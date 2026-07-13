@@ -1422,7 +1422,13 @@ impl DeveloperServer {
             }
         }
 
-        let mut command = configure_shell_command(&shell_config, command, working_dir.as_deref());
+        // BR-69: under `BIOROUTER_SHELL_SANDBOX=strict` on a host that cannot
+        // provide a full sandbox, refuse to run rather than silently degrade.
+        let mut command = configure_shell_command(&shell_config, command, working_dir.as_deref())
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e, None))?;
+        // The assistant-visible sandbox tier line, prepended to the output so the
+        // model (and a bug reporter) can see which enforcement actually applied.
+        let sandbox_status_line = super::shell::shell_sandbox_status_line(working_dir.as_deref());
 
         if self.extend_path_with_shell {
             if let Err(e) = get_shell_path_dirs()
@@ -1456,7 +1462,11 @@ impl DeveloperServer {
             output_result = output_task => {
                 // Wait for the process to complete
                 let _exit_status = child.wait().await.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
-                output_result
+                // BR-69: prepend the sandbox tier line when the gate is on.
+                output_result.map(|out| match sandbox_status_line {
+                    Some(line) => format!("{line}\n{out}"),
+                    None => out,
+                })
             }
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Cancellation token triggered! Attempting to kill process and all child processes");

@@ -23,6 +23,20 @@ mod memory;
 pub mod secret_guard;
 pub mod tutorial;
 
+/// Sandbox-helper entry point (BR-69). Call this as the **first line of
+/// `main()`** in every binary that may wrap a shell command (`biorouter`,
+/// `biorouterd`): on Linux, if the process was re-exec'd with the hidden
+/// `__br-sandbox` marker it applies the in-process Landlock/seccomp restrictions
+/// and `execve`s the real program — it never returns. Otherwise it is a no-op
+/// and normal startup proceeds. Re-exported here so the binaries do not each
+/// need a direct `biorouter-sandbox` dependency.
+pub use biorouter_sandbox::shell_sandbox::run_helper_if_invoked as run_shell_sandbox_helper_if_invoked;
+
+/// The cross-platform OS-level shell sandbox (BR-69). Re-exported so callers
+/// (`biorouter doctor`, startup logging) can report which tier is active without
+/// a direct `biorouter-sandbox` dependency.
+pub use biorouter_sandbox::shell_sandbox;
+
 pub use agent_drafter::AgentDrafterServer;
 pub use autovisualiser::AutoVisualiserRouter;
 pub use computercontroller::ComputerControllerServer;
