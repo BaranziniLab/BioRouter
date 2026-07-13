@@ -20,6 +20,18 @@ const COST_TRIGGER_CLASS =
   'flex h-7 items-center justify-center rounded-md px-0.5 transition-colors cursor-default text-text-default/70 hover:bg-background-medium hover:text-text-default';
 const COST_SYMBOL_CLASS = 'mr-0.5 text-xs font-mono font-semibold leading-none text-current';
 
+// The tokens CostTracker receives are the ACCUMULATED (billed) input/output
+// across the whole conversation, not the last turn — see Issue #1. Spell that
+// out in the tooltip so nobody reads it as the last message's size.
+const BILLED_EXPLAINER =
+  'Every turn resends the full conversation, so billed tokens exceed the last message’s count.';
+
+// A prominent "N billed tokens (X in + Y out)" summary line for the tooltip.
+export function billedTokensSummary(inputTokens: number, outputTokens: number): string {
+  const total = inputTokens + outputTokens;
+  return `${total.toLocaleString()} billed tokens (${inputTokens.toLocaleString()} in + ${outputTokens.toLocaleString()} out, accumulated across all turns)`;
+}
+
 export function formatTooltipMoney(amount: number, currency = '$'): string {
   if (!Number.isFinite(amount) || amount <= 0) {
     return `${currency}0.00`;
@@ -160,7 +172,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
             </div>
           </TooltipTrigger>
           <TooltipContent>
-            {`Local model (${inputTokens.toLocaleString()} input, ${outputTokens.toLocaleString()} output tokens)`}
+            {`Local model — ${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`}
           </TooltipContent>
         </Tooltip>
       );
@@ -169,9 +181,9 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     // Otherwise show as unavailable
     const getUnavailableTooltip = () => {
       if (pricingFailed) {
-        return `Pricing data unavailable for ${currentModel}`;
+        return `Pricing data unavailable for ${currentModel}\n${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`;
       }
-      return `Cost data not available for ${currentModel} (${inputTokens.toLocaleString()} input, ${outputTokens.toLocaleString()} output tokens)`;
+      return `Cost data not available for ${currentModel}\n${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`;
     };
 
     return (
@@ -191,15 +203,20 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
 
   // Build tooltip content
   const getTooltipContent = (): string => {
+    // Lead every tooltip with the billed (accumulated) token figure + why it
+    // is larger than the last message — this is the number the user is charged
+    // for and the source of the Issue #1 confusion.
+    const billedHeader = `${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}\n\n`;
+
     // Handle error states first
     if (pricingFailed) {
-      return `Pricing data unavailable for ${currentProvider}/${currentModel}`;
+      return `${billedHeader}Pricing data unavailable for ${currentProvider}/${currentModel}`;
     }
 
     // Handle session costs
     if (sessionCosts && Object.keys(sessionCosts).length > 0) {
       // Show session breakdown
-      let tooltip = 'Session cost breakdown:\n';
+      let tooltip = `${billedHeader}Session cost breakdown:\n`;
 
       Object.entries(sessionCosts).forEach(([modelKey, cost]) => {
         const costStr = formatTooltipMoney(cost.totalCost, costInfo?.currency || '$');
@@ -221,7 +238,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     }
 
     // Default tooltip for single model
-    return `Input: ${inputTokens.toLocaleString()} tokens (${formatTooltipMoney(inputTokens * (costInfo?.input_token_cost || 0), costInfo?.currency || '$')}) | Output: ${outputTokens.toLocaleString()} tokens (${formatTooltipMoney(outputTokens * (costInfo?.output_token_cost || 0), costInfo?.currency || '$')})`;
+    return `${billedHeader}Input: ${inputTokens.toLocaleString()} tokens (${formatTooltipMoney(inputTokens * (costInfo?.input_token_cost || 0), costInfo?.currency || '$')}) | Output: ${outputTokens.toLocaleString()} tokens (${formatTooltipMoney(outputTokens * (costInfo?.output_token_cost || 0), costInfo?.currency || '$')})`;
   };
 
   return (
