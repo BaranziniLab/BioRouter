@@ -1,4 +1,8 @@
 mod agent;
+// BR-35: the per-reply wall-clock / token / dollar ceiling. Off unless
+// configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
+// steps a reply takes, this bounds how long it runs and what it costs.
+pub mod budget;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod code_execution_extension;
 pub mod execute_commands;
@@ -39,6 +43,7 @@ pub mod vault_refs;
 pub mod workspace_summary;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
+pub use budget::ReplyBudget;
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};

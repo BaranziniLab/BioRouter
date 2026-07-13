@@ -12,6 +12,7 @@ use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
 use crate::action_required_manager::ActionRequiredManager;
+use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
@@ -1290,16 +1291,43 @@ impl Agent {
 
     /// Record this turn's provider usage exactly once for token accounting
     /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
+    ///
+    /// BR-35: the same usage also feeds the per-reply budget, which is the only
+    /// thing that sees the *whole reply's* spend — the session gauge tracks the
+    /// live context, not what this reply has burned. Pricing is looked up per
+    /// turn against the model that actually ran (a lead/worker swap mid-reply is
+    /// therefore priced correctly), and only when a dollar limit is set.
     async fn record_turn_usage(
         &self,
         session_config: &SessionConfig,
         turn_usage: Option<crate::providers::base::ProviderUsage>,
+        budget: &mut BudgetTracker,
     ) -> Result<()> {
         if let Some(usage) = turn_usage {
+            self.record_budget_usage(budget, &usage).await;
             self.update_session_metrics(session_config, &usage, false)
                 .await?;
         }
         Ok(())
+    }
+
+    /// Fold one provider round-trip (a turn, or an in-reply compaction) into the
+    /// BR-35 budget. Free when no budget is set.
+    async fn record_budget_usage(
+        &self,
+        budget: &mut BudgetTracker,
+        usage: &crate::providers::base::ProviderUsage,
+    ) {
+        if !budget.is_active() {
+            return;
+        }
+        let provider_name = match self.provider().await {
+            Ok(provider) => provider.get_name().to_string(),
+            // No provider is a pricing miss, not a stop: the token and clock
+            // axes still hold.
+            Err(_) => String::new(),
+        };
+        budget.record_usage(&provider_name, usage);
     }
 
     /// BR-12: move auto-compaction off the user-visible critical path.
@@ -2395,6 +2423,21 @@ impl Agent {
             // give-up instruction and keeps calling tools cannot spin all the way
             // to `max_turns`.
             let mut stall_deadline: Option<u32> = None;
+            // BR-35: the per-reply wall-clock / token / dollar ceiling. `max_turns`
+            // and `max_tool_calls` bound how many *steps* a reply takes, which is
+            // not a bound on time or money — 429 backoff (~2 min/call) compounds
+            // inside a single step, and one step can re-bill a 200k-token context.
+            // Inert (and free) unless a limit is configured; a limit set on the
+            // session wins per-axis over the global config.
+            let reply_started = std::time::Instant::now();
+            let mut budget = BudgetTracker::new(
+                ReplyBudget::resolve(session_config.budget, Config::global()),
+            );
+            // Set once the budget is spent and the model has been told to wrap up:
+            // the action count by which this reply must be over, mirroring
+            // `stall_deadline`, so a model that keeps calling tools anyway cannot
+            // spend the budget twice over.
+            let mut budget_deadline: Option<u32> = None;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -2469,6 +2512,28 @@ impl Agent {
                     );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(crate::agents::stall::stopped_message(&reason))
+                    );
+                    break;
+                }
+                // BR-35: the budget was spent, the model was asked to wrap up, and
+                // it kept working past its grace window. End the reply rather than
+                // let it spend the budget over again.
+                if budget_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    let snapshot = budget.snapshot_at(reply_started.elapsed());
+                    warn!(
+                        elapsed_seconds = snapshot.elapsed_seconds,
+                        tokens = snapshot.tokens,
+                        "reply budget wrap-up ignored; ending the turn at action {turns_taken}"
+                    );
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::BudgetStop)
+                            .session(&session_config.id)
+                            .count(turns_taken)
+                            .maybe_axis(snapshot.axis),
+                    );
+                    yield AgentEvent::Message(
+                        Message::assistant()
+                            .with_text(crate::agents::budget::stopped_message(&snapshot))
                     );
                     break;
                 }
@@ -2557,6 +2622,74 @@ impl Agent {
                                     format!(
                                         "⏳ Stopped looping after {flags} progress check(s) — {why}. \
                                          Wrapping up with a best-effort answer."
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
+                }
+
+                // BR-35: the per-reply budget meter. Cheap (no LLM call, no I/O):
+                // a comparison against the running totals `record_turn_usage` has
+                // already folded in, skipped entirely when no limit is set.
+                match budget.check_at(reply_started.elapsed()) {
+                    BudgetAction::Proceed => {}
+                    BudgetAction::Warn(snapshot) => {
+                        // One heads-up as the reply nears its ceiling, so a long
+                        // agentic turn is never a silent spend.
+                        info!(
+                            elapsed_seconds = snapshot.elapsed_seconds,
+                            tokens = snapshot.tokens,
+                            axis = snapshot.axis,
+                            "reply budget is running low"
+                        );
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::BudgetWarn)
+                                .session(&session_config.id)
+                                .count(turns_taken)
+                                .maybe_axis(snapshot.axis),
+                        );
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    crate::agents::budget::progress_note(&snapshot),
+                                )
+                                .user_only(),
+                        );
+                    }
+                    BudgetAction::Exceeded(snapshot) => {
+                        warn!(
+                            elapsed_seconds = snapshot.elapsed_seconds,
+                            tokens = snapshot.tokens,
+                            axis = snapshot.axis,
+                            "reply budget spent; asking for a wrap-up"
+                        );
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::BudgetExceeded)
+                                .session(&session_config.id)
+                                .count(turns_taken)
+                                .maybe_axis(snapshot.axis),
+                        );
+                        // Graceful: the model is told the budget is spent (and how
+                        // many tokens it has left) and gets a short grace window to
+                        // summarize where it got to. The hard stop above fires only
+                        // if it ignores that.
+                        budget_deadline = Some(
+                            turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
+                        );
+                        let wrapup = Message::user()
+                            .with_text(crate::agents::budget::wrapup_instruction(&snapshot))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        conversation.push(wrapup);
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Budget reached ({}). Wrapping up with what I have.",
+                                        snapshot.describe()
                                     ),
                                 )
                                 .user_only(),
@@ -3003,6 +3136,10 @@ impl Agent {
                             match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
+                                    // BR-35: a summarization round-trip inside the
+                                    // reply is spend like any other — bill it to the
+                                    // budget too, not just the session gauge.
+                                    self.record_budget_usage(&mut budget, &usage).await;
                                     self.update_session_metrics(&session_config, &usage, true).await?;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
@@ -3080,7 +3217,7 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                self.record_turn_usage(&session_config, turn_usage.take()).await?;
+                self.record_turn_usage(&session_config, turn_usage.take(), &mut budget).await?;
 
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
