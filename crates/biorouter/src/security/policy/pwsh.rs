@@ -413,6 +413,7 @@ pub struct PwshSegment {
     /// Canonical cmdlet (`Remove-Item`), or the literal binary for non-cmdlets.
     pub cmdlet: String,
     /// argv[0] exactly as typed, lowercased (`rd`, `del`, `takeown`).
+    #[allow(dead_code)] // read by the module's tests; retained for arg-regex diagnostics.
     pub raw_binary: String,
     /// Canonical parameter names present, lowercased (`recurse`, `force`).
     pub params: Vec<String>,
@@ -426,6 +427,7 @@ pub struct PwshSegment {
 }
 
 impl PwshSegment {
+    #[allow(dead_code)] // used by the module's tests as a readable param assertion.
     pub fn has_param(&self, name: &str) -> bool {
         self.params.iter().any(|p| p.eq_ignore_ascii_case(name))
     }
@@ -477,6 +479,8 @@ pub fn normalize(tokens: &[String]) -> PwshSegment {
 /// literal local script is legitimate, and a deny here would be a
 /// false-positive generator. A denylist is a mistake-catcher, not an
 /// adversary-stopper — see BR-64 for the containment answer.
+// `t[1..]` follows a `t.len() > 1` guard on a string whose first char is an ASCII `&`/`.`/`$`.
+#[allow(clippy::string_slice)]
 pub fn is_obfuscated_exec(stage: &str, tokens: &[String]) -> bool {
     let lower = stage.to_ascii_lowercase();
     if lower.contains("[scriptblock]::create") {
