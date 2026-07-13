@@ -142,6 +142,7 @@ const PairRouteWrapper = ({
     }
   }, [
     initialMessage,
+    initialAttachments,
     workflowId,
     workflowDeeplinkFromConfig,
     sessionId,

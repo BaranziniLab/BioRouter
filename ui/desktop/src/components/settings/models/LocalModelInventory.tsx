@@ -151,7 +151,7 @@ export default function LocalModelInventory() {
     return stopPolling;
   }, [refresh, stopPolling]);
 
-  const catalog = snapshot?.catalog ?? [];
+  const catalog = useMemo(() => snapshot?.catalog ?? [], [snapshot]);
   const installedCount = useMemo(() => catalog.filter(isInstalled).length, [catalog]);
 
   const confirmResources = useCallback(

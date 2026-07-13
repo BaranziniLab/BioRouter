@@ -5,6 +5,12 @@ import ExtensionModal from './ExtensionModal';
 import { ExtensionFormData } from '../utils';
 
 describe('ExtensionModal', () => {
+  // This is a full render-and-drive integration test: it mounts ExtensionModal,
+  // opens a Radix Select, and types into five fields. In jsdom that legitimately
+  // takes ~2s on its own, so under the parallel full-suite run (90 test files
+  // contending for CPU) it overshoots vitest's default 5s timeout even though it
+  // asserts nothing wrong. The explicit timeout below gives it headroom for the
+  // loaded case rather than weakening what it verifies; isolated it finishes in ~2s.
   it('creates a http_streamable extension', async () => {
     const user = userEvent.setup();
     const mockOnSubmit = vi.fn();
@@ -85,5 +91,5 @@ describe('ExtensionModal', () => {
     expect(submittedData.headers).toEqual([
       { key: 'Authorization', value: 'Bearer abc123', isEdited: true },
     ]);
-  });
+  }, 20000);
 });

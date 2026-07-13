@@ -155,7 +155,7 @@ export function ForceGraphCanvas({
     }, 900);
 
     return () => window.clearTimeout(timeout);
-  }, [graph, size.height, size.width]);
+  }, [graph, size.height, size.width, compactCanvas]);
 
   return (
     <div
