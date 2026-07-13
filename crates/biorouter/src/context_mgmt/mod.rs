@@ -1,10 +1,10 @@
+use crate::config::Config;
 use crate::conversation::message::{ActionRequiredData, MessageMetadata};
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::{merge_consecutive_messages, Conversation};
 use crate::prompt_template::render_global_file;
 use crate::providers::base::{Provider, ProviderUsage};
 use crate::providers::errors::ProviderError;
-use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
 use rmcp::model::{Role, Tool};
 use serde::Serialize;
@@ -426,6 +426,95 @@ async fn compact_messages_with_window(
     ))
 }
 
+/// BR-56: bytes per token for the compaction *trigger* estimate.
+///
+/// A deliberate **floor**, so the estimate over-counts: o200k averages ~4 bytes
+/// per token on English prose and ~3.3 on code/JSON, and even CJK (3 UTF-8 bytes
+/// per character, roughly one token per character) lands at ~3. Dividing by 3
+/// therefore yields an upper-ish bound, and the fast path only *skips* the exact
+/// count when even that upper bound is under the threshold — so the heuristic can
+/// cost a needless exact count but cannot hide a needed compaction. Override with
+/// `BIOROUTER_COMPACT_ESTIMATE_BYTES_PER_TOKEN`.
+const BYTES_PER_TOKEN_FLOOR: f64 = 3.0;
+
+/// Per-message and per-tool overheads mirroring [`TokenCounter::count_chat_tokens`]
+/// so the estimate is comparable to the exact count it short-circuits.
+const ESTIMATE_TOKENS_PER_MESSAGE: usize = 4;
+
+fn fast_estimate_enabled() -> bool {
+    Config::global()
+        .get_param::<bool>("BIOROUTER_COMPACT_FAST_ESTIMATE")
+        .unwrap_or(true)
+}
+
+fn bytes_per_token() -> f64 {
+    let configured = Config::global()
+        .get_param::<f64>("BIOROUTER_COMPACT_ESTIMATE_BYTES_PER_TOKEN")
+        .unwrap_or(BYTES_PER_TOKEN_FLOOR);
+    if configured > 0.0 {
+        configured
+    } else {
+        BYTES_PER_TOKEN_FLOOR
+    }
+}
+
+/// A byte-count-based token estimate for the whole request (system prompt +
+/// agent-visible messages + tool schemas). No tokenizer, no allocation per
+/// message — it walks the text that is already in memory.
+fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+    let mut bytes = system_prompt.len();
+    let mut overhead = if system_prompt.is_empty() {
+        0
+    } else {
+        ESTIMATE_TOKENS_PER_MESSAGE
+    };
+
+    for message in messages.iter().filter(|m| m.is_agent_visible()) {
+        overhead += ESTIMATE_TOKENS_PER_MESSAGE;
+        for content in &message.content {
+            match content {
+                MessageContent::Text(text) => bytes += text.text.len(),
+                MessageContent::Thinking(thinking) => bytes += thinking.thinking.len(),
+                MessageContent::RedactedThinking(redacted) => bytes += redacted.data.len(),
+                MessageContent::Image(image) => bytes += image.data.len(),
+                MessageContent::ToolRequest(request) => {
+                    bytes += request.id.len();
+                    if let Ok(call) = &request.tool_call {
+                        bytes += call.name.len();
+                        bytes += call
+                            .arguments
+                            .as_ref()
+                            .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
+                            .unwrap_or(0);
+                    }
+                }
+                MessageContent::ToolResponse(response) => {
+                    bytes += response.id.len();
+                    if let Ok(result) = &response.tool_result {
+                        for item in result.content.iter() {
+                            if let Some(text) = item.as_text() {
+                                bytes += text.text.len();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for tool in tools {
+        bytes += tool.name.len();
+        bytes += tool.description.as_ref().map(|d| d.len()).unwrap_or(0);
+        bytes += serde_json::to_string(&tool.input_schema)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        overhead += ESTIMATE_TOKENS_PER_MESSAGE;
+    }
+
+    ((bytes as f64) / bytes_per_token()).ceil() as usize + overhead
+}
+
 /// Check if messages exceed the auto-compaction threshold
 ///
 /// `cold_path_context` supplies the system prompt and tool schemas for the
@@ -452,13 +541,16 @@ pub async fn check_if_compaction_needed(
 
     let context_limit = provider.get_model_config().context_limit();
 
+    // Auto-compaction disabled: nothing below can change the answer, and the cold
+    // path would otherwise pay for a full tokenization to reach the same `false`.
+    if threshold <= 0.0 || threshold >= 1.0 {
+        return Ok(false);
+    }
+    let threshold_tokens = (context_limit as f64 * threshold) as usize;
+
     let (current_tokens, token_source) = match session.total_tokens {
         Some(tokens) => (tokens as usize, "session metadata"),
         None => {
-            let token_counter = create_token_counter()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create token counter: {}", e))?;
-
             // BR-15: the fallback estimate must include the system prompt and tool
             // schemas — frequently the two largest contributors — or it undercounts
             // badly. Fall back to empty (the old behaviour) only when the caller
@@ -474,6 +566,31 @@ pub async fn check_if_compaction_needed(
             // estimate by a small, conservative per-provider margin to keep the
             // trigger calibrated across providers.
             let calibration = crate::token_counter::provider_token_calibration(provider.get_name());
+
+            // BR-56: a cheap byte-based upper estimate first. The exact count is a
+            // tiktoken BPE encode of the whole request — megabytes of history on a
+            // long session, and this runs at the top of every reply for any provider
+            // that doesn't report usage. When the estimate says we are *clearly*
+            // under the threshold, the exact answer cannot be "compact", so skip it.
+            // The estimate deliberately over-counts (see `BYTES_PER_TOKEN_FLOOR`), so
+            // this can only ever cost an unnecessary exact count, never a missed
+            // compaction.
+            if fast_estimate_enabled() {
+                let estimate = ((estimate_request_tokens(messages, &system_prompt, &tools) as f64)
+                    * calibration)
+                    .ceil() as usize;
+                if estimate <= threshold_tokens {
+                    debug!(
+                        "Compaction check short-circuited: byte estimate {} <= threshold {} ({} tokens limit)",
+                        estimate, threshold_tokens, context_limit
+                    );
+                    return Ok(false);
+                }
+            }
+
+            let token_counter = crate::token_counter::shared_token_counter()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create token counter: {}", e))?;
 
             // tiktoken BPE over the whole history is CPU-bound. This runs at the
             // top of reply() on a session's first turn (or for providers that
@@ -501,11 +618,8 @@ pub async fn check_if_compaction_needed(
 
     let usage_ratio = current_tokens as f64 / context_limit as f64;
 
-    let needs_compaction = if threshold <= 0.0 || threshold >= 1.0 {
-        false // Auto-compact is disabled.
-    } else {
-        usage_ratio > threshold
-    };
+    // Auto-compact-disabled thresholds already returned above.
+    let needs_compaction = usage_ratio > threshold;
 
     debug!(
         "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}%, needs compaction: {}, source: {}",
