@@ -9,6 +9,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use super::command::ParsedCommand;
+use super::target::{Blast, Dialect, Platform};
 
 /// The three first-class outcomes a rule can assert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -63,6 +64,18 @@ pub struct RuleMatch {
     pub path_glob: Option<Vec<String>>,
     #[serde(default)]
     pub pipes_to_shell: Option<bool>,
+    /// BR-68: match a path argument by its *blast radius* rather than by
+    /// enumerating `path_glob`s per platform. A rule with
+    /// `target_blast: [root, system_dir, home_bare, wildcard_at_root]` fires on
+    /// any target whose normalized blast is one of those — the discriminator
+    /// that keeps `Remove-Item -Recurse -Force .\dist` allowed. Like `path_glob`,
+    /// it must co-occur with `binary` in the *same* segment.
+    #[serde(default)]
+    pub target_blast: Option<Vec<Blast>>,
+    /// BR-68: the segment reached an obfuscated PowerShell execution sink (the
+    /// residue signal). Used by the single `ask`-tier obfuscation rule.
+    #[serde(default)]
+    pub obfuscated_exec: Option<bool>,
 }
 
 impl RuleMatch {
@@ -75,6 +88,8 @@ impl RuleMatch {
             && self.arg_regex.is_none()
             && self.path_glob.is_none()
             && self.pipes_to_shell.is_none()
+            && self.target_blast.is_none()
+            && self.obfuscated_exec.is_none()
     }
 }
 
@@ -108,6 +123,14 @@ pub struct Rule {
     pub enabled: bool,
     #[serde(default)]
     pub tier: Tier,
+    /// BR-68: platforms this rule is in force on. Empty/absent = all platforms,
+    /// so every pre-BR-68 baseline rule keeps firing everywhere (`rm -rf /etc`
+    /// typed into `pwsh` on Linux is still `rm -rf /etc`).
+    #[serde(default)]
+    pub platforms: Vec<Platform>,
+    /// BR-68: shell dialects this rule understands. Empty/absent = all dialects.
+    #[serde(default)]
+    pub shells: Vec<Dialect>,
     #[serde(default)]
     pub tests: RuleTests,
 }
@@ -211,8 +234,15 @@ impl CompiledRule {
     }
 
     /// Whether this rule applies to `(tool, cmd)`. All specified dimensions must
-    /// hold (AND); `binary` and `path_glob` must co-occur in one segment.
+    /// hold (AND); `binary`, `path_glob`, `target_blast` and the dialect gate
+    /// must co-occur in one segment (BR-68 keeps this co-occurrence — it is why
+    /// `rm -rf ./x && cd /etc` is not fooled).
     pub fn matches(&self, tool: &str, cmd: &ParsedCommand) -> bool {
+        // BR-68 platform gate: cheapest early-out. A rule with no `platforms`
+        // applies everywhere.
+        if !self.rule.platforms.is_empty() && !self.rule.platforms.contains(&cmd.platform) {
+            return false;
+        }
         if let Some(globs) = &self.tool_globs {
             if !globs.iter().any(|g| g.matches(tool)) {
                 return false;
@@ -230,8 +260,10 @@ impl CompiledRule {
         }
         if let Some(prefixes) = &self.rule.r#match.command_prefix {
             let hit = cmd.segments.iter().any(|seg| {
-                let line = seg.command_line();
-                prefixes.iter().any(|p| line.starts_with(p.trim()))
+                self.dialect_ok(seg) && {
+                    let line = seg.command_line();
+                    prefixes.iter().any(|p| line.starts_with(p.trim()))
+                }
             });
             if !hit {
                 return false;
@@ -239,8 +271,13 @@ impl CompiledRule {
         }
 
         let binaries = &self.rule.r#match.binary;
-        if binaries.is_some() || self.path_globs.is_some() {
+        let blasts = &self.rule.r#match.target_blast;
+        let obf = self.rule.r#match.obfuscated_exec;
+        if binaries.is_some() || self.path_globs.is_some() || blasts.is_some() || obf.is_some() {
             let ok = cmd.segments.iter().any(|seg| {
+                if !self.dialect_ok(seg) {
+                    return false;
+                }
                 let bin_ok = binaries
                     .as_ref()
                     .is_none_or(|bins| bins.iter().any(|b| b.eq_ignore_ascii_case(&seg.binary)));
@@ -249,7 +286,11 @@ impl CompiledRule {
                         .iter()
                         .any(|p| globs.iter().any(|g| g.matches_path(p)))
                 });
-                bin_ok && path_ok
+                let blast_ok = blasts
+                    .as_ref()
+                    .is_none_or(|wanted| seg.targets.iter().any(|t| wanted.contains(&t.blast)));
+                let obf_ok = obf.is_none_or(|want| seg.obfuscated_exec == want);
+                bin_ok && path_ok && blast_ok && obf_ok
             });
             if !ok {
                 return false;
@@ -257,6 +298,12 @@ impl CompiledRule {
         }
 
         true
+    }
+
+    /// A rule's `shells` gate, evaluated per segment (a segment carries the
+    /// dialect that will interpret it). Empty `shells` = all dialects.
+    fn dialect_ok(&self, seg: &super::command::Segment) -> bool {
+        self.rule.shells.is_empty() || self.rule.shells.contains(&seg.dialect)
     }
 }
 
