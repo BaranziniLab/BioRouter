@@ -1,3 +1,4 @@
+use crate::agents::tool_errors::ToolErrorKind;
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::mcp_utils::ToolResult;
@@ -165,6 +166,17 @@ pub struct FailureLoopConfig {
     /// Nth consecutive identical failure after which the next call to the tool is
     /// denied. `None` disables the hard stage (nudge-only).
     pub hard_stop_at: Option<u32>,
+    /// BR-51: also hard-stop a streak of *retryable* failures (timeouts, transient
+    /// dependency errors).
+    ///
+    /// Off by default, and that is the one thing the taxonomy changes about BR-31.
+    /// The hard stop's whole justification is "a byte-identical failure cannot
+    /// become a success" — which is exactly false for a timeout or a connection
+    /// reset: the far end may simply have been down, and blocking the call that
+    /// would have worked strands the turn. The nudges still fire at every stage
+    /// (the model is told it is hammering something flaky), and the absolute
+    /// tool-call ceiling remains the backstop against an unbounded retry loop.
+    pub deny_retryable: bool,
 }
 
 impl Default for FailureLoopConfig {
@@ -175,6 +187,7 @@ impl Default for FailureLoopConfig {
             soft_warn_at: Some(DEFAULT_FAILURE_SOFT_WARN),
             escalate_at: Some(DEFAULT_FAILURE_ESCALATE_WARN),
             hard_stop_at: Some(DEFAULT_FAILURE_HARD_STOP),
+            deny_retryable: false,
         }
     }
 }
@@ -191,11 +204,27 @@ impl FailureLoopConfig {
 
 /// BR-31: one completed tool call, reduced to what the no-progress detector
 /// needs — which tool ran, and, if it failed, a normalized signature of its error.
+///
+/// BR-51 adds the failure's *class*: the detectors used to treat "the file does
+/// not exist" and "the network blipped" as the same shapeless failure, and only
+/// one of those is worth trying again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutcome {
     pub tool_name: String,
     /// `None` when the call succeeded; `Some(signature)` when it failed.
     pub failure: Option<String>,
+    /// BR-51: the taxonomy class of the failure, `None` on success (or when the
+    /// taxonomy is disabled and the outcome was built without one).
+    pub kind: Option<ToolErrorKind>,
+}
+
+impl ToolOutcome {
+    /// Could this exact call plausibly succeed if it were issued again? `false`
+    /// for a success (there is nothing to retry) and for any unclassified failure
+    /// — the conservative answer, matching the pre-BR-51 assumption.
+    pub fn retryable(&self) -> bool {
+        self.failure.is_some() && self.kind.is_some_and(ToolErrorKind::retryable)
+    }
 }
 
 /// Normalize an error message into a comparison signature: lowercased,
@@ -248,13 +277,22 @@ fn failure_text(result: &ToolResult<CallToolResult>) -> Option<String> {
 }
 
 /// Reduce a completed tool result to a [`ToolOutcome`].
+///
+/// The BR-51 classification is derived from the same result, so it is available
+/// whether the taxonomy annotated the text or not (and, when it did, is read back
+/// off the header rather than re-guessed).
 pub fn tool_outcome(tool_name: &str, result: &ToolResult<CallToolResult>) -> ToolOutcome {
+    let failure = failure_text(result)
+        .as_deref()
+        .map(error_signature)
+        .filter(|signature| !signature.is_empty());
     ToolOutcome {
         tool_name: tool_name.to_string(),
-        failure: failure_text(result)
-            .as_deref()
-            .map(error_signature)
-            .filter(|signature| !signature.is_empty()),
+        kind: failure
+            .is_some()
+            .then(|| crate::agents::tool_errors::classify(result).map(|error| error.kind))
+            .flatten(),
+        failure,
     }
 }
 
@@ -335,6 +373,22 @@ fn signatures_match(a: &str, b: &str, threshold: f32) -> bool {
     a == b || string_similarity(a, b) >= threshold
 }
 
+/// BR-51: the taxonomy class of `tool_name`'s most recent failure, or `None` if
+/// its last call succeeded, it has not run, or the failure was never classified.
+pub fn latest_failure_kind(outcomes: &[ToolOutcome], tool_name: &str) -> Option<ToolErrorKind> {
+    outcomes
+        .iter()
+        .rev()
+        .find(|outcome| outcome.tool_name == tool_name)
+        .filter(|outcome| outcome.failure.is_some())
+        .and_then(|outcome| outcome.kind)
+}
+
+/// Is `tool_name`'s current failing run made of failures a retry could survive?
+fn streak_is_retryable(outcomes: &[ToolOutcome], tool_name: &str) -> bool {
+    latest_failure_kind(outcomes, tool_name).is_some_and(ToolErrorKind::retryable)
+}
+
 /// BR-31: the nudge (if any) owed to `tool_name` after its latest result, given
 /// every outcome since the last user turn (including the batch that just ran).
 ///
@@ -352,30 +406,68 @@ pub fn failure_loop_nudge(
     }
     let streak = failing_streak(outcomes, tool_name, config.similarity_threshold);
     let fired = |threshold: Option<u32>| threshold.is_some_and(|at| at > 0 && streak >= at);
+    let kind = latest_failure_kind(outcomes, tool_name);
 
     if fired(config.escalate_at) {
         Some(escalated_failure_nudge(
             tool_name,
             streak,
-            config.hard_stop_at,
+            // A retryable streak is never hard-stopped unless the operator opted
+            // in, so do not threaten the model with a block that will not come.
+            config
+                .hard_stop_at
+                .filter(|_| config.deny_retryable || !kind.is_some_and(ToolErrorKind::retryable)),
+            kind,
         ))
     } else if fired(config.soft_warn_at) {
-        Some(soft_failure_nudge(tool_name, streak))
+        Some(soft_failure_nudge(tool_name, streak, kind))
     } else {
         None
     }
 }
 
-fn soft_failure_nudge(tool_name: &str, streak: u32) -> String {
+/// BR-51: what the nudge can honestly say about the *class* of failure being
+/// repeated. "Running it again will produce the same error again" is true of a
+/// missing file and false of a flaky network — telling the model the wrong one
+/// is worse than telling it nothing.
+fn failure_diagnosis(kind: Option<ToolErrorKind>) -> String {
+    match kind {
+        Some(kind) if kind.retryable() => format!(
+            " The failures are classified '{}' — retryable, so the tool itself may recover, \
+             but blind repetition is not a plan: back off, change the request, or take a \
+             different route.",
+            kind.as_str()
+        ),
+        Some(kind) => format!(
+            " The failures are classified '{}' — not retryable: {}",
+            kind.as_str(),
+            kind.guidance()
+        ),
+        None => String::new(),
+    }
+}
+
+fn soft_failure_nudge(tool_name: &str, streak: u32, kind: Option<ToolErrorKind>) -> String {
+    let repetition = if kind.is_some_and(ToolErrorKind::retryable) {
+        "Running it again may well produce the same error again."
+    } else {
+        "Running it again will produce the same error again."
+    };
+    let diagnosis = failure_diagnosis(kind);
     format!(
         "No progress: '{tool_name}' has now failed {streak} times in a row with the \
-         same error. Running it again will produce the same error again. Read what the \
+         same error. {repetition} Read what the \
          error actually says and fix its cause, or take a different route — a different \
-         tool, a different input, or stopping to tell the user what is blocking you."
+         tool, a different input, or stopping to tell the user what is blocking you.{diagnosis}"
     )
 }
 
-fn escalated_failure_nudge(tool_name: &str, streak: u32, hard_stop_at: Option<u32>) -> String {
+fn escalated_failure_nudge(
+    tool_name: &str,
+    streak: u32,
+    hard_stop_at: Option<u32>,
+    kind: Option<ToolErrorKind>,
+) -> String {
     let stop_clause = match hard_stop_at {
         Some(at) if at > streak => format!(
             " Further calls to '{tool_name}' will be blocked automatically once it has \
@@ -387,12 +479,13 @@ fn escalated_failure_nudge(tool_name: &str, streak: u32, hard_stop_at: Option<u3
         ),
         None => String::new(),
     };
+    let diagnosis = failure_diagnosis(kind);
     format!(
         "You are not making progress: '{tool_name}' has failed {streak} times in a row \
          with the same error, and the earlier warning changed nothing. Stop retrying it. \
          Do one of these instead: fix the underlying cause the error names, use a \
          different tool or approach, or stop and ask the user for what you are \
-         missing.{stop_clause}"
+         missing.{stop_clause}{diagnosis}"
     )
 }
 
@@ -929,6 +1022,14 @@ impl RepetitionInspector {
         if streak < hard_stop_at {
             return None;
         }
+        // BR-51: the hard stop rests on "an identical failure cannot become a
+        // success" — which is not true of a timeout or a transient dependency
+        // error. Denying the call that would finally have worked is a worse
+        // failure mode than one more retry, so a retryable streak is nudged, not
+        // blocked (unless the operator opted in).
+        if !self.failure.deny_retryable && streak_is_retryable(outcomes, tool_name) {
+            return None;
+        }
 
         Some((
             InspectionResult {
@@ -1287,6 +1388,7 @@ mod tests {
         ToolOutcome {
             tool_name: tool_name.to_string(),
             failure: Some(error_signature(error)),
+            kind: Some(crate::agents::tool_errors::kind_from_text(error)),
         }
     }
 
@@ -1294,6 +1396,7 @@ mod tests {
         ToolOutcome {
             tool_name: tool_name.to_string(),
             failure: None,
+            kind: None,
         }
     }
 
@@ -1495,5 +1598,94 @@ mod tests {
             )),
         );
         assert_eq!(outcome.failure.as_deref(), Some("connection closed"));
+    }
+
+    // ---------------------------------------------------------------------
+    // BR-51: the taxonomy the no-progress detector now reads
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn an_outcome_carries_the_class_of_its_failure() {
+        let missing = tool_outcome("read_file", &error_result("No such file or directory"));
+        assert_eq!(missing.kind, Some(ToolErrorKind::NotFound));
+        assert!(!missing.retryable());
+
+        let flaky = tool_outcome("fetch", &error_result("connection reset by peer"));
+        assert_eq!(flaky.kind, Some(ToolErrorKind::Transient));
+        assert!(flaky.retryable());
+
+        let fine = tool_outcome("shell", &ok_result("done"));
+        assert_eq!(fine.kind, None);
+        assert!(!fine.retryable());
+    }
+
+    /// The BR-51 headline for BR-31: the hard stop rests on "an identical failure
+    /// cannot become a success", which is false for a timeout. A run of timeouts
+    /// is nudged, never blocked — blocking the retry that would finally have
+    /// worked strands the turn.
+    #[test]
+    fn a_retryable_streak_is_nudged_but_not_blocked() {
+        let inspector =
+            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
+        let outcomes = vec![failed("fetch", "operation timed out"); 6];
+        assert_eq!(
+            failing_streak(&outcomes, "fetch", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            6
+        );
+
+        // Nudged: the model is told it is hammering something flaky…
+        let nudge = failure_loop_nudge(&FailureLoopConfig::default(), &outcomes, "fetch")
+            .expect("a six-failure streak nudges");
+        assert!(nudge.contains("timeout"), "{nudge}");
+        // …and not threatened with a block that will not come.
+        assert!(!nudge.contains("blocked"), "{nudge}");
+
+        // …but not denied.
+        assert!(inspector
+            .inspect_failure_loop("req-1", "fetch", &outcomes)
+            .is_none());
+
+        // A hard failure of the same length still is.
+        let hard = vec![failed("shell", "cargo: command not found"); 6];
+        let (result, streak) = inspector
+            .inspect_failure_loop("req-2", "shell", &hard)
+            .expect("a hard streak is denied");
+        assert!(matches!(result.action, InspectionAction::Deny));
+        assert_eq!(streak, 6);
+    }
+
+    /// The operator can opt back into the pre-BR-51 behaviour.
+    #[test]
+    fn deny_retryable_opts_back_into_blocking_a_flaky_streak() {
+        let inspector = RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig {
+            deny_retryable: true,
+            ..FailureLoopConfig::default()
+        });
+        let outcomes = vec![failed("fetch", "operation timed out"); 6];
+
+        let (result, _) = inspector
+            .inspect_failure_loop("req-1", "fetch", &outcomes)
+            .expect("opted in, so the streak is denied");
+        assert!(matches!(result.action, InspectionAction::Deny));
+    }
+
+    /// An unclassified failure (a `ToolOutcome` built without the taxonomy) must
+    /// behave exactly as it did before BR-51: conservatively, as a hard failure.
+    #[test]
+    fn an_unclassified_failure_is_treated_as_hard() {
+        let inspector =
+            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
+        let outcomes = vec![
+            ToolOutcome {
+                tool_name: "fetch".to_string(),
+                failure: Some("timed out".to_string()),
+                kind: None,
+            };
+            6
+        ];
+
+        assert!(inspector
+            .inspect_failure_loop("req-1", "fetch", &outcomes)
+            .is_some());
     }
 }

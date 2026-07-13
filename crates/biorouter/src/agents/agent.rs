@@ -655,6 +655,12 @@ impl Agent {
                 .get_param::<u32>("BIOROUTER_FAILURE_LOOP_HARD_STOP")
                 .ok()
                 .map_or(defaults.hard_stop_at, positive),
+            // BR-51: opt in to hard-stopping a streak of *retryable* failures
+            // (timeouts, transient dependency errors), which is off by default —
+            // blocking the retry that would have worked is worse than one more.
+            deny_retryable: config
+                .get_param::<bool>("BIOROUTER_FAILURE_LOOP_DENY_RETRYABLE")
+                .unwrap_or(defaults.deny_retryable),
         }
     }
 
@@ -780,6 +786,9 @@ impl Agent {
                 Err(error) => outcomes.push(crate::tool_monitor::ToolOutcome {
                     tool_name: crate::agents::mistakes::MALFORMED_TOOL_NAME.to_string(),
                     failure: Some(error.message.to_string()),
+                    // BR-51: a call the model emitted malformed never reached a
+                    // tool — the arguments themselves were the failure.
+                    kind: Some(crate::agents::tool_errors::ToolErrorKind::InvalidArgs),
                 }),
             }
         }
@@ -1284,9 +1293,9 @@ impl Agent {
         ))
     }
 
-    /// Integrate one completed tool result: validate it before persistence, note
-    /// extension-install failures, record it for PostToolUse hooks, and write it
-    /// into the request's response slot.
+    /// Integrate one completed tool result: validate it before persistence,
+    /// classify a failure (BR-51), note extension-install failures, record it for
+    /// PostToolUse hooks, and write it into the request's response slot.
     #[allow(clippy::too_many_arguments)]
     async fn integrate_tool_result(
         &self,
@@ -1298,6 +1307,7 @@ impl Agent {
         all_install_successful: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
         tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
+        tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
         let output = call_tool_result::validate(output);
 
@@ -1308,6 +1318,22 @@ impl Agent {
             crate::guardrails::tool_output::guard_tool_result(output, tool_output_guardrail);
         if let Some(summary) = &guardrail_summary {
             debug!(request_id = %request_id, "tool-output guardrail flagged: {summary}");
+        }
+
+        // BR-51: a failure is classified once, here — the single funnel every
+        // completed tool result passes through. The envelope rides on the result
+        // (so the GUI and a reloaded session get it) and the typed header rides
+        // in the text (so the model, and the BR-31/66 detectors reading the
+        // transcript back, can tell a retryable blip from a hard failure).
+        let (output, tool_error) =
+            crate::agents::tool_errors::annotate_tool_result(output, tool_error_taxonomy);
+        if let Some(error) = &tool_error {
+            debug!(
+                request_id = %request_id,
+                kind = error.kind.as_str(),
+                retryable = error.retryable,
+                "tool call failed"
+            );
         }
 
         if enable_extension_request_ids.contains(&request_id) && output.is_err() {
@@ -2795,6 +2821,10 @@ impl Agent {
             // reads touch the filesystem, so we avoid doing it per tool result).
             let tool_output_guardrail =
                 crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
+            // BR-51: the tool-error taxonomy policy, resolved once for the same
+            // reason (a config read touches the filesystem).
+            let tool_error_taxonomy =
+                crate::agents::tool_errors::ToolErrorTaxonomyConfig::from_config();
             // BR-32: the /goal stall detector, generalized to ordinary chat. Both
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
@@ -3341,6 +3371,7 @@ impl Agent {
                                                     &mut all_install_successful,
                                                     &mut post_tool_results,
                                                     tool_output_guardrail,
+                                                    tool_error_taxonomy,
                                                 ).await;
                                             }
                                             ToolStreamItem::Message(msg) => {
