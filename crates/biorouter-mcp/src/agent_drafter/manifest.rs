@@ -654,6 +654,22 @@ pub struct SignalDecl {
     /// Absent/false ⇒ the signal is queue-only (context for the next turn).
     #[serde(default)]
     pub autorun: bool,
+    /// Whether declaring this signal ALSO subscribes the agent to it.
+    ///
+    /// **Default: `true`.** This is the fix for the worst failure in the 100-app
+    /// test drive: signals round-tripped 1 time in 12. The subscription set used
+    /// to start empty on every connection and the *only* way to fill it was the
+    /// agent voluntarily calling `ui_subscribe` — but the user's first click
+    /// necessarily happens *before* the agent's first tool call, so the gesture was
+    /// validated against an empty set, rejected, and **dropped**. No prompt can win
+    /// an ordering race that happens before any prompt is evaluated; one probe
+    /// called `ui_subscribe` five times in a row trying.
+    ///
+    /// Declaring a signal now *is* subscribing to it. `ui_subscribe` remains, for
+    /// adding non-eager signals. Set `eager: false` for a signal the agent should
+    /// only receive after explicitly opting in.
+    #[serde(default = "yes")]
+    pub eager: bool,
 }
 
 impl Default for SignalDecl {
@@ -663,6 +679,7 @@ impl Default for SignalDecl {
             payload: None,
             coalesce_ms: default_coalesce_ms(),
             autorun: false,
+            eager: true,
         }
     }
 }

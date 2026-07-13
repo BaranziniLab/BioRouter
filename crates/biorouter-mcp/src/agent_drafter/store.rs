@@ -5,6 +5,7 @@
 //! Layout mirrors the conventions used by `memory`/`knowledge`:
 //! `~/.config/biorouter/agent_drafter/<id>/`.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -117,6 +118,51 @@ pub struct AgentConfig {
     /// per-connection sessions. Use [`AgentConfig::durable_session`] to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durable_session: Option<bool>,
+    /// Platform capabilities this app *wants* that may or may not exist here.
+    ///
+    /// This is the vocabulary the manifest was missing. An app whose spec calls
+    /// for a ClinVar knowledge base, on a machine with no ClinVar knowledge base,
+    /// previously had exactly one way to express that: invent
+    /// `knowledge_base: "clinvar"` — a lie that armed KB tools scoped to nothing
+    /// and failed on turn 1. Now the honest statement is representable:
+    /// `requires: [{kind: knowledge_base, id: "clinvar", reason: "…"}]` with the
+    /// id left unset. An unmet requirement is a lint **warning** and a runtime
+    /// banner, never a fabricated config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<Requirement>,
+}
+
+/// The kind of platform capability a [`Requirement`] refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementKind {
+    KnowledgeBase,
+    Skill,
+    Extension,
+    DataSource,
+}
+
+impl RequirementKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::KnowledgeBase => "knowledge_base",
+            Self::Skill => "skill",
+            Self::Extension => "extension",
+            Self::DataSource => "data_source",
+        }
+    }
+}
+
+/// A platform capability the app needs, and whether this install can provide it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Requirement {
+    pub kind: RequirementKind,
+    /// The id the app would use *if it existed here* (e.g. `"clinvar"`). This is
+    /// a statement of need, not a configuration — nothing is armed from it.
+    pub id: String,
+    /// Why the app needs it. Shown to the user in the degraded-capability banner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 impl AgentConfig {
@@ -136,7 +182,14 @@ pub struct Manifest {
     pub kind: ArtifactKind,
     /// Entry file rendered for previews/exports.
     pub entry: String,
+    /// Server-managed. `#[serde(default)]` because a model composing a manifest
+    /// from scratch has no way to know these and no business inventing them —
+    /// requiring them made `update_app` fail with `missing field created_at`,
+    /// which is the error that kicked off the manifest-rewrite guessing loop.
+    /// `update_app` restores the real values from disk after parsing.
+    #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentConfig>,
@@ -174,6 +227,18 @@ pub struct Manifest {
     /// unchanged.
     #[serde(default, skip_serializing_if = "ThemeConfig::is_default")]
     pub theme: ThemeConfig,
+}
+
+impl Manifest {
+    /// The theme pack this app actually renders with.
+    ///
+    /// Read this instead of `manifest.theme.pack`: the field is omitted from the
+    /// serialized manifest when it holds the default, so its *absence* means
+    /// "the default pack", never "no pack". An unknown pack on disk also resolves
+    /// to the default here, matching what the renderer does.
+    pub fn resolved_theme_pack(&self) -> &str {
+        self.theme.resolved_pack()
+    }
 }
 
 fn now_secs() -> u64 {

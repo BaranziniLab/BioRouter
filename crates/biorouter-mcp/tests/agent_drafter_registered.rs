@@ -45,6 +45,15 @@ async fn agent_drafter_serves_tools_over_mcp() {
         "preview_app",
         "export_app",
         "delete_app",
+        // Wave 1: the model can finally ask what this install actually has,
+        // instead of inventing a knowledge-base or skill id to express a need.
+        "list_platform_catalog",
+        // Wave 2: typed declaration, so the contract can be stated in one call
+        // instead of guessed at through whole-manifest rewrites.
+        "declare_surface",
+        "declare_profiles",
+        "set_theme",
+        "set_routes",
     ] {
         assert!(
             names.iter().any(|n| n == expected),
