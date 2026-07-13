@@ -396,12 +396,18 @@ impl Agent {
         // possible. Compaction is a genuine provider call and is billed, so it is
         // recorded like any other turn.
         if let Some(total) = usage.usage.total_tokens {
+            // Provider name is the live provider instance's name; the model comes
+            // from the turn's own `ProviderUsage`, so a mid-thread model switch is
+            // attributed to the model that actually served each turn.
+            let provider_name = self.provider().await.ok().map(|p| p.get_name().to_string());
             manager
                 .record_token_event(
                     session_id,
                     usage.usage.input_tokens,
                     usage.usage.output_tokens,
                     total,
+                    Some(usage.model.as_str()),
+                    provider_name.as_deref(),
                 )
                 .await?;
         }
