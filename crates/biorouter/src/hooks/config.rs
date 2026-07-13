@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer};
 use tracing::warn;
 
 use super::event::HookEvent;
+use super::matcher::{self, InputMatcher};
 use crate::config::{Config, ConfigError};
 
 /// File name of the project-level hooks file, relative to the session
@@ -49,7 +50,33 @@ pub struct HookMatcherGroup {
     /// regex (incl. `a|b` alternation) as fallback.
     #[serde(default)]
     pub matcher: Option<String>,
+    /// Optional narrowing filter on the event's `tool_input` (BR-27): either a
+    /// regex searched against the whole input JSON, or a map of dotted field
+    /// path -> regex (all must match). Groups that declare one never match an
+    /// event without a `tool_input`.
+    #[serde(default)]
+    pub input_matcher: Option<InputMatcher>,
     pub hooks: Vec<HookDefinition>,
+}
+
+impl HookMatcherGroup {
+    /// Whether this group applies to an event with this matcher key (the tool
+    /// name / source / trigger, `None` for match-all events) and tool input.
+    pub fn matches(
+        &self,
+        matcher_key: Option<&str>,
+        tool_input: Option<&serde_json::Value>,
+    ) -> bool {
+        let name_matches = match matcher_key {
+            Some(key) => matcher::matcher_matches(self.matcher.as_deref(), key),
+            None => true,
+        };
+        name_matches
+            && self
+                .input_matcher
+                .as_ref()
+                .is_none_or(|input_matcher| input_matcher.matches(tool_input))
+    }
 }
 
 /// Parsed hooks configuration: event name -> matcher groups.
@@ -279,6 +306,66 @@ PreToolUse:
             .unwrap()
             .events
             .contains_key(&HookEvent::Stop));
+    }
+
+    // ---- BR-27: tool_input matchers ----
+
+    #[test]
+    fn parses_input_matcher_in_both_forms() {
+        let yaml = r#"
+PreToolUse:
+  - matcher: "developer__shell"
+    input_matcher: "rm\\s+-rf"
+    hooks: [{ type: command, command: "guard.sh" }]
+  - matcher: "developer__text_editor"
+    input_matcher:
+      command: "^write$"
+      path: "^/etc/"
+    hooks: [{ type: command, command: "etc-guard.sh" }]
+"#;
+        let config: HooksConfig = serde_yaml::from_str(yaml).unwrap();
+        let groups = &config.events[&HookEvent::PreToolUse];
+        assert_eq!(
+            groups[0].input_matcher,
+            Some(InputMatcher::Any("rm\\s+-rf".to_string()))
+        );
+        assert!(matches!(
+            &groups[1].input_matcher,
+            Some(InputMatcher::Fields(fields)) if fields.len() == 2
+        ));
+    }
+
+    #[test]
+    fn group_without_input_matcher_is_unchanged() {
+        let config: HooksConfig = serde_yaml::from_str(SAMPLE).unwrap();
+        let group = &config.events[&HookEvent::PreToolUse][0];
+        assert_eq!(group.input_matcher, None);
+        assert!(group.matches(Some("developer__shell"), None));
+        assert!(group.matches(Some("developer__shell"), Some(&serde_json::json!({}))));
+        assert!(!group.matches(Some("memory__store"), None));
+    }
+
+    #[test]
+    fn group_matches_requires_name_and_input() {
+        let yaml = r#"
+PreToolUse:
+  - matcher: "developer__shell"
+    input_matcher:
+      command: "rm\\s+-rf"
+    hooks: [{ type: command, command: "guard.sh" }]
+"#;
+        let config: HooksConfig = serde_yaml::from_str(yaml).unwrap();
+        let group = &config.events[&HookEvent::PreToolUse][0];
+        let dangerous = serde_json::json!({"command": "rm -rf /"});
+        let benign = serde_json::json!({"command": "ls -la"});
+
+        assert!(group.matches(Some("developer__shell"), Some(&dangerous)));
+        // Right tool, harmless input.
+        assert!(!group.matches(Some("developer__shell"), Some(&benign)));
+        // Right input, wrong tool.
+        assert!(!group.matches(Some("memory__store"), Some(&dangerous)));
+        // Event with no tool input.
+        assert!(!group.matches(Some("developer__shell"), None));
     }
 
     #[test]
