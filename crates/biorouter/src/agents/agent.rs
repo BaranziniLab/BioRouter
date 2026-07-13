@@ -2074,11 +2074,38 @@ impl Agent {
         };
         let inner = result.result;
 
+        // BR-58: the returned future is what `select_all` drives concurrently, so
+        // this is the choke point that must bound total tool parallelism and
+        // serialize overlapping write paths. The guard is acquired *inside* the
+        // future (not eagerly) so parking on it does not stall the dispatch loop,
+        // and is held across the whole execution + post-processing.
+        //
+        // The subagent tool is deliberately excluded: it recursively runs its own
+        // agent loop whose leaf tools contend for this *same* global semaphore, so
+        // a subagent wrapper holding a permit while its inner tools wait for one
+        // would deadlock. Subagents already have their own `SUBAGENT_SEMAPHORE`;
+        // their leaf tools are still bounded here (permit acquired before any
+        // path lock, so a lock holder always makes progress — no deadlock).
+        let dispatch_args = tool_call.arguments.clone();
+        let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+
         (
             request_id,
             Ok(ToolCallResult {
                 notification_stream: result.notification_stream,
                 result: Box::new(Box::pin(async move {
+                    let _dispatch_guard = if bound_dispatch {
+                        Some(
+                            super::tool_dispatch_limits::acquire(
+                                &large_response_ctx.tool_name,
+                                dispatch_args.as_ref(),
+                                &large_response_ctx.working_dir,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
                     super::large_response_handler::process_tool_response(
                         inner.await,
                         &large_response_ctx,
