@@ -39,6 +39,7 @@ pub mod subagent_result;
 mod subagent_task_config;
 pub mod subagent_tool;
 pub(crate) mod todo_extension;
+pub mod tool_dispatch_limits;
 mod tool_execution;
 pub mod types;
 pub mod vault_refs;
