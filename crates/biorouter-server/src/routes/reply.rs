@@ -212,6 +212,145 @@ async fn stream_event(
     }
 }
 
+/// BR-53a: how long consecutive streamed text deltas are coalesced into a
+/// single SSE frame, read once per `/reply` from `BIOROUTER_SSE_COALESCE_MS`.
+///
+/// Default (unset, empty, `0`, or unparseable) is `Duration::ZERO`, which
+/// disables coalescing and keeps the byte-for-byte legacy behaviour of one SSE
+/// frame per provider chunk. A non-zero value (e.g. `50`) batches same-id text
+/// deltas on that millisecond window — the flush is bounded to the window and
+/// happens immediately at any real boundary (see [`DeltaCoalescer`]).
+fn sse_coalesce_window() -> Duration {
+    std::env::var("BIOROUTER_SSE_COALESCE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::ZERO)
+}
+
+/// The delta text if `msg` is the shape the provider streams for a running
+/// assistant answer — exactly one `Text` content plus a stable id. Tool
+/// requests, thinking, redacted-thinking, multi-content, and id-less messages
+/// are never coalesced (they always flush immediately), so nothing that carries
+/// structure or ordering guarantees is ever merged.
+fn coalescable_delta_text(msg: &Message) -> Option<&str> {
+    if msg.id.is_none() || msg.content.len() != 1 {
+        return None;
+    }
+    msg.content[0].as_text()
+}
+
+/// BR-53a: coalesces the provider's token-by-token text deltas so the stream
+/// emits at most one SSE frame per configured window instead of one per token.
+///
+/// A run of same-id `Text` deltas is buffered in memory; the buffer is flushed
+/// (as one `Message` carrying the concatenated text, with the run's stable id)
+/// when the window elapses, when a delta with a different id arrives, when a
+/// non-text message (tool request, thinking, …) or any non-`Message` event
+/// arrives, or when the stream ends / is cancelled. The concatenation is exact
+/// (`MessageContent::text` does not re-sanitize), so the client's append-based
+/// accumulation reconstructs identical text to the un-coalesced path.
+struct DeltaCoalescer {
+    window: Duration,
+    pending: Option<Message>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl DeltaCoalescer {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            pending: None,
+            deadline: None,
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        !self.window.is_zero()
+    }
+
+    /// When the buffered run must be flushed by, if anything is buffered.
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline
+    }
+
+    /// Offer a streamed `Message`. Returns the messages to emit to the client
+    /// *now*, in order (a flushed run and/or a pass-through); anything not
+    /// returned is buffered for a later [`Self::drain`].
+    fn push(&mut self, msg: Message) -> Vec<Message> {
+        if !self.enabled() {
+            return vec![msg];
+        }
+        if coalescable_delta_text(&msg).is_none() {
+            // Not a coalescable text delta: flush the buffered run first so
+            // ordering is preserved, then pass this message straight through.
+            let mut out = Vec::new();
+            out.extend(self.pending.take());
+            self.deadline = None;
+            out.push(msg);
+            return out;
+        }
+        let continues_run = self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.id == msg.id);
+        if continues_run {
+            let delta = msg
+                .content
+                .into_iter()
+                .next()
+                .and_then(|c| c.as_text().map(str::to_owned))
+                .unwrap_or_default();
+            if let Some(pending) = self.pending.as_mut() {
+                let current = pending
+                    .content
+                    .first()
+                    .and_then(|c| c.as_text())
+                    .unwrap_or("")
+                    .to_owned();
+                pending.content = vec![MessageContent::text(format!("{current}{delta}"))];
+            }
+            // Deadline stays anchored to the run's first delta, so latency is
+            // bounded by the window regardless of how many deltas land in it.
+            Vec::new()
+        } else {
+            // First delta of a run (or the id changed mid-stream): flush any
+            // previous run, then start buffering this one.
+            let flushed = self.pending.take();
+            self.pending = Some(msg);
+            self.deadline = Some(tokio::time::Instant::now() + self.window);
+            flushed.into_iter().collect()
+        }
+    }
+
+    /// Take the buffered run (if any), clearing the deadline. Called on the
+    /// flush timer, at end-of-stream, and on cancellation.
+    fn drain(&mut self) -> Option<Message> {
+        self.deadline = None;
+        self.pending.take()
+    }
+}
+
+/// Flush any buffered coalesced run to the client as one `Message` frame.
+async fn flush_coalesced(
+    coalescer: &mut DeltaCoalescer,
+    tx: &mpsc::Sender<String>,
+    cancel_token: &CancellationToken,
+    token_state: &TokenState,
+) {
+    if let Some(message) = coalescer.drain() {
+        stream_event(
+            MessageEvent::Message {
+                message,
+                token_state: token_state.clone(),
+            },
+            tx,
+            cancel_token,
+        )
+        .await;
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 #[utoipa::path(
     post,
@@ -417,14 +556,26 @@ pub async fn reply(
         };
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(500));
+        // BR-53a: batch the provider's token-by-token text deltas into one SSE
+        // frame per window (`BIOROUTER_SSE_COALESCE_MS`; disabled by default).
+        let mut coalescer = DeltaCoalescer::new(sse_coalesce_window());
         loop {
+            // When a run of text deltas is buffered, wake to flush it once the
+            // window elapses. Disabled branch (no buffer) never fires.
+            let flush_deadline = coalescer.deadline();
             tokio::select! {
                 _ = task_cancel.cancelled() => {
                     tracing::info!("Agent task cancelled");
+                    flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                     break;
                 }
                 _ = heartbeat_interval.tick() => {
                     stream_event(MessageEvent::Ping, &tx, &cancel_token).await;
+                }
+                _ = tokio::time::sleep_until(flush_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                    if flush_deadline.is_some() =>
+                {
+                    flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                 }
                 response = timeout(Duration::from_millis(500), stream.next()) => {
                     match response {
@@ -435,7 +586,9 @@ pub async fn reply(
 
                             all_messages.push(message.clone());
 
-                            stream_event(MessageEvent::Message { message, token_state: token_state.clone() }, &tx, &cancel_token).await;
+                            for message in coalescer.push(message) {
+                                stream_event(MessageEvent::Message { message, token_state: token_state.clone() }, &tx, &cancel_token).await;
+                            }
                         }
                         Ok(Some(Ok(AgentEvent::TokenUsage(new_token_state)))) => {
                             // BR-52: the agent wrote the session's counters at a
@@ -447,14 +600,17 @@ pub async fn reply(
                             token_state = new_token_state;
                         }
                         Ok(Some(Ok(AgentEvent::HistoryReplaced(new_messages)))) => {
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             all_messages = new_messages.clone();
                             stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state: token_state.clone()}, &tx, &cancel_token).await;
 
                         }
                         Ok(Some(Ok(AgentEvent::ModelChange { model, mode }))) => {
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             stream_event(MessageEvent::ModelChange { model, mode }, &tx, &cancel_token).await;
                         }
                         Ok(Some(Ok(AgentEvent::McpNotification((request_id, n))))) => {
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             stream_event(MessageEvent::Notification{
                                 request_id: request_id.clone(),
                                 message: n,
@@ -462,6 +618,7 @@ pub async fn reply(
                         }
 
                         Ok(Some(Err(e))) => {
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             tracing::error!("Error processing message: {}", e);
                             stream_event(
                                 MessageEvent::Error {
@@ -473,6 +630,7 @@ pub async fn reply(
                             break;
                         }
                         Ok(None) => {
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             break;
                         }
                         Err(_) => {
@@ -691,6 +849,97 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BR-53a: the pure state machine that batches streamed text deltas.
+    mod coalesce_tests {
+        use super::*;
+        use biorouter::conversation::message::Message;
+
+        fn delta(id: &str, text: &str) -> Message {
+            Message::assistant().with_id(id).with_text(text)
+        }
+
+        #[test]
+        fn disabled_window_passes_each_delta_straight_through() {
+            let mut c = DeltaCoalescer::new(Duration::ZERO);
+            assert!(!c.enabled());
+            let out = c.push(delta("a", "hello "));
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].as_concat_text(), "hello ");
+            // Nothing is ever buffered when disabled.
+            assert!(c.deadline().is_none());
+            assert!(c.drain().is_none());
+        }
+
+        #[test]
+        fn same_id_text_deltas_merge_until_drained() {
+            let mut c = DeltaCoalescer::new(Duration::from_millis(50));
+            assert!(c.push(delta("a", "he")).is_empty());
+            assert!(c.push(delta("a", "ll")).is_empty());
+            assert!(c.push(delta("a", "o")).is_empty());
+            assert!(c.deadline().is_some());
+
+            let flushed = c.drain().expect("a buffered run");
+            assert_eq!(flushed.as_concat_text(), "hello");
+            assert_eq!(flushed.id.as_deref(), Some("a"));
+            assert!(c.deadline().is_none());
+        }
+
+        #[test]
+        fn a_new_message_id_flushes_the_previous_run() {
+            let mut c = DeltaCoalescer::new(Duration::from_millis(50));
+            assert!(c.push(delta("a", "aaa")).is_empty());
+
+            let out = c.push(delta("b", "bbb"));
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].as_concat_text(), "aaa");
+            assert_eq!(out[0].id.as_deref(), Some("a"));
+
+            // The new id is now buffered.
+            let buffered = c.drain().expect("second run");
+            assert_eq!(buffered.as_concat_text(), "bbb");
+            assert_eq!(buffered.id.as_deref(), Some("b"));
+        }
+
+        #[test]
+        fn non_text_message_flushes_run_then_passes_through_in_order() {
+            let mut c = DeltaCoalescer::new(Duration::from_millis(50));
+            assert!(c.push(delta("a", "partial ")).is_empty());
+
+            // Two text contents => not a single-text delta => not coalescable.
+            let multi = Message::assistant()
+                .with_id("m")
+                .with_text("x")
+                .with_text("y");
+            let out = c.push(multi);
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].as_concat_text(), "partial "); // flushed run first
+            assert_eq!(out[0].id.as_deref(), Some("a"));
+            assert_eq!(out[1].id.as_deref(), Some("m")); // then the pass-through
+            assert!(c.deadline().is_none());
+            assert!(c.drain().is_none());
+        }
+
+        #[test]
+        fn id_less_message_is_never_coalesced() {
+            let mut c = DeltaCoalescer::new(Duration::from_millis(50));
+            let out = c.push(Message::assistant().with_text("no id"));
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].as_concat_text(), "no id");
+            assert!(c.deadline().is_none());
+        }
+
+        #[test]
+        fn coalesced_concatenation_is_byte_exact() {
+            // No spacing or re-sanitising is introduced by merging.
+            let mut c = DeltaCoalescer::new(Duration::from_millis(50));
+            for chunk in ["The ", "quick", " brown\n", "fox"] {
+                assert!(c.push(delta("x", chunk)).is_empty());
+            }
+            let merged = c.drain().unwrap();
+            assert_eq!(merged.as_concat_text(), "The quick brown\nfox");
+        }
+    }
 
     mod integration_tests {
         use super::*;

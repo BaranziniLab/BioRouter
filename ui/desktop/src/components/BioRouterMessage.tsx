@@ -114,13 +114,16 @@ export default function BioRouterMessage({
   const toolResponsesMap = useMemo(() => {
     const responseMap = new Map();
 
-    if (messageIndex !== undefined && messageIndex >= 0) {
+    // BR-53: a message with no tool requests can never match a later tool
+    // response, so skip the whole-conversation scan entirely. This memo ran
+    // once per text-only message on every streamed token — O(n²) per frame —
+    // purely to build an empty map. Guard on `toolRequests` first so the common
+    // text-only message pays nothing.
+    if (toolRequests.length > 0 && messageIndex !== undefined && messageIndex >= 0) {
+      const requestIds = new Set(toolRequests.map((req) => req.id));
       for (let i = messageIndex + 1; i < messages.length; i++) {
-        const responses = getToolResponses(messages[i]);
-
-        for (const response of responses) {
-          const matchingRequest = toolRequests.find((req) => req.id === response.id);
-          if (matchingRequest) {
+        for (const response of getToolResponses(messages[i])) {
+          if (requestIds.has(response.id)) {
             responseMap.set(response.id, response);
           }
         }

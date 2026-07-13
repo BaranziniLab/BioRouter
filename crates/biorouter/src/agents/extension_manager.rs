@@ -33,7 +33,8 @@ use super::tool_execution::ToolCallResult;
 use super::types::SharedProvider;
 use crate::agents::extension::{Envs, ProcessExit};
 use crate::agents::extension_malware_check;
-use crate::agents::mcp_client::{McpClient, McpClientTrait, McpMeta};
+use crate::agents::mcp_client::{McpClient, McpClientBox, McpClientTrait, McpMeta};
+use crate::agents::mcp_pool::{PooledEntry, SharedMcpPool};
 use crate::config::search_path::SearchPaths;
 use crate::config::{get_all_extensions, Config};
 use crate::oauth::oauth_flow;
@@ -46,8 +47,6 @@ use rmcp::model::{
 use rmcp::transport::auth::AuthClient;
 use schemars::_private::NoSerialize;
 use serde_json::Value;
-
-type McpClientBox = Arc<Mutex<Box<dyn McpClientTrait>>>;
 
 /// Tags that wrap every MOIM (`collect_moim`) `<info-msg>` block. Shared so the
 /// per-turn dedup in `moim.rs` recognises exactly what this function emits.
@@ -65,6 +64,11 @@ struct Extension {
     /// any registry, so they are excluded from `get_extension_configs` (never
     /// persisted/replayed/propagated) and re-injected per connect instead.
     inprocess: bool,
+    /// Keeps a shared (pooled) process alive while this extension references it
+    /// (BR-54). When the last extension across all sessions drops this `Arc`, the
+    /// pool's `Weak` dies and the child process is reaped. `None` for unpooled and
+    /// in-process servers, which own their client directly via `_temp_dir`/`client`.
+    _pooled: Option<Arc<PooledEntry>>,
 }
 
 impl Extension {
@@ -80,6 +84,7 @@ impl Extension {
             server_info,
             _temp_dir: temp_dir,
             inprocess: false,
+            _pooled: None,
         }
     }
 
@@ -232,6 +237,7 @@ async fn child_process_client(
     timeout: &Option<u64>,
     provider: SharedProvider,
     working_dir: Option<&PathBuf>,
+    routed_only: bool,
 ) -> ExtensionResult<McpClient> {
     #[cfg(unix)]
     command.process_group(0);
@@ -277,10 +283,11 @@ async fn child_process_client(
         Ok::<String, std::io::Error>(String::from_utf8_lossy(&all_stderr).into())
     });
 
-    let client_result = McpClient::connect(
+    let client_result = McpClient::connect_routed(
         transport,
         Duration::from_secs(timeout.unwrap_or(crate::config::DEFAULT_EXTENSION_TIMEOUT)),
         provider,
+        routed_only,
     )
     .await;
 
@@ -414,6 +421,7 @@ async fn create_streamable_http_client(
     name: &str,
     all_envs: &HashMap<String, String>,
     provider: SharedProvider,
+    routed_only: bool,
 ) -> ExtensionResult<Box<dyn McpClientTrait>> {
     let mut default_headers = HeaderMap::new();
     for (key, value) in headers {
@@ -443,7 +451,8 @@ async fn create_streamable_http_client(
     let timeout_duration =
         Duration::from_secs(timeout.unwrap_or(crate::config::DEFAULT_EXTENSION_TIMEOUT));
 
-    let client_res = McpClient::connect(transport, timeout_duration, provider.clone()).await;
+    let client_res =
+        McpClient::connect_routed(transport, timeout_duration, provider.clone(), routed_only).await;
 
     if extract_auth_error(&client_res).is_some() {
         let am = oauth_flow(&uri.to_string(), &name.to_string())
@@ -458,7 +467,7 @@ async fn create_streamable_http_client(
             },
         );
         Ok(Box::new(
-            McpClient::connect(transport, timeout_duration, provider).await?,
+            McpClient::connect_routed(transport, timeout_duration, provider, routed_only).await?,
         ))
     } else {
         Ok(Box::new(client_res?))
@@ -531,137 +540,177 @@ impl ExtensionManager {
         // Resolve working_dir: session > current_dir
         let effective_working_dir = self.resolve_working_dir().await;
 
-        let mut temp_dir = None;
+        // BR-54: when the SharedMcpPool is enabled and this variant is poolable,
+        // reuse ONE process across sessions keyed by spawn identity; otherwise
+        // spawn a private, unshared client (byte-identical to the old behavior).
+        // A pooled (shared) client isolates notifications per dispatch
+        // (`routed_only`); a private client keeps the legacy broadcast.
+        let pool_key = if SharedMcpPool::is_enabled() {
+            config.pool_key(&effective_working_dir)
+        } else {
+            None
+        };
+        let routed_only = pool_key.is_some();
 
-        let client: Box<dyn McpClientTrait> = match &config {
-            ExtensionConfig::Sse { .. } => {
-                return Err(ExtensionError::ConfigError(
-                    "SSE is unsupported, migrate to streamable_http".to_string(),
-                ));
-            }
-            ExtensionConfig::StreamableHttp {
-                uri,
-                timeout,
-                headers,
-                name,
-                envs,
-                env_keys,
-                ..
-            } => {
-                let all_envs = merge_environments(envs, env_keys, &sanitized_name).await?;
-                create_streamable_http_client(
-                    uri,
-                    *timeout,
-                    headers,
-                    name,
-                    &all_envs,
-                    self.provider.clone(),
-                )
-                .await?
-            }
-            ExtensionConfig::Stdio {
-                cmd,
-                args,
-                envs,
-                env_keys,
-                timeout,
-                ..
-            } => {
-                let all_envs = merge_environments(envs, env_keys, &sanitized_name).await?;
+        // The actual client construction, deferred into a closure so the pool can
+        // skip it entirely when a live shared client already exists (single-flight).
+        let spawn = {
+            let this = Arc::clone(self);
+            let config = config.clone();
+            let working_dir = effective_working_dir.clone();
+            let sanitized_name = sanitized_name.clone();
+            move || async move {
+                let mut temp_dir = None;
+                let client: Box<dyn McpClientTrait> = match &config {
+                    ExtensionConfig::Sse { .. } => {
+                        return Err(ExtensionError::ConfigError(
+                            "SSE is unsupported, migrate to streamable_http".to_string(),
+                        ));
+                    }
+                    ExtensionConfig::StreamableHttp {
+                        uri,
+                        timeout,
+                        headers,
+                        name,
+                        envs,
+                        env_keys,
+                        ..
+                    } => {
+                        let all_envs = merge_environments(envs, env_keys, &sanitized_name).await?;
+                        create_streamable_http_client(
+                            uri,
+                            *timeout,
+                            headers,
+                            name,
+                            &all_envs,
+                            this.provider.clone(),
+                            routed_only,
+                        )
+                        .await?
+                    }
+                    ExtensionConfig::Stdio {
+                        cmd,
+                        args,
+                        envs,
+                        env_keys,
+                        timeout,
+                        ..
+                    } => {
+                        let all_envs = merge_environments(envs, env_keys, &sanitized_name).await?;
 
-                // Check for malicious packages before launching the process
-                extension_malware_check::deny_if_malicious_cmd_args(cmd, args).await?;
+                        // Check for malicious packages before launching the process
+                        extension_malware_check::deny_if_malicious_cmd_args(cmd, args).await?;
 
-                let cmd = resolve_command(cmd);
+                        let cmd = resolve_command(cmd);
 
-                let command = Command::new(cmd).configure(|command| {
-                    command.args(args).envs(all_envs);
-                });
+                        let command = Command::new(cmd).configure(|command| {
+                            command.args(args).envs(all_envs);
+                        });
 
-                let client = child_process_client(
-                    command,
-                    timeout,
-                    self.provider.clone(),
-                    Some(&effective_working_dir),
-                )
-                .await?;
-                Box::new(client)
-            }
-            ExtensionConfig::Builtin { name, timeout, .. } => {
-                let timeout_duration = Duration::from_secs(timeout.unwrap_or(300));
-                let def = biorouter_mcp::BUILTIN_EXTENSIONS
-                    .get(name.as_str())
-                    .ok_or_else(|| {
-                        ExtensionError::ConfigError(format!("Unknown builtin extension: {}", name))
-                    })?;
-                let (server_read, client_write) = tokio::io::duplex(65536);
-                let (client_read, server_write) = tokio::io::duplex(65536);
-                // Pass the resolved working directory so in-process builtins that
-                // run shell commands (the developer extension) execute in the
-                // session's directory instead of the daemon's process cwd.
-                (def.spawn_server)(
-                    server_read,
-                    server_write,
-                    Some(effective_working_dir.clone()),
-                );
-                Box::new(
-                    McpClient::connect(
-                        (client_read, client_write),
-                        timeout_duration,
-                        self.provider.clone(),
-                    )
-                    .await?,
-                )
-            }
-            ExtensionConfig::Platform { name, .. } => {
-                let normalized_key = normalize(name);
-                let def = PLATFORM_EXTENSIONS
-                    .get(normalized_key.as_str())
-                    .ok_or_else(|| {
-                        ExtensionError::ConfigError(format!("Unknown platform extension: {}", name))
-                    })?;
-                let mut context = self.context.clone();
-                context.extension_manager = Some(Arc::downgrade(self));
-                (def.client_factory)(context)
-            }
-            ExtensionConfig::InlinePython {
-                name,
-                code,
-                timeout,
-                dependencies,
-                ..
-            } => {
-                let dir = tempdir()?;
-                let file_path = dir.path().join(format!("{}.py", name));
-                temp_dir = Some(dir);
-                tokio::fs::write(&file_path, code).await?;
+                        let client = child_process_client(
+                            command,
+                            timeout,
+                            this.provider.clone(),
+                            Some(&working_dir),
+                            routed_only,
+                        )
+                        .await?;
+                        Box::new(client)
+                    }
+                    ExtensionConfig::Builtin { name, timeout, .. } => {
+                        let timeout_duration = Duration::from_secs(timeout.unwrap_or(300));
+                        let def = biorouter_mcp::BUILTIN_EXTENSIONS
+                            .get(name.as_str())
+                            .ok_or_else(|| {
+                                ExtensionError::ConfigError(format!(
+                                    "Unknown builtin extension: {}",
+                                    name
+                                ))
+                            })?;
+                        let (server_read, client_write) = tokio::io::duplex(65536);
+                        let (client_read, server_write) = tokio::io::duplex(65536);
+                        // Pass the resolved working directory so in-process builtins
+                        // that run shell commands (the developer extension) execute in
+                        // the session's directory instead of the daemon's process cwd.
+                        (def.spawn_server)(server_read, server_write, Some(working_dir.clone()));
+                        Box::new(
+                            McpClient::connect_routed(
+                                (client_read, client_write),
+                                timeout_duration,
+                                this.provider.clone(),
+                                routed_only,
+                            )
+                            .await?,
+                        )
+                    }
+                    ExtensionConfig::Platform { name, .. } => {
+                        let normalized_key = normalize(name);
+                        let def = PLATFORM_EXTENSIONS
+                            .get(normalized_key.as_str())
+                            .ok_or_else(|| {
+                                ExtensionError::ConfigError(format!(
+                                    "Unknown platform extension: {}",
+                                    name
+                                ))
+                            })?;
+                        let mut context = this.context.clone();
+                        context.extension_manager = Some(Arc::downgrade(&this));
+                        (def.client_factory)(context)
+                    }
+                    ExtensionConfig::InlinePython {
+                        name,
+                        code,
+                        timeout,
+                        dependencies,
+                        ..
+                    } => {
+                        let dir = tempdir()?;
+                        let file_path = dir.path().join(format!("{}.py", name));
+                        temp_dir = Some(dir);
+                        tokio::fs::write(&file_path, code).await?;
 
-                let command = Command::new("uvx").configure(|command| {
-                    command.arg("--with").arg("mcp");
-                    dependencies.iter().flatten().for_each(|dep| {
-                        command.arg("--with").arg(dep);
-                    });
-                    command.arg("python").arg(file_path.to_str().unwrap());
-                });
+                        let command = Command::new("uvx").configure(|command| {
+                            command.arg("--with").arg("mcp");
+                            dependencies.iter().flatten().for_each(|dep| {
+                                command.arg("--with").arg(dep);
+                            });
+                            command.arg("python").arg(file_path.to_str().unwrap());
+                        });
 
-                let client = child_process_client(
-                    command,
-                    timeout,
-                    self.provider.clone(),
-                    Some(&effective_working_dir),
-                )
-                .await?;
+                        let client = child_process_client(
+                            command,
+                            timeout,
+                            this.provider.clone(),
+                            Some(&working_dir),
+                            routed_only,
+                        )
+                        .await?;
 
-                Box::new(client)
-            }
-            ExtensionConfig::Frontend { .. } => {
-                return Err(ExtensionError::ConfigError(
-                    "Invalid extension type: Frontend extensions cannot be added as server extensions".to_string()
-                ));
+                        Box::new(client)
+                    }
+                    ExtensionConfig::Frontend { .. } => {
+                        return Err(ExtensionError::ConfigError(
+                            "Invalid extension type: Frontend extensions cannot be added as server extensions".to_string()
+                        ));
+                    }
+                };
+
+                let server_info = client.get_info().cloned();
+                Ok(PooledEntry::new(
+                    Arc::new(Mutex::new(client)),
+                    server_info,
+                    temp_dir,
+                ))
             }
         };
 
-        let server_info = client.get_info().cloned();
+        let entry = if let Some(key) = pool_key {
+            SharedMcpPool::global().get_or_spawn(key, spawn).await?
+        } else {
+            Arc::new(spawn().await?)
+        };
+
+        let server_info = entry.server_info();
 
         // Only generate name from server info when config has no name (e.g., CLI --with-*-extension args)
         let mut extensions = self.extensions.lock().await;
@@ -672,7 +721,14 @@ impl ExtensionManager {
         };
         extensions.insert(
             final_name,
-            Extension::new(config, Arc::new(Mutex::new(client)), server_info, temp_dir),
+            Extension {
+                config,
+                client: entry.client(),
+                server_info,
+                _temp_dir: None,
+                inprocess: false,
+                _pooled: Some(entry),
+            },
         );
         drop(extensions);
         self.invalidate_tools_cache_and_bump_version().await;
@@ -753,6 +809,7 @@ impl ExtensionManager {
                 server_info: info,
                 _temp_dir: None,
                 inprocess: true,
+                _pooled: None,
             },
         );
         self.invalidate_tools_cache_and_bump_version().await;
@@ -1317,7 +1374,12 @@ impl ExtensionManager {
 
         let arguments = tool_call.arguments.clone();
         let client = client.clone();
-        let notifications_receiver = client.lock().await.subscribe().await;
+        // BR-54: on a shared (pooled) client this mints a per-dispatch progress
+        // token and returns a receiver that gets ONLY this dispatch's
+        // notifications; on an unpooled client it is the legacy broadcast
+        // subscription with no token.
+        let (progress_token, notifications_receiver) =
+            client.lock().await.register_dispatch().await;
         let session_id = session_id.to_string();
 
         let fut = async move {
@@ -1327,7 +1389,10 @@ impl ExtensionManager {
                 session_id
             );
             let client_guard = client.lock().await;
-            let meta = McpMeta::new(&session_id);
+            let mut meta = McpMeta::new(&session_id);
+            if let Some(token) = progress_token {
+                meta = meta.with_progress_token(token);
+            }
             client_guard
                 .call_tool(&tool_name, arguments, meta, cancellation_token)
                 .await

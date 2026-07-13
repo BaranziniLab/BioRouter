@@ -41,14 +41,42 @@ impl AgentManager {
             default_provider: Arc::new(RwLock::new(None)),
         };
 
-        crate::agents::skills_extension::install_builtin_skills();
-
-        // First-run install of the built-in Soul KB, its Meditation workflow +
-        // update-soul skill, and the Daily Meditation 3:00 AM schedule.
-        // Idempotent and best-effort: it must never block agent startup.
-        crate::knowledge::soul::install(&manager.scheduler).await;
+        // BR-55: don't block the listener bind / first frame on first-run
+        // install. Seeding the built-in skills (blocking file copies) and
+        // installing the Soul KB + Meditation workflow + 3 AM schedule (git
+        // init on first run) is idempotent, best-effort, and needed by nothing
+        // on the hot startup path — not `/status`, not the first turn, not tool
+        // dispatch (the skills extension re-seeds itself in `SkillsClient::new`
+        // on first use). Running it inline gated the server's `TcpListener`
+        // bind — and thus the GUI's `loadURL` / the CLI's first prompt — behind
+        // that I/O. Spawn it so startup returns immediately; set
+        // BIOROUTER_BLOCKING_STARTUP=1 to force the old synchronous behavior.
+        let scheduler = Arc::clone(&manager.scheduler);
+        if std::env::var_os("BIOROUTER_BLOCKING_STARTUP").is_some() {
+            Self::run_first_run_init(scheduler).await;
+        } else {
+            tokio::spawn(Self::run_first_run_init(scheduler));
+        }
 
         Ok(manager)
+    }
+
+    /// First-run install of the built-in skills, the Soul KB, its Meditation
+    /// workflow + update-soul skill, and the Daily Meditation 3:00 AM schedule.
+    ///
+    /// Every step is idempotent and best-effort (each logs a warning on failure
+    /// and never returns an error), and none of it is required to serve a
+    /// request, so [`AgentManager::new`] runs it in the background (BR-55). The
+    /// synchronous skills seeding is blocking file I/O, so it goes through
+    /// `spawn_blocking` to keep it off the async runtime.
+    async fn run_first_run_init(scheduler: Arc<dyn SchedulerTrait>) {
+        if let Err(e) =
+            tokio::task::spawn_blocking(crate::agents::skills_extension::install_builtin_skills)
+                .await
+        {
+            tracing::warn!("Failed to seed built-in skills: {e}");
+        }
+        crate::knowledge::soul::install(&scheduler).await;
     }
 
     pub async fn instance() -> Result<Arc<Self>> {
@@ -149,6 +177,28 @@ mod tests {
         AgentManager::new(session_manager, schedule_path, Some(100))
             .await
             .unwrap()
+    }
+
+    /// BR-55: `new` spawns `run_first_run_init` in the background, so a manager
+    /// must be fully usable (scheduler present, agents creatable) the instant
+    /// `new` returns — without waiting for skills/Soul install. It must also be
+    /// panic-free and idempotent, since a second Biorouter process runs it too.
+    #[tokio::test]
+    async fn test_manager_usable_before_first_run_init_completes() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        // The scheduler (a required field, built synchronously) is available and
+        // the manager can create an agent immediately after `new` returns.
+        let _scheduler = manager.scheduler();
+        let session = uuid::Uuid::new_v4().to_string();
+        manager.get_or_create_agent(session.clone()).await.unwrap();
+        assert!(manager.has_session(&session).await);
+
+        // Running the deferred init directly must be panic-free and idempotent
+        // (best-effort: every step logs a warning on failure rather than erroring).
+        AgentManager::run_first_run_init(manager.scheduler()).await;
+        AgentManager::run_first_run_init(manager.scheduler()).await;
     }
 
     #[test]

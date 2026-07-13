@@ -472,8 +472,17 @@ fn unescape_json_values_in_place(value: &mut Value) {
     }
 }
 
+/// Per-request debug log of the LLM exchange (`<state>/logs/llm_request.N.jsonl`).
+///
+/// BR-57: this is written on **every** request and, while streaming, once per
+/// decoded chunk — interleaved between token batches on the async runtime. To
+/// keep blocking file I/O off that runtime the lines are buffered in memory
+/// ([`write`](Self::write) does no syscalls) and the whole exchange is flushed
+/// and rotated in a single `spawn_blocking` at [`finish`](Self::finish) time.
 pub struct RequestLog {
-    writer: Option<BufWriter<File>>,
+    /// Buffered JSONL lines (each already serialized, no trailing newline).
+    /// `None` once the log has been flushed, so `finish` is idempotent.
+    lines: Option<Vec<String>>,
     temp_path: PathBuf,
 }
 
@@ -490,32 +499,26 @@ impl RequestLog {
         let temp_name = format!("llm_request.{request_id}.jsonl");
         let temp_path = logs_dir.join(PathBuf::from(temp_name));
 
-        let mut writer = BufWriter::new(
-            File::options()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp_path)?,
-        );
-
         let data = serde_json::json!({
             "model_config": model_config,
             "input": payload,
         });
-        writeln!(writer, "{}", serde_json::to_string(&data)?)?;
+        // Buffer the opening line in memory — no file is opened on the async
+        // runtime; the disk work is deferred to `finish` (`spawn_blocking`).
+        let lines = vec![serde_json::to_string(&data)?];
 
         Ok(Self {
-            writer: Some(writer),
+            lines: Some(lines),
             temp_path,
         })
     }
 
     fn write_json(&mut self, line: &serde_json::Value) -> Result<()> {
-        let writer = self
-            .writer
+        let lines = self
+            .lines
             .as_mut()
             .ok_or_else(|| anyhow!("logger is finished"))?;
-        writeln!(writer, "{}", serde_json::to_string(line)?)?;
+        lines.push(serde_json::to_string(line)?);
         Ok(())
     }
 
@@ -539,19 +542,60 @@ impl RequestLog {
     }
 
     fn finish(&mut self) -> Result<()> {
-        if let Some(mut writer) = self.writer.take() {
-            writer.flush()?;
-            let logs_dir = Paths::in_state_dir("logs");
-            let log_path = |i| logs_dir.join(format!("llm_request.{}.jsonl", i));
-
-            for i in (0..LOGS_TO_KEEP - 1).rev() {
-                let _ = std::fs::rename(log_path(i), log_path(i + 1));
+        let Some(lines) = self.lines.take() else {
+            return Ok(());
+        };
+        let temp_path = std::mem::take(&mut self.temp_path);
+        match tokio::runtime::Handle::try_current() {
+            // On a runtime (the streaming/agent path): move the open + write +
+            // rotate off the async worker. Detached — the turn does not wait on
+            // it; a normally-dropped runtime still drains in-flight blocking
+            // tasks, so shutdown flushes the last request's log.
+            Ok(handle) => {
+                handle.spawn_blocking(move || {
+                    if let Err(e) = flush_request_log(lines, temp_path) {
+                        tracing::debug!("failed to flush LLM request log: {e}");
+                    }
+                });
+                Ok(())
             }
-
-            std::fs::rename(&self.temp_path, log_path(0))?;
+            // No runtime in scope (sync context / unit tests): flush inline.
+            Err(_) => flush_request_log(lines, temp_path),
         }
-        Ok(())
     }
+}
+
+/// Write the buffered request log to its temp file, then rotate the numbered
+/// logs so the newest becomes `llm_request.0.jsonl` and only [`LOGS_TO_KEEP`]
+/// are retained. This is entirely blocking file I/O and must run off the async
+/// runtime (via `spawn_blocking`) — see [`RequestLog`].
+fn flush_request_log(lines: Vec<String>, temp_path: PathBuf) -> Result<()> {
+    let logs_dir = temp_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Paths::in_state_dir("logs"));
+    // `start` no longer opens a file, so ensure the directory exists here.
+    let _ = std::fs::create_dir_all(&logs_dir);
+
+    let mut writer = BufWriter::new(
+        File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)?,
+    );
+    for line in &lines {
+        writeln!(writer, "{line}")?;
+    }
+    writer.flush()?;
+    drop(writer);
+
+    let log_path = |i| logs_dir.join(format!("llm_request.{}.jsonl", i));
+    for i in (0..LOGS_TO_KEEP - 1).rev() {
+        let _ = std::fs::rename(log_path(i), log_path(i + 1));
+    }
+    std::fs::rename(&temp_path, log_path(0))?;
+    Ok(())
 }
 
 impl Drop for RequestLog {
@@ -633,6 +677,62 @@ pub fn json_escape_control_chars_in_string(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // BR-57: the log buffers its lines in memory and only touches the disk when
+    // it is finished (inline here, since there is no tokio runtime; on the
+    // streaming path the same flush runs in `spawn_blocking`).
+    #[test]
+    fn test_request_log_buffers_then_flushes_on_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp_path = dir.path().join("llm_request.abc.jsonl");
+        let mut log = RequestLog {
+            lines: Some(vec![json!({"input": "hi"}).to_string()]),
+            temp_path: temp_path.clone(),
+        };
+
+        // `write`/`error` are pure in-memory: nothing is written to disk yet.
+        log.write(&json!({"delta": "one"}), None).unwrap();
+        log.error("boom").unwrap();
+        assert_eq!(log.lines.as_ref().unwrap().len(), 3);
+        assert!(!temp_path.exists());
+        assert!(!dir.path().join("llm_request.0.jsonl").exists());
+
+        // Finishing flushes every buffered line and rotates into slot 0.
+        log.finish().unwrap();
+        let slot0 = dir.path().join("llm_request.0.jsonl");
+        let contents = std::fs::read_to_string(&slot0).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("\"input\":\"hi\""));
+        assert!(lines[1].contains("\"delta\":\"one\""));
+        assert!(lines[2].contains("\"error\":\"boom\""));
+        // The temp file was consumed by the rename.
+        assert!(!temp_path.exists());
+
+        // A second finish (e.g. from Drop) is a no-op.
+        log.finish().unwrap();
+        assert!(log.lines.is_none());
+    }
+
+    #[test]
+    fn test_flush_request_log_rotates_numbered_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_dir = dir.path();
+        // A pre-existing newest log must shift to slot 1 when a new one lands.
+        std::fs::write(logs_dir.join("llm_request.0.jsonl"), "old\n").unwrap();
+
+        let temp_path = logs_dir.join("llm_request.new.jsonl");
+        flush_request_log(vec!["fresh".to_string()], temp_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(logs_dir.join("llm_request.0.jsonl")).unwrap(),
+            "fresh\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(logs_dir.join("llm_request.1.jsonl")).unwrap(),
+            "old\n"
+        );
+    }
 
     #[test]
     fn test_detect_image_path() {
