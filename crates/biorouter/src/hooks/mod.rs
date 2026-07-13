@@ -18,12 +18,13 @@ pub mod matcher;
 pub mod outcome;
 pub mod prompt_runner;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 pub use config::{HookDefinition, HookMatcherGroup, HooksConfig};
@@ -44,6 +45,38 @@ pub const DEFAULT_PROMPT_TIMEOUT_SECS: u64 = 30;
 /// Maximum consecutive Stop-hook blocks per session before Biorouter
 /// overrides the hook and stops anyway.
 pub const STOP_HOOK_BLOCK_CAP: u32 = 5;
+
+/// BR-28: how long a turn boundary waits for still-running observe-only hook
+/// tasks ([`HooksManager::fire`]) before giving up *on this boundary*. Kept
+/// small on purpose — settling must never stall the agent loop behind a slow
+/// Notification / compaction hook. Unfinished tasks stay registered and are
+/// re-joined at the next boundary (nothing is aborted; each hook's own timeout
+/// still bounds how long it can run).
+pub const FIRE_JOIN_BUDGET: Duration = Duration::from_millis(250);
+
+/// BR-28: budget for a shutdown-style join (session end), where waiting for a
+/// hook to finish is the point rather than an interruption.
+pub const FIRE_JOIN_BUDGET_SHUTDOWN: Duration = Duration::from_secs(5);
+
+/// BR-28: cap on captured `fire()` aggregates held in memory. A session that
+/// never settles (e.g. a subagent that exits before its start hook returns)
+/// must not grow the buffer without bound; the oldest entry is dropped.
+const MAX_FIRED_OUTCOMES: usize = 64;
+
+/// BR-28: the aggregate of an observe-only hook event dispatched via
+/// [`HooksManager::fire`] — Notification, SubagentStart/Stop, Pre/PostCompact.
+///
+/// These used to be spawned detached with the whole [`HookAggregate`] dropped
+/// on the floor, so a `systemMessage` was invisible, a failing hook untraceable,
+/// and there was no way to know a compaction/subagent hook had even run. The
+/// aggregate is now captured here and drained by the caller at a turn or
+/// shutdown boundary via [`HooksManager::settle_fired`].
+#[derive(Debug, Clone)]
+pub struct FiredHookOutcome {
+    pub event: HookEvent,
+    pub session_id: String,
+    pub aggregate: HookAggregate,
+}
 
 /// Result of consulting Stop hooks at turn exit.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +105,15 @@ pub struct HooksManager {
     /// cannot be disabled; a managed `allow_project_hooks` override wins over
     /// the user/env opt-in. Inert when no managed file is present.
     managed: Arc<ManagedPolicy>,
+    /// BR-28: detached `fire()` tasks still in flight, so a turn/shutdown
+    /// boundary can join them instead of letting them outlive the turn and race
+    /// process shutdown. `std::sync::Mutex` (never held across an await) so the
+    /// synchronous `fire()` can register a handle without blocking.
+    pending_fires: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    /// BR-28: aggregates captured from finished `fire()` tasks, awaiting a
+    /// [`Self::settle_fired`] drain by the owning session. Bounded by
+    /// [`MAX_FIRED_OUTCOMES`].
+    fired: std::sync::Mutex<VecDeque<FiredHookOutcome>>,
 }
 
 impl HooksManager {
@@ -126,6 +168,8 @@ impl HooksManager {
             stop_blocks: Mutex::new(HashMap::new()),
             session_hooks: RwLock::new(HashMap::new()),
             managed,
+            pending_fires: std::sync::Mutex::new(Vec::new()),
+            fired: std::sync::Mutex::new(VecDeque::new()),
         }
     }
 
@@ -298,8 +342,15 @@ impl HooksManager {
         aggregate
     }
 
-    /// Fire-and-forget dispatch for observe-only events; never blocks the
-    /// agent loop.
+    /// Detached dispatch for observe-only events; never blocks the agent loop.
+    ///
+    /// BR-28: the spawned task's [`HookAggregate`] is no longer discarded — it
+    /// is captured (when it carries anything: a system message, injected
+    /// context, a decision, or an error) and the task handle is registered so a
+    /// turn or shutdown boundary can join it via [`Self::settle_fired`]. Callers
+    /// therefore *can* act on the combined outcome of a Notification /
+    /// SubagentStart|Stop / Pre|PostCompact hook, and these tasks no longer
+    /// silently outlive the turn.
     pub fn fire(
         self: &Arc<Self>,
         event: HookEvent,
@@ -308,11 +359,109 @@ impl HooksManager {
         working_dir: PathBuf,
     ) {
         let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            manager
+        let session_id = payload.session_id.clone();
+        let handle = tokio::spawn(async move {
+            let aggregate = manager
                 .dispatch(event, matcher_key.as_deref(), &payload, &working_dir)
                 .await;
+            if aggregate.is_empty() {
+                return;
+            }
+            manager.record_fired(FiredHookOutcome {
+                event,
+                session_id,
+                aggregate,
+            });
         });
+        let mut pending = self
+            .pending_fires
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.retain(|handle| !handle.is_finished());
+        pending.push(handle);
+    }
+
+    fn record_fired(&self, outcome: FiredHookOutcome) {
+        let mut fired = self.fired.lock().unwrap_or_else(PoisonError::into_inner);
+        while fired.len() >= MAX_FIRED_OUTCOMES {
+            fired.pop_front();
+        }
+        fired.push_back(outcome);
+    }
+
+    /// BR-28: join outstanding [`Self::fire`] tasks, waiting at most `budget`.
+    /// Returns how many finished. Nothing is aborted — a task that misses the
+    /// budget stays registered and is re-joined at the next boundary, so a slow
+    /// hook delays only its own observability, never the agent loop.
+    pub async fn join_fired(&self, budget: Duration) -> usize {
+        let handles: Vec<JoinHandle<()>> = {
+            let mut pending = self
+                .pending_fires
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *pending)
+        };
+        if handles.is_empty() {
+            return 0;
+        }
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut joined = 0usize;
+        let mut unfinished = Vec::new();
+        for mut handle in handles {
+            match tokio::time::timeout_at(deadline, &mut handle).await {
+                Ok(Ok(())) => joined += 1,
+                Ok(Err(e)) => {
+                    warn!("hooks: fired hook task failed: {e}");
+                    joined += 1;
+                }
+                Err(_) => unfinished.push(handle),
+            }
+        }
+        if !unfinished.is_empty() {
+            debug!(
+                "hooks: {} fired hook task(s) still running past the {:?} join budget",
+                unfinished.len(),
+                budget
+            );
+            self.pending_fires
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(unfinished);
+        }
+        joined
+    }
+
+    /// BR-28: take the captured aggregates of the observe-only hooks fired for
+    /// `session_id`. Other sessions' outcomes are left in place.
+    pub fn drain_fired(&self, session_id: &str) -> Vec<FiredHookOutcome> {
+        let mut fired = self.fired.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(fired.len());
+        while let Some(outcome) = fired.pop_front() {
+            if outcome.session_id == session_id {
+                taken.push(outcome);
+            } else {
+                kept.push_back(outcome);
+            }
+        }
+        *fired = kept;
+        taken
+    }
+
+    /// BR-28: the turn/shutdown-boundary call — join what has finished (bounded
+    /// by `budget`) and hand back this session's captured aggregates so the
+    /// caller can surface their `systemMessage`s and errors.
+    pub async fn settle_fired(&self, session_id: &str, budget: Duration) -> Vec<FiredHookOutcome> {
+        self.join_fired(budget).await;
+        self.drain_fired(session_id)
+    }
+
+    /// Number of `fire()` tasks still registered as in flight (observability).
+    pub fn pending_fire_count(&self) -> usize {
+        self.pending_fires
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     async fn run_one(
@@ -630,6 +779,185 @@ PreToolUse:
             )
             .await;
         assert!(aggregate.decision.is_none());
+    }
+
+    // ---- BR-28: fire() aggregates are captured, not dropped ----
+
+    fn notification_payload(session_id: &str) -> HookPayload {
+        let mut payload = HookPayload::new(HookEvent::Notification, session_id, "/tmp");
+        payload.message = Some("Permission required for developer__shell".to_string());
+        payload
+    }
+
+    /// The whole point of BR-28: a `systemMessage` (and an error) from an
+    /// observe-only, `fire`d event survives to the caller instead of being
+    /// dropped with the detached task's aggregate.
+    #[tokio::test]
+    async fn fired_hook_aggregate_is_captured_and_settled() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"guard script ran\"}'"
+      - type: command
+        command: "definitely-not-a-real-binary-biorouter"
+"#,
+        );
+
+        manager.fire(
+            HookEvent::Notification,
+            Some("permission_prompt".to_string()),
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+
+        let settled = manager.settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(settled.len(), 1);
+        let outcome = &settled[0];
+        assert_eq!(outcome.event, HookEvent::Notification);
+        assert_eq!(outcome.session_id, "s1");
+        assert_eq!(
+            outcome.aggregate.system_messages,
+            vec!["guard script ran".to_string()]
+        );
+        assert!(
+            !outcome.aggregate.errors.is_empty(),
+            "the failing hook's error must reach the caller too"
+        );
+        // Draining is destructive: the boundary consumed it.
+        assert!(manager
+            .settle_fired("s1", FIRE_JOIN_BUDGET)
+            .await
+            .is_empty());
+    }
+
+    /// Joining at a turn boundary is what stops a fired hook from outliving the
+    /// turn, and a settled task is no longer registered as pending.
+    #[tokio::test]
+    async fn join_fired_awaits_outstanding_tasks() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"done\"}'"
+"#,
+        );
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+        assert_eq!(manager.pending_fire_count(), 1);
+
+        assert_eq!(manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await, 1);
+        assert_eq!(manager.pending_fire_count(), 0);
+        assert_eq!(manager.drain_fired("s1").len(), 1);
+    }
+
+    /// A slow hook must not stall the boundary: the join gives up on its budget,
+    /// keeps the task registered, and the next boundary picks the outcome up.
+    #[tokio::test]
+    async fn slow_fired_hook_misses_its_budget_and_settles_later() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "sleep 0.4; echo '{\"systemMessage\":\"late but not lost\"}'"
+"#,
+        );
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+
+        // First boundary: the hook is still running, so nothing is surfaced —
+        // but the task is neither aborted nor forgotten.
+        let early = manager.settle_fired("s1", Duration::from_millis(20)).await;
+        assert!(early.is_empty());
+        assert_eq!(manager.pending_fire_count(), 1);
+
+        // A later boundary with a real budget settles it.
+        let settled = manager.settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(
+            settled
+                .iter()
+                .flat_map(|o| o.aggregate.system_messages.clone())
+                .collect::<Vec<_>>(),
+            vec!["late but not lost".to_string()]
+        );
+    }
+
+    /// Outcomes are drained per session, so one session's turn boundary cannot
+    /// swallow another's hook output (a `HooksManager` is shared across sessions).
+    #[tokio::test]
+    async fn fired_outcomes_drain_per_session() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"ping\"}'"
+"#,
+        );
+        for session in ["s1", "s2"] {
+            manager.fire(
+                HookEvent::Notification,
+                None,
+                notification_payload(session),
+                PathBuf::from("/tmp"),
+            );
+        }
+        manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
+
+        assert_eq!(manager.drain_fired("s1").len(), 1);
+        assert!(manager.drain_fired("s1").is_empty());
+        assert_eq!(manager.drain_fired("s2").len(), 1);
+    }
+
+    /// With no matching hook there is nothing to act on, so nothing is buffered
+    /// — the common path stays allocation-free for the caller.
+    #[tokio::test]
+    async fn fire_with_no_matching_hook_buffers_nothing() {
+        let manager = manager_with_yaml("{}");
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+        assert!(manager
+            .settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN)
+            .await
+            .is_empty());
+    }
+
+    /// A session that never settles must not grow the buffer without bound.
+    #[tokio::test]
+    async fn fired_outcome_buffer_is_bounded() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"x\"}'"
+"#,
+        );
+        for _ in 0..(MAX_FIRED_OUTCOMES + 8) {
+            manager.fire(
+                HookEvent::Notification,
+                None,
+                notification_payload("orphan"),
+                PathBuf::from("/tmp"),
+            );
+        }
+        manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(manager.drain_fired("orphan").len(), MAX_FIRED_OUTCOMES);
     }
 
     // ---- BR-27: matching on tool_input content ----

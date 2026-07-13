@@ -4,8 +4,10 @@
 //! keychain) and a per-test working directory holding a project
 //! `.biorouter/hooks.yaml`, asserting that the integration points added to
 //! agent.rs actually fire: UserPromptSubmit block + context injection,
-//! PreToolUse deny feeding back into the tool result, and the Stop-hook
-//! block loop. Mirrors the MockToolProvider pattern in tests/agent.rs.
+//! PreToolUse deny feeding back into the tool result, the Stop-hook block loop,
+//! and (BR-28) the turn-boundary settle that surfaces the aggregate of an
+//! observe-only, `fire`d hook. Mirrors the MockToolProvider pattern in
+//! tests/agent.rs.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -112,6 +114,16 @@ async fn agent_with_project_hooks(
     hooks_yaml: &str,
     provider: Arc<dyn Provider>,
 ) -> (Agent, String, TempDir) {
+    agent_with_project_hooks_in_mode(hooks_yaml, provider, BioRouterMode::Auto).await
+}
+
+/// As above, but in an explicit mode. `Approve` is what raises a real permission
+/// prompt, which is the only thing that fires a `Notification` hook.
+async fn agent_with_project_hooks_in_mode(
+    hooks_yaml: &str,
+    provider: Arc<dyn Provider>,
+    mode: BioRouterMode,
+) -> (Agent, String, TempDir) {
     // SAFETY: tests run single-threaded per process for this env var; it only
     // flips on the project-hook opt-in the HooksManager reads at construction.
     std::env::set_var("BIOROUTER_ALLOW_PROJECT_HOOKS", "1");
@@ -126,7 +138,7 @@ async fn agent_with_project_hooks(
         session_manager.clone(),
         PermissionManager::instance(),
         None,
-        BioRouterMode::Auto,
+        mode,
     );
     let agent = Agent::with_config(config);
 
@@ -332,5 +344,78 @@ async fn stop_hook_blocks_then_releases() {
     assert!(
         provider.calls.load(Ordering::SeqCst) >= 2,
         "stop block should have forced another turn"
+    );
+}
+
+// ---- BR-28: observe-only (`fire`d) hook aggregates reach the caller ----
+
+/// A `Notification` hook fires when a permission prompt is raised. It is
+/// dispatched detached (`fire`), and its whole `HookAggregate` used to be
+/// dropped on the floor — so a `systemMessage` was invisible and there was no
+/// way to know the hook had run. The turn boundary now joins the task and
+/// surfaces the message to the user.
+#[tokio::test]
+async fn fired_notification_hook_system_message_reaches_the_user() {
+    let provider = Arc::new(ScriptedProvider::new(true, "done"));
+    let (agent, session_id, _work) = agent_with_project_hooks_in_mode(
+        r#"hooks:
+  Notification:
+    - hooks:
+        - type: command
+          command: "echo '{\"systemMessage\":\"audit: permission prompt shown\"}'"
+"#,
+        provider.clone(),
+        BioRouterMode::Approve,
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("audit: permission prompt shown"),
+        "expected the fired Notification hook's systemMessage to surface, got: {text}"
+    );
+}
+
+/// The settle is bounded: a fired hook slower than the turn-boundary budget must
+/// not stall the loop. The turn completes normally without the hook's message,
+/// and the hook is still in flight afterwards — proof the loop moved on rather
+/// than waiting for it. (The budget's timing semantics are pinned directly in
+/// `hooks::tests::slow_fired_hook_misses_its_budget_and_settles_later`; asserting
+/// on wall-clock here would be flaky under parallel-test contention.)
+#[tokio::test]
+async fn slow_fired_hook_does_not_stall_the_turn() {
+    let provider = Arc::new(ScriptedProvider::new(true, "finished anyway"));
+    let (agent, session_id, _work) = agent_with_project_hooks_in_mode(
+        r#"hooks:
+  Notification:
+    - hooks:
+        - type: command
+          command: "sleep 20; echo '{\"systemMessage\":\"too late\"}'"
+"#,
+        provider.clone(),
+        BioRouterMode::Approve,
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("finished anyway"),
+        "the turn must complete, got: {text}"
+    );
+    assert!(
+        !text.contains("too late"),
+        "a hook that misses its budget must not be waited on, got: {text}"
+    );
+    assert_eq!(
+        agent.hooks_manager().pending_fire_count(),
+        1,
+        "the slow hook should still be in flight — the turn did not wait for it"
     );
 }
