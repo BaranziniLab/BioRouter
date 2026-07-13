@@ -372,8 +372,19 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
     ))
 }
 
+/// Extract usage from an OpenAI-compatible `usage` object.
+///
+/// Per-provider semantics: OpenAI's `prompt_tokens` **already includes** the
+/// cached prompt tokens — `prompt_tokens_details.cached_tokens` is a *subset*
+/// of `prompt_tokens`, not an addition. To keep [`Usage`]'s buckets disjoint
+/// (so [`Usage::billed_total`] is a plain sum), we subtract the cached count
+/// back out of `input_tokens` and record it in `cache_read_input_tokens`.
+/// OpenAI has no separate cache-write step, so `cache_creation` stays `None`.
+/// `total_tokens` (prompt + completion) is unchanged. Providers that omit
+/// `cached_tokens` (Ollama, most local servers) get `input_tokens = prompt`
+/// and no cache buckets.
 pub fn get_usage(usage: &Value) -> Usage {
-    let input_tokens = usage
+    let prompt_tokens = usage
         .get("prompt_tokens")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
@@ -383,16 +394,32 @@ pub fn get_usage(usage: &Value) -> Usage {
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
+    // `cached_tokens` is a subset of `prompt_tokens`; clamp to it so a
+    // malformed response can never drive `input_tokens` negative.
+    let cached_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
+        .filter(|&c| c > 0)
+        .map(|c| c.min(prompt_tokens.unwrap_or(c)));
+
+    // Fresh (non-cached) input = prompt_tokens - cached_tokens.
+    let input_tokens = match (prompt_tokens, cached_tokens) {
+        (Some(prompt), Some(cached)) => Some(prompt - cached),
+        (prompt, _) => prompt,
+    };
+
     let total_tokens = usage
         .get("total_tokens")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32)
-        .or_else(|| match (input_tokens, output_tokens) {
-            (Some(input), Some(output)) => Some(input + output),
+        .or_else(|| match (prompt_tokens, output_tokens) {
+            (Some(prompt), Some(output)) => Some(prompt + output),
             _ => None,
         });
 
-    Usage::new(input_tokens, output_tokens, total_tokens)
+    Usage::new(input_tokens, output_tokens, total_tokens).with_cache(cached_tokens, None)
 }
 
 /// Validates and fixes tool schemas to ensure they have proper parameter structure.
@@ -751,6 +778,66 @@ mod tests {
     use serde_json::json;
     use tokio::pin;
     use tokio_stream::{self, StreamExt};
+
+    #[test]
+    fn get_usage_subtracts_cached_tokens_from_prompt() {
+        // prompt_tokens=1000 INCLUDES 800 cached. Fresh input must be 200.
+        let usage = json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_tokens_details": { "cached_tokens": 800 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(200));
+        assert_eq!(u.output_tokens, Some(50));
+        assert_eq!(u.cache_read_input_tokens, Some(800));
+        assert_eq!(u.cache_creation_input_tokens, None); // OpenAI has no cache-write
+        assert_eq!(u.total_tokens, Some(1050));
+        // Billed reconciles: 200 + 50 + 800 = 1050 = prompt + completion.
+        assert_eq!(u.billed_total(), Some(1050));
+    }
+
+    #[test]
+    fn get_usage_without_cache_details_leaves_input_as_prompt() {
+        let usage = json!({
+            "prompt_tokens": 300,
+            "completion_tokens": 20,
+            "total_tokens": 320
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(300));
+        assert_eq!(u.cache_read_input_tokens, None);
+        assert_eq!(u.cache_creation_input_tokens, None);
+        assert_eq!(u.billed_total(), Some(320));
+    }
+
+    #[test]
+    fn get_usage_ignores_zero_cached_tokens() {
+        // cached_tokens: 0 is not a cache hit — leave input untouched, cache None.
+        let usage = json!({
+            "prompt_tokens": 300,
+            "completion_tokens": 20,
+            "total_tokens": 320,
+            "prompt_tokens_details": { "cached_tokens": 0 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(300));
+        assert_eq!(u.cache_read_input_tokens, None);
+    }
+
+    #[test]
+    fn get_usage_clamps_cached_tokens_to_prompt() {
+        // Defensive: a malformed cached > prompt must not make input negative.
+        let usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": { "cached_tokens": 250 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(0));
+        assert_eq!(u.cache_read_input_tokens, Some(100));
+    }
 
     #[test]
     fn test_validate_tool_schemas() {
