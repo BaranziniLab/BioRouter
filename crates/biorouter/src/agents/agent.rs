@@ -2825,6 +2825,21 @@ impl Agent {
             // reason (a config read touches the filesystem).
             let tool_error_taxonomy =
                 crate::agents::tool_errors::ToolErrorTaxonomyConfig::from_config();
+            // BR-47: the auto post-edit diagnostics policy, resolved once per
+            // reply (config read touches the filesystem). The tree-sitter analyzer
+            // that runs the actual check is built lazily, only if a `text_editor`
+            // write actually lands while the feature is active.
+            let post_edit_diag_config =
+                crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config();
+            let mut post_edit_analyzer: Option<
+                biorouter_mcp::developer::analyze::CodeAnalyzer,
+            > = None;
+            // BR-47: consecutive post-edit reflections this reply. Bounded by
+            // `post_edit_diag_config.max_reflections` so a file that never parses
+            // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
+            // to 0 whenever an edited file comes back clean, so a genuine fix
+            // restores the budget.
+            let mut post_edit_reflections: u32 = 0;
             // BR-32: the /goal stall detector, generalized to ordinary chat. Both
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
@@ -3249,6 +3264,12 @@ impl Agent {
                                 // inspection, plus BR-31's no-progress nudges, gathered from
                                 // the results themselves.
                                 let mut loop_warnings: Vec<String> = Vec::new();
+                                // BR-47: the framed post-edit syntax diagnostics for this
+                                // batch, if any. Computed at the result seam but injected
+                                // *after* the tool request/response pair below, so the
+                                // transcript reads "you edited X (tool response), then the
+                                // syntax check on X found ...".
+                                let mut pending_post_edit_diagnostics: Option<String> = None;
 
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
@@ -3376,6 +3397,103 @@ impl Agent {
                                             }
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
+                                            }
+                                        }
+                                    }
+
+                                    // BR-47: auto post-edit diagnostics. A successful
+                                    // `text_editor` write is re-parsed with the developer
+                                    // analyzer's tree-sitter grammars; any ERROR / MISSING
+                                    // nodes become agent-visible corrective context, so the
+                                    // model fixes broken syntax in the same turn instead of
+                                    // only discovering it if it happens to run tests. Bounded
+                                    // by a per-reply reflection counter so a file that never
+                                    // parses clean cannot wedge the turn — the built-in twin
+                                    // of the BR-19 PostToolUse block cap below. Runs off the
+                                    // still-owned `post_tool_results`, before the PostToolUse
+                                    // hooks consume it.
+                                    if post_edit_diag_config.is_active() {
+                                        use crate::agents::post_edit_diagnostics as ped;
+                                        // (display path, resolved path) for each successful write.
+                                        let mut edited: Vec<(String, std::path::PathBuf)> = Vec::new();
+                                        for (request_id, _response_value, error_text) in &post_tool_results {
+                                            if error_text.is_some() {
+                                                // The write itself failed; there is nothing valid
+                                                // on disk to parse.
+                                                continue;
+                                            }
+                                            let Some(request) = remaining_requests.iter().find(|r| &r.id == request_id) else { continue };
+                                            let Some(resolved) = ped::edited_path_from_request(request, &session.working_dir) else { continue };
+                                            // Show the model the path it actually sent, when readable.
+                                            let display = request
+                                                .tool_call
+                                                .as_ref()
+                                                .ok()
+                                                .and_then(|tc| tc.arguments.as_ref())
+                                                .and_then(|a| a.get("path").or_else(|| a.get("file_path")))
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
+                                                .unwrap_or_else(|| resolved.display().to_string());
+                                            edited.push((display, resolved));
+                                        }
+                                        if !edited.is_empty() {
+                                            let analyzer = post_edit_analyzer.get_or_insert_with(
+                                                biorouter_mcp::developer::analyze::CodeAnalyzer::new,
+                                            );
+                                            let mut files: Vec<ped::FileDiagnostics> = Vec::new();
+                                            // Dedup by resolved path: a file written twice in one
+                                            // batch is reported once, on its final on-disk state.
+                                            let mut seen = std::collections::HashSet::new();
+                                            for (display, resolved) in edited {
+                                                if !seen.insert(resolved.clone()) {
+                                                    continue;
+                                                }
+                                                let diags = analyzer.diagnose_file(&resolved);
+                                                if diags.is_empty() {
+                                                    continue;
+                                                }
+                                                files.push(ped::FileDiagnostics {
+                                                    path: display,
+                                                    lines: diags.iter().map(|d| d.render()).collect(),
+                                                });
+                                            }
+                                            match ped::next_reflection(
+                                                !files.is_empty(),
+                                                post_edit_reflections,
+                                                post_edit_diag_config.max_reflections,
+                                            ) {
+                                                ped::ReflectionOutcome::Reset => {
+                                                    // Every edited file parsed clean: a genuine
+                                                    // fix (or a clean edit) restores the budget.
+                                                    post_edit_reflections = 0;
+                                                }
+                                                ped::ReflectionOutcome::Inject { next } => {
+                                                    post_edit_reflections = next;
+                                                    let total: usize = files.iter().map(|f| f.lines.len()).sum();
+                                                    tracing::info!(
+                                                        files = files.len(),
+                                                        diagnostics = total,
+                                                        reflection = post_edit_reflections,
+                                                        "BR-47: injecting post-edit syntax diagnostics"
+                                                    );
+                                                    loop_safety::emit(
+                                                        LoopSafetyEvent::new(LoopSafetyKind::PostEditDiagnostics)
+                                                            .session(&session_config.id)
+                                                            .count(post_edit_reflections),
+                                                    );
+                                                    // Held, not pushed: it must land after the
+                                                    // tool response for the edit it describes.
+                                                    pending_post_edit_diagnostics =
+                                                        Some(ped::frame_post_edit_diagnostics(&files));
+                                                }
+                                                ped::ReflectionOutcome::Capped => {
+                                                    // Deliver the result as-is so the turn is not
+                                                    // wedged on a file that never parses clean.
+                                                    tracing::info!(
+                                                        cap = post_edit_diag_config.max_reflections,
+                                                        "BR-47: post-edit diagnostics reflection cap reached; not injecting again this reply"
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -3574,6 +3692,20 @@ impl Agent {
                                         yield AgentEvent::Message(final_response.clone());
                                         messages_to_add.push(final_response);
                                     }
+                                }
+
+                                // BR-47: the post-edit syntax diagnostics for this batch,
+                                // injected here so they sit right after the tool responses
+                                // for the edits they describe. Model-visible only — like the
+                                // loop-guard nudges, this is corrective plumbing the user
+                                // does not need in the transcript.
+                                if let Some(diagnostics_text) = pending_post_edit_diagnostics.take() {
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(diagnostics_text)
+                                            .with_visibility(false, true),
+                                    );
                                 }
 
                                 // Soft stage (BR-29/30/31): the repeated — or repeatedly

@@ -85,11 +85,14 @@ pub enum LoopSafetyKind {
     HookAsk,
     /// The turn was cancelled (user interrupt / shutdown).
     Cancelled,
+    /// BR-47: a post-edit syntax check flagged the just-written file; the model
+    /// was nudged with the diagnostics at the result seam.
+    PostEditDiagnostics,
 }
 
 /// Every kind, in declaration order. The counter table is indexed by position
 /// here, so a new variant must be appended to both.
-pub const ALL_KINDS: [LoopSafetyKind; 17] = [
+pub const ALL_KINDS: [LoopSafetyKind; 18] = [
     LoopSafetyKind::RepetitionWarn,
     LoopSafetyKind::RepetitionStop,
     LoopSafetyKind::FailureLoopNudge,
@@ -107,6 +110,7 @@ pub const ALL_KINDS: [LoopSafetyKind; 17] = [
     LoopSafetyKind::HookBlock,
     LoopSafetyKind::HookAsk,
     LoopSafetyKind::Cancelled,
+    LoopSafetyKind::PostEditDiagnostics,
 ];
 
 impl LoopSafetyKind {
@@ -131,6 +135,7 @@ impl LoopSafetyKind {
             LoopSafetyKind::HookBlock => "hook_block",
             LoopSafetyKind::HookAsk => "hook_ask",
             LoopSafetyKind::Cancelled => "cancelled",
+            LoopSafetyKind::PostEditDiagnostics => "post_edit_diagnostics",
         }
     }
 
