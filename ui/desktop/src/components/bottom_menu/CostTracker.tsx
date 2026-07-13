@@ -3,6 +3,8 @@ import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
+import type { ModelCostRow } from '../../hooks/useCostTracking';
+import { ModelBreakdownTable } from './ModelBreakdownTable';
 
 interface CostTrackerProps {
   inputTokens?: number;
@@ -14,6 +16,14 @@ interface CostTrackerProps {
       totalCost: number;
     };
   };
+  /** Real per-model rows from the token ledger. When present, they replace the
+   * legacy client-side model-switch guessing for the popover breakdown. */
+  modelCostRows?: ModelCostRow[];
+}
+
+/** Sum the priced per-model rows; rows with unknown pricing (null) count 0. */
+export function sumModelRowsCost(rows: ModelCostRow[]): number {
+  return rows.reduce((acc, row) => acc + (row.totalCost ?? 0), 0);
 }
 
 const COST_TRIGGER_CLASS =
@@ -47,7 +57,12 @@ export function formatTooltipMoney(amount: number, currency = '$'): string {
   })}`;
 }
 
-export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }: CostTrackerProps) {
+export function CostTracker({
+  inputTokens = 0,
+  outputTokens = 0,
+  sessionCosts,
+  modelCostRows,
+}: CostTrackerProps) {
   const { currentModel, currentProvider } = useModelAndProvider();
   const [costInfo, setCostInfo] = useState<PricingData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -97,6 +112,34 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
   // Return null early if pricing is disabled
   if (!showPricing) {
     return null;
+  }
+
+  // Real per-model rows (Issue #1): when the token ledger gives us an actual
+  // breakdown, show it as a table and total it directly, instead of the legacy
+  // client-side model-switch guessing. This path is independent of the current
+  // model's pricing lookup, so a switched-away model still appears.
+  if (modelCostRows && modelCostRows.length > 0) {
+    const total = sumModelRowsCost(modelCostRows);
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className={COST_TRIGGER_CLASS}>
+            <span className={COST_SYMBOL_CLASS}>$</span>
+            <span className="text-xs font-mono">{total.toFixed(2)}</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-none">
+          <div className="flex flex-col gap-2">
+            <div className="whitespace-pre-line">
+              {`${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`}
+            </div>
+            <div className="font-medium">Per-model breakdown</div>
+            <ModelBreakdownTable rows={modelCostRows} />
+            <div className="text-right font-medium">Total: {formatTooltipMoney(total)}</div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    );
   }
 
   const calculateCost = (): number => {
