@@ -685,3 +685,239 @@ async fn test_window_resets_on_a_real_user_turn_only() {
         "an agent-authored injection must not reset the window"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BR-31: repeated-failing-result / no-progress detection
+//
+// The gap these cover: the model varies the arguments every time (so neither the
+// byte-exact guard nor the near-duplicate heuristic fires) but every call comes
+// back with the *same error*. Only the results reveal the loop.
+// ---------------------------------------------------------------------------
+
+use biorouter::tool_monitor::{FailureLoopConfig, FAILURE_LOOP_HARD_FINDING_ID};
+use rmcp::model::{CallToolResult, Content};
+
+fn tool_error(text: &str) -> CallToolResult {
+    CallToolResult {
+        content: vec![Content::text(text)],
+        structured_content: None,
+        is_error: Some(true),
+        meta: None,
+    }
+}
+
+fn tool_ok(text: &str) -> CallToolResult {
+    CallToolResult {
+        content: vec![Content::text(text)],
+        structured_content: None,
+        is_error: Some(false),
+        meta: None,
+    }
+}
+
+/// One completed shell call in the transcript: the assistant's request, then the
+/// tool response the agent wrote back.
+fn completed_shell(index: usize, command: &str, result: CallToolResult) -> Vec<Message> {
+    let id = format!("hist_{index}");
+    vec![
+        Message::assistant().with_tool_request(&id, Ok(shell(command))),
+        Message::user().with_tool_response(&id, Ok(result)),
+    ]
+}
+
+/// Six shell calls, all with different commands (so the call-shape guards stay
+/// quiet), every one failing with the same error.
+fn six_identical_failures(error: &str) -> Vec<Message> {
+    [
+        "cargo build",
+        "cargo test --workspace",
+        "npm run lint",
+        "python analyze.py --input data.csv",
+        "make release",
+        "./scripts/deploy.sh --verbose",
+    ]
+    .iter()
+    .enumerate()
+    .flat_map(|(index, command)| completed_shell(index, command, tool_error(error)))
+    .collect()
+}
+
+async fn inspect_with_history(
+    inspector: &RepetitionInspector,
+    requests: &[ToolRequest],
+    history: &[Message],
+) -> Vec<biorouter::tool_inspection::InspectionResult> {
+    inspector
+        .inspect(
+            requests,
+            history,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed")
+}
+
+#[tokio::test]
+async fn test_repeated_identical_failures_stop_the_next_call() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let history = six_identical_failures("error: no toolchain installed for 'stable'");
+    let next = requests(vec![shell("cargo doc --open")]);
+
+    let results = inspect_with_history(&inspector, &next, &history).await;
+
+    assert_eq!(
+        results.len(),
+        1,
+        "the 7th call must be stopped: {results:?}"
+    );
+    let deny = &results[0];
+    assert_eq!(deny.action, InspectionAction::Deny);
+    assert_eq!(
+        deny.finding_id.as_deref(),
+        Some(FAILURE_LOOP_HARD_FINDING_ID)
+    );
+
+    let reason = deny.reason.to_lowercase();
+    assert!(
+        reason.contains("failed 6 times"),
+        "the reason must state the observed streak: {}",
+        deny.reason
+    );
+    assert!(
+        reason.contains("did not decline"),
+        "the model must not be told the user declined: {}",
+        deny.reason
+    );
+    assert!(
+        reason.contains("ask the user") || reason.contains("tell the user"),
+        "the reason must offer the honest way out: {}",
+        deny.reason
+    );
+}
+
+// Below the hard threshold the guard stays out of the way — the escalating
+// nudges (emitted at the result-collection seam, not here) are what run.
+#[tokio::test]
+async fn test_a_short_failure_run_is_not_stopped() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let mut history = six_identical_failures("error: no toolchain installed for 'stable'");
+    history.truncate(10); // five completed calls, not six
+
+    let next = requests(vec![shell("cargo doc --open")]);
+    let results = inspect_with_history(&inspector, &next, &history).await;
+
+    assert!(results.is_empty(), "5 failures must not block: {results:?}");
+}
+
+// The stop is a circuit breaker, not a lockout: the denial is itself an error
+// with a different signature, so it breaks the streak and the model gets to try
+// again. (Without this, a tool that failed 6 times would be dead for the rest of
+// the turn — and a model that fixed the actual cause could never prove it.)
+#[tokio::test]
+async fn test_the_stop_clears_itself_so_the_tool_is_not_dead() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let mut history = six_identical_failures("error: no toolchain installed for 'stable'");
+    let next = requests(vec![shell("cargo doc --open")]);
+
+    let deny = inspect_with_history(&inspector, &next, &history)
+        .await
+        .into_iter()
+        .next()
+        .expect("the 7th call is denied");
+
+    // Replay what the agent does with a denial: the reason is written back as the
+    // call's (error) result.
+    history.push(Message::assistant().with_tool_request("stopped", Ok(shell("cargo doc --open"))));
+    history.push(Message::user().with_tool_response("stopped", Ok(tool_error(&deny.reason))));
+
+    let retry = requests(vec![shell("rustup toolchain install stable")]);
+    let results = inspect_with_history(&inspector, &retry, &history).await;
+
+    assert!(
+        results.is_empty(),
+        "after the stop the model must be free to try again: {results:?}"
+    );
+}
+
+// A tool that succeeds is making progress, whatever it did before.
+#[tokio::test]
+async fn test_a_success_clears_the_failure_streak() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let mut history = six_identical_failures("error: no toolchain installed for 'stable'");
+    history.extend(completed_shell(
+        99,
+        "which cargo",
+        tool_ok("/usr/bin/cargo"),
+    ));
+
+    let next = requests(vec![shell("cargo doc --open")]);
+    let results = inspect_with_history(&inspector, &next, &history).await;
+
+    assert!(results.is_empty(), "a success resets the run: {results:?}");
+}
+
+// Another tool's failures are not this tool's loop.
+#[tokio::test]
+async fn test_the_streak_is_per_tool() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let history = six_identical_failures("error: no toolchain installed for 'stable'");
+
+    let next = requests(vec![call_with("read_file", json!({"path": "Cargo.toml"}))]);
+    let results = inspect_with_history(&inspector, &next, &history).await;
+
+    assert!(
+        results.is_empty(),
+        "a different tool must not inherit the streak: {results:?}"
+    );
+}
+
+// Operators can keep the nudges but never block (`..._HARD_STOP=0`), or turn the
+// whole detector off.
+#[tokio::test]
+async fn test_the_hard_stop_is_configurable_off() {
+    let history = six_identical_failures("error: no toolchain installed for 'stable'");
+    let next = requests(vec![shell("cargo doc --open")]);
+
+    let nudge_only = RepetitionInspector::staged(3, 5).with_failure_loop(FailureLoopConfig {
+        hard_stop_at: None,
+        ..FailureLoopConfig::default()
+    });
+    assert!(inspect_with_history(&nudge_only, &next, &history)
+        .await
+        .is_empty());
+
+    let off = RepetitionInspector::staged(3, 5).with_failure_loop(FailureLoopConfig::disabled());
+    assert!(inspect_with_history(&off, &next, &history).await.is_empty());
+}
+
+// A genuine user turn is a fresh start; the agent's own hidden nudge is not.
+#[tokio::test]
+async fn test_a_user_turn_resets_the_failure_window() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let history = six_identical_failures("error: no toolchain installed for 'stable'");
+    let next = requests(vec![shell("cargo doc --open")]);
+
+    let mut with_user_turn = history.clone();
+    with_user_turn.push(Message::user().with_text("never mind, just read the manifest"));
+    assert!(
+        inspect_with_history(&inspector, &next, &with_user_turn)
+            .await
+            .is_empty(),
+        "a user turn must reset the failure window"
+    );
+
+    let mut with_nudge = history;
+    with_nudge.push(
+        Message::user()
+            .with_text("<biorouter-loop-guard>no progress</biorouter-loop-guard>")
+            .with_visibility(false, true),
+    );
+    assert_eq!(
+        inspect_with_history(&inspector, &next, &with_nudge)
+            .await
+            .len(),
+        1,
+        "the agent's own nudge must not launder the loop"
+    );
+}
