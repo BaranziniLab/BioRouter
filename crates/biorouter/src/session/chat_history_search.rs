@@ -1,4 +1,5 @@
 use crate::conversation::message::MessageContent;
+use crate::session::chat_fts;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -74,23 +75,97 @@ impl<'a> ChatHistorySearch<'a> {
     }
 
     pub async fn execute(self) -> Result<ChatRecallResults> {
-        let keywords = self.parse_keywords();
-        if keywords.is_empty() {
-            return Ok(ChatRecallResults {
-                results: vec![],
-                total_matches: 0,
-            });
-        }
+        let empty = || ChatRecallResults {
+            results: vec![],
+            total_matches: 0,
+        };
 
-        let rows = self.fetch_rows(&keywords).await?;
-        let session_messages = self.process_rows(rows);
+        // Prefer the FTS5 index (relevance-ranked via bm25) when it exists;
+        // fall back to the legacy substring `LIKE` scan for an un-migrated DB
+        // so recall never errors, it only degrades (BR-17).
+        let rows = if self.fts_available().await {
+            let match_expr = chat_fts::sanitize_fts_query(self.query);
+            if match_expr.is_empty() {
+                return Ok(empty());
+            }
+            self.fetch_rows_fts(&match_expr).await?
+        } else {
+            let keywords = self.parse_keywords();
+            if keywords.is_empty() {
+                return Ok(empty());
+            }
+            self.fetch_rows_like(&keywords).await?
+        };
+
+        let (session_messages, order) = self.process_rows(rows);
         let session_totals = self.get_session_totals(&session_messages).await?;
-        let results = self.convert_to_results(session_messages, session_totals);
+        let results = self.convert_to_results(session_messages, order, session_totals);
 
         Ok(results)
     }
 
-    async fn fetch_rows(&self, keywords: &[String]) -> Result<Vec<SqlQueryRow>> {
+    /// True when the FTS5 mirror table exists (created by schema migration 11).
+    async fn fts_available(&self) -> bool {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+        )
+        .fetch_one(self.pool)
+        .await
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
+    /// Relevance-ranked recall over the FTS5 index. Rows come back best-first
+    /// (`bm25` ascending) and, because the index only stores the flattened
+    /// text, this joins back to `messages`/`sessions` so the downstream row
+    /// shape and rendering stay identical to the `LIKE` path.
+    async fn fetch_rows_fts(&self, match_expr: &str) -> Result<Vec<SqlQueryRow>> {
+        let mut sql = String::from(
+            r#"
+            SELECT
+                s.id as session_id,
+                s.description as session_description,
+                s.working_dir as session_working_dir,
+                s.created_at as session_created_at,
+                m.role,
+                m.content_json,
+                m.timestamp
+            FROM messages_fts f
+            INNER JOIN messages m ON m.id = f.message_id
+            INNER JOIN sessions s ON m.session_id = s.id
+            WHERE messages_fts MATCH ?
+        "#,
+        );
+
+        if self.exclude_session_id.is_some() {
+            sql.push_str(" AND s.id != ?");
+        }
+        if self.after_date.is_some() {
+            sql.push_str(" AND m.timestamp >= ?");
+        }
+        if self.before_date.is_some() {
+            sql.push_str(" AND m.timestamp <= ?");
+        }
+
+        sql.push_str(" ORDER BY bm25(messages_fts) ASC LIMIT ?");
+
+        let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql).bind(match_expr);
+
+        if let Some(exclude_id) = &self.exclude_session_id {
+            query_builder = query_builder.bind(exclude_id);
+        }
+        if let Some(after) = self.after_date {
+            query_builder = query_builder.bind(after);
+        }
+        if let Some(before) = self.before_date {
+            query_builder = query_builder.bind(before);
+        }
+        query_builder = query_builder.bind(self.limit as i64);
+
+        Ok(query_builder.fetch_all(self.pool).await?)
+    }
+
+    async fn fetch_rows_like(&self, keywords: &[String]) -> Result<Vec<SqlQueryRow>> {
         let sql = self.build_sql(keywords);
         let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql);
 
@@ -171,8 +246,16 @@ impl<'a> ChatHistorySearch<'a> {
         sql
     }
 
-    fn process_rows(&self, rows: Vec<SqlQueryRow>) -> HashMap<String, SessionMessageGroup> {
+    /// Group matched rows by session, returning the sessions in the order they
+    /// were first seen. Rows arrive ranked (bm25-best-first for FTS,
+    /// most-recent-first for the `LIKE` fallback), so first-seen order carries
+    /// the ranking down to the session level.
+    fn process_rows(
+        &self,
+        rows: Vec<SqlQueryRow>,
+    ) -> (HashMap<String, SessionMessageGroup>, Vec<String>) {
         let mut session_messages: HashMap<String, SessionMessageGroup> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
 
         for (
             session_id,
@@ -185,9 +268,12 @@ impl<'a> ChatHistorySearch<'a> {
         ) in rows
         {
             if let Ok(content_vec) = serde_json::from_str::<Vec<MessageContent>>(&content_json) {
-                let text_parts = Self::extract_text_content(content_vec);
+                let text_parts = chat_fts::searchable_parts(&content_vec);
 
                 if !text_parts.is_empty() {
+                    if !session_messages.contains_key(&session_id) {
+                        order.push(session_id.clone());
+                    }
                     let entry = session_messages.entry(session_id.clone()).or_insert((
                         session_description.clone(),
                         session_working_dir.clone(),
@@ -201,22 +287,7 @@ impl<'a> ChatHistorySearch<'a> {
             }
         }
 
-        session_messages
-    }
-
-    fn extract_text_content(content_vec: Vec<MessageContent>) -> Vec<String> {
-        content_vec
-            .into_iter()
-            .filter_map(|content| match content {
-                MessageContent::Text(ref tc) => Some(tc.text.clone()),
-                MessageContent::ToolRequest(ref tr) => {
-                    Some(format!("[Tool: {}]", tr.to_readable_string()))
-                }
-                MessageContent::ToolResponse(_) => Some("[Tool Response]".to_string()),
-                MessageContent::Thinking(ref t) => Some(format!("[Thinking: {}]", t.thinking)),
-                _ => None,
-            })
-            .collect()
+        (session_messages, order)
     }
 
     async fn get_session_totals(
@@ -250,44 +321,46 @@ impl<'a> ChatHistorySearch<'a> {
 
     fn convert_to_results(
         &self,
-        session_messages: HashMap<String, SessionMessageGroup>,
+        mut session_messages: HashMap<String, SessionMessageGroup>,
+        order: Vec<String>,
         session_totals: HashMap<String, usize>,
     ) -> ChatRecallResults {
-        let mut results: Vec<ChatRecallResult> = session_messages
-            .into_iter()
-            .map(
-                |(session_id, (description, working_dir, _created_at, messages))| {
-                    let message_vec: Vec<ChatRecallMessage> = messages
-                        .into_iter()
-                        .map(|(role, content, timestamp)| ChatRecallMessage {
-                            role,
-                            content,
-                            timestamp,
-                        })
-                        .collect();
+        // Emit sessions in ranked order (best first) rather than re-sorting by
+        // recency, so bm25 relevance is what the caller sees.
+        let mut results: Vec<ChatRecallResult> = Vec::with_capacity(order.len());
+        for session_id in order {
+            let Some((description, working_dir, _created_at, messages)) =
+                session_messages.remove(&session_id)
+            else {
+                continue;
+            };
 
-                    let last_activity = message_vec
-                        .iter()
-                        .map(|m| m.timestamp)
-                        .max()
-                        .unwrap_or_else(chrono::Utc::now);
+            let message_vec: Vec<ChatRecallMessage> = messages
+                .into_iter()
+                .map(|(role, content, timestamp)| ChatRecallMessage {
+                    role,
+                    content,
+                    timestamp,
+                })
+                .collect();
 
-                    let total_messages_in_session =
-                        session_totals.get(&session_id).copied().unwrap_or(0);
+            let last_activity = message_vec
+                .iter()
+                .map(|m| m.timestamp)
+                .max()
+                .unwrap_or_else(chrono::Utc::now);
 
-                    ChatRecallResult {
-                        session_id,
-                        session_description: description,
-                        session_working_dir: working_dir,
-                        last_activity,
-                        total_messages_in_session,
-                        messages: message_vec,
-                    }
-                },
-            )
-            .collect();
+            let total_messages_in_session = session_totals.get(&session_id).copied().unwrap_or(0);
 
-        results.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            results.push(ChatRecallResult {
+                session_id,
+                session_description: description,
+                session_working_dir: working_dir,
+                last_activity,
+                total_messages_in_session,
+                messages: message_vec,
+            });
+        }
 
         let total_matches = results.iter().map(|r| r.messages.len()).sum();
         ChatRecallResults {
