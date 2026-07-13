@@ -40,6 +40,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                     "sidecar": llama,
                     "model_cache_dir": model_cache_dir,
                 },
+                "shell_sandbox": sandbox_json(),
                 "update": update,
             })
         );
@@ -75,6 +76,12 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     println!();
     section("Local models (Llama Server)");
     print_llama_status(&llama, &model_cache_dir);
+
+    // Shell sandbox (BR-69): which OS-level enforcement tier the shell tool
+    // would actually get on this host, and whether the opt-in gate is on.
+    println!();
+    section("Shell sandbox");
+    print_sandbox_status();
 
     // Actionable next steps for anything missing.
     let missing_required: Vec<&DependencyStatus> =
@@ -191,6 +198,57 @@ fn print_llama_status(status: &SidecarStatus, model_cache_dir: &str) {
             println!("    {} {}", style("·").dim(), style(detail).dim());
         }
     }
+}
+
+/// Print the BR-69 shell-sandbox status: the opt-in gate mode plus the
+/// enforcement tier this host would actually provide (probed, never guessed).
+fn print_sandbox_status() {
+    use biorouter_mcp::shell_sandbox::{self, SandboxMode, SandboxTier};
+
+    let mode = SandboxMode::from_env();
+    let report = shell_sandbox::detect().probe();
+
+    let mode_label = match mode {
+        SandboxMode::Off => "off (opt in with BIOROUTER_SHELL_SANDBOX=auto|strict)",
+        SandboxMode::Auto => "auto",
+        SandboxMode::Strict => "strict",
+    };
+    let mode_marker = if mode.is_on() {
+        style("●").green().to_string()
+    } else {
+        style("○").dim().to_string()
+    };
+    println!("    {} gate  {}", mode_marker, style(mode_label).dim());
+
+    let tier_marker = match report.tier {
+        SandboxTier::Full => style("●").green().to_string(),
+        SandboxTier::WriteOnly | SandboxTier::ContainmentOnly => style("◐").yellow().to_string(),
+        SandboxTier::None => style("○").dim().to_string(),
+    };
+    println!(
+        "    {} tier  {} {}",
+        tier_marker,
+        style(report.mechanism).bold(),
+        style(report.tier.describe()).dim()
+    );
+    for d in &report.degradations {
+        println!("      {} {}", style("·").dim(), style(d).dim());
+    }
+}
+
+/// JSON form of the shell-sandbox status for `doctor --format json`.
+fn sandbox_json() -> serde_json::Value {
+    use biorouter_mcp::shell_sandbox::{self, SandboxMode};
+
+    let mode = SandboxMode::from_env();
+    let report = shell_sandbox::detect().probe();
+    serde_json::json!({
+        "mode": format!("{mode:?}").to_lowercase(),
+        "tier": format!("{:?}", report.tier).to_lowercase(),
+        "mechanism": report.mechanism,
+        "degradations": report.degradations,
+        "summary": report.summary(),
+    })
 }
 
 fn print_dep(d: &DependencyStatus, width: usize) {

@@ -13,19 +13,36 @@
 //! already in place so they slot in without a rewrite.
 
 mod baseline;
-mod command;
+mod cmd_shell;
+pub(crate) mod command;
+mod pwsh;
 mod rule;
+pub(crate) mod target;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_platform;
 
 pub use command::ParsedCommand;
 pub use rule::{Decision, PolicyVerdict, Rule, Tier};
+pub use target::{Blast, Dialect, EnvFacts, Platform};
 
 use rule::CompiledRule;
 use serde_json::Value;
 use std::path::Path;
 use uuid::Uuid;
+
+/// Per-platform self-test fixtures. A rule's embedded `matches` examples run
+/// under the platform the rule declares (a Windows rule's example uses a Windows
+/// cwd/home), so `Remove-Item -Recurse -Force C:\` classifies correctly on a
+/// mac CI box.
+fn self_test_fixture(platform: Platform) -> (&'static str, &'static str) {
+    match platform {
+        Platform::Windows => (r"C:\Users\me\project", r"C:\Users\me"),
+        _ => (SELF_TEST_CWD, "/home/user"),
+    }
+}
 
 /// A rule that failed its embedded self-test at load / in `cargo test`.
 #[derive(Debug, Clone)]
@@ -82,14 +99,64 @@ impl PolicyEngine {
         Self { rules: compiled }
     }
 
-    /// Evaluate a tool call. Winner = highest effective priority; ties broken
-    /// last-match-wins (later rule / higher tier prevails). No match = Allow.
+    /// Evaluate a tool call for the running host. Winner = highest effective
+    /// priority; ties broken last-match-wins. No match = Allow.
     pub fn evaluate(&self, tool_name: &str, args: &Value, cwd: &Path) -> PolicyVerdict {
+        let platform = Platform::host();
+        let env = EnvFacts::host(&cwd.to_string_lossy());
+        self.evaluate_with(tool_name, args, platform, platform.default_dialect(), &env)
+    }
+
+    /// Evaluate for an explicit target platform + environment, using that
+    /// platform's default shell dialect. Used by the BR-68 test matrix to run
+    /// the Windows rule set on a mac.
+    pub fn evaluate_for(
+        &self,
+        platform: Platform,
+        tool_name: &str,
+        args: &Value,
+        cwd: &str,
+        home: &str,
+    ) -> PolicyVerdict {
+        self.evaluate_for_dialect(
+            platform,
+            platform.default_dialect(),
+            tool_name,
+            args,
+            cwd,
+            home,
+        )
+    }
+
+    /// Evaluate for an explicit (platform × dialect). The dialect is stated by
+    /// the test matrix because a bare command carries no wrapper to infer it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_for_dialect(
+        &self,
+        platform: Platform,
+        dialect: Dialect,
+        tool_name: &str,
+        args: &Value,
+        cwd: &str,
+        home: &str,
+    ) -> PolicyVerdict {
+        let env = EnvFacts::for_platform(platform, cwd, home);
+        self.evaluate_with(tool_name, args, platform, dialect, &env)
+    }
+
+    fn evaluate_with(
+        &self,
+        tool_name: &str,
+        args: &Value,
+        platform: Platform,
+        dialect: Dialect,
+        env: &EnvFacts,
+    ) -> PolicyVerdict {
         let command = args
             .as_object()
             .and_then(|m| super::command_text_from(tool_name, m))
             .unwrap_or_default();
-        let parsed = ParsedCommand::parse(&command, cwd);
+        let parsed = ParsedCommand::parse_for_dialect(&command, platform, dialect, env);
 
         let mut winner: Option<&CompiledRule> = None;
         let mut winner_priority: i64 = -1;
@@ -128,11 +195,21 @@ impl PolicyEngine {
     /// list of failures so a `#[test]` can assert the baseline is self-consistent
     /// (the "auditable" guarantee: a rule edit that breaks its examples fails CI).
     pub fn run_self_tests(&self) -> Result<(), Vec<SelfTestFailure>> {
-        let cwd = Path::new(SELF_TEST_CWD);
         let mut failures = Vec::new();
         for cr in &self.rules {
+            // Run each rule under a platform it declares (Windows rules need a
+            // Windows cwd/home to classify their targets). A rule with no
+            // `platforms` runs under the host, preserving the pre-BR-68 oracle.
+            let platform = cr
+                .rule
+                .platforms
+                .first()
+                .copied()
+                .unwrap_or_else(Platform::host);
+            let (cwd, home) = self_test_fixture(platform);
+            let env = EnvFacts::for_platform(platform, cwd, home);
             for cmd in &cr.rule.tests.matches {
-                let parsed = ParsedCommand::parse(cmd, cwd);
+                let parsed = ParsedCommand::parse_for(cmd, platform, &env);
                 if !cr.matches(SELF_TEST_TOOL, &parsed) {
                     failures.push(SelfTestFailure {
                         rule_id: cr.rule.id.clone(),
@@ -142,7 +219,7 @@ impl PolicyEngine {
                 }
             }
             for cmd in &cr.rule.tests.not_matches {
-                let parsed = ParsedCommand::parse(cmd, cwd);
+                let parsed = ParsedCommand::parse_for(cmd, platform, &env);
                 if cr.matches(SELF_TEST_TOOL, &parsed) {
                     failures.push(SelfTestFailure {
                         rule_id: cr.rule.id.clone(),

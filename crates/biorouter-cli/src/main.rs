@@ -11,6 +11,11 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // BR-69: if this process was re-exec'd as the shell-sandbox helper (hidden
+    // `__br-sandbox` marker, Linux only), apply the in-process Landlock/seccomp
+    // restrictions and `execve` the target program. Never returns in that case;
+    // a normal invocation falls straight through. Must run before any real work.
+    biorouter_mcp::run_shell_sandbox_helper_if_invoked();
     tune_allocator();
     if let Err(e) = biorouter_cli::logging::setup_logging(None, None) {
         eprintln!("Warning: Failed to initialize logging: {}", e);

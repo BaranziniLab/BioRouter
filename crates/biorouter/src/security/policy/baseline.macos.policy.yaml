@@ -1,0 +1,71 @@
+# BioRouter macOS command-policy tier (BR-68).
+#
+# Cheap additions, since the machinery is identical: the destructive macOS-native
+# tools that the POSIX baseline does not name. `platforms: [macos]`.
+
+rules:
+  - id: macos_diskutil_erase
+    description: Erasing a disk or APFS container with diskutil
+    justification: >-
+      `diskutil eraseDisk` / `diskutil apfs deleteContainer` destroys every
+      volume on the target disk. Operate on a disk image instead.
+    decision: deny
+    priority: 900
+    platforms: [macos]
+    match:
+      binary: [diskutil]
+      arg_regex: '(?i)(erasedisk|erasevolume|apfs\s+(delete|erase)|reformat)'
+    tests:
+      matches:
+        - 'diskutil eraseDisk JHFS+ Untitled /dev/disk2'
+        - 'diskutil apfs deleteContainer disk2'
+      not_matches:
+        - 'diskutil list'
+        - 'diskutil info /'
+
+  - id: macos_rm_system
+    description: Deleting a macOS-specific system directory
+    justification: >-
+      Recursively deleting /System, /Library, or /Applications destroys the OS
+      install. (The generic Unix roots — /etc, /usr, … — are already covered by
+      baseline.rm_rf_system; this rule adds only the macOS-native roots, via
+      path_glob so it never shadows that rule.) Delete a project subfolder instead.
+    decision: deny
+    priority: 900
+    platforms: [macos]
+    match:
+      binary: [rm]
+      arg_regex: '(^|\s)-[a-zA-Z]*[rR]|--recursive'
+      path_glob:
+        - "/System"
+        - "/System/**"
+        - "/Library"
+        - "/Library/**"
+        - "/Applications"
+        - "/Applications/**"
+    tests:
+      matches:
+        - 'rm -rf /System'
+        - 'rm -rf /Library/LaunchDaemons'
+      not_matches:
+        - 'rm -rf ./build'
+        - 'rm -rf ~/Library/Caches/myapp'
+        - 'rm -rf /etc'
+
+  - id: macos_disable_sip
+    description: Disabling System Integrity Protection or Gatekeeper
+    justification: >-
+      `csrutil disable`, `spctl --master-disable`, and `nvram -c` weaken macOS
+      integrity/security protections. Confirm this is intended.
+    decision: ask
+    priority: 400
+    platforms: [macos]
+    match:
+      arg_regex: '(?i)(csrutil\s+disable|spctl\s+--master-disable|nvram\s+-c)'
+    tests:
+      matches:
+        - 'csrutil disable'
+        - 'sudo spctl --master-disable'
+      not_matches:
+        - 'csrutil status'
+        - 'spctl --status'

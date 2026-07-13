@@ -17,6 +17,8 @@ check-everything:
     ./scripts/check-openapi-schema.sh
     @echo "  → Checking CLI/daemon/GUI version consistency..."
     ./scripts/check-version-consistency.sh
+    @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
+    ./scripts/check-no-cross-drift.sh
     @echo ""
     @echo "✅ All style checks passed!"
 
@@ -34,95 +36,32 @@ release-binary:
     @echo "Generating OpenAPI schema..."
     cargo run -p biorouter-server --bin generate_schema
 
-# release-windows docker build command
-#
-# Two cross-compile fixes are required for the x86_64-pc-windows-gnu target:
-#  1. aws-lc-sys (pulled in via the AWS SDK / rustls) compiles its POSIX
-#     threading shim under mingw and references winpthread symbols
-#     (pthread_*). rustc places `-C link-arg=-l...` BEFORE the rlibs, so GNU
-#     ld discards the lib before it's needed. We wrap the linker so
-#     `-lpthread -lwinpthread` are appended AFTER everything else.
-#  2. lzma-sys (via xz2, used by the knowledge .brkb path) would otherwise
-#     find the HOST liblzma through pkg-config (PKG_CONFIG_ALLOW_CROSS) and
-#     emit an invalid dynamic link. LZMA_API_STATIC=1 forces it to compile
-#     its bundled liblzma C source statically — keeping the build
-#     self-contained (no liblzma DLL to ship).
-win_docker_build_sh := '''rustup target add x86_64-pc-windows-gnu && \
-	apt-get update && \
-	apt-get install -y mingw-w64 protobuf-compiler cmake && \
-	printf "#!/bin/sh\nexec x86_64-w64-mingw32-gcc \"\$@\" -lpthread -lwinpthread\n" > /usr/local/bin/winpthread-gcc && \
-	chmod +x /usr/local/bin/winpthread-gcc && \
-	export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc && \
-	export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ && \
-	export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar && \
-	export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=/usr/local/bin/winpthread-gcc && \
-	export LZMA_API_STATIC=1 && \
-	export PKG_CONFIG_ALLOW_CROSS=1 && \
-	export PROTOC=/usr/bin/protoc && \
-	export PATH=/usr/bin:\$PATH && \
-	protoc --version && \
-	cargo build --release --target x86_64-pc-windows-gnu --bin biorouterd --bin biorouter && \
-	GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1) && \
-	cp \$GCC_DIR/libstdc++-6.dll /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
-	cp \$GCC_DIR/libgcc_s_seh-1.dll /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
-	cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll /usr/src/myapp/target/x86_64-pc-windows-gnu/release/
-'''
-
-# Build Windows executable
+# Build Windows executable (x86_64-pc-windows-gnu) via Docker.
+# The cross recipe — mingw toolchain, the winpthread linker wrap, LZMA_API_STATIC
+# and the runtime-DLL staging — lives in scripts/cross-env.sh (one source of
+# truth, shared with scripts/release.sh and the BR-70 check-cross CI gate). This
+# is a Docker-based recipe; the release is cut on macOS/Linux with system docker.
 release-windows:
-    #!/usr/bin/env sh
-    if [ "$(uname)" = "Darwin" ] || [ "$(uname)" = "Linux" ]; then
-        echo "Building Windows executable using Docker..."
-        docker volume create biorouter-windows-cache || true
-        docker run --rm \
-            -v "$(pwd)":/usr/src/myapp \
-            -v biorouter-windows-cache:/usr/local/cargo/registry \
-            -w /usr/src/myapp \
-            rust:latest \
-            sh -c "{{win_docker_build_sh}}"
-    else
-        echo "Building Windows executable using Docker through PowerShell..."
-        powershell.exe -Command "docker volume create biorouter-windows-cache; \`
-            docker run --rm \`
-                -v ${PWD}:/usr/src/myapp \`
-                -v biorouter-windows-cache:/usr/local/cargo/registry \`
-                -w /usr/src/myapp \`
-                rust:latest \`
-                sh -c '{{win_docker_build_sh}}'"
-    fi
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/cross-env.sh
+    echo "Building Windows executable using Docker ($WIN_RUST_IMG)..."
+    cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
     echo "Windows executable and required DLLs created at ./target/x86_64-pc-windows-gnu/release/"
-
-# Linux x64 cross-compilation command (runs inside rust:latest Docker container)
-linux_docker_build_sh := '''rustup target add x86_64-unknown-linux-gnu && \
-	dpkg --add-architecture amd64 && \
-	apt-get update -q && \
-	apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64 && \
-	export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc && \
-	export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ && \
-	export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar && \
-	export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc && \
-	export LZMA_API_STATIC=1 && \
-	export PKG_CONFIG_ALLOW_CROSS=1 && \
-	export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig && \
-	export PROTOC=/usr/bin/protoc && \
-	cargo build --release --target x86_64-unknown-linux-gnu
-'''
 
 # Build Linux x64 .deb package for Ubuntu / Pop!_OS — requires Docker Desktop
 # Output: ui/desktop/out/make/deb/x64/BioRouter_<version>_amd64.deb
 # Note: src/bin/ will contain Linux x64 binaries after this build.
 # Run 'just copy-binary' afterward to restore macOS ARM binaries.
+# The Rust cross-compile uses scripts/cross-env.sh (pinned rust:1.92-bullseye,
+# glibc 2.31 floor) — the SAME recipe the release + check-cross gate use. This
+# recipe previously pinned `rust:latest`, silently raising the glibc floor.
 make-ui-linux:
-    #!/usr/bin/env sh
-    set -e
-    echo "Step 1/2: Cross-compiling Rust binaries for Linux x64 via Docker..."
-    docker volume create biorouter-linux-cache || true
-    docker run --rm \
-        -v "$(pwd)":/usr/src/myapp \
-        -v biorouter-linux-cache:/usr/local/cargo/registry \
-        -w /usr/src/myapp \
-        rust:latest \
-        sh -c "{{linux_docker_build_sh}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/cross-env.sh
+    echo "Step 1/2: Cross-compiling Rust binaries for Linux x64 via Docker ($LINUX_RUST_IMG)..."
+    cross_linux "cargo build --release"
     echo "Step 2/2: Packaging .deb via Docker (linux/amd64)..."
     docker volume create biorouter-linux-npm-cache || true
     docker run --rm \
@@ -134,6 +73,45 @@ make-ui-linux:
     echo ""
     echo "✓ .deb package: ui/desktop/out/make/deb/x64/"
     echo "  Run 'just copy-binary' to restore macOS ARM binaries in src/bin/."
+
+# ── Cross-platform compile gate (BR-70) ──────────────────────────────────────
+# Type-check the ENTIRE workspace — every crate, every target, INCLUDING
+# #[cfg(test)] code — for Windows and Linux, using the SAME docker images and
+# linker hacks as the release (both source scripts/cross-env.sh, so the gate can
+# never drift from what actually ships). `cargo check` (not build): it catches
+# cfg / target-dep mistakes and type errors in platform-gated code without
+# paying to link, and still runs build.rs (lzma-sys / aws-lc-sys / protoc). Link
+# errors are covered by the nightly `build-cross`. Needs Docker; deliberately
+# NOT part of `check-everything` (it takes minutes). Expect the Windows lane to
+# surface a backlog on first run — that backlog is the bug this gate exposes.
+check-cross: check-cross-linux check-cross-windows
+
+check-cross-linux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/cross-env.sh
+    echo "→ cargo check x86_64-unknown-linux-gnu ($LINUX_RUST_IMG, glibc floor $GLIBC_FLOOR)"
+    cross_linux "cargo check --workspace --all-targets --locked" \
+                "/usr/src/myapp/target/cross-check/linux"
+
+check-cross-windows:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/cross-env.sh
+    echo "→ cargo check x86_64-pc-windows-gnu ($WIN_RUST_IMG)"
+    cross_windows "cargo check --workspace --all-targets --locked" \
+                  "/usr/src/myapp/target/cross-check/windows"
+
+# Full cross BUILD of the shipped binaries — catches LINK errors (the aws-lc /
+# winpthread class) that `check` cannot, then asserts the glibc floor is intact.
+# Nightly in CI; run locally before a release.
+build-cross:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/cross-env.sh
+    cross_linux   "cargo build --release --bin biorouterd --bin biorouter"
+    cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
+    ./scripts/check-glibc-floor.sh
 
 # Build for Intel Mac
 release-intel:
