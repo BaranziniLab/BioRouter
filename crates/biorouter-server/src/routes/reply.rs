@@ -910,6 +910,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         turn_id: turn_id.map(str::to_string),
+                        reasoning_effort: None,
                     })
                     .unwrap(),
                 ))
