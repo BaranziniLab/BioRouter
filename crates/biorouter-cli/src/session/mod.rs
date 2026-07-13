@@ -968,6 +968,7 @@ impl CliSession {
             max_turns: self.max_turns,
             max_tool_calls: None,
             retry_config: self.retry_config.clone(),
+            reasoning_effort: None,
         };
         let user_message = self
             .messages

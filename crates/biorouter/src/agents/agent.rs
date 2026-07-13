@@ -12,6 +12,7 @@ use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
 use crate::action_required_manager::ActionRequiredManager;
+use crate::agents::effort::ReasoningEffort;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
@@ -215,6 +216,9 @@ pub struct Agent {
     /// its predecessor sets were constructed empty and never populated, so the
     /// read-only short-circuit was unreachable.
     pub(super) tool_risks: Arc<ToolRiskRegistry>,
+    /// BR-63: per-session sticky reasoning effort, set by `/effort`. A per-turn
+    /// effort on the `SessionConfig` (the GUI composer toggle) wins over it.
+    pub(super) efforts: crate::agents::effort::EffortRegistry,
 }
 
 #[derive(Clone, Debug)]
@@ -377,6 +381,7 @@ impl Agent {
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
             tool_risks,
+            efforts: Default::default(),
         }
     }
 
@@ -1377,6 +1382,67 @@ impl Agent {
         }
     }
 
+    /// BR-63: set the session's sticky reasoning effort (`/effort <level>`).
+    pub async fn set_reasoning_effort(&self, session_id: &str, effort: ReasoningEffort) {
+        self.efforts.set(session_id, effort).await;
+    }
+
+    /// The session's sticky reasoning effort, if `/effort` set one.
+    pub async fn reasoning_effort(&self, session_id: &str) -> ReasoningEffort {
+        self.efforts.get(session_id).await.unwrap_or_default()
+    }
+
+    /// Resolve the effort for one turn: an explicit per-turn effort on the
+    /// request (the GUI composer toggle) wins over the session's sticky
+    /// `/effort`, which in turn wins over the default (`Normal`, a no-op).
+    async fn resolve_effort(&self, session_config: &SessionConfig) -> ReasoningEffort {
+        match session_config.reasoning_effort {
+            Some(effort) => effort,
+            None => self.reasoning_effort(&session_config.id).await,
+        }
+    }
+
+    /// The effort-stamped provider to run this turn's completions through, or
+    /// `None` when the turn should just use the session's provider as it always
+    /// has (the default effort, or a provider the effort can't be applied to).
+    ///
+    /// `quick`/`deep` re-stamp the model config with the effort and rebuild the
+    /// provider around it, once per reply — the streaming path reads its model
+    /// config off the provider, so there is nowhere else to inject a per-turn
+    /// config.
+    ///
+    /// Failure is not fatal: an unreconstructible provider (a lead/worker
+    /// composite, a provider whose registry entry is gone) falls back to the
+    /// session's provider, which still gets the effort's exploration caps. That
+    /// is the "degrade gracefully" the proposal asks for.
+    async fn provider_with_effort(
+        &self,
+        effort: ReasoningEffort,
+    ) -> Result<Option<Arc<dyn Provider>>> {
+        if effort.is_default() {
+            return Ok(None);
+        }
+        let provider = self.provider().await?;
+        if provider.as_lead_worker().is_some() {
+            return Ok(None);
+        }
+
+        let model_config = effort.apply_to_model(provider.get_model_config());
+        match crate::providers::create(provider.get_name(), model_config).await {
+            Ok(rebuilt) => Ok(Some(rebuilt)),
+            Err(e) => {
+                warn!(
+                    "Reasoning effort '{}' not applied to provider '{}' ({}); \
+                     falling back to the session provider (exploration caps still apply)",
+                    effort.as_str(),
+                    provider.get_name(),
+                    e
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// Check if a tool is a frontend tool
     pub async fn is_frontend_tool(&self, name: &str) -> bool {
         self.frontend_tools.lock().await.contains_key(name)
@@ -2185,6 +2251,11 @@ impl Agent {
 
         let session_manager = self.config.session_manager.clone();
 
+        // BR-63: the turn's reasoning effort. `Normal` (the default) changes
+        // nothing: same provider object, same caps.
+        let effort = self.resolve_effort(&session_config).await;
+        let turn_provider = self.provider_with_effort(effort).await?;
+
         let working_dir = session.working_dir.clone();
         // BR-43: stable anchor for this turn's checkpoints — the `created`
         // timestamp of the last user message (the same key `truncate_conversation`
@@ -2207,18 +2278,25 @@ impl Agent {
                 CheckpointKind::PreStep,
             ).await;
             let mut turns_taken = 0u32;
-            let max_turns = session_config
-                .max_turns
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
-                .unwrap_or(DEFAULT_MAX_TURNS);
+            // BR-63: the effort scales the exploration budget — `quick` halves it
+            // (never below a usable floor, never above what the user configured),
+            // `deep` doubles it, `normal` leaves it exactly as configured.
+            let max_turns = effort.scale_turns(
+                session_config
+                    .max_turns
+                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                    .unwrap_or(DEFAULT_MAX_TURNS),
+            );
             // Cumulative tool calls dispatched this reply, across all iterations,
             // bounded by `max_tool_calls` so parallel fan-out can't run unbounded
             // even while `turns_taken` stays under `max_turns`.
             let mut tool_calls_taken = 0u32;
-            let max_tool_calls = session_config
-                .max_tool_calls
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
-                .unwrap_or(DEFAULT_MAX_TOOL_CALLS);
+            let max_tool_calls = effort.scale_tool_calls(
+                session_config
+                    .max_tool_calls
+                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
+                    .unwrap_or(DEFAULT_MAX_TOOL_CALLS),
+            );
             let mut compaction_attempts = 0;
             // Consecutive auto-continues of a length-truncated turn; reset on any
             // tool call (real progress). Bounds the continue-on-truncation guard.
@@ -2280,8 +2358,15 @@ impl Agent {
                     .assemble_turn_context(&session_config.id, &conversation, &working_dir)
                     .await;
 
+                // BR-63: the effort-stamped provider for this turn, or the
+                // session's provider when the effort is the default (unchanged
+                // behaviour, and it picks up a mid-session model switch).
+                let iteration_provider = match &turn_provider {
+                    Some(provider) => Arc::clone(provider),
+                    None => self.provider().await?,
+                };
                 let mut stream = Self::stream_response_from_provider(
-                    self.provider().await?,
+                    iteration_provider,
                     &system_prompt,
                     conversation_with_moim.messages(),
                     &tools,

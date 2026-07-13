@@ -669,7 +669,7 @@ pub fn create_request(
             || model_config.model_name.starts_with("gpt-5"));
 
     // Only extract reasoning effort for O-series models
-    let (model_name, reasoning_effort) = if is_ox_model {
+    let (model_name, mut reasoning_effort) = if is_ox_model {
         let parts: Vec<&str> = model_config.model_name.split('-').collect();
         let last_part = parts.last().unwrap();
 
@@ -687,6 +687,18 @@ pub fn create_request(
         // For non-O family models, use the model name as is and no reasoning effort
         (model_config.model_name.to_string(), None)
     };
+
+    // BR-63: an explicit per-turn effort (quick/deep) outranks the effort implied
+    // by the model name, but only for models that actually accept the parameter —
+    // sending `reasoning_effort` to a non-reasoning model is a 400.
+    if is_ox_model {
+        if let Some(effort) = model_config
+            .reasoning_effort
+            .and_then(|effort| effort.provider_effort())
+        {
+            reasoning_effort = Some(effort.to_string());
+        }
+    }
 
     let system_message = json!({
         "role": if is_ox_model { "developer" } else { "system" },
@@ -745,6 +757,7 @@ pub fn create_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::effort::ReasoningEffort;
     use crate::conversation::message::Message;
     use rmcp::model::CallToolResult;
     use rmcp::object;
@@ -1324,6 +1337,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(
             &model_config,
@@ -1364,6 +1378,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(
             &model_config,
@@ -1404,6 +1419,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(
             &model_config,
@@ -1446,6 +1462,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(
             &model_config,
@@ -1472,6 +1489,77 @@ mod tests {
             assert_eq!(obj.get(key).unwrap(), value);
         }
 
+        Ok(())
+    }
+
+    // BR-63: an explicit per-turn effort outranks the effort implied by the
+    // model name, and is never sent to a model that can't take it.
+    #[test]
+    fn test_create_request_explicit_effort_overrides_model_name_suffix() -> anyhow::Result<()> {
+        let model_config = ModelConfig::new_or_fail("o3-mini-high")
+            .with_reasoning_effort(Some(ReasoningEffort::Quick));
+
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        let obj = request.as_object().unwrap();
+        assert_eq!(obj.get("model").unwrap(), "o3-mini");
+        assert_eq!(obj.get("reasoning_effort").unwrap(), "low");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_deep_effort_asks_for_high_reasoning() -> anyhow::Result<()> {
+        let model_config =
+            ModelConfig::new_or_fail("o3-mini").with_reasoning_effort(Some(ReasoningEffort::Deep));
+
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        assert_eq!(
+            request
+                .as_object()
+                .unwrap()
+                .get("reasoning_effort")
+                .unwrap(),
+            "high"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_effort_not_sent_to_non_reasoning_model() -> anyhow::Result<()> {
+        // gpt-4o rejects `reasoning_effort` outright — the effort must degrade
+        // to a no-op on the request rather than 400 the turn.
+        let model_config =
+            ModelConfig::new_or_fail("gpt-4o").with_reasoning_effort(Some(ReasoningEffort::Deep));
+
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        assert!(request
+            .as_object()
+            .unwrap()
+            .get("reasoning_effort")
+            .is_none());
         Ok(())
     }
 

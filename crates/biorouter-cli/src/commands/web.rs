@@ -596,6 +596,7 @@ async fn process_message_streaming(
         max_turns: None,
         max_tool_calls: None,
         retry_config: None,
+        reasoning_effort: None,
     };
 
     match agent.reply(user_message, session_config, None).await {

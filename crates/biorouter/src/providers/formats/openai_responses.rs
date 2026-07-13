@@ -427,6 +427,19 @@ pub fn create_responses_request(
             .insert("max_output_tokens".to_string(), json!(tokens));
     }
 
+    // BR-63: the Responses API takes the effort as `reasoning.effort`, not the
+    // chat-completions top-level `reasoning_effort`. Omitted entirely unless the
+    // turn pinned an effort, so the model's own default is untouched.
+    if let Some(effort) = model_config
+        .reasoning_effort
+        .and_then(|effort| effort.provider_effort())
+    {
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("reasoning".to_string(), json!({ "effort": effort }));
+    }
+
     Ok(payload)
 }
 
@@ -713,5 +726,60 @@ where
         } else if let Some(usage) = final_usage {
             yield (None, Some(usage));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::effort::ReasoningEffort;
+
+    // BR-63: the Responses API takes the effort nested under `reasoning`, not as
+    // the chat-completions top-level `reasoning_effort` key.
+    #[test]
+    fn deep_effort_sets_reasoning_effort_high() -> anyhow::Result<()> {
+        let model_config =
+            ModelConfig::new_or_fail("gpt-5.5").with_reasoning_effort(Some(ReasoningEffort::Deep));
+
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert_eq!(payload["reasoning"]["effort"], json!("high"));
+        Ok(())
+    }
+
+    #[test]
+    fn quick_effort_sets_reasoning_effort_low() -> anyhow::Result<()> {
+        let model_config =
+            ModelConfig::new_or_fail("gpt-5.5").with_reasoning_effort(Some(ReasoningEffort::Quick));
+
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert_eq!(payload["reasoning"]["effort"], json!("low"));
+        Ok(())
+    }
+
+    #[test]
+    fn no_effort_leaves_the_request_untouched() -> anyhow::Result<()> {
+        let model_config = ModelConfig::new_or_fail("gpt-5.5");
+
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert!(payload.get("reasoning").is_none());
+        Ok(())
     }
 }

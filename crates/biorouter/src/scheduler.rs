@@ -887,6 +887,7 @@ async fn execute_job(
         max_turns: None,
         max_tool_calls: None,
         retry_config: None,
+        reasoning_effort: None,
     };
 
     let session_id = session_config.id.clone();

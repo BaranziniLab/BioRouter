@@ -1087,6 +1087,7 @@ mod tests {
                     toolshim_model: None,
                     fast_model: None,
                     request_params: None,
+                    reasoning_effort: None,
                 },
                 max_tool_responses: None,
                 max_input_chars: None,
@@ -1849,6 +1850,7 @@ mod tests {
             max_turns: None,
             max_tool_calls: None,
             retry_config: None,
+            reasoning_effort: None,
         }
     }
 

@@ -139,6 +139,7 @@ export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restor
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
+    reasoning_effort?: ReasoningEffort | null;
     session_id: string;
     user_message: Message;
     workflow_name?: string | null;
@@ -939,6 +940,7 @@ export type ModelConfig = {
     fast_model?: string | null;
     max_tokens?: number | null;
     model_name: string;
+    reasoning_effort?: ReasoningEffort | null;
     /**
      * Provider-specific request parameters (e.g., anthropic_beta headers)
      */
@@ -1181,6 +1183,11 @@ export type ReadResourceResponse = {
     text: string;
     uri: string;
 };
+
+/**
+ * How hard the agent should think this turn.
+ */
+export type ReasoningEffort = 'quick' | 'normal' | 'deep';
 
 export type RedactedThinkingContent = {
     data: string;

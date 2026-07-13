@@ -512,6 +512,7 @@ async fn drive_response(
         max_turns: session.max_turns,
         max_tool_calls: None,
         retry_config: session.retry_config.clone(),
+        reasoning_effort: None,
     };
     let debug = session.debug;
     let cancel = CancellationToken::new();
