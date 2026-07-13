@@ -19,6 +19,9 @@ pub mod mcp_client;
 pub mod mistakes;
 pub mod moim;
 pub mod platform_tools;
+// BR-47: auto post-edit diagnostics — the config gate, write-detection, and
+// corrective-context formatting for the edit->check->fix reflection loop.
+pub mod post_edit_diagnostics;
 pub mod prompt_manager;
 mod recurring;
 // BR-12: `pub(crate)` so `context_mgmt::run_eager_compaction` can reuse
