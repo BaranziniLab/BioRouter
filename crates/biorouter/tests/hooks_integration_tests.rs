@@ -28,13 +28,21 @@ fn manager_from_yaml(yaml: &str) -> Arc<HooksManager> {
 }
 
 fn tool_request(id: &str, name: &str) -> biorouter::conversation::message::ToolRequest {
+    tool_request_with(id, name, object!({"command": "echo hi"}))
+}
+
+fn tool_request_with(
+    id: &str,
+    name: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> biorouter::conversation::message::ToolRequest {
     let message = Message::assistant().with_tool_request(
         id,
         Ok(CallToolRequestParams {
             task: None,
             meta: None,
             name: name.to_string().into(),
-            arguments: Some(object!({"command": "echo hi"})),
+            arguments: Some(arguments),
         }),
     );
     message
@@ -319,4 +327,55 @@ UserPromptSubmit:
         allowed.joined_context().as_deref(),
         Some("lab context: BSL-2 protocols apply")
     );
+}
+
+/// BR-27: a group scoped by `input_matcher` only fires on tool calls whose
+/// arguments match, so the guard costs nothing on the other 99% of shell calls.
+#[tokio::test]
+async fn input_matcher_gates_the_inspector_on_tool_arguments() {
+    let manager = manager_from_yaml(
+        r#"
+PreToolUse:
+  - matcher: "developer__shell"
+    input_matcher:
+      command: "rm\\s+-rf"
+    hooks:
+      - type: command
+        command: "echo 'recursive delete blocked' >&2; exit 2"
+"#,
+    );
+    let inspector = HookInspector::new(manager);
+
+    let results = inspector
+        .inspect(
+            &[tool_request_with(
+                "req_1",
+                "developer__shell",
+                object!({"command": "rm -rf /tmp/scratch"}),
+            )],
+            &[],
+            BioRouterMode::Approve,
+            &Session::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].action, InspectionAction::Deny);
+    assert_eq!(results[0].reason, "recursive delete blocked");
+
+    // Same tool, benign arguments: the guard never runs.
+    let results = inspector
+        .inspect(
+            &[tool_request_with(
+                "req_2",
+                "developer__shell",
+                object!({"command": "ls -la"}),
+            )],
+            &[],
+            BioRouterMode::Approve,
+            &Session::default(),
+        )
+        .await
+        .unwrap();
+    assert!(results.is_empty());
 }

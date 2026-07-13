@@ -5,6 +5,7 @@ mod agent;
 pub mod budget;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod code_execution_extension;
+pub mod effort;
 pub mod execute_commands;
 pub mod extension;
 pub mod extension_malware_check;
@@ -44,6 +45,7 @@ pub mod workspace_summary;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
 pub use budget::ReplyBudget;
+pub use effort::ReasoningEffort;
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};

@@ -4,6 +4,7 @@ import PermissionModal from './settings/permission/PermissionModal';
 import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
+import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
 
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
@@ -22,6 +23,11 @@ const toolConfirmationState = new Map<
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 
+/** `developer__text_editor` → `Text Editor`. */
+function friendlyToolName(toolName: string): string {
+  return snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2));
+}
+
 interface ToolConfirmationProps {
   sessionId: string;
   isCancelledMessage: boolean;
@@ -36,7 +42,10 @@ export default function ToolConfirmation({
   actionRequiredContent,
 }: ToolConfirmationProps) {
   const data = actionRequiredContent.data as ToolConfirmationData;
-  const { id: toolConfirmationId, toolName, prompt } = data;
+  // BR-63: `risk` and `preview` are optional — a confirmation persisted before
+  // BR-63, or replayed from an older daemon, simply has neither and the card
+  // degrades to its pre-BR-63 shape rather than breaking.
+  const { id: toolConfirmationId, toolName, prompt, risk, preview } = data;
 
   // Check if we have a stored state for this tool confirmation
   const storedState = toolConfirmationState.get(toolConfirmationId);
@@ -155,7 +164,7 @@ export default function ToolConfirmation({
               <span>
                 {isClicked
                   ? 'Tool confirmation is not available'
-                  : `${snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2))} is ${actionDisplay}`}
+                  : `${friendlyToolName(toolName)} is ${actionDisplay}`}
               </span>
             </div>
             <button
@@ -170,14 +179,22 @@ export default function ToolConfirmation({
         ) : (
           // Pending state — the agent is asking the user for permission.
           <div className="px-4 py-3">
-            <div className="mb-3 flex items-center gap-2">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
               <Lock className="h-4 w-4 shrink-0 text-text-muted" />
               <span className="text-sm font-medium text-text-default">
-                {prompt
-                  ? 'Do you allow this tool call?'
-                  : 'BioRouter wants to run this tool. Allow?'}
+                {/* Name the tool. "this tool" told the user nothing. */}
+                Run <span className="font-mono">{friendlyToolName(toolName)}</span>?
               </span>
+              {risk && <ToolRiskBadge risk={risk} />}
             </div>
+
+            {/* BR-63: the whole point — what the call will actually do. */}
+            {preview && (
+              <div className="mb-3">
+                <ToolCallPreview preview={preview} />
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" variant="default" onClick={() => handleButtonClick(ALLOW_ONCE)}>
                 Allow Once

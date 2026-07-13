@@ -33,6 +33,7 @@ import {
 import { getToolResponses } from '../types/message';
 import { errorMessage } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
+import { reasoningEffortForRequest } from '../store/reasoningEffort';
 
 const openedAppUrls = new Set<string>();
 
@@ -537,6 +538,9 @@ class ChatStreamController {
         body: {
           session_id: this.sessionId,
           user_message: newMessage,
+          // BR-63: the composer's per-turn reasoning effort. Omitted on the
+          // default ('normal'), so a session-level `/effort` still applies.
+          reasoning_effort: reasoningEffortForRequest(),
         },
         throwOnError: true,
         signal: this.abortController.signal,

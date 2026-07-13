@@ -18,17 +18,19 @@ pub mod matcher;
 pub mod outcome;
 pub mod prompt_runner;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 pub use config::{HookDefinition, HookMatcherGroup, HooksConfig};
 pub use event::{HookEvent, HookPayload};
-pub use inspector::HookInspector;
+pub use inspector::{apply_tool_input_rewrites, HookInspector};
+pub use matcher::InputMatcher;
 pub use outcome::{HookAggregate, HookDecision, HookOutcome};
 
 use crate::agents::types::SharedProvider;
@@ -43,6 +45,73 @@ pub const DEFAULT_PROMPT_TIMEOUT_SECS: u64 = 30;
 /// Maximum consecutive Stop-hook blocks per session before Biorouter
 /// overrides the hook and stops anyway.
 pub const STOP_HOOK_BLOCK_CAP: u32 = 5;
+
+/// BR-19: maximum consecutive PostToolUse blocks honored per session before
+/// Biorouter overrides the hook and delivers the tool result anyway. A
+/// PostToolUse block feeds a correction back to the model, which will typically
+/// retry the tool — a hook that blocks unconditionally would otherwise wedge
+/// the turn in a retry loop. Same shape as [`STOP_HOOK_BLOCK_CAP`], smaller
+/// because each block costs a full tool round trip.
+pub const POST_TOOL_HOOK_BLOCK_CAP: u32 = 3;
+
+/// BR-19: cap on staged tool-hook effects held per session. Bounded for the
+/// same reason as [`MAX_FIRED_OUTCOMES`]: a caller that never drains (a turn
+/// cancelled between the inspector and the injection point) must not grow the
+/// buffer without bound. Oldest entries are dropped.
+const MAX_STAGED_TOOL_HOOKS: usize = 64;
+
+/// BR-28: how long a turn boundary waits for still-running observe-only hook
+/// tasks ([`HooksManager::fire`]) before giving up *on this boundary*. Kept
+/// small on purpose — settling must never stall the agent loop behind a slow
+/// Notification / compaction hook. Unfinished tasks stay registered and are
+/// re-joined at the next boundary (nothing is aborted; each hook's own timeout
+/// still bounds how long it can run).
+pub const FIRE_JOIN_BUDGET: Duration = Duration::from_millis(250);
+
+/// BR-28: budget for a shutdown-style join (session end), where waiting for a
+/// hook to finish is the point rather than an interruption.
+pub const FIRE_JOIN_BUDGET_SHUTDOWN: Duration = Duration::from_secs(5);
+
+/// BR-28: cap on captured `fire()` aggregates held in memory. A session that
+/// never settles (e.g. a subagent that exits before its start hook returns)
+/// must not grow the buffer without bound; the oldest entry is dropped.
+const MAX_FIRED_OUTCOMES: usize = 64;
+
+/// BR-28: the aggregate of an observe-only hook event dispatched via
+/// [`HooksManager::fire`] — Notification, SubagentStart/Stop, Pre/PostCompact.
+///
+/// These used to be spawned detached with the whole [`HookAggregate`] dropped
+/// on the floor, so a `systemMessage` was invisible, a failing hook untraceable,
+/// and there was no way to know a compaction/subagent hook had even run. The
+/// aggregate is now captured here and drained by the caller at a turn or
+/// shutdown boundary via [`HooksManager::settle_fired`].
+#[derive(Debug, Clone)]
+pub struct FiredHookOutcome {
+    pub event: HookEvent,
+    pub session_id: String,
+    pub aggregate: HookAggregate,
+}
+
+/// BR-19: the non-decision effects of a PreToolUse / PermissionRequest hook,
+/// staged at the hook's call site (the [`HookInspector`], the permission gate in
+/// `agents::tool_execution`) for the agent loop to apply on the tool path.
+///
+/// Both call sites used to read only `aggregate.decision`, so a hook's
+/// `updatedInput`, `additionalContext` and `systemMessage` were silently
+/// discarded. They are staged here instead: the rewrite is taken *before*
+/// dispatch (`take_tool_input_rewrites`), the context/messages at the turn's
+/// injection point (`drain_tool_hook_context`).
+#[derive(Debug, Clone)]
+pub struct StagedToolHook {
+    pub event: HookEvent,
+    pub tool_request_id: String,
+    pub tool_name: String,
+    /// Rewritten tool arguments to apply before dispatch (PreToolUse only).
+    /// Taken out by [`HooksManager::take_tool_input_rewrites`].
+    pub updated_input: Option<serde_json::Value>,
+    pub additional_context: Vec<String>,
+    pub system_messages: Vec<String>,
+}
 
 /// Result of consulting Stop hooks at turn exit.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +140,24 @@ pub struct HooksManager {
     /// cannot be disabled; a managed `allow_project_hooks` override wins over
     /// the user/env opt-in. Inert when no managed file is present.
     managed: Arc<ManagedPolicy>,
+    /// BR-28: detached `fire()` tasks still in flight, so a turn/shutdown
+    /// boundary can join them instead of letting them outlive the turn and race
+    /// process shutdown. `std::sync::Mutex` (never held across an await) so the
+    /// synchronous `fire()` can register a handle without blocking.
+    pending_fires: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    /// BR-28: aggregates captured from finished `fire()` tasks, awaiting a
+    /// [`Self::settle_fired`] drain by the owning session. Bounded by
+    /// [`MAX_FIRED_OUTCOMES`].
+    fired: std::sync::Mutex<VecDeque<FiredHookOutcome>>,
+    /// BR-19: consecutive honored PostToolUse blocks per session, capped by
+    /// [`POST_TOOL_HOOK_BLOCK_CAP`] so a hook that always blocks cannot wedge
+    /// the turn (same pattern as `stop_blocks`).
+    post_tool_blocks: Mutex<HashMap<String, u32>>,
+    /// BR-19: tool-path hook effects staged by the inspector / permission gate,
+    /// keyed by session id. Bounded by [`MAX_STAGED_TOOL_HOOKS`].
+    /// `std::sync::Mutex` (never held across an await) so the staging call sites
+    /// stay synchronous.
+    staged_tool_hooks: std::sync::Mutex<HashMap<String, VecDeque<StagedToolHook>>>,
 }
 
 impl HooksManager {
@@ -125,6 +212,10 @@ impl HooksManager {
             stop_blocks: Mutex::new(HashMap::new()),
             session_hooks: RwLock::new(HashMap::new()),
             managed,
+            pending_fires: std::sync::Mutex::new(Vec::new()),
+            fired: std::sync::Mutex::new(VecDeque::new()),
+            post_tool_blocks: Mutex::new(HashMap::new()),
+            staged_tool_hooks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -229,6 +320,11 @@ impl HooksManager {
     }
 
     /// Cheap check whether any hook could run for this event + matcher key.
+    ///
+    /// Name-matcher only: a group's `input_matcher` (BR-27) is *not* evaluated
+    /// here because the tool input is not available at the gate. This
+    /// deliberately over-approximates — `dispatch` applies the input matcher
+    /// and may then run nothing — so an input-matched hook is never gated out.
     pub async fn has_hooks(
         &self,
         event: HookEvent,
@@ -258,12 +354,10 @@ impl HooksManager {
         working_dir: &Path,
     ) -> HookAggregate {
         let groups = self.resolved_groups(event, working_dir).await;
+        let tool_input = payload.tool_input.as_ref();
         let mut definitions: Vec<HookDefinition> = groups
             .iter()
-            .filter(|group| match matcher_key {
-                Some(key) => matcher::matcher_matches(group.matcher.as_deref(), key),
-                None => true,
-            })
+            .filter(|group| group.matches(matcher_key, tool_input))
             .flat_map(|group| group.hooks.iter().cloned())
             .collect();
 
@@ -294,8 +388,15 @@ impl HooksManager {
         aggregate
     }
 
-    /// Fire-and-forget dispatch for observe-only events; never blocks the
-    /// agent loop.
+    /// Detached dispatch for observe-only events; never blocks the agent loop.
+    ///
+    /// BR-28: the spawned task's [`HookAggregate`] is no longer discarded — it
+    /// is captured (when it carries anything: a system message, injected
+    /// context, a decision, or an error) and the task handle is registered so a
+    /// turn or shutdown boundary can join it via [`Self::settle_fired`]. Callers
+    /// therefore *can* act on the combined outcome of a Notification /
+    /// SubagentStart|Stop / Pre|PostCompact hook, and these tasks no longer
+    /// silently outlive the turn.
     pub fn fire(
         self: &Arc<Self>,
         event: HookEvent,
@@ -304,11 +405,207 @@ impl HooksManager {
         working_dir: PathBuf,
     ) {
         let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            manager
+        let session_id = payload.session_id.clone();
+        let handle = tokio::spawn(async move {
+            let aggregate = manager
                 .dispatch(event, matcher_key.as_deref(), &payload, &working_dir)
                 .await;
+            if aggregate.is_empty() {
+                return;
+            }
+            manager.record_fired(FiredHookOutcome {
+                event,
+                session_id,
+                aggregate,
+            });
         });
+        let mut pending = self
+            .pending_fires
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.retain(|handle| !handle.is_finished());
+        pending.push(handle);
+    }
+
+    fn record_fired(&self, outcome: FiredHookOutcome) {
+        let mut fired = self.fired.lock().unwrap_or_else(PoisonError::into_inner);
+        while fired.len() >= MAX_FIRED_OUTCOMES {
+            fired.pop_front();
+        }
+        fired.push_back(outcome);
+    }
+
+    /// BR-28: join outstanding [`Self::fire`] tasks, waiting at most `budget`.
+    /// Returns how many finished. Nothing is aborted — a task that misses the
+    /// budget stays registered and is re-joined at the next boundary, so a slow
+    /// hook delays only its own observability, never the agent loop.
+    pub async fn join_fired(&self, budget: Duration) -> usize {
+        let handles: Vec<JoinHandle<()>> = {
+            let mut pending = self
+                .pending_fires
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *pending)
+        };
+        if handles.is_empty() {
+            return 0;
+        }
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut joined = 0usize;
+        let mut unfinished = Vec::new();
+        for mut handle in handles {
+            match tokio::time::timeout_at(deadline, &mut handle).await {
+                Ok(Ok(())) => joined += 1,
+                Ok(Err(e)) => {
+                    warn!("hooks: fired hook task failed: {e}");
+                    joined += 1;
+                }
+                Err(_) => unfinished.push(handle),
+            }
+        }
+        if !unfinished.is_empty() {
+            debug!(
+                "hooks: {} fired hook task(s) still running past the {:?} join budget",
+                unfinished.len(),
+                budget
+            );
+            self.pending_fires
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(unfinished);
+        }
+        joined
+    }
+
+    /// BR-28: take the captured aggregates of the observe-only hooks fired for
+    /// `session_id`. Other sessions' outcomes are left in place.
+    pub fn drain_fired(&self, session_id: &str) -> Vec<FiredHookOutcome> {
+        let mut fired = self.fired.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(fired.len());
+        while let Some(outcome) = fired.pop_front() {
+            if outcome.session_id == session_id {
+                taken.push(outcome);
+            } else {
+                kept.push_back(outcome);
+            }
+        }
+        *fired = kept;
+        taken
+    }
+
+    /// BR-28: the turn/shutdown-boundary call — join what has finished (bounded
+    /// by `budget`) and hand back this session's captured aggregates so the
+    /// caller can surface their `systemMessage`s and errors.
+    pub async fn settle_fired(&self, session_id: &str, budget: Duration) -> Vec<FiredHookOutcome> {
+        self.join_fired(budget).await;
+        self.drain_fired(session_id)
+    }
+
+    /// Number of `fire()` tasks still registered as in flight (observability).
+    pub fn pending_fire_count(&self) -> usize {
+        self.pending_fires
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    // ---- BR-19: tool-path hook effects (rewrite + context) ----
+
+    /// BR-19: stage a tool-path hook's non-decision effects for the agent loop.
+    /// Called by the [`HookInspector`] (PreToolUse) and the permission gate
+    /// (PermissionRequest), whose own return channels can only carry a decision.
+    pub fn stage_tool_hook(&self, session_id: &str, staged: StagedToolHook) {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = buffer.entry(session_id.to_string()).or_default();
+        while entry.len() >= MAX_STAGED_TOOL_HOOKS {
+            entry.pop_front();
+        }
+        entry.push_back(staged);
+    }
+
+    /// BR-19: take the input rewrites staged for `session_id`, as
+    /// `tool_request_id -> new arguments`. Destructive for the rewrite only —
+    /// the staged context/system messages stay queued for
+    /// [`Self::drain_tool_hook_context`] at the turn's injection point, which
+    /// runs later (after the permission gate has staged its own).
+    pub fn take_tool_input_rewrites(&self, session_id: &str) -> HashMap<String, serde_json::Value> {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(entries) = buffer.get_mut(session_id) else {
+            return HashMap::new();
+        };
+        let mut rewrites = HashMap::new();
+        for entry in entries.iter_mut() {
+            if let Some(input) = entry.updated_input.take() {
+                rewrites.insert(entry.tool_request_id.clone(), input);
+            }
+        }
+        rewrites
+    }
+
+    /// BR-19: drain the staged tool-path hook effects for `session_id` so the
+    /// turn can inject their `additionalContext` (as framed hook context) and
+    /// surface their `systemMessage`s.
+    pub fn drain_tool_hook_context(&self, session_id: &str) -> Vec<StagedToolHook> {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        buffer
+            .remove(session_id)
+            .map(|entries| entries.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// BR-19: drop any tool-path hook effects still staged for `session_id`
+    /// (a turn cancelled between the inspector and the injection point), so a
+    /// fresh prompt does not inherit context about an aborted tool call.
+    pub fn clear_staged_tool_hooks(&self, session_id: &str) {
+        self.staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session_id);
+    }
+
+    /// BR-19: record a honored PostToolUse block for `session_id`. Returns
+    /// `true` while the block should be honored and `false` once
+    /// [`POST_TOOL_HOOK_BLOCK_CAP`] consecutive blocks have been honored — at
+    /// which point the result is delivered anyway, so a hook that blocks
+    /// unconditionally cannot trap the turn in a retry loop.
+    pub async fn note_post_tool_block(&self, session_id: &str) -> bool {
+        let mut blocks = self.post_tool_blocks.lock().await;
+        let count = blocks.entry(session_id.to_string()).or_insert(0);
+        if *count >= POST_TOOL_HOOK_BLOCK_CAP {
+            warn!(
+                "hooks: PostToolUse block cap ({}) reached for session {}; delivering the tool result anyway",
+                POST_TOOL_HOOK_BLOCK_CAP, session_id
+            );
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// BR-19: reset the consecutive PostToolUse-block counter (a tool result
+    /// made it through unblocked).
+    pub async fn reset_post_tool_blocks(&self, session_id: &str) {
+        self.post_tool_blocks.lock().await.remove(session_id);
+    }
+
+    /// Consecutive PostToolUse blocks honored for a session (observability).
+    pub async fn post_tool_block_count(&self, session_id: &str) -> u32 {
+        self.post_tool_blocks
+            .lock()
+            .await
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     async fn run_one(
@@ -626,6 +923,359 @@ PreToolUse:
             )
             .await;
         assert!(aggregate.decision.is_none());
+    }
+
+    // ---- BR-28: fire() aggregates are captured, not dropped ----
+
+    fn notification_payload(session_id: &str) -> HookPayload {
+        let mut payload = HookPayload::new(HookEvent::Notification, session_id, "/tmp");
+        payload.message = Some("Permission required for developer__shell".to_string());
+        payload
+    }
+
+    /// The whole point of BR-28: a `systemMessage` (and an error) from an
+    /// observe-only, `fire`d event survives to the caller instead of being
+    /// dropped with the detached task's aggregate.
+    #[tokio::test]
+    async fn fired_hook_aggregate_is_captured_and_settled() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"guard script ran\"}'"
+      - type: command
+        command: "definitely-not-a-real-binary-biorouter"
+"#,
+        );
+
+        manager.fire(
+            HookEvent::Notification,
+            Some("permission_prompt".to_string()),
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+
+        let settled = manager.settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(settled.len(), 1);
+        let outcome = &settled[0];
+        assert_eq!(outcome.event, HookEvent::Notification);
+        assert_eq!(outcome.session_id, "s1");
+        assert_eq!(
+            outcome.aggregate.system_messages,
+            vec!["guard script ran".to_string()]
+        );
+        assert!(
+            !outcome.aggregate.errors.is_empty(),
+            "the failing hook's error must reach the caller too"
+        );
+        // Draining is destructive: the boundary consumed it.
+        assert!(manager
+            .settle_fired("s1", FIRE_JOIN_BUDGET)
+            .await
+            .is_empty());
+    }
+
+    /// Joining at a turn boundary is what stops a fired hook from outliving the
+    /// turn, and a settled task is no longer registered as pending.
+    #[tokio::test]
+    async fn join_fired_awaits_outstanding_tasks() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"done\"}'"
+"#,
+        );
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+        assert_eq!(manager.pending_fire_count(), 1);
+
+        assert_eq!(manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await, 1);
+        assert_eq!(manager.pending_fire_count(), 0);
+        assert_eq!(manager.drain_fired("s1").len(), 1);
+    }
+
+    /// A slow hook must not stall the boundary: the join gives up on its budget,
+    /// keeps the task registered, and the next boundary picks the outcome up.
+    #[tokio::test]
+    async fn slow_fired_hook_misses_its_budget_and_settles_later() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "sleep 0.4; echo '{\"systemMessage\":\"late but not lost\"}'"
+"#,
+        );
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+
+        // First boundary: the hook is still running, so nothing is surfaced —
+        // but the task is neither aborted nor forgotten.
+        let early = manager.settle_fired("s1", Duration::from_millis(20)).await;
+        assert!(early.is_empty());
+        assert_eq!(manager.pending_fire_count(), 1);
+
+        // A later boundary with a real budget settles it.
+        let settled = manager.settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(
+            settled
+                .iter()
+                .flat_map(|o| o.aggregate.system_messages.clone())
+                .collect::<Vec<_>>(),
+            vec!["late but not lost".to_string()]
+        );
+    }
+
+    /// Outcomes are drained per session, so one session's turn boundary cannot
+    /// swallow another's hook output (a `HooksManager` is shared across sessions).
+    #[tokio::test]
+    async fn fired_outcomes_drain_per_session() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"ping\"}'"
+"#,
+        );
+        for session in ["s1", "s2"] {
+            manager.fire(
+                HookEvent::Notification,
+                None,
+                notification_payload(session),
+                PathBuf::from("/tmp"),
+            );
+        }
+        manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
+
+        assert_eq!(manager.drain_fired("s1").len(), 1);
+        assert!(manager.drain_fired("s1").is_empty());
+        assert_eq!(manager.drain_fired("s2").len(), 1);
+    }
+
+    /// With no matching hook there is nothing to act on, so nothing is buffered
+    /// — the common path stays allocation-free for the caller.
+    #[tokio::test]
+    async fn fire_with_no_matching_hook_buffers_nothing() {
+        let manager = manager_with_yaml("{}");
+        manager.fire(
+            HookEvent::Notification,
+            None,
+            notification_payload("s1"),
+            PathBuf::from("/tmp"),
+        );
+        assert!(manager
+            .settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN)
+            .await
+            .is_empty());
+    }
+
+    // ---- BR-19: staged tool-hook effects + PostToolUse block cap ----
+
+    fn staged(session_rewrite: Option<serde_json::Value>) -> StagedToolHook {
+        StagedToolHook {
+            event: HookEvent::PreToolUse,
+            tool_request_id: "call_1".to_string(),
+            tool_name: "developer__shell".to_string(),
+            updated_input: session_rewrite,
+            additional_context: vec!["the path was sandboxed".to_string()],
+            system_messages: vec!["sandboxed a write".to_string()],
+        }
+    }
+
+    /// The rewrite is taken *before* dispatch and the context *after* the
+    /// permission gate has run, so taking one must not consume the other.
+    #[test]
+    fn taking_the_rewrite_leaves_the_context_for_the_later_drain() {
+        let manager = manager_with_yaml("{}");
+        manager.stage_tool_hook("s1", staged(Some(serde_json::json!({"path": "./safe"}))));
+
+        let rewrites = manager.take_tool_input_rewrites("s1");
+        assert_eq!(
+            rewrites.get("call_1"),
+            Some(&serde_json::json!({"path": "./safe"}))
+        );
+        // Taken once: a second take must not re-apply the same rewrite.
+        assert!(manager.take_tool_input_rewrites("s1").is_empty());
+
+        let drained = manager.drain_tool_hook_context("s1");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(
+            drained[0].additional_context,
+            vec!["the path was sandboxed"]
+        );
+        assert_eq!(drained[0].system_messages, vec!["sandboxed a write"]);
+        assert!(manager.drain_tool_hook_context("s1").is_empty());
+    }
+
+    /// A `HooksManager` is shared across sessions: one turn's drain must not
+    /// swallow another session's staged effects.
+    #[test]
+    fn staged_effects_are_scoped_per_session() {
+        let manager = manager_with_yaml("{}");
+        manager.stage_tool_hook("s1", staged(None));
+        manager.stage_tool_hook("s2", staged(None));
+        assert_eq!(manager.drain_tool_hook_context("s1").len(), 1);
+        assert_eq!(manager.drain_tool_hook_context("s2").len(), 1);
+    }
+
+    /// A turn cancelled between staging and the drain must not grow the buffer
+    /// without bound.
+    #[test]
+    fn staged_effects_are_bounded() {
+        let manager = manager_with_yaml("{}");
+        for _ in 0..(MAX_STAGED_TOOL_HOOKS + 10) {
+            manager.stage_tool_hook("s1", staged(None));
+        }
+        assert_eq!(
+            manager.drain_tool_hook_context("s1").len(),
+            MAX_STAGED_TOOL_HOOKS
+        );
+    }
+
+    /// A PostToolUse hook that blocks unconditionally would trap the turn in a
+    /// block → retry → block loop; the cap releases it (same shape as the Stop
+    /// hook's cap), and a clean result resets the counter.
+    #[tokio::test]
+    async fn post_tool_blocks_are_capped_and_reset() {
+        let manager = manager_with_yaml("{}");
+        for _ in 0..POST_TOOL_HOOK_BLOCK_CAP {
+            assert!(manager.note_post_tool_block("s1").await);
+        }
+        assert_eq!(
+            manager.post_tool_block_count("s1").await,
+            POST_TOOL_HOOK_BLOCK_CAP
+        );
+        assert!(
+            !manager.note_post_tool_block("s1").await,
+            "past the cap the block must be overridden"
+        );
+
+        manager.reset_post_tool_blocks("s1").await;
+        assert_eq!(manager.post_tool_block_count("s1").await, 0);
+        assert!(manager.note_post_tool_block("s1").await);
+    }
+
+    /// A session that never settles must not grow the buffer without bound.
+    #[tokio::test]
+    async fn fired_outcome_buffer_is_bounded() {
+        let manager = manager_with_yaml(
+            r#"
+Notification:
+  - hooks:
+      - type: command
+        command: "echo '{\"systemMessage\":\"x\"}'"
+"#,
+        );
+        for _ in 0..(MAX_FIRED_OUTCOMES + 8) {
+            manager.fire(
+                HookEvent::Notification,
+                None,
+                notification_payload("orphan"),
+                PathBuf::from("/tmp"),
+            );
+        }
+        manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
+        assert_eq!(manager.drain_fired("orphan").len(), MAX_FIRED_OUTCOMES);
+    }
+
+    // ---- BR-27: matching on tool_input content ----
+
+    /// A guard rule can be scoped to dangerous *content* — only `rm -rf` shell
+    /// commands pay for the hook, every other shell call skips it entirely.
+    #[tokio::test]
+    async fn input_matcher_narrows_a_group_to_matching_tool_input() {
+        let manager = manager_with_yaml(
+            r#"
+PreToolUse:
+  - matcher: "developer__shell"
+    input_matcher:
+      command: "rm\\s+-rf"
+    hooks:
+      - type: command
+        command: "echo 'no recursive deletes' >&2; exit 2"
+"#,
+        );
+
+        let denied = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__shell",
+                &serde_json::json!({"command": "rm -rf /tmp/x"}),
+            )
+            .await;
+        assert!(denied.is_denied());
+        assert_eq!(denied.deny_reason(), Some("no recursive deletes"));
+
+        // Same tool, harmless command: the hook never runs.
+        let allowed = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__shell",
+                &serde_json::json!({"command": "ls -la"}),
+            )
+            .await;
+        assert!(allowed.decision.is_none());
+        assert!(allowed.errors.is_empty());
+    }
+
+    /// The whole-input regex form, and the rule that a group with an
+    /// `input_matcher` never fires on an event that carries no tool input.
+    #[tokio::test]
+    async fn whole_input_regex_form_and_no_input_events() {
+        let manager = manager_with_yaml(
+            r#"
+PreToolUse:
+  - input_matcher: "/etc/"
+    hooks:
+      - type: command
+        command: "echo 'system path' >&2; exit 2"
+Stop:
+  - input_matcher: ".*"
+    hooks:
+      - type: command
+        command: "echo '{\"decision\":\"block\",\"reason\":\"never\"}'"
+"#,
+        );
+
+        let denied = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__text_editor",
+                &serde_json::json!({"command": "write", "path": "/etc/hosts"}),
+            )
+            .await;
+        assert!(denied.is_denied());
+
+        let allowed = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__text_editor",
+                &serde_json::json!({"command": "write", "path": "/home/me/notes.md"}),
+            )
+            .await;
+        assert!(allowed.decision.is_none());
+
+        // Stop carries no tool_input, so the input-matched group cannot fire.
+        assert_eq!(
+            manager.stop("s1", Path::new("/tmp"), None).await,
+            StopHookVerdict::Proceed
+        );
     }
 
     #[tokio::test]
