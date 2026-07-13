@@ -1,0 +1,58 @@
+{
+  "id": "spec-015-foldscape",
+  "title": "FoldScape",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-015-foldscape/manifest.json",
+  "actions_expected": [
+    "highlight_residues",
+    "mutate",
+    "orient_structure",
+    "run_minimization",
+    "score_state",
+    "set_dihedral"
+  ],
+  "actions_actual": [
+    "highlight_residues",
+    "mutate",
+    "orient_structure",
+    "run_minimization",
+    "score_state",
+    "set_dihedral"
+  ],
+  "signals_expected": [
+    "dihedral_dragged",
+    "mutation_chosen",
+    "residue_selected",
+    "structure_rotated"
+  ],
+  "signals_actual": [
+    "dihedral_dragged",
+    "mutation_chosen",
+    "residue_selected",
+    "structure_rotated"
+  ],
+  "agents_expected": [
+    "Folder",
+    "Mutagenesis Critic",
+    "Validator"
+  ],
+  "agents_actual": [
+    "folder",
+    "mutagenesis_critic",
+    "validator"
+  ],
+  "regions": [
+    "contact-map",
+    "energy-plot",
+    "inspector",
+    "presence",
+    "progress",
+    "ramachandran",
+    "residue-rail",
+    "structure",
+    "transport"
+  ],
+  "theme_expected": "biorouter",
+  "theme_actual": "biorouter",
+  "issues": []
+}

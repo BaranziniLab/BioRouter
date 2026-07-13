@@ -1,0 +1,59 @@
+{
+  "id": "spec-007-provenance-autopsy",
+  "title": "Provenance Autopsy",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-007-provenance-autopsy/manifest.json",
+  "actions_expected": [
+    "focus_step",
+    "highlight_path",
+    "mark_diff",
+    "place_integrity",
+    "set_bisect_bound",
+    "trace_upstream"
+  ],
+  "actions_actual": [
+    "focus_step",
+    "highlight_path",
+    "mark_diff",
+    "place_integrity",
+    "set_bisect_bound",
+    "trace_upstream"
+  ],
+  "signals_expected": [
+    "cell_clicked",
+    "row_selected",
+    "run_compared",
+    "suspicion_marked"
+  ],
+  "signals_actual": [
+    "cell_clicked",
+    "row_selected",
+    "run_compared",
+    "suspicion_marked"
+  ],
+  "agents_expected": [
+    "Tracer",
+    "Diff Hunter",
+    "Bisector",
+    "Reporter"
+  ],
+  "agents_actual": [
+    "bisector",
+    "diff_hunter",
+    "reporter",
+    "tracer"
+  ],
+  "regions": [
+    "artifacts",
+    "dag",
+    "diff",
+    "evidence",
+    "findings",
+    "inspector",
+    "provenance-table",
+    "transport"
+  ],
+  "theme_expected": "terminal",
+  "theme_actual": "terminal",
+  "issues": []
+}

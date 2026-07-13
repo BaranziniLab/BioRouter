@@ -1,0 +1,59 @@
+{
+  "id": "spec-011-reaction-diffusion-foundry",
+  "title": "Reaction-Diffusion Foundry",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-011-reaction-diffusion-foundry/manifest.json",
+  "actions_expected": [
+    "capture_frame",
+    "paint_seed",
+    "run_stage",
+    "score_pattern",
+    "set_param",
+    "stage_regime"
+  ],
+  "actions_actual": [
+    "capture_frame",
+    "paint_seed",
+    "run_stage",
+    "score_pattern",
+    "set_param",
+    "stage_regime"
+  ],
+  "signals_expected": [
+    "brush_stroke",
+    "param_dragged",
+    "region_lassoed",
+    "target_chosen"
+  ],
+  "signals_actual": [
+    "brush_stroke",
+    "param_dragged",
+    "region_lassoed",
+    "target_chosen"
+  ],
+  "agents_expected": [
+    "Cartographer",
+    "Perturbationist",
+    "Morphologist"
+  ],
+  "agents_actual": [
+    "cartographer",
+    "morphologist",
+    "perturbationist"
+  ],
+  "regions": [
+    "agent-notes",
+    "canvas-cell",
+    "inspector",
+    "phase",
+    "presence",
+    "progress",
+    "reagent-rail",
+    "spectral",
+    "timeline",
+    "transport"
+  ],
+  "theme_expected": "lab-notebook",
+  "theme_actual": "lab-notebook",
+  "issues": []
+}
