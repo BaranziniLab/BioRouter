@@ -18,6 +18,7 @@ use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMP
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{
@@ -54,6 +55,7 @@ use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+use crate::session::message_blobs;
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
 use crate::tool_monitor::RepetitionInspector;
@@ -1343,6 +1345,24 @@ impl Agent {
             return (request_id, Ok(ToolCallResult::from(wrapped_result)));
         }
 
+        // BR-7: read back a tool result that was externalized out of the
+        // conversation. Reads the session store, so it never touches the
+        // extension manager's dispatch path.
+        if tool_call.name == PLATFORM_READ_SESSION_BLOB_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self.handle_read_session_blob(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
@@ -1662,6 +1682,16 @@ impl Agent {
         // agent's provider, which is checked at call time.
         if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
             prefixed_tools.push(platform_tools::ingest_conversation_tool());
+        }
+
+        // BR-7: the retrieval half of externalized tool results. Only offered
+        // when lazy blob loading is on — with the default hydrating read the
+        // payloads are spliced back into the conversation at load time, so the
+        // model never sees a stub and would have nothing to read back.
+        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
+            && message_blobs::lazy_load_enabled()
+        {
+            prefixed_tools.push(platform_tools::read_session_blob_tool());
         }
 
         if extension_name.is_none() {
