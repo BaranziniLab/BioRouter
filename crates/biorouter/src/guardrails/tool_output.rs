@@ -213,9 +213,9 @@ pub fn apply(text: &str, mode: ToolOutputGuardrailMode) -> ToolOutputVerdict {
 /// Only the text content of a **successful** result is scanned; errors and
 /// non-text content (images, resources) pass through untouched. This runs
 /// after [`super::super::agents::large_response_handler`] has already offloaded
-/// oversized blobs to a file reference, so we never annotate a 200 KB payload —
-/// that content is scanned instead when the model reads the file back through a
-/// tool call.
+/// over-budget blobs (BR-6: aggregate token limit) to a preview + file handle,
+/// so we never annotate a multi-megabyte payload — that content is scanned
+/// instead when the model reads the handle back through a tool call.
 pub fn guard_tool_result(
     output: ToolResult<CallToolResult>,
     mode: ToolOutputGuardrailMode,

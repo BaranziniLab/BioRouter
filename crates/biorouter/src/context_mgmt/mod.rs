@@ -699,7 +699,11 @@ fn filter_tool_responses<'a>(messages: &[&'a Message], remove_percent: u32) -> V
 /// bottom (the tail of a log / the end of a file), both of which a plain
 /// head-only or tail-only cut would throw away. Char-based, so it is safe on
 /// multibyte text.
-fn truncate_middle_out(text: &str, max_chars: usize) -> String {
+///
+/// BR-6 reuses this helper to build the inline head/tail preview of an
+/// offloaded oversized tool result, so compaction and the large-response
+/// handler elide the middle the same way.
+pub(crate) fn truncate_middle_out(text: &str, max_chars: usize) -> String {
     let total = text.chars().count();
     if total <= max_chars {
         return text.to_string();
