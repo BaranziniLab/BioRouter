@@ -14,6 +14,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// BR-67: the emit sites for loop-safety decisions (repetition trips, budget
+/// stops, streak nudges, stall give-ups, hook blocks, cancellations).
+pub mod loop_safety;
+
 /// An observe-only lifecycle event emitted around the agent loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObsEvent {

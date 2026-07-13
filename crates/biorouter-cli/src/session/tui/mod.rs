@@ -511,6 +511,7 @@ async fn drive_response(
         schedule_id: session.scheduled_job_id.clone(),
         max_turns: session.max_turns,
         max_tool_calls: None,
+        budget: None,
         retry_config: session.retry_config.clone(),
     };
     let debug = session.debug;
