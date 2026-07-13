@@ -49,6 +49,11 @@ use serde_json::Value;
 
 type McpClientBox = Arc<Mutex<Box<dyn McpClientTrait>>>;
 
+/// Tags that wrap every MOIM (`collect_moim`) `<info-msg>` block. Shared so the
+/// per-turn dedup in `moim.rs` recognises exactly what this function emits.
+pub const MOIM_OPEN_TAG: &str = "<info-msg>";
+pub const MOIM_CLOSE_TAG: &str = "</info-msg>";
+
 struct Extension {
     pub config: ExtensionConfig,
 
@@ -1513,10 +1518,19 @@ impl ExtensionManager {
         // Use minute-level granularity to prevent conversation changes every second
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
         let mut content = format!(
-            "<info-msg>\nIt is currently {}\nWorking directory: {}\n",
+            "{MOIM_OPEN_TAG}\nIt is currently {}\nWorking directory: {}\n",
             timestamp,
             working_dir.display()
         );
+
+        // BR-1: give the model a bounded, gitignore-aware map of the workspace so
+        // it doesn't rediscover project structure from scratch every session. The
+        // map is cached and token-capped inside `workspace_summary`.
+        if let Some(map) = crate::agents::workspace_summary::workspace_summary(working_dir) {
+            content.push('\n');
+            content.push_str(&map);
+            content.push('\n');
+        }
 
         let platform_clients: Vec<(String, McpClientBox)> = {
             let extensions = self.extensions.lock().await;
@@ -1541,7 +1555,8 @@ impl ExtensionManager {
             }
         }
 
-        content.push_str("\n</info-msg>");
+        content.push('\n');
+        content.push_str(MOIM_CLOSE_TAG);
 
         Some(content)
     }
