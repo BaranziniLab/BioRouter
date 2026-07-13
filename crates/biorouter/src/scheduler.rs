@@ -921,6 +921,12 @@ async fn execute_job(
     // Scheduled run finished: SessionEnd hooks (awaited; failure-open).
     {
         let hooks = agent.hooks_manager();
+        // BR-28: shutdown boundary — join any observe-only hook still running
+        // from the run's last turn, so it finishes here instead of being killed
+        // mid-flight when the runtime tears the job's tasks down.
+        hooks
+            .join_fired(crate::hooks::FIRE_JOIN_BUDGET_SHUTDOWN)
+            .await;
         let mut payload = crate::hooks::HookPayload::new(
             crate::hooks::HookEvent::SessionEnd,
             &session.id,

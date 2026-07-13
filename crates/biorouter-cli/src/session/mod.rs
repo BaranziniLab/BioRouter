@@ -447,6 +447,12 @@ impl CliSession {
     async fn fire_session_end_hooks(&self, reason: &str) {
         if let Ok(session) = self.get_session().await {
             let hooks = self.agent.hooks_manager();
+            // BR-28: shutdown boundary — join any observe-only hook (Notification,
+            // Pre/PostCompact, Subagent*) still running from the last turn, so it
+            // completes before the process exits instead of being cut off.
+            hooks
+                .join_fired(biorouter::hooks::FIRE_JOIN_BUDGET_SHUTDOWN)
+                .await;
             let mut payload = biorouter::hooks::HookPayload::new(
                 biorouter::hooks::HookEvent::SessionEnd,
                 &session.id,

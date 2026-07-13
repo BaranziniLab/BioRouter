@@ -120,7 +120,7 @@ pub struct HookOutcome {
 }
 
 /// Merged result of all hooks that ran for one event.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct HookAggregate {
     /// Most restrictive decision wins: Deny > Ask > Allow.
     pub decision: Option<HookDecision>,
@@ -130,6 +130,16 @@ pub struct HookAggregate {
 }
 
 impl HookAggregate {
+    /// Nothing a caller could act on: no decision, no injected context, no
+    /// system message, no error. Used by [`crate::hooks::HooksManager::fire`]
+    /// to avoid buffering aggregates from events where no hook matched.
+    pub fn is_empty(&self) -> bool {
+        self.decision.is_none()
+            && self.additional_context.is_empty()
+            && self.system_messages.is_empty()
+            && self.errors.is_empty()
+    }
+
     pub fn is_denied(&self) -> bool {
         matches!(self.decision, Some(HookDecision::Deny { .. }))
     }

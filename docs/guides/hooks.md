@@ -174,6 +174,13 @@ restrictive decision wins (`deny` > `ask` > `allow`).
 - **Stop blocks are capped** at 5 consecutive blocks per session; the payload
   field `stop_hook_active` is `true` on re-checks so well-behaved hooks can
   exit early.
+- **Observe-only events run detached, but are not discarded.** `Notification`,
+  `SubagentStart` / `SubagentStop` and `PreCompact` / `PostCompact` cannot block,
+  so they are dispatched in the background rather than on the agent's critical
+  path. Their `systemMessage` still reaches you — it is collected at the next
+  turn boundary, where any outstanding hook is also joined. A hook slower than
+  the boundary's short wait is never waited on; it simply surfaces one boundary
+  later, and is joined at session end.
 - **GUI sessions do not fire `SessionEnd`** in v1 (there is no reliable
   session-close signal in the desktop app).
 - Hook activity (blocks, judge verdicts, `systemMessage`s) appears as yellow

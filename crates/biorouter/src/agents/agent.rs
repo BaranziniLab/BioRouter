@@ -1026,6 +1026,38 @@ impl Agent {
         Ok(())
     }
 
+    /// BR-28: the turn-boundary settle for observe-only (`fire`d) hook events —
+    /// Notification, SubagentStart/Stop, Pre/PostCompact.
+    ///
+    /// Those hooks used to be spawned detached with their whole `HookAggregate`
+    /// dropped, so a `systemMessage` was invisible, a failing hook untraceable,
+    /// and the task could outlive the turn. Now the boundary joins whatever has
+    /// finished (bounded by [`crate::hooks::FIRE_JOIN_BUDGET`], so a slow hook
+    /// delays only its own observability, never the loop) and turns each captured
+    /// aggregate into user-visible inline notices. Errors are already logged by
+    /// `dispatch`; hooks fired here stay observe-only, so any `decision` they
+    /// return is deliberately not honored.
+    async fn settle_fired_hooks(&self, session_id: &str) -> Vec<Message> {
+        self.hooks_manager
+            .settle_fired(session_id, crate::hooks::FIRE_JOIN_BUDGET)
+            .await
+            .into_iter()
+            .flat_map(|outcome| {
+                let event = outcome.event;
+                outcome
+                    .aggregate
+                    .system_messages
+                    .into_iter()
+                    .map(move |msg| {
+                        debug!("hooks: surfacing {event} systemMessage");
+                        Message::assistant()
+                            .with_system_notification(SystemNotificationType::InlineMessage, msg)
+                            .user_only()
+                    })
+            })
+            .collect()
+    }
+
     /// BR-12: move auto-compaction off the user-visible critical path.
     ///
     /// Called at the turn boundary — after [`Self::record_turn_usage`] has
@@ -2612,6 +2644,15 @@ impl Agent {
                 }
                 conversation.extend(messages_to_add);
 
+                // BR-28: turn boundary — join the observe-only hooks fired during
+                // this iteration (Notification on a permission prompt, Pre/PostCompact
+                // on an in-loop compaction) and surface what they returned instead of
+                // dropping their aggregate. Placed before the `exit_chat` branch so
+                // every exit path passes through it.
+                for msg in self.settle_fired_hooks(&session_config.id).await {
+                    yield AgentEvent::Message(msg);
+                }
+
                 if !no_tools_called {
                     // Tools ran this iteration: any Stop-hook block streak is over,
                     // and the turn made real progress, so reset the auto-continue streaks.
@@ -2646,6 +2687,12 @@ impl Agent {
                             payload,
                             session.working_dir.clone(),
                         );
+                        // BR-28: this break is the subagent's last boundary, so settle
+                        // the SubagentStop hook here — nothing downstream would ever
+                        // join it, and its aggregate would be lost with the task.
+                        for msg in self.settle_fired_hooks(&session_config.id).await {
+                            yield AgentEvent::Message(msg);
+                        }
                         break;
                     }
                     let active_goal = self.active_goal(&session_config.id).await;
