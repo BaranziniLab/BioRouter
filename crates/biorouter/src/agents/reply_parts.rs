@@ -408,6 +408,8 @@ impl Agent {
                     total,
                     Some(usage.model.as_str()),
                     provider_name.as_deref(),
+                    usage.usage.cache_read_input_tokens,
+                    usage.usage.cache_creation_input_tokens,
                 )
                 .await?;
         }
