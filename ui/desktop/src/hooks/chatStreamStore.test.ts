@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
-import { interrupt, reply, resumeAgent } from '../api';
+import { cancelTurn, interrupt, reply, resumeAgent } from '../api';
 
 vi.mock('../api', async () => {
   return {
+    cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
     getSession: vi.fn(async () => ({ data: null })),
     interrupt: vi.fn(),
     listApps: vi.fn(async () => ({ data: { apps: [] } })),
@@ -95,6 +96,8 @@ beforeEach(() => {
   vi.mocked(resumeAgent).mockReset();
   vi.mocked(reply).mockReset();
   vi.mocked(interrupt).mockReset();
+  vi.mocked(cancelTurn).mockReset();
+  vi.mocked(cancelTurn).mockResolvedValue({ data: { cancelled: true } } as never);
   Object.assign(window, {
     electron: {
       openExternal: vi.fn(async () => undefined),
@@ -284,6 +287,60 @@ describe('ChatStreamRegistry', () => {
     await expect(controller.steer('actually, use R')).resolves.toBe(false);
 
     controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
+  it('sends a client-generated turn_id so an SSE re-POST dedupes (BR-62b)', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    await registry.getController('s1').handleSubmit('hello');
+
+    const turnId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+    expect(typeof turnId).toBe('string');
+    expect((turnId as string).length).toBeGreaterThan(0);
+  });
+
+  it('uses a fresh turn_id for each turn (BR-62b)', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('first');
+    await controller.handleSubmit('second');
+
+    const firstId = vi.mocked(reply).mock.calls[0][0].body.turn_id;
+    const secondId = vi.mocked(reply).mock.calls[1][0].body.turn_id;
+    expect(firstId).not.toEqual(secondId);
+  });
+
+  it('reliably cancels the running turn on Stop via /agent/cancel (BR-62b)', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('long task');
+    await flush();
+
+    controller.stopStreaming();
+
+    expect(cancelTurn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cancelTurn).mock.calls[0][0].body).toEqual({ session_id: 's1' });
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+
     controlled.close();
     await submit;
   });

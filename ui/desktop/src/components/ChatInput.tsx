@@ -452,8 +452,14 @@ export default function ChatInput({
     [canSendDroppedFileAsPath, canUploadDroppedImage]
   );
 
-  const droppedFilePath = (file: DroppedFile) => file.sourcePath || file.path;
-  const droppedImageAttachmentPath = (file: DroppedFile) => file.stagedPath || file.path;
+  // Stable identities: these are pure functions of their argument, so memoising
+  // with an empty dep list keeps the useCallback at the bottom of this component
+  // from re-creating on every render.
+  const droppedFilePath = useCallback((file: DroppedFile) => file.sourcePath || file.path, []);
+  const droppedImageAttachmentPath = useCallback(
+    (file: DroppedFile) => file.stagedPath || file.path,
+    []
+  );
 
   const handleRemoveDroppedFile = (idToRemove: string) => {
     // Remove from local dropped files

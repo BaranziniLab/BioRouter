@@ -17,7 +17,6 @@ export default function WorkflowExpandableInfo({
 }: WorkflowExpandableInfoProps) {
   const [isValueExpanded, setValueExpanded] = useState(false);
   const [isClamped, setIsClamped] = useState(false);
-  // eslint-disable-next-line no-undef
   const contentRef = useRef<HTMLParagraphElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
 
