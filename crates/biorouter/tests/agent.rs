@@ -749,6 +749,8 @@ mod tests {
             let mut responses = Vec::new();
             while let Some(event) = reply_stream.next().await {
                 match event? {
+                    // BR-52: token-state pings carry no reply content.
+                    AgentEvent::TokenUsage(_) => {}
                     AgentEvent::Message(response) => {
                         if let Some(MessageContent::ActionRequired(action)) =
                             response.content.first()
@@ -809,6 +811,7 @@ mod tests {
                         ..Default::default()
                     }),
                     retry_config: None,
+                    reasoning_effort: None,
                 },
             )
             .await?;
@@ -864,6 +867,7 @@ mod tests {
                     max_tool_calls: None,
                     budget: None,
                     retry_config: None,
+                    reasoning_effort: None,
                 },
             )
             .await?;
@@ -979,6 +983,7 @@ mod tests {
                 max_turns: None,
                 max_tool_calls: None,
                 retry_config: None,
+                budget: None,
                 reasoning_effort: None,
             }
         }
@@ -1067,6 +1072,9 @@ mod tests {
                 agent.reasoning_effort("session-b").await,
                 ReasoningEffort::Normal
             );
+        }
+    }
+
     /// BR-52: the agent carries the token state it just wrote in the event
     /// stream, so consumers never have to re-read SQLite per streamed token.
     #[cfg(test)]
@@ -1167,6 +1175,8 @@ mod tests {
                 max_turns: Some(1),
                 max_tool_calls: None,
                 retry_config: None,
+                budget: None,
+                reasoning_effort: None,
             };
 
             let stream = agent
