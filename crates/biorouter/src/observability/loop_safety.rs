@@ -91,11 +91,17 @@ pub enum LoopSafetyKind {
     /// BR-50: the optional self-critique pass flagged a possible defect in an
     /// ordinary answer; the model was asked to revise before finishing.
     SelfCritiqueRevise,
+    /// BR-48: the interactive done-ness gate's checks failed; the model was
+    /// asked to keep working before it could finish.
+    DoneGateBlock,
+    /// BR-48: the done-ness gate spent its attempt budget with checks still
+    /// failing; the turn was allowed to finish anyway.
+    DoneGateGiveUp,
 }
 
 /// Every kind, in declaration order. The counter table is indexed by position
 /// here, so a new variant must be appended to both.
-pub const ALL_KINDS: [LoopSafetyKind; 19] = [
+pub const ALL_KINDS: [LoopSafetyKind; 21] = [
     LoopSafetyKind::RepetitionWarn,
     LoopSafetyKind::RepetitionStop,
     LoopSafetyKind::FailureLoopNudge,
@@ -115,6 +121,8 @@ pub const ALL_KINDS: [LoopSafetyKind; 19] = [
     LoopSafetyKind::Cancelled,
     LoopSafetyKind::PostEditDiagnostics,
     LoopSafetyKind::SelfCritiqueRevise,
+    LoopSafetyKind::DoneGateBlock,
+    LoopSafetyKind::DoneGateGiveUp,
 ];
 
 impl LoopSafetyKind {
@@ -141,6 +149,8 @@ impl LoopSafetyKind {
             LoopSafetyKind::Cancelled => "cancelled",
             LoopSafetyKind::PostEditDiagnostics => "post_edit_diagnostics",
             LoopSafetyKind::SelfCritiqueRevise => "self_critique_revise",
+            LoopSafetyKind::DoneGateBlock => "done_gate_block",
+            LoopSafetyKind::DoneGateGiveUp => "done_gate_give_up",
         }
     }
 

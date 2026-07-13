@@ -5,6 +5,10 @@ mod agent;
 pub mod budget;
 pub(crate) mod chatrecall_extension;
 pub(crate) mod code_execution_extension;
+// BR-48: a deterministic done-ness gate for interactive chat — reuses the
+// workflow `SuccessCheck` machinery to keep a turn working until its checks
+// pass. Config-gated, default OFF.
+pub mod done_gate;
 pub mod effort;
 pub mod execute_commands;
 pub mod extension;

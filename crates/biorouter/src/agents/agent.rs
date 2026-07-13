@@ -2850,6 +2850,16 @@ impl Agent {
             // bounded by `self_critique_config.max_passes` so a stubborn answer
             // cannot spin. Reply-scoped, like `post_edit_reflections`.
             let mut self_critique_passes: u32 = 0;
+            // BR-48: the optional deterministic done-ness gate, resolved once per
+            // reply (config read touches the filesystem). Default OFF; when a user
+            // opts in it re-runs their `SuccessCheck`s before the turn may finish
+            // and keeps the agent working on the failures. `done_gate_iterations`
+            // is the per-reply corrective-attempt counter — it does NOT reset on
+            // tool calls (mirroring the /goal iteration budget), so a check that
+            // never goes green cannot loop past the cap.
+            let done_gate_config =
+                crate::agents::done_gate::DoneGateConfig::from_config();
+            let mut done_gate_iterations: u32 = 0;
             // BR-32: the /goal stall detector, generalized to ordinary chat. Both
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
@@ -4024,6 +4034,76 @@ impl Agent {
                         break;
                     }
                     let active_goal = self.active_goal(&session_config.id).await;
+
+                    // BR-48: deterministic done-ness gate. When enabled, re-run
+                    // the configured `SuccessCheck`s before the turn is allowed to
+                    // finish; on failure inject *what failed* and keep working
+                    // (iterating on the current diff, never resetting the way the
+                    // workflow retry does). Skipped when the turn is already being
+                    // wound down under a stall/budget deadline or after a cancel —
+                    // those wrap-ups must be allowed to end. Default OFF, so this
+                    // is inert unless a user opted in. Runs before the (optional,
+                    // LLM) self-critique so a broken build is caught deterministically
+                    // and cheaply, without spending a judge call.
+                    if done_gate_config.is_active()
+                        && stall_deadline.is_none()
+                        && budget_deadline.is_none()
+                        && !is_token_cancelled(&cancel_token)
+                    {
+                        let failures = crate::agents::retry::collect_check_failures(
+                            &done_gate_config.checks,
+                            done_gate_config.timeout,
+                            Some(working_dir.as_path()),
+                        )
+                        .await;
+                        if !failures.is_empty() {
+                            if done_gate_iterations < done_gate_config.max_iterations {
+                                done_gate_iterations += 1;
+                                loop_safety::emit(
+                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateBlock)
+                                        .session(&session_config.id)
+                                        .count(done_gate_iterations)
+                                        .limit(done_gate_config.max_iterations),
+                                );
+                                let feedback = Message::user()
+                                    .with_text(crate::agents::done_gate::gate_instruction(
+                                        &failures,
+                                    ))
+                                    .with_visibility(false, true);
+                                session_manager
+                                    .add_message(&session_config.id, &feedback)
+                                    .await?;
+                                conversation.push(feedback);
+                                // Keep looping so the model fixes the failures;
+                                // skip this iteration's Stop hook. The counter does
+                                // not reset on the tool calls the fix requires, so
+                                // the loop is bounded by `max_iterations`.
+                                tokio::task::yield_now().await;
+                                continue;
+                            } else {
+                                // Budget spent with checks still red: let the turn
+                                // finish rather than wedge, but tell the user it is
+                                // on unmet conditions.
+                                loop_safety::emit(
+                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateGiveUp)
+                                        .session(&session_config.id)
+                                        .count(done_gate_iterations)
+                                        .limit(done_gate_config.max_iterations),
+                                );
+                                yield AgentEvent::Message(
+                                    Message::assistant()
+                                        .with_system_notification(
+                                            SystemNotificationType::InlineMessage,
+                                            crate::agents::done_gate::giveup_notice(
+                                                done_gate_iterations,
+                                                &failures,
+                                            ),
+                                        )
+                                        .user_only(),
+                                );
+                            }
+                        }
+                    }
 
                     // BR-50: optional self-critique pass on an *ordinary* answer.
                     // Skipped when a /goal is active (its Stop-hook judge already
