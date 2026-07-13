@@ -28,9 +28,11 @@ use crate::agents::resource_refs::{
 };
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
+use crate::agents::subagent_handle;
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
-    create_subagent_tool, handle_subagent_tool, SUBAGENT_TOOL_NAME,
+    create_subagent_status_tool, create_subagent_tool, handle_subagent_status_tool,
+    handle_subagent_tool, SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME,
 };
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
@@ -1989,6 +1991,15 @@ impl Agent {
                 session.working_dir.clone(),
                 cancellation_token,
             )
+        } else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME {
+            // BR-40: poll / await / cancel a background subagent. Scoped to this
+            // session's own handles, so one chat can never reach into another's.
+            let arguments = tool_call
+                .arguments
+                .clone()
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            handle_subagent_status_tool(arguments, session.id.clone())
         } else if self.is_frontend_tool(&tool_call.name).await {
             // For frontend tools, return an error indicating we need frontend execution
             ToolCallResult::from(Err(ErrorData::new(
@@ -2278,6 +2289,13 @@ impl Agent {
                 let sub_workflows = self.sub_workflows.lock().await;
                 let sub_workflows_vec: Vec<_> = sub_workflows.values().cloned().collect();
                 prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));
+
+                // BR-40: the poll half of the spawn→poll model. Offered only
+                // when background subagents are enabled — without them there is
+                // never a handle to poll.
+                if subagent_handle::background_enabled() {
+                    prefixed_tools.push(create_subagent_status_tool());
+                }
             }
         }
 
