@@ -28,6 +28,7 @@ pub mod subagent_tool;
 pub(crate) mod todo_extension;
 mod tool_execution;
 pub mod turn_abort;
+pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
 

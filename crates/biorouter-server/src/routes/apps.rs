@@ -754,6 +754,12 @@ impl CapabilityReport {
     }
 }
 
+/// True when the app declares no worker profiles at all (a single-agent app, and
+/// every v1 app).
+fn valid_profile_count_is_zero(cfg: &AgentConfig) -> bool {
+    cfg.orchestration.agents.is_empty()
+}
+
 async fn configure_agent(
     agent: &biorouter::agents::Agent,
     state: &AppState,
@@ -1030,11 +1036,31 @@ async fn configure_agent(
         }
     }
 
-    // BRSDK orchestration: register manifest-declared sub-agents as
-    // agents-as-tools. Each becomes a recipe the engine's subagent tool can
-    // invoke by name (the tool auto-lists them once registered). A functional
-    // capability, opt-in via the manifest — no global safety gate.
-    if !cfg.orchestration.sub_agents.is_empty() {
+    // ONE delegation mechanism per app.
+    //
+    // Both paths used to be armed at once: `orchestration.sub_agents` registered
+    // recipes for the engine's generic `subagent` tool, while `orchestration.agents`
+    // armed `consult`. The generic tool is the easier one to reach — its
+    // description auto-lists the very worker names the author registered, and it
+    // takes a free-form `instructions` string — so the model picked it every time
+    // and the declared profiles became dead configuration. (spec-006 declared the
+    // same four workers *twice*, once in each map.)
+    //
+    // When the app declares worker profiles, the `subagent` tool is withheld
+    // entirely: it never appears in the tool list, so it cannot be called. A prompt
+    // saying "use consult, not subagent" was already there, and lost — prose does
+    // not beat an available tool.
+    if !valid_profile_count_is_zero(cfg) {
+        agent.set_subagent_tool_enabled(false);
+        if !cfg.orchestration.sub_agents.is_empty() {
+            warn!(
+                app = %manifest.id,
+                count = cfg.orchestration.sub_agents.len(),
+                "app declares BOTH worker profiles and sub_agents; sub_agents are ignored \
+                 (consult is the single delegation mechanism)"
+            );
+        }
+    } else if !cfg.orchestration.sub_agents.is_empty() {
         let dir = store().artifact_dir(&manifest.id).join("subagents");
         let _ = std::fs::create_dir_all(&dir);
         let mut subs = Vec::new();
@@ -1139,6 +1165,30 @@ async fn configure_agent(
             "\n\n## Unavailable knowledge base\nThis app was configured for the knowledge base \
              '{kb}', which is NOT installed here. You have no knowledge tools scoped to it — do \
              not attempt to search it, and do not present recalled facts as if they came from it.",
+        ));
+    }
+
+    // The orchestration section is GENERATED from the manifest's own keys, never
+    // authored. The author used to write the worker names into the system prompt by
+    // hand — and wrote display names ("Prosecutor") while the manifest was keyed
+    // `prosecutor`, so every `consult` 404'd. Generating it means the names the
+    // model is given and the names the lookup accepts cannot drift.
+    if !cfg.orchestration.agents.is_empty() {
+        let mut keys: Vec<&str> = cfg
+            .orchestration
+            .agents
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        prompt.push_str(&format!(
+            "\n\n## Worker agents\nThis app declares {} worker profile(s): {}. \
+             Delegate with `consult(agent: \"<key>\", …)` using EXACTLY these keys — they are \
+             identifiers, not display names. There is no `subagent` tool in this app; `consult` \
+             is the only way to reach a worker. Workers cannot draw on the page: you own the UI, \
+             so render their findings yourself.",
+            keys.len(),
+            keys.join(", ")
         ));
     }
     // Tell the model the `ui_*` tools exist and, more importantly, when to reach
@@ -1302,9 +1352,18 @@ fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
 
         // Normalize the kept profile.
         let mut cfg = profile.clone();
-        // Force ui off unless the profile opts in AND the app grants ui.
+        // A worker drives the page only if it EXPLICITLY opts in — and even then
+        // only within the app's own grant.
+        //
+        // This used to read `profile.capabilities.ui.enabled && app…ui.enabled`,
+        // which looks like an opt-in but is not: `UiCapability::enabled` defaults
+        // to `true`, so a profile authored without a `ui` block deserialized as
+        // `true && true`. Every worker was handed `appcontrol` on the MAIN bridge
+        // plus the "drive the page" system prompt. They weren't drifting — they
+        // were instructed to seize the UI. UI ownership is now main-only unless
+        // the author writes `{"ui":{"worker_ui":true}}`.
         cfg.capabilities.ui.enabled =
-            profile.capabilities.ui.enabled && app.capabilities.ui.enabled;
+            profile.capabilities.ui.worker_ui && app.capabilities.ui.enabled;
         // Workers never carry their own worker profiles / routes / lazy-tools.
         cfg.orchestration = Default::default();
         out.valid.insert(name.clone(), cfg);
@@ -1425,6 +1484,25 @@ async fn configure_worker_agent(
             .set_active_for_session(session_id, Some(kb))
         {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker set active KB failed: {e}");
+        }
+    }
+
+    // Every worker carries `report_evidence`, whether or not it can draw on the
+    // page. Its verdict — "I did not have the sumstats" — is the thing that stops
+    // the main agent inventing numbers to fill the gap, so it must be available to
+    // a worker that has no UI grant at all (which, post-fix, is most of them).
+    // The main agent does NOT get this tool: it cannot write its own alibi.
+    {
+        let evidence = biorouter_mcp::agent_drafter::evidence::EvidenceServer::new(
+            main_bridge.clone(),
+            profile_name,
+        );
+        if let Err(e) = agent
+            .extension_manager
+            .add_inprocess_server("evidence", evidence)
+            .await
+        {
+            warn!(app = %manifest.id, profile = %profile_name, "worker evidence injection failed: {e}");
         }
     }
 
@@ -1567,6 +1645,47 @@ async fn run_bounded_turn(
 /// `{text}` / `{error}`. Depth-1 is enforced by the caller (only the MAIN turn
 /// loop calls this).
 #[allow(clippy::too_many_arguments)]
+/// Map a requested worker name onto a declared profile key.
+///
+/// Exact match wins. Otherwise fold case and treat `-`/space as `_`, and accept
+/// the result only when exactly ONE key matches — an ambiguous abbreviation must
+/// fail loudly rather than silently consult the wrong agent. The error always
+/// lists the real keys, so the model's retry is grounded.
+fn resolve_profile_key<'a, I>(requested: &str, keys: I) -> Result<String, String>
+where
+    I: Iterator<Item = &'a String> + Clone,
+{
+    let normalize = |s: &str| s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+
+    let all: Vec<&String> = keys.collect();
+    if all.iter().any(|k| k.as_str() == requested) {
+        return Ok(requested.to_string());
+    }
+
+    let want = normalize(requested);
+    let matches: Vec<&&String> = all.iter().filter(|k| normalize(k) == want).collect();
+
+    let known = if all.is_empty() {
+        "(none declared)".to_string()
+    } else {
+        all.iter()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    match matches.len() {
+        1 => Ok(matches[0].to_string()),
+        0 => Err(format!(
+            "no such worker profile \"{requested}\"; declared profiles: {known}. \
+             Use the exact key — `consult` resolves keys, not display names."
+        )),
+        _ => Err(format!(
+            "\"{requested}\" is ambiguous; declared profiles: {known}. Use the exact key."
+        )),
+    }
+}
+
 async fn run_consult(
     state: &AppState,
     manifest: &Manifest,
@@ -1578,16 +1697,24 @@ async fn run_consult(
     req: &ConsultRequest,
     cancel: CancellationToken,
 ) -> serde_json::Value {
-    if !valid.contains_key(&req.agent) {
-        let known: Vec<&str> = valid.keys().map(String::as_str).collect();
-        return json!({
-            "error": format!(
-                "no such worker profile \"{}\"; declared profiles: {}",
-                req.agent,
-                if known.is_empty() { "(none)".to_string() } else { known.join(", ") }
-            )
-        });
-    }
+    // Resolve the requested profile name to a manifest KEY.
+    //
+    // The lookup used to be an exact map hit, so `consult(agent: "Prosecutor")`
+    // against a manifest keyed `prosecutor` was a hard error — and the model
+    // reaches for the display name it wrote in its own prompt. Two changes make
+    // the mismatch un-fatal *and* un-creatable: keys are validated as identifiers
+    // at declaration time (`declare_profiles`), and resolution here is tolerant of
+    // case and separators, but only when the match is UNAMBIGUOUS.
+    let requested = req.agent.clone();
+    let resolved = match resolve_profile_key(&requested, valid.keys()) {
+        Ok(key) => key,
+        Err(e) => return json!({ "error": e }),
+    };
+    let req = &ConsultRequest {
+        agent: resolved.clone(),
+        ..req.clone()
+    };
+
     if !worker_agents.contains_key(&req.agent) {
         match build_worker(
             state,
@@ -1683,21 +1810,58 @@ fn widget_action_text(widget_id: &str, action: &str, payload: &serde_json::Value
 /// wraps the action + args in an `<app-data>` envelope; text-form uses the free
 /// text directly. When a structured output was requested (`wants_output`), the
 /// emit_result instruction is appended so the model finishes with a typed result.
+/// Compose the user-message text for a turn the APP started.
+///
+/// The call's arguments come from the author's own closure, and there is nothing
+/// forcing that closure to read the shared state document — so an app could ship
+/// `{sample_size: 248}` from a stale local object while `ui_patch_state` had
+/// already written `/power/n = 784` into the doc the agent believes it is looking
+/// at. The two diverged silently, and the model had no corrective view: this
+/// function used to compose the message from `name` + `args` alone.
+///
+/// The canonical doc now travels with every typed turn, and a top-level argument
+/// whose value contradicts the doc is called out by name. The model is told which
+/// side is authoritative rather than being left to guess.
 fn build_call_text(
     name: Option<String>,
     args: Option<serde_json::Value>,
     text: Option<String>,
     wants_output: bool,
+    state_doc: &serde_json::Value,
+    state_version: u64,
 ) -> String {
     const EMIT: &str =
         "Finish by calling the emit_result tool with a result matching the declared schema.";
     let named = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
     let mut out = if let Some(n) = named {
         let args = args.unwrap_or_else(|| json!({}));
-        format!(
+        let mut s = format!(
             "[app call] The application invoked \"{n}\" with arguments:\n<app-data>\n{}\n</app-data>\n",
             cap_json(&args)
-        )
+        );
+
+        if !is_empty_doc(state_doc) {
+            s.push_str(&format!(
+                "\nThe app's shared state document (canonical, v{state_version}):\n\
+                 <app-data name=\"app state\">\n{}\n</app-data>\n",
+                cap_json(state_doc)
+            ));
+
+            let conflicts = conflicting_args(&args, state_doc);
+            if !conflicts.is_empty() {
+                s.push_str(
+                    "\nThese call arguments DISAGREE with the canonical state. The state \
+                     document is authoritative — use it, and do not reason from the argument \
+                     value:\n",
+                );
+                for (key, arg_val, doc_val) in conflicts {
+                    s.push_str(&format!(
+                        "- `{key}`: argument = {arg_val}, state = {doc_val}\n"
+                    ));
+                }
+            }
+        }
+        s
     } else {
         text.unwrap_or_default()
     };
@@ -1707,6 +1871,40 @@ fn build_call_text(
         }
         out.push_str(EMIT);
     }
+    out
+}
+
+fn is_empty_doc(doc: &serde_json::Value) -> bool {
+    match doc {
+        serde_json::Value::Object(m) => m.is_empty(),
+        serde_json::Value::Null => true,
+        _ => false,
+    }
+}
+
+/// Top-level argument keys that also exist at the top level of the state doc but
+/// hold a different value. Deliberately shallow and conservative: a false
+/// "disagreement" would teach the model to distrust its own arguments, which is
+/// worse than the silence we are fixing.
+fn conflicting_args(
+    args: &serde_json::Value,
+    doc: &serde_json::Value,
+) -> Vec<(String, String, String)> {
+    let (Some(a), Some(d)) = (args.as_object(), doc.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, arg_val) in a {
+        if let Some(doc_val) = d.get(key) {
+            // Only scalars — comparing whole objects would fire on harmless
+            // reorderings and on partial views the app legitimately sends.
+            let scalar = |v: &serde_json::Value| !v.is_object() && !v.is_array() && !v.is_null();
+            if scalar(arg_val) && scalar(doc_val) && arg_val != doc_val {
+                out.push((key.clone(), arg_val.to_string(), doc_val.to_string()));
+            }
+        }
+    }
+    out.sort();
     out
 }
 
@@ -2684,6 +2882,14 @@ async fn handle_agent_socket(
     // replays to the page as a snapshot.
     if let Some(ps) = load_ui_state(&state, &session_id).await {
         ui_bridge.seed_state(ps.doc, ps.version);
+    } else if let Some(initial) = manifest.surface.state_initial.clone() {
+        // No durable doc yet: seed the app's DECLARED initial state, so the first
+        // frame the page receives already carries it. Without this the shared doc
+        // is `{}` until a paid agent turn writes to it, every `data-br-bind`
+        // renders blank on first load, and authors work around it with a private
+        // local object that then diverges from the doc the agent is reading.
+        // `seed_state` no-ops on a warm bridge, so a live session keeps its state.
+        ui_bridge.seed_state(initial, 0);
     }
 
     let (mut ui_rx, conn_token) = ui_bridge.attach();
@@ -3150,7 +3356,17 @@ async fn handle_agent_socket(
                 if wants_output {
                     ui_bridge.set_pending_output(call_id.clone(), output_schema.clone());
                 }
-                (build_call_text(name, args, text, wants_output), Vec::new())
+                // Attach the CANONICAL state doc. `build_call_text` used to compose
+                // the model's message from the call's name + args only — so when an
+                // app's closure shipped a stale local value (n=248) while the agent
+                // had patched the shared doc (n=784), the model was handed the
+                // stale number with nothing to contradict it. Now it sees both, and
+                // is told which one is authoritative.
+                let (state_doc, state_version) = ui_bridge.state_snapshot();
+                (
+                    build_call_text(name, args, text, wants_output, &state_doc, state_version),
+                    Vec::new(),
+                )
             }
             // br.kb / br.model.status: served inline in the between-turns dispatch
             // loop above and the mid-turn reader; any that reach here (e.g. queued)
@@ -3326,6 +3542,11 @@ async fn handle_agent_socket(
             max_turns: Some(max_turns),
             retry_config: None,
         };
+        // Fresh evidence ledger for this turn. A worker saying "I had no sumstats"
+        // must block THIS turn's publishing actions — but must not keep blocking
+        // once the user supplies the data on the next one.
+        ui_bridge.clear_evidence();
+
         let cancel = CancellationToken::new();
         let mut stream = match turn_agent
             .reply(user, session_config, Some(cancel.clone()))
@@ -5054,12 +5275,16 @@ mod tests {
     #[test]
     fn build_call_text_name_form_wraps_args_and_adds_emit_instruction() {
         use super::build_call_text;
+        let no_state = serde_json::json!({});
+
         // Name-form, no output schema → envelope, no emit instruction.
         let t = build_call_text(
             Some("summarize".into()),
             Some(serde_json::json!({"gene": "TP53"})),
             None,
             false,
+            &no_state,
+            0,
         );
         assert!(t.contains(r#"invoked "summarize" with arguments:"#), "{t}");
         assert!(
@@ -5072,20 +5297,130 @@ mod tests {
         );
 
         // Name-form WITH output schema → emit instruction appended.
-        let t = build_call_text(Some("summarize".into()), None, None, true);
+        let t = build_call_text(Some("summarize".into()), None, None, true, &no_state, 0);
         assert!(
             t.contains("emit_result"),
             "schema-armed call gets the emit instruction: {t}"
         );
 
         // Text-form → the free text, plus the emit instruction when armed.
-        let t = build_call_text(None, None, Some("score the cohort".into()), true);
+        let t = build_call_text(
+            None,
+            None,
+            Some("score the cohort".into()),
+            true,
+            &no_state,
+            0,
+        );
         assert!(t.starts_with("score the cohort"), "{t}");
         assert!(t.contains("emit_result"), "{t}");
         // Text-form is NOT wrapped in <app-data>.
         assert!(
             !t.contains("<app-data>"),
             "text-form uses the text directly: {t}"
+        );
+    }
+
+    /// The app and the agent must read the SAME state.
+    ///
+    /// In the test drive they did not: `br.call` ships whatever the author's
+    /// closure passes, and nothing forced that closure to read the shared doc. So
+    /// an app sent `sample_size: 248` from a stale local object while
+    /// `ui_patch_state` had already written 784 into the document the agent
+    /// believed it was looking at — and this function composed the model's message
+    /// from name + args ALONE, so the model never saw the contradiction and
+    /// reasoned confidently from the stale number.
+    #[test]
+    fn an_argument_that_contradicts_the_canonical_state_is_called_out() {
+        use super::build_call_text;
+        let doc = serde_json::json!({ "sample_size": 784, "cohort": "ms" });
+
+        let t = build_call_text(
+            Some("run_power_analysis".into()),
+            Some(serde_json::json!({ "sample_size": 248 })),
+            None,
+            false,
+            &doc,
+            7,
+        );
+
+        assert!(
+            t.contains("app state"),
+            "the doc must travel with the turn: {t}"
+        );
+        assert!(
+            t.contains("784"),
+            "the canonical value must be visible: {t}"
+        );
+        assert!(
+            t.contains("DISAGREE"),
+            "a stale argument must be flagged, not silently believed: {t}"
+        );
+        assert!(t.contains("`sample_size`"), "name the offending key: {t}");
+        assert!(
+            t.contains("authoritative"),
+            "the model must be told which side wins: {t}"
+        );
+    }
+
+    /// The guard against crying wolf. A false "disagreement" would teach the model
+    /// to distrust its own inputs — worse than the silence being fixed.
+    #[test]
+    fn agreeing_and_absent_and_structured_arguments_are_not_flagged() {
+        use super::build_call_text;
+
+        // Same value → not a conflict.
+        let t = build_call_text(
+            Some("run".into()),
+            Some(serde_json::json!({ "n": 784 })),
+            None,
+            false,
+            &serde_json::json!({ "n": 784 }),
+            3,
+        );
+        assert!(t.contains("app state"), "the doc still travels: {t}");
+        assert!(!t.contains("DISAGREE"), "identical values agree: {t}");
+
+        // A key the doc says nothing about → just an argument.
+        let t = build_call_text(
+            Some("plot".into()),
+            Some(serde_json::json!({ "palette": "viridis" })),
+            None,
+            false,
+            &serde_json::json!({ "cohort": "ms" }),
+            1,
+        );
+        assert!(!t.contains("DISAGREE"), "{t}");
+
+        // A partial object the app legitimately sends → not a conflicting scalar.
+        let t = build_call_text(
+            Some("focus".into()),
+            Some(serde_json::json!({ "selection": { "id": "a" } })),
+            None,
+            false,
+            &serde_json::json!({ "selection": { "id": "a", "label": "A" } }),
+            2,
+        );
+        assert!(!t.contains("DISAGREE"), "{t}");
+    }
+
+    /// Back-compat: a v1 app has no shared state, and must get exactly the message
+    /// it got before — no empty envelope, no noise.
+    #[test]
+    fn an_app_with_no_shared_state_gets_no_envelope() {
+        use super::build_call_text;
+        let t = build_call_text(
+            Some("summarize".into()),
+            Some(serde_json::json!({ "n": 3 })),
+            None,
+            false,
+            &serde_json::json!({}),
+            0,
+        );
+        assert!(t.contains("summarize"));
+        assert!(
+            !t.contains("app state"),
+            "an empty doc must not add an empty envelope: {t}"
         );
     }
 
@@ -5354,6 +5689,7 @@ mod tests {
                 name: "echo".into(),
                 description: "Echo".into(),
                 params: serde_json::json!({}),
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -5887,15 +6223,131 @@ mod tests {
             );
         }
 
+        /// THE inversion. A worker profile authored with no `ui` block used to
+        /// deserialize with `ui.enabled = true` (the field's default, which is
+        /// right for the MAIN agent), and the validator ANDed `true && true`. Every
+        /// worker was handed `appcontrol` on the main bridge plus the "drive the
+        /// page" system prompt. They were not drifting — they were instructed to
+        /// seize the UI. This test used to assert that they got it.
         #[test]
-        fn ui_is_shared_when_both_grant_it() {
-            // App grants ui (default) and the profile keeps ui (default) → worker ui on.
+        fn a_worker_does_not_get_the_ui_by_default() {
             let app = app_with_profiles(
                 AgentConfig::default(),
                 vec![("critic", AgentConfig::default())],
             );
             let v = validate_profiles(&app);
-            assert!(v.valid.get("critic").unwrap().capabilities.ui.enabled);
+            assert!(
+                !v.valid.get("critic").unwrap().capabilities.ui.enabled,
+                "UI ownership is main-only unless the author explicitly opts a worker in"
+            );
+        }
+
+        /// A worker that genuinely should render can still say so.
+        #[test]
+        fn a_worker_gets_the_ui_when_it_explicitly_opts_in() {
+            let renderer = AgentConfig {
+                capabilities: Capabilities {
+                    ui: biorouter_mcp::agent_drafter::manifest::UiCapability {
+                        worker_ui: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let app = app_with_profiles(AgentConfig::default(), vec![("renderer", renderer)]);
+            let v = validate_profiles(&app);
+            assert!(v.valid.get("renderer").unwrap().capabilities.ui.enabled);
+        }
+
+        /// An opt-in worker still cannot exceed the app's own grant.
+        #[test]
+        fn a_worker_opt_in_cannot_exceed_the_apps_grant() {
+            let app_cfg = AgentConfig {
+                capabilities: Capabilities {
+                    ui: biorouter_mcp::agent_drafter::manifest::UiCapability {
+                        enabled: false,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let renderer = AgentConfig {
+                capabilities: Capabilities {
+                    ui: biorouter_mcp::agent_drafter::manifest::UiCapability {
+                        worker_ui: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let app = app_with_profiles(app_cfg, vec![("renderer", renderer)]);
+            let v = validate_profiles(&app);
+            assert!(
+                !v.valid.get("renderer").unwrap().capabilities.ui.enabled,
+                "a text-only app's worker cannot opt into a UI the app itself denies"
+            );
+        }
+
+        /// `consult(agent: "Prosecutor")` against a manifest keyed `prosecutor` was
+        /// a hard error — and the display name is exactly what the model reaches
+        /// for, because it is what the author wrote in the prompt. Resolution is now
+        /// tolerant of case and separators, but only when the match is unambiguous.
+        #[test]
+        fn a_display_name_resolves_to_its_manifest_key() {
+            use crate::routes::apps::resolve_profile_key;
+            let keys = vec![
+                "prosecutor".to_string(),
+                "defense".to_string(),
+                "fine_mapper".to_string(),
+            ];
+
+            assert_eq!(
+                resolve_profile_key("Prosecutor", keys.iter()).unwrap(),
+                "prosecutor"
+            );
+            assert_eq!(
+                resolve_profile_key("Fine Mapper", keys.iter()).unwrap(),
+                "fine_mapper"
+            );
+            assert_eq!(
+                resolve_profile_key("fine-mapper", keys.iter()).unwrap(),
+                "fine_mapper"
+            );
+            // An exact key always wins, untouched.
+            assert_eq!(
+                resolve_profile_key("defense", keys.iter()).unwrap(),
+                "defense"
+            );
+        }
+
+        /// A name that matches nothing must fail LOUDLY, naming the real keys — a
+        /// bare "no" teaches the model nothing and it guesses again.
+        #[test]
+        fn an_unknown_profile_is_rejected_with_the_real_keys() {
+            use crate::routes::apps::resolve_profile_key;
+            let keys = vec!["prosecutor".to_string(), "defense".to_string()];
+
+            let err = resolve_profile_key("judge", keys.iter()).unwrap_err();
+            assert!(
+                err.contains("prosecutor") && err.contains("defense"),
+                "{err}"
+            );
+            assert!(err.contains("exact key"), "{err}");
+        }
+
+        /// Tolerance must not become guessing: an ambiguous name is an error, not a
+        /// coin flip between two workers.
+        #[test]
+        fn an_ambiguous_name_is_refused_rather_than_guessed() {
+            use crate::routes::apps::resolve_profile_key;
+            // Two keys that normalize identically.
+            let keys = vec!["fine_mapper".to_string(), "fine-mapper".to_string()];
+
+            let err = resolve_profile_key("Fine Mapper", keys.iter()).unwrap_err();
+            assert!(err.contains("ambiguous"), "{err}");
         }
 
         #[test]

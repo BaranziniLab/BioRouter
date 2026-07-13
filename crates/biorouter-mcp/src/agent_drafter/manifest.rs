@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::store::AgentConfig;
@@ -132,6 +133,24 @@ pub struct UiCapability {
     /// whether the agent may *listen*.
     #[serde(default = "yes")]
     pub allow_signals: bool,
+    /// Whether a WORKER profile using this capability block may drive the page.
+    ///
+    /// **Default: `false`** — and this is the deny-by-default that was inverted.
+    ///
+    /// [`UiCapability::enabled`] defaults to `true` (correctly: the main agent's
+    /// blast radius is the app's own page). But a worker profile is a full
+    /// `AgentConfig`, so a profile authored *without* a `ui` block also
+    /// deserialized with `ui.enabled = true` — and the profile validator then
+    /// ANDed it with the app's grant (`true && true`). Every worker was therefore
+    /// handed `appcontrol` on the MAIN bridge plus the full `ui_system_prompt`,
+    /// whose first rule is "drive the page". The workers were not drifting; they
+    /// were *instructed* to seize the UI, and no amount of prose telling them not
+    /// to could compete with the tools they had been given.
+    ///
+    /// UI ownership is now main-only by construction. A worker that genuinely
+    /// should render must say so: `{"ui": {"worker_ui": true}}`.
+    #[serde(default)]
+    pub worker_ui: bool,
     /// Allow `ui_html` to inject server-sanitized rich HTML into the page.
     ///
     /// **Default: `false`** — deliberately unlike the other `allow_*` switches,
@@ -179,6 +198,10 @@ impl Default for UiCapability {
             allow_layout: true,
             allow_ask: true,
             allow_signals: true,
+            // A worker never drives the page unless the author says so — see the
+            // field docs: this default being `true` is what let every worker seize
+            // the UI.
+            worker_ui: false,
             // Off by default even though every sibling defaults on — see the
             // field docs: raw HTML is an XSS surface, so it is opt-in.
             allow_html: false,
@@ -590,6 +613,22 @@ pub struct SurfaceDecl {
     /// server-side; when absent the default structural caps still apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_schema: Option<serde_json::Value>,
+    /// The shared state document's INITIAL value.
+    ///
+    /// `state_schema` is a validator, not a value — so the shared doc started
+    /// empty on every load and every `data-br-bind` KPI rendered blank until a
+    /// *paid agent turn* wrote something into it. Authors compensated by keeping a
+    /// private local `state` object, which is the root cause of the other half of
+    /// this finding: the agent patched the shared doc (n=784) while the app's
+    /// `br.call` closures kept shipping the stale local object (n=248), and the
+    /// two silently diverged.
+    ///
+    /// Declaring the initial value gives the app one place to put it. The server
+    /// seeds the bridge from this before the first frame, and the SDK seeds its
+    /// own doc at construction — so bindings paint correctly before the socket
+    /// even connects (which is also what makes an exported/offline app work).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_initial: Option<serde_json::Value>,
     /// App-defined verbs the AGENT may invoke (`app_call`). The author registers
     /// handlers in `main.ts`; the SDK enforces that registrations match these
     /// declarations at build/lint time. Declared now, consumed in Phase 3.
@@ -617,6 +656,7 @@ impl SurfaceDecl {
     /// `surface: {}` key when re-serialized.
     pub fn is_empty(&self) -> bool {
         self.state_schema.is_none()
+            && self.state_initial.is_none()
             && self.actions.is_empty()
             && self.signals.is_empty()
             && self.components.is_empty()
@@ -632,6 +672,74 @@ pub struct ActionDecl {
     /// JSON Schema for the action's arguments (`{}` → unconstrained).
     #[serde(default = "empty_object", skip_serializing_if = "is_empty_object")]
     pub params: serde_json::Value,
+    /// What calling this action DOES. Default [`ActionEffect::Read`], so every v1
+    /// action behaves exactly as before.
+    ///
+    /// An action used to carry no declared effect at all, so the platform could not
+    /// tell "apply an intervention" from "read a value" — and therefore could not
+    /// require that one was ever called. The agent could *simulate* the effect
+    /// instead: `ui_patch_state` will happily write `/params/lion_vision` directly,
+    /// and `ui_render` will draw the narrative, without the app's handler ever
+    /// running. Specs 011/013/014 did exactly that: the page showed a plan being
+    /// applied that was never applied.
+    #[serde(default, skip_serializing_if = "ActionEffect::is_read")]
+    pub effect: ActionEffect,
+    /// JSON Pointers into the shared state document that this action's handler
+    /// OWNS. Only meaningful for a `mutate` action.
+    ///
+    /// The platform refuses `ui_state` / `ui_patch_state` writes at or under an
+    /// owned pointer: the number on the page can then only move by calling the
+    /// app's real handler. This is what makes "narrate the change without making
+    /// it" structurally impossible, rather than merely discouraged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+    /// Named inputs this action's output DEPENDS on, e.g.
+    /// `["sumstats", "ld_reference"]`.
+    ///
+    /// If a worker profile reports (via `report_evidence`) that one of these is
+    /// missing, the platform REFUSES a non-synthetic call to this action.
+    ///
+    /// This exists because of the worst failure in the test drive: a worker said
+    /// "PIPs are not defensible without sumstats/LD/harmonization", and the main
+    /// agent then **invented five posterior probabilities that summed to 1.0** and
+    /// shaded them onto the page as a credible set. Nothing stopped it: `consult`
+    /// returns free prose (to the platform, that refusal was an ordinary
+    /// paragraph), and `app_call` validated args **shape-only** — five plausible
+    /// floats satisfy any schema an author would write. The model *read* the
+    /// refusal and proceeded anyway, which is the strongest possible evidence that
+    /// prose cannot fix this.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_evidence: Vec<String>,
+    /// Require every call to declare where its numbers came from
+    /// (`_provenance: {"source": "tool" | "consult:<key>" | "user" | "synthetic"}`).
+    ///
+    /// A `synthetic` call is allowed — a demo is legitimate — but the values it
+    /// writes are stamped and rendered with a **DEMO** badge, so fabricated
+    /// numbers can never again be indistinguishable from computed ones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provenance_required: bool,
+}
+
+/// What an action does to the app.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionEffect {
+    /// Reads or renders; changes nothing the agent could otherwise fake.
+    #[default]
+    Read,
+    /// Changes app state. The pointers in [`ActionDecl::writes`] become
+    /// handler-owned: the agent cannot write them directly.
+    Mutate,
+}
+
+impl ActionEffect {
+    pub fn is_read(&self) -> bool {
+        matches!(self, Self::Read)
+    }
+
+    pub fn is_mutate(&self) -> bool {
+        matches!(self, Self::Mutate)
+    }
 }
 
 /// An app→agent notification the agent may subscribe to. See [`SurfaceDecl::signals`]
