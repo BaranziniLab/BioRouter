@@ -1,16 +1,24 @@
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 use crate::agents::types::SharedProvider;
 use crate::config::permission::PermissionLevel;
-use crate::config::{BioRouterMode, PermissionManager};
+use crate::config::{BioRouterMode, Config, PermissionManager};
 use crate::conversation::message::{Message, ToolRequest};
 use crate::managed::{ManagedPolicy, ManagedVerdict};
 use crate::permission::managed_inspector::{MANAGED_ASK_REASON, MANAGED_DENY_REASON};
 use crate::permission::permission_judge::{detect_read_only_tools, PermissionCheckResult};
+use crate::permission::permission_scope::CallFacts;
+use crate::permission::permission_store::ToolPermissionStore;
 use crate::permission::tool_risk::{SmartApproveConfig, ToolRisk, ToolRiskRegistry};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
+
+/// BR-24 kill switch. Scoped grants only ever fire on a grant the user explicitly
+/// created, so the default (`true`) changes no behaviour on its own; the flag
+/// exists so a deployment can turn the whole tier off without clearing the store.
+const SCOPED_GRANTS_PARAM: &str = "PERMISSION_SCOPED_GRANTS";
 
 /// Permission Inspector that handles tool permission checking
 pub struct PermissionInspector {
@@ -30,6 +38,14 @@ pub struct PermissionInspector {
     /// so a managed force-allow wins even over a user `NeverAllow` (the one
     /// decision the escalation-only merge cannot express). Inert when absent.
     managed: Arc<ManagedPolicy>,
+    /// BR-24: remembered *scoped* grants — "always allow in this directory",
+    /// "always allow this command prefix". The middle grades between the store's
+    /// exact-args reuse (too narrow to ever fire twice) and a tool-name-wide
+    /// `PermissionLevel::AlwaysAllow` (so broad that granting it for `shell`
+    /// blesses every future command).
+    scoped_store: Arc<RwLock<ToolPermissionStore>>,
+    /// Whether the scoped tier is consulted at all ([`SCOPED_GRANTS_PARAM`]).
+    scoped_enabled: bool,
 }
 
 /// What the deterministic (no-LLM) pass concluded for a single tool request.
@@ -66,13 +82,44 @@ impl PermissionInspector {
         provider: SharedProvider,
         smart: SmartApproveConfig,
     ) -> Self {
+        // A store we cannot read is an empty store: the tier then grants nothing
+        // and every call falls through to the existing prompt.
+        let scoped_store = ToolPermissionStore::load().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load scoped tool permissions ({e}); starting empty");
+            ToolPermissionStore::new()
+        });
+
         Self {
             risks,
             smart,
             provider,
             permission_manager,
             managed,
+            scoped_store: Arc::new(RwLock::new(scoped_store)),
+            scoped_enabled: Config::global()
+                .get_param::<bool>(SCOPED_GRANTS_PARAM)
+                .unwrap_or(true),
         }
+    }
+
+    /// Pin the scoped-grant store (and the tier's kill switch), bypassing both
+    /// the on-disk store and the process-wide config. For tests and for
+    /// embedders that keep permissions outside the user's config dir.
+    pub fn with_scoped_store(
+        mut self,
+        scoped_store: Arc<RwLock<ToolPermissionStore>>,
+        enabled: bool,
+    ) -> Self {
+        self.scoped_store = scoped_store;
+        self.scoped_enabled = enabled;
+        self
+    }
+
+    /// The scoped-grant store, so the confirmation path can record a grant when
+    /// the user picks "always allow in this directory" / "always allow this
+    /// command prefix".
+    pub fn scoped_store(&self) -> Arc<RwLock<ToolPermissionStore>> {
+        Arc::clone(&self.scoped_store)
     }
 
     /// Process inspection results into permission decisions
@@ -244,8 +291,63 @@ impl PermissionInspector {
         )
     }
 
+    /// BR-24: a remembered grant scoped to a directory or a command prefix.
+    ///
+    /// `None` means "no live grant matches this call" — which is also what every
+    /// unparseable, unrecognised or ambiguous call yields, because the matching
+    /// in [`crate::permission::permission_scope`] fails closed throughout. The
+    /// caller then falls through to the existing behaviour and prompts.
+    fn scoped_verdict(
+        &self,
+        tool_name: &str,
+        request: &ToolRequest,
+        working_dir: &Path,
+    ) -> Option<Verdict> {
+        if !self.scoped_enabled {
+            return None;
+        }
+        let tool_call = request.tool_call.as_ref().ok()?;
+
+        let facts = CallFacts::for_tool_call(tool_name, tool_call.arguments.as_ref(), working_dir);
+        if !facts.is_scopable() {
+            // Nothing a scope can be matched against — not a command, and no
+            // path we can vouch for. Never guess.
+            return None;
+        }
+
+        let grant = self
+            .scoped_store
+            .read()
+            .ok()?
+            .matching_scoped_grant(tool_name, &facts)?;
+
+        Some(if grant.allowed {
+            Verdict::Decided(
+                InspectionAction::Allow,
+                format!(
+                    "Allowed by a remembered permission scoped to {}",
+                    grant.scope.describe()
+                ),
+            )
+        } else {
+            Verdict::Decided(
+                InspectionAction::Deny,
+                format!(
+                    "Denied by a remembered permission scoped to {}",
+                    grant.scope.describe()
+                ),
+            )
+        })
+    }
+
     /// The deterministic, no-LLM decision for one tool.
-    fn deterministic_verdict(&self, tool_name: &str, mode: BioRouterMode) -> Verdict {
+    fn deterministic_verdict(
+        &self,
+        tool_name: &str,
+        request: &ToolRequest,
+        mode: BioRouterMode,
+        working_dir: &Path,
+    ) -> Verdict {
         if let Some(verdict) = self.managed_verdict(tool_name, mode) {
             return verdict;
         }
@@ -264,6 +366,8 @@ impl PermissionInspector {
 
                 // 2. Enabling/disabling extensions rewires the agent's own tool
                 //    surface — always a human decision, in both gating modes.
+                //    Deliberately *above* the scoped tier: no directory or
+                //    command-prefix grant may buy its way past this gate.
                 if tool_name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
                     return Verdict::Decided(
                         InspectionAction::RequireApproval(Some(
@@ -273,7 +377,16 @@ impl PermissionInspector {
                     );
                 }
 
-                // 3. Approve confirms everything else; SmartApprove grades it.
+                // 3. BR-24: a scoped grant the user made earlier. It sits below
+                //    the managed policy, the tool-level preference and the
+                //    extension gate — none of which it can override — and above
+                //    the blanket ask, so it relieves approval fatigue in
+                //    `Approve` too, not only in `SmartApprove`.
+                if let Some(verdict) = self.scoped_verdict(tool_name, request, working_dir) {
+                    return verdict;
+                }
+
+                // 4. Approve confirms everything else; SmartApprove grades it.
                 if mode == BioRouterMode::Approve {
                     return Verdict::Decided(
                         InspectionAction::RequireApproval(None),
@@ -325,7 +438,7 @@ impl ToolInspector for PermissionInspector {
         tool_requests: &[ToolRequest],
         _messages: &[Message],
         biorouter_mode: BioRouterMode,
-        _session: &crate::session::Session,
+        session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         // Chat mode skips tools entirely; the agent splices a canned response.
         if biorouter_mode == BioRouterMode::Chat {
@@ -334,13 +447,17 @@ impl ToolInspector for PermissionInspector {
 
         let mut results = Vec::new();
         let mut judge_candidates: Vec<&ToolRequest> = Vec::new();
+        // BR-24: what a relative path argument is resolved against.
+        let working_dir = session.working_dir.as_path();
 
-        // Pass 1 — deterministic (managed policy → user preference → risk grade).
+        // Pass 1 — deterministic (managed policy → user preference → extension
+        // gate → scoped grant → risk grade).
         for request in tool_requests {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            match self.deterministic_verdict(&tool_call.name, biorouter_mode) {
+            match self.deterministic_verdict(&tool_call.name, request, biorouter_mode, working_dir)
+            {
                 Verdict::Decided(action, reason) => results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action,
