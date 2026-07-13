@@ -88,11 +88,14 @@ pub enum LoopSafetyKind {
     /// BR-47: a post-edit syntax check flagged the just-written file; the model
     /// was nudged with the diagnostics at the result seam.
     PostEditDiagnostics,
+    /// BR-50: the optional self-critique pass flagged a possible defect in an
+    /// ordinary answer; the model was asked to revise before finishing.
+    SelfCritiqueRevise,
 }
 
 /// Every kind, in declaration order. The counter table is indexed by position
 /// here, so a new variant must be appended to both.
-pub const ALL_KINDS: [LoopSafetyKind; 18] = [
+pub const ALL_KINDS: [LoopSafetyKind; 19] = [
     LoopSafetyKind::RepetitionWarn,
     LoopSafetyKind::RepetitionStop,
     LoopSafetyKind::FailureLoopNudge,
@@ -111,6 +114,7 @@ pub const ALL_KINDS: [LoopSafetyKind; 18] = [
     LoopSafetyKind::HookAsk,
     LoopSafetyKind::Cancelled,
     LoopSafetyKind::PostEditDiagnostics,
+    LoopSafetyKind::SelfCritiqueRevise,
 ];
 
 impl LoopSafetyKind {
@@ -136,6 +140,7 @@ impl LoopSafetyKind {
             LoopSafetyKind::HookAsk => "hook_ask",
             LoopSafetyKind::Cancelled => "cancelled",
             LoopSafetyKind::PostEditDiagnostics => "post_edit_diagnostics",
+            LoopSafetyKind::SelfCritiqueRevise => "self_critique_revise",
         }
     }
 

@@ -2840,6 +2840,16 @@ impl Agent {
             // to 0 whenever an edited file comes back clean, so a genuine fix
             // restores the budget.
             let mut post_edit_reflections: u32 = 0;
+            // BR-50: the optional self-critique / reflection policy, resolved once
+            // per reply (config read touches the filesystem). Default OFF; when a
+            // user opts in it re-reads an ordinary answer for correctness before
+            // it is returned, using the goal-judge LLM primitive.
+            let self_critique_config =
+                crate::agents::self_critique::SelfCritiqueConfig::from_config();
+            // BR-50: corrective passes the critique has requested this reply,
+            // bounded by `self_critique_config.max_passes` so a stubborn answer
+            // cannot spin. Reply-scoped, like `post_edit_reflections`.
+            let mut self_critique_passes: u32 = 0;
             // BR-32: the /goal stall detector, generalized to ordinary chat. Both
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
@@ -4014,6 +4024,44 @@ impl Agent {
                         break;
                     }
                     let active_goal = self.active_goal(&session_config.id).await;
+
+                    // BR-50: optional self-critique pass on an *ordinary* answer.
+                    // Skipped when a /goal is active (its Stop-hook judge already
+                    // re-reads the work), when the turn is already being wrapped up
+                    // under a stall/budget deadline (a critique would re-expand a
+                    // turn we are deliberately ending), when cancelled, or once the
+                    // per-reply pass budget is spent. Default OFF, so this is inert
+                    // unless a user opted in.
+                    if self_critique_config.is_active()
+                        && active_goal.is_none()
+                        && stall_deadline.is_none()
+                        && budget_deadline.is_none()
+                        && self_critique_passes < self_critique_config.max_passes
+                        && !is_token_cancelled(&cancel_token)
+                    {
+                        if let Some(reason) = self.run_self_critique(&conversation).await {
+                            self_critique_passes += 1;
+                            loop_safety::emit(
+                                LoopSafetyEvent::new(LoopSafetyKind::SelfCritiqueRevise)
+                                    .session(&session_config.id)
+                                    .count(self_critique_passes),
+                            );
+                            let feedback = Message::user()
+                                .with_text(
+                                    crate::agents::self_critique::revise_instruction(&reason),
+                                )
+                                .with_visibility(false, true);
+                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            conversation.push(feedback);
+                            // Keep looping so the model revises; skip this
+                            // iteration's Stop hook. The next finish attempt runs
+                            // Stop hooks normally, and the critique won't fire again
+                            // once the pass budget is spent.
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                    }
+
                     let transcript_tail = crate::agents::goal::transcript_tail(&conversation);
                     match self.hooks_manager.stop(&session_config.id, &session.working_dir, transcript_tail).await {
                         crate::hooks::StopHookVerdict::Proceed => {
