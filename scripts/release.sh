@@ -55,6 +55,12 @@ NOTARY="$ROOT/notarization"
 SIGN_IDENTITY="Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)"
 TEAM_ID="F3YYBXAFJ8"
 
+# The docker cross-compile recipes (linux/windows images, mingw winpthread
+# linker wrap, LZMA_API_STATIC, the glibc-2.31 pin) live in ONE place so the
+# release and the BR-70 `check-cross` CI gate can never drift apart.
+# shellcheck source=scripts/cross-env.sh
+. "$ROOT/scripts/cross-env.sh"
+
 log()  { printf '\033[1;36m[release]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[release] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -135,15 +141,9 @@ PY
 }
 
 # ── backends ──────────────────────────────────────────────────────────────────
-WIN_LINKER_WRAP='printf "#!/bin/sh\nexec x86_64-w64-mingw32-gcc \"\$@\" -lpthread -lwinpthread\n" > /usr/local/bin/winpthread-gcc && chmod +x /usr/local/bin/winpthread-gcc'
-
-# Pin the Linux cross-compile to an OLD-glibc base (Debian 11 "bullseye",
-# glibc 2.31) so the produced binaries run on mainstream distros — Ubuntu
-# 20.04+/22.04/24.04, Debian 11/12, and RHEL/Rocky 8/9 (glibc 2.34). Using the
-# rolling `rust:latest` (now trixie, glibc 2.39) yields binaries that fail to
-# start on anything older than bleeding-edge — caught by the cli-linux smoke
-# test. Windows (mingw) has no glibc concern and stays on rust:latest.
-LINUX_RUST_IMG="rust:1.92-bullseye"
+# The cross-compile images, toolchain env, mingw linker wrap and LZMA_API_STATIC
+# now live in scripts/cross-env.sh (sourced above) — the SAME recipe the BR-70
+# `check-cross` CI gate uses, so what the gate checks is exactly what ships.
 
 # Linux x86_64 backend (biorouterd + biorouter). Extracted so it can be re-run
 # on its own. Cleans the target dir first to force a from-scratch compile
@@ -159,19 +159,10 @@ cmd_linux-backend() {
   # under the pinned bullseye fails at build time with "GLIBC_2.3x not found".
   # Drop only the Linux (ELF) build scripts so they recompile against bullseye's
   # glibc; the mac (Mach-O) build scripts and final mac binaries are left intact.
+  # (The check-cross gate uses a per-triple target dir and never hits this.)
   find "$ROOT/target/release/build" -name 'build-script-build' -type f 2>/dev/null \
     | while read -r f; do file "$f" 2>/dev/null | grep -q ELF && rm -rf "$(dirname "$f")"; done
-  docker volume create biorouter-linux-bullseye-cache >/dev/null 2>&1 || true
-  docker run --rm -v "$ROOT":/usr/src/myapp -v biorouter-linux-bullseye-cache:/usr/local/cargo/registry \
-    -w /usr/src/myapp "$LINUX_RUST_IMG" sh -c '
-      rustup target add x86_64-unknown-linux-gnu && dpkg --add-architecture amd64 && apt-get update -q &&
-      apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64 &&
-      export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
-             AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
-             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
-             LZMA_API_STATIC=1 PKG_CONFIG_ALLOW_CROSS=1 \
-             PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig PROTOC=/usr/bin/protoc &&
-      cargo build --release --target x86_64-unknown-linux-gnu --bin biorouterd --bin biorouter'
+  cross_linux "cargo build --release --bin biorouterd --bin biorouter"
   log "linux backend compiled"
 }
 
@@ -185,21 +176,7 @@ cmd_backends() {
 
   ensure_docker
   log "cross-compiling windows-gnu backend (docker)"
-  docker volume create biorouter-windows-cache >/dev/null 2>&1 || true
-  docker run --rm -v "$ROOT":/usr/src/myapp -v biorouter-windows-cache:/usr/local/cargo/registry \
-    -w /usr/src/myapp rust:latest sh -c "
-      rustup target add x86_64-pc-windows-gnu && apt-get update &&
-      apt-get install -y mingw-w64 protobuf-compiler cmake &&
-      $WIN_LINKER_WRAP &&
-      export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ \
-             AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar \
-             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=/usr/local/bin/winpthread-gcc \
-             LZMA_API_STATIC=1 PKG_CONFIG_ALLOW_CROSS=1 PROTOC=/usr/bin/protoc PATH=/usr/bin:\$PATH &&
-      cargo build --release --target x86_64-pc-windows-gnu --bin biorouterd --bin biorouter &&
-      GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1) &&
-      cp \$GCC_DIR/libstdc++-6.dll \$GCC_DIR/libgcc_s_seh-1.dll \
-         /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll \
-         /usr/src/myapp/target/x86_64-pc-windows-gnu/release/"
+  cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
 
   cmd_linux-backend
   log "all 4 backends compiled"
