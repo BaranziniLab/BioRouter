@@ -40,6 +40,10 @@ mod subagent_task_config;
 pub mod subagent_tool;
 pub(crate) mod todo_extension;
 mod tool_execution;
+// BR-51: the structured tool-error taxonomy every failed tool result is reduced
+// to, so the model and the loop detectors can tell a retryable blip from a hard
+// failure.
+pub mod tool_errors;
 pub mod types;
 pub mod vault_refs;
 pub mod workspace_summary;
