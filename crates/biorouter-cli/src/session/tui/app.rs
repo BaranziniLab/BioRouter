@@ -129,6 +129,12 @@ pub struct App {
     pub stream_text: String,
     pub stream_id: Option<String>,
     pub stream_start: Option<usize>,
+    /// BR-53: set when `stream_text` grew since the preview was last rendered.
+    /// A delta only appends + flags this; the expensive Markdown re-render
+    /// (`render_stream_if_dirty`) is deferred to the next draw, which the reply
+    /// loop caps at ~60 fps — so a fast token stream stops re-parsing the whole
+    /// message on every token (O(n²) → O(n) per frame).
+    pub stream_dirty: bool,
     /// Scrollback range `[start, start+len)` of the MOST RECENT tool result's
     /// preview lines. When the next tool call starts, that block is collapsed to a
     /// one-line summary so old tool output doesn't bury the conversation — only the
@@ -165,15 +171,18 @@ impl App {
             stream_text: String::new(),
             stream_id: None,
             stream_start: None,
+            stream_dirty: false,
             last_tool_result: None,
         }
     }
 
     // ── live token streaming ─────────────────────────────────────────────────
 
-    /// Append a streamed assistant-text delta and re-render the live preview in
-    /// place (as Markdown, so a finished structure snaps into shape as it
-    /// completes). A new response id while one is in flight commits the prior.
+    /// Append a streamed assistant-text delta. The delta is only buffered and
+    /// the preview marked dirty; the Markdown re-render (which reparses the whole
+    /// in-progress message) is deferred to [`Self::render_stream_if_dirty`],
+    /// which the reply loop drives at most ~60 fps. A new response id while one
+    /// is in flight commits the prior.
     pub fn stream_delta(&mut self, id: Option<String>, delta: &str) {
         if self.stream_start.is_some() && id.is_some() && self.stream_id != id {
             self.stream_commit();
@@ -185,13 +194,26 @@ impl App {
             self.stream_text.clear();
         }
         self.stream_text.push_str(delta);
+        self.stream_dirty = true;
+        self.scroll = 0; // follow the latest output
+    }
+
+    /// Re-render the in-progress streamed preview as Markdown, in place, if a
+    /// delta has landed since the last render. Called from `draw` so the reparse
+    /// happens once per drawn frame instead of once per streamed token (a
+    /// finished structure still snaps into shape as it completes). No-op when
+    /// nothing is streaming or nothing changed.
+    pub fn render_stream_if_dirty(&mut self) {
+        if !self.stream_dirty {
+            return;
+        }
+        self.stream_dirty = false;
         if let Some(start) = self.stream_start {
             self.scrollback.truncate(start);
             for line in md_lines(&self.stream_text) {
                 self.scrollback.push(line);
             }
         }
-        self.scroll = 0; // follow the latest output
     }
 
     /// Finalize the streamed message into permanent scrollback. Returns the full
@@ -199,6 +221,7 @@ impl App {
     pub fn stream_commit(&mut self) -> Option<String> {
         let start = self.stream_start.take()?;
         self.stream_id = None;
+        self.stream_dirty = false;
         self.scrollback.truncate(start);
         let text = std::mem::take(&mut self.stream_text);
         if text.trim().is_empty() {
