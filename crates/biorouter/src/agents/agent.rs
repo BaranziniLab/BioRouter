@@ -12,6 +12,7 @@ use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
 use crate::action_required_manager::ActionRequiredManager;
+use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
@@ -24,6 +25,7 @@ use crate::agents::resource_refs::{
     canonical_builtin_extension_name, extract_resource_refs, ResourceRefs,
 };
 use crate::agents::retry::{RetryManager, RetryResult};
+use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
     create_subagent_tool, handle_subagent_tool, SUBAGENT_TOOL_NAME,
@@ -45,6 +47,7 @@ use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
 use crate::managed::ManagedPolicy;
 use crate::mcp_utils::ToolResult;
+use crate::observability::loop_safety::{self, LoopSafetyEvent, LoopSafetyKind};
 use crate::permission::managed_inspector::ManagedPolicyInspector;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
@@ -56,7 +59,7 @@ use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
-use crate::tool_monitor::RepetitionInspector;
+use crate::tool_monitor::{FailureLoopConfig, RepetitionInspector, SemanticLoopConfig};
 use crate::utils::is_token_cancelled;
 use crate::workflow::{Author, Response, Settings, SubWorkflow, Workflow};
 use regex::Regex;
@@ -79,7 +82,16 @@ const DEFAULT_MAX_TURNS: u32 = 100;
 /// normal work; overridable per session (`max_tool_calls`) or globally
 /// (`BIOROUTER_MAX_TOOL_CALLS`).
 const DEFAULT_MAX_TOOL_CALLS: u32 = 200;
-const DEFAULT_MAX_REPETITIONS: u32 = 3;
+/// BR-29 staged repetition guard, soft stage: the Nth consecutive byte-identical
+/// tool call earns a non-blocking warning injected into the model's context (the
+/// call still runs). Overridable with `BIOROUTER_REPETITION_SOFT_WARN`.
+const DEFAULT_REPETITION_SOFT_WARN: u32 = 3;
+/// BR-29 staged repetition guard, hard stage: the Nth consecutive byte-identical
+/// tool call is denied outright, with an honest "repetition guard" reason (never
+/// the misleading "the user declined"). Overridable with
+/// `BIOROUTER_REPETITION_HARD_STOP`. Set below the soft threshold to disable the
+/// soft stage entirely.
+const DEFAULT_REPETITION_HARD_STOP: u32 = 5;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
 /// Max consecutive auto-continues for a turn the provider cut off by the output
 /// length limit (`finish_reason == "length"`) with no tool call. Bounded so a
@@ -206,6 +218,11 @@ pub struct Agent {
     /// short pointer on later turns so a skill-heavy session doesn't re-pay the
     /// multi-KB body cost every turn. Keyed by session id.
     pub(super) injected_skills: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// BR-31 no-progress detector. The same config the `RepetitionInspector`
+    /// carries: the inspector owns the hard stop (it can only block a *future*
+    /// call), while the reply loop owns the escalating nudges, which it emits at
+    /// the result-collection seam as soon as the failing result lands.
+    pub(super) failure_loop: FailureLoopConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -362,6 +379,7 @@ impl Agent {
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
+            failure_loop: Self::failure_loop_config(Config::global()),
         }
     }
 
@@ -478,16 +496,228 @@ impl Agent {
             managed,
         )));
 
-        // Add repetition inspector (lower priority - basic repetition checking)
-        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::new(Some(
-            DEFAULT_MAX_REPETITIONS,
-        ))));
+        // Add repetition inspector (lower priority - basic repetition checking).
+        // BR-29: staged — a soft, non-blocking warning first, a hard stop only if
+        // the model keeps repeating itself through it.
+        // BR-30: plus the semantic heuristics (near-duplicate arg tweaks, A/B/A/B
+        // oscillation), which are warn-only unless a hard stop is configured.
+        let config = Config::global();
+        let soft_warn_at = config
+            .get_param::<u32>("BIOROUTER_REPETITION_SOFT_WARN")
+            .unwrap_or(DEFAULT_REPETITION_SOFT_WARN);
+        let hard_stop_at = config
+            .get_param::<u32>("BIOROUTER_REPETITION_HARD_STOP")
+            .unwrap_or(DEFAULT_REPETITION_HARD_STOP);
+        tool_inspection_manager.add_inspector(Box::new(
+            RepetitionInspector::staged(soft_warn_at, hard_stop_at)
+                .with_semantic(Self::semantic_loop_config(config))
+                .with_failure_loop(Self::failure_loop_config(config)),
+        ));
 
         // Add user-configured PreToolUse hooks (runs last)
         tool_inspection_manager
             .add_inspector(Box::new(crate::hooks::HookInspector::new(hooks_manager)));
 
         tool_inspection_manager
+    }
+
+    /// BR-30: resolve the semantic loop-detection config.
+    ///
+    /// Defaults are deliberately warn-only — a heuristic that denies a call it
+    /// misread is worse than one that nudges. Operators who want enforcement set
+    /// `BIOROUTER_LOOP_NEAR_DUP_HARD_STOP` / `BIOROUTER_LOOP_OSCILLATION_HARD_STOP`
+    /// (a value of 0 keeps the stage off).
+    fn semantic_loop_config(config: &Config) -> SemanticLoopConfig {
+        let defaults = SemanticLoopConfig::default();
+        let positive = |value: u32| (value > 0).then_some(value);
+        SemanticLoopConfig {
+            enabled: config
+                .get_param::<bool>("BIOROUTER_LOOP_SEMANTIC_DETECTION")
+                .unwrap_or(defaults.enabled),
+            similarity_threshold: config
+                .get_param::<f32>("BIOROUTER_LOOP_ARG_SIMILARITY")
+                .ok()
+                .filter(|threshold| (0.0..=1.0).contains(threshold))
+                .unwrap_or(defaults.similarity_threshold),
+            near_dup_soft_warn: config
+                .get_param::<u32>("BIOROUTER_LOOP_NEAR_DUP_SOFT_WARN")
+                .ok()
+                .map_or(defaults.near_dup_soft_warn, positive),
+            near_dup_hard_stop: config
+                .get_param::<u32>("BIOROUTER_LOOP_NEAR_DUP_HARD_STOP")
+                .ok()
+                .map_or(defaults.near_dup_hard_stop, positive),
+            oscillation_soft_warn: config
+                .get_param::<u32>("BIOROUTER_LOOP_OSCILLATION_SOFT_WARN")
+                .ok()
+                .map_or(defaults.oscillation_soft_warn, positive),
+            oscillation_hard_stop: config
+                .get_param::<u32>("BIOROUTER_LOOP_OSCILLATION_HARD_STOP")
+                .ok()
+                .map_or(defaults.oscillation_hard_stop, positive),
+        }
+    }
+
+    /// BR-31: resolve the repeated-failing-result ("no progress") config.
+    ///
+    /// Unlike BR-30's heuristics this ships with its hard stage on: a run of
+    /// identical *failures* is observed evidence, not a similarity guess. Each
+    /// stage is individually disabled by setting it to 0
+    /// (`BIOROUTER_FAILURE_LOOP_HARD_STOP=0` keeps the nudges but never blocks);
+    /// `BIOROUTER_FAILURE_LOOP_DETECTION=false` turns the whole detector off.
+    fn failure_loop_config(config: &Config) -> FailureLoopConfig {
+        let defaults = FailureLoopConfig::default();
+        let positive = |value: u32| (value > 0).then_some(value);
+        FailureLoopConfig {
+            enabled: config
+                .get_param::<bool>("BIOROUTER_FAILURE_LOOP_DETECTION")
+                .unwrap_or(defaults.enabled),
+            similarity_threshold: config
+                .get_param::<f32>("BIOROUTER_FAILURE_ERROR_SIMILARITY")
+                .ok()
+                .filter(|threshold| (0.0..=1.0).contains(threshold))
+                .unwrap_or(defaults.similarity_threshold),
+            soft_warn_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_SOFT_WARN")
+                .ok()
+                .map_or(defaults.soft_warn_at, positive),
+            escalate_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_ESCALATE")
+                .ok()
+                .map_or(defaults.escalate_at, positive),
+            hard_stop_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_HARD_STOP")
+                .ok()
+                .map_or(defaults.hard_stop_at, positive),
+        }
+    }
+
+    /// BR-31 result-collection seam: the escalating no-progress nudges owed to
+    /// this batch's tool results.
+    ///
+    /// Called once the batch's results have been written into the response slots
+    /// by [`Self::integrate_tool_result`], so the model sees "you have failed the
+    /// same way 3 times" attached to the *third* failure — not one provider
+    /// round-trip (and one more wasted call) later.
+    ///
+    /// `history` is the conversation as of the previous iteration; the outcomes of
+    /// the batch that just ran are appended from the response slots, matching the
+    /// exact same request→response pairing the inspector does on the transcript,
+    /// so a streak spans iterations.
+    async fn failure_loop_nudges(
+        &self,
+        history: &[Message],
+        requests: &[ToolRequest],
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) -> Vec<String> {
+        if !self.failure_loop.enabled {
+            return Vec::new();
+        }
+
+        let mut outcomes = crate::tool_monitor::tool_outcomes_since_last_user_turn(history);
+        let mut failed_tools: Vec<String> = Vec::new();
+
+        for request in requests {
+            let Ok(tool_call) = &request.tool_call else {
+                continue;
+            };
+            let Some(slot) = request_to_response_map.get(&request.id) else {
+                continue;
+            };
+            let response = slot.lock().await.clone();
+            let Some(outcome) = crate::tool_monitor::outcome_from_response_message(
+                &tool_call.name,
+                &request.id,
+                &response,
+            ) else {
+                continue;
+            };
+            if outcome.failure.is_some() && !failed_tools.contains(&outcome.tool_name) {
+                failed_tools.push(outcome.tool_name.clone());
+            }
+            outcomes.push(outcome);
+        }
+
+        failed_tools
+            .iter()
+            .filter_map(|tool_name| {
+                let nudge = crate::tool_monitor::failure_loop_nudge(
+                    &self.failure_loop,
+                    &outcomes,
+                    tool_name,
+                )?;
+                // BR-67: the nudge is a loop-safety decision; put which tool has
+                // been failing, and how long its streak is, on the record.
+                loop_safety::emit(
+                    LoopSafetyEvent::new(LoopSafetyKind::FailureLoopNudge)
+                        .tool(tool_name)
+                        .count(crate::tool_monitor::failing_streak(
+                            &outcomes,
+                            tool_name,
+                            self.failure_loop.similarity_threshold,
+                        )),
+                );
+                Some(nudge)
+            })
+            .collect()
+    }
+
+    /// BR-66: this batch's outcomes as the general mistake-streak counter sees
+    /// them — one entry per tool call the *model* is answerable for, in request
+    /// order.
+    ///
+    /// Two deliberate differences from BR-31's view of the same batch:
+    ///
+    /// * A **malformed** tool call (one the provider emitted that never parsed)
+    ///   counts as a mistake. BR-31 skips it — it has no tool name to key a
+    ///   per-tool failure streak on — but "the model keeps emitting garbage
+    ///   calls" is exactly the streak BR-66 exists to catch.
+    /// * Calls that never ran because a **guard denied** them, or because the
+    ///   **user declined** them, are dropped. Those are policy verdicts, not the
+    ///   model's failures; counting them would nudge the model for a decision it
+    ///   did not make, on top of the warning BR-29/30/31 already sent.
+    async fn mistake_outcomes(
+        &self,
+        requests: &[ToolRequest],
+        permission_check_result: &PermissionCheckResult,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) -> Vec<crate::tool_monitor::ToolOutcome> {
+        let denied: HashSet<&str> = permission_check_result
+            .denied
+            .iter()
+            .map(|request| request.id.as_str())
+            .collect();
+
+        let mut outcomes = Vec::new();
+        for request in requests {
+            if denied.contains(request.id.as_str()) {
+                continue;
+            }
+            match &request.tool_call {
+                Ok(tool_call) => {
+                    let Some(slot) = request_to_response_map.get(&request.id) else {
+                        continue;
+                    };
+                    let response = slot.lock().await.clone();
+                    let Some(outcome) = crate::tool_monitor::outcome_from_response_message(
+                        &tool_call.name,
+                        &request.id,
+                        &response,
+                    ) else {
+                        continue;
+                    };
+                    if crate::agents::mistakes::is_user_decline(&outcome) {
+                        continue;
+                    }
+                    outcomes.push(outcome);
+                }
+                Err(error) => outcomes.push(crate::tool_monitor::ToolOutcome {
+                    tool_name: crate::agents::mistakes::MALFORMED_TOOL_NAME.to_string(),
+                    failure: Some(error.message.to_string()),
+                }),
+            }
+        }
+        outcomes
     }
 
     /// Reset the retry attempts counter to 0
@@ -1012,18 +1242,92 @@ impl Agent {
         }
     }
 
+    /// BR-32 loop seam: the periodic "are you looping?" progress check, and the
+    /// staged response to its verdict.
+    ///
+    /// The `/goal` loop has had real stall detection for a while (fuzzy
+    /// similarity of the judge's feedback across attempts, a counter that does
+    /// NOT reset when tools run, a graceful give-up) — but only for sessions with
+    /// a goal set, which is not where most stuck loops happen. This runs the same
+    /// idea for *every* session, on a schedule: nothing until a single turn has
+    /// already burned [`stall::StallCheckConfig::first_check_at`] actions without
+    /// returning to the user, then one small fast-model call every
+    /// `interval` actions. See [`crate::agents::stall`].
+    ///
+    /// Skipped when a `/goal` is active: that session already pays for an LLM
+    /// judge on every stop attempt and owns a non-resetting stall budget, so a
+    /// second detector would double the cost and could fight the goal's own
+    /// give-up. Fail-open everywhere — no tail, no provider, a provider error, or
+    /// an unreadable verdict all mean [`StallAction::Proceed`].
+    async fn stall_check(
+        &self,
+        session_id: &str,
+        conversation: &Conversation,
+        actions_taken: u32,
+        config: &StallCheckConfig,
+        watch: &mut StallWatch,
+    ) -> StallAction {
+        if !config.due(actions_taken) || watch.has_given_up() {
+            return StallAction::Proceed;
+        }
+        if self.active_goal(session_id).await.is_some() {
+            return StallAction::Proceed;
+        }
+        let Some(tail) = crate::agents::stall::progress_tail(conversation) else {
+            return StallAction::Proceed;
+        };
+        let Ok(provider) = self.provider().await else {
+            return StallAction::Proceed;
+        };
+        let verdict = crate::agents::stall::check_progress(
+            provider,
+            &tail,
+            actions_taken,
+            watch.last_reason(),
+        )
+        .await;
+        watch.record(verdict.as_deref(), config)
+    }
+
     /// Record this turn's provider usage exactly once for token accounting
     /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
+    ///
+    /// BR-35: the same usage also feeds the per-reply budget, which is the only
+    /// thing that sees the *whole reply's* spend — the session gauge tracks the
+    /// live context, not what this reply has burned. Pricing is looked up per
+    /// turn against the model that actually ran (a lead/worker swap mid-reply is
+    /// therefore priced correctly), and only when a dollar limit is set.
     async fn record_turn_usage(
         &self,
         session_config: &SessionConfig,
         turn_usage: Option<crate::providers::base::ProviderUsage>,
+        budget: &mut BudgetTracker,
     ) -> Result<()> {
         if let Some(usage) = turn_usage {
+            self.record_budget_usage(budget, &usage).await;
             self.update_session_metrics(session_config, &usage, false)
                 .await?;
         }
         Ok(())
+    }
+
+    /// Fold one provider round-trip (a turn, or an in-reply compaction) into the
+    /// BR-35 budget. Free when no budget is set.
+    async fn record_budget_usage(
+        &self,
+        budget: &mut BudgetTracker,
+        usage: &crate::providers::base::ProviderUsage,
+    ) {
+        if !budget.is_active() {
+            return;
+        }
+        let provider_name = match self.provider().await {
+            Ok(provider) => provider.get_name().to_string(),
+            // No provider is a pricing miss, not a stop: the token and clock
+            // axes still hold.
+            Err(_) => String::new(),
+        };
+        budget.record_usage(&provider_name, usage);
     }
 
     /// BR-12: move auto-compaction off the user-visible critical path.
@@ -1222,6 +1526,18 @@ impl Agent {
                     // Non-bypassable safety block: the user did not decline, the
                     // command is refused outright, so return the reason directly.
                     Some(result) if result.inspector_name == "security" => result.reason.clone(),
+                    // BR-29/BR-31: a loop guard tripped — the call repeated
+                    // itself, or the tool has been failing the same way over and
+                    // over. The user did not decline anything; telling the model
+                    // they did (the old DECLINED_RESPONSE) is actively misleading
+                    // and leaves it unable to diagnose the stop. Return the real
+                    // reason.
+                    Some(result)
+                        if result.inspector_name
+                            == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
+                    {
+                        result.reason.clone()
+                    }
                     _ => DECLINED_RESPONSE.to_string(),
                 };
                 let mut response = response_msg.lock().await;
@@ -2090,9 +2406,48 @@ impl Agent {
             // reads touch the filesystem, so we avoid doing it per tool result).
             let tool_output_guardrail =
                 crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
+            // BR-32: the /goal stall detector, generalized to ordinary chat. Both
+            // resolved once per reply (config reads hit the filesystem).
+            let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
+            let mut stall_watch = crate::agents::stall::StallWatch::default();
+            // BR-66: the general mistake streak — consecutive failed tool calls of
+            // *any* kind (BR-31 only sees one tool failing one way), plus the
+            // recoverable-provider-error counter that decides whether a failed
+            // model call ends the turn or earns one more attempt with a hint.
+            // Reply-scoped, like the stall tracker, so a streak can never leak
+            // across turns.
+            let mistake_config = crate::agents::mistakes::MistakeConfig::from_config(Config::global());
+            let mut mistakes = crate::agents::mistakes::MistakeTracker::default();
+            // Set once the stall check has told the model to wrap up: the action
+            // count by which this turn must be over, so a model that ignores the
+            // give-up instruction and keeps calling tools cannot spin all the way
+            // to `max_turns`.
+            let mut stall_deadline: Option<u32> = None;
+            // BR-35: the per-reply wall-clock / token / dollar ceiling. `max_turns`
+            // and `max_tool_calls` bound how many *steps* a reply takes, which is
+            // not a bound on time or money — 429 backoff (~2 min/call) compounds
+            // inside a single step, and one step can re-bill a 200k-token context.
+            // Inert (and free) unless a limit is configured; a limit set on the
+            // session wins per-axis over the global config.
+            let reply_started = std::time::Instant::now();
+            let mut budget = BudgetTracker::new(
+                ReplyBudget::resolve(session_config.budget, Config::global()),
+            );
+            // Set once the budget is spent and the model has been told to wrap up:
+            // the action count by which this reply must be over, mirroring
+            // `stall_deadline`, so a model that keeps calling tools anyway cannot
+            // spend the budget twice over.
+            let mut budget_deadline: Option<u32> = None;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
+                    // BR-67: a cancelled turn and a completed turn look identical
+                    // in the logs otherwise.
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::Cancelled)
+                            .session(&session_config.id)
+                            .count(turns_taken),
+                    );
                     break;
                 }
 
@@ -2112,6 +2467,12 @@ impl Agent {
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::TurnLimitStop)
+                            .session(&session_config.id)
+                            .count(turns_taken)
+                            .limit(max_turns),
+                    );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(format!(
                             "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
@@ -2120,10 +2481,59 @@ impl Agent {
                     break;
                 }
                 if tool_calls_taken > max_tool_calls {
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::ToolCallLimitStop)
+                            .session(&session_config.id)
+                            .count(tool_calls_taken)
+                            .limit(max_tool_calls),
+                    );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(format!(
                             "I've made {tool_calls_taken} tool calls this turn, past my per-turn limit of {max_tool_calls}, so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_tool_calls` / `BIOROUTER_MAX_TOOL_CALLS`.)"
                         ))
+                    );
+                    break;
+                }
+                // BR-32: the stall check already told the model to wrap up and it
+                // kept going. End the turn rather than let a confirmed loop run to
+                // the `max_turns` cap.
+                if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    let reason = stall_watch
+                        .last_reason()
+                        .unwrap_or("repeating the same actions without progress")
+                        .to_string();
+                    warn!("stall give-up ignored; ending the turn at action {turns_taken}");
+                    // BR-67: the judge's `reason` is model prose about the user's
+                    // work — the event carries the action count only.
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::StallStop)
+                            .session(&session_config.id)
+                            .count(turns_taken),
+                    );
+                    yield AgentEvent::Message(
+                        Message::assistant().with_text(crate::agents::stall::stopped_message(&reason))
+                    );
+                    break;
+                }
+                // BR-35: the budget was spent, the model was asked to wrap up, and
+                // it kept working past its grace window. End the reply rather than
+                // let it spend the budget over again.
+                if budget_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    let snapshot = budget.snapshot_at(reply_started.elapsed());
+                    warn!(
+                        elapsed_seconds = snapshot.elapsed_seconds,
+                        tokens = snapshot.tokens,
+                        "reply budget wrap-up ignored; ending the turn at action {turns_taken}"
+                    );
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::BudgetStop)
+                            .session(&session_config.id)
+                            .count(turns_taken)
+                            .maybe_axis(snapshot.axis),
+                    );
+                    yield AgentEvent::Message(
+                        Message::assistant()
+                            .with_text(crate::agents::budget::stopped_message(&snapshot))
                     );
                     break;
                 }
@@ -2137,6 +2547,154 @@ impl Agent {
                     session_manager.add_message(&session_config.id, &m).await?;
                     conversation.push(m.clone());
                     yield AgentEvent::Message(m);
+                }
+
+                // BR-32: periodic "are you looping?" check for a turn that has been
+                // running a long time without returning to the user. Off in normal
+                // chat (nothing gets 30 actions deep); the LLM call is fail-open, so
+                // an error here can never break a turn.
+                match self.stall_check(
+                    &session_config.id,
+                    &conversation,
+                    turns_taken,
+                    &stall_config,
+                    &mut stall_watch,
+                ).await {
+                    StallAction::Proceed => {}
+                    StallAction::Nudge { reason } => {
+                        info!(actions = turns_taken, "stall check flagged a loop; nudging the model");
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::StallNudge)
+                                .session(&session_config.id)
+                                .count(turns_taken),
+                        );
+                        let nudge = Message::user()
+                            .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &nudge).await?;
+                        conversation.push(nudge);
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Progress check: {}",
+                                        crate::agents::stall::ellipsize(&reason, 200)
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
+                    StallAction::GiveUp { reason, flags, stalled } => {
+                        warn!(
+                            actions = turns_taken,
+                            flags,
+                            stalled,
+                            "stall check gave up; asking for a best-effort answer"
+                        );
+                        // `flags` (how many progress checks flagged this turn) is
+                        // the count that tripped the give-up; the reason prose
+                        // stays out of the trace.
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::StallGiveUp)
+                                .session(&session_config.id)
+                                .count(flags)
+                                .limit(stall_config.max_flags),
+                        );
+                        // The model gets a short grace window to write its wrap-up;
+                        // after that the turn ends whether or not it complied.
+                        stall_deadline =
+                            Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
+                        let wrapup = Message::user()
+                            .with_text(crate::agents::stall::giveup_instruction(&reason))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        conversation.push(wrapup);
+                        let why = if stalled {
+                            "the same loop kept repeating"
+                        } else {
+                            "no progress across several checks"
+                        };
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Stopped looping after {flags} progress check(s) — {why}. \
+                                         Wrapping up with a best-effort answer."
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
+                }
+
+                // BR-35: the per-reply budget meter. Cheap (no LLM call, no I/O):
+                // a comparison against the running totals `record_turn_usage` has
+                // already folded in, skipped entirely when no limit is set.
+                match budget.check_at(reply_started.elapsed()) {
+                    BudgetAction::Proceed => {}
+                    BudgetAction::Warn(snapshot) => {
+                        // One heads-up as the reply nears its ceiling, so a long
+                        // agentic turn is never a silent spend.
+                        info!(
+                            elapsed_seconds = snapshot.elapsed_seconds,
+                            tokens = snapshot.tokens,
+                            axis = snapshot.axis,
+                            "reply budget is running low"
+                        );
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::BudgetWarn)
+                                .session(&session_config.id)
+                                .count(turns_taken)
+                                .maybe_axis(snapshot.axis),
+                        );
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    crate::agents::budget::progress_note(&snapshot),
+                                )
+                                .user_only(),
+                        );
+                    }
+                    BudgetAction::Exceeded(snapshot) => {
+                        warn!(
+                            elapsed_seconds = snapshot.elapsed_seconds,
+                            tokens = snapshot.tokens,
+                            axis = snapshot.axis,
+                            "reply budget spent; asking for a wrap-up"
+                        );
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::BudgetExceeded)
+                                .session(&session_config.id)
+                                .count(turns_taken)
+                                .maybe_axis(snapshot.axis),
+                        );
+                        // Graceful: the model is told the budget is spent (and how
+                        // many tokens it has left) and gets a short grace window to
+                        // summarize where it got to. The hard stop above fires only
+                        // if it ignores that.
+                        budget_deadline = Some(
+                            turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
+                        );
+                        let wrapup = Message::user()
+                            .with_text(crate::agents::budget::wrapup_instruction(&snapshot))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        conversation.push(wrapup);
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Budget reached ({}). Wrapping up with what I have.",
+                                        snapshot.describe()
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
                 }
 
                 let conversation_with_moim = self
@@ -2155,6 +2713,10 @@ impl Agent {
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
+                // BR-66: set when a recoverable provider error was absorbed and a
+                // hint pushed into `messages_to_add`; the turn continues instead of
+                // ending on the error.
+                let mut did_recover_provider_error_this_iteration = false;
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
@@ -2176,6 +2738,9 @@ impl Agent {
                     match next {
                         Ok((response, usage)) => {
                             compaction_attempts = 0;
+                            // BR-66: the provider is answering again; whatever blip
+                            // was retried before is over.
+                            mistakes.observe_provider_success();
 
                             // Emit model change event if provider is lead-worker
                             let provider = self.provider().await?;
@@ -2248,6 +2813,13 @@ impl Agent {
                                         yield AgentEvent::Message(msg);
                                     }
                                 }
+                                // Soft-stage advisories injected after this batch's tool
+                                // results so the model can break the loop itself before the
+                                // hard stop: BR-29/BR-30's call-shape warnings, gathered from
+                                // inspection, plus BR-31's no-progress nudges, gathered from
+                                // the results themselves.
+                                let mut loop_warnings: Vec<String> = Vec::new();
+
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
                                     for request in remaining_requests.iter() {
@@ -2279,6 +2851,8 @@ impl Agent {
                                         &request_to_response_map,
                                         cancel_token.clone(),
                                     ).await?;
+
+                                    loop_warnings = crate::tool_inspection::collect_warning_reasons(&inspection_results);
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
 
@@ -2338,6 +2912,48 @@ impl Agent {
                                                 yield AgentEvent::McpNotification((request_id, msg));
                                             }
                                         }
+                                    }
+
+                                    // BR-31: the results are in. If a tool has now failed the
+                                    // same way N times in a row, nudge the model here — with
+                                    // the failing result still in front of it — rather than
+                                    // waiting for it to burn another call. The hard stop for
+                                    // a streak that survives the nudges is enforced by the
+                                    // repetition inspector on the next call.
+                                    loop_warnings.extend(
+                                        self.failure_loop_nudges(
+                                            conversation.messages(),
+                                            &remaining_requests,
+                                            &request_to_response_map,
+                                        ).await,
+                                    );
+
+                                    // BR-66: the general streak. BR-31 above only speaks when
+                                    // *one* tool has failed *the same way* N times; a run of
+                                    // different tools failing in different ways — the ordinary
+                                    // shape of an agent that has lost the thread — is invisible
+                                    // to it. Count every failed call of any kind (malformed
+                                    // calls included) and, at the cap, make the model stop and
+                                    // re-plan. Warn-only: a mixed run of failures is not proof
+                                    // the next call is doomed, so nothing is blocked.
+                                    if let Some(nudge) = mistakes.observe_tool_outcomes(
+                                        &mistake_config,
+                                        &self.mistake_outcomes(
+                                            &remaining_requests,
+                                            &permission_check_result,
+                                            &request_to_response_map,
+                                        ).await,
+                                    ) {
+                                        tracing::info!(
+                                            streak = mistakes.streak(),
+                                            "Injecting mistake-streak reflect-and-replan nudge"
+                                        );
+                                        loop_safety::emit(
+                                            LoopSafetyEvent::new(LoopSafetyKind::MistakeStreakNudge)
+                                                .session(&session_config.id)
+                                                .count(mistakes.streak()),
+                                        );
+                                        loop_warnings.push(nudge);
                                     }
 
                                     // PostToolUse / PostToolUseFailure hooks (observe-only):
@@ -2455,6 +3071,24 @@ impl Agent {
                                     }
                                 }
 
+                                // Soft stage (BR-29/30/31): the repeated — or repeatedly
+                                // failing — call *ran*; nudge the model right after its
+                                // result so it changes approach before the hard stop fires.
+                                // Model-visible only — this is loop-safety plumbing, not
+                                // something the user needs in the transcript.
+                                if !loop_warnings.is_empty() {
+                                    tracing::info!(
+                                        warnings = loop_warnings.len(),
+                                        "Injecting loop-guard soft warning"
+                                    );
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(crate::tool_inspection::frame_loop_warnings(&loop_warnings))
+                                            .with_visibility(false, true),
+                                    );
+                                }
+
                                 no_tools_called = false;
                             }
                         }
@@ -2502,6 +3136,10 @@ impl Agent {
                             match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
+                                    // BR-35: a summarization round-trip inside the
+                                    // reply is spend like any other — bill it to the
+                                    // budget too, not just the session gauge.
+                                    self.record_budget_usage(&mut budget, &usage).await;
                                     self.update_session_metrics(&session_config, &usage, true).await?;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
@@ -2523,12 +3161,55 @@ impl Agent {
                         }
                         Err(ref provider_err) => {
                             error!("Error: {}", provider_err);
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
-                                )
-                            );
-                            break;
+                            // BR-66: a non-context provider error used to end the turn
+                            // outright, handing the user a "please retry" string for a
+                            // blip the agent could have absorbed itself. Give a
+                            // *recoverable* error one more attempt with a hint in
+                            // context; a fatal one (auth, rate limit, unsupported) or a
+                            // spent retry budget still stops, with the conversation
+                            // preserved so the user can just say "continue".
+                            match mistakes.observe_provider_error(&mistake_config, provider_err) {
+                                crate::agents::mistakes::ProviderErrorAction::Recover { notice, attempt, limit } => {
+                                    warn!(
+                                        "Provider call failed ({provider_err}); retrying with a hint ({attempt}/{limit})"
+                                    );
+                                    // BR-67: retries are a loop-safety decision too —
+                                    // the error text itself never enters the trace.
+                                    loop_safety::emit(
+                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorRecover)
+                                            .session(&session_config.id)
+                                            .count(attempt)
+                                            .limit(limit),
+                                    );
+                                    yield AgentEvent::Message(
+                                        Message::assistant().with_system_notification(
+                                            SystemNotificationType::InlineMessage,
+                                            format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),
+                                        )
+                                    );
+                                    // Model-visible only: the hint is loop plumbing, and
+                                    // the user already has the notification above.
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(crate::tool_inspection::frame_loop_warnings(
+                                                std::slice::from_ref(&notice),
+                                            ))
+                                            .with_visibility(false, true),
+                                    );
+                                    did_recover_provider_error_this_iteration = true;
+                                    break;
+                                }
+                                crate::agents::mistakes::ProviderErrorAction::Stop { notice } => {
+                                    loop_safety::emit(
+                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorStop)
+                                            .session(&session_config.id)
+                                            .count(mistakes.provider_errors()),
+                                    );
+                                    yield AgentEvent::Message(Message::assistant().with_text(notice));
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -2536,7 +3217,7 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                self.record_turn_usage(&session_config, turn_usage.take()).await?;
+                self.record_turn_usage(&session_config, turn_usage.take(), &mut budget).await?;
 
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
@@ -2585,6 +3266,14 @@ impl Agent {
                         }
                     } else if did_recovery_compact_this_iteration {
                         // Avoid setting exit_chat; continue from last user message in the conversation
+                    } else if did_recover_provider_error_this_iteration {
+                        // BR-66: the provider call failed recoverably and the hint is
+                        // already in `messages_to_add`. No tool ran and the model said
+                        // nothing, so this is not a finished turn — take the retry
+                        // rather than ending the turn (or handing it to the retry
+                        // manager, whose job is a *completed* response that failed
+                        // validation). Bounded by `provider_error_retries`, and by
+                        // `max_turns` like every other iteration.
                     } else {
                         match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
                             Ok(should_retry) => {
@@ -3308,5 +3997,230 @@ mod tests {
         );
 
         Ok(())
+    }
+}
+
+/// BR-32: the reply loop's stall-check seam — when it runs, when it stays silent,
+/// and who owns stall detection when a `/goal` is set.
+#[cfg(test)]
+mod stall_seam_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    /// A judge that always reports a loop, and counts how often it was consulted —
+    /// so a test can assert the check did NOT cost a provider round-trip.
+    struct LoopyJudge {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for LoopyJudge {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "loopy",
+                "Loopy",
+                "",
+                "loopy-model",
+                vec!["loopy-model"],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "loopy"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text(
+                    r#"{"looping": true, "reason": "the same failing shell command, six times"}"#,
+                ),
+                ProviderUsage::new("loopy-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("loopy-model")
+        }
+    }
+
+    /// An agent over an isolated session store, wired to the counting judge.
+    async fn agent_with_judge(dir: &std::path::Path) -> (Agent, String, Arc<AtomicUsize>) {
+        let session_manager = Arc::new(SessionManager::new(dir.to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session_id = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "stall".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        let calls = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(LoopyJudge {
+                    calls: Arc::clone(&calls),
+                }),
+                &session_id,
+            )
+            .await
+            .unwrap();
+        (agent, session_id, calls)
+    }
+
+    fn busy_conversation() -> Conversation {
+        let mut conversation = Conversation::default();
+        conversation.push(Message::user().with_text("fix the failing build"));
+        conversation.push(Message::assistant().with_text("Running the build again."));
+        conversation
+    }
+
+    #[tokio::test]
+    async fn a_normal_turn_never_pays_for_the_check() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        for actions in [1u32, 12, 29] {
+            let action = agent
+                .stall_check(
+                    &session_id,
+                    &busy_conversation(),
+                    actions,
+                    &config,
+                    &mut watch,
+                )
+                .await;
+            assert_eq!(action, StallAction::Proceed);
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no provider round-trip before the threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_turn_is_checked_and_nudged() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 30, &config, &mut watch)
+            .await;
+        match action {
+            StallAction::Nudge { reason } => assert!(reason.contains("same failing shell command")),
+            other => panic!("expected a nudge, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one check");
+    }
+
+    #[tokio::test]
+    async fn a_goal_session_keeps_its_own_stall_detector() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        agent
+            .set_goal(&session_id, "the build passes".to_string())
+            .await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 30, &config, &mut watch)
+            .await;
+        assert_eq!(
+            action,
+            StallAction::Proceed,
+            "the goal loop already judges every stop and owns its own stall budget"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a goal session must not pay for a second loop judge"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_gave_up_is_not_re_checked() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        // Three near-identical looping verdicts (checks at 30/40/50) → give up.
+        for actions in [30u32, 40, 50] {
+            agent
+                .stall_check(
+                    &session_id,
+                    &busy_conversation(),
+                    actions,
+                    &config,
+                    &mut watch,
+                )
+                .await;
+        }
+        assert!(watch.has_given_up());
+        let checks_at_giveup = calls.load(Ordering::SeqCst);
+        assert_eq!(checks_at_giveup, 3);
+
+        // The wrap-up window must not re-run the judge.
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 60, &config, &mut watch)
+            .await;
+        assert_eq!(action, StallAction::Proceed);
+        assert_eq!(calls.load(Ordering::SeqCst), checks_at_giveup);
+    }
+
+    #[tokio::test]
+    async fn a_provider_less_agent_fails_open() {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(
+                "no-such-session",
+                &busy_conversation(),
+                30,
+                &StallCheckConfig::default(),
+                &mut watch,
+            )
+            .await;
+        assert_eq!(action, StallAction::Proceed, "no provider → no verdict");
     }
 }

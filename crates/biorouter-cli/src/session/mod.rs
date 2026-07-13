@@ -961,6 +961,7 @@ impl CliSession {
             schedule_id: self.scheduled_job_id.clone(),
             max_turns: self.max_turns,
             max_tool_calls: None,
+            budget: None,
             retry_config: self.retry_config.clone(),
         };
         let user_message = self

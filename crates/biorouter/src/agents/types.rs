@@ -94,6 +94,13 @@ pub struct SessionConfig {
     /// cap misses (one iteration can dispatch many parallel tool calls).
     #[serde(default)]
     pub max_tool_calls: Option<u32>,
+    /// Per-reply wall-clock / token / dollar ceiling (BR-35). Bounds how long a
+    /// reply runs and what it costs, which the iteration caps above do not:
+    /// 429 backoff compounds *inside* an iteration, and one iteration can pull a
+    /// whole 200k-token context. Unset axes fall back to the global config keys
+    /// (`BIOROUTER_REPLY_BUDGET_*`); unset everywhere means unbounded, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<crate::agents::budget::ReplyBudget>,
     /// Retry configuration for automated validation and recovery
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_config: Option<RetryConfig>,

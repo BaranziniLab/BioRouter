@@ -430,6 +430,7 @@ mod tests {
                 schedule_id: None,
                 max_turns: Some(1),
                 max_tool_calls: None,
+                budget: None,
                 retry_config: None,
             };
 
@@ -606,6 +607,7 @@ mod tests {
                 // what stops the reply. With 2 calls/iteration it trips at iter 3.
                 max_turns: Some(100),
                 max_tool_calls: Some(3),
+                budget: None,
                 retry_config: None,
             };
 
@@ -647,6 +649,232 @@ mod tests {
             assert!(
                 stopped,
                 "expected the per-turn tool-call limit message; responses did not contain it"
+            );
+            Ok(())
+        }
+    }
+
+    // BR-35: the per-reply budget. `max_turns` / `max_tool_calls` bound how many
+    // steps a reply takes; this bounds what it *spends*. The token axis is the
+    // one a mock provider can drive deterministically (the clock axis is the same
+    // code path with a different number, and is unit-tested in `agents::budget`).
+    #[cfg(test)]
+    mod reply_budget_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use biorouter::agents::budget::ReplyBudget;
+        use biorouter::agents::SessionConfig;
+        use biorouter::conversation::message::{Message, MessageContent};
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session::session_manager::SessionType;
+        use rmcp::model::{CallToolRequestParams, Tool};
+        use rmcp::object;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Always calls a tool (with fresh args, so no repetition guard fires) and
+        /// reports 100 tokens a turn — an agent that would otherwise happily run to
+        /// the iteration cap while burning tokens the whole way.
+        struct MockSpendyProvider {
+            counter: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for MockSpendyProvider {
+            async fn complete(
+                &self,
+                _system_prompt: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                let n = self.counter.fetch_add(1, Ordering::SeqCst);
+                let call = CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "test_tool".into(),
+                    arguments: Some(object!({ "param": format!("value-{n}") })),
+                };
+                let message = Message::assistant().with_tool_request(format!("call_{n}"), Ok(call));
+                let usage = ProviderUsage::new(
+                    "mock-model".to_string(),
+                    Usage::new(Some(80), Some(20), Some(100)),
+                );
+                Ok((message, usage))
+            }
+
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                system_prompt: &str,
+                messages: &[Message],
+                tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.complete(system_prompt, messages, tools).await
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "mock".to_string(),
+                    display_name: "Mock Provider".to_string(),
+                    description: "Mock provider for testing".to_string(),
+                    default_model: "mock-model".to_string(),
+                    known_models: vec![],
+                    model_doc_link: String::new(),
+                    config_keys: vec![],
+                    allows_unlisted_models: false,
+                }
+            }
+
+            fn get_name(&self) -> &str {
+                "mock-spendy"
+            }
+        }
+
+        async fn drain(agent: &Agent, session_config: SessionConfig) -> Result<Vec<Message>> {
+            let reply_stream = agent
+                .reply(Message::user().with_text("Hello"), session_config, None)
+                .await?;
+            tokio::pin!(reply_stream);
+
+            let mut responses = Vec::new();
+            while let Some(event) = reply_stream.next().await {
+                match event? {
+                    AgentEvent::Message(response) => {
+                        if let Some(MessageContent::ActionRequired(action)) =
+                            response.content.first()
+                        {
+                            if let biorouter::conversation::message::ActionRequiredData::ToolConfirmation { id, .. } = &action.data {
+                                agent.handle_confirmation(
+                                    id.clone(),
+                                    biorouter::permission::PermissionConfirmation {
+                                        principal_type: biorouter::permission::permission_confirmation::PrincipalType::Tool,
+                                        permission: biorouter::permission::Permission::AllowOnce,
+                                    }
+                                ).await;
+                            }
+                        }
+                        responses.push(response);
+                    }
+                    AgentEvent::McpNotification(_)
+                    | AgentEvent::ModelChange { .. }
+                    | AgentEvent::HistoryReplaced(_) => {}
+                }
+            }
+            Ok(responses)
+        }
+
+        async fn spendy_agent(name: &str) -> Result<(Agent, String)> {
+            let agent = Agent::new();
+            let session = agent
+                .config
+                .session_manager
+                .create_session(PathBuf::default(), name.to_string(), SessionType::Hidden)
+                .await?;
+            agent
+                .update_provider(
+                    Arc::new(MockSpendyProvider {
+                        counter: AtomicUsize::new(0),
+                    }),
+                    &session.id,
+                )
+                .await?;
+            Ok((agent, session.id))
+        }
+
+        #[tokio::test]
+        async fn a_reply_that_blows_its_token_budget_is_stopped_and_says_so() -> Result<()> {
+            let (agent, session_id) = spendy_agent("reply-budget-test").await?;
+
+            let responses = drain(
+                &agent,
+                SessionConfig {
+                    id: session_id.clone(),
+                    schedule_id: None,
+                    // Deliberately far out of reach: the *budget*, not the
+                    // iteration cap, has to be what ends this reply.
+                    max_turns: Some(100),
+                    max_tool_calls: None,
+                    budget: Some(ReplyBudget {
+                        max_tokens: Some(150),
+                        ..Default::default()
+                    }),
+                    retry_config: None,
+                },
+            )
+            .await?;
+
+            let text = |m: &Message| m.as_concat_text();
+            assert!(
+                responses
+                    .iter()
+                    .any(|m| text(m).contains("I've reached the budget for this reply")),
+                "expected an honest budget stop; got: {:?}",
+                responses.iter().map(text).collect::<Vec<_>>()
+            );
+            // The meter is a system notification, not prose, so it is matched on
+            // the content variant rather than the message text.
+            assert!(
+                responses.iter().any(|m| m.content.iter().any(|c| matches!(
+                    c,
+                    MessageContent::SystemNotification(n) if n.msg.contains("Budget reached")
+                ))),
+                "expected the user to be told the budget was reached before the stop"
+            );
+
+            // Graceful, not a kill: the model is asked in-context to wrap up (with
+            // the numbers, so it can size its answer) before the turn is ended.
+            let session = agent
+                .config
+                .session_manager
+                .get_session(&session_id, true)
+                .await?;
+            let conversation = session.conversation.expect("conversation");
+            assert!(
+                conversation
+                    .messages()
+                    .iter()
+                    .any(|m| m.as_concat_text().contains("[budget] This reply has used")),
+                "the wrap-up instruction must reach the model, not just the user"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn no_budget_means_the_old_behaviour_exactly() -> Result<()> {
+            let (agent, session_id) = spendy_agent("no-budget-test").await?;
+
+            let responses = drain(
+                &agent,
+                SessionConfig {
+                    id: session_id,
+                    schedule_id: None,
+                    // Low turn cap so the test is quick: with no budget, the
+                    // iteration cap is what must stop it.
+                    max_turns: Some(3),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                },
+            )
+            .await?;
+
+            let text = |m: &Message| m.as_concat_text();
+            assert!(
+                responses
+                    .iter()
+                    .any(|m| text(m).contains("I've reached my action limit for this turn")),
+                "an unbudgeted reply must still stop on the iteration cap"
+            );
+            assert!(
+                !responses.iter().any(|m| text(m).contains("budget")),
+                "an unbudgeted reply must never mention a budget: {:?}",
+                responses.iter().map(text).collect::<Vec<_>>()
             );
             Ok(())
         }

@@ -4,7 +4,6 @@ use biorouter::config::Config;
 use biorouter::conversation::message::{
     ActionRequiredData, Message, MessageContent, ToolRequest, ToolResponse,
 };
-use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::utils::safe_truncate;
 use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -1132,35 +1131,17 @@ pub fn display_context_usage(total_tokens: usize, context_limit: usize) {
     );
 }
 
-fn estimate_cost_usd(
-    provider: &str,
-    model: &str,
-    input_tokens: usize,
-    output_tokens: usize,
-) -> Option<f64> {
-    // Mirror the server's `/config/pricing` precedence so the CLI shows the same
-    // cost the desktop does: provider-specific overrides first, then the
-    // canonical model catalog. Both cost fields are already per-token.
-    if let Some(pricing) = biorouter::providers::pricing::provider_model_pricing(provider, model) {
-        return Some(
-            pricing.input_token_cost * input_tokens as f64
-                + pricing.output_token_cost * output_tokens as f64,
-        );
-    }
-
-    let canonical_model = maybe_get_canonical_model(provider, model)?;
-
-    let input_cost_per_token = canonical_model.pricing.prompt?;
-    let output_cost_per_token = canonical_model.pricing.completion?;
-
-    let input_cost = input_cost_per_token * input_tokens as f64;
-    let output_cost = output_cost_per_token * output_tokens as f64;
-    Some(input_cost + output_cost)
-}
-
 /// Display cost information, if price data is available.
 pub fn display_cost_usage(provider: &str, model: &str, input_tokens: usize, output_tokens: usize) {
-    if let Some(cost) = estimate_cost_usd(provider, model, input_tokens, output_tokens) {
+    // Priced by the shared estimator (provider overrides, then the canonical
+    // catalog), so the CLI's cost line, the server's `/config/pricing` and the
+    // BR-35 per-reply dollar budget can never disagree about what a turn cost.
+    if let Some(cost) = biorouter::providers::pricing::estimate_cost_usd(
+        provider,
+        model,
+        input_tokens as u64,
+        output_tokens as u64,
+    ) {
         use console::style;
         eprintln!(
             "Cost: {} USD ({} tokens: in {}, out {})",

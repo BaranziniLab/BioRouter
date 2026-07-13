@@ -105,6 +105,7 @@ async fn drain(agent: &Agent, user: &str, session_id: &str) -> Result<Vec<Messag
         schedule_id: None,
         max_turns: Some(8),
         max_tool_calls: None,
+        budget: None,
         retry_config: None,
     };
     let stream = agent

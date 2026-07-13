@@ -215,6 +215,7 @@ fn get_agent_messages(
             schedule_id: None,
             max_turns: task_config.max_turns.map(|v| v as u32),
             max_tool_calls: None,
+            budget: None,
             retry_config: workflow.retry,
         };
 
