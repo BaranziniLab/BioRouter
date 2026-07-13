@@ -283,6 +283,7 @@ pub fn classify(p: &TargetPath, env: &EnvFacts) -> Blast {
 }
 
 /// Convenience: normalize + classify in one step.
+#[allow(dead_code)] // used by the module's tests; kept as a public convenience.
 pub fn blast_of(platform: Platform, raw: &str, env: &EnvFacts) -> Blast {
     classify(&normalize_for(platform, raw, env), env)
 }
@@ -306,6 +307,8 @@ fn is_strictly_below_cwd(platform: Platform, norm: &str, env: &EnvFacts) -> bool
 }
 
 /// Number of path components below the root (`/etc` = 1, `/var/folders/a/b` = 4).
+// `norm.find('/')` returns a byte index on an ASCII `/`, so `i + 1` is a char boundary.
+#[allow(clippy::string_slice)]
 fn depth(norm: &str, platform: Platform) -> usize {
     let body = if platform.is_windows() {
         match norm.find('/') {
@@ -431,6 +434,8 @@ fn bare(env: &EnvFacts) -> EnvFacts {
     }
 }
 
+// The `[2..]` slice follows an ASCII drive-letter + `:` guard, so it is a char boundary.
+#[allow(clippy::string_slice)]
 fn split_drive(norm: &str) -> Option<(char, &str)> {
     let bytes = norm.as_bytes();
     if bytes.len() >= 2 && (bytes[0] as char).is_ascii_alphabetic() && bytes[1] == b':' {
@@ -442,6 +447,8 @@ fn split_drive(norm: &str) -> Option<(char, &str)> {
 
 // --- normalization internals ---------------------------------------------
 
+// Both slice bounds land on ASCII quote bytes verified just above, so they are char boundaries.
+#[allow(clippy::string_slice)]
 fn strip_quotes(raw: &str) -> String {
     let t = raw.trim();
     if t.len() >= 2 {
@@ -535,6 +542,8 @@ fn split_posix_root(p: &str, _env: &EnvFacts) -> (Option<String>, Vec<String>) {
 /// Split a Windows path into `(root, components)`, understanding `\\?\`/`\\.\`
 /// prefixes, UNC shares, drive-absolute (`C:\x`), drive-relative (`C:x`) and
 /// rooted (`\Windows`) forms. The root is lowercased and `/`-separated.
+// All slices sit after ASCII drive-letter/`:` guards, so every bound is a char boundary.
+#[allow(clippy::string_slice)]
 fn split_windows_root(p: &str, env: &EnvFacts) -> (Option<String>, Vec<String>) {
     let unified = p.replace('\\', "/");
     let comps = |s: &str| -> Vec<String> {
@@ -620,6 +629,8 @@ fn split_windows_root(p: &str, env: &EnvFacts) -> (Option<String>, Vec<String>) 
 }
 
 /// Root-split that never consults the cwd (used while splitting the cwd itself).
+// The `[..1]`/`[2..]` slices follow an ASCII drive-letter + `:` guard (char boundaries).
+#[allow(clippy::string_slice)]
 fn split_windows_root_nocwd(p: &str) -> (Option<String>, Vec<String>) {
     let unified = p.replace('\\', "/");
     let b = unified.as_bytes();
