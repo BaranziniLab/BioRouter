@@ -657,6 +657,12 @@ impl Agent {
                 .get_param::<u32>("BIOROUTER_FAILURE_LOOP_HARD_STOP")
                 .ok()
                 .map_or(defaults.hard_stop_at, positive),
+            // BR-51: opt in to hard-stopping a streak of *retryable* failures
+            // (timeouts, transient dependency errors), which is off by default —
+            // blocking the retry that would have worked is worse than one more.
+            deny_retryable: config
+                .get_param::<bool>("BIOROUTER_FAILURE_LOOP_DENY_RETRYABLE")
+                .unwrap_or(defaults.deny_retryable),
         }
     }
 
@@ -782,6 +788,9 @@ impl Agent {
                 Err(error) => outcomes.push(crate::tool_monitor::ToolOutcome {
                     tool_name: crate::agents::mistakes::MALFORMED_TOOL_NAME.to_string(),
                     failure: Some(error.message.to_string()),
+                    // BR-51: a call the model emitted malformed never reached a
+                    // tool — the arguments themselves were the failure.
+                    kind: Some(crate::agents::tool_errors::ToolErrorKind::InvalidArgs),
                 }),
             }
         }
@@ -1286,9 +1295,9 @@ impl Agent {
         ))
     }
 
-    /// Integrate one completed tool result: validate it before persistence, note
-    /// extension-install failures, record it for PostToolUse hooks, and write it
-    /// into the request's response slot.
+    /// Integrate one completed tool result: validate it before persistence,
+    /// classify a failure (BR-51), note extension-install failures, record it for
+    /// PostToolUse hooks, and write it into the request's response slot.
     #[allow(clippy::too_many_arguments)]
     async fn integrate_tool_result(
         &self,
@@ -1300,6 +1309,7 @@ impl Agent {
         all_install_successful: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
         tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
+        tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
         let output = call_tool_result::validate(output);
 
@@ -1310,6 +1320,22 @@ impl Agent {
             crate::guardrails::tool_output::guard_tool_result(output, tool_output_guardrail);
         if let Some(summary) = &guardrail_summary {
             debug!(request_id = %request_id, "tool-output guardrail flagged: {summary}");
+        }
+
+        // BR-51: a failure is classified once, here — the single funnel every
+        // completed tool result passes through. The envelope rides on the result
+        // (so the GUI and a reloaded session get it) and the typed header rides
+        // in the text (so the model, and the BR-31/66 detectors reading the
+        // transcript back, can tell a retryable blip from a hard failure).
+        let (output, tool_error) =
+            crate::agents::tool_errors::annotate_tool_result(output, tool_error_taxonomy);
+        if let Some(error) = &tool_error {
+            debug!(
+                request_id = %request_id,
+                kind = error.kind.as_str(),
+                retryable = error.retryable,
+                "tool call failed"
+            );
         }
 
         if enable_extension_request_ids.contains(&request_id) && output.is_err() {
@@ -2813,6 +2839,45 @@ impl Agent {
             // reads touch the filesystem, so we avoid doing it per tool result).
             let tool_output_guardrail =
                 crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
+            // BR-51: the tool-error taxonomy policy, resolved once for the same
+            // reason (a config read touches the filesystem).
+            let tool_error_taxonomy =
+                crate::agents::tool_errors::ToolErrorTaxonomyConfig::from_config();
+            // BR-47: the auto post-edit diagnostics policy, resolved once per
+            // reply (config read touches the filesystem). The tree-sitter analyzer
+            // that runs the actual check is built lazily, only if a `text_editor`
+            // write actually lands while the feature is active.
+            let post_edit_diag_config =
+                crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config();
+            let mut post_edit_analyzer: Option<
+                biorouter_mcp::developer::analyze::CodeAnalyzer,
+            > = None;
+            // BR-47: consecutive post-edit reflections this reply. Bounded by
+            // `post_edit_diag_config.max_reflections` so a file that never parses
+            // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
+            // to 0 whenever an edited file comes back clean, so a genuine fix
+            // restores the budget.
+            let mut post_edit_reflections: u32 = 0;
+            // BR-50: the optional self-critique / reflection policy, resolved once
+            // per reply (config read touches the filesystem). Default OFF; when a
+            // user opts in it re-reads an ordinary answer for correctness before
+            // it is returned, using the goal-judge LLM primitive.
+            let self_critique_config =
+                crate::agents::self_critique::SelfCritiqueConfig::from_config();
+            // BR-50: corrective passes the critique has requested this reply,
+            // bounded by `self_critique_config.max_passes` so a stubborn answer
+            // cannot spin. Reply-scoped, like `post_edit_reflections`.
+            let mut self_critique_passes: u32 = 0;
+            // BR-48: the optional deterministic done-ness gate, resolved once per
+            // reply (config read touches the filesystem). Default OFF; when a user
+            // opts in it re-runs their `SuccessCheck`s before the turn may finish
+            // and keeps the agent working on the failures. `done_gate_iterations`
+            // is the per-reply corrective-attempt counter — it does NOT reset on
+            // tool calls (mirroring the /goal iteration budget), so a check that
+            // never goes green cannot loop past the cap.
+            let done_gate_config =
+                crate::agents::done_gate::DoneGateConfig::from_config();
+            let mut done_gate_iterations: u32 = 0;
             // BR-32: the /goal stall detector, generalized to ordinary chat. Both
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
@@ -3237,6 +3302,12 @@ impl Agent {
                                 // inspection, plus BR-31's no-progress nudges, gathered from
                                 // the results themselves.
                                 let mut loop_warnings: Vec<String> = Vec::new();
+                                // BR-47: the framed post-edit syntax diagnostics for this
+                                // batch, if any. Computed at the result seam but injected
+                                // *after* the tool request/response pair below, so the
+                                // transcript reads "you edited X (tool response), then the
+                                // syntax check on X found ...".
+                                let mut pending_post_edit_diagnostics: Option<String> = None;
 
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
@@ -3359,10 +3430,108 @@ impl Agent {
                                                     &mut all_install_successful,
                                                     &mut post_tool_results,
                                                     tool_output_guardrail,
+                                                    tool_error_taxonomy,
                                                 ).await;
                                             }
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
+                                            }
+                                        }
+                                    }
+
+                                    // BR-47: auto post-edit diagnostics. A successful
+                                    // `text_editor` write is re-parsed with the developer
+                                    // analyzer's tree-sitter grammars; any ERROR / MISSING
+                                    // nodes become agent-visible corrective context, so the
+                                    // model fixes broken syntax in the same turn instead of
+                                    // only discovering it if it happens to run tests. Bounded
+                                    // by a per-reply reflection counter so a file that never
+                                    // parses clean cannot wedge the turn — the built-in twin
+                                    // of the BR-19 PostToolUse block cap below. Runs off the
+                                    // still-owned `post_tool_results`, before the PostToolUse
+                                    // hooks consume it.
+                                    if post_edit_diag_config.is_active() {
+                                        use crate::agents::post_edit_diagnostics as ped;
+                                        // (display path, resolved path) for each successful write.
+                                        let mut edited: Vec<(String, std::path::PathBuf)> = Vec::new();
+                                        for (request_id, _response_value, error_text) in &post_tool_results {
+                                            if error_text.is_some() {
+                                                // The write itself failed; there is nothing valid
+                                                // on disk to parse.
+                                                continue;
+                                            }
+                                            let Some(request) = remaining_requests.iter().find(|r| &r.id == request_id) else { continue };
+                                            let Some(resolved) = ped::edited_path_from_request(request, &session.working_dir) else { continue };
+                                            // Show the model the path it actually sent, when readable.
+                                            let display = request
+                                                .tool_call
+                                                .as_ref()
+                                                .ok()
+                                                .and_then(|tc| tc.arguments.as_ref())
+                                                .and_then(|a| a.get("path").or_else(|| a.get("file_path")))
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
+                                                .unwrap_or_else(|| resolved.display().to_string());
+                                            edited.push((display, resolved));
+                                        }
+                                        if !edited.is_empty() {
+                                            let analyzer = post_edit_analyzer.get_or_insert_with(
+                                                biorouter_mcp::developer::analyze::CodeAnalyzer::new,
+                                            );
+                                            let mut files: Vec<ped::FileDiagnostics> = Vec::new();
+                                            // Dedup by resolved path: a file written twice in one
+                                            // batch is reported once, on its final on-disk state.
+                                            let mut seen = std::collections::HashSet::new();
+                                            for (display, resolved) in edited {
+                                                if !seen.insert(resolved.clone()) {
+                                                    continue;
+                                                }
+                                                let diags = analyzer.diagnose_file(&resolved);
+                                                if diags.is_empty() {
+                                                    continue;
+                                                }
+                                                files.push(ped::FileDiagnostics {
+                                                    path: display,
+                                                    lines: diags.iter().map(|d| d.render()).collect(),
+                                                });
+                                            }
+                                            match ped::next_reflection(
+                                                !files.is_empty(),
+                                                post_edit_reflections,
+                                                post_edit_diag_config.max_reflections,
+                                            ) {
+                                                ped::ReflectionOutcome::Reset => {
+                                                    // Every edited file parsed clean: a genuine
+                                                    // fix (or a clean edit) restores the budget.
+                                                    post_edit_reflections = 0;
+                                                }
+                                                ped::ReflectionOutcome::Inject { next } => {
+                                                    post_edit_reflections = next;
+                                                    let total: usize = files.iter().map(|f| f.lines.len()).sum();
+                                                    tracing::info!(
+                                                        files = files.len(),
+                                                        diagnostics = total,
+                                                        reflection = post_edit_reflections,
+                                                        "BR-47: injecting post-edit syntax diagnostics"
+                                                    );
+                                                    loop_safety::emit(
+                                                        LoopSafetyEvent::new(LoopSafetyKind::PostEditDiagnostics)
+                                                            .session(&session_config.id)
+                                                            .count(post_edit_reflections),
+                                                    );
+                                                    // Held, not pushed: it must land after the
+                                                    // tool response for the edit it describes.
+                                                    pending_post_edit_diagnostics =
+                                                        Some(ped::frame_post_edit_diagnostics(&files));
+                                                }
+                                                ped::ReflectionOutcome::Capped => {
+                                                    // Deliver the result as-is so the turn is not
+                                                    // wedged on a file that never parses clean.
+                                                    tracing::info!(
+                                                        cap = post_edit_diag_config.max_reflections,
+                                                        "BR-47: post-edit diagnostics reflection cap reached; not injecting again this reply"
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -3561,6 +3730,20 @@ impl Agent {
                                         yield AgentEvent::Message(final_response.clone());
                                         messages_to_add.push(final_response);
                                     }
+                                }
+
+                                // BR-47: the post-edit syntax diagnostics for this batch,
+                                // injected here so they sit right after the tool responses
+                                // for the edits they describe. Model-visible only — like the
+                                // loop-guard nudges, this is corrective plumbing the user
+                                // does not need in the transcript.
+                                if let Some(diagnostics_text) = pending_post_edit_diagnostics.take() {
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(diagnostics_text)
+                                            .with_visibility(false, true),
+                                    );
                                 }
 
                                 // Soft stage (BR-29/30/31): the repeated — or repeatedly
@@ -3869,6 +4052,114 @@ impl Agent {
                         break;
                     }
                     let active_goal = self.active_goal(&session_config.id).await;
+
+                    // BR-48: deterministic done-ness gate. When enabled, re-run
+                    // the configured `SuccessCheck`s before the turn is allowed to
+                    // finish; on failure inject *what failed* and keep working
+                    // (iterating on the current diff, never resetting the way the
+                    // workflow retry does). Skipped when the turn is already being
+                    // wound down under a stall/budget deadline or after a cancel —
+                    // those wrap-ups must be allowed to end. Default OFF, so this
+                    // is inert unless a user opted in. Runs before the (optional,
+                    // LLM) self-critique so a broken build is caught deterministically
+                    // and cheaply, without spending a judge call.
+                    if done_gate_config.is_active()
+                        && stall_deadline.is_none()
+                        && budget_deadline.is_none()
+                        && !is_token_cancelled(&cancel_token)
+                    {
+                        let failures = crate::agents::retry::collect_check_failures(
+                            &done_gate_config.checks,
+                            done_gate_config.timeout,
+                            Some(working_dir.as_path()),
+                        )
+                        .await;
+                        if !failures.is_empty() {
+                            if done_gate_iterations < done_gate_config.max_iterations {
+                                done_gate_iterations += 1;
+                                loop_safety::emit(
+                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateBlock)
+                                        .session(&session_config.id)
+                                        .count(done_gate_iterations)
+                                        .limit(done_gate_config.max_iterations),
+                                );
+                                let feedback = Message::user()
+                                    .with_text(crate::agents::done_gate::gate_instruction(
+                                        &failures,
+                                    ))
+                                    .with_visibility(false, true);
+                                session_manager
+                                    .add_message(&session_config.id, &feedback)
+                                    .await?;
+                                conversation.push(feedback);
+                                // Keep looping so the model fixes the failures;
+                                // skip this iteration's Stop hook. The counter does
+                                // not reset on the tool calls the fix requires, so
+                                // the loop is bounded by `max_iterations`.
+                                tokio::task::yield_now().await;
+                                continue;
+                            } else {
+                                // Budget spent with checks still red: let the turn
+                                // finish rather than wedge, but tell the user it is
+                                // on unmet conditions.
+                                loop_safety::emit(
+                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateGiveUp)
+                                        .session(&session_config.id)
+                                        .count(done_gate_iterations)
+                                        .limit(done_gate_config.max_iterations),
+                                );
+                                yield AgentEvent::Message(
+                                    Message::assistant()
+                                        .with_system_notification(
+                                            SystemNotificationType::InlineMessage,
+                                            crate::agents::done_gate::giveup_notice(
+                                                done_gate_iterations,
+                                                &failures,
+                                            ),
+                                        )
+                                        .user_only(),
+                                );
+                            }
+                        }
+                    }
+
+                    // BR-50: optional self-critique pass on an *ordinary* answer.
+                    // Skipped when a /goal is active (its Stop-hook judge already
+                    // re-reads the work), when the turn is already being wrapped up
+                    // under a stall/budget deadline (a critique would re-expand a
+                    // turn we are deliberately ending), when cancelled, or once the
+                    // per-reply pass budget is spent. Default OFF, so this is inert
+                    // unless a user opted in.
+                    if self_critique_config.is_active()
+                        && active_goal.is_none()
+                        && stall_deadline.is_none()
+                        && budget_deadline.is_none()
+                        && self_critique_passes < self_critique_config.max_passes
+                        && !is_token_cancelled(&cancel_token)
+                    {
+                        if let Some(reason) = self.run_self_critique(&conversation).await {
+                            self_critique_passes += 1;
+                            loop_safety::emit(
+                                LoopSafetyEvent::new(LoopSafetyKind::SelfCritiqueRevise)
+                                    .session(&session_config.id)
+                                    .count(self_critique_passes),
+                            );
+                            let feedback = Message::user()
+                                .with_text(
+                                    crate::agents::self_critique::revise_instruction(&reason),
+                                )
+                                .with_visibility(false, true);
+                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            conversation.push(feedback);
+                            // Keep looping so the model revises; skip this
+                            // iteration's Stop hook. The next finish attempt runs
+                            // Stop hooks normally, and the critique won't fire again
+                            // once the pass budget is spent.
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                    }
+
                     let transcript_tail = crate::agents::goal::transcript_tail(&conversation);
                     match self.hooks_manager.stop(&session_config.id, &session.working_dir, transcript_tail).await {
                         crate::hooks::StopHookVerdict::Proceed => {

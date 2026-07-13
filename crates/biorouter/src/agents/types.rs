@@ -61,15 +61,50 @@ impl RetryConfig {
     }
 }
 
-/// A single success check to validate workflow completion
+/// A single success check to validate workflow completion, or (BR-48) to gate
+/// an interactive chat turn from finishing with unmet conditions.
+///
+/// Originally a single `Shell` variant used only by the workflow retry path.
+/// BR-48 added the non-shell variants and a done-ness gate so an interactive
+/// session can also declare "not done until these hold" — see
+/// [`crate::agents::done_gate`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type")]
 pub enum SuccessCheck {
-    /// Execute a shell command and check its exit status
+    /// Execute a shell command and check its exit status (0 = pass).
     #[serde(alias = "shell")]
     Shell {
         /// The shell command to execute
         command: String,
+    },
+    /// BR-48: pass when a file exists at `path`. A relative `path` resolves
+    /// against the session working directory (interactive gate) or the process
+    /// working directory (workflow retry).
+    #[serde(alias = "file_exists", alias = "fileexists")]
+    FileExists {
+        /// The file (or directory) that must exist.
+        path: String,
+    },
+    /// BR-48: run `command` and pass when its combined stdout+stderr contains
+    /// `substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is
+    /// ignored — this checks the *content* of the output (e.g. `0 failed`,
+    /// `PASS`, a coverage percentage).
+    #[serde(alias = "output_contains", alias = "outputcontains")]
+    OutputContains {
+        /// The shell command whose output is inspected.
+        command: String,
+        /// The substring the output must contain.
+        substring: String,
+    },
+    /// BR-48: pass when the JSON file at `path` parses and validates against the
+    /// inline JSON Schema `schema` (same engine as the workflow final-output
+    /// contract, [`crate::agents::final_output_tool`]).
+    #[serde(alias = "json_schema", alias = "jsonschema")]
+    JsonSchema {
+        /// The JSON file to validate.
+        path: String,
+        /// The JSON Schema the file's contents must satisfy.
+        schema: serde_json::Value,
     },
 }
 
