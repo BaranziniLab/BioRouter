@@ -842,13 +842,14 @@ impl RepetitionInspector {
     }
 
     /// BR-30: near-duplicate + oscillation heuristics over the recent call
-    /// window. Returns at most one result, the most severe that applies.
+    /// window. Returns at most one result, the most severe that applies, paired
+    /// with the run length that tripped it (BR-67 reports it).
     fn inspect_semantic(
         &self,
         tool_request_id: &str,
         tool_name: &str,
         window: &[InternalToolCall],
-    ) -> Option<InspectionResult> {
+    ) -> Option<(InspectionResult, u32)> {
         if !self.semantic.enabled {
             return None;
         }
@@ -864,54 +865,62 @@ impl RepetitionInspector {
             threshold.is_some_and(|at| at > 0 && run >= at)
         };
 
-        let (action, reason, finding_id) = if fired(self.semantic.near_dup_hard_stop, near_dup_run)
-        {
-            (
-                InspectionAction::Deny,
-                Self::near_dup_stop_reason(tool_name, near_dup_run),
-                REPETITION_NEAR_DUP_HARD_FINDING_ID,
-            )
-        } else if fired(self.semantic.oscillation_hard_stop, oscillation_run) {
-            (
-                InspectionAction::Deny,
-                Self::oscillation_stop_reason(tool_name, oscillation_run),
-                REPETITION_OSCILLATION_HARD_FINDING_ID,
-            )
-        } else if fired(self.semantic.near_dup_soft_warn, near_dup_run) {
-            (
-                InspectionAction::Warn,
-                Self::near_dup_warn_reason(tool_name, near_dup_run),
-                REPETITION_NEAR_DUP_SOFT_FINDING_ID,
-            )
-        } else if fired(self.semantic.oscillation_soft_warn, oscillation_run) {
-            (
-                InspectionAction::Warn,
-                Self::oscillation_warn_reason(tool_name, oscillation_run),
-                REPETITION_OSCILLATION_SOFT_FINDING_ID,
-            )
-        } else {
-            return None;
-        };
+        let (action, reason, finding_id, run) =
+            if fired(self.semantic.near_dup_hard_stop, near_dup_run) {
+                (
+                    InspectionAction::Deny,
+                    Self::near_dup_stop_reason(tool_name, near_dup_run),
+                    REPETITION_NEAR_DUP_HARD_FINDING_ID,
+                    near_dup_run,
+                )
+            } else if fired(self.semantic.oscillation_hard_stop, oscillation_run) {
+                (
+                    InspectionAction::Deny,
+                    Self::oscillation_stop_reason(tool_name, oscillation_run),
+                    REPETITION_OSCILLATION_HARD_FINDING_ID,
+                    oscillation_run,
+                )
+            } else if fired(self.semantic.near_dup_soft_warn, near_dup_run) {
+                (
+                    InspectionAction::Warn,
+                    Self::near_dup_warn_reason(tool_name, near_dup_run),
+                    REPETITION_NEAR_DUP_SOFT_FINDING_ID,
+                    near_dup_run,
+                )
+            } else if fired(self.semantic.oscillation_soft_warn, oscillation_run) {
+                (
+                    InspectionAction::Warn,
+                    Self::oscillation_warn_reason(tool_name, oscillation_run),
+                    REPETITION_OSCILLATION_SOFT_FINDING_ID,
+                    oscillation_run,
+                )
+            } else {
+                return None;
+            };
 
-        Some(InspectionResult {
-            tool_request_id: tool_request_id.to_string(),
-            action,
-            reason,
-            // Heuristic, not a proof: below the 1.0 the byte-exact guard claims.
-            confidence: 0.8,
-            inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-            finding_id: Some(finding_id.to_string()),
-        })
+        Some((
+            InspectionResult {
+                tool_request_id: tool_request_id.to_string(),
+                action,
+                reason,
+                // Heuristic, not a proof: below the 1.0 the byte-exact guard claims.
+                confidence: 0.8,
+                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+                finding_id: Some(finding_id.to_string()),
+            },
+            run,
+        ))
     }
 
     /// BR-31 hard stage: deny a call to a tool that has already failed the same
-    /// way `hard_stop_at` times in a row since the last user turn.
+    /// way `hard_stop_at` times in a row since the last user turn. Paired with
+    /// the failing streak that tripped it (BR-67 reports it).
     fn inspect_failure_loop(
         &self,
         tool_request_id: &str,
         tool_name: &str,
         outcomes: &[ToolOutcome],
-    ) -> Option<InspectionResult> {
+    ) -> Option<(InspectionResult, u32)> {
         if !self.failure.enabled {
             return None;
         }
@@ -921,16 +930,41 @@ impl RepetitionInspector {
             return None;
         }
 
-        Some(InspectionResult {
-            tool_request_id: tool_request_id.to_string(),
-            action: InspectionAction::Deny,
-            reason: failure_stop_reason(tool_name, streak),
-            // The tool ran and failed, every time: this is observed, not guessed.
-            confidence: 1.0,
-            inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-            finding_id: Some(FAILURE_LOOP_HARD_FINDING_ID.to_string()),
-        })
+        Some((
+            InspectionResult {
+                tool_request_id: tool_request_id.to_string(),
+                action: InspectionAction::Deny,
+                reason: failure_stop_reason(tool_name, streak),
+                // The tool ran and failed, every time: this is observed, not guessed.
+                confidence: 1.0,
+                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+                finding_id: Some(FAILURE_LOOP_HARD_FINDING_ID.to_string()),
+            },
+            streak,
+        ))
     }
+}
+
+/// BR-67: report a repetition-guard verdict to the loop-safety trace.
+///
+/// Only the tool *name*, the stable finding id and the run length that tripped
+/// the guard travel; the reason prose (which quotes the model's own framing)
+/// never does.
+fn emit_repetition_verdict(session_id: &str, tool_name: &str, result: &InspectionResult, run: u32) {
+    use crate::observability::loop_safety::{LoopSafetyEvent, LoopSafetyKind};
+
+    let kind = match result.action {
+        InspectionAction::Deny => LoopSafetyKind::RepetitionStop,
+        _ => LoopSafetyKind::RepetitionWarn,
+    };
+    let mut event = LoopSafetyEvent::new(kind)
+        .session(session_id)
+        .tool(tool_name)
+        .count(run);
+    if let Some(finding_id) = &result.finding_id {
+        event = event.finding_id(finding_id);
+    }
+    crate::observability::loop_safety::emit(event);
 }
 
 #[async_trait]
@@ -948,7 +982,7 @@ impl ToolInspector for RepetitionInspector {
         tool_requests: &[ToolRequest],
         messages: &[Message],
         _biorouter_mode: BioRouterMode,
-        _session: &crate::session::Session,
+        session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut results = Vec::new();
         if self.hard_stop_at.is_none() && !self.semantic.enabled && !self.failure.enabled {
@@ -1012,26 +1046,36 @@ impl ToolInspector for RepetitionInspector {
 
                 let exact_result = self.hard_stop_at.and_then(|hard_stop_at| {
                     if repeat_count >= hard_stop_at {
-                        Some(InspectionResult {
-                            tool_request_id: tool_request.id.clone(),
-                            action: InspectionAction::Deny,
-                            reason: Self::hard_stop_reason(&tool_name, repeat_count),
-                            confidence: 1.0,
-                            inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-                            finding_id: Some(REPETITION_HARD_FINDING_ID.to_string()),
-                        })
+                        Some((
+                            InspectionResult {
+                                tool_request_id: tool_request.id.clone(),
+                                action: InspectionAction::Deny,
+                                reason: Self::hard_stop_reason(&tool_name, repeat_count),
+                                confidence: 1.0,
+                                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+                                finding_id: Some(REPETITION_HARD_FINDING_ID.to_string()),
+                            },
+                            repeat_count,
+                        ))
                     } else if self
                         .soft_warn_at
                         .is_some_and(|soft_warn_at| repeat_count >= soft_warn_at)
                     {
-                        Some(InspectionResult {
-                            tool_request_id: tool_request.id.clone(),
-                            action: InspectionAction::Warn,
-                            reason: Self::soft_warn_reason(&tool_name, repeat_count, hard_stop_at),
-                            confidence: 1.0,
-                            inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-                            finding_id: Some(REPETITION_SOFT_FINDING_ID.to_string()),
-                        })
+                        Some((
+                            InspectionResult {
+                                tool_request_id: tool_request.id.clone(),
+                                action: InspectionAction::Warn,
+                                reason: Self::soft_warn_reason(
+                                    &tool_name,
+                                    repeat_count,
+                                    hard_stop_at,
+                                ),
+                                confidence: 1.0,
+                                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+                                finding_id: Some(REPETITION_SOFT_FINDING_ID.to_string()),
+                            },
+                            repeat_count,
+                        ))
                     } else {
                         None
                     }
@@ -1044,12 +1088,18 @@ impl ToolInspector for RepetitionInspector {
                 // between the two denies, the byte-exact guard's is the more
                 // specific proof, so it keeps precedence.
                 let verdict = match (exact_result, failure_result) {
-                    (Some(exact), Some(_)) if exact.action == InspectionAction::Deny => Some(exact),
+                    (Some(exact), Some(_)) if exact.0.action == InspectionAction::Deny => {
+                        Some(exact)
+                    }
                     (_, Some(failure)) => Some(failure),
                     (Some(exact), None) => Some(exact),
                     (None, None) => self.inspect_semantic(&tool_request.id, &tool_name, &window),
                 };
-                if let Some(result) = verdict {
+                if let Some((result, run)) = verdict {
+                    // BR-67: the guard tripping is exactly the moment an operator
+                    // needs on the record — which guard, on which tool, at what
+                    // run length, and whether the call was stopped or just warned.
+                    emit_repetition_verdict(&session.id, &tool_name, &result, run);
                     results.push(result);
                 }
             }

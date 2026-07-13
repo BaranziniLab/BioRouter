@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use super::{HookDecision, HooksManager};
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
+use crate::observability::loop_safety::{self, LoopSafetyEvent, LoopSafetyKind};
 use crate::session::Session;
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
@@ -61,6 +62,14 @@ impl ToolInspector for HookInspector {
 
             match aggregate.decision {
                 Some(HookDecision::Deny { reason }) => {
+                    // BR-67: a hook veto is a loop-safety stop like any other —
+                    // record which tool was blocked (never the hook's reason
+                    // text, which is free-form and can quote the call).
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::HookBlock)
+                            .session(&session.id)
+                            .tool(&tool_name),
+                    );
                     results.push(InspectionResult {
                         tool_request_id: request.id.clone(),
                         action: InspectionAction::Deny,
@@ -71,6 +80,11 @@ impl ToolInspector for HookInspector {
                     });
                 }
                 Some(HookDecision::Ask { reason }) => {
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::HookAsk)
+                            .session(&session.id)
+                            .tool(&tool_name),
+                    );
                     let warning = reason
                         .unwrap_or_else(|| format!("A hook requires approval for {tool_name}"));
                     results.push(InspectionResult {
