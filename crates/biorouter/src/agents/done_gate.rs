@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn gate_instruction_ellipsizes_a_long_reason() {
         let long = "x".repeat(2_000);
-        let text = gate_instruction(&[long.clone()]);
+        let text = gate_instruction(std::slice::from_ref(&long));
         assert!(text.contains('…'), "a long failure reason is truncated");
         assert!(text.len() < long.len() + 600);
     }
