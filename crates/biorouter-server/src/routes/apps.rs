@@ -59,6 +59,13 @@ use crate::state::AppState;
 /// Workflow-style apps can raise this via `agent.max_turns` in the manifest.
 const DEFAULT_MAX_TURNS: u32 = 24;
 
+/// BR-49: how many corrective re-prompts the app loop will spend getting the
+/// final answer to satisfy a declared `output_type` JSON-Schema contract before
+/// giving up and surfacing the raw answer with the validation errors. Only apps
+/// that declare `output_type` are affected at all; others never validate.
+/// Overridable with the `brsdk_output_retries` config key.
+const DEFAULT_OUTPUT_RETRIES: u32 = 2;
+
 fn store() -> ArtifactStore {
     ArtifactStore::new(default_root())
 }
@@ -1153,9 +1160,9 @@ async fn handle_agent_socket(
             }
         };
 
-        let mut user = Message::user().with_text(prompt_text);
+        let mut turn_message = Message::user().with_text(prompt_text);
         for img in images {
-            user = user.with_image(img.data, img.mime_type);
+            turn_message = turn_message.with_image(img.data, img.mime_type);
         }
 
         // Bound the agent's tool-calling loop (guardrail against runaway loops;
@@ -1166,139 +1173,39 @@ async fn handle_agent_socket(
             .as_ref()
             .and_then(|a| a.max_turns)
             .unwrap_or(DEFAULT_MAX_TURNS);
-        let session_config = SessionConfig {
-            id: session_id.clone(),
-            schedule_id: None,
-            max_turns: Some(max_turns),
-            max_tool_calls: None,
-            budget: None,
-            retry_config: None,
-            reasoning_effort: None,
-        };
-        let cancel = CancellationToken::new();
-        let mut stream = match agent
-            .reply(user, session_config, Some(cancel.clone()))
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = send_json(
-                    &mut socket_tx,
-                    json!({"type":"error","message": e.to_string()}),
-                )
-                .await;
-                continue;
-            }
-        };
 
+        // BR-49: the app's declared final-answer JSON-Schema contract, if any.
+        // Only apps that set `output_type` get validate/re-prompt enforcement;
+        // for every other app the block below is a byte-for-byte no-op.
+        let output_type = manifest.agent.as_ref().and_then(|a| a.output_type.clone());
+        let max_output_retries = biorouter::config::Config::global()
+            .get_param::<u32>("brsdk_output_retries")
+            .unwrap_or(DEFAULT_OUTPUT_RETRIES);
+        let mut output_attempt: u32 = 0;
+
+        // Shared across a turn and its structured-output re-prompts: `done` and the
+        // session rename fire once, after the whole thing settles.
         let mut errored = false;
-        // call id → tool name, so a ToolResponse can be reported by name.
-        let mut tool_names: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        loop {
-            // Three sources, biased so a UI command a tool just issued reaches the
-            // page before the `tool completed` frame that follows it. Every branch
-            // only binds — the bodies below are outside the `select!`, so they may
-            // borrow the socket and the stream freely.
-            let woken = tokio::select! {
-                biased;
-                Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
-                inbound = socket_rx.next() => TurnWake::Client(inbound),
-                event = stream.next() => TurnWake::Agent(event),
-            };
+        // Set once a turn's terminal answer satisfies `output_type`, so the typed
+        // `output` frame can be emitted after the loop.
+        let mut structured_value: Option<serde_json::Value> = None;
 
-            let event = match woken {
-                TurnWake::Ui(cmd) => {
-                    if !send_json(&mut socket_tx, cmd).await {
-                        ui_bridge.detach(conn_token);
-                        return;
-                    }
-                    continue;
-                }
-                TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
-                    handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued);
-                    continue;
-                }
-                TurnWake::Client(Some(Ok(WsMessage::Close(_))))
-                | TurnWake::Client(Some(Err(_)))
-                | TurnWake::Client(None) => {
-                    // The page went away mid-turn: stop the agent and unblock any
-                    // `ui_ask` it left parked, rather than leaking a live turn.
-                    cancel.cancel();
-                    ui_bridge.detach(conn_token);
-                    return;
-                }
-                TurnWake::Client(Some(Ok(_))) => continue,
-                TurnWake::Agent(Some(e)) => e,
-                TurnWake::Agent(None) => break,
+        'attempt: loop {
+            let session_config = SessionConfig {
+                id: session_id.clone(),
+                schedule_id: None,
+                max_turns: Some(max_turns),
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
             };
-
-            match event {
-                Ok(AgentEvent::Message(message)) => {
-                    for content in &message.content {
-                        let frame = match content {
-                            MessageContent::Text(t) => {
-                                Some(json!({"type":"message","delta": t.text}))
-                            }
-                            MessageContent::Thinking(t) => {
-                                Some(json!({"type":"thought","delta": t.thinking}))
-                            }
-                            MessageContent::ToolRequest(tr) => {
-                                let name = tr
-                                    .tool_call
-                                    .as_ref()
-                                    .map(|c| c.name.to_string())
-                                    .unwrap_or_else(|_| "tool".to_string());
-                                // Remember the name against the call id so the
-                                // response frame can report it too. A timeline of
-                                // "tool completed" rows says nothing about what ran
-                                // — which matters now that tools redraw the page.
-                                tool_names.insert(tr.id.clone(), name.clone());
-                                Some(
-                                    json!({"type":"tool","name": name, "id": tr.id, "status":"pending"}),
-                                )
-                            }
-                            MessageContent::ToolResponse(resp) => {
-                                let status = match &resp.tool_result {
-                                    Ok(r) if r.is_error == Some(true) => "failed",
-                                    Ok(_) => "completed",
-                                    Err(_) => "failed",
-                                };
-                                let name = tool_names
-                                    .remove(&resp.id)
-                                    .unwrap_or_else(|| "tool".to_string());
-                                Some(
-                                    json!({"type":"tool","name": name, "id": resp.id, "status": status}),
-                                )
-                            }
-                            MessageContent::ActionRequired(ar) => {
-                                // HITL: pause for human approval over this socket,
-                                // then resume. Returns no frame (it sends its own).
-                                handle_action_required(
-                                    &mut socket_tx,
-                                    &mut socket_rx,
-                                    &state,
-                                    &agent,
-                                    &session_id,
-                                    &manifest.id,
-                                    &ui_bridge,
-                                    conn_token,
-                                    ar,
-                                )
-                                .await;
-                                None
-                            }
-                            _ => None,
-                        };
-                        if let Some(f) = frame {
-                            if !send_json(&mut socket_tx, f).await {
-                                ui_bridge.detach(conn_token);
-                                return;
-                            }
-                        }
-                    }
-                }
-                Ok(_) => {}
+            let cancel = CancellationToken::new();
+            let mut stream = match agent
+                .reply(turn_message.clone(), session_config, Some(cancel.clone()))
+                .await
+            {
+                Ok(s) => s,
                 Err(e) => {
                     let _ = send_json(
                         &mut socket_tx,
@@ -1306,19 +1213,204 @@ async fn handle_agent_socket(
                     )
                     .await;
                     errored = true;
-                    break;
+                    break 'attempt;
+                }
+            };
+
+            // call id → tool name, so a ToolResponse can be reported by name.
+            let mut tool_names: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            // BR-49: the terminal free-text answer, reconstructed from the text
+            // deltas emitted since the last tool call — a tool call means the text
+            // before it was commentary, not the answer. Validated against
+            // `output_type` once the stream drains.
+            let mut final_text = String::new();
+            loop {
+                // Three sources, biased so a UI command a tool just issued reaches the
+                // page before the `tool completed` frame that follows it. Every branch
+                // only binds — the bodies below are outside the `select!`, so they may
+                // borrow the socket and the stream freely.
+                let woken = tokio::select! {
+                    biased;
+                    Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
+                    inbound = socket_rx.next() => TurnWake::Client(inbound),
+                    event = stream.next() => TurnWake::Agent(event),
+                };
+
+                let event = match woken {
+                    TurnWake::Ui(cmd) => {
+                        if !send_json(&mut socket_tx, cmd).await {
+                            ui_bridge.detach(conn_token);
+                            return;
+                        }
+                        continue;
+                    }
+                    TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
+                        handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued);
+                        continue;
+                    }
+                    TurnWake::Client(Some(Ok(WsMessage::Close(_))))
+                    | TurnWake::Client(Some(Err(_)))
+                    | TurnWake::Client(None) => {
+                        // The page went away mid-turn: stop the agent and unblock any
+                        // `ui_ask` it left parked, rather than leaking a live turn.
+                        cancel.cancel();
+                        ui_bridge.detach(conn_token);
+                        return;
+                    }
+                    TurnWake::Client(Some(Ok(_))) => continue,
+                    TurnWake::Agent(Some(e)) => e,
+                    TurnWake::Agent(None) => break,
+                };
+
+                match event {
+                    Ok(AgentEvent::Message(message)) => {
+                        for content in &message.content {
+                            let frame = match content {
+                                MessageContent::Text(t) => {
+                                    // BR-49: accumulate the terminal answer for the
+                                    // `output_type` check (no-op string push otherwise).
+                                    final_text.push_str(&t.text);
+                                    Some(json!({"type":"message","delta": t.text}))
+                                }
+                                MessageContent::Thinking(t) => {
+                                    Some(json!({"type":"thought","delta": t.thinking}))
+                                }
+                                MessageContent::ToolRequest(tr) => {
+                                    // BR-49: a tool call means whatever text streamed
+                                    // before it was commentary, not the final answer.
+                                    final_text.clear();
+                                    let name = tr
+                                        .tool_call
+                                        .as_ref()
+                                        .map(|c| c.name.to_string())
+                                        .unwrap_or_else(|_| "tool".to_string());
+                                    // Remember the name against the call id so the
+                                    // response frame can report it too. A timeline of
+                                    // "tool completed" rows says nothing about what ran
+                                    // — which matters now that tools redraw the page.
+                                    tool_names.insert(tr.id.clone(), name.clone());
+                                    Some(
+                                        json!({"type":"tool","name": name, "id": tr.id, "status":"pending"}),
+                                    )
+                                }
+                                MessageContent::ToolResponse(resp) => {
+                                    let status = match &resp.tool_result {
+                                        Ok(r) if r.is_error == Some(true) => "failed",
+                                        Ok(_) => "completed",
+                                        Err(_) => "failed",
+                                    };
+                                    let name = tool_names
+                                        .remove(&resp.id)
+                                        .unwrap_or_else(|| "tool".to_string());
+                                    Some(
+                                        json!({"type":"tool","name": name, "id": resp.id, "status": status}),
+                                    )
+                                }
+                                MessageContent::ActionRequired(ar) => {
+                                    // HITL: pause for human approval over this socket,
+                                    // then resume. Returns no frame (it sends its own).
+                                    handle_action_required(
+                                        &mut socket_tx,
+                                        &mut socket_rx,
+                                        &state,
+                                        &agent,
+                                        &session_id,
+                                        &manifest.id,
+                                        &ui_bridge,
+                                        conn_token,
+                                        ar,
+                                    )
+                                    .await;
+                                    None
+                                }
+                                _ => None,
+                            };
+                            if let Some(f) = frame {
+                                if !send_json(&mut socket_tx, f).await {
+                                    ui_bridge.detach(conn_token);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = send_json(
+                            &mut socket_tx,
+                            json!({"type":"error","message": e.to_string()}),
+                        )
+                        .await;
+                        errored = true;
+                        break;
+                    }
+                }
+            }
+
+            // The reply stream is done, but a tool's last UI command may still be
+            // in flight. Flush before we finish so the page is settled when the
+            // app's `prompt()` promise resolves (tests and app code rely on that).
+            while let Ok(cmd) = ui_rx.try_recv() {
+                if !send_json(&mut socket_tx, cmd).await {
+                    ui_bridge.detach(conn_token);
+                    return;
+                }
+            }
+
+            // A provider error or a user cancel ends the turn as-is — never
+            // re-prompt over an aborted or partial answer.
+            if errored || cancel.is_cancelled() {
+                break 'attempt;
+            }
+
+            // BR-49: enforce the `output_type` contract on the terminal answer.
+            match decide_output(
+                output_type.as_ref(),
+                &final_text,
+                output_attempt,
+                max_output_retries,
+            ) {
+                OutputDecision::None => break 'attempt,
+                OutputDecision::Valid(value) => {
+                    structured_value = Some(value);
+                    break 'attempt;
+                }
+                OutputDecision::GiveUp { errors } => {
+                    // Out of re-prompts: hand the app the errors so it can react,
+                    // but keep the raw answer (as `value`) the user already saw
+                    // streamed so the `output` frame always carries a value.
+                    let _ = send_json(
+                        &mut socket_tx,
+                        json!({"type":"output","valid": false, "value": final_text, "errors": errors}),
+                    )
+                    .await;
+                    break 'attempt;
+                }
+                OutputDecision::Reprompt { message, errors } => {
+                    output_attempt += 1;
+                    let _ = send_json(
+                        &mut socket_tx,
+                        json!({"type":"output_retry","attempt": output_attempt, "errors": errors}),
+                    )
+                    .await;
+                    // Hidden from the user transcript; visible to the agent so it
+                    // re-answers in the required shape.
+                    turn_message = Message::user()
+                        .with_text(message)
+                        .with_visibility(false, true);
+                    continue 'attempt;
                 }
             }
         }
 
-        // The reply stream is done, but a tool's last UI command may still be in
-        // flight. Flush before `done` so the page is settled when the app's
-        // `prompt()` promise resolves (tests and app code both rely on that).
-        while let Ok(cmd) = ui_rx.try_recv() {
-            if !send_json(&mut socket_tx, cmd).await {
-                ui_bridge.detach(conn_token);
-                return;
-            }
+        // BR-49: a validated structured answer — hand the app the typed value so
+        // it can skip scraping the streamed markdown. Emitted before `done`.
+        if let Some(value) = structured_value {
+            let _ = send_json(
+                &mut socket_tx,
+                json!({"type":"output","valid": true, "value": value}),
+            )
+            .await;
         }
 
         // Reply loop ended — trigger the best-effort LLM session rename. Always
@@ -1379,6 +1471,61 @@ fn apply_pii_policy(text: String, mode: PiiMode) -> PiiOutcome {
             }
         }
         PiiMode::Off => PiiOutcome::Pass(text),
+    }
+}
+
+/// BR-49: what the app loop should do after a turn's terminal answer is in hand,
+/// given the app's optional `output_type` JSON-Schema contract.
+#[derive(Debug)]
+enum OutputDecision {
+    /// No contract declared (or the answer was empty): finish exactly as before.
+    None,
+    /// The answer validates: emit the parsed structured value and finish.
+    Valid(serde_json::Value),
+    /// The answer is invalid and re-prompts remain: push this corrective message
+    /// back to the agent and run another turn.
+    Reprompt {
+        message: String,
+        errors: Vec<String>,
+    },
+    /// The answer is invalid and no re-prompts remain: surface the errors and
+    /// finish with the raw answer (best-effort, never hangs the turn).
+    GiveUp { errors: Vec<String> },
+}
+
+/// Decide how to enforce a BRSDK `output_type` contract for one completed turn.
+/// Pure so it is unit-testable in isolation; the streaming/re-prompt wiring in
+/// `handle_agent_socket` is the only caller. Mirrors the `final_output_tool`
+/// validate-then-correct path, but over the terminal free-text answer.
+fn decide_output(
+    output_type: Option<&serde_json::Value>,
+    terminal_text: &str,
+    attempt: u32,
+    max_retries: u32,
+) -> OutputDecision {
+    let Some(schema) = output_type else {
+        return OutputDecision::None;
+    };
+    // An empty terminal answer means the turn produced no free-text answer to
+    // validate (e.g. it ended on a tool result or was cancelled). Don't invent a
+    // schema violation for it — leave the turn untouched.
+    if terminal_text.trim().is_empty() {
+        return OutputDecision::None;
+    }
+    match biorouter::agents::structured_output::parse_and_validate(terminal_text, schema) {
+        Ok(value) => OutputDecision::Valid(value),
+        Err(errors) => {
+            if attempt < max_retries {
+                OutputDecision::Reprompt {
+                    message: biorouter::agents::structured_output::reprompt_message(
+                        &errors, schema,
+                    ),
+                    errors,
+                }
+            } else {
+                OutputDecision::GiveUp { errors }
+            }
+        }
     }
 }
 
@@ -1713,6 +1860,105 @@ mod tests {
             PiiMode::Block,
         );
         assert!(matches!(out, PiiOutcome::Pass(_)));
+    }
+
+    // --- BR-49: output_type validate/re-prompt decision ---
+    use super::{decide_output, OutputDecision};
+    use serde_json::json;
+
+    fn out_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "gene": { "type": "string" },
+                "pathways": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["gene", "pathways"]
+        })
+    }
+
+    #[test]
+    fn decide_output_no_schema_is_a_noop() {
+        // Apps that never declared `output_type` are untouched, even if their
+        // answer happens to be prose that isn't JSON.
+        assert!(matches!(
+            decide_output(None, "here is your answer", 0, 2),
+            OutputDecision::None
+        ));
+    }
+
+    #[test]
+    fn decide_output_empty_answer_is_left_alone() {
+        // A turn that ended on a tool result (no free-text answer) must not be
+        // reported as a schema violation.
+        let schema = out_schema();
+        assert!(matches!(
+            decide_output(Some(&schema), "   ", 0, 2),
+            OutputDecision::None
+        ));
+    }
+
+    #[test]
+    fn decide_output_valid_fenced_json_parses() {
+        let schema = out_schema();
+        let text = "```json\n{\"gene\":\"CFTR\",\"pathways\":[\"chloride transport\"]}\n```";
+        match decide_output(Some(&schema), text, 0, 2) {
+            OutputDecision::Valid(value) => {
+                assert_eq!(value["gene"], "CFTR");
+                assert_eq!(value["pathways"].as_array().unwrap().len(), 1);
+            }
+            other => panic!("expected Valid, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn decide_output_invalid_with_budget_reprompts() {
+        let schema = out_schema();
+        // Missing the required `pathways` field.
+        match decide_output(Some(&schema), "{\"gene\":\"CFTR\"}", 0, 2) {
+            OutputDecision::Reprompt { message, errors } => {
+                assert!(!errors.is_empty());
+                assert!(
+                    message.contains("pathways"),
+                    "corrective msg names the field"
+                );
+                assert!(message.contains("ONLY"), "corrective msg demands JSON-only");
+            }
+            other => panic!(
+                "expected Reprompt, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn decide_output_invalid_out_of_budget_gives_up() {
+        let schema = out_schema();
+        // attempt == max_retries → no budget left.
+        match decide_output(Some(&schema), "not json at all", 2, 2) {
+            OutputDecision::GiveUp { errors } => assert!(!errors.is_empty()),
+            other => panic!("expected GiveUp, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn decide_output_zero_retries_validates_but_never_reprompts() {
+        let schema = out_schema();
+        // With retries disabled, a good answer still yields the typed value…
+        assert!(matches!(
+            decide_output(
+                Some(&schema),
+                "{\"gene\":\"TP53\",\"pathways\":[\"apoptosis\"]}",
+                0,
+                0
+            ),
+            OutputDecision::Valid(_)
+        ));
+        // …and a bad one goes straight to GiveUp rather than looping.
+        assert!(matches!(
+            decide_output(Some(&schema), "{\"gene\":\"TP53\"}", 0, 0),
+            OutputDecision::GiveUp { .. }
+        ));
     }
 
     // --- data-source jail boundary (the security boundary of the data feature) ---
