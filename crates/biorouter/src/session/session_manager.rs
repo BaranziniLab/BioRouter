@@ -3,6 +3,7 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
+use crate::providers::pricing::model_cost;
 use crate::session::extension_data::ExtensionData;
 use crate::workflow::Workflow;
 use anyhow::Result;
@@ -207,6 +208,215 @@ pub struct ModelUsageRow {
     pub total_tokens: i64,
     /// Number of billed turns attributed to this group.
     pub turns: i64,
+}
+
+/// How `get_usage_report` buckets the per-turn ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageGroup {
+    /// One row per local calendar day (models summed within the day).
+    Day,
+    /// One row per `(model, provider)` group over the whole range.
+    Model,
+    /// One row per `(day, model, provider)`.
+    DayModel,
+}
+
+/// One bucket of the usage report.
+///
+/// `date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is
+/// present unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of
+/// the priced turns in the bucket, or `None` when *every* contributing turn was
+/// unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
+/// flags a bucket that mixes priced and unpriced turns, so a day cost can be
+/// read as "at least this much" rather than exact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReportRow {
+    pub date: Option<String>,
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub turns: i64,
+    pub cost: Option<f64>,
+    pub has_unpriced: bool,
+}
+
+/// Token + cost totals for a time span, priced through [`model_cost`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTotals {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub turns: i64,
+    /// Dollar cost of the priced turns, or `None` when nothing in the span is
+    /// priced. Priced-but-partial spans return the priced sum with
+    /// `has_unpriced = true`.
+    pub cost: Option<f64>,
+    pub has_unpriced: bool,
+}
+
+/// Month-to-date and all-time usage totals, for the summary gauge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    /// Current local month, `YYYY-MM`.
+    pub month: String,
+    pub month_to_date: UsageTotals,
+    pub all_time: UsageTotals,
+}
+
+/// The finest per-`(day, model, provider)` grain the report SQL returns, before
+/// Rust rolls it up into the requested [`UsageGroup`] and prices each bucket.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct UsageGrainRow {
+    day: String,
+    model_id: Option<String>,
+    provider: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    turns: i64,
+}
+
+/// Dollar cost of one finest-grain row, or `None` when its `(provider, model)`
+/// pair is unknown/unpriced. Both endpoints must be present to price it — a row
+/// with no model (the "unknown" bucket) is always unpriced.
+fn price_grain(row: &UsageGrainRow) -> Option<f64> {
+    match (row.provider.as_deref(), row.model_id.as_deref()) {
+        (Some(provider), Some(model)) => {
+            model_cost(provider, model, row.input_tokens, row.output_tokens)
+        }
+        _ => None,
+    }
+}
+
+/// Accumulator for one output bucket while rolling grain rows up.
+struct BucketAcc {
+    date: Option<String>,
+    model_id: Option<String>,
+    provider: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    turns: i64,
+    cost_sum: f64,
+    priced_any: bool,
+    unpriced_any: bool,
+}
+
+impl BucketAcc {
+    fn add(&mut self, row: &UsageGrainRow) {
+        self.input_tokens += row.input_tokens;
+        self.output_tokens += row.output_tokens;
+        self.total_tokens += row.total_tokens;
+        self.turns += row.turns;
+        match price_grain(row) {
+            Some(cost) => {
+                self.cost_sum += cost;
+                self.priced_any = true;
+            }
+            None => self.unpriced_any = true,
+        }
+    }
+
+    /// `cost` is `None` only when the bucket is *entirely* unpriced, so a null
+    /// cost can never be misread as "$0"; a partially-priced bucket returns its
+    /// priced sum with `has_unpriced = true`.
+    fn cost(&self) -> Option<f64> {
+        self.priced_any.then_some(self.cost_sum)
+    }
+}
+
+/// Roll the finest per-`(day, model, provider)` grain up into the requested
+/// grouping, pricing every grain row through [`model_cost`] once. Pure so the
+/// grouping + cost math is unit-tested without a database.
+fn rollup_report(grain: &[UsageGrainRow], group: UsageGroup) -> Vec<UsageReportRow> {
+    // Bucket key: (date, model_id, provider); components are None per grouping.
+    type BucketKey = (Option<String>, Option<String>, Option<String>);
+    let mut map: std::collections::BTreeMap<BucketKey, BucketAcc> =
+        std::collections::BTreeMap::new();
+
+    for row in grain {
+        let (date, model_id, provider) = match group {
+            UsageGroup::Day => (Some(row.day.clone()), None, None),
+            UsageGroup::Model => (None, row.model_id.clone(), row.provider.clone()),
+            UsageGroup::DayModel => (
+                Some(row.day.clone()),
+                row.model_id.clone(),
+                row.provider.clone(),
+            ),
+        };
+        map.entry((date.clone(), model_id.clone(), provider.clone()))
+            .or_insert_with(|| BucketAcc {
+                date,
+                model_id,
+                provider,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                turns: 0,
+                cost_sum: 0.0,
+                priced_any: false,
+                unpriced_any: false,
+            })
+            .add(row);
+    }
+
+    let mut rows: Vec<UsageReportRow> = map
+        .into_values()
+        .map(|a| UsageReportRow {
+            cost: a.cost(),
+            has_unpriced: a.unpriced_any,
+            date: a.date,
+            model_id: a.model_id,
+            provider: a.provider,
+            input_tokens: a.input_tokens,
+            output_tokens: a.output_tokens,
+            total_tokens: a.total_tokens,
+            turns: a.turns,
+        })
+        .collect();
+
+    // Day-bearing groups read as a chronological series (day asc, then heaviest
+    // model first within a day); a pure per-model report is heaviest-first.
+    rows.sort_by(|a, b| {
+        a.date
+            .cmp(&b.date)
+            .then(b.total_tokens.cmp(&a.total_tokens))
+            .then(a.model_id.cmp(&b.model_id))
+    });
+    rows
+}
+
+/// Sum grain rows into a single priced total (used for MTD and all-time).
+fn totals_from_grain(grain: &[UsageGrainRow]) -> UsageTotals {
+    let mut acc = BucketAcc {
+        date: None,
+        model_id: None,
+        provider: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        turns: 0,
+        cost_sum: 0.0,
+        priced_any: false,
+        unpriced_any: false,
+    };
+    for row in grain {
+        acc.add(row);
+    }
+    UsageTotals {
+        input_tokens: acc.input_tokens,
+        output_tokens: acc.output_tokens,
+        total_tokens: acc.total_tokens,
+        turns: acc.turns,
+        cost: acc.cost(),
+        has_unpriced: acc.unpriced_any,
+    }
 }
 
 /// A day's raw intensity, before bucketing.
@@ -660,6 +870,22 @@ impl SessionManager {
     /// Global per-model usage rollup over `[from, to]` (inclusive, unix seconds).
     pub async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
         self.storage.get_model_usage(from, to).await
+    }
+
+    /// Queryable, server-priced usage report over `[from, to]` (inclusive, unix
+    /// seconds), bucketed by day, model, or day×model.
+    pub async fn get_usage_report(
+        &self,
+        from: i64,
+        to: i64,
+        group: UsageGroup,
+    ) -> Result<Vec<UsageReportRow>> {
+        self.storage.get_usage_report(from, to, group).await
+    }
+
+    /// Month-to-date + all-time priced usage totals, for the summary gauge.
+    pub async fn get_usage_summary(&self) -> Result<UsageSummary> {
+        self.storage.get_usage_summary().await
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
@@ -2204,6 +2430,97 @@ impl SessionStorage {
         Ok(rows)
     }
 
+    /// Queryable usage report over the inclusive `[from, to]` unix-second window.
+    ///
+    /// The SQL always groups at the finest `(day, model, provider)` grain; Rust
+    /// then prices each grain row once and rolls it up into `group`. That order
+    /// is what lets a `Day` bucket report a correct dollar cost even though the
+    /// day mixes models at different prices.
+    async fn get_usage_report(
+        &self,
+        from: i64,
+        to: i64,
+        group: UsageGroup,
+    ) -> Result<Vec<UsageReportRow>> {
+        let pool = self.pool().await?;
+        let grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(te.total_tokens), 0)  AS total_tokens,
+                   COUNT(*)                           AS turns
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+              AND te.ts >= ?1 AND te.ts <= ?2
+            GROUP BY day, te.model_id, te.provider
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(pool)
+        .await?;
+        Ok(rollup_report(&grain, group))
+    }
+
+    /// Month-to-date (current local month) + all-time priced totals.
+    async fn get_usage_summary(&self) -> Result<UsageSummary> {
+        let pool = self.pool().await?;
+
+        // Per-model grain is required so each model prices at its own rate before
+        // summing; `day` is unused here, so a constant keeps the shared struct.
+        let mtd_grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT '' AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(te.total_tokens), 0)  AS total_tokens,
+                   COUNT(*)                           AS turns
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+              AND strftime('%Y-%m', te.ts, 'unixepoch', 'localtime')
+                  = strftime('%Y-%m', 'now', 'localtime')
+            GROUP BY te.model_id, te.provider
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let all_grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT '' AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(te.total_tokens), 0)  AS total_tokens,
+                   COUNT(*)                           AS turns
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+            GROUP BY te.model_id, te.provider
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let month: String = sqlx::query_scalar("SELECT strftime('%Y-%m', 'now', 'localtime')")
+            .fetch_one(pool)
+            .await?;
+
+        Ok(UsageSummary {
+            month,
+            month_to_date: totals_from_grain(&mtd_grain),
+            all_time: totals_from_grain(&all_grain),
+        })
+    }
+
     async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
         let pool = self.pool().await?;
         let days = days.clamp(1, 371);
@@ -3299,6 +3616,144 @@ mod tests {
         assert_eq!(rows[0].model_id.as_deref(), Some("gpt-5"));
     }
 
+    /// Shared fixture for the pure rollup tests. Prices use the real zai
+    /// `glm-5.2` card ($1.40 / 1M input, $4.40 / 1M output); the unknown-model
+    /// row is unpriced. Chosen so every dollar figure is an exact hand value.
+    fn usage_grain_fixture() -> Vec<UsageGrainRow> {
+        vec![
+            // Day 10, priced: 1M input → $1.40.
+            UsageGrainRow {
+                day: "2026-07-10".into(),
+                model_id: Some("glm-5.2".into()),
+                provider: Some("zai".into()),
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                total_tokens: 1_000_000,
+                turns: 5,
+            },
+            // Day 10, unknown model → unpriced.
+            UsageGrainRow {
+                day: "2026-07-10".into(),
+                model_id: None,
+                provider: None,
+                input_tokens: 500,
+                output_tokens: 500,
+                total_tokens: 1_000,
+                turns: 2,
+            },
+            // Day 11, priced: 2M input + 1M output → 2.80 + 4.40 = $7.20.
+            UsageGrainRow {
+                day: "2026-07-11".into(),
+                model_id: Some("glm-5.2".into()),
+                provider: Some("zai".into()),
+                input_tokens: 2_000_000,
+                output_tokens: 1_000_000,
+                total_tokens: 3_000_000,
+                turns: 3,
+            },
+        ]
+    }
+
+    fn approx(a: Option<f64>, b: f64) -> bool {
+        matches!(a, Some(v) if (v - b).abs() < 1e-9)
+    }
+
+    #[test]
+    fn rollup_by_day_prices_each_model_before_summing() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::Day);
+        assert_eq!(rows.len(), 2);
+
+        // Chronological: day 10 then day 11.
+        let d10 = &rows[0];
+        assert_eq!(d10.date.as_deref(), Some("2026-07-10"));
+        assert_eq!(d10.model_id, None, "day grouping drops the model");
+        assert_eq!(d10.input_tokens, 1_000_500);
+        assert_eq!(d10.output_tokens, 500);
+        assert_eq!(d10.total_tokens, 1_001_000);
+        assert_eq!(d10.turns, 7);
+        // Only the priced glm row contributes dollars; the unknown row flags it.
+        assert!(approx(d10.cost, 1.40), "got {:?}", d10.cost);
+        assert!(d10.has_unpriced);
+
+        let d11 = &rows[1];
+        assert_eq!(d11.date.as_deref(), Some("2026-07-11"));
+        assert!(approx(d11.cost, 7.20), "got {:?}", d11.cost);
+        assert!(!d11.has_unpriced);
+    }
+
+    #[test]
+    fn rollup_by_model_sums_days_and_isolates_unknown() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::Model);
+        assert_eq!(rows.len(), 2);
+
+        // Heaviest model first.
+        let glm = &rows[0];
+        assert_eq!(glm.model_id.as_deref(), Some("glm-5.2"));
+        assert_eq!(glm.date, None, "model grouping drops the day");
+        assert_eq!(glm.input_tokens, 3_000_000);
+        assert_eq!(glm.output_tokens, 1_000_000);
+        assert_eq!(glm.total_tokens, 4_000_000);
+        assert_eq!(glm.turns, 8);
+        // 1.40 (day 10) + 7.20 (day 11) = 8.60.
+        assert!(approx(glm.cost, 8.60), "got {:?}", glm.cost);
+        assert!(!glm.has_unpriced);
+
+        let unknown = &rows[1];
+        assert_eq!(unknown.model_id, None);
+        assert_eq!(unknown.cost, None, "unknown model is null cost, never $0");
+        assert!(unknown.has_unpriced);
+    }
+
+    #[test]
+    fn rollup_by_day_model_keeps_every_bucket() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::DayModel);
+        assert_eq!(rows.len(), 3);
+        // Sorted day asc, then heaviest model within a day.
+        assert_eq!(
+            (rows[0].date.as_deref(), rows[0].model_id.as_deref()),
+            (Some("2026-07-10"), Some("glm-5.2"))
+        );
+        assert!(approx(rows[0].cost, 1.40));
+        assert_eq!(
+            (rows[1].date.as_deref(), rows[1].model_id.as_deref()),
+            (Some("2026-07-10"), None)
+        );
+        assert_eq!(rows[1].cost, None);
+        assert_eq!(
+            (rows[2].date.as_deref(), rows[2].model_id.as_deref()),
+            (Some("2026-07-11"), Some("glm-5.2"))
+        );
+        assert!(approx(rows[2].cost, 7.20));
+    }
+
+    #[test]
+    fn totals_from_grain_sum_and_price() {
+        let totals = totals_from_grain(&usage_grain_fixture());
+        assert_eq!(totals.input_tokens, 3_000_500);
+        assert_eq!(totals.output_tokens, 1_000_500);
+        assert_eq!(totals.total_tokens, 4_001_000);
+        assert_eq!(totals.turns, 10);
+        assert!(approx(totals.cost, 8.60), "got {:?}", totals.cost);
+        assert!(totals.has_unpriced, "the unknown row leaves it partial");
+    }
+
+    #[test]
+    fn totals_are_fully_null_when_nothing_is_priced() {
+        let grain = vec![UsageGrainRow {
+            day: "".into(),
+            model_id: None,
+            provider: None,
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            turns: 1,
+        }];
+        let totals = totals_from_grain(&grain);
+        assert_eq!(totals.total_tokens, 150);
+        assert_eq!(totals.cost, None, "wholly-unpriced span is null, not $0");
+        assert!(totals.has_unpriced);
+    }
+
     #[tokio::test]
     async fn empty_model_strings_collapse_into_unknown() {
         let temp_dir = TempDir::new().unwrap();
@@ -3374,6 +3829,217 @@ mod tests {
         // Just below the lowest ts excludes everything.
         let none = sm.get_model_usage(0, 999).await.unwrap();
         assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn usage_report_buckets_by_local_day_and_excludes_nonuser_sessions() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let user = seed_session_with_messages(&sm, 1).await;
+        // A non-user session whose events must never reach the report.
+        let hidden = sm
+            .create_session(
+                PathBuf::from("/tmp/h"),
+                "hidden".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        let t0: i64 = 1_700_000_000;
+        let t2 = t0 + 2 * 86_400; // two days later
+
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        let insert = |sid: String,
+                      ts: i64,
+                      input: i64,
+                      output: i64,
+                      total: i64,
+                      model: Option<&'static str>,
+                      provider: Option<&'static str>,
+                      pool: &sqlx::SqlitePool| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                    .bind(sid).bind(ts).bind(input).bind(output).bind(total).bind(model).bind(provider)
+                    .execute(&pool).await.unwrap();
+            }
+        };
+
+        // Day 0: a priced glm turn (1M input → $1.40) + an unknown turn.
+        insert(
+            user.id.clone(),
+            t0,
+            1_000_000,
+            0,
+            1_000_000,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+        insert(user.id.clone(), t0, 100, 0, 100, None, None, &pool).await;
+        // Day 2: a priced glm turn (1M output → $4.40).
+        insert(
+            user.id.clone(),
+            t2,
+            0,
+            1_000_000,
+            1_000_000,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+        // Non-user session on day 0 — excluded.
+        insert(
+            hidden.id.clone(),
+            t0,
+            9_999_999,
+            0,
+            9_999_999,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+
+        // The local-day strings are tz-dependent; ask SQLite so the assertion
+        // holds in any timezone the test runs in.
+        let day0: String = sqlx::query_scalar("SELECT date(?, 'unixepoch', 'localtime')")
+            .bind(t0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let day2: String = sqlx::query_scalar("SELECT date(?, 'unixepoch', 'localtime')")
+            .bind(t2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let report = sm
+            .get_usage_report(t0 - 1, t2 + 1, UsageGroup::Day)
+            .await
+            .unwrap();
+        assert_eq!(report.len(), 2, "two active local days, hidden excluded");
+
+        let b0 = report
+            .iter()
+            .find(|r| r.date.as_deref() == Some(&day0))
+            .unwrap();
+        assert_eq!(b0.input_tokens, 1_000_100, "hidden 9.9M not counted");
+        assert_eq!(b0.output_tokens, 0);
+        assert_eq!(b0.total_tokens, 1_000_100);
+        assert_eq!(b0.turns, 2);
+        assert!(
+            matches!(b0.cost, Some(c) if (c - 1.40).abs() < 1e-9),
+            "got {:?}",
+            b0.cost
+        );
+        assert!(b0.has_unpriced, "the unknown turn flags the day partial");
+
+        let b2 = report
+            .iter()
+            .find(|r| r.date.as_deref() == Some(&day2))
+            .unwrap();
+        assert_eq!(b2.total_tokens, 1_000_000);
+        assert!(
+            matches!(b2.cost, Some(c) if (c - 4.40).abs() < 1e-9),
+            "got {:?}",
+            b2.cost
+        );
+        assert!(!b2.has_unpriced);
+
+        // Window that ends before day 2 drops that bucket entirely.
+        let narrow = sm
+            .get_usage_report(t0 - 1, t0 + 1, UsageGroup::Day)
+            .await
+            .unwrap();
+        assert_eq!(narrow.len(), 1);
+        assert_eq!(narrow[0].date.as_deref(), Some(day0.as_str()));
+    }
+
+    #[tokio::test]
+    async fn usage_summary_month_to_date_respects_the_local_month_boundary() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let user = seed_session_with_messages(&sm, 1).await;
+
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        // Unix second of local midnight on the 1st of the current month. The
+        // 'utc' modifier reads the wall-clock string as localtime, so this is a
+        // real instant regardless of the runner's timezone.
+        let month_start: i64 = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', strftime('%Y-%m-01 00:00:00', 'now', 'localtime'), 'utc') AS INTEGER)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let first_of_month = month_start; // inside MTD
+        let last_of_prev_month = month_start - 1; // one second earlier: previous month
+
+        let insert = |ts: i64, input: i64, output: i64, total: i64, pool: &sqlx::SqlitePool| {
+            let sid = user.id.clone();
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider) VALUES (?, ?, ?, ?, ?, 'glm-5.2', 'zai')")
+                    .bind(sid).bind(ts).bind(input).bind(output).bind(total)
+                    .execute(&pool).await.unwrap();
+            }
+        };
+
+        // In the current month: 1M input → $1.40.
+        insert(first_of_month, 1_000_000, 0, 1_000_000, &pool).await;
+        // One second into the previous month: 5M input → must be excluded from MTD.
+        insert(last_of_prev_month, 5_000_000, 0, 5_000_000, &pool).await;
+        pool.close().await;
+
+        let summary = sm.get_usage_summary().await.unwrap();
+
+        // MTD sees only the first-of-month row.
+        assert_eq!(
+            summary.month_to_date.total_tokens, 1_000_000,
+            "the last-second-of-previous-month row must be excluded"
+        );
+        assert_eq!(summary.month_to_date.input_tokens, 1_000_000);
+        assert!(
+            matches!(summary.month_to_date.cost, Some(c) if (c - 1.40).abs() < 1e-9),
+            "got {:?}",
+            summary.month_to_date.cost
+        );
+        assert!(!summary.month_to_date.has_unpriced);
+
+        // All-time sees both rows: 1M + 5M = 6M input → $8.40.
+        assert_eq!(summary.all_time.total_tokens, 6_000_000);
+        assert!(
+            matches!(summary.all_time.cost, Some(c) if (c - 8.40).abs() < 1e-9),
+            "got {:?}",
+            summary.all_time.cost
+        );
+
+        // `month` is the current local YYYY-MM.
+        assert_eq!(summary.month.len(), 7);
+        assert_eq!(&summary.month[4..5], "-");
     }
 
     #[tokio::test]

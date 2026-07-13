@@ -17,6 +17,27 @@ impl ProviderModelPricing {
     }
 }
 
+/// Dollar cost of a turn (or a rollup of turns) for one `(provider, model)`,
+/// or `None` when the pair has no known pricing.
+///
+/// `input_token_cost` / `output_token_cost` are the currency's cost **per
+/// token** (`usd_per_million` already divided the per-million rate by 1e6), so
+/// the cost is simply `tokens * per-token-cost`. This is the single shared
+/// definition of "what a turn costs" — the server usage report, the summary
+/// gauge, and any future caller price identically through it.
+pub fn model_cost(
+    provider: &str,
+    model: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+) -> Option<f64> {
+    let pricing = provider_model_pricing(provider, model)?;
+    Some(
+        input_tokens as f64 * pricing.input_token_cost
+            + output_tokens as f64 * pricing.output_token_cost,
+    )
+}
+
 pub fn provider_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
     let provider = provider.to_ascii_lowercase();
     let model = model.to_ascii_lowercase();
@@ -174,5 +195,26 @@ mod tests {
     fn local_or_subscription_models_are_unpriced() {
         assert!(provider_model_pricing("ollama", "llama3").is_none());
         assert!(provider_model_pricing("github_copilot", "gpt-5.5").is_none());
+    }
+
+    #[test]
+    fn model_cost_multiplies_tokens_by_per_token_rate() {
+        // glm-5.2 on zai: $1.40 / 1M input, $4.40 / 1M output.
+        // Hand-computed for 2,000,000 input + 500,000 output tokens:
+        //   input:  2_000_000 * 1.40 / 1_000_000 = 2.80
+        //   output:   500_000 * 4.40 / 1_000_000 = 2.20
+        //   total = 5.00
+        let cost = model_cost("zai", "glm-5.2", 2_000_000, 500_000).unwrap();
+        assert!((cost - 5.00).abs() < 1e-9, "got {cost}");
+    }
+
+    #[test]
+    fn model_cost_is_none_for_unpriced_pair() {
+        assert!(model_cost("ollama", "llama3", 1_000, 1_000).is_none());
+    }
+
+    #[test]
+    fn model_cost_of_zero_tokens_is_zero_not_none_for_priced_model() {
+        assert_eq!(model_cost("zai", "glm-5.2", 0, 0), Some(0.0));
     }
 }
