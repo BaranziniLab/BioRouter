@@ -4855,6 +4855,11 @@
             "format": "int64",
             "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer — an in-flight turn captured mid-generation is\nnever carried over.",
             "nullable": true
+          },
+          "truncateAfterId": {
+            "type": "string",
+            "description": "Optional anchor by durable message id (`Message.id`), the BR-45 fork\npoint. Preferred over `truncate_after`: it is unambiguous when two\nmessages share a whole second and it records the branch's fork point. It\ntakes precedence when both are supplied; `truncate_after` stays for\nback-compatibility with older clients.",
+            "nullable": true
           }
         }
       },
@@ -7503,6 +7508,11 @@
             "type": "integer",
             "format": "int64",
             "description": "Lifetime totals: the sum of every turn's usage, i.e. tokens actually\nprocessed and billed. They grow without bound and overflowed `i32` at\n~2.1e9 — in release that wraps *negative* and then subtracts from the\ninsights `SUM`. SQLite's INTEGER is already 64-bit.",
+            "nullable": true
+          },
+          "branch_point_msg_uid": {
+            "type": "string",
+            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at — the fork point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
             "nullable": true
           },
           "conversation": {

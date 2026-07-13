@@ -1,5 +1,5 @@
 use crate::config::paths::Paths;
-use crate::conversation::message::Message;
+use crate::conversation::message::{new_message_id, Message};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+pub const CURRENT_SCHEMA_VERSION: i32 = 12;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -101,6 +101,13 @@ pub struct Session {
     /// a session's lineage ("branched from …").
     #[serde(default)]
     pub diverged_from: Option<String>,
+    /// The durable `msg_uid` of the exact parent message this session was
+    /// branched at — the fork point (BR-45). Paired with `diverged_from`
+    /// (parent session), it is the edge label of the branch forest. `None` for
+    /// normally-created sessions. Anchoring on this stable id instead of a
+    /// whole-second timestamp is what fixes the same-second over-truncation.
+    #[serde(default)]
+    pub branch_point_msg_uid: Option<String>,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -141,6 +148,7 @@ pub struct SessionUpdateBuilder<'a> {
     provider_name: Option<Option<String>>,
     model_config: Option<Option<ModelConfig>>,
     diverged_from: Option<Option<String>>,
+    branch_point_msg_uid: Option<Option<String>>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -379,6 +387,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             provider_name: None,
             model_config: None,
             diverged_from: None,
+            branch_point_msg_uid: None,
         }
     }
 
@@ -505,6 +514,13 @@ impl<'a> SessionUpdateBuilder<'a> {
         self.diverged_from = Some(diverged_from);
         self
     }
+
+    /// Record (or clear) the durable `msg_uid` of the parent message this
+    /// session was branched at (BR-45 fork point).
+    pub fn branch_point_msg_uid(mut self, branch_point_msg_uid: Option<String>) -> Self {
+        self.branch_point_msg_uid = Some(branch_point_msg_uid);
+        self
+    }
 }
 
 /// The six token counters stored on a session row. Fetched cheaply on the
@@ -517,6 +533,37 @@ pub struct SessionTokenCounts {
     pub accumulated_total_tokens: Option<i64>,
     pub accumulated_input_tokens: Option<i64>,
     pub accumulated_output_tokens: Option<i64>,
+}
+
+/// SQLite row shape for the BR-43 `checkpoints` table, mapped to the public
+/// `checkpoint::CheckpointRecord`.
+#[derive(sqlx::FromRow)]
+struct CheckpointRow {
+    id: String,
+    session_id: String,
+    turn_index: i64,
+    anchor_ts: i64,
+    kind: String,
+    commit_sha: String,
+    tree_sha: String,
+    changed_paths_json: String,
+    created_at: String,
+}
+
+impl CheckpointRow {
+    fn into_record(self) -> Result<crate::checkpoint::CheckpointRecord> {
+        Ok(crate::checkpoint::CheckpointRecord {
+            id: self.id,
+            session_id: self.session_id,
+            turn_index: self.turn_index,
+            anchor_ts: self.anchor_ts,
+            kind: self.kind.parse()?,
+            commit_sha: self.commit_sha,
+            tree_sha: self.tree_sha,
+            changed_paths: serde_json::from_str(&self.changed_paths_json).unwrap_or_default(),
+            created_at: self.created_at,
+        })
+    }
 }
 
 pub struct SessionManager {
@@ -657,7 +704,7 @@ impl SessionManager {
     /// route and the CLI/TUI `/diverge` command.
     ///
     /// The branch conversation is trimmed to end at the last *complete*
-    /// assistant answer (see `trim_to_last_complete_answer`), so a diverge
+    /// assistant answer (see `trim_to_last_complete_answer_at`), so a diverge
     /// triggered while the agent is still generating or calling tools never
     /// leaves a dangling, unanswered turn in the new session. `anchor_ms` (the
     /// `created` timestamp of the message a per-message Diverge button was
@@ -669,8 +716,24 @@ impl SessionManager {
         custom_name: Option<String>,
         anchor_ms: Option<i64>,
     ) -> Result<Session> {
+        self.diverge_session_at(session_id, custom_name, anchor_ms, None)
+            .await
+    }
+
+    /// Diverge anchored by a durable message id (`anchor_uid`), the BR-45 fork
+    /// point. Preferred over the timestamp anchor: it is unambiguous when two
+    /// messages share a whole second, and it records `branch_point_msg_uid` on
+    /// the child. `anchor_ms` is kept as a back-compatible fallback for clients
+    /// that still pass a timestamp.
+    pub async fn diverge_session_at(
+        &self,
+        session_id: &str,
+        custom_name: Option<String>,
+        anchor_ms: Option<i64>,
+        anchor_uid: Option<String>,
+    ) -> Result<Session> {
         self.storage
-            .diverge_session(self, session_id, custom_name, anchor_ms)
+            .diverge_session(self, session_id, custom_name, anchor_ms, anchor_uid)
             .await
     }
 
@@ -678,6 +741,39 @@ impl SessionManager {
         self.storage
             .truncate_conversation(session_id, timestamp)
             .await
+    }
+
+    // BR-43 shadow-git checkpoints: `checkpoints` table access, delegated to
+    // `SessionStorage` (which owns the pool) and called by `CheckpointManager`.
+
+    pub async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        self.storage.insert_checkpoint(rec).await
+    }
+
+    pub async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        self.storage.list_checkpoints(session_id).await
+    }
+
+    pub async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.last_checkpoint(session_id).await
+    }
+
+    pub async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.get_checkpoint(session_id, checkpoint_id).await
+    }
+
+    pub async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        self.storage.delete_checkpoints(session_id).await
     }
 
     pub async fn maybe_update_name(&self, id: &str, provider: Arc<dyn Provider>) -> Result<()> {
@@ -826,6 +922,7 @@ impl Default for Session {
             provider_name: None,
             model_config: None,
             diverged_from: None,
+            branch_point_msg_uid: None,
         }
     }
 }
@@ -906,15 +1003,28 @@ fn is_assistant_terminal_answer(m: &Message) -> bool {
 /// If there is no complete answer at all (e.g. diverged before the very first
 /// reply landed), the branch starts empty rather than carrying an orphaned
 /// question.
-pub(crate) fn trim_to_last_complete_answer(
+/// Trim a branch to end at the last *complete* assistant answer within the
+/// prefix up to (and including) the anchor.
+///
+/// The anchor is resolved by durable message id first (`anchor_uid`), which is
+/// unambiguous even when two messages share a whole-second `created` — the
+/// same-second collision that `anchor_ms` (`m.created <= ts`, inclusive) could
+/// over-truncate (BR-45). A missing/unknown `anchor_uid` falls back to the
+/// timestamp anchor, and `None`/`None` keeps the whole conversation.
+pub(crate) fn trim_to_last_complete_answer_at(
     conversation: &Conversation,
+    anchor_uid: Option<&str>,
     anchor_ms: Option<i64>,
 ) -> Conversation {
-    let kept: Vec<&Message> = conversation
-        .messages()
-        .iter()
-        .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
-        .collect();
+    let msgs = conversation.messages();
+    let kept: Vec<&Message> =
+        match anchor_uid.and_then(|uid| msgs.iter().position(|m| m.id.as_deref() == Some(uid))) {
+            Some(end) => msgs[..=end].iter().collect(),
+            None => msgs
+                .iter()
+                .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
+                .collect(),
+        };
 
     match kept.iter().rposition(|m| is_assistant_terminal_answer(m)) {
         Some(end) => Conversation::new_unvalidated(
@@ -981,6 +1091,9 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             provider_name: row.try_get("provider_name").ok().flatten(),
             model_config,
             diverged_from: row.try_get("diverged_from").ok().flatten(),
+            // Tolerant read: SELECTs that omit the column (e.g. the session
+            // list) yield None rather than erroring, mirroring `model_config`.
+            branch_point_msg_uid: row.try_get("branch_point_msg_uid").ok().flatten(),
         })
     }
 }
@@ -1092,7 +1205,8 @@ impl SessionStorage {
                 provider_name TEXT,
                 model_config_json TEXT,
                 diverged_from TEXT,
-                external_key TEXT
+                external_key TEXT,
+                branch_point_msg_uid TEXT
             )
         "#,
         )
@@ -1109,7 +1223,8 @@ impl SessionStorage {
                 created_timestamp INTEGER NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 tokens INTEGER,
-                metadata_json TEXT
+                metadata_json TEXT,
+                msg_uid TEXT
             )
         "#,
         )
@@ -1140,10 +1255,19 @@ impl SessionStorage {
             .execute(pool)
             .await?;
 
+        // BR-43 shadow-git checkpoints (migration 11), created inline for fresh DBs.
+        Self::create_checkpoints_table(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
         sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
+            .execute(pool)
+            .await?;
+        // BR-45: durable per-message id, unique within a session (ids are
+        // intentionally carried into a diverged child, so uniqueness is
+        // per-session, not global).
+        sqlx::query("CREATE UNIQUE INDEX idx_messages_uid ON messages(session_id, msg_uid)")
             .execute(pool)
             .await?;
         sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
@@ -1504,11 +1628,69 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
             }
+            11 => {
+                // BR-43 shadow-git checkpoints. Additive side table keyed by the
+                // turn's anchor `created_timestamp` (NOT the positional message
+                // id) so checkpoints survive the future stable-UUID migration.
+                Self::create_checkpoints_table(pool).await?;
+            }
+            12 => {
+                // BR-45: stable, durable per-message id (`msg_uid`) that survives
+                // history rewrites, plus a branch fork-point anchored on that id.
+                sqlx::query("ALTER TABLE messages ADD COLUMN msg_uid TEXT")
+                    .execute(pool)
+                    .await?;
+                // Deterministic backfill from the durable rowid. Stable
+                // thereafter because every rewrite (compaction/edit/diverge)
+                // preserves the carried `msg_uid`.
+                sqlx::query("UPDATE messages SET msg_uid = 'm' || id WHERE msg_uid IS NULL")
+                    .execute(pool)
+                    .await?;
+                // Unique per-session (ids are intentionally carried into a
+                // diverged child, so uniqueness is not global).
+                sqlx::query(
+                    "CREATE UNIQUE INDEX idx_messages_uid ON messages(session_id, msg_uid)",
+                )
+                .execute(pool)
+                .await?;
+                // The exact parent message a branch was cut at (replaces the
+                // fuzzy whole-second timestamp).
+                sqlx::query("ALTER TABLE sessions ADD COLUMN branch_point_msg_uid TEXT")
+                    .execute(pool)
+                    .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
         }
 
+        Ok(())
+    }
+
+    /// The BR-43 `checkpoints` side table (migration 11 + fresh-DB schema).
+    async fn create_checkpoints_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                anchor_ts INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                tree_sha TEXT NOT NULL,
+                changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, turn_index)",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -1616,7 +1798,7 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json, diverged_from
+               provider_name, model_config_json, diverged_from, branch_point_msg_uid
         FROM sessions
         WHERE id = ?
     "#,
@@ -1720,6 +1902,7 @@ impl SessionStorage {
         add_update!(builder.provider_name, "provider_name");
         add_update!(builder.model_config, "model_config_json");
         add_update!(builder.diverged_from, "diverged_from");
+        add_update!(builder.branch_point_msg_uid, "branch_point_msg_uid");
 
         if updates.is_empty() {
             return Ok(());
@@ -1797,6 +1980,9 @@ impl SessionStorage {
         if let Some(diverged_from) = builder.diverged_from {
             q = q.bind(diverged_from);
         }
+        if let Some(branch_point_msg_uid) = builder.branch_point_msg_uid {
+            q = q.bind(branch_point_msg_uid);
+        }
 
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
@@ -1809,15 +1995,15 @@ impl SessionStorage {
 
     async fn get_conversation(&self, session_id: &str) -> Result<Conversation> {
         let pool = self.pool().await?;
-        let rows = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
-            "SELECT role, content_json, created_timestamp, metadata_json FROM messages WHERE session_id = ? ORDER BY timestamp",
+        let rows = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<String>)>(
+            "SELECT role, content_json, created_timestamp, metadata_json, msg_uid FROM messages WHERE session_id = ? ORDER BY timestamp",
         )
             .bind(session_id)
             .fetch_all(pool)
             .await?;
 
         let mut messages = Vec::new();
-        for (idx, (role_str, content_json, created_timestamp, metadata_json)) in
+        for (idx, (role_str, content_json, created_timestamp, metadata_json, msg_uid)) in
             rows.into_iter().enumerate()
         {
             let role = match role_str.as_str() {
@@ -1833,7 +2019,11 @@ impl SessionStorage {
 
             let mut message = Message::new(role, created_timestamp, content);
             message.metadata = metadata;
-            message = message.with_id(format!("msg_{}_{}", session_id, idx));
+            // Dual-read: prefer the durable `msg_uid`; fall back to the legacy
+            // positional id only for a row an in-flight upgrade hasn't
+            // backfilled yet (migration 12 backfills all existing rows).
+            let id = msg_uid.unwrap_or_else(|| format!("msg_{}_{}", session_id, idx));
+            message = message.with_id(id);
             messages.push(message);
         }
 
@@ -1845,11 +2035,14 @@ impl SessionStorage {
         let mut tx = pool.begin().await?;
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
+        // Persist the message's stable id, minting a fresh UUIDv7 when the
+        // caller didn't supply one (BR-45).
+        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
         sqlx::query(
             r#"
-            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
         )
         .bind(session_id)
@@ -1857,6 +2050,7 @@ impl SessionStorage {
         .bind(serde_json::to_string(&message.content)?)
         .bind(message.created)
         .bind(metadata_json)
+        .bind(msg_uid)
         .execute(&mut *tx)
         .await?;
 
@@ -1883,11 +2077,16 @@ impl SessionStorage {
 
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
+            // PRESERVE each kept message's stable id across the rewrite (this is
+            // the exact op — DELETE + re-INSERT — that used to renumber ids).
+            // Only a newly-minted message (e.g. a compaction summary) with no id
+            // gets a fresh one (BR-45).
+            let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
             sqlx::query(
                 r#"
-            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
             )
             .bind(session_id)
@@ -1895,6 +2094,7 @@ impl SessionStorage {
             .bind(serde_json::to_string(&message.content)?)
             .bind(message.created)
             .bind(metadata_json)
+            .bind(msg_uid)
             .execute(&mut *tx)
             .await?;
         }
@@ -2211,6 +2411,7 @@ impl SessionStorage {
         session_id: &str,
         custom_name: Option<String>,
         anchor_ms: Option<i64>,
+        anchor_uid: Option<String>,
     ) -> Result<Session> {
         // Load original first (with conversation) so we can derive a name and
         // confirm it exists.
@@ -2223,12 +2424,23 @@ impl SessionStorage {
 
         // Build the branch conversation: the parent's history trimmed to end at
         // the last complete assistant answer (so a mid-generation diverge never
-        // carries over an unanswered question or a dangling tool call).
+        // carries over an unanswered question or a dangling tool call). The
+        // durable message id (`anchor_uid`) is preferred over the timestamp so a
+        // fork at one of two same-second messages does not over-truncate.
         let branch_conversation = original
             .conversation
             .as_ref()
-            .map(|c| trim_to_last_complete_answer(c, anchor_ms))
+            .map(|c| trim_to_last_complete_answer_at(c, anchor_uid.as_deref(), anchor_ms))
             .unwrap_or_default();
+
+        // Record the fork point: the explicit anchor id when supplied, else the
+        // id of the last message actually carried into the branch.
+        let branch_point = anchor_uid.clone().or_else(|| {
+            branch_conversation
+                .messages()
+                .last()
+                .and_then(|m| m.id.clone())
+        });
 
         // Mint the branch session and copy the carry-over metadata (mirrors
         // copy_session, but writes the *trimmed* conversation rather than the
@@ -2248,9 +2460,10 @@ impl SessionStorage {
             .workflow(original.workflow)
             .user_workflow_values(original.user_workflow_values)
             // Lock the computed/custom name (so the auto-namer never clobbers
-            // the branch marker) and record the lineage pointer.
+            // the branch marker) and record the lineage pointer + fork point.
             .user_provided_name(new_name)
             .diverged_from(Some(session_id.to_string()))
+            .branch_point_msg_uid(branch_point)
             .apply()
             .await?;
 
@@ -2310,6 +2523,90 @@ impl SessionStorage {
         Ok(())
     }
 
+    // BR-43 shadow-git checkpoints: the `checkpoints` side-table CRUD. Kept here
+    // (rather than the `checkpoint` module) because `SessionStorage` owns the
+    // SQLite pool; `CheckpointManager` calls these through `SessionManager`.
+
+    async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        let pool = self.pool().await?;
+        let changed = serde_json::to_string(&rec.changed_paths)?;
+        sqlx::query(
+            r#"INSERT INTO checkpoints
+                (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.session_id)
+        .bind(rec.turn_index)
+        .bind(rec.anchor_ts)
+        .bind(rec.kind.as_str())
+        .bind(&rec.commit_sha)
+        .bind(&rec.tree_sha)
+        .bind(changed)
+        .bind(&rec.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(CheckpointRow::into_record).collect()
+    }
+
+    /// The highest-`turn_index` checkpoint, for the next ordinal + `tree_sha`
+    /// dedup baseline.
+    async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? AND id = ?",
+        )
+        .bind(session_id)
+        .bind(checkpoint_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query("DELETE FROM checkpoints WHERE session_id = ?")
+            .bind(session_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     async fn search_chat_history(
         &self,
         query: &str,
@@ -2341,6 +2638,46 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    #[tokio::test]
+    async fn checkpoints_table_crud_roundtrip() {
+        // A fresh DB (create_schema path) must carry the migration-11 `checkpoints`
+        // table, and the CRUD helpers `CheckpointManager` relies on must roundtrip.
+        use crate::checkpoint::{CheckpointKind, CheckpointRecord};
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+        assert!(sm.last_checkpoint("s1").await.unwrap().is_none());
+
+        let rec = CheckpointRecord {
+            id: "cp-1".to_string(),
+            session_id: "s1".to_string(),
+            turn_index: 0,
+            anchor_ts: 1234,
+            kind: CheckpointKind::PreStep,
+            commit_sha: "deadbeef".to_string(),
+            tree_sha: "cafef00d".to_string(),
+            changed_paths: vec!["a.txt".to_string()],
+            created_at: "2026-07-12T00:00:00Z".to_string(),
+        };
+        sm.insert_checkpoint(&rec).await.unwrap();
+
+        let listed = sm.list_checkpoints("s1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, CheckpointKind::PreStep);
+        assert_eq!(listed[0].tree_sha, "cafef00d");
+        assert_eq!(listed[0].changed_paths, vec!["a.txt".to_string()]);
+
+        let got = sm.get_checkpoint("s1", "cp-1").await.unwrap().unwrap();
+        assert_eq!(got.commit_sha, "deadbeef");
+        assert!(sm.get_checkpoint("s1", "missing").await.unwrap().is_none());
+        // Scoped by session.
+        assert!(sm.get_checkpoint("other", "cp-1").await.unwrap().is_none());
+
+        sm.delete_checkpoints("s1").await.unwrap();
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn test_concurrent_session_creation() {
@@ -3409,7 +3746,7 @@ mod tests {
             umsg(3, "q2"),
             amsg(4, "a2"),
         ]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 4);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a2");
     }
@@ -3419,7 +3756,7 @@ mod tests {
         // The reported bug: diverge fired while the agent was still generating
         // the answer to q2, so the DB has q2 persisted with no answer yet.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -3435,7 +3772,7 @@ mod tests {
             amsg(4, ""),
             atool(5),
         ]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -3449,7 +3786,7 @@ mod tests {
             amsg(40, "a2"),
         ]);
         // Per-message Diverge button clicked on a1 (created=20).
-        let t = trim_to_last_complete_answer(&conv, Some(20));
+        let t = trim_to_last_complete_answer_at(&conv, None, Some(20));
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -3458,7 +3795,7 @@ mod tests {
     fn test_trim_empty_when_no_complete_answer() {
         // Diverged before the first reply landed: only an unanswered question.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1")]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert!(t.messages().is_empty());
     }
 
@@ -3486,6 +3823,217 @@ mod tests {
             .unwrap()
             .as_concat_text();
         assert_eq!(last, "answer 0");
+    }
+
+    // ── BR-45: stable per-message ids + branch fork point ───────────────────
+
+    /// Ids survive the exact operation that used to renumber them — a full
+    /// history rewrite (compaction/edit). Every kept message keeps its id; only
+    /// a newly-inserted message gets a fresh, non-positional id.
+    #[tokio::test]
+    async fn msg_uid_stable_across_replace_conversation() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 2).await; // 4 messages
+        let before: Vec<String> = session
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(before.len(), 4);
+        // Durable ids are UUIDs, not the old positional `msg_{session}_{idx}`.
+        assert!(before.iter().all(|id| !id.starts_with("msg_")));
+
+        // Simulate a compaction: rewrite the same messages plus one brand-new
+        // summary message that carries no id yet.
+        let mut msgs: Vec<Message> = session.conversation.as_ref().unwrap().messages().to_vec();
+        msgs.push(amsg(chrono::Utc::now().timestamp_millis() + 99, "summary"));
+        sm.replace_conversation(&session.id, &Conversation::new_unvalidated(msgs))
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&session.id, true).await.unwrap();
+        let after_ids: Vec<String> = after
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(after_ids.len(), 5);
+        // The four kept messages preserved their ids across the rewrite.
+        assert_eq!(&after_ids[..4], &before[..]);
+        // The new summary got a fresh, distinct, non-positional id.
+        let new_id = &after_ids[4];
+        assert!(!new_id.starts_with("msg_"));
+        assert!(!before.contains(new_id));
+    }
+
+    /// A row an in-flight upgrade left with a NULL `msg_uid` still loads, using
+    /// the legacy positional id as a fallback (BR-45 dual-read).
+    #[tokio::test]
+    async fn get_conversation_falls_back_to_positional_id_for_null_uid() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/br45null"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // Insert directly with a NULL msg_uid (mimics a not-yet-backfilled row).
+        let pool = sm.storage.pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid) VALUES (?, 'user', ?, 0, '{}', NULL)",
+        )
+        .bind(&session.id)
+        .bind(serde_json::to_string(&vec![MessageContent::text("legacy")]).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let msg = &loaded.conversation.as_ref().unwrap().messages()[0];
+        assert_eq!(
+            msg.id.as_deref(),
+            Some(format!("msg_{}_0", session.id).as_str())
+        );
+    }
+
+    /// Two messages sharing a whole-second `created` used to collapse to one
+    /// anchor, so a diverge at the first silently carried the second over. The
+    /// durable-id anchor keeps only the strict prefix and records the fork point
+    /// (BR-45, item 3).
+    #[tokio::test]
+    async fn diverge_by_uid_beats_same_second_collision() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/br45"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // a1, q2, a2 all share created = 2000 (a single whole second).
+        for m in [
+            umsg(1000, "q1"),
+            amsg(2000, "a1"),
+            umsg(2000, "q2"),
+            amsg(2000, "a2"),
+        ] {
+            sm.add_message(&session.id, &m).await.unwrap();
+        }
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let a1_uid = loaded
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text() == "a1")
+            .and_then(|m| m.id.clone())
+            .unwrap();
+
+        // Anchored by durable id: keep exactly [q1, a1].
+        let by_uid = sm
+            .diverge_session_at(&session.id, None, None, Some(a1_uid.clone()))
+            .await
+            .unwrap();
+        let uid_texts: Vec<String> = by_uid
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.as_concat_text())
+            .collect();
+        assert_eq!(uid_texts, vec!["q1".to_string(), "a1".to_string()]);
+        // The fork point is recorded on the child branch.
+        assert_eq!(
+            by_uid.branch_point_msg_uid.as_deref(),
+            Some(a1_uid.as_str())
+        );
+
+        // The legacy timestamp anchor (2000) cannot disambiguate and carries a2
+        // over — the very over-truncation the uid anchor fixes.
+        let by_ts = sm
+            .diverge_session(&session.id, None, Some(2000))
+            .await
+            .unwrap();
+        assert_eq!(by_ts.message_count, 4);
+    }
+
+    /// Migration 12 backfills `msg_uid` deterministically from the durable
+    /// rowid (`m` || id) and adds the branch fork-point column.
+    #[tokio::test]
+    async fn migration_12_backfills_msg_uid_from_rowid() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = temp_dir.path().join("v11.db");
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        // A minimal pre-migration (v11) shape: no msg_uid, no branch column.
+        sqlx::query("CREATE TABLE sessions (id TEXT PRIMARY KEY, diverged_from TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                created_timestamp INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata_json TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('s', 'user', '[]', 0), ('s', 'assistant', '[]', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        SessionStorage::apply_migration(&pool, 12).await.unwrap();
+
+        let uids: Vec<(i64, Option<String>)> =
+            sqlx::query_as("SELECT id, msg_uid FROM messages ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(uids[0].1.as_deref(), Some("m1"));
+        assert_eq!(uids[1].1.as_deref(), Some("m2"));
+
+        // The branch fork-point column now exists and defaults to NULL.
+        let bp: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT branch_point_msg_uid FROM sessions")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(bp.is_empty());
     }
 }
 

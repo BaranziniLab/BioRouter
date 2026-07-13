@@ -2,7 +2,6 @@ use anyhow::Result;
 use indoc::formatdoc;
 use mpatch::{apply_patch, parse_diffs, PatchError};
 use std::{
-    collections::HashMap,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -14,6 +13,7 @@ use rmcp::model::{Content, ErrorCode, ErrorData, Role};
 use super::editor_models::EditorModel;
 use super::lang;
 use super::shell::normalize_line_endings;
+use super::undo_history::FileHistory;
 
 // Constants
 pub const LINE_READ_LIMIT: usize = 2000;
@@ -209,7 +209,7 @@ fn adjust_base_dir_for_overlap(base_dir: &Path, file_path: &Path) -> PathBuf {
 fn apply_single_patch(
     patch: &mpatch::Patch,
     base_dir: &Path,
-    file_history: &std::sync::Arc<std::sync::Mutex<HashMap<PathBuf, Vec<String>>>>,
+    file_history: &FileHistory,
     results: &mut DiffResults,
     failed_hunks: &mut Vec<String>,
 ) -> Result<(), ErrorData> {
@@ -373,7 +373,7 @@ fn report_partial_failures(failed_hunks: &[String]) {
 pub async fn apply_diff(
     base_path: &Path,
     diff_content: &str,
-    file_history: &std::sync::Arc<std::sync::Mutex<HashMap<PathBuf, Vec<String>>>>,
+    file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
     validate_diff_size(diff_content)?;
     let patches = parse_diff_content(diff_content)?;
@@ -751,9 +751,7 @@ pub async fn text_editor_replace(
     new_str: &str,
     diff: Option<&str>,
     editor_model: &Option<EditorModel>,
-    file_history: &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
-    >,
+    file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
     // Check if diff is provided
     if let Some(diff_content) = diff {
@@ -920,9 +918,7 @@ pub async fn text_editor_insert(
     path: &PathBuf,
     insert_line_spec: i64,
     new_str: &str,
-    file_history: &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
-    >,
+    file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
     // Check if file exists
     if !path.exists() {
@@ -1051,29 +1047,18 @@ pub async fn text_editor_insert(
 
 pub async fn text_editor_undo(
     path: &PathBuf,
-    file_history: &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
-    >,
+    file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
-    let mut history = file_history.lock().unwrap();
-    if let Some(contents) = history.get_mut(path) {
-        if let Some(previous_content) = contents.pop() {
-            // Write previous content back to file
-            std::fs::write(path, previous_content).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to write file: {}", e),
-                    None,
-                )
-            })?;
-            Ok(vec![Content::text("Undid the last edit")])
-        } else {
-            Err(ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                "No edit history available to undo".to_string(),
+    if let Some(previous_content) = file_history.pop(path) {
+        // Write previous content back to file
+        std::fs::write(path, previous_content).map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Failed to write file: {}", e),
                 None,
-            ))
-        }
+            )
+        })?;
+        Ok(vec![Content::text("Undid the last edit")])
     } else {
         Err(ErrorData::new(
             ErrorCode::INVALID_PARAMS,
@@ -1083,24 +1068,12 @@ pub async fn text_editor_undo(
     }
 }
 
-pub fn save_file_history(
-    path: &PathBuf,
-    file_history: &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
-    >,
-) -> Result<(), ErrorData> {
-    let mut history = file_history.lock().unwrap();
-    let content = if path.exists() {
-        std::fs::read_to_string(path).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to read file: {}", e),
-                None,
-            )
-        })?
-    } else {
-        String::new()
-    };
-    history.entry(path.clone()).or_default().push(content);
-    Ok(())
+pub fn save_file_history(path: &Path, file_history: &FileHistory) -> Result<(), ErrorData> {
+    file_history.snapshot(path).map_err(|e| {
+        ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("Failed to read file: {}", e),
+            None,
+        )
+    })
 }

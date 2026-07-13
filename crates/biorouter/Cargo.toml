@@ -45,7 +45,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
 jsonschema = "0.30.0"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "v7"] }
 regex = { workspace = true }
 async-trait = "0.1.89"
 async-stream = "0.3"
@@ -104,6 +104,9 @@ shellexpand = "3.1.1"
 indexmap = "2.12.0"
 ignore = { workspace = true }
 which = { workspace = true}
+# BR-43 shadow-git checkpoints. Same vendored libgit2 the workspace already
+# builds for biorouter-mcp (crates/biorouter-mcp/Cargo.toml).
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 boa_engine = "0.21.0"
 unbinder = "0.1.7"
 

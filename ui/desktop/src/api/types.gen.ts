@@ -328,6 +328,14 @@ export type DivergeSessionRequest = {
      * never carried over.
      */
     truncateAfter?: number | null;
+    /**
+     * Optional anchor by durable message id (`Message.id`), the BR-45 fork
+     * point. Preferred over `truncate_after`: it is unambiguous when two
+     * messages share a whole second and it records the branch's fork point. It
+     * takes precedence when both are supplied; `truncate_after` stays for
+     * back-compatibility with older clients.
+     */
+    truncateAfterId?: string | null;
 };
 
 export type DivergeSessionResponse = {
@@ -1273,6 +1281,14 @@ export type Session = {
      * insights `SUM`. SQLite's INTEGER is already 64-bit.
      */
     accumulated_total_tokens?: number | null;
+    /**
+     * The durable `msg_uid` of the exact parent message this session was
+     * branched at — the fork point (BR-45). Paired with `diverged_from`
+     * (parent session), it is the edge label of the branch forest. `None` for
+     * normally-created sessions. Anchoring on this stable id instead of a
+     * whole-second timestamp is what fixes the same-second over-truncation.
+     */
+    branch_point_msg_uid?: string | null;
     conversation?: Conversation | null;
     created_at: string;
     /**
