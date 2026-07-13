@@ -80,10 +80,30 @@ impl ToolInspectionManager {
         biorouter_mode: BioRouterMode,
         session: &Session,
     ) -> Result<Vec<InspectionResult>> {
+        self.inspect_tools_excluding(&[], tool_requests, messages, biorouter_mode, session)
+            .await
+    }
+
+    /// Run every inspector *except* the named ones.
+    ///
+    /// BR-19: used to re-validate a tool call whose input a PreToolUse hook
+    /// rewrote. The rewrite must not be a way around the security/permission
+    /// gates, so the other inspectors run again on the new arguments — but the
+    /// hook inspector is excluded, because re-running it would execute the
+    /// user's hook commands a second time (side effects) and let a rewrite
+    /// trigger another rewrite.
+    pub async fn inspect_tools_excluding(
+        &self,
+        excluded: &[&str],
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+    ) -> Result<Vec<InspectionResult>> {
         let mut all_results = Vec::new();
 
         for inspector in &self.inspectors {
-            if !inspector.is_enabled() {
+            if !inspector.is_enabled() || excluded.contains(&inspector.name()) {
                 continue;
             }
 

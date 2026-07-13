@@ -885,9 +885,15 @@ impl Agent {
     /// extension-enable tracking) and eagerly dispatch approved/denied tools,
     /// returning the inspection results, permission verdict, enable-extension
     /// request ids, and the pending tool futures.
+    ///
+    /// BR-19: `remaining_requests` is `&mut` because a PreToolUse hook may
+    /// *rewrite* a tool's input (sandbox a path, redact a payload, normalize a
+    /// command). The rewrite is applied here — after the hooks ran, before
+    /// anything is dispatched — and the requests the caller goes on to persist
+    /// are the rewritten ones, so the transcript matches what actually executed.
     async fn inspect_and_gate_tool_requests(
         &self,
-        remaining_requests: &[ToolRequest],
+        remaining_requests: &mut Vec<ToolRequest>,
         conversation: &Conversation,
         biorouter_mode: BioRouterMode,
         session: &Session,
@@ -900,7 +906,7 @@ impl Agent {
         Vec<(String, ToolStream)>,
     )> {
         // Run all tool inspectors
-        let inspection_results = self
+        let mut inspection_results = self
             .tool_inspection_manager
             .inspect_tools(
                 remaining_requests,
@@ -909,6 +915,32 @@ impl Agent {
                 session,
             )
             .await?;
+
+        // BR-19: apply any tool-input rewrite the PreToolUse hooks staged. The
+        // rewritten input has NOT been seen by the security/permission
+        // inspectors (they ran above, on the model's original arguments), so a
+        // rewrite must not be a hole around them: re-run every inspector except
+        // the hook one (re-running that would execute the user's hook commands
+        // twice and let a rewrite trigger another rewrite).
+        let rewrites = self.hooks_manager.take_tool_input_rewrites(&session.id);
+        if !rewrites.is_empty()
+            && crate::hooks::apply_tool_input_rewrites(remaining_requests, &rewrites) > 0
+        {
+            let mut revalidated = self
+                .tool_inspection_manager
+                .inspect_tools_excluding(
+                    &[crate::hooks::inspector::HOOK_INSPECTOR_NAME],
+                    remaining_requests,
+                    conversation.messages(),
+                    biorouter_mode,
+                    session,
+                )
+                .await?;
+            inspection_results.retain(|result| {
+                result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME
+            });
+            inspection_results.append(&mut revalidated);
+        }
 
         let permission_check_result = self
             .tool_inspection_manager
@@ -1009,6 +1041,52 @@ impl Agent {
             *response = response
                 .clone()
                 .with_tool_response_with_metadata(request_id, output, metadata);
+        }
+    }
+
+    /// BR-19: honor a PostToolUse / PostToolUseFailure `block` decision.
+    ///
+    /// PostToolUse hooks were observe-only: the decision was computed and thrown
+    /// away, so a hook could not reject e.g. a write that fails lint. It is now
+    /// applied to the already-integrated tool response, in place — the tool has
+    /// *run*, so its output is kept (its side effects stand and the model may
+    /// need to see what happened) and the hook's reason is appended as corrective
+    /// feedback, with the result marked as an error so the model treats it as a
+    /// failure to address rather than a success to build on.
+    async fn apply_post_tool_block(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        reason: &str,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) {
+        let Some(response_msg) = request_to_response_map.get(request_id) else {
+            return;
+        };
+        let mut response = response_msg.lock().await;
+        for content in response.content.iter_mut() {
+            let MessageContent::ToolResponse(tool_response) = content else {
+                continue;
+            };
+            if tool_response.id != request_id {
+                continue;
+            }
+            let mut items = match &tool_response.tool_result {
+                Ok(result) => result.content.clone(),
+                Err(e) => vec![Content::text(e.to_string())],
+            };
+            items.push(Content::text(format!(
+                "A PostToolUse hook blocked this result for `{tool_name}`.\n\n\
+                 Hook feedback: {reason}\n\n\
+                 The tool already ran, so its side effects stand. Address the feedback \
+                 before continuing; do not simply retry the identical call."
+            )));
+            tool_response.tool_result = Ok(CallToolResult {
+                content: items,
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            });
         }
     }
 
@@ -1793,6 +1871,13 @@ impl Agent {
             if let Ok(hook_session) = session_manager.get_session(&session_config.id, false).await {
                 let hooks = self.hooks_manager();
                 hooks.reset_stop_blocks(&session_config.id).await;
+                // BR-19: a turn cancelled between the PreToolUse inspector and
+                // the tool-path injection point can leave staged hook context
+                // behind. Drop it on a fresh prompt rather than injecting a note
+                // about a tool call the user aborted; the consecutive
+                // PostToolUse-block count is per-turn for the same reason.
+                hooks.clear_staged_tool_hooks(&session_config.id);
+                hooks.reset_post_tool_blocks(&session_config.id).await;
 
                 let source = if hook_session.message_count > 0 {
                     "resume"
@@ -2240,7 +2325,11 @@ impl Agent {
                             if let Some(response) = response {
                                 let ToolCategorizeResult {
                                     frontend_requests,
-                                    remaining_requests,
+                                    // BR-19: `mut` — a PreToolUse hook may rewrite a
+                                    // tool's input inside inspect_and_gate_tool_requests,
+                                    // and the rewritten request is the one dispatched,
+                                    // persisted, and handed to the PostToolUse hooks.
+                                    mut remaining_requests,
                                     filtered_response,
                                 } = self.categorize_tools(&response, &tools).await;
 
@@ -2304,7 +2393,7 @@ impl Agent {
                                         enable_extension_request_ids,
                                         mut tool_futures,
                                     ) = self.inspect_and_gate_tool_requests(
-                                        &remaining_requests,
+                                        &mut remaining_requests,
                                         &conversation,
                                         biorouter_mode,
                                         &session,
@@ -2331,6 +2420,41 @@ impl Agent {
                                         let mut futures_lock = tool_futures_arc.lock().await;
                                         futures_lock.drain(..).collect::<Vec<_>>()
                                     };
+
+                                    // BR-19: PreToolUse (inspector) and PermissionRequest
+                                    // (permission gate) hooks stage their additionalContext /
+                                    // systemMessage there because neither return channel can
+                                    // carry them — both sites used to read only the decision
+                                    // and drop the rest. Drain them here, once both have run:
+                                    // messages surface as inline notices, context reaches the
+                                    // model with the same untrusted framing (BR-26) as the
+                                    // SessionStart / UserPromptSubmit path.
+                                    {
+                                        let staged = self.hooks_manager.drain_tool_hook_context(&session.id);
+                                        let mut hook_contexts: Vec<String> = Vec::new();
+                                        for entry in staged {
+                                            for msg in entry.system_messages {
+                                                yield AgentEvent::Message(
+                                                    Message::assistant()
+                                                        .with_system_notification(
+                                                            SystemNotificationType::InlineMessage,
+                                                            msg,
+                                                        )
+                                                        .user_only(),
+                                                );
+                                            }
+                                            hook_contexts.extend(entry.additional_context);
+                                        }
+                                        if !hook_contexts.is_empty() {
+                                            messages_to_add.push(
+                                                Message::user()
+                                                    .with_text(crate::hooks::outcome::frame_hook_context(
+                                                        &hook_contexts.join("\n\n"),
+                                                    ))
+                                                    .with_visibility(false, true),
+                                            );
+                                        }
+                                    }
 
                                     let with_id = tool_futures
                                         .into_iter()
@@ -2372,9 +2496,12 @@ impl Agent {
                                         }
                                     }
 
-                                    // PostToolUse / PostToolUseFailure hooks (observe-only):
-                                    // awaited so injected context lands before the next
-                                    // provider call, but decisions are ignored.
+                                    // PostToolUse / PostToolUseFailure hooks: awaited so their
+                                    // injected context lands before the next provider call, and
+                                    // (BR-19) their decision is now honored — a `block` turns the
+                                    // result into corrective feedback instead of being computed
+                                    // and thrown away. Bounded by POST_TOOL_HOOK_BLOCK_CAP so a
+                                    // hook that always blocks cannot wedge the turn.
                                     {
                                         let hooks = self.hooks_manager();
                                         let mut post_futures = Vec::new();
@@ -2408,14 +2535,16 @@ impl Agent {
                                             let hooks = Arc::clone(&hooks);
                                             let working_dir = session.working_dir.clone();
                                             post_futures.push(async move {
-                                                hooks
+                                                let aggregate = hooks
                                                     .dispatch(event, Some(&tool_name), &payload, &working_dir)
-                                                    .await
+                                                    .await;
+                                                (request_id, tool_name, aggregate)
                                             });
                                         }
                                         if !post_futures.is_empty() {
                                             let mut hook_contexts: Vec<String> = Vec::new();
-                                            for aggregate in futures::future::join_all(post_futures).await {
+                                            let mut blocked_any = false;
+                                            for (request_id, tool_name, aggregate) in futures::future::join_all(post_futures).await {
                                                 for msg in &aggregate.system_messages {
                                                     yield AgentEvent::Message(
                                                         Message::assistant()
@@ -2426,9 +2555,43 @@ impl Agent {
                                                             .user_only(),
                                                     );
                                                 }
+                                                if let Some(reason) = aggregate.deny_reason() {
+                                                    if self.hooks_manager.note_post_tool_block(&session.id).await {
+                                                        blocked_any = true;
+                                                        self.apply_post_tool_block(
+                                                            &request_id,
+                                                            &tool_name,
+                                                            reason,
+                                                            &request_to_response_map,
+                                                        ).await;
+                                                        yield AgentEvent::Message(
+                                                            Message::assistant()
+                                                                .with_system_notification(
+                                                                    SystemNotificationType::InlineMessage,
+                                                                    format!("Hook blocked the result of {tool_name}: {reason}"),
+                                                                )
+                                                                .user_only(),
+                                                        );
+                                                    } else {
+                                                        yield AgentEvent::Message(
+                                                            Message::assistant()
+                                                                .with_system_notification(
+                                                                    SystemNotificationType::InlineMessage,
+                                                                    format!(
+                                                                        "A PostToolUse hook has blocked {tool_name} {} times; delivering the result anyway.",
+                                                                        crate::hooks::POST_TOOL_HOOK_BLOCK_CAP
+                                                                    ),
+                                                                )
+                                                                .user_only(),
+                                                        );
+                                                    }
+                                                }
                                                 if let Some(ctx) = aggregate.joined_context() {
                                                     hook_contexts.push(ctx);
                                                 }
+                                            }
+                                            if !blocked_any {
+                                                self.hooks_manager.reset_post_tool_blocks(&session.id).await;
                                             }
                                             if !hook_contexts.is_empty() {
                                                 let context_message = Message::user()

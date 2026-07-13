@@ -29,7 +29,7 @@ use tracing::{debug, warn};
 
 pub use config::{HookDefinition, HookMatcherGroup, HooksConfig};
 pub use event::{HookEvent, HookPayload};
-pub use inspector::HookInspector;
+pub use inspector::{apply_tool_input_rewrites, HookInspector};
 pub use matcher::InputMatcher;
 pub use outcome::{HookAggregate, HookDecision, HookOutcome};
 
@@ -45,6 +45,20 @@ pub const DEFAULT_PROMPT_TIMEOUT_SECS: u64 = 30;
 /// Maximum consecutive Stop-hook blocks per session before Biorouter
 /// overrides the hook and stops anyway.
 pub const STOP_HOOK_BLOCK_CAP: u32 = 5;
+
+/// BR-19: maximum consecutive PostToolUse blocks honored per session before
+/// Biorouter overrides the hook and delivers the tool result anyway. A
+/// PostToolUse block feeds a correction back to the model, which will typically
+/// retry the tool — a hook that blocks unconditionally would otherwise wedge
+/// the turn in a retry loop. Same shape as [`STOP_HOOK_BLOCK_CAP`], smaller
+/// because each block costs a full tool round trip.
+pub const POST_TOOL_HOOK_BLOCK_CAP: u32 = 3;
+
+/// BR-19: cap on staged tool-hook effects held per session. Bounded for the
+/// same reason as [`MAX_FIRED_OUTCOMES`]: a caller that never drains (a turn
+/// cancelled between the inspector and the injection point) must not grow the
+/// buffer without bound. Oldest entries are dropped.
+const MAX_STAGED_TOOL_HOOKS: usize = 64;
 
 /// BR-28: how long a turn boundary waits for still-running observe-only hook
 /// tasks ([`HooksManager::fire`]) before giving up *on this boundary*. Kept
@@ -76,6 +90,27 @@ pub struct FiredHookOutcome {
     pub event: HookEvent,
     pub session_id: String,
     pub aggregate: HookAggregate,
+}
+
+/// BR-19: the non-decision effects of a PreToolUse / PermissionRequest hook,
+/// staged at the hook's call site (the [`HookInspector`], the permission gate in
+/// `agents::tool_execution`) for the agent loop to apply on the tool path.
+///
+/// Both call sites used to read only `aggregate.decision`, so a hook's
+/// `updatedInput`, `additionalContext` and `systemMessage` were silently
+/// discarded. They are staged here instead: the rewrite is taken *before*
+/// dispatch (`take_tool_input_rewrites`), the context/messages at the turn's
+/// injection point (`drain_tool_hook_context`).
+#[derive(Debug, Clone)]
+pub struct StagedToolHook {
+    pub event: HookEvent,
+    pub tool_request_id: String,
+    pub tool_name: String,
+    /// Rewritten tool arguments to apply before dispatch (PreToolUse only).
+    /// Taken out by [`HooksManager::take_tool_input_rewrites`].
+    pub updated_input: Option<serde_json::Value>,
+    pub additional_context: Vec<String>,
+    pub system_messages: Vec<String>,
 }
 
 /// Result of consulting Stop hooks at turn exit.
@@ -114,6 +149,15 @@ pub struct HooksManager {
     /// [`Self::settle_fired`] drain by the owning session. Bounded by
     /// [`MAX_FIRED_OUTCOMES`].
     fired: std::sync::Mutex<VecDeque<FiredHookOutcome>>,
+    /// BR-19: consecutive honored PostToolUse blocks per session, capped by
+    /// [`POST_TOOL_HOOK_BLOCK_CAP`] so a hook that always blocks cannot wedge
+    /// the turn (same pattern as `stop_blocks`).
+    post_tool_blocks: Mutex<HashMap<String, u32>>,
+    /// BR-19: tool-path hook effects staged by the inspector / permission gate,
+    /// keyed by session id. Bounded by [`MAX_STAGED_TOOL_HOOKS`].
+    /// `std::sync::Mutex` (never held across an await) so the staging call sites
+    /// stay synchronous.
+    staged_tool_hooks: std::sync::Mutex<HashMap<String, VecDeque<StagedToolHook>>>,
 }
 
 impl HooksManager {
@@ -170,6 +214,8 @@ impl HooksManager {
             managed,
             pending_fires: std::sync::Mutex::new(Vec::new()),
             fired: std::sync::Mutex::new(VecDeque::new()),
+            post_tool_blocks: Mutex::new(HashMap::new()),
+            staged_tool_hooks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -462,6 +508,104 @@ impl HooksManager {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
+    }
+
+    // ---- BR-19: tool-path hook effects (rewrite + context) ----
+
+    /// BR-19: stage a tool-path hook's non-decision effects for the agent loop.
+    /// Called by the [`HookInspector`] (PreToolUse) and the permission gate
+    /// (PermissionRequest), whose own return channels can only carry a decision.
+    pub fn stage_tool_hook(&self, session_id: &str, staged: StagedToolHook) {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = buffer.entry(session_id.to_string()).or_default();
+        while entry.len() >= MAX_STAGED_TOOL_HOOKS {
+            entry.pop_front();
+        }
+        entry.push_back(staged);
+    }
+
+    /// BR-19: take the input rewrites staged for `session_id`, as
+    /// `tool_request_id -> new arguments`. Destructive for the rewrite only —
+    /// the staged context/system messages stay queued for
+    /// [`Self::drain_tool_hook_context`] at the turn's injection point, which
+    /// runs later (after the permission gate has staged its own).
+    pub fn take_tool_input_rewrites(&self, session_id: &str) -> HashMap<String, serde_json::Value> {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(entries) = buffer.get_mut(session_id) else {
+            return HashMap::new();
+        };
+        let mut rewrites = HashMap::new();
+        for entry in entries.iter_mut() {
+            if let Some(input) = entry.updated_input.take() {
+                rewrites.insert(entry.tool_request_id.clone(), input);
+            }
+        }
+        rewrites
+    }
+
+    /// BR-19: drain the staged tool-path hook effects for `session_id` so the
+    /// turn can inject their `additionalContext` (as framed hook context) and
+    /// surface their `systemMessage`s.
+    pub fn drain_tool_hook_context(&self, session_id: &str) -> Vec<StagedToolHook> {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        buffer
+            .remove(session_id)
+            .map(|entries| entries.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// BR-19: drop any tool-path hook effects still staged for `session_id`
+    /// (a turn cancelled between the inspector and the injection point), so a
+    /// fresh prompt does not inherit context about an aborted tool call.
+    pub fn clear_staged_tool_hooks(&self, session_id: &str) {
+        self.staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session_id);
+    }
+
+    /// BR-19: record a honored PostToolUse block for `session_id`. Returns
+    /// `true` while the block should be honored and `false` once
+    /// [`POST_TOOL_HOOK_BLOCK_CAP`] consecutive blocks have been honored — at
+    /// which point the result is delivered anyway, so a hook that blocks
+    /// unconditionally cannot trap the turn in a retry loop.
+    pub async fn note_post_tool_block(&self, session_id: &str) -> bool {
+        let mut blocks = self.post_tool_blocks.lock().await;
+        let count = blocks.entry(session_id.to_string()).or_insert(0);
+        if *count >= POST_TOOL_HOOK_BLOCK_CAP {
+            warn!(
+                "hooks: PostToolUse block cap ({}) reached for session {}; delivering the tool result anyway",
+                POST_TOOL_HOOK_BLOCK_CAP, session_id
+            );
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// BR-19: reset the consecutive PostToolUse-block counter (a tool result
+    /// made it through unblocked).
+    pub async fn reset_post_tool_blocks(&self, session_id: &str) {
+        self.post_tool_blocks.lock().await.remove(session_id);
+    }
+
+    /// Consecutive PostToolUse blocks honored for a session (observability).
+    pub async fn post_tool_block_count(&self, session_id: &str) -> u32 {
+        self.post_tool_blocks
+            .lock()
+            .await
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     async fn run_one(
@@ -935,6 +1079,92 @@ Notification:
             .settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN)
             .await
             .is_empty());
+    }
+
+    // ---- BR-19: staged tool-hook effects + PostToolUse block cap ----
+
+    fn staged(session_rewrite: Option<serde_json::Value>) -> StagedToolHook {
+        StagedToolHook {
+            event: HookEvent::PreToolUse,
+            tool_request_id: "call_1".to_string(),
+            tool_name: "developer__shell".to_string(),
+            updated_input: session_rewrite,
+            additional_context: vec!["the path was sandboxed".to_string()],
+            system_messages: vec!["sandboxed a write".to_string()],
+        }
+    }
+
+    /// The rewrite is taken *before* dispatch and the context *after* the
+    /// permission gate has run, so taking one must not consume the other.
+    #[test]
+    fn taking_the_rewrite_leaves_the_context_for_the_later_drain() {
+        let manager = manager_with_yaml("{}");
+        manager.stage_tool_hook("s1", staged(Some(serde_json::json!({"path": "./safe"}))));
+
+        let rewrites = manager.take_tool_input_rewrites("s1");
+        assert_eq!(
+            rewrites.get("call_1"),
+            Some(&serde_json::json!({"path": "./safe"}))
+        );
+        // Taken once: a second take must not re-apply the same rewrite.
+        assert!(manager.take_tool_input_rewrites("s1").is_empty());
+
+        let drained = manager.drain_tool_hook_context("s1");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(
+            drained[0].additional_context,
+            vec!["the path was sandboxed"]
+        );
+        assert_eq!(drained[0].system_messages, vec!["sandboxed a write"]);
+        assert!(manager.drain_tool_hook_context("s1").is_empty());
+    }
+
+    /// A `HooksManager` is shared across sessions: one turn's drain must not
+    /// swallow another session's staged effects.
+    #[test]
+    fn staged_effects_are_scoped_per_session() {
+        let manager = manager_with_yaml("{}");
+        manager.stage_tool_hook("s1", staged(None));
+        manager.stage_tool_hook("s2", staged(None));
+        assert_eq!(manager.drain_tool_hook_context("s1").len(), 1);
+        assert_eq!(manager.drain_tool_hook_context("s2").len(), 1);
+    }
+
+    /// A turn cancelled between staging and the drain must not grow the buffer
+    /// without bound.
+    #[test]
+    fn staged_effects_are_bounded() {
+        let manager = manager_with_yaml("{}");
+        for _ in 0..(MAX_STAGED_TOOL_HOOKS + 10) {
+            manager.stage_tool_hook("s1", staged(None));
+        }
+        assert_eq!(
+            manager.drain_tool_hook_context("s1").len(),
+            MAX_STAGED_TOOL_HOOKS
+        );
+    }
+
+    /// A PostToolUse hook that blocks unconditionally would trap the turn in a
+    /// block → retry → block loop; the cap releases it (same shape as the Stop
+    /// hook's cap), and a clean result resets the counter.
+    #[tokio::test]
+    async fn post_tool_blocks_are_capped_and_reset() {
+        let manager = manager_with_yaml("{}");
+        for _ in 0..POST_TOOL_HOOK_BLOCK_CAP {
+            assert!(manager.note_post_tool_block("s1").await);
+        }
+        assert_eq!(
+            manager.post_tool_block_count("s1").await,
+            POST_TOOL_HOOK_BLOCK_CAP
+        );
+        assert!(
+            !manager.note_post_tool_block("s1").await,
+            "past the cap the block must be overridden"
+        );
+
+        manager.reset_post_tool_blocks("s1").await;
+        assert_eq!(manager.post_tool_block_count("s1").await, 0);
+        assert!(manager.note_post_tool_block("s1").await);
     }
 
     /// A session that never settles must not grow the buffer without bound.
