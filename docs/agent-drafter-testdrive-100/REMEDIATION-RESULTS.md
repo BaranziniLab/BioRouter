@@ -234,18 +234,63 @@ tool that reports success while doing nothing.
 
 ---
 
-## 7. What is *not* done
+## 7. Wave 6 — lint that RUNS the app
+
+Every remaining finding shares one property: **no string analysis can catch it.** The
+code is correct-looking and the failure is a runtime state. A control that fires and
+delivers no turn leaves *nothing* behind — the handler completes, the console is
+clean, and the session holds no record. Only the wire knows.
+
+`scripts/agent-drafter/app-smoke.mjs` (+ the `smoke_app` tool) boots the built app in
+a real browser against a real mock daemon, drives it, and asserts on **frames** and
+**pixels**:
+
+| Check | What it catches |
+|---|---|
+| `control-delivers-a-turn` | clicks every wired control; a control that sends **no** `prompt`/`call`/`signal` frame is dead |
+| `bindings-first-load` | with **zero** turns run, every `data-br-bind` must already show a value |
+| `keyboard-reaches-state` | arrow keys on a bound range must move the **shared document**, not just the DOM (jsdom cannot test this — only a real browser dispatches native range key handling) |
+| `drag-is-reachable` | a keyboard `Enter`→`Enter` drop must land, and must emit the declared signal |
+| `progress-isolation` | tool frames must not render twice, nor inside the declared result region |
+
+It **fails closed**: if no browser can be launched it exits 2 (*could not run*), never
+0. A check that reports success without executing is the exact failure this whole
+campaign exists to eliminate.
+
+### It discriminates — which is the only thing that makes it worth having
+
+A harness that passes everything is decoration; one that fails everything gets muted.
+Run against the real corpus (`the_executing_check_separates_the_repaired_app_from_the_broken_ones`):
+
+- **`spec-002` (repaired by the platform's own agent)** → **exit 0**, 37 frames on the
+  wire, no findings.
+- **`spec-009-survival-atelier` (the audit's own FAIL verdict, untouched)** → **exit 1**,
+  and it independently reproduced all three of the audit's failures — including the one
+  no static rule can see:
+
+  > *"Fit Cox", "Check PH", "Adjust confounders" fired and delivered **NOTHING** to the
+  > agent — no prompt, call, or signal frame reached the wire.*
+
+- `spec-004-trial-regia` → 8/13 bindings blank before any turn; 12 HTML5-draggable
+  elements no assistive pointer can drive.
+
+The dead control — the defect that produced *0/18 functional passes* and that the audit
+could only find by hand, one app at a time — is now caught automatically, by a tool the
+authoring agent can call.
+
+---
+
+## 8. What is *not* done
 
 Honest ledger:
 
-- **The executing smoke runner (`app-smoke.mjs`) is not built.** Its lint-rule half
-  landed (drag-only, blank bindings), but the Chromium tier that clicks every control
-  and asserts a frame reaches the wire is still the plan's Wave 5.1. That is the check
-  that would catch a *dead control* — the one class of defect no static rule can see.
-  The SDK-side causes of dead controls (the wedged run queue, the pre-paint throw) are
-  fixed; the executing check that would *prove* it per-app is not.
 - **The 30 corpus apps are not re-authored.** They were built against the broken
-  platform; the fixed platform now *sees* their defects, but making them pass means
-  re-running the authoring loop, not patching them.
-- **The `done{degraded}` banner and contrast audit are unit- and build-tested, not
-  browser-tested.** Both are client-side behaviours whose real proof is a browser run.
+  platform; the fixed platform now *sees* their defects (and `spec-002` proves an agent
+  can repair one on request), but making them all pass means re-running the authoring
+  loop, not patching them.
+- **The `done{degraded}` banner and the `ui_theme` contrast audit are unit- and
+  build-tested, not browser-tested.** `app-smoke.mjs` is the natural home for both; the
+  hooks are there, the scenarios are not written.
+- **`smoke_app` is not yet wired into `build_app`.** It is a tool the agent (or CI) must
+  call. Making a failing smoke check *block* a build is a deliberate follow-up: it
+  should ship advisory first, so a false positive cannot brick an existing app.

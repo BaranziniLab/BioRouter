@@ -196,3 +196,57 @@ fn first_line(msg: &str) -> String {
         one
     }
 }
+
+/// The executing check must SEPARATE a working app from a broken one.
+///
+/// A harness that passes everything is decoration, and one that fails everything
+/// gets muted. This is the discrimination test, run against the real corpus:
+/// `spec-002` was repaired by the fixed platform's own agent; `spec-009` is the
+/// audit's own FAIL verdict and was never touched.
+///
+/// Ignored by default — it needs Node and a browser. Run with:
+///   cargo test -p biorouter-mcp --test testdrive_corpus_relint -- --ignored --nocapture
+#[test]
+#[ignore = "needs node + a browser"]
+fn the_executing_check_separates_the_repaired_app_from_the_broken_ones() {
+    let Some(dir) = corpus() else {
+        eprintln!("test-drive corpus absent; skipping");
+        return;
+    };
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("scripts/agent-drafter/app-smoke.mjs");
+    if !script.exists() {
+        eprintln!("app-smoke.mjs absent; skipping");
+        return;
+    }
+
+    let smoke = |app: &str| -> i32 {
+        std::process::Command::new("node")
+            .arg(&script)
+            .arg(dir.join(app))
+            .output()
+            .map(|o| o.status.code().unwrap_or(-1))
+            .unwrap_or(-1)
+    };
+
+    // The repaired app: every control delivers, every binding paints, the drag is
+    // keyboard-reachable.
+    let repaired = smoke("spec-002-cohort-funnel-foundry");
+    assert_eq!(
+        repaired, 0,
+        "the app the fixed platform repaired must pass the executing check (got exit {repaired}; \
+         2 means the browser could not launch)"
+    );
+
+    // The audit's own FAIL: blank bindings, a drag only a mouse can drive, and —
+    // the defect no static analysis can see — controls that fire and send nothing.
+    let broken = smoke("spec-009-survival-atelier");
+    assert_eq!(
+        broken, 1,
+        "the audit's FAIL app must still fail the executing check (got exit {broken})"
+    );
+}

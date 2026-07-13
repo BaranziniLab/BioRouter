@@ -54,6 +54,9 @@ async fn agent_drafter_serves_tools_over_mcp() {
         "declare_profiles",
         "set_theme",
         "set_routes",
+        // Wave 6: the executing check. Lint that RUNS the app — the only thing that
+        // can catch a control which fires and delivers no turn.
+        "smoke_app",
     ] {
         assert!(
             names.iter().any(|n| n == expected),
