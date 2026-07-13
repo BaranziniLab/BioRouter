@@ -1,11 +1,13 @@
 #[cfg(test)]
-use chrono::DateTime;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::agents::extension::ExtensionInfo;
+use crate::context_budget::{
+    fit_context_blocks, injection_budget_tokens, BudgetReport, ContextBlock,
+};
 use crate::hints::load_hints::{load_hint_files, AGENTS_MD_FILENAME, BIOROUTER_HINTS_FILENAME};
 use crate::{
     config::{BioRouterMode, Config},
@@ -14,10 +16,84 @@ use crate::{
 };
 use std::path::Path;
 
+/// Local time at hour granularity, e.g. `2026-07-12 14:00`. Hour (not
+/// minute/second) granularity keeps the rendered system prompt byte-identical
+/// within the hour so multi-session prompt caching still hits; Local (not UTC)
+/// matches the MOIM `<info-msg>` clock so the model never sees two contradictory
+/// timezones. Computed fresh at each `build()` (not frozen at construction) so a
+/// long-lived agent's clock never goes stale.
+fn current_hour_timestamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
+}
+
+/// BR-3: which system-prompt variant to render for the active model.
+///
+/// One fixed `system.md` served 43+ providers of wildly varying capability:
+/// strong models paid for scaffolding they don't need, and small/local models
+/// got too little. Rather than the "one prompt file per model" sprawl the
+/// review warned against, variants are kept intentionally minimal — a shared
+/// base (`system.md`, the strong-model default) plus at most one small overlay.
+/// The `Default` variant renders the base byte-identically, so strong models
+/// (and their multi-session prompt cache key) are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptVariant {
+    /// Strong commercial / institution-hosted models. Base `system.md` only.
+    Default,
+    /// Small, weak local models (Llama Server, Ollama). Base + a compact
+    /// scaffolding overlay (`system_small_local.md`).
+    SmallLocal,
+}
+
+impl PromptVariant {
+    /// Choose a variant for `(provider_name, model_name)`.
+    ///
+    /// `BIOROUTER_SYSTEM_PROMPT_VARIANT` (`default` | `small_local`) pins the
+    /// choice for testing / power users; otherwise the provider/model-keyed
+    /// table decides, defaulting to [`PromptVariant::Default`].
+    pub fn select(provider_name: &str, model_name: &str) -> PromptVariant {
+        if let Ok(pinned) = Config::global().get_param::<String>("BIOROUTER_SYSTEM_PROMPT_VARIANT")
+        {
+            match pinned.trim().to_ascii_lowercase().as_str() {
+                "default" | "strong" => return PromptVariant::Default,
+                "small_local" | "small" | "local" => return PromptVariant::SmallLocal,
+                other => tracing::warn!(
+                    variant = other,
+                    "unknown BIOROUTER_SYSTEM_PROMPT_VARIANT; using the model-derived variant"
+                ),
+            }
+        }
+        select_variant_from_table(provider_name, model_name)
+    }
+}
+
+/// Provider/model → variant rules, first match wins, `Default` as the fallback.
+/// Kept deliberately tiny (BR-3: "keep variants minimal / avoid sprawl").
+///
+/// The local providers ship small, weak models by default (Llama Server's
+/// Qwen3.5-4B / Gemma-4, Ollama's local tags), so they get the extra
+/// scaffolding — except when the model name says a *large* model is loaded
+/// locally, which needs no hand-holding.
+fn select_variant_from_table(provider_name: &str, model_name: &str) -> PromptVariant {
+    let provider = provider_name.to_ascii_lowercase();
+    let model = model_name.to_ascii_lowercase();
+
+    if matches!(provider.as_str(), "llamacpp" | "ollama") {
+        const LARGE_LOCAL_MARKERS: &[&str] = &["70b", "72b", "65b", "34b", "large"];
+        if LARGE_LOCAL_MARKERS.iter().any(|m| model.contains(m)) {
+            return PromptVariant::Default;
+        }
+        return PromptVariant::SmallLocal;
+    }
+
+    PromptVariant::Default
+}
+
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: Vec<String>,
-    current_date_timestamp: String,
+    /// When `Some`, pins the rendered clock (deterministic tests). When `None`,
+    /// the clock is computed live at `build()` time.
+    fixed_timestamp: Option<String>,
 }
 
 impl Default for PromptManager {
@@ -44,9 +120,16 @@ pub struct SystemPromptBuilder<'a, M> {
     subagents_enabled: bool,
     hints: Option<String>,
     code_execution_mode: bool,
+    variant: PromptVariant,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
+    /// BR-3: select the per-model prompt variant (default: strong-model base).
+    pub fn with_prompt_variant(mut self, variant: PromptVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
     pub fn with_extension(mut self, extension: ExtensionInfo) -> Self {
         self.extensions_info.push(extension);
         self
@@ -115,7 +198,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // Stable tool ordering is important for multi session prompt caching.
         extensions_info.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let sanitized_extensions_info: Vec<ExtensionInfo> = extensions_info
+        let mut sanitized_extensions_info: Vec<ExtensionInfo> = extensions_info
             .into_iter()
             .map(|mut ext_info| {
                 ext_info.instructions = sanitize_unicode_tags(&ext_info.instructions);
@@ -123,19 +206,42 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             })
             .collect();
 
+        // BR-2: bound the aggregate size of injected context (extension
+        // instructions + hint files) so a chatty MCP server or a runaway
+        // `AGENTS.md` can't silently blow the window. The base `system.md` and
+        // the app-supplied extras (desktop/CLI prompt) are trusted and small, so
+        // they stay pinned outside the budget.
+        let mut hints = self.hints;
+        let report = apply_injection_budget(
+            &mut sanitized_extensions_info,
+            &mut hints,
+            injection_budget_tokens(),
+        );
+        if !report.is_empty() {
+            tracing::warn!(
+                dropped = ?report.dropped,
+                truncated = ?report.truncated,
+                "context budget: trimmed injected system-prompt blocks to fit CONTEXT_INJECTION_BUDGET_TOKENS"
+            );
+        }
+
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
 
         let context = SystemPromptContext {
             extensions: sanitized_extensions_info,
-            current_date_time: self.manager.current_date_timestamp.clone(),
+            current_date_time: self
+                .manager
+                .fixed_timestamp
+                .clone()
+                .unwrap_or_else(current_hour_timestamp),
             biorouter_mode,
             is_autonomous: biorouter_mode == BioRouterMode::Auto,
             enable_subagents: self.subagents_enabled,
             code_execution_mode: self.code_execution_mode,
         };
 
-        let base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
+        let mut base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
             let sanitized_override_prompt = sanitize_unicode_tags(override_prompt);
             prompt_template::render_inline_once(&sanitized_override_prompt, &context)
         } else {
@@ -145,10 +251,29 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             "You are Biorouter, a general-purpose AI agent and integrated research environment for biomedical discovery, created by Wanjun Gu and the Baranzini Lab at UCSF".to_string()
         });
 
+        // BR-3: small/weak local models get a compact scaffolding overlay on top
+        // of the shared base prompt. The `Default` variant appends nothing, so a
+        // strong model's rendered prompt (and its cache key) stays byte-identical.
+        // Skipped under a full custom prompt override, which is already complete.
+        if self.variant == PromptVariant::SmallLocal
+            && self.manager.system_prompt_override.is_none()
+        {
+            match prompt_template::render_global_file("system_small_local.md", &context) {
+                Ok(overlay) if !overlay.trim().is_empty() => {
+                    base_prompt.push_str("\n\n");
+                    base_prompt.push_str(&overlay);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("failed to render small-local prompt overlay: {e}")
+                }
+            }
+        }
+
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
-        // Add hints if provided
-        if let Some(hints) = self.hints {
+        // Add hints if provided (post-budget)
+        if let Some(hints) = hints {
             system_prompt_extras.push(hints);
         }
 
@@ -181,9 +306,10 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: Vec::new(),
-            // Use the fixed current date time so that prompt cache can be used.
-            // Filtering to an hour to balance user time accuracy and multi session prompt cache hits.
-            current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
+            // Left unset: the clock is computed live per `build()` (hour
+            // granularity) so it stays cache-stable within the hour yet never
+            // freezes at agent-construction time.
+            fixed_timestamp: None,
         }
     }
 
@@ -192,7 +318,7 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: Vec::new(),
-            current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            fixed_timestamp: Some(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
         }
     }
 
@@ -215,6 +341,7 @@ impl PromptManager {
             subagents_enabled: false,
             hints: None,
             code_execution_mode: false,
+            variant: PromptVariant::Default,
         }
     }
 
@@ -223,6 +350,61 @@ impl PromptManager {
         prompt_template::render_global_file("workflow.md", &context)
             .unwrap_or_else(|_| "The workflow prompt is busted. Tell the user.".to_string())
     }
+}
+
+/// Apply the BR-2 injection budget across the injected system-prompt blocks —
+/// the MCP extension instructions and the hint files — mutating each in place
+/// (truncating or emptying). Extension instructions rank above hints: teaching
+/// the model how to call a tool matters more than project hints, so hints are
+/// trimmed first and instructions only if the servers alone exceed the budget.
+/// `budget_tokens == 0` disables the cap. Returns what was trimmed for logging.
+fn apply_injection_budget(
+    extensions: &mut [ExtensionInfo],
+    hints: &mut Option<String>,
+    budget_tokens: usize,
+) -> BudgetReport {
+    if budget_tokens == 0 {
+        return BudgetReport::default();
+    }
+
+    let has_hints = hints.is_some();
+    let mut blocks: Vec<ContextBlock> = extensions
+        .iter()
+        .map(|ext| ContextBlock {
+            label: format!("extension:{}", ext.name),
+            content: ext.instructions.clone(),
+            priority: 100,
+        })
+        .collect();
+    if let Some(h) = hints.as_ref() {
+        blocks.push(ContextBlock {
+            label: "hints".to_string(),
+            content: h.clone(),
+            priority: 50,
+        });
+    }
+
+    let (fitted, report) = fit_context_blocks(blocks, budget_tokens);
+    if report.is_empty() {
+        // Fast path: nothing changed, avoid rewriting every field.
+        return report;
+    }
+
+    // `fitted` preserves input order: the first `extensions.len()` entries are
+    // the extension blocks, followed by the optional hints block.
+    for (ext, fitted_block) in extensions.iter_mut().zip(fitted.iter()) {
+        ext.instructions = fitted_block.content.clone();
+    }
+    if has_hints {
+        let fitted_hints = &fitted[extensions.len()].content;
+        *hints = if fitted_hints.is_empty() {
+            None
+        } else {
+            Some(fitted_hints.clone())
+        };
+    }
+
+    report
 }
 
 #[cfg(test)]
@@ -320,6 +502,23 @@ mod tests {
         let system_prompt = manager.builder().build();
 
         assert_snapshot!(system_prompt)
+    }
+
+    /// The live (non-test) clock is computed at `build()` time, at Local hour
+    /// granularity — not frozen at construction, not UTC. Robust across an hour
+    /// tick by accepting either boundary.
+    #[test]
+    fn test_live_clock_is_fresh_local_hour() {
+        let before = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+        let prompt = PromptManager::new().builder().build();
+        let after = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+
+        let expected_before = format!("The current date and time is {before}.");
+        let expected_after = format!("The current date and time is {after}.");
+        assert!(
+            prompt.contains(&expected_before) || prompt.contains(&expected_after),
+            "system prompt must render the live Local hour clock (minutes pinned to :00)"
+        );
     }
 
     #[test]
@@ -444,6 +643,164 @@ mod tests {
         assert!(
             !without_ext.contains("about-biorouter"),
             "pillar awareness must not appear when no extensions are loaded"
+        );
+    }
+
+    /// BR-2: with a generous budget, injected blocks are left byte-identical and
+    /// the report is empty — ordinary sessions are unaffected.
+    #[test]
+    fn test_injection_budget_noop_under_budget() {
+        let mut extensions = vec![
+            ExtensionInfo::new("a", "short instructions", false),
+            ExtensionInfo::new("b", "more instructions", false),
+        ];
+        let mut hints = Some("some project hints".to_string());
+        let report = apply_injection_budget(&mut extensions, &mut hints, 10_000);
+        assert!(report.is_empty());
+        assert_eq!(extensions[0].instructions, "short instructions");
+        assert_eq!(extensions[1].instructions, "more instructions");
+        assert_eq!(hints.as_deref(), Some("some project hints"));
+    }
+
+    /// BR-2: hints (lower priority) are dropped before extension instructions
+    /// (higher priority) when the budget is tight.
+    #[test]
+    fn test_injection_budget_drops_hints_before_instructions() {
+        let big_instructions = "i".repeat(3_000); // ~750 tokens
+        let big_hints = "h".repeat(3_000);
+        let mut extensions = vec![ExtensionInfo::new("dev", &big_instructions, false)];
+        let mut hints = Some(big_hints.clone());
+
+        let report = apply_injection_budget(&mut extensions, &mut hints, 800);
+
+        assert_eq!(
+            extensions[0].instructions, big_instructions,
+            "extension instructions must be kept in full"
+        );
+        assert_eq!(hints, None, "hints must be dropped to fit the budget");
+        assert!(report.dropped.iter().any(|l| l == "hints"));
+    }
+
+    /// BR-2: a budget of 0 disables the cap entirely.
+    #[test]
+    fn test_injection_budget_disabled_with_zero() {
+        let big = "x".repeat(100_000);
+        let mut extensions = vec![ExtensionInfo::new("dev", &big, false)];
+        let mut hints = Some(big.clone());
+        let report = apply_injection_budget(&mut extensions, &mut hints, 0);
+        assert!(report.is_empty());
+        assert_eq!(extensions[0].instructions, big);
+        assert_eq!(hints.as_deref(), Some(big.as_str()));
+    }
+
+    /// BR-3: the provider/model table routes the local providers to the
+    /// small-local variant and everything else to the strong-model default.
+    #[test]
+    fn test_prompt_variant_table() {
+        // Local providers → small-local scaffolding.
+        assert_eq!(
+            select_variant_from_table("llamacpp", "qwen3.5-4b"),
+            PromptVariant::SmallLocal
+        );
+        assert_eq!(
+            select_variant_from_table("ollama", "gemma4:latest"),
+            PromptVariant::SmallLocal
+        );
+        // Strong commercial / institution-hosted → base prompt only.
+        assert_eq!(
+            select_variant_from_table("anthropic", "claude-sonnet-4"),
+            PromptVariant::Default
+        );
+        assert_eq!(
+            select_variant_from_table("openai", "gpt-5.2"),
+            PromptVariant::Default
+        );
+        // A *large* model run locally does not need the extra hand-holding.
+        assert_eq!(
+            select_variant_from_table("ollama", "llama3.3:70b"),
+            PromptVariant::Default
+        );
+    }
+
+    /// BR-3: the small-local variant appends the scaffolding overlay, while the
+    /// default variant renders the base prompt byte-identically (no overlay).
+    #[test]
+    fn test_small_local_variant_appends_overlay() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let default_prompt = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::Default)
+            .build();
+        assert!(
+            !default_prompt.contains("Running on a Smaller Model"),
+            "the default (strong-model) variant must not append the overlay"
+        );
+
+        let small_prompt = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(
+            small_prompt.starts_with(&default_prompt),
+            "the small-local variant is the shared base plus an appended overlay"
+        );
+        assert!(
+            small_prompt.len() > default_prompt.len(),
+            "the small-local variant must add scaffolding on top of the base"
+        );
+    }
+
+    /// BR-3 contract test: guard the small-local overlay's intentional clauses
+    /// against silent removal (mirrors `test_system_prompt_has_behavior_clauses`
+    /// for the base prompt). If any of these disappears, the weak-model
+    /// scaffolding is quietly lost.
+    #[test]
+    fn test_small_local_overlay_has_scaffolding_clauses() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let p = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+
+        assert!(
+            p.contains("You are running on a smaller local model"),
+            "missing small-model self-identification"
+        );
+        assert!(
+            p.contains("single tool call per turn"),
+            "missing one-step-at-a-time discipline"
+        );
+        assert!(
+            p.contains("emit only valid JSON for tool arguments"),
+            "missing valid-tool-JSON discipline"
+        );
+        assert!(
+            p.contains("ask a short clarifying question"),
+            "missing ask-vs-act discipline"
+        );
+        assert!(
+            p.contains("Before saying a task is done"),
+            "missing verify-before-done discipline"
+        );
+    }
+
+    /// BR-3: a full custom prompt override is already complete, so the overlay
+    /// is not appended even for the small-local variant.
+    #[test]
+    fn test_small_local_variant_skips_overlay_under_override() {
+        let mut manager = PromptManager::new();
+        manager.set_system_prompt_override("Custom prompt for a workflow.".to_string());
+
+        let p = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+
+        assert!(p.contains("Custom prompt for a workflow."));
+        assert!(
+            !p.contains("Running on a Smaller Model"),
+            "the overlay must not be appended to a custom prompt override"
         );
     }
 }

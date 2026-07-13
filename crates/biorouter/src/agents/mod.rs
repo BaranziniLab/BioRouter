@@ -32,6 +32,7 @@ pub(crate) mod todo_extension;
 mod tool_execution;
 pub mod types;
 pub mod vault_refs;
+pub mod workspace_summary;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
 pub use execute_commands::COMPACT_TRIGGERS;
