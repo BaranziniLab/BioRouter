@@ -1,0 +1,56 @@
+{
+  "id": "spec-016-aerocanvas",
+  "title": "AeroCanvas",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-016-aerocanvas/manifest.json",
+  "actions_expected": [
+    "inject_dye",
+    "reshape_airfoil",
+    "run_solve",
+    "set_inlet",
+    "set_reynolds",
+    "sweep_aoa"
+  ],
+  "actions_actual": [
+    "inject_dye",
+    "reshape_airfoil",
+    "run_solve",
+    "set_inlet",
+    "set_reynolds",
+    "sweep_aoa"
+  ],
+  "signals_expected": [
+    "aoa_slider",
+    "control_point_dragged",
+    "inlet_vector_pulled",
+    "obstacle_drawn"
+  ],
+  "signals_actual": [
+    "aoa_slider",
+    "control_point_dragged",
+    "inlet_vector_pulled",
+    "obstacle_drawn"
+  ],
+  "agents_expected": [
+    "Aerodynamicist",
+    "Turbulence Skeptic",
+    "Instrumenter"
+  ],
+  "agents_actual": [
+    "aerodynamicist",
+    "instrumenter",
+    "turbulence_skeptic"
+  ],
+  "regions": [
+    "conditions",
+    "cp",
+    "flowfield",
+    "inspector",
+    "polar",
+    "presence",
+    "transport"
+  ],
+  "theme_expected": "terminal",
+  "theme_actual": "terminal",
+  "issues": []
+}

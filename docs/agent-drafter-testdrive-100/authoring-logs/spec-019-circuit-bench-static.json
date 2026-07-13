@@ -1,0 +1,61 @@
+{
+  "id": "spec-019-circuit-bench",
+  "title": "Circuit Bench",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-019-circuit-bench/manifest.json",
+  "actions_expected": [
+    "place_part",
+    "probe_node",
+    "run_analysis",
+    "set_value",
+    "sweep_frequency",
+    "wire"
+  ],
+  "actions_actual": [
+    "place_part",
+    "probe_node",
+    "run_analysis",
+    "set_value",
+    "sweep_frequency",
+    "wire"
+  ],
+  "signals_expected": [
+    "node_probed",
+    "part_dragged",
+    "value_edited",
+    "wire_drawn"
+  ],
+  "signals_actual": [
+    "node_probed",
+    "part_dragged",
+    "value_edited",
+    "wire_drawn"
+  ],
+  "agents_expected": [
+    "Designer",
+    "SPICE Analyst",
+    "Tolerance Critic"
+  ],
+  "agents_actual": [
+    "designer",
+    "spice_analyst",
+    "tolerance_critic"
+  ],
+  "regions": [
+    "agent-notes",
+    "bode-figure",
+    "inspector",
+    "oscilloscope-plot",
+    "parts-rail",
+    "presence",
+    "progress-region",
+    "schematic",
+    "schematic-canvas",
+    "tolerance-alerts",
+    "transport",
+    "value-editor"
+  ],
+  "theme_expected": "lab-notebook",
+  "theme_actual": "lab-notebook",
+  "issues": []
+}
