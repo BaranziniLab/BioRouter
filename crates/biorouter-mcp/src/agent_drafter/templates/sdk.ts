@@ -63,6 +63,18 @@ export interface ImageInput {
   data: string;
 }
 
+/** Options for `br.dnd.catalog(...)`. */
+export interface DndCatalogOptions {
+  /** Container of the draggable items (each marked `data-br-item="<id>"`). */
+  source: HTMLElement | string;
+  /** One or more drop zones (each marked `data-br-zone="<id>"`). */
+  target: HTMLElement | HTMLElement[] | string;
+  /** Declared signal to emit on a drop. The primitive sends it for you. */
+  signal?: string;
+  /** Author callback, in addition to the signal. */
+  onDrop?: (item: string, zone: string) => void;
+}
+
 export interface PromptOptions {
   images?: ImageInput[];
   // SDK v2 (`br.run` turn control): trailing-edge debounce per run target, and
@@ -74,6 +86,22 @@ export interface PromptOptions {
   // scoped to. Set by `br.agent(name)`; rides the outgoing frame as `agent`, and
   // settles / filters against server frames that carry the same `agent`.
   agent?: string;
+  /**
+   * Where to show tool-call progress for this run.
+   *
+   * A selector or element routes progress there; `false` suppresses it entirely.
+   * Omit and the SDK uses the app's existing progress surface if it has one, and
+   * only falls back to an inline strip inside the run target if it does not — so
+   * progress never displaces the result by default.
+   */
+  progress?: HTMLElement | string | false;
+  /**
+   * How long to wait for the turn to finish before abandoning it (default
+   * `RUN_STALL_MS`). A turn that never emits `done` used to leave the run queue
+   * pending forever, so every later `br.run` sat behind it — unsent, unpainted,
+   * and indistinguishable from a broken button.
+   */
+  timeoutMs?: number;
 }
 
 export interface TimelineOptions {
@@ -92,7 +120,7 @@ export type AgentEvent =
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
   | { type: "tool"; name: string; status: string; id?: string }
-  | { type: "done" }
+  | { type: "done"; degraded?: boolean; missingProfiles?: string[] }
   | { type: "error"; message: string }
   // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
   | { type: "output"; callId?: string; schema?: unknown; value: unknown }
@@ -460,6 +488,161 @@ function openSocket(url: string): Promise<WebSocket> {
 /** How many frames may wait for a closed socket before the oldest is dropped. */
 const OUTBOX_MAX = 64;
 
+/**
+ * Every timeline currently mounted by the app author.
+ *
+ * `doRun` used to ALWAYS mount a timeline inside its run target, so
+ * `br.run(prompt, "#synthesis")` rendered tool-call plumbing into the semantic
+ * result region *by construction* — and if the app had also mounted a timeline at
+ * `#progress`, the same events rendered twice, in two places. There was no way to
+ * say "progress here, result there". Now: if the author mounted a sink, `run`
+ * streams progress to it and leaves the result region for the result.
+ */
+const PROGRESS_SINKS = new Set<HTMLElement>();
+
+/** Whether the app has somewhere of its own to show progress. */
+function hasProgressSink(): boolean {
+  for (const el of PROGRESS_SINKS) {
+    if (el.isConnected) return true;
+    PROGRESS_SINKS.delete(el);
+  }
+  return (
+    !!document.querySelector("[data-br-progress]") ||
+    !!document.querySelector("[data-br-chat]")
+  );
+}
+
+/**
+ * How long a queued/running `br.run` waits for the server's `done` before it is
+ * abandoned and the run queue is drained.
+ *
+ * Generous: a legitimate multi-agent turn with several consults can take minutes.
+ * The point is not to be tight, it is to be FINITE — the queue previously had no
+ * liveness at all.
+ */
+const RUN_STALL_MS = 180_000;
+
+/** Minimum WCAG contrast ratio a visible text element must keep after a restyle. */
+const MIN_CONTRAST = 3.0;
+
+/** An RGBA colour. A named object rather than a tuple: the no-esbuild fallback
+ *  bundler strips simple type annotations, not tuple types. */
+interface Rgba {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+/** Parse a computed `rgb()` / `rgba()` colour. Returns null for anything else. */
+function parseRgb(value: string): Rgba | null {
+  const m = /rgba?\(([^)]+)\)/.exec(value);
+  if (!m) return null;
+  const parts = m[1].split(",").map((p) => parseFloat(p.trim()));
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return null;
+  return {
+    r: parts[0],
+    g: parts[1],
+    b: parts[2],
+    a: parts.length > 3 ? parts[3] : 1,
+  };
+}
+
+/** Relative luminance, per WCAG 2.x. */
+function luminance(r: number, g: number, b: number): number {
+  const f = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+function contrastRatio(fg: Rgba, bg: Rgba): number {
+  const l1 = luminance(fg.r, fg.g, fg.b);
+  const l2 = luminance(bg.r, bg.g, bg.b);
+  const hi = Math.max(l1, l2);
+  const lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** The nearest ancestor with an opaque background — what the text actually sits on. */
+function effectiveBackground(el: Element): Rgba | null {
+  let node: Element | null = el;
+  while (node) {
+    const bg = parseRgb(getComputedStyle(node).backgroundColor);
+    if (bg && bg.a > 0.5) return bg;
+    node = node.parentElement;
+  }
+  const body = parseRgb(getComputedStyle(document.body).backgroundColor);
+  return body && body.a > 0.5 ? body : null;
+}
+
+/**
+ * Find text the current theme has made unreadable.
+ *
+ * `ui_theme` reported success no matter what it did to the page — and what it did
+ * depended on CSS the agent itself had written in an earlier turn, so it could not
+ * have known. An app whose page background is a hardcoded `#fff` while its cards
+ * use `var(--br-surface)` produces exactly the reported artifact after a dark pack
+ * lands: black blocks on a white page.
+ *
+ * Deliberately conservative. A false positive would revert a perfectly good theme
+ * and teach the agent that theming does not work, which is worse than the bug: so
+ * only VISIBLE elements with actual text and a resolvable opaque background are
+ * checked, and the threshold is 3.0 (large-text AA), not 4.5.
+ */
+function auditContrast(): string[] {
+  const offenders: string[] = [];
+  const candidates = document.querySelectorAll<HTMLElement>(
+    "[data-br-region], [data-br-region] *, .br-card, .br-card *, [data-br-bind]"
+  );
+
+  for (const el of candidates) {
+    if (offenders.length >= 20) break;
+    const text = (el.textContent || "").trim();
+    if (!text) continue;
+    // Only leaf-ish text: a container's textContent is its children's.
+    if (el.children.length > 0) continue;
+
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    if (parseFloat(style.opacity || "1") < 0.1) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) continue;
+
+    const fg = parseRgb(style.color);
+    const bg = effectiveBackground(el);
+    if (!fg || !bg || fg.a < 0.5) continue;
+
+    if (contrastRatio(fg, bg) < MIN_CONTRAST) {
+      const label = el.tagName.toLowerCase() + (el.id ? `#${el.id}` : "");
+      offenders.push(`${label}: "${text.slice(0, 24)}"`);
+    }
+  }
+
+  return offenders;
+}
+
+/**
+ * Render a run failure where the user can actually see it.
+ *
+ * A `br.run` whose target was missing rejected a promise that generated click
+ * handlers never await — so the click did nothing, said nothing, and left no trace
+ * in the session. This is the floor: whatever else fails, the user is told.
+ */
+function mountRunError(message: string): void {
+  const host =
+    document.querySelector<HTMLElement>("[data-br-chat]") ||
+    document.querySelector<HTMLElement>(".br-output") ||
+    document.body;
+  const card = document.createElement("div");
+  card.className = "br-run-failed";
+  card.setAttribute("data-br-run-error", "1");
+  card.setAttribute("role", "alert");
+  card.textContent = message;
+  host.appendChild(card);
+}
+
 export class BioRouterClient {
   readonly config: AppConfig;
   private ws: WebSocket | null = null;
@@ -714,6 +897,14 @@ export class BioRouterClient {
     this.routeFacade(msg);
     // Settle the correct facade's in-flight promise by the frame's `agent`.
     if (msg.type === "done") {
+      // A turn where the workers produced nothing must not look like a turn that
+      // did the work. The main agent used to get a soft "did not answer" text,
+      // ignore it, and complete normally — the page showed a finished turn with no
+      // sign that half its reasoning never happened. The server marks the frame; we
+      // show it, whether or not the model mentions it.
+      if (msg.degraded) {
+        showDegradedBanner(msg.missingProfiles || []);
+      }
       const agent = frameAgent(msg);
       if (agent) {
         this.settleAgentCall(agent, null);
@@ -1465,15 +1656,74 @@ export class BioRouterClient {
         userResolve(handle.partial);
       },
     };
+
+    // Resolve the target NOW, on the click — not inside the queued closure.
+    //
+    // `doRun` used to look the target up only when its turn came round, and throw
+    // if it was missing. Two silent failures followed: a generated
+    // `br.run(prompt, "#log")` whose `#log` had been swallowed by an SDK re-render
+    // rejected a promise no click handler awaits (nothing visible, nothing sent);
+    // and if the queue was wedged, `doRun` was never entered at all, so the target
+    // was never even looked up. Either way the control looked alive and was dead.
+    const el =
+      typeof target === "string"
+        ? document.querySelector<HTMLElement>(target)
+        : target;
+    if (!el) {
+      const where = typeof target === "string" ? target : "(element)";
+      const message = `run(): target not found: ${where}`;
+      console.error(message);
+      this.reportUiError("run", message);
+      mountRunError(message);
+      const err = new Error(message);
+      userReject(err);
+      return userPromise;
+    }
+
+    // Paint immediately, so a QUEUED run is visible. A control that fires and shows
+    // nothing is indistinguishable from a control that is broken.
+    if (this.activeRun && !this.activeRun.settled) {
+      el.innerHTML =
+        '<div class="br-run-status"></div><div class="br-run-answer">' +
+        '<span class="br-spinner"></span> Queued — waiting for the current agent run…</div>';
+    }
+
     // The queue advances on the *internal* turn settling (server done), NOT on
     // the user promise — which may resolve early via resolveEarly.
     const internal = this.runChain.then(() =>
-      this.launchRun(text, target, opts, handle, userResolve, userReject)
+      this.launchRun(text, el, opts, handle, userResolve, userReject)
     );
     this.runChain = internal.then(
       () => undefined,
       () => undefined
     );
+
+    // Watchdog. `runChain` is a promise chain with no liveness: a turn that never
+    // emits `done` — a blocked `ui_ask`, a consult that outran its deadline, a
+    // dropped socket, the runaway-tool loop — left it pending FOREVER, and every
+    // subsequent `br.run` sat behind it, unsent and unpainted. Serialization is
+    // worth keeping; the deadlock is not.
+    const timeoutMs = opts.timeoutMs ?? RUN_STALL_MS;
+    const watchdog = setTimeout(() => {
+      if (handle.settled) return;
+      handle.settled = true;
+      const message =
+        "The agent run did not finish and was abandoned. The app is responsive again — try once more.";
+      this.reportUiError("run", "run-stalled: no `done` frame within " + timeoutMs + "ms");
+      try {
+        el.innerHTML = '<div class="br-run-answer br-run-failed"></div>';
+        const answer = el.querySelector<HTMLElement>(".br-run-answer");
+        if (answer) answer.textContent = message;
+      } catch {
+        /* the target may have been removed; the rejection below still lands */
+      }
+      // Drain the chain so the NEXT run is not stuck behind a turn that never ends.
+      this.runChain = Promise.resolve();
+      if (this.activeRun === handle) this.activeRun = null;
+      userReject(new Error("run-stalled"));
+    }, timeoutMs);
+    void internal.finally(() => clearTimeout(watchdog));
+
     return userPromise;
   }
 
@@ -1510,17 +1760,50 @@ export class BioRouterClient {
     opts: PromptOptions = {},
     handle?: RunHandle
   ): Promise<string> {
+    // `startRun` already resolved the target on the click and reported a miss
+    // visibly; this re-resolve only covers a direct internal caller.
     const el =
       typeof target === "string"
         ? document.querySelector<HTMLElement>(target)
         : target;
-    if (!el) throw new Error("run(): target element not found");
+    if (!el) {
+      const message = "run(): target element not found";
+      this.reportUiError("run", message);
+      mountRunError(message);
+      throw new Error(message);
+    }
     let buf = "";
-    el.innerHTML =
-      '<div class="br-run-status"></div><div class="br-run-answer"><span class="br-spinner"></span> Starting agent run…</div>';
-    const statusEl = el.querySelector<HTMLElement>(".br-run-status")!;
+
+    // Where does progress go?
+    //
+    // `run` used to mount a timeline INSIDE the run target unconditionally, so
+    // `br.run(prompt, "#synthesis")` wrote tool-call plumbing into the semantic
+    // result region by construction — and an app that also mounted its own
+    // timeline rendered the same events twice, displacing the science it was
+    // supposed to be showing. If the author has a progress surface (an explicit
+    // `progress` option, a `mountTimeline`, a `[data-br-progress]`, or a chat
+    // panel), the target gets the ANSWER and nothing else.
+    const explicitProgress =
+      opts.progress === false
+        ? null
+        : typeof opts.progress === "string"
+          ? document.querySelector<HTMLElement>(opts.progress)
+          : opts.progress || null;
+    const routeAway =
+      opts.progress === false || !!explicitProgress || hasProgressSink();
+
+    el.innerHTML = routeAway
+      ? '<div class="br-run-answer"><span class="br-spinner"></span> Starting agent run…</div>'
+      : '<div class="br-run-status"></div><div class="br-run-answer"><span class="br-spinner"></span> Starting agent run…</div>';
+    const statusEl = el.querySelector<HTMLElement>(".br-run-status");
     const answerEl = el.querySelector<HTMLElement>(".br-run-answer")!;
-    const stopTimeline = mountTimeline(this, statusEl, { maxItems: 18 });
+
+    // Only mount a timeline of our own when the app has nowhere else to show one.
+    const timelineHost = explicitProgress || statusEl;
+    const stopTimeline =
+      opts.progress === false || !timelineHost
+        ? () => undefined
+        : mountTimeline(this, timelineHost, { maxItems: 18 });
     // A worker run streams only its profile's frames; a main run streams only
     // un-tagged frames (a no-op filter for single-agent apps) (§3.8).
     const want = opts.agent || "";
@@ -1817,6 +2100,194 @@ export class BioRouterClient {
     return {
       emit: (name: string, payload: unknown) => this.emitSignal(name, payload),
       declared: () => this.declaredSignals.slice(),
+    };
+  }
+
+  /**
+   * `br.dnd.catalog({source, target, onDrop, signal})` — a drag interaction that
+   * actually works.
+   *
+   * The SDK had NO drag support at all, while `theme.css` shipped `.br-dropzone`
+   * and "draggable list item" styling. That is starter gravity: the CSS told the
+   * model this was the blessed pattern and gave it no runtime, so it hand-rolled
+   * HTML5 `draggable="true"` + `dragstart`/`drop` with `DataTransfer`. HTML5 DnD is
+   * not driven by synthetic pointer moves, so a coordinate drag from Playwright, a
+   * screen reader, or any assistive pointer produced NO `dragstart` — the core
+   * interaction of spec-009 was unreachable by anything but a human mouse.
+   *
+   * This primitive is reliable by construction:
+   *   - **pointer events** (`pointerdown`/`move`/`up`), so real and synthetic
+   *     coordinate drags both work;
+   *   - **click parity** — click an item to pick it up, click a zone to drop;
+   *   - **keyboard parity** — `Enter`/`Space` picks up, arrows move between zones,
+   *     `Enter` drops, `Escape` cancels, with ARIA roles and live announcements;
+   *   - and it **emits the declared signal itself**, so the app→agent path cannot
+   *     be forgotten.
+   *
+   * Returns a teardown function.
+   */
+  get dnd() {
+    return {
+      catalog: (opts: DndCatalogOptions) => this.mountDndCatalog(opts),
+    };
+  }
+
+  private mountDndCatalog(opts: DndCatalogOptions) {
+    const source =
+      typeof opts.source === "string"
+        ? document.querySelector<HTMLElement>(opts.source)
+        : opts.source;
+    const zones: HTMLElement[] =
+      typeof opts.target === "string"
+        ? Array.from(document.querySelectorAll<HTMLElement>(opts.target))
+        : Array.isArray(opts.target)
+          ? opts.target
+          : opts.target
+            ? [opts.target]
+            : [];
+
+    if (!source || !zones.length) {
+      const msg = `br.dnd.catalog(): source or target not found (${String(opts.source)} → ${String(opts.target)})`;
+      console.error(msg);
+      this.reportUiError("dnd", msg);
+      return () => undefined;
+    }
+
+    const items = () =>
+      Array.from(source.querySelectorAll<HTMLElement>("[data-br-item]"));
+    let picked: HTMLElement | null = null;
+    let zoneIdx = 0;
+
+    const live = document.createElement("div");
+    live.className = "br-sr-only";
+    live.setAttribute("aria-live", "polite");
+    source.appendChild(live);
+    const announce = (m: string) => {
+      live.textContent = m;
+    };
+
+    const itemId = (el: HTMLElement) => el.dataset.brItem || el.id || "";
+    const zoneId = (el: HTMLElement) => el.dataset.brZone || el.id || "";
+
+    const setPicked = (el: HTMLElement | null) => {
+      if (picked) picked.classList.remove("is-picked");
+      picked = el;
+      if (picked) {
+        picked.classList.add("is-picked");
+        announce(
+          `${itemId(picked)} picked up. Choose a zone, then press Enter to drop.`
+        );
+      }
+    };
+
+    const highlight = (zone: HTMLElement | null) => {
+      for (const z of zones) z.classList.toggle("is-over", z === zone);
+    };
+
+    const drop = (item: HTMLElement, zone: HTMLElement) => {
+      const i = itemId(item);
+      const z = zoneId(zone);
+      setPicked(null);
+      highlight(null);
+      announce(`${i} dropped on ${z}.`);
+      // The primitive emits, so the app→agent path cannot be forgotten. This is
+      // the whole point: a drag that the agent never hears about is decoration.
+      if (opts.signal) this.emitSignal(opts.signal, { item: i, zone: z });
+      if (opts.onDrop) opts.onDrop(i, z);
+    };
+
+    const zoneAt = (x: number, y: number): HTMLElement | null =>
+      zones.find((z) => {
+        const r = z.getBoundingClientRect();
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      }) || null;
+
+    // ── Pointer path (works for a real mouse AND a synthetic coordinate drag) ──
+    const onPointerDown = (e: PointerEvent) => {
+      const item = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+        "[data-br-item]"
+      );
+      if (!item || !source.contains(item)) return;
+      e.preventDefault();
+      item.setPointerCapture?.(e.pointerId);
+      setPicked(item);
+
+      const onMove = (m: PointerEvent) => highlight(zoneAt(m.clientX, m.clientY));
+      const onUp = (u: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        const z = zoneAt(u.clientX, u.clientY);
+        if (z && picked) drop(picked, z);
+        else {
+          // A pointerdown with no movement is a CLICK: keep the item picked up so
+          // the click-to-drop path works (mouse, touch, and automated pointers).
+          highlight(null);
+        }
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+
+    // ── Click-to-drop parity ────────────────────────────────────────────────
+    const onZoneClick = (e: Event) => {
+      const zone = e.currentTarget as HTMLElement;
+      if (picked) drop(picked, zone);
+    };
+
+    // ── Keyboard parity ─────────────────────────────────────────────────────
+    const onKeyDown = (e: KeyboardEvent) => {
+      const item = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+        "[data-br-item]"
+      );
+      if (e.key === "Escape") {
+        setPicked(null);
+        highlight(null);
+        return;
+      }
+      if ((e.key === "Enter" || e.key === " ") && item && !picked) {
+        e.preventDefault();
+        setPicked(item);
+        zoneIdx = 0;
+        highlight(zones[0]);
+        return;
+      }
+      if (!picked) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+        e.preventDefault();
+        zoneIdx = (zoneIdx + 1) % zones.length;
+        highlight(zones[zoneIdx]);
+        announce(`Zone ${zoneId(zones[zoneIdx])}.`);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        zoneIdx = (zoneIdx - 1 + zones.length) % zones.length;
+        highlight(zones[zoneIdx]);
+        announce(`Zone ${zoneId(zones[zoneIdx])}.`);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        drop(picked, zones[zoneIdx]);
+      }
+    };
+
+    // Make every item reachable and announce-able.
+    for (const it of items()) {
+      it.setAttribute("role", "option");
+      it.setAttribute("tabindex", "0");
+      it.setAttribute("aria-grabbed", "false");
+    }
+    source.setAttribute("role", "listbox");
+    source.setAttribute("data-br-dnd", "1");
+    for (const z of zones) {
+      z.setAttribute("data-br-dnd-zone", "1");
+      z.addEventListener("click", onZoneClick);
+    }
+    source.addEventListener("pointerdown", onPointerDown);
+    source.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      source.removeEventListener("pointerdown", onPointerDown);
+      source.removeEventListener("keydown", onKeyDown);
+      for (const z of zones) z.removeEventListener("click", onZoneClick);
+      live.remove();
     };
   }
 
@@ -2516,8 +2987,14 @@ export function mountTimeline(
     typeof target === "string"
       ? (document.querySelector(target) as HTMLElement | null)
       : target;
-  if (!host) return () => undefined;
+  if (!host) {
+    // A silent no-op here is how an app ends up with no progress display at all
+    // and nobody knowing why.
+    console.error(`mountTimeline(): target not found: ${String(target)}`);
+    return () => undefined;
+  }
   host.classList.add("br-run-status");
+  PROGRESS_SINKS.add(host);
   const maxItems = options.maxItems || 16;
   const entries: HTMLElement[] = [];
   const add = (ev: AgentEvent) => {
@@ -2559,6 +3036,7 @@ export function mountTimeline(
   for (const kind of kinds) client.on(kind, add);
   return () => {
     for (const kind of kinds) client.off(kind, add);
+    PROGRESS_SINKS.delete(host);
   };
 }
 
@@ -5583,6 +6061,19 @@ export class UiRuntime {
 
   private applyTheme(cmd: UiCommand): void {
     const root = document.documentElement;
+
+    // Snapshot, so an illegible restyle can be UNDONE. `ui_theme` was
+    // fire-and-forget: it emitted the frame and reported success no matter what it
+    // did to the page. The agent could black out the app's own scientific regions
+    // and be told it worked — and could not have known otherwise, because the
+    // failure depends on CSS the agent wrote in an earlier turn.
+    const before = {
+      pack: root.getAttribute("data-br-pack"),
+      mode: root.getAttribute("data-br-theme"),
+      density: root.getAttribute("data-br-density"),
+      accent: root.style.getPropertyValue("--br-accent"),
+    };
+
     if (typeof cmd.pack === "string") this.applyPack(cmd.pack, root);
     if (cmd.accent) root.style.setProperty("--br-accent", cmd.accent);
     if (cmd.mode) {
@@ -5590,6 +6081,29 @@ export class UiRuntime {
       else root.setAttribute("data-br-theme", cmd.mode);
     }
     if (cmd.density) root.setAttribute("data-br-density", cmd.density);
+
+    // Audit after the browser has recomputed styles.
+    requestAnimationFrame(() => {
+      const offenders = auditContrast();
+      if (!offenders.length) return;
+
+      // Revert exactly what we changed.
+      if (before.pack) root.setAttribute("data-br-pack", before.pack);
+      else root.removeAttribute("data-br-pack");
+      if (before.mode) root.setAttribute("data-br-theme", before.mode);
+      else root.removeAttribute("data-br-theme");
+      if (before.density) root.setAttribute("data-br-density", before.density);
+      else root.removeAttribute("data-br-density");
+      if (before.accent) root.style.setProperty("--br-accent", before.accent);
+      else root.style.removeProperty("--br-accent");
+
+      const detail = offenders.slice(0, 4).join("; ");
+      this.reportUiError(
+        "theme",
+        `theme reverted: it made ${offenders.length} element(s) illegible (${detail}). ` +
+          `The app's own CSS hardcodes colours that do not follow the theme tokens.`
+      );
+    });
   }
 
   /** Switch the active theme pack. Validated against the curated set — an unknown
@@ -6373,6 +6887,45 @@ export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
     document.addEventListener("DOMContentLoaded", start);
   else start();
   return client;
+}
+
+/**
+ * A persistent banner when the turn finished but a worker agent it consulted never
+ * answered.
+ *
+ * The main agent used to receive a soft "the profile did not answer within 120s"
+ * TEXT result, treat it as an ordinary paragraph, and complete the turn — so a
+ * multi-agent app could show a confident finished answer while half its reasoning
+ * had silently timed out. The server now marks the `done` frame; the page renders
+ * it regardless of what the model chose to say.
+ */
+export function showDegradedBanner(missingProfiles: string[]): void {
+  const existing = document.querySelector("[data-br-degraded]");
+  if (existing) existing.remove();
+
+  const bar = document.createElement("div");
+  bar.className = "br-degraded";
+  bar.setAttribute("data-br-degraded", "1");
+  bar.setAttribute("role", "status");
+
+  const title = document.createElement("strong");
+  title.textContent = "Incomplete answer";
+  const body = document.createElement("div");
+  body.textContent = missingProfiles.length
+    ? `These agents were consulted but never answered: ${missingProfiles.join(", ")}. ` +
+      `Anything that depended on them is missing from this result.`
+    : "An agent this app consulted never answered, so this result is incomplete.";
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "br-degraded-dismiss";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", () => bar.remove());
+
+  bar.appendChild(title);
+  bar.appendChild(body);
+  bar.appendChild(dismiss);
+  document.body.appendChild(bar);
 }
 
 /**

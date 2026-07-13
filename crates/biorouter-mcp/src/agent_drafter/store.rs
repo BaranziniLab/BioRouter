@@ -130,6 +130,14 @@ pub struct AgentConfig {
     /// banner, never a fabricated config.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
+    /// When this config is a WORKER PROFILE: how many seconds it gets to answer a
+    /// `consult` before it is cancelled.
+    ///
+    /// `max_turns` bounds tool CALLS, not wall clock — a worker can sit inside a
+    /// single slow tool indefinitely. The deadline used to be a compile-time
+    /// constant with no configuration path at all. Clamped 5..=600 at use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consult_timeout_s: Option<u64>,
 }
 
 /// The kind of platform capability a [`Requirement`] refers to.

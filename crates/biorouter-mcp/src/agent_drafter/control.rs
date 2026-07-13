@@ -53,11 +53,27 @@ pub const APP_PAYLOAD_MAX: usize = 65_536;
 /// it gives up and returns gracefully (so a missing/hung handler can't wedge the
 /// turn). Tests shadow this via [`UiBridge::set_app_call_timeout_s`].
 pub const APP_CALL_TIMEOUT_S: u64 = 60;
-/// Seconds the `consult` tool parks waiting for a worker profile to answer before
-/// it gives up gracefully (design §3.8 multi-agent profiles). A consult runs a
-/// whole worker turn, so its budget is larger than an `app_call`'s. Tests shadow
-/// it via [`UiBridge::set_consult_timeout_s`].
-pub const CONSULT_TIMEOUT_S: u64 = 120;
+/// Default seconds a consulted worker profile gets to answer (design §3.8).
+///
+/// Lowered from 120 to 60. The old value was a compile-time constant with **no
+/// configuration path at all** (`set_consult_timeout_s` was called only from a
+/// test), and it was duplicated on both sides of the channel: the `consult` tool
+/// started a 120 s timer *before* the request even reached the socket loop, and
+/// `run_consult` then started a second one strictly later. The outer always won,
+/// so the inner was effectively dead code — and when the outer fired, the loop was
+/// still awaiting the worker, draining nothing, for another full deadline.
+///
+/// The loop side now owns the deadline (see `CONSULT_GRACE_S`), and an app may
+/// override it per profile.
+pub const CONSULT_TIMEOUT_S: u64 = 60;
+
+/// Extra slack the parked `consult` TOOL allows beyond the loop's deadline.
+///
+/// The loop is the single owner of the consult deadline: it times the worker out,
+/// cancels it, and resolves the tool with a structured result. This grace exists
+/// only so a wedged loop cannot park the tool forever — it must never be the timer
+/// that fires first, or we are back to two racing deadlines.
+pub const CONSULT_GRACE_S: u64 = 20;
 
 // ── Shared state document caps (Apps SDK v2, Pillar 2) ──────────────────────
 // Enforced after every mutation so an unschema'd app can't become an unbounded
@@ -4027,16 +4043,44 @@ impl AppControlServer {
             );
         }
 
+        // Park for the loop's deadline PLUS a grace. The loop owns the timeout: it
+        // cancels the worker and resolves this oneshot with a structured verdict.
+        // This timer is a backstop against a wedged loop, and must never fire first.
         let secs = self.bridge.inner.consult_timeout_s.load(Ordering::Relaxed);
-        match tokio::time::timeout(Duration::from_secs(secs), rx).await {
+        match tokio::time::timeout(Duration::from_secs(secs + CONSULT_GRACE_S), rx).await {
             Ok(Ok(payload)) => {
                 if payload.get("cancelled").and_then(Value::as_bool) == Some(true) {
                     return ok_text(format!(
                         "The consultation with \"{agent}\" was cancelled before it returned."
                     ));
                 }
+                // A timeout is an ERROR result, not prose. It used to come back as
+                // ordinary text ("did not answer within 120s"), which the model was
+                // free to read as an answer and move on from — and did, silently
+                // completing the turn with no work done.
+                if payload.get("status").and_then(Value::as_str) == Some("timeout") {
+                    let elapsed = payload
+                        .get("elapsed_s")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(secs);
+                    let partial = payload
+                        .get("partial")
+                        .and_then(Value::as_str)
+                        .filter(|p| !p.trim().is_empty());
+                    let mut msg = format!(
+                        "The \"{agent}\" profile did NOT answer within {elapsed}s and was \
+                         cancelled. You have no result from it. Do not present its conclusion as \
+                         if you had one — either work without it and say so, or tell the user."
+                    );
+                    if let Some(p) = partial {
+                        msg.push_str(&format!("\n\nPartial output before cancellation:\n{p}"));
+                    }
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
                 if let Some(err) = payload.get("error").and_then(Value::as_str) {
-                    return ok_text(format!("The \"{agent}\" profile could not answer: {err}"));
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "The \"{agent}\" profile could not answer: {err}"
+                    ))]));
                 }
                 let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
                 ok_text(format!("[{agent}] {text}"))
@@ -4051,11 +4095,13 @@ impl AppControlServer {
                 ))
             }
             Err(_) => {
+                // The loop did not even resolve us within deadline + grace: it is
+                // wedged. Still an ERROR, never prose.
                 self.bridge.forget_consult(&id);
-                ok_text(format!(
-                    "The \"{agent}\" profile did not answer within {secs}s. Proceed without its \
-                     input or tell the user."
-                ))
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "The \"{agent}\" profile did not answer within {secs}s and the app's worker \
+                     loop did not respond. You have no result from it — do not invent one."
+                ))]))
             }
         }
     }
