@@ -9,6 +9,11 @@
 
 pub mod pii;
 pub mod run_state;
+/// Main-loop tool-*output* guardrail: scans returned tool content for
+/// prompt-injection markers and PII/PHI and (by default) annotates it as
+/// untrusted data before it re-enters the model context. This is the first
+/// implementation of a [`GuardrailStage::ToolOutput`] on the CLI/GUI loop.
+pub mod tool_output;
 
 /// Where in a turn's lifecycle a guardrail runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

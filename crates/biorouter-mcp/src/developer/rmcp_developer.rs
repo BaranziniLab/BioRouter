@@ -1,7 +1,5 @@
 use anyhow::anyhow;
 use base64::Engine;
-use etcetera::AppStrategy;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use include_dir::{include_dir, Dir};
 use indoc::{formatdoc, indoc};
 use rmcp::{
@@ -36,6 +34,7 @@ use tokio_stream::{wrappers::SplitStream, StreamExt as _};
 use tokio_util::sync::CancellationToken;
 
 use crate::developer::{paths::get_shell_path_dirs, shell::ShellConfig};
+use crate::secret_guard::SecretGuard;
 
 use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
@@ -305,7 +304,7 @@ fn load_prompt_files() -> HashMap<String, Prompt> {
 pub struct DeveloperServer {
     tool_router: ToolRouter<Self>,
     file_history: Arc<FileHistory>,
-    ignore_patterns: Gitignore,
+    secret_guard: SecretGuard,
     editor_model: Option<EditorModel>,
     prompts: HashMap<String, Prompt>,
     code_analyzer: CodeAnalyzer,
@@ -688,9 +687,9 @@ impl Default for DeveloperServer {
 #[tool_router(router = tool_router)]
 impl DeveloperServer {
     pub fn new() -> Self {
-        // Build ignore patterns (simplified version for this tool)
+        // Build the shared secret/ignore guard (BR-23) rooted at the cwd.
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let ignore_patterns = Self::build_ignore_patterns(&cwd);
+        let secret_guard = SecretGuard::for_dir(&cwd);
 
         // Initialize editor model for AI-powered code editing
         let editor_model = create_editor_model();
@@ -698,7 +697,7 @@ impl DeveloperServer {
         Self {
             tool_router: Self::tool_router(),
             file_history: Arc::new(FileHistory::in_memory()),
-            ignore_patterns,
+            secret_guard,
             editor_model,
             prompts: load_prompt_files(),
             code_analyzer: CodeAnalyzer::new(),
@@ -1526,7 +1525,7 @@ impl DeveloperServer {
         let params = params.0;
         let path = self.resolve_path(&params.path)?;
         self.code_analyzer
-            .analyze(params, path, &self.ignore_patterns)
+            .analyze(params, path, self.secret_guard.gitignore())
     }
 
     /// Process an image file from disk.
@@ -1732,40 +1731,11 @@ impl DeveloperServer {
         Ok(resolved)
     }
 
-    fn build_ignore_patterns(cwd: &PathBuf) -> Gitignore {
-        let mut builder = GitignoreBuilder::new(cwd);
-        let local_ignore_path = cwd.join(".biorouterignore");
-
-        let global_ignore_path = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|strategy| strategy.config_dir().join(".biorouterignore"))
-            .ok();
-
-        let has_local_ignore = local_ignore_path.is_file();
-        let has_global_ignore = global_ignore_path
-            .as_ref()
-            .map(|p| p.is_file())
-            .unwrap_or(false);
-
-        if has_global_ignore {
-            let _ = builder.add(global_ignore_path.as_ref().unwrap());
-        }
-
-        if has_local_ignore {
-            let _ = builder.add(&local_ignore_path);
-        }
-
-        if !has_local_ignore && !has_global_ignore {
-            let _ = builder.add_line(None, "**/.env");
-            let _ = builder.add_line(None, "**/.env.*");
-            let _ = builder.add_line(None, "**/secrets.*");
-        }
-
-        builder.build().expect("Failed to build ignore patterns")
-    }
-
-    // Helper method to check if a path should be ignored
+    // Helper method to check if a path should be ignored. Delegates to the
+    // shared `SecretGuard` (BR-23) so the Developer server and the central
+    // extension-manager dispatch boundary enforce the same deny set.
     fn is_ignored(&self, path: &Path) -> bool {
-        self.ignore_patterns.matched(path, false).is_ignore()
+        self.secret_guard.is_denied(path)
     }
 
     // Only returns true when 100% certain (checks /proc/1/cgroup for container markers)

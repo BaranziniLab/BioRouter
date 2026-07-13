@@ -11,6 +11,7 @@ pub mod hints;
 pub mod hooks;
 pub mod knowledge;
 pub mod logging;
+pub mod managed;
 pub mod mcp_utils;
 pub mod model;
 pub mod oauth;
