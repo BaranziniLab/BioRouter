@@ -16,6 +16,7 @@ import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
+import { selectBilledTokens } from '../utils/billedTokens';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
 import {
@@ -328,12 +329,18 @@ export function handleCreateSessionError(
   });
 }
 
-function formatCompactNumber(value: number) {
+export function formatCompactNumber(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
   return value.toLocaleString();
 }
+
+// Billed (accumulated) per-conversation token selection lives in
+// utils/billedTokens (imported at the top of this file) and is re-exported so
+// tests can keep importing pure BaseChat helpers from one place
+// (BaseChat.artifacts.test.ts precedent).
+export { selectBilledTokens };
 
 function countToolRequests(messages: Message[]) {
   return messages.reduce(
@@ -1105,11 +1112,9 @@ function BaseChatContent({
   );
   const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
-  const totalSessionTokens =
-    tokenState?.totalTokens ??
-    session?.total_tokens ??
-    session?.accumulated_total_tokens ??
-    ((session?.accumulated_input_tokens ?? 0) + (session?.accumulated_output_tokens ?? 0) || null);
+  // Billed (accumulated) tokens, NOT the last turn's context occupancy — see
+  // selectBilledTokens. This is the number the user is charged for.
+  const totalSessionTokens = selectBilledTokens(tokenState, session);
 
   useEffect(() => {
     if (!session) return;
@@ -1382,7 +1387,10 @@ function BaseChatContent({
             </div>
             <div className="grid grid-cols-2 gap-2">
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
-              <SummaryMetric label="Tokens" value={formatCompactNumber(totalSessionTokens ?? 0)} />
+              <SummaryMetric
+                label="Billed tokens"
+                value={formatCompactNumber(totalSessionTokens ?? 0)}
+              />
               <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
               <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
                 <div className="text-[11px] uppercase tracking-wide text-text-muted">Code</div>

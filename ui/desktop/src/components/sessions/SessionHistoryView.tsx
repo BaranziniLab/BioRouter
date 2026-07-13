@@ -18,6 +18,7 @@ import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { createSharedSession } from '../../sharedSessions';
+import { billedSessionTokens } from '../../utils/billedTokens';
 import {
   Dialog,
   DialogContent,
@@ -181,7 +182,8 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         session.working_dir,
         messages,
         session.name || 'Shared Session',
-        session.total_tokens || 0
+        // Share the billed (accumulated) figure, not the last turn's occupancy.
+        billedSessionTokens(session) || 0
       );
 
       const shareableLink = `biorouter://sessions/${shareToken}`;
@@ -279,10 +281,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                       <MessageSquareText className="w-4 h-4 mr-1" />
                       {session.message_count}
                     </span>
-                    {session.total_tokens !== null && (
-                      <span className="flex items-center">
+                    {billedSessionTokens(session) !== null && (
+                      <span
+                        className="flex items-center"
+                        title="Billed tokens — accumulated across every turn (each turn resends the full conversation), not the last message"
+                      >
                         <Target className="w-4 h-4 mr-1" />
-                        {(session.total_tokens || 0).toLocaleString()}
+                        {(billedSessionTokens(session) || 0).toLocaleString()}
                       </span>
                     )}
                   </div>

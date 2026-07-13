@@ -26,6 +26,7 @@ import {
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
+import { billedSessionTokens } from '../../utils/billedTokens';
 import { SearchView } from '../conversation/SearchView';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
@@ -651,10 +652,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 <MessageSquareText className="w-3 h-3" />
                 <span>{session.message_count}</span>
               </div>
-              {session.total_tokens !== null && (
-                <div className="flex items-center gap-1">
+              {billedSessionTokens(session) !== null && (
+                <div
+                  className="flex items-center gap-1"
+                  title="Billed tokens — accumulated across every turn (each turn resends the full conversation), not the last message"
+                >
                   <Target className="w-3 h-3" />
-                  <span>{(session.total_tokens || 0).toLocaleString()}</span>
+                  <span>{(billedSessionTokens(session) || 0).toLocaleString()}</span>
                 </div>
               )}
               {extensionNames.length > 0 && (
