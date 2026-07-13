@@ -175,6 +175,65 @@ JS on any machine without esbuild**.
 
 ---
 
+## 6b. The end-to-end proof: the platform repairs its own broken app
+
+The strongest test available is not a fixture. It is to point the **fixed** Agent
+Drafter at an app the **broken** Agent Drafter produced, and ask it to fix itself —
+no hand-editing, agent_drafter tools only.
+
+`scripts/agent-drafter-testdrive/repair.sh spec-002-cohort-funnel-foundry` did that.
+The app had four of the audit's defects: an invented knowledge base
+(`phenotype-defs`), no declared initial state, hand-rolled HTML5 drag, and four
+declared signals that could never round-trip.
+
+**What the agent did** — 1 × `list_platform_catalog`, 1 × `configure_app`,
+9 × `declare_surface`, 3 × `build_app`, 1 × `lint_app`. **Zero** shell escapes, and
+**zero** manifest-rewrite guessing loops (the old failure mode was ~6 rejected
+rewrites per app).
+
+**Verified independently** (not the agent's word): re-linting the corpus shows
+spec-002 dropped from 3 warnings to **1** — the pre-existing `<style>` note — and it
+is no longer in the invented-id rejection list.
+
+**Verified in a browser** (Playwright, against the real daemon, with **zero agent
+turns run**):
+
+| Check | Audit result | Now |
+|---|---|---|
+| `data-br-bind` elements painted on first load | blank until a *paid* turn | **8 / 8 painted** (`/cohort/survivingN = "12500"`) |
+| Legacy `draggable="true"` surfaces left | the only drag path | **0** |
+| Drag items keyboard-focusable | 0 — human mouse only | **10 / 10** |
+| Keyboard drop lands (`Enter` → `Enter`) | impossible | **works** — a real funnel stage is created |
+| Screen-reader announcement | none | *"eGFR<30 dropped on funnel."* |
+| **`chip_dropped` signal reaches the agent** | **1 / 12 across the corpus** | **"Agent turn queued — chip_dropped"**, agent responds with `ui_describe` |
+
+That last row is the whole campaign. A **keyboard** drop, on an interaction that
+previously no automated or assistive pointer could perform at all, emitted the app's
+declared signal, which reached the agent, which started a turn. Screenshot:
+[`shots/spec-002-repaired-keyboard-drop.png`](shots/spec-002-repaired-keyboard-drop.png).
+
+### Two bugs the repair run found in the remediation itself
+
+Worth recording, because both are the exact failure class this campaign is about — a
+tool that reports success while doing nothing.
+
+1. **`declare_surface(merge: true)` silently dropped `state_initial`.** The merge
+   branch upserted actions/signals/components and carried `state_schema` across, but
+   never `state_initial` — so the caller declared an initial document, got a success
+   result, and the manifest was unchanged. That is what cost the repair agent 8 of its
+   9 `declare_surface` calls: it was thrashing against a lie. Fixed, with a regression
+   test.
+
+2. **Wave 0.1's path fix moved the store.** `BIOROUTER_PATH_ROOT=<R>` now resolves to
+   `<R>/config/agent_drafter` — correct, and pinned to `biorouter::config::Paths` by a
+   cross-crate test. But the old, broken resolver ignored that variable and went
+   through XDG, so every existing sandboxed store is at
+   `<R>/config/biorouter/agent_drafter`. The first repair run saw **zero apps** and
+   flailed. This is a real migration step for anyone with a `BIOROUTER_PATH_ROOT`
+   store, and it is now documented in the harness scripts.
+
+---
+
 ## 7. What is *not* done
 
 Honest ledger:
