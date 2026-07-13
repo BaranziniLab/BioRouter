@@ -47,6 +47,63 @@
         }
       }
     },
+    "/active_work": {
+      "get": {
+        "tags": [
+          "active_work"
+        ],
+        "operationId": "list_active_work",
+        "responses": {
+          "200": {
+            "description": "Current background jobs, subagents, and in-flight scheduled runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveWorkResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/active_work/{id}/cancel": {
+      "post": {
+        "tags": [
+          "active_work"
+        ],
+        "operationId": "cancel_active_work",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Active-work item id from GET /active_work",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancel requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelActiveWorkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such active-work item"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
     "/agent/add_extension": {
       "post": {
         "tags": [
@@ -4080,6 +4137,69 @@
           }
         }
       },
+      "ActiveWorkItemDto": {
+        "type": "object",
+        "description": "One active unit of work, kind-tagged so the GUI can render/route uniformly.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "cancellable"
+        ],
+        "properties": {
+          "cancellable": {
+            "type": "boolean",
+            "description": "Whether `POST /active_work/{id}/cancel` can stop it."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Extra context (full command, child session id, workflow source).",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique id; also the handle for `POST /active_work/{id}/cancel`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`background_job`, `subagent`, or `scheduled_run`."
+          },
+          "runningForSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock seconds this item has been running where known.",
+            "nullable": true
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Owning/related session id where known.",
+            "nullable": true
+          },
+          "startedAt": {
+            "type": "string",
+            "description": "RFC3339 start time where known.",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "description": "Short human-readable label (command, task prompt, or schedule id)."
+          }
+        }
+      },
+      "ActiveWorkResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActiveWorkItemDto"
+            }
+          }
+        }
+      },
       "ActivityWindow": {
         "type": "object",
         "description": "The Home heatmap payload.",
@@ -4246,6 +4366,17 @@
           },
           "structured_content": {
             "nullable": true
+          }
+        }
+      },
+      "CancelActiveWorkResponse": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
           }
         }
       },
