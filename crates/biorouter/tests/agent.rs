@@ -462,6 +462,7 @@ mod tests {
                     Ok(AgentEvent::HistoryReplaced(_updated_conversation)) => {
                         // We should update the conversation here, but we're not reading it
                     }
+                    Ok(AgentEvent::TokenUsage(_)) => {}
                     Err(e) => {
                         return Err(e);
                     }
@@ -638,6 +639,7 @@ mod tests {
                     Ok(AgentEvent::McpNotification(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_)) => {}
+                    Ok(AgentEvent::TokenUsage(_)) => {}
                     Err(e) => {
                         return Err(e);
                     }
@@ -1065,6 +1067,142 @@ mod tests {
                 agent.reasoning_effort("session-b").await,
                 ReasoningEffort::Normal
             );
+    /// BR-52: the agent carries the token state it just wrote in the event
+    /// stream, so consumers never have to re-read SQLite per streamed token.
+    #[cfg(test)]
+    mod token_state_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use biorouter::agents::{AgentConfig, SessionConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session::session_manager::SessionType;
+        use biorouter::session::SessionManager;
+        use rmcp::model::Tool;
+        use std::path::PathBuf;
+
+        /// Answers with plain text (no tool calls, so the loop ends after one
+        /// turn) and reports a known usage.
+        struct MockTextProvider;
+
+        #[async_trait]
+        impl Provider for MockTextProvider {
+            async fn complete(
+                &self,
+                _system_prompt: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                Ok((
+                    Message::assistant().with_text("done"),
+                    ProviderUsage::new(
+                        "mock-model".to_string(),
+                        Usage::new(Some(10), Some(5), Some(15)),
+                    ),
+                ))
+            }
+
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                system_prompt: &str,
+                messages: &[Message],
+                tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                self.complete(system_prompt, messages, tools).await
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "mock".to_string(),
+                    display_name: "Mock Provider".to_string(),
+                    description: "Mock provider for testing".to_string(),
+                    default_model: "mock-model".to_string(),
+                    known_models: vec![],
+                    model_doc_link: String::new(),
+                    config_keys: vec![],
+                    allows_unlisted_models: false,
+                }
+            }
+
+            fn get_name(&self) -> &str {
+                "mock-text"
+            }
+        }
+
+        #[tokio::test]
+        async fn reply_stream_carries_the_recorded_token_state() -> Result<()> {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+            let agent = Agent::with_config(AgentConfig::new(
+                session_manager.clone(),
+                PermissionManager::instance(),
+                None,
+                BioRouterMode::Auto,
+            ));
+
+            let session = session_manager
+                .create_session(
+                    PathBuf::default(),
+                    "token-state-test".to_string(),
+                    SessionType::Hidden,
+                )
+                .await?;
+
+            agent
+                .update_provider(Arc::new(MockTextProvider), &session.id)
+                .await?;
+
+            let session_config = SessionConfig {
+                id: session.id.clone(),
+                schedule_id: None,
+                max_turns: Some(1),
+                max_tool_calls: None,
+                retry_config: None,
+            };
+
+            let stream = agent
+                .reply(Message::user().with_text("hi"), session_config, None)
+                .await?;
+            tokio::pin!(stream);
+
+            let mut token_states = Vec::new();
+            while let Some(event) = stream.next().await {
+                if let AgentEvent::TokenUsage(state) = event? {
+                    token_states.push(state);
+                }
+            }
+
+            let state = token_states
+                .last()
+                .expect("the agent must emit its token state once the turn's usage is recorded");
+
+            // The live gauge is this turn's usage...
+            assert_eq!(state.input_tokens, 10);
+            assert_eq!(state.output_tokens, 5);
+            assert_eq!(state.total_tokens, 15);
+            // ...and the lifetime counters agree with what was persisted, so a
+            // consumer that trusts the carried state never drifts from the store.
+            assert_eq!(state.accumulated_input_tokens, 10);
+            assert_eq!(state.accumulated_output_tokens, 5);
+            assert_eq!(state.accumulated_total_tokens, 15);
+
+            let counts = session_manager.get_token_counts(&session.id).await?;
+            assert_eq!(counts.total_tokens, Some(state.total_tokens));
+            assert_eq!(
+                counts.accumulated_total_tokens,
+                Some(state.accumulated_total_tokens)
+            );
+
+            Ok(())
         }
     }
 }

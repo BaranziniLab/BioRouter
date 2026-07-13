@@ -2,6 +2,7 @@ import React, { createContext, useContext, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import {
   getSession,
+  interrupt,
   listApps,
   listSessions,
   Message,
@@ -666,6 +667,40 @@ class ChatStreamController {
         ...prev,
         sessionLoadError: "can't call setWorkflowParams without a session",
       }));
+    }
+  };
+
+  /**
+   * BR-61 — soft interrupt ("steer"). Injects `text` into the turn that is
+   * *already running*, at the agent's next loop boundary, instead of cancelling
+   * it and re-sending the whole context: in-flight tool work is kept and the
+   * model simply sees the new instruction on its next step.
+   *
+   * Resolves `false` when there is nothing to steer (no turn in flight, empty
+   * text) or the server rejected the interrupt — callers must then fall back to
+   * sending the text as an ordinary message, so it is never silently dropped.
+   *
+   * The injected message is NOT pushed locally: the agent streams it back as a
+   * normal user message once it is consumed, which is also the only reliable
+   * signal that it landed.
+   */
+  steer = async (text: string): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed || !this.isRunning()) {
+      return false;
+    }
+    try {
+      await interrupt({
+        body: { session_id: this.sessionId, text: trimmed },
+        throwOnError: true,
+      });
+      this.lastInteractionTime = Date.now();
+      return true;
+    } catch (error) {
+      // 409 = the turn ended between the click and the POST; the caller queues
+      // or sends it instead.
+      console.warn('Soft interrupt rejected, falling back to a normal send:', error);
+      return false;
     }
   };
 

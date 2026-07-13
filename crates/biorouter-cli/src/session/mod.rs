@@ -1100,6 +1100,9 @@ impl CliSession {
                                 eprintln!("Model changed to {} in {} mode", model, mode);
                             }
                         }
+                        // BR-52: token accounting is rendered from the session row
+                        // in the CLI; the carried snapshot is informational here.
+                        Some(Ok(AgentEvent::TokenUsage(_))) => {}
                         Some(Err(e)) => {
                             handle_agent_error(&e, is_stream_json_mode);
                             cancel_token_clone.cancel();

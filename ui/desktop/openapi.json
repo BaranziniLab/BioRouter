@@ -18,6 +18,8 @@
         "tags": [
           "super::routes::action_required"
         ],
+        "summary": "Deliver a tool-permission decision to the prompt that is waiting for it.",
+        "description": "**Idempotent** (BR-62). The decision is routed by tool request id to that\nprompt's own channel, so a decision for an id nobody is waiting on — a\ndouble-clicked Allow, a card the user answered after the prompt expired or the\nturn was cancelled, a stale client replaying an old confirmation — is dropped\nrather than applied to whatever tool call happens to be pending now. (Before\nBR-62 confirmations went to a single per-agent channel, so a late \"allow\"\nreally could approve an unrelated later tool call.)\n\nBoth outcomes are a 200: a duplicate click is a no-op, not a failure. The\n`status` field reports which happened — `delivered` when a live prompt took\nthe decision, `unknown` when nothing was waiting on that id.",
         "operationId": "confirm_tool_action",
         "requestBody": {
           "content": {
@@ -31,7 +33,7 @@
         },
         "responses": {
           "200": {
-            "description": "Tool confirmation action is confirmed",
+            "description": "Decision processed; `status` is `delivered` or `unknown`",
             "content": {
               "application/json": {
                 "schema": {}
@@ -178,6 +180,44 @@
           },
           "424": {
             "description": "Agent not initialized"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/agent/cancel": {
+      "post": {
+        "tags": [
+          "super::routes::reply"
+        ],
+        "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
+        "operationId": "cancel_turn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cancel processed; `cancelled` reports whether a turn was running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelTurnResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
           },
           "500": {
             "description": "Internal server error"
@@ -1409,6 +1449,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/interrupt": {
+      "post": {
+        "tags": [
+          "super::routes::reply"
+        ],
+        "summary": "Soft interrupt: queue a user message to be injected into the session's",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".",
+        "operationId": "interrupt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterruptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Message queued for injection into the running turn"
+          },
+          "400": {
+            "description": "Empty message text"
+          },
+          "409": {
+            "description": "No turn is in flight for this session"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         }
       }
@@ -4396,6 +4470,36 @@
           }
         }
       },
+      "CancelTurnRequest": {
+        "type": "object",
+        "description": "Request body for the addressable cancel route.",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelTurnResponse": {
+        "type": "object",
+        "description": "Response body for the addressable cancel route.",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "True when a running turn was found and its cancellation token tripped.\nFalse means there was nothing to cancel — which is a success, not an error."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The id of the turn that was cancelled, when there was one.",
+            "nullable": true
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "enum": [
@@ -4432,6 +4536,11 @@
           },
           "session_id": {
             "type": "string"
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.",
+            "nullable": true
           },
           "user_message": {
             "$ref": "#/components/schemas/Message"
@@ -5810,6 +5919,22 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InterruptRequest": {
+        "type": "object",
+        "description": "Request body for the soft-interrupt route.",
+        "required": [
+          "session_id",
+          "text"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
           }
         }
       },

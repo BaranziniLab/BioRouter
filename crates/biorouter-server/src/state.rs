@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::tunnel::TunnelManager;
 use biorouter::agents::ExtensionLoadResult;
@@ -20,6 +21,34 @@ type ExtensionLoadingTasks =
 /// in-flight turn a rejected concurrent `/reply` collided with.
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// The turn currently in flight for a session.
+#[derive(Debug, Clone)]
+struct ActiveTurn {
+    /// Server-assigned id, surfaced to a client whose `/reply` was rejected.
+    turn_id: String,
+    /// The client's idempotency key for this turn, if it sent one (BR-62). Lets
+    /// a re-POST of the *same* turn — an SSE reconnect, a retried fetch — be
+    /// recognized as a duplicate rather than counted as a second turn.
+    idempotency_key: Option<String>,
+    /// Trips the running turn's agent loop and its SSE task. This is what makes
+    /// cancel *addressable*: before BR-62 the token lived only inside the
+    /// `/reply` task, so the only way to cancel was to tear down the SSE socket
+    /// and `/agent/stop` merely evicted the agent from the LRU while the turn
+    /// kept running on its own `Arc<Agent>`.
+    cancel: CancellationToken,
+}
+
+/// Why `AppState::try_begin_turn_idempotent` refused to start a turn.
+#[derive(Debug, Clone)]
+pub struct TurnConflict {
+    /// The id of the turn already in flight for this session.
+    pub running_turn_id: String,
+    /// True when the caller's idempotency key matches the in-flight turn's: this
+    /// POST is a *re-delivery of that same turn*, not a second one. Clients treat
+    /// it as "your turn is still running, re-attach" instead of an error.
+    pub duplicate: bool,
+}
+
 /// RAII guard marking that a session has an interactive turn in flight. Held by
 /// the `/reply` task and removed from the active-turns map when dropped (turn
 /// completes, errors, or is cancelled), so the next `/reply` for that session
@@ -27,12 +56,23 @@ static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug)]
 pub struct TurnGuard {
     session_id: String,
-    active_turns: Arc<StdMutex<HashMap<String, String>>>,
+    /// The turn this guard owns. Checked on drop so a guard can only ever remove
+    /// *its own* entry, never a successor's.
+    turn_id: String,
+    active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
 }
 
 impl Drop for TurnGuard {
     fn drop(&mut self) {
-        if let Ok(mut turns) = self.active_turns.lock() {
+        let mut turns = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only clear the slot if it is still ours.
+        if turns
+            .get(&self.session_id)
+            .is_some_and(|turn| turn.turn_id == self.turn_id)
+        {
             turns.remove(&self.session_id);
         }
     }
@@ -44,11 +84,13 @@ pub struct AppState {
     pub workflow_file_hash_map: Arc<Mutex<HashMap<String, PathBuf>>>,
     /// Tracks sessions that have already emitted workflow telemetry to prevent double counting.
     workflow_session_tracker: Arc<Mutex<HashSet<String>>>,
-    /// Sessions with an interactive turn in flight, mapped to that turn's id.
+    /// Sessions with an interactive turn in flight, mapped to that turn's state.
     /// Enforces one turn per session at the server so a second `/reply` can't
     /// race a shared `Arc<Agent>` (confirmation channel, soft-interrupt queue,
-    /// check-compact-persist) with the running turn.
-    active_turns: Arc<StdMutex<HashMap<String, String>>>,
+    /// check-compact-persist) with the running turn (BR-33), and holds each
+    /// running turn's cancellation token so cancel is addressable by session id
+    /// rather than only by dropping the SSE socket (BR-62).
+    active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
     // Used by knowledge route handlers (Task 5+).
@@ -72,24 +114,88 @@ impl AppState {
         }))
     }
 
-    /// Try to begin an interactive turn for `session_id`. Returns a `TurnGuard`
-    /// that keeps the session marked busy until dropped, or `Err(running_turn_id)`
-    /// if a turn is already in flight for that session — the caller should reject
-    /// the duplicate `/reply` rather than start a second turn on the shared agent.
-    pub fn try_begin_turn(&self, session_id: &str) -> Result<TurnGuard, String> {
+    /// Begin an interactive turn for `session_id`. Returns a `TurnGuard` that
+    /// keeps the session marked busy until dropped, or a [`TurnConflict`] if a
+    /// turn is already in flight — the caller must reject the duplicate `/reply`
+    /// rather than start a second turn on the shared agent (BR-33).
+    ///
+    /// `cancel` is registered as the token that [`AppState::cancel_turn`] trips,
+    /// and `idempotency_key` as the client's name for this turn (BR-62).
+    ///
+    /// The key is what makes `/reply` safe to retry. With `sseMaxRetryAttempts`,
+    /// a dropped stream makes the client re-POST the *same* turn; without a key
+    /// the server cannot distinguish that from a genuine second turn, so the
+    /// retry either starts a duplicate turn (double token spend, interleaved
+    /// output) or is rejected as a hard error. With one, the conflict comes back
+    /// flagged `duplicate` and the client knows its turn is simply still running.
+    pub fn try_begin_turn_idempotent(
+        &self,
+        session_id: &str,
+        cancel: CancellationToken,
+        idempotency_key: Option<String>,
+    ) -> Result<TurnGuard, TurnConflict> {
         let mut turns = self
             .active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(running_turn_id) = turns.get(session_id) {
-            return Err(running_turn_id.clone());
+
+        if let Some(running) = turns.get(session_id) {
+            // A key only marks a duplicate when the client actually supplied one
+            // *and* it names the running turn. Two keyless turns are two turns.
+            let duplicate = idempotency_key.is_some() && idempotency_key == running.idempotency_key;
+            return Err(TurnConflict {
+                running_turn_id: running.turn_id.clone(),
+                duplicate,
+            });
         }
+
         let turn_id = format!("turn-{}", TURN_SEQ.fetch_add(1, Ordering::Relaxed));
-        turns.insert(session_id.to_string(), turn_id);
+        turns.insert(
+            session_id.to_string(),
+            ActiveTurn {
+                turn_id: turn_id.clone(),
+                idempotency_key,
+                cancel,
+            },
+        );
         Ok(TurnGuard {
             session_id: session_id.to_string(),
+            turn_id,
             active_turns: Arc::clone(&self.active_turns),
         })
+    }
+
+    /// Cancel the turn in flight for `session_id`, returning its id. `None` when
+    /// no turn is running.
+    ///
+    /// This is the addressable cancel BR-62 adds: tripping the token unwinds the
+    /// agent loop at its next boundary, unblocks any tool-permission prompt it is
+    /// parked on, and ends the SSE task — all without the client having to drop
+    /// its socket, so a second client, the CLI, or a script can stop a runaway
+    /// turn. The `TurnGuard` clears the slot as the turn task unwinds; we
+    /// deliberately do **not** remove the entry here, so `cancel_turn` stays
+    /// idempotent (a second call finds the same token, already tripped) rather
+    /// than racing the guard.
+    pub fn cancel_turn(&self, session_id: &str) -> Option<String> {
+        let turn = self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned()?;
+        turn.cancel.cancel();
+        Some(turn.turn_id)
+    }
+
+    /// True while an interactive turn is in flight for `session_id` (the BR-33
+    /// turn lock is held). BR-61 uses it to reject a soft interrupt that has no
+    /// running turn to steer — queueing it on the agent would otherwise strand
+    /// the text until some later turn injected it out of nowhere.
+    pub fn is_turn_active(&self, session_id: &str) -> bool {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(session_id)
     }
 
     pub async fn set_extension_loading_task(
@@ -174,27 +280,129 @@ impl AppState {
 mod tests {
     use super::*;
 
+    /// Begin a turn with a throwaway token and no idempotency key.
+    fn begin(state: &AppState, session_id: &str) -> Result<TurnGuard, TurnConflict> {
+        state.try_begin_turn_idempotent(session_id, CancellationToken::new(), None)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_try_begin_turn_rejects_second_and_recovers_on_drop() {
         let state = AppState::new().await.unwrap();
 
-        let guard = state
-            .try_begin_turn("s1")
-            .expect("first turn acquires the lock");
+        let guard = begin(&state, "s1").expect("first turn acquires the lock");
 
         // A second turn for the same session is rejected with the running id.
-        let running = state.try_begin_turn("s1").unwrap_err();
+        let running = begin(&state, "s1").unwrap_err().running_turn_id;
         assert!(running.starts_with("turn-"), "got id {running}");
 
         // A different session is independent.
-        let _other = state
-            .try_begin_turn("s2")
-            .expect("distinct session is unaffected");
+        let _other = begin(&state, "s2").expect("distinct session is unaffected");
 
         // Dropping the guard releases the session for the next turn.
         drop(guard);
-        let _next = state
-            .try_begin_turn("s1")
-            .expect("session is free after the guard drops");
+        let _next = begin(&state, "s1").expect("session is free after the guard drops");
+    }
+
+    /// BR-62: cancel is addressable by session id. Before, the running turn's
+    /// token lived only inside the `/reply` task, so nothing outside that socket
+    /// could stop the turn.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_turn_trips_the_running_turns_token() {
+        let state = AppState::new().await.unwrap();
+        let token = CancellationToken::new();
+
+        let _guard = state
+            .try_begin_turn_idempotent("s1", token.clone(), None)
+            .expect("turn starts");
+        assert!(!token.is_cancelled());
+
+        let cancelled = state.cancel_turn("s1").expect("a turn was running");
+        assert!(cancelled.starts_with("turn-"), "got id {cancelled}");
+        assert!(token.is_cancelled(), "the running turn's token was tripped");
+    }
+
+    /// Cancelling a session with no turn in flight — a double-clicked Stop, a
+    /// cancel that raced the turn's own completion — is a no-op, never an error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_turn_is_idempotent_and_safe_when_idle() {
+        let state = AppState::new().await.unwrap();
+        let token = CancellationToken::new();
+
+        assert!(state.cancel_turn("s1").is_none(), "nothing to cancel yet");
+
+        let guard = state
+            .try_begin_turn_idempotent("s1", token.clone(), None)
+            .expect("turn starts");
+
+        // Cancelling twice is fine: the second call finds the same, already
+        // tripped token rather than racing the guard's cleanup.
+        assert!(state.cancel_turn("s1").is_some());
+        assert!(state.cancel_turn("s1").is_some());
+        assert!(token.is_cancelled());
+
+        // Once the turn task unwinds and drops its guard, the slot is clear.
+        drop(guard);
+        assert!(state.cancel_turn("s1").is_none());
+    }
+
+    /// A re-POST of the same turn (an SSE reconnect) is recognizable as a
+    /// duplicate, so the client can re-attach instead of treating it as a hard
+    /// conflict — and, either way, no second turn starts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repost_of_the_same_turn_id_is_flagged_duplicate() {
+        let state = AppState::new().await.unwrap();
+
+        let _guard = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), Some("turn-abc".into()))
+            .expect("turn starts");
+
+        let conflict = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), Some("turn-abc".into()))
+            .expect_err("no second turn starts");
+        assert!(conflict.duplicate, "same key => same turn, re-delivered");
+
+        // A genuinely different turn is a real conflict, not a duplicate.
+        let conflict = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), Some("turn-xyz".into()))
+            .expect_err("no second turn starts");
+        assert!(!conflict.duplicate);
+    }
+
+    /// Two keyless turns are two turns — absence of a key must not be mistaken
+    /// for a matching key, or every concurrent `/reply` would look like a retry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keyless_turns_are_never_duplicates_of_each_other() {
+        let state = AppState::new().await.unwrap();
+
+        let _guard = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), None)
+            .expect("turn starts");
+
+        let conflict = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), None)
+            .expect_err("no second turn starts");
+        assert!(!conflict.duplicate);
+    }
+
+    /// A guard may only ever clear its own turn. If a guard outlived its slot and
+    /// removed a successor's entry, the session would look idle while a turn ran.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stale_guard_cannot_clear_a_successors_turn() {
+        let state = AppState::new().await.unwrap();
+
+        let first = state
+            .try_begin_turn_idempotent("s1", CancellationToken::new(), None)
+            .expect("first turn starts");
+        drop(first);
+
+        let second_token = CancellationToken::new();
+        let _second = state
+            .try_begin_turn_idempotent("s1", second_token.clone(), None)
+            .expect("second turn starts");
+
+        // The second turn still owns the slot and is still cancellable.
+        assert!(state.is_turn_active("s1"));
+        assert!(state.cancel_turn("s1").is_some());
+        assert!(second_token.is_cancelled());
     }
 }

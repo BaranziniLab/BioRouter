@@ -86,6 +86,13 @@ pub struct ChatRequest {
     /// `/effort` setting — and, failing that, the model's default depth — alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<ReasoningEffort>,
+    /// Client-generated idempotency key naming *this* turn (BR-62). Optional, but
+    /// a client that retries `/reply` — an SSE reconnect, a fetch retry on a
+    /// flaky network — should send the same key it sent the first time. The retry
+    /// then comes back as a 409 with `duplicate: true`, meaning "that turn is
+    /// still running", instead of being mistaken for a genuine second turn.
+    #[serde(default)]
+    turn_id: Option<String>,
 }
 
 pub struct SseResponse {
@@ -160,21 +167,23 @@ pub enum MessageEvent {
     Ping,
 }
 
+/// Read the session's token counters straight from the store.
+///
+/// BR-52: this used to run on *every* streamed event — one SQLite query per
+/// token — even though the counters only ever move at a turn/compaction
+/// boundary, so every mid-stream read returned the value the previous one had
+/// already returned. The stream now carries the agent's own
+/// [`AgentEvent::TokenUsage`] snapshot and this remains only for the two places
+/// a DB read is genuinely needed: seeding the state when the stream opens (a
+/// resumed session already has counters) and the authoritative reconciliation on
+/// `Finish`.
 async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
     // Fetch only the token counters — not a full session row plus a
-    // `COUNT(*)` over the messages table — since this runs once per streamed
-    // event on the chat hot path and only the token fields are used here.
+    // `COUNT(*)` over the messages table — since only the token fields are used.
     session_manager
         .get_token_counts(session_id)
         .await
-        .map(|counts| TokenState {
-            input_tokens: counts.input_tokens.unwrap_or(0),
-            output_tokens: counts.output_tokens.unwrap_or(0),
-            total_tokens: counts.total_tokens.unwrap_or(0),
-            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
-            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
-            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
-        })
+        .map(TokenState::from)
         .inspect_err(|e| {
             tracing::warn!(
                 "Failed to fetch session token state for {}: {}",
@@ -231,26 +240,47 @@ pub async fn reply(
 
     let session_id = request.session_id.clone();
 
+    // Created before the turn lock so the token can be registered *with* the
+    // turn: that is what lets `/agent/cancel` (and `/agent/stop`) reach into a
+    // running turn and trip it (BR-62).
+    let cancel_token = CancellationToken::new();
+
     // Server-enforced single-turn-per-session lock (BR-33; also serializes the
     // per-session check-compact-persist path of BR-16). Two concurrent `/reply`
     // calls for one session would share one `Arc<Agent>`, confirmation channel,
     // and soft-interrupt queue, interleaving/duplicating output and doubling
     // token spend. Reject the duplicate with 409 instead of corrupting state;
     // the guard is released when the reply task ends (drops below).
-    let turn_guard = match state.try_begin_turn(&session_id) {
+    //
+    // BR-62: a client that re-POSTs the same `turn_id` (an SSE reconnect) gets
+    // `duplicate: true` back, so it can tell "my turn is still running" apart
+    // from "someone else's turn is in the way" — and in neither case does a
+    // second turn start.
+    let turn_guard = match state.try_begin_turn_idempotent(
+        &session_id,
+        cancel_token.clone(),
+        request.turn_id.clone(),
+    ) {
         Ok(guard) => guard,
-        Err(running_turn_id) => {
+        Err(conflict) => {
             tracing::warn!(
-                "Rejected concurrent /reply for session {}: turn {} already in flight",
+                "Rejected concurrent /reply for session {}: turn {} already in flight (duplicate={})",
                 session_id,
-                running_turn_id
+                conflict.running_turn_id,
+                conflict.duplicate
             );
+            let error = if conflict.duplicate {
+                "This turn is already in progress for this session."
+            } else {
+                "A turn is already in progress for this session."
+            };
             return (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
                     "type": "Error",
-                    "error": "A turn is already in progress for this session.",
-                    "running_turn_id": running_turn_id,
+                    "error": error,
+                    "running_turn_id": conflict.running_turn_id,
+                    "duplicate": conflict.duplicate,
                 })),
             )
                 .into_response();
@@ -277,7 +307,6 @@ pub async fn reply(
 
     let (tx, rx) = mpsc::channel(100);
     let stream = ReceiverStream::new(rx);
-    let cancel_token = CancellationToken::new();
 
     let user_message = request.user_message;
     let conversation_so_far = request.conversation_so_far;
@@ -337,6 +366,12 @@ pub async fn reply(
             // falls through to the session's `/effort`, then to the default.
             reasoning_effort,
         };
+
+        // BR-52: the token state we attach to every streamed event. Seeded from
+        // the session row we just read (free — no extra query) and refreshed only
+        // when the agent tells us the counters moved, which is the only time they
+        // can. Previously every single streamed chunk re-read this from SQLite.
+        let mut token_state = TokenState::from(&session);
 
         let mut all_messages = match conversation_so_far {
             Some(history) => {
@@ -400,14 +435,20 @@ pub async fn reply(
 
                             all_messages.push(message.clone());
 
-                            let token_state = get_token_state(state.session_manager(), &session_id).await;
-
-                            stream_event(MessageEvent::Message { message, token_state }, &tx, &cancel_token).await;
+                            stream_event(MessageEvent::Message { message, token_state: token_state.clone() }, &tx, &cancel_token).await;
+                        }
+                        Ok(Some(Ok(AgentEvent::TokenUsage(new_token_state)))) => {
+                            // BR-52: the agent wrote the session's counters at a
+                            // turn/compaction boundary and handed us the result.
+                            // Every event we emit from here on carries it — no
+                            // per-event DB read, and no separate SSE frame (the
+                            // wire schema is unchanged, so older clients that only
+                            // read `token_state` off Message/Finish still work).
+                            token_state = new_token_state;
                         }
                         Ok(Some(Ok(AgentEvent::HistoryReplaced(new_messages)))) => {
                             all_messages = new_messages.clone();
-                            let token_state = get_token_state(state.session_manager(), &session_id).await;
-                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state}, &tx, &cancel_token).await;
+                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state: token_state.clone()}, &tx, &cancel_token).await;
 
                         }
                         Ok(Some(Ok(AgentEvent::ModelChange { model, mode }))) => {
@@ -509,6 +550,10 @@ pub async fn reply(
             );
         }
 
+        // BR-52: one authoritative read at the end of the turn — the single point
+        // where a client's token readout is reconciled with the store, so nothing
+        // written outside this stream (a background eager compaction, a concurrent
+        // scheduled run) can leave the UI on a stale count.
         let final_token_state = get_token_state(state.session_manager(), &session_id).await;
 
         let _ = stream_event(
@@ -525,7 +570,7 @@ pub async fn reply(
 }
 
 /// Request body for the soft-interrupt route.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct InterruptRequest {
     pub session_id: String,
     pub text: String,
@@ -535,13 +580,101 @@ pub struct InterruptRequest {
 /// running turn at the next safe loop boundary, instead of cancelling the turn
 /// and re-sending the whole context. Returns 202 Accepted; the message surfaces
 /// as a normal user message in the active reply stream on the next loop step.
-async fn interrupt(
+///
+/// BR-61: rejected with 409 when the session has no turn in flight — with no
+/// running loop to drain the queue the text would sit on the agent until some
+/// unrelated later turn injected it. Clients treat 409 as "just send it as a
+/// normal message".
+#[utoipa::path(
+    post,
+    path = "/interrupt",
+    request_body = InterruptRequest,
+    responses(
+        (status = 202, description = "Message queued for injection into the running turn"),
+        (status = 400, description = "Empty message text"),
+        (status = 409, description = "No turn is in flight for this session"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn interrupt(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InterruptRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    if req.text.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !state.is_turn_active(&req.session_id) {
+        return Err(StatusCode::CONFLICT);
+    }
     let agent = state.get_agent_for_route(req.session_id).await?;
     agent.queue_soft_interrupt(req.text);
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Request body for the addressable cancel route.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CancelTurnRequest {
+    pub session_id: String,
+}
+
+/// Response body for the addressable cancel route.
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CancelTurnResponse {
+    /// True when a running turn was found and its cancellation token tripped.
+    /// False means there was nothing to cancel — which is a success, not an error.
+    pub cancelled: bool,
+    /// The id of the turn that was cancelled, when there was one.
+    pub turn_id: Option<String>,
+}
+
+/// Hard cancel: trip the cancellation token of the turn in flight for this
+/// session (BR-62).
+///
+/// Before this route, cancelling meant dropping the SSE socket — the only thing
+/// that closed `tx` and tripped the token — so a turn could not be stopped by a
+/// second client, the CLI, or a script, and `/agent/stop` merely evicted the
+/// agent from the LRU while the in-flight reply task ran on happily against its
+/// own `Arc<Agent>`. Tripping the token unwinds the agent loop at its next
+/// boundary and unblocks a tool-permission prompt it may be parked on.
+///
+/// Deliberately **idempotent**: cancelling a session with no turn in flight (a
+/// double-clicked Stop button, a cancel that raced the turn's own completion) is
+/// a 200 with `cancelled: false`, never an error. A cancel that reports failure
+/// because the thing was already stopped is exactly the unreliability this BR
+/// exists to remove.
+#[utoipa::path(
+    post,
+    path = "/agent/cancel",
+    request_body = CancelTurnRequest,
+    responses(
+        (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn cancel_turn(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CancelTurnRequest>,
+) -> Json<CancelTurnResponse> {
+    match state.cancel_turn(&req.session_id) {
+        Some(turn_id) => {
+            tracing::info!("Cancelled turn {} for session {}", turn_id, req.session_id);
+            Json(CancelTurnResponse {
+                cancelled: true,
+                turn_id: Some(turn_id),
+            })
+        }
+        None => {
+            tracing::debug!(
+                "Cancel for session {} found no turn in flight",
+                req.session_id
+            );
+            Json(CancelTurnResponse {
+                cancelled: false,
+                turn_id: None,
+            })
+        }
+    }
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -551,6 +684,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(reply).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route("/interrupt", post(interrupt))
+        .route("/agent/cancel", post(cancel_turn))
         .with_state(state)
 }
 
@@ -563,6 +697,14 @@ mod tests {
         use axum::{body::Body, http::Request};
         use biorouter::conversation::message::Message;
         use tower::ServiceExt;
+
+        /// Begin a turn with a throwaway token and no idempotency key.
+        fn begin_turn(
+            state: &AppState,
+            session_id: &str,
+        ) -> Result<crate::state::TurnGuard, crate::state::TurnConflict> {
+            state.try_begin_turn_idempotent(session_id, CancellationToken::new(), None)
+        }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_endpoint() {
@@ -583,6 +725,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         reasoning_effort: None,
+                        turn_id: None,
                     })
                     .unwrap(),
                 ))
@@ -600,9 +743,7 @@ mod tests {
             // Simulate a turn already in flight for this session. The guard owns
             // its own Arc into the shared active-turns map, so it stays valid
             // after `state` is moved into `routes`.
-            let _guard = state
-                .try_begin_turn("busy-session")
-                .expect("first turn acquires the lock");
+            let _guard = begin_turn(&state, "busy-session").expect("first turn acquires the lock");
 
             let app = routes(state);
 
@@ -619,6 +760,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         reasoning_effort: None,
+                        turn_id: None,
                     })
                     .unwrap(),
                 ))
@@ -635,7 +777,7 @@ mod tests {
 
             // A turn that has ended (guard dropped) must not block the next one.
             {
-                let _guard = state.try_begin_turn("recycled-session").unwrap();
+                let _guard = begin_turn(&state, "recycled-session").unwrap();
             }
 
             let app = routes(state);
@@ -653,6 +795,7 @@ mod tests {
                         workflow_name: None,
                         workflow_version: None,
                         reasoning_effort: None,
+                        turn_id: None,
                     })
                     .unwrap(),
                 ))
@@ -661,6 +804,204 @@ mod tests {
             let response = app.oneshot(request).await.unwrap();
 
             assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        fn interrupt_request(session_id: &str, text: &str) -> Request<Body> {
+            Request::builder()
+                .uri("/interrupt")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&InterruptRequest {
+                        session_id: session_id.to_string(),
+                        text: text.to_string(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_accepts_steer_while_turn_in_flight() {
+            let state = AppState::new().await.unwrap();
+            let _guard = begin_turn(&state, "steering-session").expect("turn lock acquired");
+
+            let app = routes(Arc::clone(&state));
+            let response = app
+                .oneshot(interrupt_request("steering-session", "actually, use R"))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+            let agent = state
+                .get_agent("steering-session".to_string())
+                .await
+                .unwrap();
+            assert!(
+                agent.has_soft_interrupts(),
+                "the steer must be queued on the session's agent"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_rejects_when_no_turn_in_flight() {
+            let state = AppState::new().await.unwrap();
+
+            let app = routes(state);
+            let response = app
+                .oneshot(interrupt_request("idle-session", "steer me"))
+                .await
+                .unwrap();
+
+            // Nothing to steer: the client should send this as a normal message
+            // rather than let it sit on the agent's queue.
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_rejects_empty_text() {
+            let state = AppState::new().await.unwrap();
+            let _guard = begin_turn(&state, "blank-session").unwrap();
+
+            let app = routes(state);
+            let response = app
+                .oneshot(interrupt_request("blank-session", "   "))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+
+        fn cancel_request(session_id: &str) -> Request<Body> {
+            Request::builder()
+                .uri("/agent/cancel")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&CancelTurnRequest {
+                        session_id: session_id.to_string(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        async fn json_body(response: axum::response::Response) -> serde_json::Value {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        fn reply_request(session_id: &str, turn_id: Option<&str>) -> Request<Body> {
+            Request::builder()
+                .uri("/reply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&ChatRequest {
+                        user_message: Message::user().with_text("hello"),
+                        conversation_so_far: None,
+                        session_id: session_id.to_string(),
+                        workflow_name: None,
+                        workflow_version: None,
+                        turn_id: turn_id.map(str::to_string),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        /// BR-62: a turn can now be stopped by session id, without the caller
+        /// holding the SSE socket.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_cancel_trips_the_running_turn() {
+            let state = AppState::new().await.unwrap();
+            let token = CancellationToken::new();
+            let _guard = state
+                .try_begin_turn_idempotent("busy-session", token.clone(), None)
+                .expect("turn lock acquired");
+
+            let app = routes(Arc::clone(&state));
+            let response = app.oneshot(cancel_request("busy-session")).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(true));
+            assert!(body["turn_id"].is_string());
+            assert!(
+                token.is_cancelled(),
+                "the running turn's token must be tripped"
+            );
+        }
+
+        /// Cancelling an idle session is a success no-op, not an error — a Stop
+        /// button that reports failure because the turn already finished is
+        /// exactly the unreliability BR-62 removes.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_cancel_is_a_noop_when_no_turn_is_running() {
+            let state = AppState::new().await.unwrap();
+
+            let app = routes(state);
+            let response = app.oneshot(cancel_request("idle-session")).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json_body(response).await;
+            assert_eq!(body["cancelled"], serde_json::json!(false));
+            assert_eq!(body["turn_id"], serde_json::Value::Null);
+        }
+
+        /// A re-POST of the same turn (SSE reconnect) is reported as a duplicate
+        /// so the client can re-attach rather than surface a hard error — and no
+        /// second turn starts either way.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_reply_reports_a_reposted_turn_id_as_duplicate() {
+            let state = AppState::new().await.unwrap();
+            let _guard = state
+                .try_begin_turn_idempotent(
+                    "retry-session",
+                    CancellationToken::new(),
+                    Some("client-turn-1".to_string()),
+                )
+                .expect("turn lock acquired");
+
+            let app = routes(state);
+            let response = app
+                .oneshot(reply_request("retry-session", Some("client-turn-1")))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = json_body(response).await;
+            assert_eq!(body["duplicate"], serde_json::json!(true));
+        }
+
+        /// A *different* turn arriving while one is in flight is a genuine
+        /// conflict, not a retry.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_reply_reports_a_different_turn_id_as_a_real_conflict() {
+            let state = AppState::new().await.unwrap();
+            let _guard = state
+                .try_begin_turn_idempotent(
+                    "contended-session",
+                    CancellationToken::new(),
+                    Some("client-turn-1".to_string()),
+                )
+                .expect("turn lock acquired");
+
+            let app = routes(state);
+            let response = app
+                .oneshot(reply_request("contended-session", Some("client-turn-2")))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = json_body(response).await;
+            assert_eq!(body["duplicate"], serde_json::json!(false));
         }
     }
 }
