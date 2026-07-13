@@ -11,6 +11,7 @@ pub mod goal;
 pub mod knowledge_tool;
 mod large_response_handler;
 pub mod mcp_client;
+pub mod mistakes;
 pub mod moim;
 pub mod platform_tools;
 pub mod prompt_manager;

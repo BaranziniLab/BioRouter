@@ -644,6 +644,64 @@ impl Agent {
             .collect()
     }
 
+    /// BR-66: this batch's outcomes as the general mistake-streak counter sees
+    /// them — one entry per tool call the *model* is answerable for, in request
+    /// order.
+    ///
+    /// Two deliberate differences from BR-31's view of the same batch:
+    ///
+    /// * A **malformed** tool call (one the provider emitted that never parsed)
+    ///   counts as a mistake. BR-31 skips it — it has no tool name to key a
+    ///   per-tool failure streak on — but "the model keeps emitting garbage
+    ///   calls" is exactly the streak BR-66 exists to catch.
+    /// * Calls that never ran because a **guard denied** them, or because the
+    ///   **user declined** them, are dropped. Those are policy verdicts, not the
+    ///   model's failures; counting them would nudge the model for a decision it
+    ///   did not make, on top of the warning BR-29/30/31 already sent.
+    async fn mistake_outcomes(
+        &self,
+        requests: &[ToolRequest],
+        permission_check_result: &PermissionCheckResult,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) -> Vec<crate::tool_monitor::ToolOutcome> {
+        let denied: HashSet<&str> = permission_check_result
+            .denied
+            .iter()
+            .map(|request| request.id.as_str())
+            .collect();
+
+        let mut outcomes = Vec::new();
+        for request in requests {
+            if denied.contains(request.id.as_str()) {
+                continue;
+            }
+            match &request.tool_call {
+                Ok(tool_call) => {
+                    let Some(slot) = request_to_response_map.get(&request.id) else {
+                        continue;
+                    };
+                    let response = slot.lock().await.clone();
+                    let Some(outcome) = crate::tool_monitor::outcome_from_response_message(
+                        &tool_call.name,
+                        &request.id,
+                        &response,
+                    ) else {
+                        continue;
+                    };
+                    if crate::agents::mistakes::is_user_decline(&outcome) {
+                        continue;
+                    }
+                    outcomes.push(outcome);
+                }
+                Err(error) => outcomes.push(crate::tool_monitor::ToolOutcome {
+                    tool_name: crate::agents::mistakes::MALFORMED_TOOL_NAME.to_string(),
+                    failure: Some(error.message.to_string()),
+                }),
+            }
+        }
+        outcomes
+    }
+
     /// Reset the retry attempts counter to 0
     pub async fn reset_retry_attempts(&self) {
         self.retry_manager.reset_attempts().await;
@@ -2307,6 +2365,14 @@ impl Agent {
             // resolved once per reply (config reads hit the filesystem).
             let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
             let mut stall_watch = crate::agents::stall::StallWatch::default();
+            // BR-66: the general mistake streak — consecutive failed tool calls of
+            // *any* kind (BR-31 only sees one tool failing one way), plus the
+            // recoverable-provider-error counter that decides whether a failed
+            // model call ends the turn or earns one more attempt with a hint.
+            // Reply-scoped, like the stall tracker, so a streak can never leak
+            // across turns.
+            let mistake_config = crate::agents::mistakes::MistakeConfig::from_config(Config::global());
+            let mut mistakes = crate::agents::mistakes::MistakeTracker::default();
             // Set once the stall check has told the model to wrap up: the action
             // count by which this turn must be over, so a model that ignores the
             // give-up instruction and keeps calling tools cannot spin all the way
@@ -2457,6 +2523,10 @@ impl Agent {
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
+                // BR-66: set when a recoverable provider error was absorbed and a
+                // hint pushed into `messages_to_add`; the turn continues instead of
+                // ending on the error.
+                let mut did_recover_provider_error_this_iteration = false;
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
@@ -2478,6 +2548,9 @@ impl Agent {
                     match next {
                         Ok((response, usage)) => {
                             compaction_attempts = 0;
+                            // BR-66: the provider is answering again; whatever blip
+                            // was retried before is over.
+                            mistakes.observe_provider_success();
 
                             // Emit model change event if provider is lead-worker
                             let provider = self.provider().await?;
@@ -2664,6 +2737,29 @@ impl Agent {
                                             &request_to_response_map,
                                         ).await,
                                     );
+
+                                    // BR-66: the general streak. BR-31 above only speaks when
+                                    // *one* tool has failed *the same way* N times; a run of
+                                    // different tools failing in different ways — the ordinary
+                                    // shape of an agent that has lost the thread — is invisible
+                                    // to it. Count every failed call of any kind (malformed
+                                    // calls included) and, at the cap, make the model stop and
+                                    // re-plan. Warn-only: a mixed run of failures is not proof
+                                    // the next call is doomed, so nothing is blocked.
+                                    if let Some(nudge) = mistakes.observe_tool_outcomes(
+                                        &mistake_config,
+                                        &self.mistake_outcomes(
+                                            &remaining_requests,
+                                            &permission_check_result,
+                                            &request_to_response_map,
+                                        ).await,
+                                    ) {
+                                        tracing::info!(
+                                            streak = mistakes.streak(),
+                                            "Injecting mistake-streak reflect-and-replan nudge"
+                                        );
+                                        loop_warnings.push(nudge);
+                                    }
 
                                     // PostToolUse / PostToolUseFailure hooks (observe-only):
                                     // awaited so injected context lands before the next
@@ -2866,12 +2962,42 @@ impl Agent {
                         }
                         Err(ref provider_err) => {
                             error!("Error: {}", provider_err);
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
-                                )
-                            );
-                            break;
+                            // BR-66: a non-context provider error used to end the turn
+                            // outright, handing the user a "please retry" string for a
+                            // blip the agent could have absorbed itself. Give a
+                            // *recoverable* error one more attempt with a hint in
+                            // context; a fatal one (auth, rate limit, unsupported) or a
+                            // spent retry budget still stops, with the conversation
+                            // preserved so the user can just say "continue".
+                            match mistakes.observe_provider_error(&mistake_config, provider_err) {
+                                crate::agents::mistakes::ProviderErrorAction::Recover { notice, attempt, limit } => {
+                                    warn!(
+                                        "Provider call failed ({provider_err}); retrying with a hint ({attempt}/{limit})"
+                                    );
+                                    yield AgentEvent::Message(
+                                        Message::assistant().with_system_notification(
+                                            SystemNotificationType::InlineMessage,
+                                            format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),
+                                        )
+                                    );
+                                    // Model-visible only: the hint is loop plumbing, and
+                                    // the user already has the notification above.
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(crate::tool_inspection::frame_loop_warnings(
+                                                std::slice::from_ref(&notice),
+                                            ))
+                                            .with_visibility(false, true),
+                                    );
+                                    did_recover_provider_error_this_iteration = true;
+                                    break;
+                                }
+                                crate::agents::mistakes::ProviderErrorAction::Stop { notice } => {
+                                    yield AgentEvent::Message(Message::assistant().with_text(notice));
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -2928,6 +3054,14 @@ impl Agent {
                         }
                     } else if did_recovery_compact_this_iteration {
                         // Avoid setting exit_chat; continue from last user message in the conversation
+                    } else if did_recover_provider_error_this_iteration {
+                        // BR-66: the provider call failed recoverably and the hint is
+                        // already in `messages_to_add`. No tool ran and the model said
+                        // nothing, so this is not a finished turn — take the retry
+                        // rather than ending the turn (or handing it to the retry
+                        // manager, whose job is a *completed* response that failed
+                        // validation). Bounded by `provider_error_retries`, and by
+                        // `max_turns` like every other iteration.
                     } else {
                         match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
                             Ok(should_retry) => {
