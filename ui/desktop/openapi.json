@@ -3611,6 +3611,106 @@
         }
       }
     },
+    "/usage/report": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "get_usage_report",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive window start, unix seconds (default: 30 days ago)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive window end, unix seconds (default: now)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "Bucketing: day (default), model, or day_model",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/UsageGroup"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/usage/summary": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "get_usage_summary",
+        "responses": {
+          "200": {
+            "description": "Month-to-date usage vs the configured budget",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/workflows/create": {
       "post": {
         "tags": [
@@ -8737,6 +8837,188 @@
             "items": {
               "$ref": "#/components/schemas/ToolPermission"
             }
+          }
+        }
+      },
+      "UsageGroup": {
+        "type": "string",
+        "description": "How `get_usage_report` buckets the per-turn ledger.",
+        "enum": [
+          "day",
+          "model",
+          "day_model"
+        ]
+      },
+      "UsageReportResponse": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "group",
+          "rows"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed resolved window bounds (unix seconds), so the client can render\nthe exact range it got even when it sent no `from`/`to`."
+          },
+          "group": {
+            "$ref": "#/components/schemas/UsageGroup"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageReportRow"
+            }
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UsageReportRow": {
+        "type": "object",
+        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) — a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced and unpriced turns, so a day cost can be\nread as \"at least this much\" rather than exact.",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "turns",
+          "hasUnpriced"
+        ],
+        "properties": {
+          "cost": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "date": {
+            "type": "string",
+            "nullable": true
+          },
+          "hasUnpriced": {
+            "type": "boolean"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modelId": {
+            "type": "string",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "description": "Month-to-date and all-time usage totals, for the summary gauge.",
+        "required": [
+          "month",
+          "monthToDate",
+          "allTime"
+        ],
+        "properties": {
+          "allTime": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "month": {
+            "type": "string",
+            "description": "Current local month, `YYYY-MM`."
+          },
+          "monthToDate": {
+            "$ref": "#/components/schemas/UsageTotals"
+          }
+        }
+      },
+      "UsageSummaryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/UsageSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "dollarPercent": {
+                "type": "number",
+                "format": "double",
+                "description": "MTD cost as a percent of the dollar limit; `null` when no limit is set or\nthe MTD cost is unknown (some models are unpriced).",
+                "nullable": true
+              },
+              "monthlyDollarLimit": {
+                "type": "number",
+                "format": "double",
+                "description": "Configured monthly dollar budget, or `null` when unset.",
+                "nullable": true
+              },
+              "monthlyTokenLimit": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Configured monthly token allowance, or `null` when unset.",
+                "nullable": true
+              },
+              "tokenPercent": {
+                "type": "number",
+                "format": "double",
+                "description": "MTD tokens as a percent of the token limit; `null` when no limit is set.",
+                "nullable": true
+              }
+            }
+          }
+        ]
+      },
+      "UsageTotals": {
+        "type": "object",
+        "description": "Token + cost totals for a time span, priced through [`model_cost`].",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "turns",
+          "hasUnpriced"
+        ],
+        "properties": {
+          "cost": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollar cost of the priced turns, or `None` when nothing in the span is\npriced. Priced-but-partial spans return the priced sum with\n`has_unpriced = true`.",
+            "nullable": true
+          },
+          "hasUnpriced": {
+            "type": "boolean"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

@@ -1726,6 +1726,93 @@ export type UpsertPermissionsQuery = {
     tool_permissions: Array<ToolPermission>;
 };
 
+/**
+ * How `get_usage_report` buckets the per-turn ledger.
+ */
+export type UsageGroup = 'day' | 'model' | 'day_model';
+
+export type UsageReportResponse = {
+    /**
+     * Echoed resolved window bounds (unix seconds), so the client can render
+     * the exact range it got even when it sent no `from`/`to`.
+     */
+    from: number;
+    group: UsageGroup;
+    rows: Array<UsageReportRow>;
+    to: number;
+};
+
+/**
+ * One bucket of the usage report.
+ *
+ * `date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is
+ * present unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of
+ * the priced turns in the bucket, or `None` when *every* contributing turn was
+ * unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
+ * flags a bucket that mixes priced and unpriced turns, so a day cost can be
+ * read as "at least this much" rather than exact.
+ */
+export type UsageReportRow = {
+    cost?: number | null;
+    date?: string | null;
+    hasUnpriced: boolean;
+    inputTokens: number;
+    modelId?: string | null;
+    outputTokens: number;
+    provider?: string | null;
+    totalTokens: number;
+    turns: number;
+};
+
+/**
+ * Month-to-date and all-time usage totals, for the summary gauge.
+ */
+export type UsageSummary = {
+    allTime: UsageTotals;
+    /**
+     * Current local month, `YYYY-MM`.
+     */
+    month: string;
+    monthToDate: UsageTotals;
+};
+
+export type UsageSummaryResponse = UsageSummary & {
+    /**
+     * MTD cost as a percent of the dollar limit; `null` when no limit is set or
+     * the MTD cost is unknown (some models are unpriced).
+     */
+    dollarPercent?: number | null;
+    /**
+     * Configured monthly dollar budget, or `null` when unset.
+     */
+    monthlyDollarLimit?: number | null;
+    /**
+     * Configured monthly token allowance, or `null` when unset.
+     */
+    monthlyTokenLimit?: number | null;
+    /**
+     * MTD tokens as a percent of the token limit; `null` when no limit is set.
+     */
+    tokenPercent?: number | null;
+};
+
+/**
+ * Token + cost totals for a time span, priced through [`model_cost`].
+ */
+export type UsageTotals = {
+    /**
+     * Dollar cost of the priced turns, or `None` when nothing in the span is
+     * priced. Priced-but-partial spans return the priced sum with
+     * `has_unpriced = true`.
+     */
+    cost?: number | null;
+    hasUnpriced: boolean;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    turns: number;
+};
+
 export type WindowProps = {
     height: number;
     resizable: boolean;
@@ -4540,6 +4627,73 @@ export type StopTunnelResponses = {
      */
     200: unknown;
 };
+
+export type GetUsageReportData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Inclusive window start, unix seconds (default: 30 days ago)
+         */
+        from?: number | null;
+        /**
+         * Inclusive window end, unix seconds (default: now)
+         */
+        to?: number | null;
+        /**
+         * Bucketing: day (default), model, or day_model
+         */
+        group?: UsageGroup | null;
+    };
+    url: '/usage/report';
+};
+
+export type GetUsageReportErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetUsageReportResponses = {
+    /**
+     * Usage report
+     */
+    200: UsageReportResponse;
+};
+
+export type GetUsageReportResponse = GetUsageReportResponses[keyof GetUsageReportResponses];
+
+export type GetUsageSummaryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/usage/summary';
+};
+
+export type GetUsageSummaryErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetUsageSummaryResponses = {
+    /**
+     * Month-to-date usage vs the configured budget
+     */
+    200: UsageSummaryResponse;
+};
+
+export type GetUsageSummaryResponse = GetUsageSummaryResponses[keyof GetUsageSummaryResponses];
 
 export type CreateWorkflowData = {
     body: CreateWorkflowRequest;

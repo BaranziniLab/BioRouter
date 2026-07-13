@@ -8,7 +8,8 @@ use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::providers::base::{ConfigKey, ModelInfo, ProviderMetadata, ProviderType};
 use biorouter::session::{
-    ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionType, SystemInfo,
+    ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionType,
+    SystemInfo, UsageGroup, UsageReportRow, UsageSummary, UsageTotals,
 };
 use rmcp::model::{
     Annotations, Content, EmbeddedResource, Icon, ImageContent, JsonObject, RawAudioContent,
@@ -385,6 +386,8 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::session::edit_message,
         super::routes::session::diverge_session,
         super::routes::session::get_session_extensions,
+        super::routes::usage::get_usage_report,
+        super::routes::usage::get_usage_summary,
         super::routes::schedule::create_schedule,
         super::routes::schedule::list_schedules,
         super::routes::schedule::delete_schedule,
@@ -530,6 +533,12 @@ derive_utoipa!(Icon as IconSchema);
         DailyActivity,
         ModelUsageRow,
         super::routes::session::SessionModelUsageResponse,
+        UsageGroup,
+        UsageReportRow,
+        UsageSummary,
+        UsageTotals,
+        super::routes::usage::UsageReportResponse,
+        super::routes::usage::UsageSummaryResponse,
         SessionType,
         SystemInfo,
         Conversation,
