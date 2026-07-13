@@ -418,6 +418,17 @@ impl Agent {
             .unwrap_or_default()
     }
 
+    /// Whether any soft interrupt is still waiting to be injected. Checked at the
+    /// turn's exit so a steer that landed while the *final* provider response was
+    /// streaming keeps the loop alive for one more step (BR-61) instead of being
+    /// stranded on the queue until some later turn.
+    pub fn has_soft_interrupts(&self) -> bool {
+        self.soft_interrupts
+            .lock()
+            .map(|q| !q.is_empty())
+            .unwrap_or(false)
+    }
+
     /// The hooks manager driving user-configured lifecycle hooks.
     pub fn hooks_manager(&self) -> Arc<crate::hooks::HooksManager> {
         Arc::clone(&self.hooks_manager)
@@ -2725,6 +2736,17 @@ impl Agent {
                         checkpoint_anchor_ts,
                         CheckpointKind::PostStep,
                     ).await;
+                }
+
+                // BR-61: a soft interrupt queued while the final provider response
+                // was streaming arrives too late for this iteration's drain, and a
+                // turn that is about to exit would leave it parked until some later
+                // turn injected it out of context. Keep the loop alive for one more
+                // step so the steer is drained, answered, and seen now. Still bounded
+                // by max_turns / max_tool_calls, which are re-checked at the top.
+                if exit_chat && self.has_soft_interrupts() {
+                    info!("soft interrupt pending at turn exit; continuing the loop to consume it");
+                    exit_chat = false;
                 }
 
                 if exit_chat {

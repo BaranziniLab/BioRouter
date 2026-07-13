@@ -657,6 +657,14 @@ export type InspectJobResponse = {
     sessionId?: string | null;
 };
 
+/**
+ * Request body for the soft-interrupt route.
+ */
+export type InterruptRequest = {
+    session_id: string;
+    text: string;
+};
+
 export type JsonObject = {
     [key: string]: unknown;
 };
@@ -2893,6 +2901,35 @@ export type StartTetrateSetupResponses = {
 };
 
 export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTetrateSetupResponses];
+
+export type InterruptData = {
+    body: InterruptRequest;
+    path?: never;
+    query?: never;
+    url: '/interrupt';
+};
+
+export type InterruptErrors = {
+    /**
+     * Empty message text
+     */
+    400: unknown;
+    /**
+     * No turn is in flight for this session
+     */
+    409: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type InterruptResponses = {
+    /**
+     * Message queued for injection into the running turn
+     */
+    202: unknown;
+};
 
 export type GetActiveData = {
     body?: never;

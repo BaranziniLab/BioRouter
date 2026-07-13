@@ -92,6 +92,17 @@ impl AppState {
         })
     }
 
+    /// True while an interactive turn is in flight for `session_id` (the BR-33
+    /// turn lock is held). BR-61 uses it to reject a soft interrupt that has no
+    /// running turn to steer — queueing it on the agent would otherwise strand
+    /// the text until some later turn injected it out of nowhere.
+    pub fn is_turn_active(&self, session_id: &str) -> bool {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(session_id)
+    }
+
     pub async fn set_extension_loading_task(
         &self,
         session_id: String,

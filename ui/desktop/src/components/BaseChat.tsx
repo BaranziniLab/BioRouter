@@ -816,6 +816,7 @@ function BaseChatContent({
     submitSystemMessage,
     submitElicitationResponse,
     stopStreaming,
+    steer,
     sessionLoadError,
     setWorkflowUserParams,
     tokenState,
@@ -1476,6 +1477,7 @@ function BaseChatContent({
         chatState={chatState}
         setChatState={setChatState}
         onStop={stopStreaming}
+        onSteer={steer}
         commandHistory={commandHistory}
         initialValue={initialPrompt}
         setView={setView}
