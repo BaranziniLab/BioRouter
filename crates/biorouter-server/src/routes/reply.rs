@@ -533,7 +533,7 @@ pub async fn reply(
 }
 
 /// Request body for the soft-interrupt route.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct InterruptRequest {
     pub session_id: String,
     pub text: String,
@@ -543,10 +543,32 @@ pub struct InterruptRequest {
 /// running turn at the next safe loop boundary, instead of cancelling the turn
 /// and re-sending the whole context. Returns 202 Accepted; the message surfaces
 /// as a normal user message in the active reply stream on the next loop step.
-async fn interrupt(
+///
+/// BR-61: rejected with 409 when the session has no turn in flight — with no
+/// running loop to drain the queue the text would sit on the agent until some
+/// unrelated later turn injected it. Clients treat 409 as "just send it as a
+/// normal message".
+#[utoipa::path(
+    post,
+    path = "/interrupt",
+    request_body = InterruptRequest,
+    responses(
+        (status = 202, description = "Message queued for injection into the running turn"),
+        (status = 400, description = "Empty message text"),
+        (status = 409, description = "No turn is in flight for this session"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn interrupt(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InterruptRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    if req.text.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !state.is_turn_active(&req.session_id) {
+        return Err(StatusCode::CONFLICT);
+    }
     let agent = state.get_agent_for_route(req.session_id).await?;
     agent.queue_soft_interrupt(req.text);
     Ok(StatusCode::ACCEPTED)
@@ -666,6 +688,76 @@ mod tests {
             let response = app.oneshot(request).await.unwrap();
 
             assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        fn interrupt_request(session_id: &str, text: &str) -> Request<Body> {
+            Request::builder()
+                .uri("/interrupt")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&InterruptRequest {
+                        session_id: session_id.to_string(),
+                        text: text.to_string(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_accepts_steer_while_turn_in_flight() {
+            let state = AppState::new().await.unwrap();
+            let _guard = state
+                .try_begin_turn("steering-session")
+                .expect("turn lock acquired");
+
+            let app = routes(Arc::clone(&state));
+            let response = app
+                .oneshot(interrupt_request("steering-session", "actually, use R"))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+            let agent = state
+                .get_agent("steering-session".to_string())
+                .await
+                .unwrap();
+            assert!(
+                agent.has_soft_interrupts(),
+                "the steer must be queued on the session's agent"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_rejects_when_no_turn_in_flight() {
+            let state = AppState::new().await.unwrap();
+
+            let app = routes(state);
+            let response = app
+                .oneshot(interrupt_request("idle-session", "steer me"))
+                .await
+                .unwrap();
+
+            // Nothing to steer: the client should send this as a normal message
+            // rather than let it sit on the agent's queue.
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_rejects_empty_text() {
+            let state = AppState::new().await.unwrap();
+            let _guard = state.try_begin_turn("blank-session").unwrap();
+
+            let app = routes(state);
+            let response = app
+                .oneshot(interrupt_request("blank-session", "   "))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
     }
 }

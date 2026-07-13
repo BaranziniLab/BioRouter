@@ -1413,6 +1413,40 @@
         }
       }
     },
+    "/interrupt": {
+      "post": {
+        "tags": [
+          "super::routes::reply"
+        ],
+        "summary": "Soft interrupt: queue a user message to be injected into the session's",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".",
+        "operationId": "interrupt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterruptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Message queued for injection into the running turn"
+          },
+          "400": {
+            "description": "Empty message text"
+          },
+          "409": {
+            "description": "No turn is in flight for this session"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
     "/knowledge/active": {
       "get": {
         "tags": [
@@ -5786,6 +5820,22 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InterruptRequest": {
+        "type": "object",
+        "description": "Request body for the soft-interrupt route.",
+        "required": [
+          "session_id",
+          "text"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
           }
         }
       },
