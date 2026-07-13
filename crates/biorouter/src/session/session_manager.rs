@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+pub const CURRENT_SCHEMA_VERSION: i32 = 11;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -190,6 +190,23 @@ pub struct ActivityWindow {
     pub longest_streak: i64,
     /// Only days with activity. The client fills the rest of the grid with level 0.
     pub days: Vec<DailyActivity>,
+}
+
+/// One `(model, provider)` group of the per-model usage breakdown.
+///
+/// `model_id` / `provider` are `None` for turns recorded before model
+/// attribution landed, or when the provider reported no model — those rows
+/// aggregate together as the "unknown" group.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageRow {
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    /// Number of billed turns attributed to this group.
+    pub turns: i64,
 }
 
 /// A day's raw intensity, before bucketing.
@@ -617,16 +634,32 @@ impl SessionManager {
     }
 
     /// Append one turn's usage to the per-turn token ledger.
+    ///
+    /// `model` / `provider` attribute the turn for the per-model breakdown; pass
+    /// `None` when the provider did not report a model (the row then aggregates
+    /// under the 'unknown' group).
     pub async fn record_token_event(
         &self,
         session_id: &str,
         input: Option<i32>,
         output: Option<i32>,
         total: i32,
+        model: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<()> {
         self.storage
-            .record_token_event(session_id, input, output, total)
+            .record_token_event(session_id, input, output, total, model, provider)
             .await
+    }
+
+    /// Per-model usage rollup for one session (for the cost popover breakdown).
+    pub async fn get_session_model_usage(&self, session_id: &str) -> Result<Vec<ModelUsageRow>> {
+        self.storage.get_session_model_usage(session_id).await
+    }
+
+    /// Global per-model usage rollup over `[from, to]` (inclusive, unix seconds).
+    pub async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
+        self.storage.get_model_usage(from, to).await
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
@@ -1126,7 +1159,9 @@ impl SessionStorage {
                 ts INTEGER NOT NULL,
                 input_tokens INTEGER,
                 output_tokens INTEGER,
-                total_tokens INTEGER NOT NULL DEFAULT 0
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_id TEXT,
+                provider TEXT
             )
         "#,
         )
@@ -1499,6 +1534,60 @@ impl SessionStorage {
                            COALESCE(accumulated_total_tokens, total_tokens, 0)
                     FROM sessions
                     WHERE COALESCE(accumulated_total_tokens, total_tokens, 0) > 0
+                "#,
+                )
+                .execute(pool)
+                .await?;
+            }
+            11 => {
+                // Per-turn model attribution. Before this, `token_events` recorded
+                // only token counts, so a thread that switched models mid-way (the
+                // reported UCSF workflow) could not be split per model — the
+                // `ProviderUsage.model` was dropped at record time.
+                //
+                // Guard each ADD COLUMN with a pragma check so re-running the
+                // migration on a DB that already has the column is a no-op.
+                let model_col: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = 'model_id'",
+                )
+                .fetch_one(pool)
+                .await?;
+                if model_col == 0 {
+                    sqlx::query("ALTER TABLE token_events ADD COLUMN model_id TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+
+                let provider_col: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = 'provider'",
+                )
+                .fetch_one(pool)
+                .await?;
+                if provider_col == 0 {
+                    sqlx::query("ALTER TABLE token_events ADD COLUMN provider TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+
+                // Best-effort backfill of the pre-existing NULL rows from each
+                // session's stored model config + provider. A session that
+                // switched models mid-thread only retains its LAST model in
+                // `model_config_json`, so every one of its historical events is
+                // attributed to that last model — the only anchor that exists.
+                // Rows whose session has no stored model stay NULL and later
+                // aggregate as the 'unknown' group.
+                sqlx::query(
+                    r#"
+                    UPDATE token_events
+                    SET model_id = (
+                            SELECT json_extract(s.model_config_json, '$.model_name')
+                            FROM sessions s WHERE s.id = token_events.session_id
+                        ),
+                        provider = (
+                            SELECT s.provider_name
+                            FROM sessions s WHERE s.id = token_events.session_id
+                        )
+                    WHERE model_id IS NULL AND provider IS NULL
                 "#,
                 )
                 .execute(pool)
@@ -2038,21 +2127,81 @@ impl SessionStorage {
         input: Option<i32>,
         output: Option<i32>,
         total: i32,
+        model: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<()> {
         let pool = self.pool().await?;
+        // An empty model/provider string is stored as NULL so it aggregates with
+        // the genuinely-unknown rows rather than as a distinct "" group.
+        let model = model.filter(|m| !m.is_empty());
+        let provider = provider.filter(|p| !p.is_empty());
         sqlx::query(
             r#"
-            INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens)
-            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?)
+            INSERT INTO token_events
+                (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider)
+            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?)
             "#,
         )
         .bind(session_id)
         .bind(input.map(i64::from))
         .bind(output.map(i64::from))
         .bind(i64::from(total))
+        .bind(model)
+        .bind(provider)
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Per-model rollup for one session. NULL `model_id` groups as its own row
+    /// (the caller surfaces it as "unknown").
+    async fn get_session_model_usage(&self, session_id: &str) -> Result<Vec<ModelUsageRow>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, ModelUsageRow>(
+            r#"
+            SELECT model_id,
+                   provider,
+                   COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(total_tokens), 0)  AS total_tokens,
+                   COUNT(*)                        AS turns
+            FROM token_events
+            WHERE session_id = ?1
+            GROUP BY model_id, provider
+            ORDER BY total_tokens DESC
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Global per-model rollup over the inclusive `[from, to]` unix-second window,
+    /// restricted to user-facing session types (matching `get_activity`).
+    async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, ModelUsageRow>(
+            r#"
+            SELECT te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(te.total_tokens), 0)  AS total_tokens,
+                   COUNT(*)                           AS turns
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+              AND te.ts >= ?1 AND te.ts <= ?2
+            GROUP BY te.model_id, te.provider
+            ORDER BY total_tokens DESC
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
     }
 
     async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
@@ -3052,7 +3201,7 @@ mod tests {
             "a lifetime total is not a 7-day total"
         );
 
-        sm.record_token_event(&session.id, Some(80), Some(20), 100)
+        sm.record_token_event(&session.id, Some(80), Some(20), 100, Some("m1"), Some("p1"))
             .await
             .unwrap();
         let insights = sm.get_insights().await.unwrap();
@@ -3065,6 +3214,281 @@ mod tests {
         assert_eq!(activity.days[0].sessions, 1);
         assert!(activity.days[0].level >= 1);
         assert_eq!(activity.current_streak, 1);
+    }
+
+    #[tokio::test]
+    async fn per_model_usage_sums_across_models_and_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Two turns on model A, one on model B, one with no model (unknown).
+        sm.record_token_event(
+            &session.id,
+            Some(100),
+            Some(20),
+            120,
+            Some("gpt-5"),
+            Some("openai"),
+        )
+        .await
+        .unwrap();
+        sm.record_token_event(
+            &session.id,
+            Some(200),
+            Some(50),
+            250,
+            Some("gpt-5"),
+            Some("openai"),
+        )
+        .await
+        .unwrap();
+        sm.record_token_event(
+            &session.id,
+            Some(10),
+            Some(5),
+            15,
+            Some("claude-fable-5"),
+            Some("anthropic"),
+        )
+        .await
+        .unwrap();
+        // Unknown: no model / provider reported.
+        sm.record_token_event(&session.id, Some(1), Some(2), 3, None, None)
+            .await
+            .unwrap();
+
+        let rows = sm.get_session_model_usage(&session.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "gpt-5, claude, and unknown are distinct groups"
+        );
+
+        let gpt = rows
+            .iter()
+            .find(|r| r.model_id.as_deref() == Some("gpt-5"))
+            .expect("gpt-5 row present");
+        // Hand-computed: 100+200 in, 20+50 out, 120+250 total, 2 turns.
+        assert_eq!(gpt.provider.as_deref(), Some("openai"));
+        assert_eq!(gpt.input_tokens, 300);
+        assert_eq!(gpt.output_tokens, 70);
+        assert_eq!(gpt.total_tokens, 370);
+        assert_eq!(gpt.turns, 2);
+
+        let claude = rows
+            .iter()
+            .find(|r| r.model_id.as_deref() == Some("claude-fable-5"))
+            .expect("claude row present");
+        assert_eq!(claude.input_tokens, 10);
+        assert_eq!(claude.output_tokens, 5);
+        assert_eq!(claude.total_tokens, 15);
+        assert_eq!(claude.turns, 1);
+
+        let unknown = rows
+            .iter()
+            .find(|r| r.model_id.is_none())
+            .expect("unknown row present");
+        assert_eq!(unknown.provider, None);
+        assert_eq!(unknown.input_tokens, 1);
+        assert_eq!(unknown.output_tokens, 2);
+        assert_eq!(unknown.total_tokens, 3);
+        assert_eq!(unknown.turns, 1);
+
+        // Ordered by total_tokens DESC.
+        assert_eq!(rows[0].model_id.as_deref(), Some("gpt-5"));
+    }
+
+    #[tokio::test]
+    async fn empty_model_strings_collapse_into_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Empty strings must be stored as NULL so they aggregate with genuine
+        // unknowns rather than forming a "" group.
+        sm.record_token_event(&session.id, Some(4), Some(1), 5, Some(""), Some(""))
+            .await
+            .unwrap();
+        sm.record_token_event(&session.id, Some(6), Some(0), 6, None, None)
+            .await
+            .unwrap();
+
+        let rows = sm.get_session_model_usage(&session.id).await.unwrap();
+        assert_eq!(rows.len(), 1, "the empty-string turn folded into unknown");
+        assert_eq!(rows[0].model_id, None);
+        assert_eq!(rows[0].total_tokens, 11);
+        assert_eq!(rows[0].turns, 2);
+    }
+
+    #[tokio::test]
+    async fn global_model_usage_window_is_boundary_inclusive() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Creating a session initializes the schema on disk and gives us a
+        // real (user-type) session row for the aggregation join.
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Insert events at controlled timestamps by opening a second connection
+        // to the same DB file — `record_token_event` always stamps `now`.
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        for (ts, total) in [(1000_i64, 10_i64), (2000, 20), (3000, 30)] {
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider) VALUES (?, ?, ?, ?, ?, 'm', 'p')",
+            )
+            .bind(&session.id)
+            .bind(ts)
+            .bind(total)
+            .bind(0_i64)
+            .bind(total)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        pool.close().await;
+
+        // Both ends inclusive: [2000, 2000] catches exactly the ts=2000 row.
+        let mid = sm.get_model_usage(2000, 2000).await.unwrap();
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].total_tokens, 20);
+        assert_eq!(mid[0].turns, 1);
+
+        // A window straddling only the middle row.
+        let straddle = sm.get_model_usage(1500, 2500).await.unwrap();
+        assert_eq!(straddle[0].total_tokens, 20);
+
+        // Full span includes all three: from == first ts, to == last ts.
+        let all = sm.get_model_usage(1000, 3000).await.unwrap();
+        assert_eq!(all.len(), 1, "one model group");
+        assert_eq!(all[0].total_tokens, 60);
+        assert_eq!(all[0].turns, 3);
+
+        // Just below the lowest ts excludes everything.
+        let none = sm.get_model_usage(0, 999).await.unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn migration_11_backfills_model_and_is_idempotent() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        // Build a DB frozen at schema v10: token_events WITHOUT the model_id /
+        // provider columns, so opening the manager must run migration 11.
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=10 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT,
+                    model_config_json TEXT, diverged_from TEXT, external_key TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            // v10-shape token_events: no model_id / provider columns.
+            sqlx::query(
+                r#"CREATE TABLE token_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+                    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0
+                )"#,
+            ).execute(&pool).await.unwrap();
+
+            // Session S1 has a stored model + provider → its events backfill.
+            sqlx::query(
+                "INSERT INTO sessions (id, name, working_dir, provider_name, model_config_json) VALUES ('s1', 'has model', '/tmp/a', 'openai', '{\"model_name\":\"gpt-5\"}')",
+            ).execute(&pool).await.unwrap();
+            // Session S2 has no model config → its events stay unknown.
+            sqlx::query(
+                "INSERT INTO sessions (id, name, working_dir) VALUES ('s2', 'no model', '/tmp/b')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s1', 100, 8, 2, 10)")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s1', 200, 40, 10, 50)")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s2', 300, 5, 1, 6)")
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the real manager triggers run_migrations → the `11 =>` arm.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // S1's two legacy rows are attributed to the session's stored model.
+        let s1 = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(s1.len(), 1);
+        assert_eq!(s1[0].model_id.as_deref(), Some("gpt-5"));
+        assert_eq!(s1[0].provider.as_deref(), Some("openai"));
+        assert_eq!(s1[0].total_tokens, 60);
+        assert_eq!(s1[0].turns, 2);
+
+        // S2 has no stored model, so its row stays unknown (NULL model_id).
+        let s2 = sm.get_session_model_usage("s2").await.unwrap();
+        assert_eq!(s2.len(), 1);
+        assert_eq!(s2[0].model_id, None);
+        assert_eq!(s2[0].provider, None);
+        assert_eq!(s2[0].total_tokens, 6);
+
+        // Idempotency: re-applying migration 11 on the already-migrated DB is a
+        // no-op — the pragma guards skip the ADD COLUMNs and the backfill only
+        // touches still-NULL rows (S2 stays unknown, S1 unchanged).
+        let db_path2 = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path2);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        SessionStorage::apply_migration(&pool, 11).await.unwrap();
+        SessionStorage::apply_migration(&pool, 11).await.unwrap();
+        pool.close().await;
+
+        let s1_again = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(s1_again[0].total_tokens, 60);
+        assert_eq!(s1_again[0].model_id.as_deref(), Some("gpt-5"));
+        let s2_again = sm.get_session_model_usage("s2").await.unwrap();
+        assert_eq!(s2_again[0].model_id, None);
     }
 
     #[tokio::test]

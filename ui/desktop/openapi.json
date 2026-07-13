@@ -3371,6 +3371,51 @@
         ]
       }
     },
+    "/sessions/{session_id}/usage": {
+      "get": {
+        "tags": [
+          "Session Management"
+        ],
+        "operationId": "get_session_usage",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Unique identifier for the session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-model usage for the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionModelUsageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/user_workflow_values": {
       "put": {
         "tags": [
@@ -6635,6 +6680,43 @@
           }
         }
       },
+      "ModelUsageRow": {
+        "type": "object",
+        "description": "One `(model, provider)` group of the per-model usage breakdown.\n\n`model_id` / `provider` are `None` for turns recorded before model\nattribution landed, or when the provider reported no model — those rows\naggregate together as the \"unknown\" group.",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "turns"
+        ],
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modelId": {
+            "type": "string",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of billed turns attributed to this group."
+          }
+        }
+      },
       "PageContent": {
         "type": "object",
         "required": [
@@ -7722,6 +7804,22 @@
               "$ref": "#/components/schemas/Session"
             },
             "description": "List of available session information objects"
+          }
+        }
+      },
+      "SessionModelUsageResponse": {
+        "type": "object",
+        "description": "Per-model token breakdown for one session.",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelUsageRow"
+            },
+            "description": "One row per `(model, provider)` group; a `null` `modelId` is the\n\"unknown\" bucket (turns recorded before model attribution, or providers\nthat reported no model)."
           }
         }
       },

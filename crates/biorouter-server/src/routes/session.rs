@@ -13,7 +13,7 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::session::extension_data::ExtensionState;
-use biorouter::session::session_manager::{ActivityWindow, SessionInsights};
+use biorouter::session::session_manager::{ActivityWindow, ModelUsageRow, SessionInsights};
 use biorouter::session::{EnabledExtensionsState, Session};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
@@ -240,6 +240,48 @@ async fn get_session_activity(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(activity))
+}
+
+/// Per-model token breakdown for one session.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelUsageResponse {
+    /// One row per `(model, provider)` group; a `null` `modelId` is the
+    /// "unknown" bucket (turns recorded before model attribution, or providers
+    /// that reported no model).
+    pub models: Vec<ModelUsageRow>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/{session_id}/usage",
+    params(
+        ("session_id" = String, Path, description = "Unique identifier for the session")
+    ),
+    responses(
+        (status = 200, description = "Per-model usage for the session", body = SessionModelUsageResponse),
+        (status = 400, description = "Invalid session id"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "Session Management"
+)]
+async fn get_session_usage(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionModelUsageResponse>, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let models = state
+        .session_manager()
+        .get_session_model_usage(&session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(SessionModelUsageResponse { models }))
 }
 
 #[utoipa::path(
@@ -655,6 +697,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/sessions/import", post(import_session))
         .route("/sessions/insights", get(get_session_insights))
         .route("/sessions/activity", get(get_session_activity))
+        // Static `/usage` suffix — distinct from the `/sessions/{session_id}`
+        // wildcard, so axum routes it without a guard.
+        .route("/sessions/{session_id}/usage", get(get_session_usage))
         .route("/sessions/{session_id}/name", put(update_session_name))
         .route(
             "/sessions/{session_id}/user_workflow_values",
@@ -736,6 +781,85 @@ mod diverge_tests {
         assert!(body.get("currentStreak").is_some(), "camelCase payload");
         assert!(body.get("longestStreak").is_some());
         assert!(body.get("maxTokens").is_some());
+    }
+
+    async fn get_usage(
+        state: Arc<AppState>,
+        session_id: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions/{session_id}/usage"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// The `/usage` response serializes to the exact camelCase JSON the TS client
+    /// expects: `models` array of `{modelId, provider, inputTokens, outputTokens,
+    /// totalTokens, turns}`, with the unknown bucket carrying `null`.
+    ///
+    /// This is a pure serialization assertion rather than a live round-trip:
+    /// `AppState::new()` opens the REAL shared session DB, whose token-ledger
+    /// contents (and, across parallel worktrees, whose schema) are not stable
+    /// enough for a write-then-read route test. The aggregation SQL itself is
+    /// covered by `session_manager`'s `TempDir` unit tests.
+    #[test]
+    fn usage_response_serializes_to_camelcase_shape() {
+        let response = SessionModelUsageResponse {
+            models: vec![
+                ModelUsageRow {
+                    model_id: Some("gpt-5".to_string()),
+                    provider: Some("openai".to_string()),
+                    input_tokens: 300,
+                    output_tokens: 70,
+                    total_tokens: 370,
+                    turns: 2,
+                },
+                ModelUsageRow {
+                    model_id: None,
+                    provider: None,
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    total_tokens: 3,
+                    turns: 1,
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+        let models = json.get("models").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(models.len(), 2);
+
+        let gpt = &models[0];
+        assert_eq!(gpt.get("modelId").and_then(|v| v.as_str()), Some("gpt-5"));
+        assert_eq!(gpt.get("provider").and_then(|v| v.as_str()), Some("openai"));
+        assert_eq!(gpt.get("inputTokens").and_then(|v| v.as_i64()), Some(300));
+        assert_eq!(gpt.get("outputTokens").and_then(|v| v.as_i64()), Some(70));
+        assert_eq!(gpt.get("totalTokens").and_then(|v| v.as_i64()), Some(370));
+        assert_eq!(gpt.get("turns").and_then(|v| v.as_i64()), Some(2));
+
+        // The unknown bucket serializes model/provider as JSON null.
+        let unknown = &models[1];
+        assert!(unknown.get("modelId").unwrap().is_null());
+        assert!(unknown.get("provider").unwrap().is_null());
+        assert_eq!(unknown.get("totalTokens").and_then(|v| v.as_i64()), Some(3));
+    }
+
+    /// The `/usage` route rejects an invalid session id before touching the DB,
+    /// and the `/usage` suffix is not swallowed by the `/sessions/{session_id}`
+    /// wildcard registered next to it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn usage_route_rejects_invalid_session_id() {
+        let state = AppState::new().await.unwrap();
+        let (status, _) = get_usage(state, "bad.id").await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
     /// `days` is attacker-controlled; the server clamps it rather than building a

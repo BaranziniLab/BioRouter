@@ -937,6 +937,25 @@ export type ModelRef = {
     provider: string;
 };
 
+/**
+ * One `(model, provider)` group of the per-model usage breakdown.
+ *
+ * `model_id` / `provider` are `None` for turns recorded before model
+ * attribution landed, or when the provider reported no model — those rows
+ * aggregate together as the "unknown" group.
+ */
+export type ModelUsageRow = {
+    inputTokens: number;
+    modelId?: string | null;
+    outputTokens: number;
+    provider?: string | null;
+    totalTokens: number;
+    /**
+     * Number of billed turns attributed to this group.
+     */
+    turns: number;
+};
+
 export type PageContent = {
     content: string;
     /**
@@ -1338,6 +1357,18 @@ export type SessionListResponse = {
      * List of available session information objects
      */
     sessions: Array<Session>;
+};
+
+/**
+ * Per-model token breakdown for one session.
+ */
+export type SessionModelUsageResponse = {
+    /**
+     * One row per `(model, provider)` group; a `null` `modelId` is the
+     * "unknown" bucket (turns recorded before model attribution, or providers
+     * that reported no model).
+     */
+    models: Array<ModelUsageRow>;
 };
 
 export type SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'terminal';
@@ -4335,6 +4366,42 @@ export type UpdateSessionNameResponses = {
      */
     200: unknown;
 };
+
+export type GetSessionUsageData = {
+    body?: never;
+    path: {
+        /**
+         * Unique identifier for the session
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/usage';
+};
+
+export type GetSessionUsageErrors = {
+    /**
+     * Invalid session id
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionUsageResponses = {
+    /**
+     * Per-model usage for the session
+     */
+    200: SessionModelUsageResponse;
+};
+
+export type GetSessionUsageResponse = GetSessionUsageResponses[keyof GetSessionUsageResponses];
 
 export type UpdateSessionUserWorkflowValuesData = {
     body: UpdateSessionUserWorkflowValuesRequest;
