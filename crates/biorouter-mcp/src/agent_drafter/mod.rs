@@ -39,7 +39,7 @@ use rmcp::{
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::{de::DeserializeOwned, Deserialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Meta key the agent loop uses to pass the current chat session id into MCP
 /// tool calls. Must match `biorouter::session_context::SESSION_ID_HEADER`
@@ -779,6 +779,55 @@ impl Default for AgentDrafterServer {
 /// [`crate::paths`], so a sandboxed run never writes into the user's global store.
 pub fn default_root() -> PathBuf {
     crate::paths::in_config_dir("agent_drafter")
+}
+
+/// Run `scripts/agent-drafter/app-smoke.mjs` against a built app.
+///
+/// The executing check lives in Node because it needs a real browser: only a real
+/// browser dispatches native range key handling, real pointer drags, and computed
+/// styles — the three things the remaining findings depend on. jsdom cannot see any
+/// of them, which is exactly why the audit could not either.
+fn run_smoke(dir: &Path) -> Result<String, String> {
+    if std::env::var("BIOROUTER_APP_SMOKE")
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("off")
+    {
+        return Ok("smoke check skipped (BIOROUTER_APP_SMOKE=off)".to_string());
+    }
+
+    let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
+    let out = std::process::Command::new("node")
+        .arg(&script)
+        .arg(dir)
+        .output()
+        .map_err(|e| format!("could not run node: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match out.status.code() {
+        Some(0) => Ok(format!("smoke check PASSED.\n{stdout}")),
+        Some(1) => Ok(format!(
+            "smoke check found real defects — a user would hit these:\n{stdout}"
+        )),
+        _ => Err(format!("{stderr}{stdout}").trim().to_string()),
+    }
+}
+
+/// Locate the smoke script relative to the running binary or the source tree.
+fn smoke_script_path() -> Option<PathBuf> {
+    let rel = "scripts/agent-drafter/app-smoke.mjs";
+    // Dev tree: walk up from CARGO_MANIFEST_DIR.
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .parent()?
+        .join(rel);
+    if src.exists() {
+        return Some(src);
+    }
+    // Installed: next to the executable.
+    let exe = std::env::current_exe().ok()?;
+    let near = exe.parent()?.join(rel);
+    near.exists().then_some(near)
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> ErrorData {
@@ -2413,6 +2462,33 @@ impl AgentDrafterServer {
             "{} now declares {n} model route(s)",
             p.id
         ))]))
+    }
+
+    #[tool(
+        name = "smoke_app",
+        description = "EXECUTE the app in a real browser against a mock daemon and report what                        actually happens. This is the check that catches what lint cannot: a                        control that fires and delivers NO turn (the handler completes, the                        console is clean, and nothing reaches the agent), a bound KPI that renders                        blank before any turn, a slider no arrow key can move, a drag surface only                        a human mouse can drive, and progress that displaces the result. Run it                        after build_app. A finding here is a real defect a user would hit."
+    )]
+    pub async fn smoke_app(
+        &self,
+        params: Parameters<AppIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let store = self.store();
+        let dir = store.artifact_dir(&params.0.id);
+        if !dir.join("index.html").exists() {
+            return Err(err(
+                ErrorCode::INVALID_PARAMS,
+                format!("no app '{}'", params.0.id),
+            ));
+        }
+        let text = match run_smoke(&dir) {
+            Ok(text) => text,
+            Err(e) => format!(
+                "smoke check could not run: {e}\n\nThis is NOT a pass — the app was never \
+                 executed. Install a browser (`npx playwright install chromium`) or set \
+                 BIOROUTER_APP_SMOKE=off to skip deliberately."
+            ),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
