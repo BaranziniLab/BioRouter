@@ -528,6 +528,8 @@ where
                 yield (None, usage)
             } else if chunk.choices[0].delta.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
                 let mut tool_call_data: std::collections::HashMap<i32, (String, String, String)> = std::collections::HashMap::new();
+                let mut tool_usage = usage;
+                let mut tool_model = chunk.model.clone();
 
                 if let Some(tool_calls) = &chunk.choices[0].delta.tool_calls {
                     for tool_call in tool_calls {
@@ -551,9 +553,15 @@ where
                                 let tool_chunk: StreamingChunk = serde_json::from_str(line)
                                     .map_err(|e| anyhow!("Failed to parse streaming chunk: {}: {:?}", e, &line))?;
 
+                                if let Some(model) = &tool_chunk.model {
+                                    tool_model = Some(model.clone());
+                                }
                                 if !tool_chunk.choices.is_empty() {
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
                                         accumulated_reasoning.extend(details.iter().cloned());
+                                    }
+                                    if let Some(reason) = &tool_chunk.choices[0].finish_reason {
+                                        last_finish_reason = Some(reason.clone());
                                     }
                                     if let Some(delta_tool_calls) = &tool_chunk.choices[0].delta.tool_calls {
                                         for delta_call in delta_tool_calls {
@@ -571,6 +579,16 @@ where
                                     }
                                 } else {
                                     done = true;
+                                }
+
+                                if let (Some(raw_usage), Some(model)) =
+                                    (tool_chunk.usage.as_ref(), tool_model.as_ref())
+                                {
+                                    tool_usage = Some(ProviderUsage {
+                                        usage: get_usage(raw_usage),
+                                        model: model.clone(),
+                                        finish_reason: last_finish_reason.clone(),
+                                    });
                                 }
                             }
                         } else {
@@ -641,7 +659,7 @@ where
 
                 yield (
                     Some(msg),
-                    usage,
+                    tool_usage,
                 )
             } else if chunk.choices[0].delta.content.is_some() {
                 let text = chunk.choices[0].delta.content.as_ref().unwrap();
@@ -1591,7 +1609,12 @@ data: [DONE]
         let messages = response_to_streaming_message(response_stream);
         pin!(messages);
 
-        while let Some(Ok((message, _usage))) = messages.next().await {
+        let mut saw_tool_calls = false;
+        let mut final_usage = None;
+        while let Some(Ok((message, usage))) = messages.next().await {
+            if usage.is_some() {
+                final_usage = usage;
+            }
             if let Some(msg) = message {
                 println!("{:?}", msg);
                 if msg.content.len() == 2 {
@@ -1599,17 +1622,26 @@ data: [DONE]
                         (&msg.content[0], &msg.content[1])
                     {
                         if req1.tool_call.is_ok() && req2.tool_call.is_ok() {
-                            // We expect two tool calls in the response
                             assert_eq!(req1.tool_call.as_ref().unwrap().name, "developer__shell");
                             assert_eq!(req2.tool_call.as_ref().unwrap().name, "developer__shell");
-                            return Ok(());
+                            saw_tool_calls = true;
                         }
                     }
                 }
             }
         }
 
-        panic!("Expected tool call message with two calls, but did not see it");
+        assert!(
+            saw_tool_calls,
+            "expected tool call message with two calls, but did not see it"
+        );
+        let usage = final_usage.expect("expected terminal tool-call usage");
+        assert_eq!(usage.usage.input_tokens, Some(4982));
+        assert_eq!(usage.usage.output_tokens, Some(122));
+        assert_eq!(usage.usage.total_tokens, Some(5104));
+        assert_eq!(usage.usage.billed_total(), Some(5104));
+        assert_eq!(usage.finish_reason.as_deref(), Some("tool_calls"));
+        Ok(())
     }
 
     #[tokio::test]

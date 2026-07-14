@@ -343,6 +343,39 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
     }
 }
 
+fn merge_streaming_usage(initial: Usage, update: Usage) -> Usage {
+    let max_bucket = |left: Option<i32>, right: Option<i32>| match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+
+    let input_tokens = max_bucket(initial.input_tokens, update.input_tokens);
+    let output_tokens = max_bucket(initial.output_tokens, update.output_tokens);
+    let cache_read_input_tokens = max_bucket(
+        initial.cache_read_input_tokens,
+        update.cache_read_input_tokens,
+    );
+    let cache_creation_input_tokens = max_bucket(
+        initial.cache_creation_input_tokens,
+        update.cache_creation_input_tokens,
+    );
+    let total_tokens = [
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    .map(i64::from)
+    .sum::<i64>()
+    .min(i64::from(i32::MAX)) as i32;
+
+    Usage::new(input_tokens, output_tokens, Some(total_tokens))
+        .with_cache(cache_read_input_tokens, cache_creation_input_tokens)
+}
+
 /// Create a complete request payload for Anthropic's API
 pub fn create_request(
     model_config: &ModelConfig,
@@ -605,22 +638,12 @@ where
                         tracing::debug!("🔍 Anthropic message_delta parsed usage: input_tokens={:?}, output_tokens={:?}, total_tokens={:?}",
                                 delta_usage.input_tokens, delta_usage.output_tokens, delta_usage.total_tokens);
 
-                        // IMPORTANT: message_delta usage should be MERGED with existing usage, not replace it
-                        // message_start has input tokens, message_delta has output tokens
                         if let Some(existing_usage) = &final_usage {
-                            let merged_input = existing_usage.usage.input_tokens.or(delta_usage.input_tokens);
-                            let merged_output = delta_usage.output_tokens.or(existing_usage.usage.output_tokens);
-                            let merged_total = match (merged_input, merged_output) {
-                                (Some(input), Some(output)) => Some(input + output),
-                                (Some(input), None) => Some(input),
-                                (None, Some(output)) => Some(output),
-                                (None, None) => None,
-                            };
-
-                            let merged_usage = crate::providers::base::Usage::new(merged_input, merged_output, merged_total);
-                            final_usage = Some(crate::providers::base::ProviderUsage::new(existing_usage.model.clone(), merged_usage));
+                            let model = existing_usage.model.clone();
+                            let merged_usage = merge_streaming_usage(existing_usage.usage, delta_usage);
                             tracing::debug!("🔍 Anthropic MERGED usage: input_tokens={:?}, output_tokens={:?}, total_tokens={:?}",
-                                    merged_input, merged_output, merged_total);
+                                    merged_usage.input_tokens, merged_usage.output_tokens, merged_usage.total_tokens);
+                            final_usage = Some(crate::providers::base::ProviderUsage::new(model, merged_usage));
                         } else {
                             // No existing usage, just use delta usage
                             let model = event.data.get("model")
@@ -992,6 +1015,39 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(800));
         assert_eq!(usage.total_tokens, Some(825));
         assert_eq!(usage.billed_total(), Some(825));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_usage_preserves_message_start_cache_buckets() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let lines = r#"
+data: {"type":"message_start","message":{"id":"msg_cache","model":"claude-sonnet-4-20250514","usage":{"input_tokens":7,"output_tokens":0,"cache_creation_input_tokens":10000,"cache_read_input_tokens":5000}}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|line| Ok(line.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut final_usage = None;
+        while let Some(result) = messages.next().await {
+            let (_, usage) = result?;
+            if usage.is_some() {
+                final_usage = usage;
+            }
+        }
+
+        let usage = final_usage.expect("expected terminal usage");
+        assert_eq!(usage.model, "claude-sonnet-4-20250514");
+        assert_eq!(usage.usage.input_tokens, Some(7));
+        assert_eq!(usage.usage.output_tokens, Some(50));
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(5000));
+        assert_eq!(usage.usage.cache_creation_input_tokens, Some(10000));
+        assert_eq!(usage.usage.total_tokens, Some(15057));
+        assert_eq!(usage.usage.billed_total(), Some(15057));
         Ok(())
     }
 
