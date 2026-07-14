@@ -187,19 +187,19 @@ pub fn pricing_from_provider_metadata(
 
 fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
     match provider {
-        "openrouter" => openrouter_pricing(&model),
-        "groq" => groq_pricing(&model),
-        "zai" | "z.ai" | "z-ai" => zai_pricing(&model),
-        "xiaomi_mimo" | "xiaomi-mimo" | "xiaomi" => xiaomi_mimo_pricing(&model),
-        "custom_deepseek" | "deepseek" => deepseek_pricing(&model),
-        "inception" => inception_pricing(&model),
-        "mistral" | "mistralai" => mistral_pricing(&model),
-        "xai" | "x-ai" => xai_pricing(&model),
+        "openrouter" => openrouter_pricing(model),
+        "groq" => groq_pricing(model),
+        "zai" | "z.ai" | "z-ai" => zai_pricing(model),
+        "xiaomi_mimo" | "xiaomi-mimo" | "xiaomi" => xiaomi_mimo_pricing(model),
+        "custom_deepseek" | "deepseek" => deepseek_pricing(model),
+        "inception" => inception_pricing(model),
+        "mistral" | "mistralai" => mistral_pricing(model),
+        "xai" | "x-ai" => xai_pricing(model),
         // Claude, natively and on Bedrock. Bedrock also serves non-Anthropic
         // models (Titan, Llama, …); `claude_family_pricing` returns None for
         // those, leaving them correctly unpriced.
         "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" => {
-            claude_family_pricing(&model)
+            claude_family_pricing(model)
         }
         _ => None,
     }
