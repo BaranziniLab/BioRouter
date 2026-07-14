@@ -12,27 +12,36 @@ const rows: ModelCostRow[] = [
     model: 'gpt-5',
     inputTokens: 300,
     outputTokens: 70,
-    totalTokens: 370,
+    cacheReadTokens: 500,
+    cacheCreationTokens: 100,
+    totalTokens: 970,
     turns: 2,
     totalCost: 1.23,
+    costIsPartial: true,
   },
   {
     provider: 'anthropic',
     model: 'claude-fable-5',
     inputTokens: 10,
     outputTokens: 5,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     totalTokens: 15,
     turns: 1,
     totalCost: 0.0004,
+    costIsPartial: false,
   },
   {
     provider: undefined,
     model: undefined,
     inputTokens: 1,
     outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     totalTokens: 3,
     turns: 1,
     totalCost: null,
+    costIsPartial: false,
   },
 ];
 
@@ -53,19 +62,37 @@ describe('ModelBreakdownTable', () => {
     // 1 header + 3 data rows.
     expect(bodyRows).toHaveLength(4);
 
-    // gpt-5 row: label, turns, in, out, priced cost.
+    // gpt-5 row: every token bucket, cache-aware billed total, partial cost.
     const gptRow = screen.getByText('openai/gpt-5').closest('tr')!;
     const gptCells = within(gptRow).getAllByRole('cell');
-    expect(gptCells.map((c) => c.textContent)).toEqual(['openai/gpt-5', '2', '300', '70', '$1.23']);
+    expect(gptCells.map((c) => c.textContent)).toEqual([
+      'openai/gpt-5',
+      '2',
+      '300',
+      '500',
+      '100',
+      '70',
+      '970',
+      '≥$1.23',
+    ]);
 
     // Sub-cent cost renders as the compact "<$0.01".
     const claudeRow = screen.getByText('anthropic/claude-fable-5').closest('tr')!;
-    expect(within(claudeRow).getAllByRole('cell')[4].textContent).toBe('<$0.01');
+    expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('<$0.01');
 
     // Unknown bucket: labelled "unknown", null price shown as an em dash.
     const unknownRow = screen.getByText('unknown').closest('tr')!;
     const unknownCells = within(unknownRow).getAllByRole('cell');
-    expect(unknownCells.map((c) => c.textContent)).toEqual(['unknown', '1', '1', '2', '—']);
+    expect(unknownCells.map((c) => c.textContent)).toEqual([
+      'unknown',
+      '1',
+      '1',
+      '0',
+      '0',
+      '2',
+      '3',
+      '—',
+    ]);
   });
 
   it('renders nothing for an empty payload', () => {
@@ -82,9 +109,12 @@ describe('ModelBreakdownTable', () => {
             model: 'gpt-5',
             inputTokens: 12_000_000,
             outputTokens: 1_300_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
             totalTokens: 13_300_000,
             turns: 61,
             totalCost: 42,
+            costIsPartial: false,
           },
         ]}
       />
@@ -92,6 +122,7 @@ describe('ModelBreakdownTable', () => {
     const row = screen.getByText('versa/gpt-5').closest('tr')!;
     const cells = within(row).getAllByRole('cell');
     expect(cells[2].textContent).toBe('12,000,000');
-    expect(cells[3].textContent).toBe('1,300,000');
+    expect(cells[5].textContent).toBe('1,300,000');
+    expect(cells[6].textContent).toBe('13,300,000');
   });
 });

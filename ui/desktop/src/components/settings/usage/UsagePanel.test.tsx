@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { UsagePanel, formatCost, formatTokens, modelLabel } from './UsagePanel';
+import { UsagePanel, formatCost, formatCostEstimate, formatTokens, modelLabel } from './UsagePanel';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 
 const dayRows: UsageReportRow[] = [
@@ -109,6 +109,8 @@ describe('formatters', () => {
     expect(formatCost(0.004)).toBe('<$0.01');
     expect(formatCost(null)).toBe('—');
     expect(formatCost(undefined)).toBe('—');
+    expect(formatCostEstimate(5, true)).toBe('≥$5.00');
+    expect(formatCostEstimate(null, true)).toBe('—');
   });
 
   it('labels models and folds the unknown bucket', () => {
@@ -126,7 +128,8 @@ describe('UsagePanel', () => {
     const bars = screen.getByTestId('usage-day-bars');
     expect(within(bars).getAllByTestId('usage-day-bar-fill')).toHaveLength(2);
     expect(within(bars).getByText('2026-07-10')).toBeTruthy();
-    expect(within(bars).getByText('1,000,100')).toBeTruthy();
+    expect(within(bars).getByText('1,000,100 billed')).toBeTruthy();
+    expect(within(bars).getByText('≥$1.40')).toBeTruthy();
     expect(within(bars).getByText('$7.20')).toBeTruthy();
 
     // Model table: glm row with hand-checked cells + unknown null-cost row.
@@ -147,14 +150,32 @@ describe('UsagePanel', () => {
       within(glmRow)
         .getAllByRole('cell')
         .map((c) => c.textContent)
-    ).toEqual(['zai/glm-5.2', '8', '3,000,000', '1,000,000', '$8.60']);
+    ).toEqual(['zai/glm-5.2', '8', '3,000,000', '1,000,000', '4,000,000', '$8.60']);
     const unknownRow = within(table).getByText('unknown').closest('tr')!;
     // Unknown model shows an em-dash cost, never $0.
-    expect(within(unknownRow).getAllByRole('cell')[4].textContent).toBe('—');
+    expect(within(unknownRow).getAllByRole('cell')[5].textContent).toBe('—');
   });
 
   it('shows the unpriced note when any row lacks pricing', () => {
     render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    expect(screen.getByTestId('usage-unpriced-note')).toBeTruthy();
+  });
+
+  it('shows the unpriced note when a used row has null cost even if its flag is stale', () => {
+    render(
+      <UsagePanel
+        summary={summary({
+          monthToDate: {
+            ...summary().monthToDate,
+            cost: null,
+            hasUnpriced: false,
+          },
+        })}
+        dayRows={[]}
+        modelRows={[]}
+      />
+    );
+
     expect(screen.getByTestId('usage-unpriced-note')).toBeTruthy();
   });
 
@@ -248,9 +269,10 @@ describe('UsagePanel', () => {
       />
     );
     const dollarGauge = screen.getByTestId('usage-gauge-dollars');
-    expect(within(dollarGauge).getByText('(cost unavailable)')).toBeTruthy();
-    // No percent fabricated from a missing cost.
-    expect(screen.getByTestId('usage-gauge-dollars-fill').style.width).toBe('0%');
+    expect(
+      within(dollarGauge).getByText('Budget percentage unavailable because cost is unknown.')
+    ).toBeTruthy();
+    expect(screen.queryByTestId('usage-gauge-dollars-fill')).toBeNull();
   });
 
   it('renders empty-state copy when a range has no usage', () => {
@@ -294,15 +316,24 @@ describe('UsagePanel', () => {
         modelRows={cachedModels}
       />
     );
-    // MTD line shows the combined cached tokens (500 + 100 = 600).
-    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/600 cached/)).toBeTruthy();
-    // Model table gains a Cache column showing the combined 600.
+    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/500 cache read/)).toBeTruthy();
+    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/100 cache write/)).toBeTruthy();
+    // Model table exposes both cache buckets and the cache-aware billed total.
     const table = screen.getByTestId('usage-model-table');
     const row = within(table).getByText('anthropic/claude-sonnet-4').closest('tr')!;
     const cells = within(row)
       .getAllByRole('cell')
       .map((c) => c.textContent);
-    expect(cells).toEqual(['anthropic/claude-sonnet-4', '1', '1,000', '200', '600', '$0.01']);
+    expect(cells).toEqual([
+      'anthropic/claude-sonnet-4',
+      '1',
+      '1,000',
+      '500',
+      '100',
+      '200',
+      '1,800',
+      '≥$0.01',
+    ]);
     // The cost-excludes-cache note appears.
     expect(screen.getByTestId('usage-cache-excluded-note')).toBeTruthy();
   });
@@ -314,5 +345,57 @@ describe('UsagePanel', () => {
     expect(within(table).queryByText('Cache')).toBeNull();
     expect(screen.queryByTestId('usage-mtd-cache')).toBeNull();
     expect(screen.queryByTestId('usage-cache-excluded-note')).toBeNull();
+  });
+
+  it('does not draw a dollar gauge for a known but partial subtotal', () => {
+    render(
+      <UsagePanel
+        summary={summary({
+          monthToDate: {
+            ...summary().monthToDate,
+            cost: 12,
+            hasUnpriced: true,
+          },
+          monthlyDollarLimit: 100,
+          dollarPercent: 12,
+        })}
+        dayRows={[]}
+        modelRows={[]}
+      />
+    );
+
+    const gauge = screen.getByTestId('usage-gauge-dollars');
+    expect(within(gauge).getByText(/≥\$12.00 \/ \$100.00/)).toBeTruthy();
+    expect(
+      within(gauge).getByText(
+        'Budget percentage unavailable because the known cost is only a partial subtotal.'
+      )
+    ).toBeTruthy();
+    expect(screen.queryByTestId('usage-gauge-dollars-fill')).toBeNull();
+  });
+
+  it('includes cache buckets in the token gauge even if an older total omitted them', () => {
+    render(
+      <UsagePanel
+        summary={summary({
+          monthToDate: {
+            ...summary().monthToDate,
+            inputTokens: 1_000,
+            outputTokens: 200,
+            cacheReadTokens: 500,
+            cacheCreationTokens: 100,
+            totalTokens: 1_200,
+          },
+          monthlyTokenLimit: 1_800,
+          tokenPercent: 66.7,
+        })}
+        dayRows={[]}
+        modelRows={[]}
+      />
+    );
+
+    const gauge = screen.getByTestId('usage-gauge-tokens');
+    expect(within(gauge).getByText(/1,800 \/ 1,800/)).toBeTruthy();
+    expect(within(gauge).getByText('(100.0%)')).toBeTruthy();
   });
 });

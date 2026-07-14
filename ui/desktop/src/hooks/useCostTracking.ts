@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchModelPricing } from '../utils/pricing';
 import { getSessionUsage, ModelUsageRow, Session } from '../api';
+import { billedTokens } from '../utils/usageAccounting';
 
 export interface ModelCostRow {
   /** Provider that served the turns, or undefined for the unknown bucket. */
@@ -9,11 +10,31 @@ export interface ModelCostRow {
   model?: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   totalTokens: number;
   turns: number;
   /** Client-side cost from the pricing table, or null when pricing is unknown. */
   totalCost: number | null;
+  /** The known subtotal omits at least one positive token bucket. */
+  costIsPartial: boolean;
 }
+
+export interface SessionCostRow {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  totalCost: number | null;
+  costIsPartial?: boolean;
+}
+
+export type SessionCosts = Record<string, SessionCostRow>;
+
+type LegacySessionCosts = Record<
+  string,
+  { inputTokens: number; outputTokens: number; totalCost: number }
+>;
 
 interface UseCostTrackingProps {
   session?: Session | null;
@@ -30,6 +51,19 @@ export function modelRowKey(provider?: string | null, model?: string | null): st
   return `${provider ?? UNKNOWN_MODEL_LABEL}/${model ?? UNKNOWN_MODEL_LABEL}`;
 }
 
+export function buildLegacySessionCosts(rows: ModelCostRow[]): LegacySessionCosts {
+  const sessionCosts: LegacySessionCosts = {};
+  for (const row of rows) {
+    if (row.totalCost === null || row.costIsPartial) continue;
+    sessionCosts[modelRowKey(row.provider, row.model)] = {
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      totalCost: row.totalCost,
+    };
+  }
+  return sessionCosts;
+}
+
 /**
  * Price the real per-model rows the backend recorded. `pricingFor` returns the
  * per-token input/output cost for a `(provider, model)` pair, or null when the
@@ -41,22 +75,41 @@ export async function buildModelCostRows(
   pricingFor: (
     provider: string,
     model: string
-  ) => Promise<{ input_token_cost?: number; output_token_cost?: number } | null>
+  ) => Promise<{
+    input_token_cost?: number | null;
+    output_token_cost?: number | null;
+    cache_read_cost?: number | null;
+    cache_write_cost?: number | null;
+  } | null>
 ): Promise<ModelCostRow[]> {
   return Promise.all(
     rows.map(async (row) => {
       const provider = row.provider ?? undefined;
       const model = row.modelId ?? undefined;
       let totalCost: number | null = null;
+      let costIsPartial = false;
       if (provider && model) {
         const pricing = await pricingFor(provider, model);
-        if (
-          pricing &&
-          (pricing.input_token_cost !== undefined || pricing.output_token_cost !== undefined)
-        ) {
-          totalCost =
-            row.inputTokens * (pricing.input_token_cost || 0) +
-            row.outputTokens * (pricing.output_token_cost || 0);
+        if (pricing) {
+          const buckets = [
+            [row.inputTokens, pricing.input_token_cost],
+            [row.outputTokens, pricing.output_token_cost],
+            [row.cacheReadTokens, pricing.cache_read_cost],
+            [row.cacheCreationTokens, pricing.cache_write_cost],
+          ] as const;
+          let knownSubtotal = 0;
+          let hasKnownRate = false;
+          for (const [tokens, rate] of buckets) {
+            if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) {
+              knownSubtotal += tokens * rate;
+              hasKnownRate = true;
+            } else if (tokens > 0) {
+              costIsPartial = true;
+            }
+          }
+          if (hasKnownRate || billedTokens(row) === 0) {
+            totalCost = knownSubtotal;
+          }
         }
       }
       return {
@@ -64,9 +117,12 @@ export async function buildModelCostRows(
         model,
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
-        totalTokens: row.totalTokens,
+        cacheReadTokens: row.cacheReadTokens,
+        cacheCreationTokens: row.cacheCreationTokens,
+        totalTokens: billedTokens(row),
         turns: row.turns,
         totalCost,
+        costIsPartial,
       };
     })
   );
@@ -86,9 +142,11 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
   const [modelRows, setModelRows] = useState<ModelCostRow[]>([]);
 
   const sessionId = session?.id;
-  // Re-fetch when the accumulated total moves (a new billed turn landed) so the
-  // breakdown tracks the conversation without polling.
-  const accumulatedTotal = session?.accumulated_total_tokens ?? 0;
+  // Some providers report only the split and others only the total. Observe all
+  // three counters so either shape refreshes the authoritative ledger.
+  const accumulatedInput = session?.accumulated_input_tokens;
+  const accumulatedOutput = session?.accumulated_output_tokens;
+  const accumulatedTotal = session?.accumulated_total_tokens;
 
   useEffect(() => {
     let cancelled = false;
@@ -119,19 +177,11 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, accumulatedTotal]);
+  }, [sessionId, accumulatedInput, accumulatedOutput, accumulatedTotal]);
 
-  // Back-compat shape for CostTracker: keyed `${provider}/${model}` map.
-  const sessionCosts: {
-    [key: string]: { inputTokens: number; outputTokens: number; totalCost: number };
-  } = {};
-  for (const row of modelRows) {
-    sessionCosts[modelRowKey(row.provider, row.model)] = {
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      totalCost: row.totalCost ?? 0,
-    };
-  }
+  // Back-compat shape for older CostTracker callers. Unknown and partial rows
+  // stay in modelRows instead of being forged into exact legacy costs here.
+  const sessionCosts = buildLegacySessionCosts(modelRows);
 
   return {
     sessionCosts,

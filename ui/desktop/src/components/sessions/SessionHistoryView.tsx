@@ -18,7 +18,7 @@ import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { createSharedSession } from '../../sharedSessions';
-import { billedSessionTokens } from '../../utils/billedTokens';
+import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import {
   Dialog,
   DialogContent,
@@ -146,6 +146,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   const [canShare, setCanShare] = useState(false);
 
   const messages = session.conversation || [];
+  const billedTokenEstimate = billedSessionTokenEstimate(session);
 
   const setView = useNavigation();
 
@@ -182,8 +183,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         session.working_dir,
         messages,
         session.name || 'Shared Session',
-        // Share the billed (accumulated) figure, not the last turn's occupancy.
-        billedSessionTokens(session) || 0
+        billedTokenEstimate?.lowerBound ? null : (billedTokenEstimate?.value ?? null)
       );
 
       const shareableLink = `biorouter://sessions/${shareToken}`;
@@ -281,13 +281,18 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                       <MessageSquareText className="w-4 h-4 mr-1" />
                       {session.message_count}
                     </span>
-                    {billedSessionTokens(session) !== null && (
+                    {billedTokenEstimate && (
                       <span
                         className="flex items-center"
-                        title="Billed tokens — accumulated across every turn (each turn resends the full conversation), not the last message"
+                        title={
+                          billedTokenEstimate.lowerBound
+                            ? 'At least this many tokens; only last-turn usage is available for this legacy session'
+                            : 'Billed tokens — accumulated across every turn, including recorded cache buckets'
+                        }
                       >
                         <Target className="w-4 h-4 mr-1" />
-                        {(billedSessionTokens(session) || 0).toLocaleString()}
+                        <span className="sr-only">Billed tokens: </span>
+                        {formatBilledTokenEstimate(billedTokenEstimate)}
                       </span>
                     )}
                   </div>

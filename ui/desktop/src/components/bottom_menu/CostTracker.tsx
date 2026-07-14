@@ -1,60 +1,118 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { Button } from '../ui/button';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
-import type { ModelCostRow } from '../../hooks/useCostTracking';
+import type { ModelCostRow, SessionCostRow, SessionCosts } from '../../hooks/useCostTracking';
 import { ModelBreakdownTable } from './ModelBreakdownTable';
 
 interface CostTrackerProps {
   inputTokens?: number;
   outputTokens?: number;
-  sessionCosts?: {
-    [key: string]: {
-      inputTokens: number;
-      outputTokens: number;
-      totalCost: number;
-    };
-  };
-  /** Real per-model rows from the token ledger. When present, they replace the
-   * legacy client-side model-switch guessing for the popover breakdown. */
+  sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
 }
 
-/** Sum the priced per-model rows; rows with unknown pricing (null) count 0. */
-export function sumModelRowsCost(rows: ModelCostRow[]): number {
-  return rows.reduce((acc, row) => acc + (row.totalCost ?? 0), 0);
+export interface CostEstimate {
+  amount: number | null;
+  partial: boolean;
+}
+
+export function aggregateModelRowsCost(rows: ModelCostRow[]): CostEstimate {
+  let amount = 0;
+  let hasKnownCost = false;
+  let partial = false;
+  for (const row of rows) {
+    if (row.totalCost === null) {
+      partial = true;
+    } else {
+      amount += row.totalCost;
+      hasKnownCost = true;
+    }
+    partial ||= row.costIsPartial ?? false;
+  }
+  return { amount: hasKnownCost ? amount : null, partial };
+}
+
+function aggregateSessionCosts(rows: SessionCostRow[]): CostEstimate {
+  let amount = 0;
+  let hasKnownCost = false;
+  let partial = false;
+  for (const row of rows) {
+    if (row.totalCost === null) {
+      partial = true;
+    } else {
+      amount += row.totalCost;
+      hasKnownCost = true;
+    }
+    partial ||= row.costIsPartial ?? false;
+  }
+  return { amount: hasKnownCost ? amount : null, partial };
 }
 
 const COST_TRIGGER_CLASS =
-  'flex h-7 items-center justify-center rounded-md px-0.5 transition-colors cursor-default text-text-default/70 hover:bg-background-medium hover:text-text-default';
-const COST_SYMBOL_CLASS = 'mr-0.5 text-xs font-mono font-semibold leading-none text-current';
+  'h-7 min-w-0 px-1 font-mono text-xs font-normal text-text-default/70 hover:bg-background-medium hover:text-text-default';
 
-// The tokens CostTracker receives are the ACCUMULATED (billed) input/output
-// across the whole conversation, not the last turn — see Issue #1. Spell that
-// out in the tooltip so nobody reads it as the last message's size.
 const BILLED_EXPLAINER =
   'Every turn resends the full conversation, so billed tokens exceed the last message’s count.';
 
-// A prominent "N billed tokens (X in + Y out)" summary line for the tooltip.
-export function billedTokensSummary(inputTokens: number, outputTokens: number): string {
-  const total = inputTokens + outputTokens;
-  return `${total.toLocaleString()} billed tokens (${inputTokens.toLocaleString()} in + ${outputTokens.toLocaleString()} out, accumulated across all turns)`;
+export function billedTokensSummary(
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens = 0,
+  cacheCreationTokens = 0
+): string {
+  const total = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  const buckets = [
+    `${inputTokens.toLocaleString()} fresh in`,
+    `${cacheReadTokens.toLocaleString()} cache read`,
+    `${cacheCreationTokens.toLocaleString()} cache write`,
+    `${outputTokens.toLocaleString()} out`,
+  ];
+  return `${total.toLocaleString()} billed tokens (${buckets.join(' + ')}, accumulated across all turns)`;
 }
 
-export function formatTooltipMoney(amount: number, currency = '$'): string {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return `${currency}0.00`;
-  }
-
-  if (amount < 0.01) {
-    return `<${currency}0.01`;
-  }
-
+export function formatTooltipMoney(amount: number | null, currency = '$'): string {
+  if (amount === null || !Number.isFinite(amount) || amount < 0) return '—';
+  if (amount > 0 && amount < 0.01) return `<${currency}0.01`;
   return `${currency}${amount.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+export function formatCostEstimate(estimate: CostEstimate, currency = '$'): string {
+  const amount = formatTooltipMoney(estimate.amount, currency);
+  if (estimate.amount === null) return amount;
+  return estimate.partial ? `≥${amount}` : amount;
+}
+
+function CostTrigger({ estimate, currency = '$' }: { estimate: CostEstimate; currency?: string }) {
+  const label = formatCostEstimate(estimate, currency);
+  return (
+    <TooltipTrigger asChild>
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        className={COST_TRIGGER_CLASS}
+        aria-label={
+          estimate.amount === null
+            ? 'Session cost unavailable'
+            : `${estimate.partial ? 'Known session cost subtotal' : 'Session cost'} ${label}`
+        }
+      >
+        {label}
+      </Button>
+    </TooltipTrigger>
+  );
+}
+
+function totalLabel(estimate: CostEstimate, currency = '$') {
+  if (estimate.amount === null) return 'Total cost: — (pricing unavailable)';
+  const label = formatCostEstimate(estimate, currency);
+  return estimate.partial ? `Known subtotal: ${label}` : `Total: ${label}`;
 }
 
 export function CostTracker({
@@ -69,11 +127,9 @@ export function CostTracker({
   const [showPricing, setShowPricing] = useState(true);
   const [pricingFailed, setPricingFailed] = useState(false);
 
-  // Check if pricing is enabled
   useEffect(() => {
     const checkPricingSetting = () => {
-      const stored = localStorage.getItem('show_pricing');
-      setShowPricing(stored !== 'false');
+      setShowPricing(localStorage.getItem('show_pricing') !== 'false');
     };
 
     checkPricingSetting();
@@ -84,6 +140,7 @@ export function CostTracker({
   useEffect(() => {
     const loadCostInfo = async () => {
       if (!currentModel || !currentProvider) {
+        setCostInfo(null);
         setIsLoading(false);
         return;
       }
@@ -91,13 +148,8 @@ export function CostTracker({
       setIsLoading(true);
       try {
         const costData = await fetchModelPricing(currentProvider, currentModel);
-        if (costData) {
-          setCostInfo(costData);
-          setPricingFailed(false);
-        } else {
-          setPricingFailed(true);
-          setCostInfo(null);
-        }
+        setCostInfo(costData);
+        setPricingFailed(costData === null);
       } catch {
         setPricingFailed(true);
         setCostInfo(null);
@@ -109,87 +161,76 @@ export function CostTracker({
     loadCostInfo();
   }, [currentModel, currentProvider]);
 
-  // Return null early if pricing is disabled
-  if (!showPricing) {
-    return null;
-  }
+  if (!showPricing) return null;
 
-  // Real per-model rows (Issue #1): when the token ledger gives us an actual
-  // breakdown, show it as a table and total it directly, instead of the legacy
-  // client-side model-switch guessing. This path is independent of the current
-  // model's pricing lookup, so a switched-away model still appears.
   if (modelCostRows && modelCostRows.length > 0) {
-    const total = sumModelRowsCost(modelCostRows);
+    const estimate = aggregateModelRowsCost(modelCostRows);
+    const totals = modelCostRows.reduce(
+      (sum, row) => ({
+        input: sum.input + row.inputTokens,
+        output: sum.output + row.outputTokens,
+        cacheRead: sum.cacheRead + (row.cacheReadTokens ?? 0),
+        cacheCreation: sum.cacheCreation + (row.cacheCreationTokens ?? 0),
+      }),
+      { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }
+    );
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <div className={COST_TRIGGER_CLASS}>
-            <span className={COST_SYMBOL_CLASS}>$</span>
-            <span className="text-xs font-mono">{total.toFixed(2)}</span>
-          </div>
-        </TooltipTrigger>
+        <CostTrigger estimate={estimate} />
         <TooltipContent className="max-w-none">
           <div className="flex flex-col gap-2">
             <div className="whitespace-pre-line">
-              {`${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`}
+              {`${billedTokensSummary(
+                totals.input,
+                totals.output,
+                totals.cacheRead,
+                totals.cacheCreation
+              )}\n${BILLED_EXPLAINER}`}
             </div>
             <div className="font-medium">Per-model breakdown</div>
             <ModelBreakdownTable rows={modelCostRows} />
-            <div className="text-right font-medium">Total: {formatTooltipMoney(total)}</div>
+            <div className="text-right font-medium">{totalLabel(estimate)}</div>
+            {estimate.partial && (
+              <div className="max-w-xl text-text-muted">
+                This is a lower bound because pricing is unavailable for one or more models or token
+                buckets.
+              </div>
+            )}
           </div>
         </TooltipContent>
       </Tooltip>
     );
   }
 
-  const calculateCost = (): number => {
-    // If we have session costs, calculate the total across all models
-    if (sessionCosts) {
-      let totalCost = 0;
-
-      // Add up all historical costs from different models
-      Object.values(sessionCosts).forEach((modelCost) => {
-        totalCost += modelCost.totalCost;
-      });
-
-      // Add current model cost if we have pricing info
-      if (
-        costInfo &&
-        (costInfo.input_token_cost !== undefined || costInfo.output_token_cost !== undefined)
-      ) {
-        const currentInputCost = inputTokens * (costInfo.input_token_cost || 0);
-        const currentOutputCost = outputTokens * (costInfo.output_token_cost || 0);
-        totalCost += currentInputCost + currentOutputCost;
-      }
-
-      return totalCost;
-    }
-
-    // Fallback to simple calculation for current model only
-    if (
-      !costInfo ||
-      (costInfo.input_token_cost === undefined && costInfo.output_token_cost === undefined)
-    ) {
-      return 0;
-    }
-
-    const inputCost = inputTokens * (costInfo.input_token_cost || 0);
-    const outputCost = outputTokens * (costInfo.output_token_cost || 0);
-    const total = inputCost + outputCost;
-
-    return total;
-  };
-
-  const formatCost = (cost: number): string => {
-    return cost.toFixed(2);
-  };
-
-  // Show loading state or when we don't have model/provider info
-  if (!currentModel || !currentProvider) {
-    return null;
+  const legacyRows = sessionCosts ? Object.values(sessionCosts) : [];
+  if (legacyRows.length > 0) {
+    const estimate = aggregateSessionCosts(legacyRows);
+    const totals = legacyRows.reduce(
+      (sum, row) => ({
+        input: sum.input + row.inputTokens,
+        output: sum.output + row.outputTokens,
+        cacheRead: sum.cacheRead + (row.cacheReadTokens ?? 0),
+        cacheCreation: sum.cacheCreation + (row.cacheCreationTokens ?? 0),
+      }),
+      { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }
+    );
+    return (
+      <Tooltip>
+        <CostTrigger estimate={estimate} />
+        <TooltipContent className="whitespace-pre-line">
+          {`${billedTokensSummary(
+            totals.input,
+            totals.output,
+            totals.cacheRead,
+            totals.cacheCreation
+          )}\n${BILLED_EXPLAINER}\n\n${totalLabel(estimate)}`}
+        </TooltipContent>
+      </Tooltip>
+    );
   }
 
-  // If still loading, show a placeholder
+  if (!currentModel || !currentProvider) return null;
+
   if (isLoading) {
     return (
       <div className="flex h-7 items-center justify-center rounded-md px-1 text-text-muted">
@@ -198,101 +239,28 @@ export function CostTracker({
     );
   }
 
-  // If no cost info found, try to return a default
-  if (
-    !costInfo ||
-    (costInfo.input_token_cost === undefined && costInfo.output_token_cost === undefined)
-  ) {
-    // If it's a known free/local provider, show $0.000000 without "not available" message
-    const freeProviders = ['llamacpp', 'ollama', 'local', 'localhost'];
-    if (freeProviders.includes(currentProvider.toLowerCase())) {
-      return (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className={COST_TRIGGER_CLASS}>
-              <span className={COST_SYMBOL_CLASS}>$</span>
-              <span className="text-xs font-mono">0.00</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            {`Local model — ${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`}
-          </TooltipContent>
-        </Tooltip>
-      );
-    }
-
-    // Otherwise show as unavailable
-    const getUnavailableTooltip = () => {
-      if (pricingFailed) {
-        return `Pricing data unavailable for ${currentModel}\n${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`;
-      }
-      return `Cost data not available for ${currentModel}\n${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`;
-    };
-
+  if (!costInfo) {
+    const estimate = { amount: null, partial: true };
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <div className={COST_TRIGGER_CLASS}>
-            <span className={COST_SYMBOL_CLASS}>$</span>
-            <span className="text-xs font-mono">0.00</span>
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>{getUnavailableTooltip()}</TooltipContent>
+        <CostTrigger estimate={estimate} />
+        <TooltipContent className="whitespace-pre-line">
+          {`${pricingFailed ? 'Pricing data unavailable' : 'Cost data not available'} for ${currentProvider}/${currentModel}\n${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}`}
+        </TooltipContent>
       </Tooltip>
     );
   }
 
-  const totalCost = calculateCost();
-
-  // Build tooltip content
-  const getTooltipContent = (): string => {
-    // Lead every tooltip with the billed (accumulated) token figure + why it
-    // is larger than the last message — this is the number the user is charged
-    // for and the source of the Issue #1 confusion.
-    const billedHeader = `${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}\n\n`;
-
-    // Handle error states first
-    if (pricingFailed) {
-      return `${billedHeader}Pricing data unavailable for ${currentProvider}/${currentModel}`;
-    }
-
-    // Handle session costs
-    if (sessionCosts && Object.keys(sessionCosts).length > 0) {
-      // Show session breakdown
-      let tooltip = `${billedHeader}Session cost breakdown:\n`;
-
-      Object.entries(sessionCosts).forEach(([modelKey, cost]) => {
-        const costStr = formatTooltipMoney(cost.totalCost, costInfo?.currency || '$');
-        tooltip += `${modelKey}: ${costStr} (${cost.inputTokens.toLocaleString()} in, ${cost.outputTokens.toLocaleString()} out)\n`;
-      });
-
-      // Add current model if it has costs
-      if (costInfo && (inputTokens > 0 || outputTokens > 0)) {
-        const currentCost =
-          inputTokens * (costInfo.input_token_cost || 0) +
-          outputTokens * (costInfo.output_token_cost || 0);
-        if (currentCost > 0) {
-          tooltip += `${currentProvider}/${currentModel} (current): ${formatTooltipMoney(currentCost, costInfo.currency || '$')} (${inputTokens.toLocaleString()} in, ${outputTokens.toLocaleString()} out)\n`;
-        }
-      }
-
-      tooltip += `\nTotal session cost: ${formatTooltipMoney(totalCost, costInfo?.currency || '$')}`;
-      return tooltip;
-    }
-
-    // Default tooltip for single model
-    return `${billedHeader}Input: ${inputTokens.toLocaleString()} tokens (${formatTooltipMoney(inputTokens * (costInfo?.input_token_cost || 0), costInfo?.currency || '$')}) | Output: ${outputTokens.toLocaleString()} tokens (${formatTooltipMoney(outputTokens * (costInfo?.output_token_cost || 0), costInfo?.currency || '$')})`;
-  };
-
+  const freshSubtotal =
+    inputTokens * (costInfo.input_token_cost ?? 0) +
+    outputTokens * (costInfo.output_token_cost ?? 0);
+  const estimate = { amount: freshSubtotal, partial: true };
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <div className={COST_TRIGGER_CLASS}>
-          <span className={COST_SYMBOL_CLASS}>$</span>
-          <span className="text-xs font-mono">{formatCost(totalCost)}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>{getTooltipContent()}</TooltipContent>
+      <CostTrigger estimate={estimate} currency={costInfo.currency} />
+      <TooltipContent className="whitespace-pre-line">
+        {`${billedTokensSummary(inputTokens, outputTokens)}\n${BILLED_EXPLAINER}\n\nFresh-token subtotal: ${formatCostEstimate(estimate, costInfo.currency)}\nCache buckets are not available until the session ledger loads.`}
+      </TooltipContent>
     </Tooltip>
   );
 }
