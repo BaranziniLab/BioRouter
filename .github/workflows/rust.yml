@@ -103,7 +103,7 @@ jobs:
 
       - name: Install Linux native build dependencies
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --yes libxcb1-dev
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
       # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
       # widen as it proves stable. Excludes the network/cassette-dependent

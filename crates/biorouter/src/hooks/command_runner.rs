@@ -18,6 +18,26 @@ pub struct CommandHookResult {
     pub stderr: String,
 }
 
+#[cfg(target_os = "windows")]
+fn shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = Command::new("cmd.exe");
+    cmd.args(["/D", "/S", "/C"]);
+    // cmd.exe does not follow the C argv quoting convention used by
+    // Command::arg. Pass its /C payload verbatim inside the outer quote pair
+    // that /S removes, preserving JSON quotes emitted by hook commands.
+    cmd.as_std_mut().raw_arg(format!("\"{command}\""));
+    cmd
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", command]);
+    cmd
+}
+
 /// Run a hook command, piping `payload_json` to its stdin.
 ///
 /// Errors (spawn failure, timeout) are returned as `Err` — callers treat
@@ -34,15 +54,7 @@ pub async fn run_command_hook(
         timeout, command
     );
 
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", command]);
-        cmd
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", command]);
-        cmd
-    };
+    let mut cmd = shell_command(command);
     configure_command_no_window(&mut cmd);
     cmd.current_dir(cwd)
         .stdin(Stdio::piped())
@@ -130,6 +142,14 @@ mod tests {
         }
     }
 
+    fn json_stdout_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            r#"echo {"decision":"block","reason":"keep going"}"#
+        } else {
+            r#"printf '%s\n' '{"decision":"block","reason":"keep going"}'"#
+        }
+    }
+
     #[tokio::test]
     async fn hook_receives_payload_on_stdin() {
         let dir = tempfile::tempdir().unwrap();
@@ -175,6 +195,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn hook_preserves_quoted_json_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_command_hook(
+            json_stdout_command(),
+            "{}",
+            dir.path(),
+            &[],
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        let output: serde_json::Value = serde_json::from_str(result.stdout.trim()).unwrap();
+        assert_eq!(output["decision"], "block");
+        assert_eq!(output["reason"], "keep going");
     }
 
     #[tokio::test]
