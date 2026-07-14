@@ -13,10 +13,9 @@ use biorouter::config::{Config, ConfigError};
 use biorouter::model::ModelConfig;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
 use biorouter::providers::base::{ProviderMetadata, ProviderType};
-use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::providers::create_with_default_model;
 use biorouter::providers::errors::ProviderError;
-use biorouter::providers::pricing::{provider_model_pricing, ProviderModelPricing};
+use biorouter::providers::pricing::{resolved_provider_model_pricing, ProviderModelPricing};
 use biorouter::providers::providers as get_providers;
 use biorouter::providers::{retry_operation, RetryConfig};
 use biorouter::{
@@ -490,6 +489,8 @@ pub struct PricingData {
     pub model: String,
     pub input_token_cost: f64,
     pub output_token_cost: f64,
+    pub cache_read_cost: Option<f64>,
+    pub cache_write_cost: Option<f64>,
     pub currency: String,
     pub context_length: Option<u32>,
 }
@@ -517,42 +518,13 @@ pub struct PricingQuery {
 pub async fn get_pricing(
     Json(query): Json<PricingQuery>,
 ) -> Result<Json<PricingResponse>, StatusCode> {
-    if let Some(pricing) = provider_model_pricing(&query.provider, &query.model) {
-        return Ok(Json(PricingResponse {
-            pricing: vec![pricing_data_from_provider_pricing(&query, pricing)],
-            source: "provider".to_string(),
-        }));
-    }
-
-    if let Some(pricing) = provider_metadata_pricing(&query).await {
-        return Ok(Json(PricingResponse {
-            pricing: vec![pricing],
-            source: "provider_metadata".to_string(),
-        }));
-    }
-
-    let canonical_model =
-        maybe_get_canonical_model(&query.provider, &query.model).ok_or(StatusCode::NOT_FOUND)?;
-
-    let mut pricing_data = Vec::new();
-
-    if let (Some(input_cost), Some(output_cost)) = (
-        canonical_model.pricing.prompt,
-        canonical_model.pricing.completion,
-    ) {
-        pricing_data.push(PricingData {
-            provider: query.provider.clone(),
-            model: query.model.clone(),
-            input_token_cost: input_cost,
-            output_token_cost: output_cost,
-            currency: "$".to_string(),
-            context_length: Some(canonical_model.context_length as u32),
-        });
-    }
+    let pricing = resolved_provider_model_pricing(&query.provider, &query.model)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(PricingResponse {
-        pricing: pricing_data,
-        source: "canonical".to_string(),
+        pricing: vec![pricing_data_from_provider_pricing(&query, pricing)],
+        source: "resolved".to_string(),
     }))
 }
 
@@ -565,30 +537,11 @@ fn pricing_data_from_provider_pricing(
         model: query.model.clone(),
         input_token_cost: pricing.input_token_cost,
         output_token_cost: pricing.output_token_cost,
+        cache_read_cost: pricing.cache_read_cost,
+        cache_write_cost: pricing.cache_write_cost,
         currency: pricing.currency,
         context_length: pricing.context_length,
     }
-}
-
-async fn provider_metadata_pricing(query: &PricingQuery) -> Option<PricingData> {
-    let providers = get_providers().await;
-    let provider = providers
-        .into_iter()
-        .find(|(metadata, _)| metadata.name == query.provider)?;
-    let model = provider
-        .0
-        .known_models
-        .into_iter()
-        .find(|model| model.name == query.model)?;
-
-    Some(PricingData {
-        provider: query.provider.clone(),
-        model: query.model.clone(),
-        input_token_cost: model.input_token_cost?,
-        output_token_cost: model.output_token_cost?,
-        currency: model.currency.unwrap_or_else(|| "$".to_string()),
-        context_length: Some(model.context_limit as u32),
-    })
 }
 
 #[utoipa::path(
@@ -1016,5 +969,25 @@ mod tests {
         // Display names should be resolved from metadata, not left as the id.
         let openai = resp.providers.iter().find(|p| p.name == "openai").unwrap();
         assert!(!openai.display_name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricing_endpoint_uses_shared_resolver_and_exposes_cache_rates() {
+        let query = PricingQuery {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        };
+        let expected = resolved_provider_model_pricing(&query.provider, &query.model)
+            .await
+            .unwrap();
+
+        let Json(response) = get_pricing(Json(query)).await.unwrap();
+        let actual = &response.pricing[0];
+
+        assert_eq!(response.source, "resolved");
+        assert_eq!(actual.input_token_cost, expected.input_token_cost);
+        assert_eq!(actual.output_token_cost, expected.output_token_cost);
+        assert_eq!(actual.cache_read_cost, expected.cache_read_cost);
+        assert_eq!(actual.cache_write_cost, expected.cache_write_cost);
     }
 }

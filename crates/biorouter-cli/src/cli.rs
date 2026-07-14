@@ -1229,6 +1229,27 @@ enum Command {
         command: SchedulerCommand,
     },
 
+    /// Report token + cost usage per day or per model, with a month-to-date
+    /// summary against the configured monthly budget.
+    #[command(about = "Report token and cost usage (per day / per model, month-to-date)")]
+    Usage {
+        /// Start of the range, `YYYY-MM-DD` (local). Defaults to 30 days ago.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        from: Option<String>,
+
+        /// End of the range, `YYYY-MM-DD` (local, inclusive). Defaults to today.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        to: Option<String>,
+
+        /// Break the range down per model instead of per day.
+        #[arg(long = "by-model", help = "Group usage by model instead of by day")]
+        by_model: bool,
+
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long, help = "Print machine-readable JSON")]
+        json: bool,
+    },
+
     /// Check system prerequisites (git, uv, node, …) and the CLI install
     #[command(about = "Check system prerequisites and the CLI install")]
     Doctor {
@@ -1410,6 +1431,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Projects) => "projects",
         Some(Command::Run { .. }) => "run",
         Some(Command::Schedule { .. }) => "schedule",
+        Some(Command::Usage { .. }) => "usage",
         Some(Command::Models { .. }) => "models",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
@@ -2097,6 +2119,12 @@ pub async fn cli() -> anyhow::Result<()> {
             .await
         }
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
+        Some(Command::Usage {
+            from,
+            to,
+            by_model,
+            json,
+        }) => crate::commands::usage::handle_usage(from, to, by_model, json).await,
         Some(Command::Doctor { format, no_update }) => {
             crate::commands::doctor::handle_doctor(&format, !no_update).await
         }

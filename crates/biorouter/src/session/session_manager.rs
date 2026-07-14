@@ -3,6 +3,10 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
+use crate::providers::pricing::{
+    cost_with_pricing, provider_model_pricing, resolved_provider_model_pricing,
+    ProviderModelPricing, TurnCost,
+};
 use crate::session::extension_data::ExtensionData;
 use crate::workflow::Workflow;
 use anyhow::Result;
@@ -18,7 +22,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+pub const CURRENT_SCHEMA_VERSION: i32 = 12;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -82,10 +86,10 @@ pub struct Session {
     pub total_tokens: Option<i32>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
-    /// Lifetime totals: the sum of every turn's usage, i.e. tokens actually
-    /// processed and billed. They grow without bound and overflowed `i32` at
-    /// ~2.1e9 — in release that wraps *negative* and then subtracts from the
-    /// insights `SUM`. SQLite's INTEGER is already 64-bit.
+    /// Lifetime totals. New usage writes use the four-bucket billed total;
+    /// databases created before billed-bucket accounting may contain legacy
+    /// context totals here, so reporting and budgets use `token_events` instead.
+    /// These counters grow without bound, so SQLite and Rust both use 64-bit.
     pub accumulated_total_tokens: Option<i64>,
     pub accumulated_input_tokens: Option<i64>,
     pub accumulated_output_tokens: Option<i64>,
@@ -106,15 +110,35 @@ pub struct Session {
 /// One turn's token usage, applied additively and atomically in SQL.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenDelta {
-    pub input: Option<i32>,
-    pub output: Option<i32>,
-    pub total: Option<i32>,
+    pub input: Option<i64>,
+    pub output: Option<i64>,
+    pub total: Option<i64>,
 }
 
 impl TokenDelta {
     fn is_empty(self) -> bool {
         self.input.is_none() && self.output.is_none() && self.total.is_none()
     }
+}
+
+/// One provider call's durable accounting payload. `event_key` identifies the
+/// provider call for idempotent retries: the ledger row and the session's
+/// accumulated counters are either both applied once or neither is applied.
+#[derive(Debug, Clone)]
+pub struct UsageLedgerEntry {
+    pub event_key: String,
+    pub session_id: String,
+    pub schedule_id: Option<String>,
+    pub current_total_tokens: Option<i32>,
+    pub current_input_tokens: Option<i32>,
+    pub current_output_tokens: Option<i32>,
+    pub billed_total_tokens: Option<i64>,
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub cache_read_tokens: Option<i32>,
+    pub cache_creation_tokens: Option<i32>,
 }
 
 pub struct SessionUpdateBuilder<'a> {
@@ -147,11 +171,11 @@ pub struct SessionUpdateBuilder<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct SessionInsights {
     pub total_sessions: usize,
-    pub total_tokens: i64,
+    pub total_tokens: Option<i64>,
     pub sessions_last_7_days: usize,
     pub sessions_last_30_days: usize,
-    pub tokens_last_7_days: i64,
-    pub tokens_last_30_days: i64,
+    pub tokens_last_7_days: Option<i64>,
+    pub tokens_last_30_days: Option<i64>,
 }
 
 /// The session types a user actually sees. `SubAgent`, `Hidden` and `Terminal`
@@ -186,10 +210,391 @@ pub struct ActivityWindow {
     pub end: String,
     pub max_sessions: i64,
     pub max_tokens: i64,
+    /// False when at least one event in the window predates billed-token
+    /// accounting; numeric token fields are then known subtotals, not zero/exact.
+    pub tokens_complete: bool,
     pub current_streak: i64,
     pub longest_streak: i64,
     /// Only days with activity. The client fills the rest of the grid with level 0.
     pub days: Vec<DailyActivity>,
+}
+
+/// One `(model, provider)` group of the per-model usage breakdown.
+///
+/// `model_id` / `provider` are `None` for turns recorded before model
+/// attribution landed, or when the provider reported no model — those rows
+/// aggregate together as the "unknown" group.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageRow {
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Billed tokens across all four disjoint buckets. `None` means at least
+    /// one contributing event has no reconstructable billed total.
+    pub total_tokens: Option<i64>,
+    /// Input tokens served from the prompt cache. `None` means at least one
+    /// contributing event predates cache accounting or did not report it.
+    pub cache_read_tokens: Option<i64>,
+    /// Input tokens written to the prompt cache.
+    pub cache_creation_tokens: Option<i64>,
+    /// Number of billed turns attributed to this group.
+    pub turns: i64,
+}
+
+/// How `get_usage_report` buckets the per-turn ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageGroup {
+    /// One row per local calendar day (models summed within the day).
+    Day,
+    /// One row per `(model, provider)` group over the whole range.
+    Model,
+    /// One row per `(day, model, provider)`.
+    DayModel,
+}
+
+/// One bucket of the usage report.
+///
+/// `date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is
+/// present unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of
+/// the priced turns in the bucket, or `None` when *every* contributing turn was
+/// unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
+/// flags a bucket that mixes priced, unpriced, or incomplete turns, so a day
+/// cost can be read as "at least this much" rather than exact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReportRow {
+    pub date: Option<String>,
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Billed tokens, or `None` when the bucket includes incomplete history.
+    pub total_tokens: Option<i64>,
+    /// Prompt-cache read/creation tokens in the bucket. `None` preserves
+    /// historical incompleteness; it must not be presented as a measured zero.
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub turns: i64,
+    pub cost: Option<f64>,
+    pub has_unpriced: bool,
+    /// `true` when cache cost is omitted because a contributing model has no
+    /// cache rate or an event did not report a required cache bucket.
+    pub cost_excludes_cache: bool,
+}
+
+/// Token + cost totals for a time span, priced through [`model_cost_with_cache`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTotals {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Billed tokens, or `None` when the span includes incomplete history.
+    pub total_tokens: Option<i64>,
+    /// Prompt-cache read/creation tokens in the span. `None` means the span
+    /// includes at least one event without cache-bucket accounting.
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub turns: i64,
+    /// Dollar cost of the priced turns, or `None` when nothing in the span is
+    /// priced. Priced-but-partial spans return the priced sum with
+    /// `has_unpriced = true`.
+    pub cost: Option<f64>,
+    pub has_unpriced: bool,
+    /// `true` when cache cost is omitted because pricing or cache accounting is
+    /// incomplete — the figure is then a lower bound.
+    pub cost_excludes_cache: bool,
+}
+
+/// Month-to-date and all-time usage totals, for the summary gauge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummary {
+    /// Current local month, `YYYY-MM`.
+    pub month: String,
+    pub month_to_date: UsageTotals,
+    pub all_time: UsageTotals,
+}
+
+/// The finest per-`(day, model, provider)` grain the report SQL returns, before
+/// Rust rolls it up into the requested [`UsageGroup`] and prices each bucket.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct UsageGrainRow {
+    day: String,
+    model_id: Option<String>,
+    provider: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: Option<i64>,
+    cache_read_tokens: Option<i64>,
+    cache_creation_tokens: Option<i64>,
+    turns: i64,
+    input_complete: i64,
+    output_complete: i64,
+    cache_read_complete: i64,
+    cache_creation_complete: i64,
+}
+
+/// Cost of one finest-grain row, including its cache buckets, or `None` when its
+/// `(provider, model)` pair is unknown/unpriced. Both endpoints must be present
+/// to price it — a row with no model (the "unknown" bucket) is always unpriced.
+struct GrainPrice {
+    cost: Option<TurnCost>,
+    incomplete: bool,
+}
+
+type ResolvedPricing = HashMap<(String, String), ProviderModelPricing>;
+
+async fn resolve_grain_pricing(grain: &[UsageGrainRow]) -> ResolvedPricing {
+    let mut resolved = HashMap::new();
+    for row in grain {
+        let (Some(provider), Some(model)) = (row.provider.as_ref(), row.model_id.as_ref()) else {
+            continue;
+        };
+        let key = (provider.to_ascii_lowercase(), model.to_ascii_lowercase());
+        if resolved.contains_key(&key) {
+            continue;
+        }
+        if let Some(pricing) = resolved_provider_model_pricing(provider, model).await {
+            resolved.insert(key, pricing);
+        }
+    }
+    resolved
+}
+
+fn price_grain(row: &UsageGrainRow, resolved: &ResolvedPricing) -> GrainPrice {
+    let incomplete_input_output = row.input_complete == 0 || row.output_complete == 0;
+    let (Some(provider), Some(model)) = (row.provider.as_deref(), row.model_id.as_deref()) else {
+        return GrainPrice {
+            cost: None,
+            incomplete: true,
+        };
+    };
+    let key = (provider.to_ascii_lowercase(), model.to_ascii_lowercase());
+    let pricing = resolved
+        .get(&key)
+        .cloned()
+        .or_else(|| provider_model_pricing(provider, model));
+    let Some(pricing) = pricing else {
+        return GrainPrice {
+            cost: None,
+            incomplete: true,
+        };
+    };
+    let incomplete_cache = row.cache_read_complete == 0 || row.cache_creation_complete == 0;
+    let incomplete = incomplete_input_output || incomplete_cache;
+
+    let cost = Some(cost_with_pricing(
+        &pricing,
+        row.input_tokens,
+        row.output_tokens,
+        row.cache_read_tokens.unwrap_or(0),
+        row.cache_creation_tokens.unwrap_or(0),
+    ))
+    .map(|mut cost| {
+        cost.cache_excluded |= incomplete_cache;
+        cost
+    });
+
+    // A known model with only a context total has no priceable token buckets.
+    // Returning Some(0) would falsely turn "unknown" into "$0".
+    let cost = match cost {
+        Some(cost) if incomplete && cost.cost == 0.0 && row.total_tokens != Some(0) => None,
+        other => other,
+    };
+
+    GrainPrice { cost, incomplete }
+}
+
+/// Accumulator for one output bucket while rolling grain rows up.
+#[derive(Default)]
+struct BucketAcc {
+    date: Option<String>,
+    model_id: Option<String>,
+    provider: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: Option<i64>,
+    cache_read_tokens: Option<i64>,
+    cache_creation_tokens: Option<i64>,
+    turns: i64,
+    cost_sum: f64,
+    priced_any: bool,
+    unpriced_any: bool,
+    /// Set when a priced grain row carried cache tokens the model has no rate
+    /// for, so `cost_sum` understates the true figure.
+    cache_excluded_any: bool,
+}
+
+impl BucketAcc {
+    fn add(&mut self, row: &UsageGrainRow, resolved: &ResolvedPricing) {
+        let first_row = self.turns == 0;
+        self.input_tokens += row.input_tokens;
+        self.output_tokens += row.output_tokens;
+        self.total_tokens = if first_row {
+            row.total_tokens
+        } else {
+            sum_complete(self.total_tokens, row.total_tokens)
+        };
+        self.cache_read_tokens = if first_row {
+            row.cache_read_tokens
+        } else {
+            sum_complete(self.cache_read_tokens, row.cache_read_tokens)
+        };
+        self.cache_creation_tokens = if first_row {
+            row.cache_creation_tokens
+        } else {
+            sum_complete(self.cache_creation_tokens, row.cache_creation_tokens)
+        };
+        self.turns += row.turns;
+        let price = price_grain(row, resolved);
+        self.unpriced_any |= price.incomplete;
+        match price.cost {
+            Some(TurnCost {
+                cost,
+                cache_excluded,
+            }) => {
+                self.cost_sum += cost;
+                self.priced_any = true;
+                self.cache_excluded_any |= cache_excluded;
+            }
+            None => self.unpriced_any = true,
+        }
+    }
+
+    /// `cost` is `None` only when the bucket is *entirely* unpriced, so a null
+    /// cost can never be misread as "$0"; a partially-priced bucket returns its
+    /// priced sum with `has_unpriced = true`.
+    fn cost(&self) -> Option<f64> {
+        (self.priced_any && !(self.unpriced_any && self.cost_sum == 0.0)).then_some(self.cost_sum)
+    }
+}
+
+fn sum_complete(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left + right),
+        _ => None,
+    }
+}
+
+fn complete_sum(count: i64, known_count: i64, sum: Option<i64>) -> Option<i64> {
+    if count == 0 {
+        Some(0)
+    } else if count == known_count {
+        sum
+    } else {
+        None
+    }
+}
+
+/// Roll the finest per-`(day, model, provider)` grain up into the requested
+/// grouping, pricing every grain row through [`model_cost_with_cache`] once. Pure so the
+/// grouping + cost math is unit-tested without a database.
+#[cfg(test)]
+fn rollup_report(grain: &[UsageGrainRow], group: UsageGroup) -> Vec<UsageReportRow> {
+    rollup_report_with_pricing(grain, group, &ResolvedPricing::new())
+}
+
+fn rollup_report_with_pricing(
+    grain: &[UsageGrainRow],
+    group: UsageGroup,
+    resolved: &ResolvedPricing,
+) -> Vec<UsageReportRow> {
+    // Bucket key: (date, model_id, provider); components are None per grouping.
+    type BucketKey = (Option<String>, Option<String>, Option<String>);
+    let mut map: std::collections::BTreeMap<BucketKey, BucketAcc> =
+        std::collections::BTreeMap::new();
+
+    for row in grain {
+        let (date, model_id, provider) = match group {
+            UsageGroup::Day => (Some(row.day.clone()), None, None),
+            UsageGroup::Model => (None, row.model_id.clone(), row.provider.clone()),
+            UsageGroup::DayModel => (
+                Some(row.day.clone()),
+                row.model_id.clone(),
+                row.provider.clone(),
+            ),
+        };
+        map.entry((date.clone(), model_id.clone(), provider.clone()))
+            .or_insert_with(|| BucketAcc {
+                date,
+                model_id,
+                provider,
+                ..Default::default()
+            })
+            .add(row, resolved);
+    }
+
+    let mut rows: Vec<UsageReportRow> = map
+        .into_values()
+        .map(|a| UsageReportRow {
+            cost: a.cost(),
+            has_unpriced: a.unpriced_any,
+            cost_excludes_cache: a.cache_excluded_any,
+            date: a.date,
+            model_id: a.model_id,
+            provider: a.provider,
+            input_tokens: a.input_tokens,
+            output_tokens: a.output_tokens,
+            total_tokens: a.total_tokens,
+            cache_read_tokens: a.cache_read_tokens,
+            cache_creation_tokens: a.cache_creation_tokens,
+            turns: a.turns,
+        })
+        .collect();
+
+    // Day-bearing groups read as a chronological series (day asc, then heaviest
+    // model first within a day); a pure per-model report is heaviest-first.
+    rows.sort_by(|a, b| {
+        a.date
+            .cmp(&b.date)
+            .then(b.total_tokens.cmp(&a.total_tokens))
+            .then(a.model_id.cmp(&b.model_id))
+    });
+    rows
+}
+
+/// Sum grain rows into a single priced total (used for MTD and all-time).
+#[cfg(test)]
+fn totals_from_grain(grain: &[UsageGrainRow]) -> UsageTotals {
+    totals_from_grain_with_pricing(grain, &ResolvedPricing::new())
+}
+
+fn totals_from_grain_with_pricing(
+    grain: &[UsageGrainRow],
+    resolved: &ResolvedPricing,
+) -> UsageTotals {
+    if grain.is_empty() {
+        return UsageTotals {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns: 0,
+            cost: Some(0.0),
+            has_unpriced: false,
+            cost_excludes_cache: false,
+        };
+    }
+
+    let mut acc = BucketAcc::default();
+    for row in grain {
+        acc.add(row, resolved);
+    }
+    UsageTotals {
+        input_tokens: acc.input_tokens,
+        output_tokens: acc.output_tokens,
+        total_tokens: acc.total_tokens,
+        cache_read_tokens: acc.cache_read_tokens,
+        cache_creation_tokens: acc.cache_creation_tokens,
+        turns: acc.turns,
+        cost: acc.cost(),
+        has_unpriced: acc.unpriced_any,
+        cost_excludes_cache: acc.cache_excluded_any,
+    }
 }
 
 /// A day's raw intensity, before bucketing.
@@ -230,6 +635,7 @@ fn build_activity_window(
     session_rows: &[(String, i64)],
     token_rows: &[(String, i64, i64, i64)],
     message_rows: &[(String, i64)],
+    tokens_complete: bool,
 ) -> ActivityWindow {
     use std::collections::BTreeMap;
 
@@ -309,6 +715,7 @@ fn build_activity_window(
         end,
         max_sessions,
         max_tokens,
+        tokens_complete,
         current_streak,
         longest_streak,
         days,
@@ -617,16 +1024,67 @@ impl SessionManager {
     }
 
     /// Append one turn's usage to the per-turn token ledger.
+    ///
+    /// `model` / `provider` attribute the turn for the per-model breakdown; pass
+    /// `None` when the provider did not report a model (the row then aggregates
+    /// under the 'unknown' group).
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_token_event(
         &self,
         session_id: &str,
         input: Option<i32>,
         output: Option<i32>,
-        total: i32,
+        total: i64,
+        model: Option<&str>,
+        provider: Option<&str>,
+        cache_read: Option<i32>,
+        cache_creation: Option<i32>,
     ) -> Result<()> {
         self.storage
-            .record_token_event(session_id, input, output, total)
+            .record_token_event(
+                session_id,
+                input,
+                output,
+                total,
+                model,
+                provider,
+                cache_read,
+                cache_creation,
+            )
             .await
+    }
+
+    /// Atomically append a production usage event and apply the same event to
+    /// the session's lifetime counters. Reusing `event_key` is a no-op, which
+    /// makes retrying an ambiguous database result safe.
+    pub async fn apply_usage_event(&self, entry: UsageLedgerEntry) -> Result<bool> {
+        self.storage.apply_usage_event(entry).await
+    }
+
+    /// Per-model usage rollup for one session (for the cost popover breakdown).
+    pub async fn get_session_model_usage(&self, session_id: &str) -> Result<Vec<ModelUsageRow>> {
+        self.storage.get_session_model_usage(session_id).await
+    }
+
+    /// Global per-model usage rollup over `[from, to]` (inclusive, unix seconds).
+    pub async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
+        self.storage.get_model_usage(from, to).await
+    }
+
+    /// Queryable, server-priced usage report over `[from, to]` (inclusive, unix
+    /// seconds), bucketed by day, model, or day×model.
+    pub async fn get_usage_report(
+        &self,
+        from: i64,
+        to: i64,
+        group: UsageGroup,
+    ) -> Result<Vec<UsageReportRow>> {
+        self.storage.get_usage_report(from, to, group).await
+    }
+
+    /// Month-to-date + all-time priced usage totals, for the summary gauge.
+    pub async fn get_usage_summary(&self) -> Result<UsageSummary> {
+        self.storage.get_usage_summary().await
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
@@ -1116,29 +1574,7 @@ impl SessionStorage {
         .execute(pool)
         .await?;
 
-        // Append-only per-turn token accounting. See migration 10 for why this is
-        // a side table rather than `messages.tokens`.
-        sqlx::query(
-            r#"
-            CREATE TABLE token_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                ts INTEGER NOT NULL,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                total_tokens INTEGER NOT NULL DEFAULT 0
-            )
-        "#,
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX idx_token_events_ts ON token_events(ts)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_token_events_session ON token_events(session_id, ts)")
-            .execute(pool)
-            .await?;
+        Self::create_usage_schema(pool).await?;
 
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
@@ -1161,6 +1597,43 @@ impl SessionStorage {
         .execute(pool)
         .await?;
 
+        Ok(())
+    }
+
+    async fn create_usage_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                billed_total_tokens INTEGER,
+                model_id TEXT,
+                provider TEXT,
+                cache_read_tokens INTEGER,
+                cache_creation_tokens INTEGER,
+                event_key TEXT,
+                session_type TEXT
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_token_events_ts ON token_events(ts)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_token_events_session ON token_events(session_id, ts)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_token_events_event_key ON token_events(event_key) WHERE event_key IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -1286,6 +1759,104 @@ impl SessionStorage {
 
             info!("All migrations complete");
         }
+
+        // Some development builds shipped schema version 12 before the usage
+        // ledger columns were finalized. Schema-version immutability means such
+        // databases will never re-run migration 12, so reconcile the additive,
+        // idempotent shape on every open without consuming migration v13.
+        Self::reconcile_usage_schema(pool).await?;
+
+        Ok(())
+    }
+
+    async fn reconcile_usage_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
+        // concurrently running BioRouter processes. A deferred transaction lets
+        // two readers both observe a missing column before either ALTERs it.
+        let mut connection = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let result = Self::reconcile_usage_schema_locked(&mut connection).await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn reconcile_usage_schema_locked(connection: &mut sqlx::SqliteConnection) -> Result<()> {
+        for (column, sql_type) in [
+            ("model_id", "TEXT"),
+            ("provider", "TEXT"),
+            ("cache_read_tokens", "INTEGER"),
+            ("cache_creation_tokens", "INTEGER"),
+            ("billed_total_tokens", "INTEGER"),
+            ("event_key", "TEXT"),
+            ("session_type", "TEXT"),
+        ] {
+            let exists: i32 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = ?1",
+            )
+            .bind(column)
+            .fetch_one(&mut *connection)
+            .await?;
+            if exists == 0 {
+                sqlx::query(&format!(
+                    "ALTER TABLE token_events ADD COLUMN {column} {sql_type}"
+                ))
+                .execute(&mut *connection)
+                .await?;
+            }
+        }
+
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_event_key ON token_events(event_key) WHERE event_key IS NOT NULL",
+        )
+        .execute(&mut *connection)
+        .await?;
+
+        // Capture the session classification while it still exists. Rows whose
+        // parent session was already deleted remain NULL and are conservatively
+        // excluded from user/subagent spend rather than assumed billable.
+        sqlx::query(
+            r#"
+            UPDATE token_events
+            SET session_type = (
+                SELECT s.session_type FROM sessions s WHERE s.id = token_events.session_id
+            )
+            WHERE session_type IS NULL
+            "#,
+        )
+        .execute(&mut *connection)
+        .await?;
+
+        // Old v11/v12 development migrations copied each session's final model
+        // backward and sometimes materialized unknown cache buckets as zero.
+        // Without either a durable event identity or a billed total, there is no
+        // trustworthy evidence that those values describe the original call.
+        sqlx::query(
+            r#"
+            UPDATE token_events
+            SET model_id = NULL,
+                provider = NULL,
+                cache_read_tokens = NULL,
+                cache_creation_tokens = NULL
+            WHERE event_key IS NULL
+              AND billed_total_tokens IS NULL
+              AND (model_id IS NOT NULL
+                   OR provider IS NOT NULL
+                   OR cache_read_tokens IS NOT NULL
+                   OR cache_creation_tokens IS NOT NULL)
+            "#,
+        )
+        .execute(&mut *connection)
+        .await?;
 
         Ok(())
     }
@@ -1503,6 +2074,46 @@ impl SessionStorage {
                 )
                 .execute(pool)
                 .await?;
+            }
+            11 => {
+                // Per-turn model attribution. Before this, `token_events` recorded
+                // only token counts, so a thread that switched models mid-way (the
+                // reported UCSF workflow) could not be split per model — the
+                // `ProviderUsage.model` was dropped at record time.
+                //
+                // Guard each ADD COLUMN with a pragma check so re-running the
+                // migration on a DB that already has the column is a no-op.
+                let model_col: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = 'model_id'",
+                )
+                .fetch_one(pool)
+                .await?;
+                if model_col == 0 {
+                    sqlx::query("ALTER TABLE token_events ADD COLUMN model_id TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+
+                let provider_col: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = 'provider'",
+                )
+                .fetch_one(pool)
+                .await?;
+                if provider_col == 0 {
+                    sqlx::query("ALTER TABLE token_events ADD COLUMN provider TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+
+                // Historical rows deliberately remain NULL. A session stores
+                // only its final model/provider, so copying that value backward
+                // would fabricate attribution for sessions that switched models.
+            }
+            12 => {
+                // This branch handles a normal v11 → v12 upgrade. The same
+                // additive reconciliation also runs unconditionally after the
+                // version loop for databases created by early v12 builds.
+                Self::reconcile_usage_schema(pool).await?;
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
@@ -1769,7 +2380,7 @@ impl SessionStorage {
                 .into_iter()
                 .flatten()
             {
-                q = q.bind(i64::from(value));
+                q = q.bind(value);
             }
         }
         if let Some(sid) = builder.schedule_id {
@@ -1986,13 +2597,12 @@ impl SessionStorage {
         // session counts as recent even if it was started earlier. Only
         // user-facing session types are counted, so these tiles agree with the
         // session list rendered beneath them.
-        let sessions = sqlx::query_as::<_, (i64, Option<i64>, i64, i64)>(
+        let sessions = sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
             SELECT
               COUNT(*) AS total_sessions,
-              COALESCE(SUM(COALESCE(accumulated_total_tokens, total_tokens, 0)), 0) AS total_tokens,
-              SUM(CASE WHEN updated_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS sessions_7d,
-              SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS sessions_30d
+              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS sessions_7d,
+              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS sessions_30d
             FROM sessions
             WHERE session_type IN ('user', 'scheduled')
             "#,
@@ -2006,16 +2616,33 @@ impl SessionStorage {
         // had merely been touched in the window, so a 60-day-old session holding
         // 2,000,000 tokens that received one reply today contributed all
         // 2,000,000 to "past 7 days".
-        let tokens = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        let tokens = sqlx::query_as::<
+            _,
+            (
+                i64,
+                i64,
+                Option<i64>,
+                i64,
+                i64,
+                Option<i64>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-7 days') AS INTEGER)
-                THEN te.total_tokens ELSE 0 END), 0) AS tokens_7d,
-              COALESCE(SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER)
-                THEN te.total_tokens ELSE 0 END), 0) AS tokens_30d
+              COUNT(*),
+              COUNT(te.billed_total_tokens),
+              SUM(te.billed_total_tokens),
+              COUNT(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-7 days') AS INTEGER) THEN 1 END),
+              COUNT(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-7 days') AS INTEGER) THEN te.billed_total_tokens END),
+              SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-7 days') AS INTEGER) THEN te.billed_total_tokens END),
+              COUNT(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER) THEN 1 END),
+              COUNT(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER) THEN te.billed_total_tokens END),
+              SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER) THEN te.billed_total_tokens END)
             FROM token_events te
-            JOIN sessions s ON s.id = te.session_id
-            WHERE s.session_type IN ('user', 'scheduled')
+            WHERE te.session_type IN ('user', 'scheduled')
             "#,
         )
         .fetch_one(pool)
@@ -2023,36 +2650,340 @@ impl SessionStorage {
 
         Ok(SessionInsights {
             total_sessions: sessions.0 as usize,
-            total_tokens: sessions.1.unwrap_or(0),
-            sessions_last_7_days: sessions.2.max(0) as usize,
-            sessions_last_30_days: sessions.3.max(0) as usize,
-            tokens_last_7_days: tokens.0.unwrap_or(0),
-            tokens_last_30_days: tokens.1.unwrap_or(0),
+            total_tokens: complete_sum(tokens.0, tokens.1, tokens.2),
+            sessions_last_7_days: sessions.1.max(0) as usize,
+            sessions_last_30_days: sessions.2.max(0) as usize,
+            tokens_last_7_days: complete_sum(tokens.3, tokens.4, tokens.5),
+            tokens_last_30_days: complete_sum(tokens.6, tokens.7, tokens.8),
         })
     }
 
     /// Record one turn's usage. Append-only; never updated, never deleted.
+    #[allow(clippy::too_many_arguments)]
     async fn record_token_event(
         &self,
         session_id: &str,
         input: Option<i32>,
         output: Option<i32>,
-        total: i32,
+        total: i64,
+        model: Option<&str>,
+        provider: Option<&str>,
+        cache_read: Option<i32>,
+        cache_creation: Option<i32>,
     ) -> Result<()> {
         let pool = self.pool().await?;
+        // An empty model/provider string is stored as NULL so it aggregates with
+        // the genuinely-unknown rows rather than as a distinct "" group.
+        let model = model.filter(|m| !m.is_empty());
+        let provider = provider.filter(|p| !p.is_empty());
         sqlx::query(
             r#"
-            INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens)
-            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?)
+            INSERT INTO token_events
+                (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider,
+                 cache_read_tokens, cache_creation_tokens, session_type)
+            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT session_type FROM sessions WHERE id = ?))
             "#,
         )
         .bind(session_id)
         .bind(input.map(i64::from))
         .bind(output.map(i64::from))
-        .bind(i64::from(total))
+        .bind(total)
+        .bind(total)
+        .bind(model)
+        .bind(provider)
+        .bind(cache_read.map(i64::from))
+        .bind(cache_creation.map(i64::from))
+        .bind(session_id)
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    async fn apply_usage_event(&self, entry: UsageLedgerEntry) -> Result<bool> {
+        if entry.event_key.trim().is_empty() {
+            anyhow::bail!("usage event key must not be empty");
+        }
+
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+        let model = entry.model_id.as_deref().filter(|model| !model.is_empty());
+        let provider = entry
+            .provider
+            .as_deref()
+            .filter(|provider| !provider.is_empty());
+        let context_or_legacy_total = entry
+            .current_total_tokens
+            .map(i64::from)
+            .or(entry.billed_total_tokens)
+            .unwrap_or(0);
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO token_events
+                (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider,
+                 cache_read_tokens, cache_creation_tokens, event_key, session_type)
+            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT session_type FROM sessions WHERE id = ?))
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(&entry.session_id)
+        .bind(entry.input_tokens.map(i64::from))
+        .bind(entry.output_tokens.map(i64::from))
+        .bind(context_or_legacy_total)
+        .bind(entry.billed_total_tokens)
+        .bind(model)
+        .bind(provider)
+        .bind(entry.cache_read_tokens.map(i64::from))
+        .bind(entry.cache_creation_tokens.map(i64::from))
+        .bind(&entry.event_key)
+        .bind(&entry.session_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+
+        if !inserted {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        let update_current = entry.current_total_tokens.is_some()
+            || entry.current_input_tokens.is_some()
+            || entry.current_output_tokens.is_some();
+        let input_delta = entry.input_tokens.map(i64::from);
+        let output_delta = entry.output_tokens.map(i64::from);
+        let updated = sqlx::query(
+            r#"
+            UPDATE sessions SET
+                accumulated_total_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_total_tokens
+                    ELSE COALESCE(accumulated_total_tokens, 0) + ? END,
+                accumulated_input_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_input_tokens
+                    ELSE COALESCE(accumulated_input_tokens, 0) + ? END,
+                accumulated_output_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_output_tokens
+                    ELSE COALESCE(accumulated_output_tokens, 0) + ? END,
+                total_tokens = CASE WHEN ? THEN ? ELSE total_tokens END,
+                input_tokens = CASE WHEN ? THEN ? ELSE input_tokens END,
+                output_tokens = CASE WHEN ? THEN ? ELSE output_tokens END,
+                schedule_id = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            "#,
+        )
+        .bind(entry.billed_total_tokens)
+        .bind(entry.billed_total_tokens)
+        .bind(input_delta)
+        .bind(input_delta)
+        .bind(output_delta)
+        .bind(output_delta)
+        .bind(update_current)
+        .bind(entry.current_total_tokens)
+        .bind(update_current)
+        .bind(entry.current_input_tokens)
+        .bind(update_current)
+        .bind(entry.current_output_tokens)
+        .bind(&entry.schedule_id)
+        .bind(&entry.session_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        if updated != 1 {
+            anyhow::bail!("session not found");
+        }
+
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Per-model rollup for one session. NULL `model_id` groups as its own row
+    /// (the caller surfaces it as "unknown").
+    async fn get_session_model_usage(&self, session_id: &str) -> Result<Vec<ModelUsageRow>> {
+        let pool = self.pool().await?;
+        let exists =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+                .bind(session_id)
+                .fetch_one(pool)
+                .await?;
+        if !exists {
+            anyhow::bail!("session not found");
+        }
+        let rows = sqlx::query_as::<_, ModelUsageRow>(
+            r#"
+            SELECT model_id,
+                   provider,
+                   COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   CASE WHEN COUNT(billed_total_tokens) = COUNT(*)
+                        THEN SUM(billed_total_tokens) END AS total_tokens,
+                   CASE WHEN COUNT(cache_read_tokens) = COUNT(*)
+                        THEN SUM(cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN COUNT(cache_creation_tokens) = COUNT(*)
+                        THEN SUM(cache_creation_tokens) END AS cache_creation_tokens,
+                   COUNT(*)                        AS turns
+            FROM token_events
+            WHERE session_id = ?1
+            GROUP BY model_id, provider
+            ORDER BY total_tokens DESC
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Global per-model rollup over the inclusive `[from, to]` unix-second window,
+    /// restricted to billable session types. Subagent calls are real provider
+    /// spend even though their internal sessions stay hidden from session lists.
+    async fn get_model_usage(&self, from: i64, to: i64) -> Result<Vec<ModelUsageRow>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, ModelUsageRow>(
+            r#"
+            SELECT te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
+                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
+                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
+                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
+                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
+                   COUNT(*)                           AS turns
+            FROM token_events te
+            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
+              AND te.ts >= ?1 AND te.ts <= ?2
+            GROUP BY te.model_id, te.provider
+            ORDER BY total_tokens DESC
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Queryable usage report over the inclusive `[from, to]` unix-second window.
+    ///
+    /// The SQL always groups at the finest `(day, model, provider)` grain; Rust
+    /// then prices each grain row once and rolls it up into `group`. That order
+    /// is what lets a `Day` bucket report a correct dollar cost even though the
+    /// day mixes models at different prices.
+    async fn get_usage_report(
+        &self,
+        from: i64,
+        to: i64,
+        group: UsageGroup,
+    ) -> Result<Vec<UsageReportRow>> {
+        let pool = self.pool().await?;
+        let grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
+                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
+                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
+                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
+                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
+                   COUNT(*) AS turns,
+                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
+                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
+                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
+                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
+            FROM token_events te
+            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
+              AND te.ts >= ?1 AND te.ts <= ?2
+            GROUP BY day, te.model_id, te.provider
+            "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(pool)
+        .await?;
+        let pricing = resolve_grain_pricing(&grain).await;
+        Ok(rollup_report_with_pricing(&grain, group, &pricing))
+    }
+
+    /// Month-to-date (current local month) + all-time priced totals.
+    async fn get_usage_summary(&self) -> Result<UsageSummary> {
+        let pool = self.pool().await?;
+
+        // Per-model grain is required so each model prices at its own rate before
+        // summing; `day` is unused here, so a constant keeps the shared struct.
+        let mtd_grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT '' AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
+                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
+                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
+                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
+                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
+                   COUNT(*) AS turns,
+                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
+                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
+                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
+                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
+            FROM token_events te
+            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
+              AND strftime('%Y-%m', te.ts, 'unixepoch', 'localtime')
+                  = strftime('%Y-%m', 'now', 'localtime')
+            GROUP BY te.model_id, te.provider
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let all_grain = sqlx::query_as::<_, UsageGrainRow>(
+            r#"
+            SELECT '' AS day,
+                   te.model_id,
+                   te.provider,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
+                        THEN SUM(te.billed_total_tokens) END AS total_tokens,
+                   CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
+                        THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
+                   CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
+                        THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
+                   COUNT(*) AS turns,
+                   CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
+                   CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
+                   CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
+                   CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete
+            FROM token_events te
+            WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
+            GROUP BY te.model_id, te.provider
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let month: String = sqlx::query_scalar("SELECT strftime('%Y-%m', 'now', 'localtime')")
+            .fetch_one(pool)
+            .await?;
+        let mtd_pricing = resolve_grain_pricing(&mtd_grain).await;
+        let all_pricing = resolve_grain_pricing(&all_grain).await;
+
+        Ok(UsageSummary {
+            month,
+            month_to_date: totals_from_grain_with_pricing(&mtd_grain, &mtd_pricing),
+            all_time: totals_from_grain_with_pricing(&all_grain, &all_pricing),
+        })
     }
 
     async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
@@ -2079,18 +3010,28 @@ impl SessionStorage {
         let token_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
             r#"
             SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
-                   COALESCE(SUM(te.total_tokens), 0)  AS tokens,
+                   COALESCE(SUM(te.billed_total_tokens), 0) AS tokens,
                    COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
                    COALESCE(SUM(te.output_tokens), 0) AS output_tokens
             FROM token_events te
-            JOIN sessions s ON s.id = te.session_id
-            WHERE s.session_type IN ('user', 'scheduled')
+            WHERE te.session_type IN ('user', 'scheduled')
               AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
             GROUP BY day
             "#,
         )
         .bind(&window)
         .fetch_all(pool)
+        .await?;
+        let tokens_complete = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT COUNT(te.billed_total_tokens) = COUNT(*)
+            FROM token_events te
+            WHERE te.session_type IN ('user', 'scheduled')
+              AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
+            "#,
+        )
+        .bind(&window)
+        .fetch_one(pool)
         .await?;
 
         // `messages.created_timestamp` is unix SECONDS (Message::new uses
@@ -2122,6 +3063,7 @@ impl SessionStorage {
             &session_rows,
             &token_rows,
             &message_rows,
+            tokens_complete,
         ))
     }
 
@@ -2392,6 +3334,18 @@ mod tests {
                     .apply()
                     .await
                     .unwrap();
+                sm.record_token_event(
+                    &session.id,
+                    Some(100 * i),
+                    Some(0),
+                    i64::from(100 * i),
+                    Some("test-model"),
+                    Some("test-provider"),
+                    Some(0),
+                    Some(0),
+                )
+                .await
+                .unwrap();
 
                 let updated = sm.get_session(&session.id, true).await.unwrap();
                 assert_eq!(updated.message_count, 2);
@@ -2423,7 +3377,7 @@ mod tests {
         let insights = session_manager.get_insights().await.unwrap();
         assert_eq!(insights.total_sessions, NUM_CONCURRENT_SESSIONS as usize);
         let expected_tokens = 100 * NUM_CONCURRENT_SESSIONS * (NUM_CONCURRENT_SESSIONS - 1) / 2;
-        assert_eq!(insights.total_tokens, expected_tokens as i64);
+        assert_eq!(insights.total_tokens, Some(expected_tokens as i64));
     }
 
     #[tokio::test]
@@ -2977,6 +3931,129 @@ mod tests {
         assert_eq!(counts.accumulated_output_tokens, Some(60));
     }
 
+    #[tokio::test]
+    async fn usage_event_updates_ledger_and_counters_once_in_one_transaction() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+        let entry = UsageLedgerEntry {
+            event_key: "provider-call-1".to_string(),
+            session_id: session.id.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(820),
+            current_input_tokens: Some(100),
+            current_output_tokens: Some(20),
+            billed_total_tokens: Some(900),
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            model_id: Some("claude-sonnet-4-20250514".to_string()),
+            provider: Some("anthropic".to_string()),
+            cache_read_tokens: Some(700),
+            cache_creation_tokens: Some(80),
+        };
+
+        assert!(sm.apply_usage_event(entry.clone()).await.unwrap());
+        assert!(
+            !sm.apply_usage_event(entry).await.unwrap(),
+            "retrying the same provider call is a no-op"
+        );
+
+        let counts = sm.get_token_counts(&session.id).await.unwrap();
+        assert_eq!(
+            counts.total_tokens,
+            Some(820),
+            "live context stays separate"
+        );
+        assert_eq!(counts.accumulated_total_tokens, Some(900));
+        assert_eq!(counts.accumulated_input_tokens, Some(100));
+        assert_eq!(counts.accumulated_output_tokens, Some(20));
+
+        let rows = sm.get_session_model_usage(&session.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].turns, 1);
+        assert_eq!(rows[0].total_tokens, Some(900));
+        assert_eq!(rows[0].cache_read_tokens, Some(700));
+        assert_eq!(rows[0].cache_creation_tokens, Some(80));
+    }
+
+    #[tokio::test]
+    async fn total_only_usage_is_retained_but_never_priced_as_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "total-only-provider-call".to_string(),
+            session_id: session.id.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(500),
+            current_input_tokens: None,
+            current_output_tokens: None,
+            billed_total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            model_id: Some("glm-5.2".to_string()),
+            provider: Some("zai".to_string()),
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+        })
+        .await
+        .unwrap();
+
+        let counts = sm.get_token_counts(&session.id).await.unwrap();
+        assert_eq!(counts.total_tokens, Some(500));
+        assert_eq!(counts.accumulated_total_tokens, None);
+
+        let rows = sm
+            .get_usage_report(0, i64::MAX, UsageGroup::Model)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total_tokens, None);
+        assert_eq!(rows[0].cost, None, "unknown cost is null, never $0");
+        assert!(rows[0].has_unpriced);
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.total_tokens, None);
+        assert_eq!(insights.tokens_last_7_days, None);
+        let activity = sm.get_activity(7).await.unwrap();
+        assert!(!activity.tokens_complete);
+    }
+
+    #[tokio::test]
+    async fn modern_zero_cache_buckets_persist_as_complete_measurements() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "no-cache-provider-call".to_string(),
+            session_id: session.id,
+            schedule_id: None,
+            current_total_tokens: Some(120),
+            current_input_tokens: Some(100),
+            current_output_tokens: Some(20),
+            billed_total_tokens: Some(120),
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            model_id: Some("glm-5.2".to_string()),
+            provider: Some("zai".to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+
+        let rows = sm
+            .get_usage_report(0, i64::MAX, UsageGroup::Model)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].cache_read_tokens, Some(0));
+        assert_eq!(rows[0].cache_creation_tokens, Some(0));
+        assert!(!rows[0].has_unpriced);
+        assert!(!rows[0].cost_excludes_cache);
+        assert!(rows[0].cost.is_some());
+    }
+
     /// SQLite's INTEGER is 64-bit; the Rust side used to be `i32`, which wraps
     /// negative past ~2.1e9 and then *subtracts* from the insights SUM.
     #[tokio::test]
@@ -2995,9 +4072,23 @@ mod tests {
         let counts = sm.get_token_counts(&session.id).await.unwrap();
         assert_eq!(counts.accumulated_total_tokens, Some(beyond_i32));
 
+        sm.record_token_event(
+            &session.id,
+            None,
+            None,
+            beyond_i32,
+            Some("m"),
+            Some("p"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
         let insights = sm.get_insights().await.unwrap();
         assert_eq!(
-            insights.total_tokens, beyond_i32,
+            insights.total_tokens,
+            Some(beyond_i32),
             "no wrap, no negative sum"
         );
     }
@@ -3019,16 +4110,14 @@ mod tests {
                 .create_session("/tmp".into(), String::new(), session_type)
                 .await
                 .unwrap();
-            sm.update(&s.id)
-                .accumulated_total_tokens(Some(tokens))
-                .apply()
+            sm.record_token_event(&s.id, None, None, tokens, None, None, None, None)
                 .await
                 .unwrap();
         }
 
         let insights = sm.get_insights().await.unwrap();
         assert_eq!(insights.total_sessions, 2, "user + scheduled only");
-        assert_eq!(insights.total_tokens, 1_500);
+        assert_eq!(insights.total_tokens, Some(1_500));
     }
 
     /// The per-turn ledger is what makes a real per-day token series possible —
@@ -3046,18 +4135,28 @@ mod tests {
             .await
             .unwrap();
         let insights = sm.get_insights().await.unwrap();
-        assert_eq!(insights.total_tokens, 50_000);
+        assert_eq!(insights.total_tokens, Some(0));
         assert_eq!(
-            insights.tokens_last_7_days, 0,
+            insights.tokens_last_7_days,
+            Some(0),
             "a lifetime total is not a 7-day total"
         );
 
-        sm.record_token_event(&session.id, Some(80), Some(20), 100)
-            .await
-            .unwrap();
+        sm.record_token_event(
+            &session.id,
+            Some(80),
+            Some(20),
+            100,
+            Some("m1"),
+            Some("p1"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let insights = sm.get_insights().await.unwrap();
-        assert_eq!(insights.tokens_last_7_days, 100);
-        assert_eq!(insights.tokens_last_30_days, 100);
+        assert_eq!(insights.tokens_last_7_days, Some(100));
+        assert_eq!(insights.tokens_last_30_days, Some(100));
 
         let activity = sm.get_activity(30).await.unwrap();
         assert_eq!(activity.days.len(), 1);
@@ -3065,6 +4164,1137 @@ mod tests {
         assert_eq!(activity.days[0].sessions, 1);
         assert!(activity.days[0].level >= 1);
         assert_eq!(activity.current_streak, 1);
+    }
+
+    #[tokio::test]
+    async fn per_model_usage_sums_across_models_and_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Two turns on model A, one on model B, one with no model (unknown).
+        sm.record_token_event(
+            &session.id,
+            Some(100),
+            Some(20),
+            120,
+            Some("gpt-5"),
+            Some("openai"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        sm.record_token_event(
+            &session.id,
+            Some(200),
+            Some(50),
+            250,
+            Some("gpt-5"),
+            Some("openai"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        sm.record_token_event(
+            &session.id,
+            Some(10),
+            Some(5),
+            15,
+            Some("claude-fable-5"),
+            Some("anthropic"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        // Unknown: no model / provider reported.
+        sm.record_token_event(&session.id, Some(1), Some(2), 3, None, None, None, None)
+            .await
+            .unwrap();
+
+        let rows = sm.get_session_model_usage(&session.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "gpt-5, claude, and unknown are distinct groups"
+        );
+
+        let gpt = rows
+            .iter()
+            .find(|r| r.model_id.as_deref() == Some("gpt-5"))
+            .expect("gpt-5 row present");
+        // Hand-computed: 100+200 in, 20+50 out, 120+250 total, 2 turns.
+        assert_eq!(gpt.provider.as_deref(), Some("openai"));
+        assert_eq!(gpt.input_tokens, 300);
+        assert_eq!(gpt.output_tokens, 70);
+        assert_eq!(gpt.total_tokens, Some(370));
+        assert_eq!(gpt.turns, 2);
+
+        let claude = rows
+            .iter()
+            .find(|r| r.model_id.as_deref() == Some("claude-fable-5"))
+            .expect("claude row present");
+        assert_eq!(claude.input_tokens, 10);
+        assert_eq!(claude.output_tokens, 5);
+        assert_eq!(claude.total_tokens, Some(15));
+        assert_eq!(claude.turns, 1);
+
+        let unknown = rows
+            .iter()
+            .find(|r| r.model_id.is_none())
+            .expect("unknown row present");
+        assert_eq!(unknown.provider, None);
+        assert_eq!(unknown.input_tokens, 1);
+        assert_eq!(unknown.output_tokens, 2);
+        assert_eq!(unknown.total_tokens, Some(3));
+        assert_eq!(unknown.turns, 1);
+
+        // Ordered by total_tokens DESC.
+        assert_eq!(rows[0].model_id.as_deref(), Some("gpt-5"));
+    }
+
+    /// Shared fixture for the pure rollup tests. Prices use the real zai
+    /// `glm-5.2` card ($1.40 / 1M input, $4.40 / 1M output); the unknown-model
+    /// row is unpriced. Chosen so every dollar figure is an exact hand value.
+    fn usage_grain_fixture() -> Vec<UsageGrainRow> {
+        vec![
+            // Day 10, priced: 1M input → $1.40.
+            UsageGrainRow {
+                day: "2026-07-10".into(),
+                model_id: Some("glm-5.2".into()),
+                provider: Some("zai".into()),
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                total_tokens: Some(1_000_000),
+                cache_read_tokens: Some(0),
+                cache_creation_tokens: Some(0),
+                turns: 5,
+                input_complete: 1,
+                output_complete: 1,
+                cache_read_complete: 1,
+                cache_creation_complete: 1,
+            },
+            // Day 10, unknown model → unpriced.
+            UsageGrainRow {
+                day: "2026-07-10".into(),
+                model_id: None,
+                provider: None,
+                input_tokens: 500,
+                output_tokens: 500,
+                total_tokens: Some(1_000),
+                cache_read_tokens: Some(0),
+                cache_creation_tokens: Some(0),
+                turns: 2,
+                input_complete: 1,
+                output_complete: 1,
+                cache_read_complete: 1,
+                cache_creation_complete: 1,
+            },
+            // Day 11, priced: 2M input + 1M output → 2.80 + 4.40 = $7.20.
+            UsageGrainRow {
+                day: "2026-07-11".into(),
+                model_id: Some("glm-5.2".into()),
+                provider: Some("zai".into()),
+                input_tokens: 2_000_000,
+                output_tokens: 1_000_000,
+                total_tokens: Some(3_000_000),
+                cache_read_tokens: Some(0),
+                cache_creation_tokens: Some(0),
+                turns: 3,
+                input_complete: 1,
+                output_complete: 1,
+                cache_read_complete: 1,
+                cache_creation_complete: 1,
+            },
+        ]
+    }
+
+    fn approx(a: Option<f64>, b: f64) -> bool {
+        matches!(a, Some(v) if (v - b).abs() < 1e-9)
+    }
+
+    #[test]
+    fn rollup_by_day_prices_each_model_before_summing() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::Day);
+        assert_eq!(rows.len(), 2);
+
+        // Chronological: day 10 then day 11.
+        let d10 = &rows[0];
+        assert_eq!(d10.date.as_deref(), Some("2026-07-10"));
+        assert_eq!(d10.model_id, None, "day grouping drops the model");
+        assert_eq!(d10.input_tokens, 1_000_500);
+        assert_eq!(d10.output_tokens, 500);
+        assert_eq!(d10.total_tokens, Some(1_001_000));
+        assert_eq!(d10.turns, 7);
+        // Only the priced glm row contributes dollars; the unknown row flags it.
+        assert!(approx(d10.cost, 1.40), "got {:?}", d10.cost);
+        assert!(d10.has_unpriced);
+
+        let d11 = &rows[1];
+        assert_eq!(d11.date.as_deref(), Some("2026-07-11"));
+        assert!(approx(d11.cost, 7.20), "got {:?}", d11.cost);
+        assert!(!d11.has_unpriced);
+    }
+
+    #[test]
+    fn rollup_by_model_sums_days_and_isolates_unknown() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::Model);
+        assert_eq!(rows.len(), 2);
+
+        // Heaviest model first.
+        let glm = &rows[0];
+        assert_eq!(glm.model_id.as_deref(), Some("glm-5.2"));
+        assert_eq!(glm.date, None, "model grouping drops the day");
+        assert_eq!(glm.input_tokens, 3_000_000);
+        assert_eq!(glm.output_tokens, 1_000_000);
+        assert_eq!(glm.total_tokens, Some(4_000_000));
+        assert_eq!(glm.turns, 8);
+        // 1.40 (day 10) + 7.20 (day 11) = 8.60.
+        assert!(approx(glm.cost, 8.60), "got {:?}", glm.cost);
+        assert!(!glm.has_unpriced);
+
+        let unknown = &rows[1];
+        assert_eq!(unknown.model_id, None);
+        assert_eq!(unknown.cost, None, "unknown model is null cost, never $0");
+        assert!(unknown.has_unpriced);
+    }
+
+    #[test]
+    fn rollup_by_day_model_keeps_every_bucket() {
+        let rows = rollup_report(&usage_grain_fixture(), UsageGroup::DayModel);
+        assert_eq!(rows.len(), 3);
+        // Sorted day asc, then heaviest model within a day.
+        assert_eq!(
+            (rows[0].date.as_deref(), rows[0].model_id.as_deref()),
+            (Some("2026-07-10"), Some("glm-5.2"))
+        );
+        assert!(approx(rows[0].cost, 1.40));
+        assert_eq!(
+            (rows[1].date.as_deref(), rows[1].model_id.as_deref()),
+            (Some("2026-07-10"), None)
+        );
+        assert_eq!(rows[1].cost, None);
+        assert_eq!(
+            (rows[2].date.as_deref(), rows[2].model_id.as_deref()),
+            (Some("2026-07-11"), Some("glm-5.2"))
+        );
+        assert!(approx(rows[2].cost, 7.20));
+    }
+
+    #[test]
+    fn totals_from_grain_sum_and_price() {
+        let totals = totals_from_grain(&usage_grain_fixture());
+        assert_eq!(totals.input_tokens, 3_000_500);
+        assert_eq!(totals.output_tokens, 1_000_500);
+        assert_eq!(totals.total_tokens, Some(4_001_000));
+        assert_eq!(totals.turns, 10);
+        assert!(approx(totals.cost, 8.60), "got {:?}", totals.cost);
+        assert!(totals.has_unpriced, "the unknown row leaves it partial");
+    }
+
+    #[test]
+    fn totals_are_fully_null_when_nothing_is_priced() {
+        let grain = vec![UsageGrainRow {
+            day: "".into(),
+            model_id: None,
+            provider: None,
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: Some(150),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns: 1,
+            input_complete: 1,
+            output_complete: 1,
+            cache_read_complete: 1,
+            cache_creation_complete: 1,
+        }];
+        let totals = totals_from_grain(&grain);
+        assert_eq!(totals.total_tokens, Some(150));
+        assert_eq!(totals.cost, None, "wholly-unpriced span is null, not $0");
+        assert!(totals.has_unpriced);
+    }
+
+    #[test]
+    fn partial_bucket_with_zero_known_subtotal_has_null_cost() {
+        let grain = vec![UsageGrainRow {
+            day: "".into(),
+            model_id: Some("glm-5.2".into()),
+            provider: Some("zai".into()),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            turns: 1,
+            input_complete: 0,
+            output_complete: 0,
+            cache_read_complete: 0,
+            cache_creation_complete: 0,
+        }];
+        let totals = totals_from_grain(&grain);
+        assert_eq!(totals.cost, None, "an unknown cost must not render as $0");
+        assert!(totals.has_unpriced);
+    }
+
+    #[test]
+    fn legacy_null_cache_buckets_remain_incomplete_for_models_without_cache_rates() {
+        let grain = vec![UsageGrainRow {
+            day: "".into(),
+            model_id: Some("glm-5.2".into()),
+            provider: Some("zai".into()),
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            total_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            turns: 1,
+            input_complete: 1,
+            output_complete: 1,
+            cache_read_complete: 0,
+            cache_creation_complete: 0,
+        }];
+        let totals = totals_from_grain(&grain);
+        assert!(approx(totals.cost, 1.40));
+        assert!(totals.has_unpriced);
+        assert!(totals.cost_excludes_cache);
+        assert_eq!(totals.cache_read_tokens, None);
+        assert_eq!(totals.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn cache_incomplete_nonzero_total_with_zero_known_subtotal_has_no_price() {
+        let row = UsageGrainRow {
+            day: "".into(),
+            model_id: Some("glm-5.2".into()),
+            provider: Some("zai".into()),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: Some(100),
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            turns: 1,
+            input_complete: 1,
+            output_complete: 1,
+            cache_read_complete: 0,
+            cache_creation_complete: 0,
+        };
+        let price = price_grain(&row, &ResolvedPricing::new());
+        assert_eq!(price.cost, None);
+        assert!(price.incomplete);
+    }
+
+    #[test]
+    fn report_uses_resolved_declarative_provider_pricing() {
+        let metadata = crate::providers::base::ProviderMetadata::with_models(
+            "custom_acme",
+            "Acme",
+            "test",
+            "acme-model",
+            vec![crate::providers::base::ModelInfo::with_cost(
+                "acme-model",
+                32_000,
+                0.000_002,
+                0.000_008,
+            )],
+            "",
+            vec![],
+        );
+        let pricing =
+            crate::providers::pricing::pricing_from_provider_metadata(&metadata, "acme-model")
+                .unwrap();
+        let mut resolved = ResolvedPricing::new();
+        resolved.insert(
+            ("custom_acme".to_string(), "acme-model".to_string()),
+            pricing,
+        );
+        let grain = vec![UsageGrainRow {
+            day: "2026-07-13".into(),
+            model_id: Some("acme-model".into()),
+            provider: Some("custom_acme".into()),
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            total_tokens: Some(1_500_000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns: 1,
+            input_complete: 1,
+            output_complete: 1,
+            cache_read_complete: 1,
+            cache_creation_complete: 1,
+        }];
+        let rows = rollup_report_with_pricing(&grain, UsageGroup::Model, &resolved);
+        assert!(approx(rows[0].cost, 6.0));
+        assert!(!rows[0].has_unpriced);
+    }
+
+    #[test]
+    fn empty_span_is_exactly_zero_not_unknown() {
+        let totals = totals_from_grain(&[]);
+        assert_eq!(totals.total_tokens, Some(0));
+        assert_eq!(totals.cache_read_tokens, Some(0));
+        assert_eq!(totals.cache_creation_tokens, Some(0));
+        assert_eq!(totals.cost, Some(0.0));
+        assert!(!totals.has_unpriced);
+        assert!(!totals.cost_excludes_cache);
+    }
+
+    #[test]
+    fn rollup_prices_cache_buckets_and_flags_exclusion() {
+        // Two grain rows:
+        //  - Claude Sonnet (cache-priced): input 1M, output 200k, cache_read
+        //    500k, cache_creation 100k. Hand-computed cost = 6.525 (see the
+        //    pricing crate's model_cost_with_cache test).
+        //  - zai glm-5.2 (no cache rate) with cache tokens: input 1M -> $1.40,
+        //    cache omitted, so the bucket flags cost_excludes_cache.
+        let grain = vec![
+            UsageGrainRow {
+                day: "2026-07-12".into(),
+                model_id: Some("claude-sonnet-4-20250514".into()),
+                provider: Some("anthropic".into()),
+                input_tokens: 1_000_000,
+                output_tokens: 200_000,
+                total_tokens: Some(1_600_000),
+                cache_read_tokens: Some(500_000),
+                cache_creation_tokens: Some(100_000),
+                turns: 1,
+                input_complete: 1,
+                output_complete: 1,
+                cache_read_complete: 1,
+                cache_creation_complete: 1,
+            },
+            UsageGrainRow {
+                day: "2026-07-12".into(),
+                model_id: Some("glm-5.2".into()),
+                provider: Some("zai".into()),
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                total_tokens: Some(1_900_000),
+                cache_read_tokens: Some(900_000),
+                cache_creation_tokens: Some(0),
+                turns: 1,
+                input_complete: 1,
+                output_complete: 1,
+                cache_read_complete: 1,
+                cache_creation_complete: 1,
+            },
+        ];
+        let day = &rollup_report(&grain, UsageGroup::Day)[0];
+        assert_eq!(day.cache_read_tokens, Some(1_400_000));
+        assert_eq!(day.cache_creation_tokens, Some(100_000));
+        // 6.525 (sonnet incl. cache) + 1.40 (zai, cache excluded) = 7.925.
+        assert!(approx(day.cost, 7.925), "got {:?}", day.cost);
+        assert!(
+            day.cost_excludes_cache,
+            "zai carried cache with no cache rate"
+        );
+
+        let totals = totals_from_grain(&grain);
+        assert_eq!(totals.cache_read_tokens, Some(1_400_000));
+        assert_eq!(totals.cache_creation_tokens, Some(100_000));
+        assert!(approx(totals.cost, 7.925));
+        assert!(totals.cost_excludes_cache);
+    }
+
+    #[tokio::test]
+    async fn empty_model_strings_collapse_into_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Empty strings must be stored as NULL so they aggregate with genuine
+        // unknowns rather than forming a "" group.
+        sm.record_token_event(
+            &session.id,
+            Some(4),
+            Some(1),
+            5,
+            Some(""),
+            Some(""),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        sm.record_token_event(&session.id, Some(6), Some(0), 6, None, None, None, None)
+            .await
+            .unwrap();
+
+        let rows = sm.get_session_model_usage(&session.id).await.unwrap();
+        assert_eq!(rows.len(), 1, "the empty-string turn folded into unknown");
+        assert_eq!(rows[0].model_id, None);
+        assert_eq!(rows[0].total_tokens, Some(11));
+        assert_eq!(rows[0].turns, 2);
+    }
+
+    #[tokio::test]
+    async fn global_model_usage_window_is_boundary_inclusive() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Creating a session initializes the schema on disk and gives us a
+        // real (user-type) session row for the aggregation join.
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // Insert events at controlled timestamps by opening a second connection
+        // to the same DB file — `record_token_event` always stamps `now`.
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        for (ts, total) in [(1000_i64, 10_i64), (2000, 20), (3000, 30)] {
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider, session_type) VALUES (?, ?, ?, ?, ?, ?, 'm', 'p', 'user')",
+            )
+            .bind(&session.id)
+            .bind(ts)
+            .bind(total)
+            .bind(0_i64)
+            .bind(total)
+            .bind(total)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        pool.close().await;
+
+        // Both ends inclusive: [2000, 2000] catches exactly the ts=2000 row.
+        let mid = sm.get_model_usage(2000, 2000).await.unwrap();
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].total_tokens, Some(20));
+        assert_eq!(mid[0].turns, 1);
+
+        // A window straddling only the middle row.
+        let straddle = sm.get_model_usage(1500, 2500).await.unwrap();
+        assert_eq!(straddle[0].total_tokens, Some(20));
+
+        // Full span includes all three: from == first ts, to == last ts.
+        let all = sm.get_model_usage(1000, 3000).await.unwrap();
+        assert_eq!(all.len(), 1, "one model group");
+        assert_eq!(all[0].total_tokens, Some(60));
+        assert_eq!(all[0].turns, 3);
+
+        // Just below the lowest ts excludes everything.
+        let none = sm.get_model_usage(0, 999).await.unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn usage_report_includes_subagent_spend_and_excludes_hidden_sessions() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let user = seed_session_with_messages(&sm, 1).await;
+        let subagent = sm
+            .create_session(
+                PathBuf::from("/tmp/sub"),
+                "subagent".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let hidden = sm
+            .create_session(
+                PathBuf::from("/tmp/h"),
+                "hidden".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+
+        let t0: i64 = 1_700_000_000;
+        let t2 = t0 + 2 * 86_400; // two days later
+
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        let insert = |sid: String,
+                      ts: i64,
+                      input: i64,
+                      output: i64,
+                      total: i64,
+                      model: Option<&'static str>,
+                      provider: Option<&'static str>,
+                      pool: &sqlx::SqlitePool| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider, cache_read_tokens, cache_creation_tokens, session_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, (SELECT session_type FROM sessions WHERE id = ?))")
+                    .bind(sid.clone()).bind(ts).bind(input).bind(output).bind(total).bind(total).bind(model).bind(provider).bind(sid)
+                    .execute(&pool).await.unwrap();
+            }
+        };
+
+        // Day 0: a priced glm turn (1M input → $1.40) + an unknown turn.
+        insert(
+            user.id.clone(),
+            t0,
+            1_000_000,
+            0,
+            1_000_000,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+        insert(user.id.clone(), t0, 100, 0, 100, None, None, &pool).await;
+        // Day 2: a priced glm turn (1M output → $4.40).
+        insert(
+            user.id.clone(),
+            t2,
+            0,
+            1_000_000,
+            1_000_000,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+        // Subagent work is hidden from the session list but is real spend.
+        insert(
+            subagent.id.clone(),
+            t0,
+            2_000_000,
+            0,
+            2_000_000,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+        // Hidden bookkeeping sessions do not represent user workload.
+        insert(
+            hidden.id.clone(),
+            t0,
+            9_999_999,
+            0,
+            9_999_999,
+            Some("glm-5.2"),
+            Some("zai"),
+            &pool,
+        )
+        .await;
+
+        // The local-day strings are tz-dependent; ask SQLite so the assertion
+        // holds in any timezone the test runs in.
+        let day0: String = sqlx::query_scalar("SELECT date(?, 'unixepoch', 'localtime')")
+            .bind(t0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let day2: String = sqlx::query_scalar("SELECT date(?, 'unixepoch', 'localtime')")
+            .bind(t2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let report = sm
+            .get_usage_report(t0 - 1, t2 + 1, UsageGroup::Day)
+            .await
+            .unwrap();
+        assert_eq!(report.len(), 2, "two active local days, hidden excluded");
+
+        let b0 = report
+            .iter()
+            .find(|r| r.date.as_deref() == Some(&day0))
+            .unwrap();
+        assert_eq!(
+            b0.input_tokens, 3_000_100,
+            "subagent included, hidden excluded"
+        );
+        assert_eq!(b0.output_tokens, 0);
+        assert_eq!(b0.total_tokens, Some(3_000_100));
+        assert_eq!(b0.turns, 3);
+        assert!(
+            matches!(b0.cost, Some(c) if (c - 4.20).abs() < 1e-9),
+            "got {:?}",
+            b0.cost
+        );
+        assert!(b0.has_unpriced, "the unknown turn flags the day partial");
+
+        let b2 = report
+            .iter()
+            .find(|r| r.date.as_deref() == Some(&day2))
+            .unwrap();
+        assert_eq!(b2.total_tokens, Some(1_000_000));
+        assert!(
+            matches!(b2.cost, Some(c) if (c - 4.40).abs() < 1e-9),
+            "got {:?}",
+            b2.cost
+        );
+        assert!(!b2.has_unpriced);
+
+        // Window that ends before day 2 drops that bucket entirely.
+        let narrow = sm
+            .get_usage_report(t0 - 1, t0 + 1, UsageGroup::Day)
+            .await
+            .unwrap();
+        assert_eq!(narrow.len(), 1);
+        assert_eq!(narrow[0].date.as_deref(), Some(day0.as_str()));
+    }
+
+    #[tokio::test]
+    async fn usage_summary_month_to_date_respects_the_local_month_boundary() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let user = seed_session_with_messages(&sm, 1).await;
+
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        // Unix second of local midnight on the 1st of the current month. The
+        // 'utc' modifier reads the wall-clock string as localtime, so this is a
+        // real instant regardless of the runner's timezone.
+        let month_start: i64 = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', strftime('%Y-%m-01 00:00:00', 'now', 'localtime'), 'utc') AS INTEGER)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let first_of_month = month_start; // inside MTD
+        let last_of_prev_month = month_start - 1; // one second earlier: previous month
+
+        let insert = |ts: i64, input: i64, output: i64, total: i64, pool: &sqlx::SqlitePool| {
+            let sid = user.id.clone();
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider, cache_read_tokens, cache_creation_tokens, session_type) VALUES (?, ?, ?, ?, ?, ?, 'glm-5.2', 'zai', 0, 0, 'user')")
+                    .bind(sid).bind(ts).bind(input).bind(output).bind(total).bind(total)
+                    .execute(&pool).await.unwrap();
+            }
+        };
+
+        // In the current month: 1M input → $1.40.
+        insert(first_of_month, 1_000_000, 0, 1_000_000, &pool).await;
+        // One second into the previous month: 5M input → must be excluded from MTD.
+        insert(last_of_prev_month, 5_000_000, 0, 5_000_000, &pool).await;
+        pool.close().await;
+
+        let summary = sm.get_usage_summary().await.unwrap();
+
+        // MTD sees only the first-of-month row.
+        assert_eq!(
+            summary.month_to_date.total_tokens,
+            Some(1_000_000),
+            "the last-second-of-previous-month row must be excluded"
+        );
+        assert_eq!(summary.month_to_date.input_tokens, 1_000_000);
+        assert!(
+            matches!(summary.month_to_date.cost, Some(c) if (c - 1.40).abs() < 1e-9),
+            "got {:?}",
+            summary.month_to_date.cost
+        );
+        assert!(!summary.month_to_date.has_unpriced);
+
+        // All-time sees both rows: 1M + 5M = 6M input → $8.40.
+        assert_eq!(summary.all_time.total_tokens, Some(6_000_000));
+        assert!(
+            matches!(summary.all_time.cost, Some(c) if (c - 8.40).abs() < 1e-9),
+            "got {:?}",
+            summary.all_time.cost
+        );
+
+        // `month` is the current local YYYY-MM.
+        assert_eq!(summary.month.len(), 7);
+        assert_eq!(summary.month.chars().nth(4), Some('-'));
+    }
+
+    #[tokio::test]
+    async fn migration_11_preserves_unknown_model_history_and_is_idempotent() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        // Build a DB frozen at schema v10: token_events WITHOUT the model_id /
+        // provider columns, so opening the manager must run migration 11.
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=10 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT,
+                    model_config_json TEXT, diverged_from TEXT, external_key TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            // v10-shape token_events: no model_id / provider columns.
+            sqlx::query(
+                r#"CREATE TABLE token_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+                    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0
+                )"#,
+            ).execute(&pool).await.unwrap();
+
+            // Session S1 has only the session's final model/provider, which is
+            // not valid attribution for earlier turns.
+            sqlx::query(
+                "INSERT INTO sessions (id, name, working_dir, provider_name, model_config_json) VALUES ('s1', 'has model', '/tmp/a', 'openai', '{\"model_name\":\"gpt-5\"}')",
+            ).execute(&pool).await.unwrap();
+            // Session S2 has no model config → its events stay unknown.
+            sqlx::query(
+                "INSERT INTO sessions (id, name, working_dir) VALUES ('s2', 'no model', '/tmp/b')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s1', 100, 8, 2, 10)")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s1', 200, 40, 10, 50)")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s2', 300, 5, 1, 6)")
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the real manager triggers run_migrations → the `11 =>` arm.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // Both sessions' legacy rows remain explicitly unattributed. Copying
+        // S1's final model backward would fabricate history after a model switch.
+        let s1 = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(s1.len(), 1);
+        assert_eq!(s1[0].model_id, None);
+        assert_eq!(s1[0].provider, None);
+        assert_eq!(s1[0].total_tokens, None);
+        assert_eq!(s1[0].turns, 2);
+
+        // S2 has no stored model, so its row stays unknown (NULL model_id).
+        let s2 = sm.get_session_model_usage("s2").await.unwrap();
+        assert_eq!(s2.len(), 1);
+        assert_eq!(s2[0].model_id, None);
+        assert_eq!(s2[0].provider, None);
+        assert_eq!(s2[0].total_tokens, None);
+
+        // Idempotency: re-applying migration 11 on the already-migrated DB is a
+        // no-op — the pragma guards skip the ADD COLUMNs and neither invocation
+        // fabricates model attribution.
+        let db_path2 = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let opts = SqliteConnectOptions::new().filename(&db_path2);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        SessionStorage::apply_migration(&pool, 11).await.unwrap();
+        SessionStorage::apply_migration(&pool, 11).await.unwrap();
+        pool.close().await;
+
+        let s1_again = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(s1_again[0].total_tokens, None);
+        assert_eq!(s1_again[0].model_id, None);
+        let s2_again = sm.get_session_model_usage("s2").await.unwrap();
+        assert_eq!(s2_again[0].model_id, None);
+    }
+
+    #[tokio::test]
+    async fn migration_12_adds_nullable_accounting_columns_and_is_idempotent() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        // Build a DB frozen at schema v11: token_events WITH model_id/provider
+        // but WITHOUT the cache columns, so opening the manager runs migration 12.
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=11 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT,
+                    model_config_json TEXT, diverged_from TEXT, external_key TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            // v11-shape token_events: model_id/provider but no cache columns.
+            sqlx::query(
+                r#"CREATE TABLE token_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+                    input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_id TEXT, provider TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO sessions (id, name, working_dir) VALUES ('s1', 'legacy', '/tmp/a')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider) VALUES ('s1', 100, 8, 2, 10, 'm', 'p')")
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the manager triggers run_migrations → the `12 =>` arm, which
+        // adds nullable accounting columns; the pre-existing legacy row remains
+        // unknown instead of being rewritten as measured zero.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let rows = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model_id, None);
+        assert_eq!(rows[0].provider, None);
+        assert_eq!(rows[0].total_tokens, None);
+        assert_eq!(rows[0].cache_read_tokens, None);
+        assert_eq!(rows[0].cache_creation_tokens, None);
+
+        // A new turn records real cache values through the added columns.
+        sm.record_token_event(
+            "s1",
+            Some(1),
+            Some(1),
+            902,
+            Some("m-new"),
+            Some("p"),
+            Some(700),
+            Some(200),
+        )
+        .await
+        .unwrap();
+        let rows = sm.get_session_model_usage("s1").await.unwrap();
+        let current = rows
+            .iter()
+            .find(|row| row.model_id.as_deref() == Some("m-new"))
+            .unwrap();
+        assert_eq!(current.total_tokens, Some(902));
+        assert_eq!(current.cache_read_tokens, Some(700));
+        assert_eq!(current.cache_creation_tokens, Some(200));
+
+        // Idempotency: re-applying migration 12 twice more is a no-op (the pragma
+        // guards skip the ADD COLUMNs) and does not disturb the recorded data.
+        let opts = SqliteConnectOptions::new().filename(&db_path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        SessionStorage::apply_migration(&pool, 12).await.unwrap();
+        SessionStorage::apply_migration(&pool, 12).await.unwrap();
+        for column in [
+            "billed_total_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "event_key",
+            "session_type",
+        ] {
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('token_events') WHERE name = ?1",
+            )
+            .bind(column)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(exists, 1, "missing migrated column {column}");
+        }
+        let event_index: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_token_events_event_key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(event_index, 1);
+        pool.close().await;
+
+        let rows = sm.get_session_model_usage("s1").await.unwrap();
+        let legacy = rows.iter().find(|row| row.model_id.is_none()).unwrap();
+        assert_eq!(legacy.total_tokens, None);
+        assert_eq!(legacy.cache_read_tokens, None);
+        assert_eq!(legacy.cache_creation_tokens, None);
+        let current = rows
+            .iter()
+            .find(|row| row.model_id.as_deref() == Some("m-new"))
+            .unwrap();
+        assert_eq!(current.total_tokens, Some(902));
+        assert_eq!(current.cache_read_tokens, Some(700));
+        assert_eq!(current.cache_creation_tokens, Some(200));
+    }
+
+    #[tokio::test]
+    async fn already_v12_database_reconciles_ambiguous_usage_without_version_bump() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        // Early v12 builds had model/cache columns and marked the schema as
+        // current, but lacked billed totals, durable event keys, and event-level
+        // session types. They also copied final-session attribution backward and
+        // could materialize unknown cache values as zero.
+        {
+            let options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (12)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, session_type TEXT NOT NULL DEFAULT 'user')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE token_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_id TEXT,
+                    provider TEXT,
+                    cache_read_tokens INTEGER,
+                    cache_creation_tokens INTEGER
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO sessions (id, session_type) VALUES ('s1', 'user')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens, model_id, provider, cache_read_tokens, cache_creation_tokens) VALUES ('s1', 100, 8, 2, 10, 'fabricated-final-model', 'fabricated-provider', 0, 0)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let rows = sm.get_session_model_usage("s1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model_id, None);
+        assert_eq!(rows[0].provider, None);
+        assert_eq!(rows[0].total_tokens, None);
+        assert_eq!(rows[0].cache_read_tokens, None);
+        assert_eq!(rows[0].cache_creation_tokens, None);
+
+        let pool = sm.storage.pool().await.unwrap();
+        SessionStorage::reconcile_usage_schema(pool).await.unwrap();
+        SessionStorage::reconcile_usage_schema(pool).await.unwrap();
+        let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 12, "reconciliation must not consume migration v13");
+        type ReconciledUsageRow = (
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        );
+        let raw: ReconciledUsageRow = sqlx::query_as(
+            "SELECT model_id, provider, cache_read_tokens, cache_creation_tokens, billed_total_tokens, session_type FROM token_events WHERE session_id = 's1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(raw, (None, None, None, None, None, Some("user".into())));
+
+        let before_delete = sm.get_usage_summary().await.unwrap();
+        assert_eq!(before_delete.all_time.turns, 1);
+        sm.delete_session("s1").await.unwrap();
+        let after_delete = sm.get_usage_summary().await.unwrap();
+        assert_eq!(after_delete.all_time.turns, 1);
+        assert_eq!(after_delete.all_time.total_tokens, None);
     }
 
     #[tokio::test]
@@ -3513,7 +5743,7 @@ mod activity_tests {
         sessions.push((day(13), 6));
         tokens.push((day(13), 1_800_000, 0, 0));
 
-        let w = build_activity_window(day(1), day(13), &sessions, &tokens, &[]);
+        let w = build_activity_window(day(1), day(13), &sessions, &tokens, &[], true);
 
         assert_eq!(w.days.len(), 13);
         let outlier = w.days.iter().find(|d| d.date == day(13)).unwrap();
@@ -3535,7 +5765,7 @@ mod activity_tests {
     #[test]
     fn idle_days_are_omitted_entirely() {
         let sessions = vec![(day(1), 1)];
-        let w = build_activity_window(day(1), day(5), &sessions, &[], &[]);
+        let w = build_activity_window(day(1), day(5), &sessions, &[], &[], true);
         assert_eq!(w.days.len(), 1);
         assert_eq!(w.days[0].date, day(1));
     }
@@ -3545,7 +5775,7 @@ mod activity_tests {
     #[test]
     fn messages_alone_do_not_create_an_active_day() {
         let messages = vec![(day(2), 40)];
-        let w = build_activity_window(day(1), day(3), &[], &[], &messages);
+        let w = build_activity_window(day(1), day(3), &[], &[], &messages, true);
         assert!(w.days.is_empty());
     }
 
@@ -3565,7 +5795,7 @@ mod activity_tests {
         // active: 1,2,3   idle: 4   active: 6,7  (5 idle)
         let sessions: Vec<(String, i64)> =
             [1u32, 2, 3, 6, 7].iter().map(|i| (day(*i), 1)).collect();
-        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[], true);
         assert_eq!(w.longest_streak, 3);
         assert_eq!(w.current_streak, 2, "6th and 7th");
     }
@@ -3574,7 +5804,7 @@ mod activity_tests {
     #[test]
     fn current_streak_tolerates_an_inactive_today() {
         let sessions: Vec<(String, i64)> = [4u32, 5, 6].iter().map(|i| (day(*i), 1)).collect();
-        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[], true);
         assert_eq!(w.current_streak, 3);
     }
 
@@ -3582,7 +5812,7 @@ mod activity_tests {
     fn max_sessions_and_tokens_reported() {
         let sessions = vec![(day(1), 2), (day(2), 5)];
         let tokens = vec![(day(1), 900, 400, 500), (day(2), 100, 60, 40)];
-        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[]);
+        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[], true);
         assert_eq!(w.max_sessions, 5);
         assert_eq!(w.max_tokens, 900);
         let d1 = &w.days[0];

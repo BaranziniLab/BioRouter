@@ -391,32 +391,38 @@ impl Provider for LeadWorkerProvider {
             );
         }
 
-        // Make the completion request
         let result = provider.complete(system, messages, tools).await;
+        let selected_provider_name = provider.get_name().to_string();
 
-        // For technical failures, try with default model (lead provider) instead
-        let final_result = match &result {
-            Err(_) => {
+        // For technical failures, try with default model (lead provider) instead.
+        // Keep the concrete successful child provider on ProviderUsage so the
+        // accounting ledger does not attribute worker spend to the wrapper's
+        // lead-provider get_name().
+        let (mut final_result, serving_provider_name) = match result {
+            Err(original_error) => {
                 tracing::warn!("Technical failure with {} provider, retrying with default model (lead provider)", provider_type);
 
-                // Try with lead provider as the default/fallback for technical failures
                 let default_result = self.lead_provider.complete(system, messages, tools).await;
 
-                match &default_result {
-                    Ok(_) => {
+                match default_result {
+                    Ok(value) => {
                         tracing::info!(
                             "✅ Default model (lead provider) succeeded after technical failure"
                         );
-                        default_result
+                        (Ok(value), self.lead_provider.get_name().to_string())
                     }
                     Err(_) => {
                         tracing::error!("❌ Default model (lead provider) also failed - returning original error");
-                        result // Return the original error
+                        (Err(original_error), selected_provider_name)
                     }
                 }
             }
-            Ok(_) => result, // Success with original provider
+            Ok(value) => (Ok(value), selected_provider_name),
         };
+
+        if let Ok((_, usage)) = &mut final_result {
+            usage.provider = Some(serving_provider_name);
+        }
 
         // Handle the result and update tracking (only for successful completions)
         self.handle_completion_result(&final_result).await;
@@ -487,7 +493,7 @@ mod tests {
         }
 
         fn get_name(&self) -> &str {
-            "mock-lead"
+            &self.name
         }
 
         fn get_model_config(&self) -> ModelConfig {
@@ -536,6 +542,7 @@ mod tests {
         for i in 0..3 {
             let (_message, usage) = provider.complete("system", &[], &[]).await.unwrap();
             assert_eq!(usage.model, "lead");
+            assert_eq!(usage.provider.as_deref(), Some("lead"));
             assert_eq!(provider.get_turn_count().await, i + 1);
             assert!(!provider.is_in_fallback_mode().await);
         }
@@ -544,6 +551,7 @@ mod tests {
         for i in 3..6 {
             let (_message, usage) = provider.complete("system", &[], &[]).await.unwrap();
             assert_eq!(usage.model, "worker");
+            assert_eq!(usage.provider.as_deref(), Some("worker"));
             assert_eq!(provider.get_turn_count().await, i + 1);
             assert!(!provider.is_in_fallback_mode().await);
         }
@@ -556,6 +564,7 @@ mod tests {
 
         let (_message, usage) = provider.complete("system", &[], &[]).await.unwrap();
         assert_eq!(usage.model, "lead");
+        assert_eq!(usage.provider.as_deref(), Some("lead"));
     }
 
     #[tokio::test]
@@ -585,7 +594,9 @@ mod tests {
         // Next turn uses worker (will fail, but should retry with lead and succeed)
         let result = provider.complete("system", &[], &[]).await;
         assert!(result.is_ok()); // Should succeed because lead provider is used as fallback
-        assert_eq!(result.unwrap().1.model, "lead"); // Should be lead provider
+        let usage = result.unwrap().1;
+        assert_eq!(usage.model, "lead"); // Should be lead provider
+        assert_eq!(usage.provider.as_deref(), Some("lead"));
         assert_eq!(provider.get_failure_count().await, 0); // No failure tracking for technical failures
         assert!(!provider.is_in_fallback_mode().await); // Not in fallback mode
 
@@ -653,7 +664,7 @@ mod tests {
         }
 
         fn get_name(&self) -> &str {
-            "mock-lead"
+            &self.name
         }
 
         fn get_model_config(&self) -> ModelConfig {

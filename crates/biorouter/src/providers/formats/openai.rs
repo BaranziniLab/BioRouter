@@ -372,8 +372,19 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
     ))
 }
 
+/// Extract usage from an OpenAI-compatible `usage` object.
+///
+/// Per-provider semantics: OpenAI's `prompt_tokens` **already includes** the
+/// cached prompt tokens — `prompt_tokens_details.cached_tokens` is a *subset*
+/// of `prompt_tokens`, not an addition. To keep [`Usage`]'s buckets disjoint
+/// (so [`Usage::billed_total`] is a plain sum), we subtract the cached count
+/// back out of `input_tokens` and record it in `cache_read_input_tokens`.
+/// OpenAI has no separate cache-write step, so `cache_creation` stays `None`.
+/// `total_tokens` (prompt + completion) is unchanged. Providers that omit
+/// `cached_tokens` (Ollama, most local servers) get `input_tokens = prompt`
+/// and no cache buckets.
 pub fn get_usage(usage: &Value) -> Usage {
-    let input_tokens = usage
+    let prompt_tokens = usage
         .get("prompt_tokens")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
@@ -383,16 +394,32 @@ pub fn get_usage(usage: &Value) -> Usage {
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
+    // `cached_tokens` is a subset of `prompt_tokens`; clamp to it so a
+    // malformed response can never drive `input_tokens` negative.
+    let cached_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
+        .filter(|&c| c > 0)
+        .map(|c| c.min(prompt_tokens.unwrap_or(c)));
+
+    // Fresh (non-cached) input = prompt_tokens - cached_tokens.
+    let input_tokens = match (prompt_tokens, cached_tokens) {
+        (Some(prompt), Some(cached)) => Some(prompt - cached),
+        (prompt, _) => prompt,
+    };
+
     let total_tokens = usage
         .get("total_tokens")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32)
-        .or_else(|| match (input_tokens, output_tokens) {
-            (Some(input), Some(output)) => Some(input + output),
+        .or_else(|| match (prompt_tokens, output_tokens) {
+            (Some(prompt), Some(output)) => Some(prompt + output),
             _ => None,
         });
 
-    Usage::new(input_tokens, output_tokens, total_tokens)
+    Usage::new(input_tokens, output_tokens, total_tokens).with_cache(cached_tokens, None)
 }
 
 /// Validates and fixes tool schemas to ensure they have proper parameter structure.
@@ -492,6 +519,7 @@ where
                     ProviderUsage {
                         usage: get_usage(u),
                         model: model.clone(),
+                        provider: None,
                         finish_reason: last_finish_reason.clone(),
                     }
                 })
@@ -501,6 +529,8 @@ where
                 yield (None, usage)
             } else if chunk.choices[0].delta.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
                 let mut tool_call_data: std::collections::HashMap<i32, (String, String, String)> = std::collections::HashMap::new();
+                let mut tool_usage = usage;
+                let mut tool_model = chunk.model.clone();
 
                 if let Some(tool_calls) = &chunk.choices[0].delta.tool_calls {
                     for tool_call in tool_calls {
@@ -524,9 +554,15 @@ where
                                 let tool_chunk: StreamingChunk = serde_json::from_str(line)
                                     .map_err(|e| anyhow!("Failed to parse streaming chunk: {}: {:?}", e, &line))?;
 
+                                if let Some(model) = &tool_chunk.model {
+                                    tool_model = Some(model.clone());
+                                }
                                 if !tool_chunk.choices.is_empty() {
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
                                         accumulated_reasoning.extend(details.iter().cloned());
+                                    }
+                                    if let Some(reason) = &tool_chunk.choices[0].finish_reason {
+                                        last_finish_reason = Some(reason.clone());
                                     }
                                     if let Some(delta_tool_calls) = &tool_chunk.choices[0].delta.tool_calls {
                                         for delta_call in delta_tool_calls {
@@ -544,6 +580,17 @@ where
                                     }
                                 } else {
                                     done = true;
+                                }
+
+                                if let (Some(raw_usage), Some(model)) =
+                                    (tool_chunk.usage.as_ref(), tool_model.as_ref())
+                                {
+                                    tool_usage = Some(ProviderUsage {
+                                        usage: get_usage(raw_usage),
+                                        model: model.clone(),
+                                        provider: None,
+                                        finish_reason: last_finish_reason.clone(),
+                                    });
                                 }
                             }
                         } else {
@@ -614,7 +661,7 @@ where
 
                 yield (
                     Some(msg),
-                    usage,
+                    tool_usage,
                 )
             } else if chunk.choices[0].delta.content.is_some() {
                 let text = chunk.choices[0].delta.content.as_ref().unwrap();
@@ -751,6 +798,66 @@ mod tests {
     use serde_json::json;
     use tokio::pin;
     use tokio_stream::{self, StreamExt};
+
+    #[test]
+    fn get_usage_subtracts_cached_tokens_from_prompt() {
+        // prompt_tokens=1000 INCLUDES 800 cached. Fresh input must be 200.
+        let usage = json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_tokens_details": { "cached_tokens": 800 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(200));
+        assert_eq!(u.output_tokens, Some(50));
+        assert_eq!(u.cache_read_input_tokens, Some(800));
+        assert_eq!(u.cache_creation_input_tokens, None); // OpenAI has no cache-write
+        assert_eq!(u.total_tokens, Some(1050));
+        // Billed reconciles: 200 + 50 + 800 = 1050 = prompt + completion.
+        assert_eq!(u.billed_total(), Some(1050));
+    }
+
+    #[test]
+    fn get_usage_without_cache_details_leaves_input_as_prompt() {
+        let usage = json!({
+            "prompt_tokens": 300,
+            "completion_tokens": 20,
+            "total_tokens": 320
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(300));
+        assert_eq!(u.cache_read_input_tokens, None);
+        assert_eq!(u.cache_creation_input_tokens, None);
+        assert_eq!(u.billed_total(), Some(320));
+    }
+
+    #[test]
+    fn get_usage_ignores_zero_cached_tokens() {
+        // cached_tokens: 0 is not a cache hit — leave input untouched, cache None.
+        let usage = json!({
+            "prompt_tokens": 300,
+            "completion_tokens": 20,
+            "total_tokens": 320,
+            "prompt_tokens_details": { "cached_tokens": 0 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(300));
+        assert_eq!(u.cache_read_input_tokens, None);
+    }
+
+    #[test]
+    fn get_usage_clamps_cached_tokens_to_prompt() {
+        // Defensive: a malformed cached > prompt must not make input negative.
+        let usage = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": { "cached_tokens": 250 }
+        });
+        let u = get_usage(&usage);
+        assert_eq!(u.input_tokens, Some(0));
+        assert_eq!(u.cache_read_input_tokens, Some(100));
+    }
 
     #[test]
     fn test_validate_tool_schemas() {
@@ -1504,7 +1611,12 @@ data: [DONE]
         let messages = response_to_streaming_message(response_stream);
         pin!(messages);
 
-        while let Some(Ok((message, _usage))) = messages.next().await {
+        let mut saw_tool_calls = false;
+        let mut final_usage = None;
+        while let Some(Ok((message, usage))) = messages.next().await {
+            if usage.is_some() {
+                final_usage = usage;
+            }
             if let Some(msg) = message {
                 println!("{:?}", msg);
                 if msg.content.len() == 2 {
@@ -1512,17 +1624,26 @@ data: [DONE]
                         (&msg.content[0], &msg.content[1])
                     {
                         if req1.tool_call.is_ok() && req2.tool_call.is_ok() {
-                            // We expect two tool calls in the response
                             assert_eq!(req1.tool_call.as_ref().unwrap().name, "developer__shell");
                             assert_eq!(req2.tool_call.as_ref().unwrap().name, "developer__shell");
-                            return Ok(());
+                            saw_tool_calls = true;
                         }
                     }
                 }
             }
         }
 
-        panic!("Expected tool call message with two calls, but did not see it");
+        assert!(
+            saw_tool_calls,
+            "expected tool call message with two calls, but did not see it"
+        );
+        let usage = final_usage.expect("expected terminal tool-call usage");
+        assert_eq!(usage.usage.input_tokens, Some(4982));
+        assert_eq!(usage.usage.output_tokens, Some(122));
+        assert_eq!(usage.usage.total_tokens, Some(5104));
+        assert_eq!(usage.usage.billed_total(), Some(5104));
+        assert_eq!(usage.finish_reason.as_deref(), Some("tool_calls"));
+        Ok(())
     }
 
     #[tokio::test]
