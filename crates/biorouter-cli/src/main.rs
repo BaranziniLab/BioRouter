@@ -1,5 +1,6 @@
-use anyhow::Result;
+use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
 use biorouter_cli::cli::cli;
+use std::process::ExitCode;
 
 // Tuned jemalloc as the global allocator (default-on `jemalloc` feature). The
 // long-running CLI/TUI churns conversation buffers per turn; jemalloc returns
@@ -10,13 +11,26 @@ use biorouter_cli::cli::cli;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     tune_allocator();
     if let Err(e) = biorouter_cli::logging::setup_logging(None, None) {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }
 
-    cli().await
+    match cli().await {
+        Ok(()) => ExitCode::from(abort_exit::OK),
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            // A turn that ran but did not complete its work gets its own exit
+            // code, so a caller can tell "the provider rejected our key" (75)
+            // from "the agent ran and disagreed with you" (0) — which is what a
+            // 403 used to look like. Everything else keeps the historical rc 1.
+            match e.downcast_ref::<TurnFailed>() {
+                Some(failed) => ExitCode::from(failed.exit_code()),
+                None => ExitCode::from(abort_exit::GENERIC),
+            }
+        }
+    }
 }
 
 /// Lower jemalloc's dirty/muzzy decay so freed pages return to the OS within

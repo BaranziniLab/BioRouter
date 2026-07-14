@@ -1,0 +1,56 @@
+{
+  "id": "spec-022-crossfire",
+  "title": "Crossfire",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-022-crossfire/manifest.json",
+  "actions_expected": [
+    "add_claim",
+    "attach_evidence",
+    "collapse",
+    "focus_node",
+    "mark_unresolved",
+    "score_branch"
+  ],
+  "actions_actual": [
+    "add_claim",
+    "attach_evidence",
+    "collapse",
+    "focus_node",
+    "mark_unresolved",
+    "score_branch"
+  ],
+  "signals_expected": [
+    "evidence_challenged",
+    "node_selected",
+    "stance_flipped",
+    "verdict_frozen"
+  ],
+  "signals_actual": [
+    "evidence_challenged",
+    "node_selected",
+    "stance_flipped",
+    "verdict_frozen"
+  ],
+  "agents_expected": [
+    "Advocate",
+    "Prosecutor",
+    "Referee"
+  ],
+  "agents_actual": [
+    "advocate",
+    "prosecutor",
+    "referee"
+  ],
+  "regions": [
+    "claim_stack",
+    "figure",
+    "inspector",
+    "presence",
+    "progress",
+    "tree",
+    "verdict"
+  ],
+  "theme_expected": "terminal",
+  "theme_actual": "terminal",
+  "issues": []
+}

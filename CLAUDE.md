@@ -402,6 +402,20 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
 per-app agent over `GET /apps/<id>/agent`. Full design in
 [`docs/agent-drafter-apps.md`](docs/agent-drafter-apps.md).
 
+- **Apps SDK v2** — the typed two-way surface (app contract, shared state doc,
+  catalog + `ui_patch`, `br.kb`/`br.model`, theme packs, archetypes, standalone
+  export). Human-facing reference: [`docs/apps-sdk-reference.md`](docs/apps-sdk-reference.md)
+  (every `br.*` signature, the manifest schema, the frame tables); the v2 map sits
+  atop `docs/agent-drafter-apps.md`. Partial in this build: the SDK emits
+  `ui_error` frames the daemon doesn't consume, and `ui_suggest` has no MCP tool.
+  Multi-agent worker profiles (`orchestration.agents` → `br.agent(name)` +
+  `consult` + `ready.profiles`) are **actively landing** in this branch —
+  serialized cross-profile turns (parallel is a stretch goal); treat the code as
+  authoritative. New test gates: the SDK v2 harness self-test
+  `node scripts/agent-drafter/ui-control-harness.mjs` (real `sdk.ts` in jsdom vs a
+  mock daemon; needs esbuild + jsdom) and `cargo test -p biorouter-server --lib
+  routes::apps` (~54 tests: frames, KB grants, provider-class routing).
+
 - **The agent drives the app, it doesn't just answer in it.** A per-session
   in-process MCP server (`agent_drafter/control.rs`, injected as `appcontrol` by
   `configure_agent` exactly like `datasql`/`files`/`compute`) exposes `ui_*`

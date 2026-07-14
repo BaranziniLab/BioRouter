@@ -1,0 +1,59 @@
+{
+  "id": "spec-001-variant-tribunal",
+  "title": "Variant Tribunal",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-001-variant-tribunal/manifest.json",
+  "actions_expected": [
+    "cite",
+    "focus_locus",
+    "highlight_track",
+    "set_verdict",
+    "stage_route",
+    "toggle_criterion"
+  ],
+  "actions_actual": [
+    "cite",
+    "focus_locus",
+    "highlight_track",
+    "set_verdict",
+    "stage_route",
+    "toggle_criterion"
+  ],
+  "signals_expected": [
+    "criterion_clicked",
+    "track_region_drawn",
+    "variant_selected",
+    "verdict_challenged"
+  ],
+  "signals_actual": [
+    "criterion_clicked",
+    "track_region_drawn",
+    "variant_selected",
+    "verdict_challenged"
+  ],
+  "agents_expected": [
+    "Prosecutor",
+    "Defense",
+    "Chief Justice",
+    "Clerk"
+  ],
+  "agents_actual": [
+    "chief_justice",
+    "clerk",
+    "defense",
+    "prosecutor"
+  ],
+  "regions": [
+    "criteria",
+    "genome",
+    "presence",
+    "rail",
+    "record",
+    "tracks",
+    "variant-queue",
+    "verdict"
+  ],
+  "theme_expected": "clinical",
+  "theme_actual": "clinical",
+  "issues": []
+}

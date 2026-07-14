@@ -1,0 +1,61 @@
+{
+  "id": "spec-003-pathway-seance",
+  "title": "Pathway S\u00e9ance",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-003-pathway-seance/manifest.json",
+  "actions_expected": [
+    "add_node",
+    "dim_edge",
+    "focus_node",
+    "link",
+    "propose_bridge",
+    "stage_layout"
+  ],
+  "actions_actual": [
+    "add_node",
+    "dim_edge",
+    "focus_node",
+    "link",
+    "propose_bridge",
+    "stage_layout"
+  ],
+  "signals_expected": [
+    "bridge_accepted",
+    "edge_selected",
+    "lasso",
+    "legend_toggled",
+    "node_selected"
+  ],
+  "signals_actual": [
+    "bridge_accepted",
+    "edge_selected",
+    "lasso",
+    "legend_toggled",
+    "node_selected"
+  ],
+  "agents_expected": [
+    "Cartographer",
+    "Skeptic",
+    "Bridger",
+    "Narrator"
+  ],
+  "agents_actual": [
+    "bridger",
+    "cartographer",
+    "narrator",
+    "skeptic"
+  ],
+  "regions": [
+    "bridges",
+    "brief",
+    "dossier",
+    "graph",
+    "inspector",
+    "presence",
+    "progress",
+    "seeds"
+  ],
+  "theme_expected": "midnight",
+  "theme_actual": "midnight",
+  "issues": []
+}

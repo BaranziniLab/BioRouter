@@ -1,0 +1,62 @@
+{
+  "id": "spec-004-trial-regia",
+  "title": "Trial Regia",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-004-trial-regia/manifest.json",
+  "actions_expected": [
+    "compute_power",
+    "export_protocol",
+    "flag_cell",
+    "place_km_projection",
+    "place_visit",
+    "set_endpoint"
+  ],
+  "actions_actual": [
+    "compute_power",
+    "export_protocol",
+    "flag_cell",
+    "place_km_projection",
+    "place_visit",
+    "set_endpoint"
+  ],
+  "signals_expected": [
+    "arm_added",
+    "cell_edited",
+    "effect_size_dragged",
+    "endpoint_selected"
+  ],
+  "signals_actual": [
+    "arm_added",
+    "cell_edited",
+    "effect_size_dragged",
+    "endpoint_selected"
+  ],
+  "agents_expected": [
+    "Designer",
+    "Biostatistician",
+    "Regulatory Critic",
+    "Operationalizer"
+  ],
+  "agents_actual": [
+    "biostatistician",
+    "designer",
+    "operationalizer",
+    "protocol_exporter",
+    "regulatory_critic"
+  ],
+  "regions": [
+    "agent-composer",
+    "agent-notes",
+    "feasibility-kpi",
+    "flags",
+    "inspector",
+    "km-figure",
+    "library",
+    "progress",
+    "soa",
+    "timeline"
+  ],
+  "theme_expected": "journal",
+  "theme_actual": "journal",
+  "issues": []
+}

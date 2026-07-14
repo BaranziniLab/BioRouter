@@ -1,0 +1,62 @@
+{
+  "id": "spec-005-omics-loom",
+  "title": "Omics Loom",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-005-omics-loom/manifest.json",
+  "actions_expected": [
+    "cluster_heatmap",
+    "draw_cross_edge",
+    "focus_feature",
+    "highlight_volcano",
+    "link_brush",
+    "place_kpi"
+  ],
+  "actions_actual": [
+    "cluster_heatmap",
+    "draw_cross_edge",
+    "focus_feature",
+    "highlight_volcano",
+    "link_brush",
+    "place_kpi"
+  ],
+  "signals_expected": [
+    "brush",
+    "heatmap_cell_selected",
+    "layer_toggled",
+    "point_clicked"
+  ],
+  "signals_actual": [
+    "brush",
+    "heatmap_cell_selected",
+    "layer_toggled",
+    "point_clicked"
+  ],
+  "agents_expected": [
+    "Aligner",
+    "Correlator",
+    "Contrarian",
+    "Weaver"
+  ],
+  "agents_actual": [
+    "aligner",
+    "contrarian",
+    "correlator",
+    "weaver"
+  ],
+  "regions": [
+    "annotations",
+    "heatmap",
+    "inspector",
+    "kpi",
+    "layers",
+    "network",
+    "progress",
+    "search-results",
+    "synthesis",
+    "transport",
+    "volcano"
+  ],
+  "theme_expected": "lab-notebook",
+  "theme_actual": "lab-notebook",
+  "issues": []
+}

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">Explorer</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+
+    <!-- Presence: the agent's step progress renders here (see main.ts). -->
+    <div data-br-progress class="br-run-status" style="margin-top: 12px;"></div>
+
+    <div class="br-row" style="display: flex; gap: 12px; margin-top: 12px;">
+      <input id="q" class="br-input" placeholder="Search the graph…" style="flex: 1;" />
+      <button id="search" class="br-btn">Search</button>
+    </div>
+
+    <div class="br-grid br-grid--2" style="margin-top: 16px;">
+      <!-- The agent renders a `network` catalog kind here via
+           ui_render(target="@region:graph", …); selection auto-emits node_selected. -->
+      <section class="br-card" data-br-region="graph" style="min-height: 320px;"></section>
+
+      <!-- Inspector: bound to the shared selection, so focus_node updates it. -->
+      <aside class="br-card">
+        <h2 style="font-size: 14px; margin: 0 0 8px;">Inspector</h2>
+        <p class="br-text--muted" style="margin: 0 0 4px;">Selected node</p>
+        <p style="font-weight: 600; color: var(--br-text);" data-br-bind="/selection/label">—</p>
+        <p class="br-text--muted" data-br-bind="/selection/type"></p>
+      </aside>
+    </div>
+
+    <!-- Agent notes / prose about the current selection. -->
+    <section class="br-output" id="out" data-br-region="notes" style="margin-top: 16px;"></section>
+    <p class="br-footer">Powered by BioRouter · Explorer archetype</p>
+  </main>
+</body>
+</html>

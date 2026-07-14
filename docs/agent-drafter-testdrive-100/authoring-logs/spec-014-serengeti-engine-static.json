@@ -1,0 +1,58 @@
+{
+  "id": "spec-014-serengeti-engine",
+  "title": "Serengeti Engine",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-014-serengeti-engine/manifest.json",
+  "actions_expected": [
+    "balance",
+    "classify_regime",
+    "paint_terrain",
+    "run_generations",
+    "set_species_rate",
+    "spawn_herd"
+  ],
+  "actions_actual": [
+    "balance",
+    "classify_regime",
+    "paint_terrain",
+    "run_generations",
+    "set_species_rate",
+    "spawn_herd"
+  ],
+  "signals_expected": [
+    "herd_dropped",
+    "quadrant_selected",
+    "rate_slider",
+    "terrain_painted"
+  ],
+  "signals_actual": [
+    "herd_dropped",
+    "quadrant_selected",
+    "rate_slider",
+    "terrain_painted"
+  ],
+  "agents_expected": [
+    "Ranger",
+    "Invasive Species",
+    "Naturalist"
+  ],
+  "agents_actual": [
+    "invasive_species",
+    "naturalist",
+    "ranger"
+  ],
+  "regions": [
+    "ecosystem",
+    "field-notes",
+    "inspector",
+    "phase-figure",
+    "presence",
+    "progress",
+    "rate-controls",
+    "species-rail",
+    "transport"
+  ],
+  "theme_expected": "journal",
+  "theme_actual": "journal",
+  "issues": []
+}

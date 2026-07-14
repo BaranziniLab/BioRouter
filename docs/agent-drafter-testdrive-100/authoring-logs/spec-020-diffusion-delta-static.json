@@ -1,0 +1,60 @@
+{
+  "id": "spec-020-diffusion-delta",
+  "title": "Diffusion Delta",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-020-diffusion-delta/manifest.json",
+  "actions_expected": [
+    "mark_exceedance",
+    "paint_source",
+    "place_monitor",
+    "run_transport",
+    "set_field",
+    "set_wind"
+  ],
+  "actions_actual": [
+    "mark_exceedance",
+    "paint_source",
+    "place_monitor",
+    "run_transport",
+    "set_field",
+    "set_wind"
+  ],
+  "signals_expected": [
+    "barrier_drawn",
+    "monitor_placed",
+    "source_painted",
+    "wind_dial"
+  ],
+  "signals_actual": [
+    "barrier_drawn",
+    "monitor_placed",
+    "source_painted",
+    "wind_dial"
+  ],
+  "agents_expected": [
+    "Meteorologist",
+    "Dispersion Modeler",
+    "Risk Assessor"
+  ],
+  "agents_actual": [
+    "dispersion_modeler",
+    "meteorologist",
+    "risk_assessor"
+  ],
+  "regions": [
+    "dosage-kpi",
+    "field-rail",
+    "inspector",
+    "map",
+    "monitor-table",
+    "notes",
+    "plot",
+    "presence",
+    "progress",
+    "site-monitors",
+    "transport"
+  ],
+  "theme_expected": "midnight",
+  "theme_actual": "midnight",
+  "issues": []
+}
