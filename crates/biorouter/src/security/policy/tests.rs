@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use super::{Decision, PolicyEngine, Rule};
+use super::{Decision, Dialect, Platform, PolicyEngine, PolicyVerdict, Rule};
 
 const CWD: &str = "/home/user/project";
 
@@ -15,10 +15,19 @@ fn engine_from_yaml(yaml: &str) -> PolicyEngine {
     PolicyEngine::with_rules(rules)
 }
 
+fn verdict(engine: &PolicyEngine, command: &str) -> PolicyVerdict {
+    engine.evaluate_for_dialect(
+        Platform::Linux,
+        Dialect::Posix,
+        "shell",
+        &json!({ "command": command }),
+        CWD,
+        "/home/user",
+    )
+}
+
 fn decision(engine: &PolicyEngine, command: &str) -> Decision {
-    engine
-        .evaluate("shell", &json!({ "command": command }), Path::new(CWD))
-        .decision
+    verdict(engine, command).decision
 }
 
 // --- Baseline self-tests: the auditable guarantee ------------------------
@@ -180,11 +189,7 @@ fn command_prefix_and_ask_decision() {
     let yaml = "- id: t.git_push\n  decision: ask\n  \
                 match: { command_prefix: [\"git push\"] }\n";
     let engine = engine_from_yaml(yaml);
-    let v = engine.evaluate(
-        "shell",
-        &json!({ "command": "git push origin main" }),
-        Path::new(CWD),
-    );
+    let v = verdict(&engine, "git push origin main");
     assert_eq!(v.decision, Decision::Ask);
     assert_eq!(v.rule_id.as_deref(), Some("t.git_push"));
     assert!(v.finding_id.starts_with("POL-"));
@@ -213,11 +218,7 @@ fn non_command_tool_is_allowed() {
 #[test]
 fn deny_verdict_carries_rule_and_justification() {
     let engine = PolicyEngine::load();
-    let v = engine.evaluate(
-        "shell",
-        &json!({ "command": "rm -rf /etc" }),
-        Path::new(CWD),
-    );
+    let v = verdict(&engine, "rm -rf /etc");
     assert_eq!(v.decision, Decision::Deny);
     assert_eq!(v.rule_id.as_deref(), Some("baseline.rm_rf_system"));
     assert!(
