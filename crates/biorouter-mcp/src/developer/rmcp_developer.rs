@@ -2006,7 +2006,10 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::TempDir;
+    use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
+
+    use crate::developer::shell::normalize_line_endings;
 
     fn create_test_server() -> DeveloperServer {
         DeveloperServer::new()
@@ -2158,11 +2161,16 @@ mod tests {
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
+            let command = if cfg!(windows) {
+                "(Get-Location).Path"
+            } else {
+                "pwd"
+            };
             let result = server
                 .shell(
                     Parameters(ShellParams {
                         working_directory: None,
-                        command: "pwd".to_string(),
+                        command: command.to_string(),
                         background: None,
                         label: None,
                     }),
@@ -2183,8 +2191,14 @@ mod tests {
                 .expect("shell output has text")
                 .text
                 .clone();
+            let expected_dir = dir
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            let comparable_text = text.replace('\\', "/").to_ascii_lowercase();
             assert!(
-                text.contains(dir.to_str().unwrap()),
+                comparable_text.contains(&expected_dir),
                 "pwd should report the session dir {}, got: {text}",
                 dir.display()
             );
@@ -2281,7 +2295,11 @@ mod tests {
         std::io::Error,
         rmcp::transport::async_rw::TransportAdapterAsyncCombinedRW,
     > {
-        let (_client, server) = tokio::io::duplex(1024);
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut buffer = [0_u8; 8192];
+            while client.read(&mut buffer).await.unwrap_or(0) != 0 {}
+        });
         server
     }
 
@@ -2364,10 +2382,10 @@ mod tests {
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
-            // Test PowerShell command
             let shell_params = Parameters(ShellParams {
                 working_directory: None,
-                command: "Get-ChildItem".to_string(),
+                command: "Get-ChildItem | Out-Null; Write-Output biorouter-windows-shell-ok"
+                    .to_string(),
                 background: None,
                 label: None,
             });
@@ -2383,9 +2401,13 @@ mod tests {
                         peer: peer.clone(),
                     },
                 )
-                .await;
-
-            assert!(result.is_err());
+                .await
+                .expect("PowerShell command should run");
+            assert!(result.content.iter().any(|content| {
+                content
+                    .as_text()
+                    .is_some_and(|text| text.text.contains("biorouter-windows-shell-ok"))
+            }));
 
             // Test that resolve_path works with Windows paths
             let windows_path = r"C:\Windows\System32";
@@ -2539,7 +2561,10 @@ mod tests {
 
         server.text_editor(write("v1\n")).await.unwrap();
         server.text_editor(write("v2\n")).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "v2\n");
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            normalize_line_endings("v2\n")
+        );
 
         let undo = Parameters(TextEditorParams {
             path: file_path_str.clone(),
@@ -2552,7 +2577,10 @@ mod tests {
             diff: None,
         });
         server.text_editor(undo).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "v1\n");
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            normalize_line_endings("v1\n")
+        );
     }
 
     /// BR-44: a `shell` redirect target is pre-snapshotted, so `undo_edit`
@@ -3107,7 +3135,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3226,7 +3257,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3283,7 +3317,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3456,7 +3493,7 @@ mod tests {
 
         // Verify the file is back to original content
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2"));
+        assert_eq!(file_content, normalize_line_endings("Line 1\nLine 2\n"));
         assert!(!file_content.contains("Inserted Line"));
     }
 
@@ -3878,7 +3915,7 @@ mod tests {
 
             // Create a command that generates > 100 lines of output
             let command = if cfg!(windows) {
-                "for /L %i in (1,1,150) do @echo Line %i"
+                "1..150 | ForEach-Object { 'Line ' + $_ }"
             } else {
                 "for i in {1..150}; do echo \"Line $i\"; done"
             };

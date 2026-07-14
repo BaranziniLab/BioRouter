@@ -15,6 +15,18 @@ use super::lang;
 use super::shell::normalize_line_endings;
 use super::undo_history::FileHistory;
 
+fn ensure_trailing_newline(content: &mut String) {
+    if content.ends_with('\n') {
+        return;
+    }
+
+    if cfg!(windows) {
+        content.push_str("\r\n");
+    } else {
+        content.push('\n');
+    }
+}
+
 // Constants
 pub const LINE_READ_LIMIT: usize = 2000;
 pub const MAX_DIFF_SIZE: usize = 1024 * 1024; // 1MB max diff size
@@ -702,13 +714,8 @@ pub async fn text_editor_view(
 }
 
 pub async fn text_editor_write(path: &PathBuf, file_text: &str) -> Result<Vec<Content>, ErrorData> {
-    // Normalize line endings based on platform
-    let mut normalized_text = normalize_line_endings(file_text); // Make mutable
-
-    // Ensure the text ends with a newline
-    if !normalized_text.ends_with('\n') {
-        normalized_text.push('\n');
-    }
+    let mut normalized_text = normalize_line_endings(file_text);
+    ensure_trailing_newline(&mut normalized_text);
 
     // Write to the file
     std::fs::write(path, &normalized_text) // Write the potentially modified text
@@ -797,9 +804,7 @@ pub async fn text_editor_replace(
                 // Write the updated content directly
                 let mut normalized_content = normalize_line_endings(&updated_content);
 
-                if !normalized_content.ends_with('\n') {
-                    normalized_content.push('\n');
-                }
+                ensure_trailing_newline(&mut normalized_content);
 
                 std::fs::write(path, &normalized_content).map_err(|e| {
                     ErrorData::new(
@@ -848,9 +853,7 @@ pub async fn text_editor_replace(
     let new_content = content.replace(old_str, new_str);
     let mut normalized_content = normalize_line_endings(&new_content);
 
-    if !normalized_content.ends_with('\n') {
-        normalized_content.push('\n');
-    }
+    ensure_trailing_newline(&mut normalized_content);
 
     std::fs::write(path, &normalized_content).map_err(|e| {
         ErrorData::new(
@@ -981,14 +984,8 @@ pub async fn text_editor_insert(
     }
 
     let new_content = new_lines.join("\n");
-    let normalized_content = normalize_line_endings(&new_content);
-
-    // Ensure the file ends with a newline
-    let final_content = if !normalized_content.ends_with('\n') {
-        format!("{}\n", normalized_content)
-    } else {
-        normalized_content
-    };
+    let mut final_content = normalize_line_endings(&new_content);
+    ensure_trailing_newline(&mut final_content);
 
     std::fs::write(path, &final_content).map_err(|e| {
         ErrorData::new(

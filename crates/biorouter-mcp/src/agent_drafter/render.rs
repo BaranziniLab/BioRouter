@@ -1433,8 +1433,8 @@ mod tests {
             p
         };
         let serve = write("serve.mjs");
-        let run = write("run.sh");
-        let lib = write("biorouter-launch.sh");
+        let run = file(&files, "run.sh");
+        let lib = file(&files, "biorouter-launch.sh");
 
         use std::process::Command;
         let has = |prog: &str| Command::new(prog).arg("--version").output().is_ok();
@@ -1454,16 +1454,25 @@ mod tests {
             );
         }
         if has("bash") {
-            for launcher in [&run, &lib] {
-                let out = Command::new("bash")
+            for (name, launcher) in [("run.sh", run), ("biorouter-launch.sh", lib)] {
+                let mut child = Command::new("bash")
                     .arg("-n")
-                    .arg(launcher)
-                    .output()
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
                     .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(launcher.as_bytes())
+                    .unwrap();
+                let out = child.wait_with_output().unwrap();
                 assert!(
                     out.status.success(),
                     "generated launcher {} is not valid bash:\n{}",
-                    launcher.display(),
+                    name,
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
@@ -1483,12 +1492,16 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let script = format!("set -euo pipefail\n. '{}'\nfind_biorouterd", lib.display());
+            let script =
+                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd");
             let out = Command::new("bash")
                 .args(["-c", &script])
-                .env_clear()
-                .env("PATH", format!("{}:/usr/bin:/bin", stub_dir.display()))
-                .env("HOME", dir.path())
+                .current_dir(&stub_dir)
+                .env_remove("BIOROUTERD_BIN")
+                .env_remove("XDG_CONFIG_HOME")
+                .env("DIR", ".")
+                .env("PATH", ".:/usr/bin:/bin")
+                .env("HOME", ".")
                 .output()
                 .unwrap();
             assert!(
@@ -1498,7 +1511,7 @@ mod tests {
             );
             assert_eq!(
                 String::from_utf8_lossy(&out.stdout).trim(),
-                stub.display().to_string(),
+                "./biorouterd",
                 "find_biorouterd should locate the on-PATH biorouterd"
             );
         }

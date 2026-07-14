@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::developer::shell::normalize_line_endings;
     use crate::developer::text_editor::*;
     use crate::developer::undo_history::FileHistory;
     use mpatch::parse_diffs;
@@ -410,7 +411,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "Hello, World!\n");
+        assert_eq!(content, normalize_line_endings("Hello, World!\n"));
     }
 
     #[tokio::test]
@@ -423,7 +424,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "Hello, World!\n");
+        assert_eq!(content, normalize_line_endings("Hello, World!\n"));
     }
 
     #[tokio::test]
@@ -437,7 +438,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "line1\nline2\nline3\n");
+        assert_eq!(content, normalize_line_endings("line1\nline2\nline3\n"));
     }
 
     #[tokio::test]
