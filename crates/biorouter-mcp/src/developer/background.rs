@@ -294,7 +294,20 @@ impl BackgroundJobs {
         job.killed.store(true, Ordering::SeqCst);
         kill_process_group(job.pid, job.identity.clone());
         let mut rx = job.done_rx.clone();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rx.wait_for(|d| *d)).await;
+        let confirmed = matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(KILL_CONFIRM_SECS),
+                rx.wait_for(|done| *done),
+            )
+            .await,
+            Ok(Ok(_))
+        ) || job.status.lock().await.is_terminal();
+        if !confirmed {
+            job.killed.store(false, Ordering::SeqCst);
+            return Err(format!(
+                "sent kill signal to job {id}, but its exit was not confirmed within {KILL_CONFIRM_SECS} seconds"
+            ));
+        }
         Ok(format!("sent kill signal to job {id}"))
     }
 
@@ -357,6 +370,9 @@ where
 /// both platforms: Unix sends SIGTERM then SIGKILL, Windows asks `taskkill` to
 /// close the tree then escalates to `/F`.
 const GRACE_MS: u64 = 1500;
+const KILL_CONFIRM_SECS: u64 = 12;
+#[cfg(windows)]
+const CONTROL_COMMAND_MS: u64 = 3000;
 
 /// Kill the whole process group led by `pid`: ask it to stop, give it
 /// `GRACE_MS` to flush, then force. Mirrors the foreground shell's kill idiom.
@@ -384,18 +400,52 @@ fn kill_process_group(pid: Option<u32>, identity: Arc<JobIdentity>) {
         // SIGTERM — the job gets to flush its output and remove its own files.
         // Going straight to `/F` (as this used to) killed dev servers and test
         // runners mid-write.
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/PID", &pid.to_string()])
-            .spawn();
         tokio::spawn(async move {
+            if let Err(error) = run_taskkill(pid, false).await {
+                tracing::warn!("Graceful taskkill failed for background job {pid}: {error}");
+            }
             tokio::time::sleep(std::time::Duration::from_millis(GRACE_MS)).await;
             if still_ours(pid, &identity).await {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .spawn();
+                if let Err(error) = run_taskkill(pid, true).await {
+                    tracing::warn!("Forced taskkill failed for background job {pid}: {error}");
+                }
             }
         });
     }
+}
+
+#[cfg(windows)]
+async fn run_taskkill(pid: u32, force: bool) -> Result<(), String> {
+    let program = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .ok_or_else(|| "SystemRoot is not set; cannot locate taskkill.exe".to_string())?
+        .join("System32")
+        .join("taskkill.exe");
+    let mut command = tokio::process::Command::new(program);
+    if force {
+        command.arg("/F");
+    }
+    command
+        .args(["/T", "/PID", &pid.to_string()])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_millis(CONTROL_COMMAND_MS),
+        command.output(),
+    )
+    .await
+    .map_err(|_| format!("taskkill timed out for pid {pid}"))?
+    .map_err(|e| format!("failed to run taskkill for pid {pid}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(format!(
+        "taskkill failed for pid {pid} with {}; stdout: {}; stderr: {}",
+        output.status,
+        stdout.trim(),
+        stderr.trim()
+    ))
 }
 
 /// Whether `pid` still names the process we recorded, for a kill we are already
@@ -958,7 +1008,11 @@ mod tests {
             "bounded wait must NOT kill the job"
         );
         jobs.kill(&id).await.unwrap();
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Killed);
+        assert_eq!(
+            *jobs.job(&id).await.unwrap().status.lock().await,
+            JobStatus::Killed,
+            "a successful kill must already have an OS-confirmed terminal state"
+        );
     }
 
     #[tokio::test]
