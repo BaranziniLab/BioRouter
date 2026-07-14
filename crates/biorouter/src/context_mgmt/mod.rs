@@ -744,11 +744,14 @@ pub async fn run_eager_compaction(
     session_manager
         .replace_conversation(&session_config.id, &compacted)
         .await?;
+    let usage_event_key = uuid::Uuid::new_v4().to_string();
     crate::agents::reply_parts::apply_session_metrics(
         &session_manager,
         &session_config,
         &usage,
         true,
+        &usage_event_key,
+        Some(provider.get_name().to_string()),
     )
     .await?;
 

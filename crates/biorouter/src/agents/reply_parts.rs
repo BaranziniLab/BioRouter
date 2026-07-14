@@ -18,7 +18,7 @@ use crate::providers::toolshim::{
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
 use crate::agents::subagent_tool::{SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME};
-use crate::session::session_manager::TokenDelta;
+use crate::session::session_manager::UsageLedgerEntry;
 #[cfg(test)]
 use crate::session::SessionType;
 use rmcp::model::Tool;
@@ -374,38 +374,38 @@ impl Agent {
         session_config: &crate::agents::types::SessionConfig,
         usage: &ProviderUsage,
         is_compaction_usage: bool,
+        event_key: &str,
     ) -> Result<()> {
+        let provider_name = match usage.provider.clone() {
+            Some(provider) => Some(provider),
+            None => self
+                .provider()
+                .await
+                .ok()
+                .map(|provider| provider.get_name().to_string()),
+        };
         apply_session_metrics(
             &self.config.session_manager,
             session_config,
             usage,
             is_compaction_usage,
+            event_key,
+            provider_name,
         )
         .await
     }
 }
 
-/// Update a session's live token gauge + lifetime counters for one completed
-/// turn (or compaction). Factored out of [`Agent::update_session_metrics`] so
-/// the BR-12 background eager-compaction task — which runs in a detached
-/// `tokio::spawn` without `&self` — can apply the same accounting after it swaps
-/// in a compacted history.
 pub(crate) async fn apply_session_metrics(
     manager: &crate::session::SessionManager,
     session_config: &crate::agents::types::SessionConfig,
     usage: &ProviderUsage,
     is_compaction_usage: bool,
+    event_key: &str,
+    provider_name: Option<String>,
 ) -> Result<()> {
     let session_id = session_config.id.as_str();
-
-    let delta = TokenDelta {
-        input: usage.usage.input_tokens,
-        output: usage.usage.output_tokens,
-        total: usage.usage.total_tokens,
-    };
-
     let (current_total, current_input, current_output) = if is_compaction_usage {
-        // After compaction: summary output becomes new input context
         let new_input = usage.usage.output_tokens;
         (new_input, new_input, None)
     } else {
@@ -416,35 +416,30 @@ pub(crate) async fn apply_session_metrics(
         )
     };
 
-    let mut update = manager
-        .update(session_id)
-        .schedule_id(session_config.schedule_id.clone())
-        // The lifetime counters accumulate atomically in SQL. Reading the row
-        // into Rust and writing back lost an update whenever two turns raced.
-        .accumulate_tokens(delta);
-
-    // A turn that reports no usage at all must not blank the live gauge — the
-    // session's context-window readout should keep the last real value.
-    if current_total.is_some() || current_input.is_some() || current_output.is_some() {
-        update = update
-            .total_tokens(current_total)
-            .input_tokens(current_input)
-            .output_tokens(current_output);
-    }
-
-    update.apply().await?;
-
-    // Append the per-turn event that makes a real per-day token series
-    // possible. Compaction is a genuine provider call and is billed, so it is
-    // recorded like any other turn.
-    if let Some(total) = usage.usage.total_tokens {
+    let billed_total = usage.usage.billed_total();
+    if billed_total.is_some() || usage.usage.total_tokens.is_some() {
         manager
-            .record_token_event(
-                session_id,
-                usage.usage.input_tokens,
-                usage.usage.output_tokens,
-                total,
-            )
+            .apply_usage_event(UsageLedgerEntry {
+                event_key: event_key.to_string(),
+                session_id: session_id.to_string(),
+                schedule_id: session_config.schedule_id.clone(),
+                current_total_tokens: current_total,
+                current_input_tokens: current_input,
+                current_output_tokens: current_output,
+                billed_total_tokens: billed_total,
+                input_tokens: usage.usage.input_tokens,
+                output_tokens: usage.usage.output_tokens,
+                model_id: Some(usage.model.clone()),
+                provider: provider_name,
+                cache_read_tokens: Some(usage.usage.cache_read_input_tokens.unwrap_or(0)),
+                cache_creation_tokens: Some(usage.usage.cache_creation_input_tokens.unwrap_or(0)),
+            })
+            .await?;
+    } else {
+        manager
+            .update(session_id)
+            .schedule_id(session_config.schedule_id.clone())
+            .apply()
             .await?;
     }
 

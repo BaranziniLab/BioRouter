@@ -23,6 +23,10 @@ fn sdk_template() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent_drafter/templates/sdk.ts")
 }
 
+fn smoke_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/agent-drafter/app-smoke.mjs")
+}
+
 fn example_apps() -> Vec<(String, PathBuf)> {
     let mut apps: Vec<(String, PathBuf)> = std::fs::read_dir(examples_dir())
         .expect("read examples/ui")
@@ -181,5 +185,42 @@ fn every_example_bundles_against_the_real_sdk() {
         let js = std::fs::read_to_string(staging.join("dist/app.js")).unwrap();
         assert!(js.len() > 500, "{id}: suspiciously small bundle");
         let _ = std::fs::remove_dir_all(&staging);
+    }
+}
+
+/// Run every reference app in Chromium and require its controls, bindings, and
+/// accessibility paths to satisfy the same executing harness used by app builds.
+#[test]
+#[ignore = "needs node + Chromium"]
+fn every_example_passes_the_executing_smoke_harness() {
+    assert!(smoke_script().is_file(), "app-smoke.mjs must exist");
+
+    for (id, dir) in example_apps() {
+        let staging = std::env::temp_dir().join(format!("br-ui-smoke-{id}"));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(staging.join("src")).unwrap();
+        for file in ["index.html", "manifest.json"] {
+            std::fs::copy(dir.join(file), staging.join(file)).unwrap();
+        }
+        std::fs::copy(dir.join("src/main.ts"), staging.join("src/main.ts")).unwrap();
+        std::fs::copy(sdk_template(), staging.join("src/sdk.ts")).unwrap();
+
+        let report = bundle::build_app(&staging).unwrap_or_else(|e| panic!("{id}: build: {e}"));
+        assert!(report.ok, "{id}: bundle failed:\n{}", report.log);
+
+        let output = std::process::Command::new("node")
+            .arg(smoke_script())
+            .arg(&staging)
+            .arg("--json")
+            .output()
+            .unwrap_or_else(|e| panic!("{id}: could not launch app-smoke: {e}"));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_dir_all(&staging);
+        assert!(
+            output.status.success(),
+            "{id}: executing smoke failed ({}):\n{stdout}\n{stderr}",
+            output.status
+        );
     }
 }

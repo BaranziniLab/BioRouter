@@ -60,6 +60,8 @@ mod tool_execution;
 // to, so the model and the loop detectors can tell a retryable blip from a hard
 // failure.
 pub mod tool_errors;
+pub mod turn_abort;
+pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
 pub mod workspace_summary;
@@ -74,5 +76,6 @@ pub use prompt_manager::PromptManager;
 pub use subagent_handle::{BackgroundSubagent, HandleSnapshot, HandleState};
 pub use subagent_result::{SubagentResult, SubagentStatus, SubagentTokens};
 pub use subagent_task_config::TaskConfig;
+pub use turn_abort::{exit, TurnAbortCode};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};
 pub use vault_refs::VaultRefs;

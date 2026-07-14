@@ -31,14 +31,17 @@ pub enum KbIdError {
     BadShape,
 }
 
+/// `<config>/knowledge`, honouring `BIOROUTER_PATH_ROOT` via [`crate::paths`].
+///
+/// This used to hand-roll `choose_app_strategy` with an `io/biorouter/biorouter`
+/// tuple — a *third* app-strategy in the codebase, and one that ignored the
+/// sandbox override, so an isolated run read and wrote the user's global KBs.
+/// It now shares the crate resolver (`Block/Block/biorouter`, matching
+/// `biorouter::config::Paths`). The two tuples resolve identically on XDG and on
+/// macOS; they differ only on Windows, where the old path was never the one the
+/// rest of BioRouter used anyway.
 pub fn knowledge_root() -> anyhow::Result<PathBuf> {
-    use etcetera::{choose_app_strategy, AppStrategy, AppStrategyArgs};
-    let strategy = choose_app_strategy(AppStrategyArgs {
-        top_level_domain: "io".to_string(),
-        author: "biorouter".to_string(),
-        app_name: "biorouter".to_string(),
-    })?;
-    Ok(strategy.config_dir().join("knowledge"))
+    Ok(crate::paths::in_config_dir("knowledge"))
 }
 
 pub fn kb_root(root: &Path, id: &str) -> PathBuf {

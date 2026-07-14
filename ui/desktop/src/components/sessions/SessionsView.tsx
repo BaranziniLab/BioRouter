@@ -81,7 +81,7 @@ const SessionsView: React.FC = () => {
           name: 'Loading...',
           working_dir: '',
           message_count: 0,
-          total_tokens: 0,
+          total_tokens: null,
           created_at: '',
           updated_at: '',
           extension_data: {},

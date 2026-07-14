@@ -77,6 +77,13 @@ pub struct ResponseUsage {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub total_tokens: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens_details: Option<ResponseInputTokensDetails>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseInputTokensDetails {
+    pub cached_tokens: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -510,13 +517,27 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
 }
 
 pub fn get_responses_usage(response: &ResponsesApiResponse) -> Usage {
-    response.usage.as_ref().map_or_else(Usage::default, |u| {
-        Usage::new(
-            Some(u.input_tokens),
-            Some(u.output_tokens),
-            Some(u.total_tokens),
-        )
-    })
+    response
+        .usage
+        .as_ref()
+        .map_or_else(Usage::default, response_usage_to_usage)
+}
+
+fn response_usage_to_usage(usage: &ResponseUsage) -> Usage {
+    let cached_tokens = usage
+        .input_tokens_details
+        .as_ref()
+        .map(|details| details.cached_tokens)
+        .filter(|cached| *cached > 0)
+        .map(|cached| cached.min(usage.input_tokens.max(0)));
+    let input_tokens = usage.input_tokens - cached_tokens.unwrap_or(0);
+
+    Usage::new(
+        Some(input_tokens),
+        Some(usage.output_tokens),
+        Some(usage.total_tokens),
+    )
+    .with_cache(cached_tokens, None)
 }
 
 fn process_streaming_output_items(
@@ -669,17 +690,14 @@ where
 
                 ResponsesStreamEvent::ResponseCompleted { response, .. } => {
                     let model = model_name.as_ref().unwrap_or(&response.model);
-                    let usage = response.usage.as_ref().map_or_else(
-                        Usage::default,
-                        |u| Usage::new(
-                            Some(u.input_tokens),
-                            Some(u.output_tokens),
-                            Some(u.total_tokens),
-                        ),
-                    );
+                    let usage = response
+                        .usage
+                        .as_ref()
+                        .map_or_else(Usage::default, response_usage_to_usage);
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
+                        provider: None,
                         finish_reason: None,
                     });
 
@@ -733,6 +751,8 @@ where
 mod tests {
     use super::*;
     use crate::agents::effort::ReasoningEffort;
+    use futures::StreamExt;
+    use tokio::pin;
 
     // BR-63: the Responses API takes the effort nested under `reasoning`, not as
     // the chat-completions top-level `reasoning_effort` key.
@@ -780,6 +800,62 @@ mod tests {
         )?;
 
         assert!(payload.get("reasoning").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn non_streaming_usage_extracts_cached_input_tokens() {
+        let response: ResponsesApiResponse = serde_json::from_value(json!({
+            "id": "resp_cache",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": "gpt-5.4",
+            "output": [],
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 50,
+                "total_tokens": 1050,
+                "input_tokens_details": { "cached_tokens": 800 }
+            }
+        }))
+        .expect("valid Responses API response");
+
+        let usage = get_responses_usage(&response);
+        assert_eq!(usage.input_tokens, Some(200));
+        assert_eq!(usage.output_tokens, Some(50));
+        assert_eq!(usage.cache_read_input_tokens, Some(800));
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.total_tokens, Some(1050));
+        assert_eq!(usage.billed_total(), Some(1050));
+    }
+
+    #[tokio::test]
+    async fn streaming_usage_extracts_cached_input_tokens() -> anyhow::Result<()> {
+        let lines = r#"
+data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_cache","object":"response","created_at":1,"status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":1000,"output_tokens":50,"total_tokens":1050,"input_tokens_details":{"cached_tokens":800}}}}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|line| Ok(line.to_string())));
+        let messages = responses_api_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut final_usage = None;
+        while let Some(result) = messages.next().await {
+            let (_, usage) = result?;
+            if usage.is_some() {
+                final_usage = usage;
+            }
+        }
+
+        let usage = final_usage.expect("expected terminal usage");
+        assert_eq!(usage.model, "gpt-5.4");
+        assert_eq!(usage.usage.input_tokens, Some(200));
+        assert_eq!(usage.usage.output_tokens, Some(50));
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(800));
+        assert_eq!(usage.usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.usage.total_tokens, Some(1050));
+        assert_eq!(usage.usage.billed_total(), Some(1050));
         Ok(())
     }
 }

@@ -39,11 +39,7 @@ import {
   getBiorouterCliBinaryPath,
   findAvailablePort,
 } from './biorouterd';
-import {
-  getSharedBackend,
-  isSharedDaemonEnabled,
-  resetSharedBackend,
-} from './biorouterdSingleton';
+import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';

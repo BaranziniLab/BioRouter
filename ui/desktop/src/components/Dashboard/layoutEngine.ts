@@ -178,10 +178,16 @@ export function computeLayout(
     // size to SNAP_GRID so post-snap cells remain edge-aligned with no drift.
     const sizedW = fixedCellSize
       ? cellW
-      : Math.max(MIN_W, Math.floor(Math.min(cellW, Math.floor(interiorW / cols)) / SNAP_GRID) * SNAP_GRID);
+      : Math.max(
+          MIN_W,
+          Math.floor(Math.min(cellW, Math.floor(interiorW / cols)) / SNAP_GRID) * SNAP_GRID
+        );
     const sizedH = fixedCellSize
       ? cellH
-      : Math.max(MIN_H, Math.floor(Math.min(cellH, Math.floor(interiorH / rows)) / SNAP_GRID) * SNAP_GRID);
+      : Math.max(
+          MIN_H,
+          Math.floor(Math.min(cellH, Math.floor(interiorH / rows)) / SNAP_GRID) * SNAP_GRID
+        );
     const itemsInLastRow = nTiled - cols * (rows - 1);
     const blockW = cols * sizedW;
     const blockH = rows * sizedH;

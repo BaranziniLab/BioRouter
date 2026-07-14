@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod bench;
 pub mod configure;
 pub mod doctor;
@@ -10,5 +11,6 @@ pub mod schedule;
 pub mod session;
 pub mod skill;
 pub mod term;
+pub mod usage;
 pub mod web;
 pub mod workflow;

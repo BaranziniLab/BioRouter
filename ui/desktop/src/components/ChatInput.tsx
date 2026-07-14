@@ -21,6 +21,7 @@ import { useModelAndProvider } from './ModelAndProviderContext';
 import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
 import { COST_TRACKING_ENABLED } from '../updates';
 import { CostTracker } from './bottom_menu/CostTracker';
+import type { ModelCostRow } from '../hooks/useCostTracking';
 import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
 import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
@@ -121,6 +122,8 @@ interface ChatInputProps {
       totalCost: number;
     };
   };
+  /** Real per-model usage rows from the token ledger (Issue #1 breakdown). */
+  modelCostRows?: ModelCostRow[];
   disableAnimation?: boolean;
   workflow?: Workflow | null;
   workflowAccepted?: boolean;
@@ -155,6 +158,7 @@ export default function ChatInput({
   messages = [],
   disableAnimation = false,
   sessionCosts,
+  modelCostRows,
   workflowAccepted,
   initialPrompt,
   toolCount,
@@ -1772,6 +1776,7 @@ export default function ChatInput({
                   inputTokens={accumulatedInputTokens}
                   outputTokens={accumulatedOutputTokens}
                   sessionCosts={sessionCosts}
+                  modelCostRows={modelCostRows}
                 />
               </div>
             )}

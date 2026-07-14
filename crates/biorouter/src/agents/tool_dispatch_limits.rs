@@ -199,10 +199,9 @@ static SHELL_OUTPUT_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// The base tool name as the model calls it, stripping any `extension__` prefix.
 fn base_tool_name(tool_name: &str) -> &str {
-    match tool_name.rfind("__") {
-        Some(idx) => &tool_name[idx + 2..],
-        None => tool_name,
-    }
+    tool_name
+        .rsplit_once("__")
+        .map_or(tool_name, |(_, base_name)| base_name)
 }
 
 /// The absolute, lexically-normalised paths a tool call is about to write. Empty
@@ -331,6 +330,12 @@ mod tests {
 
     fn args(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn base_tool_name_handles_unicode_prefixes() {
+        assert_eq!(base_tool_name("développeur__text_editor"), "text_editor");
+        assert_eq!(base_tool_name("text_editor"), "text_editor");
     }
 
     #[test]

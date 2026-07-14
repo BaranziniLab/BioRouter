@@ -93,8 +93,7 @@ const statusResponse = {
       accelerator_memory_kind: 'vram',
       default_context_size: 32768,
       model_cache_dir: '/Users/test/.ollama/models',
-      model_cache_layout:
-        'Ollama manifests/blobs; Hugging Face fallback cache under the same root',
+      model_cache_layout: 'Ollama manifests/blobs; Hugging Face fallback cache under the same root',
     },
   },
 };

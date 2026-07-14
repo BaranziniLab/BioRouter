@@ -20,11 +20,7 @@ declare module 'react-force-graph-2d' {
     backgroundColor?: string;
     onNodeHover?: (node: unknown | null) => void;
     onNodeClick?: (node: unknown) => void;
-    nodeCanvasObject?: (
-      node: unknown,
-      ctx: CanvasRenderingContext2D,
-      globalScale: number
-    ) => void;
+    nodeCanvasObject?: (node: unknown, ctx: CanvasRenderingContext2D, globalScale: number) => void;
     linkCanvasObject?: (link: unknown, ctx: CanvasRenderingContext2D) => void;
     linkCanvasObjectMode?: () => 'replace' | 'before' | 'after';
   }

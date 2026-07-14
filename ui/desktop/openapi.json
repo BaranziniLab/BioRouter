@@ -3502,6 +3502,54 @@
         ]
       }
     },
+    "/sessions/{session_id}/usage": {
+      "get": {
+        "tags": [
+          "Session Management"
+        ],
+        "operationId": "get_session_usage",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Unique identifier for the session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-model usage for the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionModelUsageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/user_workflow_values": {
       "put": {
         "tags": [
@@ -3695,6 +3743,106 @@
             }
           }
         }
+      }
+    },
+    "/usage/report": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "get_usage_report",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive window start, unix seconds (default: 30 days ago)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive window end, unix seconds (default: now)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "Bucketing: day (default), model, or day_model",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/UsageGroup"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/usage/summary": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "get_usage_summary",
+        "responses": {
+          "200": {
+            "description": "Month-to-date usage vs the configured budget",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/workflows/create": {
@@ -4298,6 +4446,7 @@
           "end",
           "maxSessions",
           "maxTokens",
+          "tokensComplete",
           "currentStreak",
           "longestStreak",
           "days"
@@ -4331,6 +4480,10 @@
           },
           "start": {
             "type": "string"
+          },
+          "tokensComplete": {
+            "type": "boolean",
+            "description": "False when at least one event in the window predates billed-token\naccounting; numeric token fields are then known subtotals, not zero/exact."
           }
         }
       },
@@ -6928,6 +7081,56 @@
           }
         }
       },
+      "ModelUsageRow": {
+        "type": "object",
+        "description": "One `(model, provider)` group of the per-model usage breakdown.\n\n`model_id` / `provider` are `None` for turns recorded before model\nattribution landed, or when the provider reported no model — those rows\naggregate together as the \"unknown\" group.",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "turns"
+        ],
+        "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Input tokens written to the prompt cache.",
+            "nullable": true
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Input tokens served from the prompt cache. `None` means at least one\ncontributing event predates cache accounting or did not report it.",
+            "nullable": true
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modelId": {
+            "type": "string",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Billed tokens across all four disjoint buckets. `None` means at least\none contributing event has no reconstructable billed total.",
+            "nullable": true
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of billed turns attributed to this group."
+          }
+        }
+      },
       "PageContent": {
         "type": "object",
         "required": [
@@ -7043,6 +7246,16 @@
           "currency"
         ],
         "properties": {
+          "cache_read_cost": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "cache_write_cost": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
           "context_length": {
             "type": "integer",
             "format": "int32",
@@ -7804,7 +8017,7 @@
           "accumulated_total_tokens": {
             "type": "integer",
             "format": "int64",
-            "description": "Lifetime totals: the sum of every turn's usage, i.e. tokens actually\nprocessed and billed. They grow without bound and overflowed `i32` at\n~2.1e9 — in release that wraps *negative* and then subtracts from the\ninsights `SUM`. SQLite's INTEGER is already 64-bit.",
+            "description": "Lifetime totals. New usage writes use the four-bucket billed total;\ndatabases created before billed-bucket accounting may contain legacy\ncontext totals here, so reporting and budgets use `token_events` instead.\nThese counters grow without bound, so SQLite and Rust both use 64-bit.",
             "nullable": true
           },
           "branch_point_msg_uid": {
@@ -7984,11 +8197,8 @@
         "type": "object",
         "required": [
           "totalSessions",
-          "totalTokens",
           "sessionsLast7Days",
-          "sessionsLast30Days",
-          "tokensLast7Days",
-          "tokensLast30Days"
+          "sessionsLast30Days"
         ],
         "properties": {
           "sessionsLast30Days": {
@@ -8001,11 +8211,13 @@
           },
           "tokensLast30Days": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "nullable": true
           },
           "tokensLast7Days": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "nullable": true
           },
           "totalSessions": {
             "type": "integer",
@@ -8013,7 +8225,8 @@
           },
           "totalTokens": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "nullable": true
           }
         }
       },
@@ -8029,6 +8242,22 @@
               "$ref": "#/components/schemas/Session"
             },
             "description": "List of available session information objects"
+          }
+        }
+      },
+      "SessionModelUsageResponse": {
+        "type": "object",
+        "description": "Per-model token breakdown for one session.",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelUsageRow"
+            },
+            "description": "One row per `(model, provider)` group; a `null` `modelId` is the\n\"unknown\" bucket (turns recorded before model attribution, or providers\nthat reported no model)."
           }
         }
       },
@@ -9178,6 +9407,222 @@
             "items": {
               "$ref": "#/components/schemas/ToolPermission"
             }
+          }
+        }
+      },
+      "UsageGroup": {
+        "type": "string",
+        "description": "How `get_usage_report` buckets the per-turn ledger.",
+        "enum": [
+          "day",
+          "model",
+          "day_model"
+        ]
+      },
+      "UsageReportResponse": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "group",
+          "rows"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echoed resolved window bounds (unix seconds), so the client can render\nthe exact range it got even when it sent no `from`/`to`."
+          },
+          "group": {
+            "$ref": "#/components/schemas/UsageGroup"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageReportRow"
+            }
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UsageReportRow": {
+        "type": "object",
+        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) — a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced, unpriced, or incomplete turns, so a day\ncost can be read as \"at least this much\" rather than exact.",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "turns",
+          "hasUnpriced",
+          "costExcludesCache"
+        ],
+        "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Prompt-cache read/creation tokens in the bucket. `None` preserves\nhistorical incompleteness; it must not be presented as a measured zero.",
+            "nullable": true
+          },
+          "cost": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "costExcludesCache": {
+            "type": "boolean",
+            "description": "`true` when cache cost is omitted because a contributing model has no\ncache rate or an event did not report a required cache bucket."
+          },
+          "date": {
+            "type": "string",
+            "nullable": true
+          },
+          "hasUnpriced": {
+            "type": "boolean"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modelId": {
+            "type": "string",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Billed tokens, or `None` when the bucket includes incomplete history.",
+            "nullable": true
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "description": "Month-to-date and all-time usage totals, for the summary gauge.",
+        "required": [
+          "month",
+          "monthToDate",
+          "allTime"
+        ],
+        "properties": {
+          "allTime": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "month": {
+            "type": "string",
+            "description": "Current local month, `YYYY-MM`."
+          },
+          "monthToDate": {
+            "$ref": "#/components/schemas/UsageTotals"
+          }
+        }
+      },
+      "UsageSummaryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/UsageSummary"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "dollarPercent": {
+                "type": "number",
+                "format": "double",
+                "description": "MTD cost as a percent of the dollar limit; `null` when no limit is set or\nthe MTD cost is unknown or only a lower bound.",
+                "nullable": true
+              },
+              "monthlyDollarLimit": {
+                "type": "number",
+                "format": "double",
+                "description": "Configured monthly dollar budget, or `null` when unset.",
+                "nullable": true
+              },
+              "monthlyTokenLimit": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Configured monthly token allowance, or `null` when unset.",
+                "nullable": true
+              },
+              "tokenPercent": {
+                "type": "number",
+                "format": "double",
+                "description": "MTD billed tokens as a percent of the token limit; `null` when no limit\nis set or the historical billed total is incomplete.",
+                "nullable": true
+              }
+            }
+          }
+        ]
+      },
+      "UsageTotals": {
+        "type": "object",
+        "description": "Token + cost totals for a time span, priced through [`model_cost_with_cache`].",
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "turns",
+          "hasUnpriced",
+          "costExcludesCache"
+        ],
+        "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Prompt-cache read/creation tokens in the span. `None` means the span\nincludes at least one event without cache-bucket accounting.",
+            "nullable": true
+          },
+          "cost": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollar cost of the priced turns, or `None` when nothing in the span is\npriced. Priced-but-partial spans return the priced sum with\n`has_unpriced = true`.",
+            "nullable": true
+          },
+          "costExcludesCache": {
+            "type": "boolean",
+            "description": "`true` when cache cost is omitted because pricing or cache accounting is\nincomplete — the figure is then a lower bound."
+          },
+          "hasUnpriced": {
+            "type": "boolean"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Billed tokens, or `None` when the span includes incomplete history.",
+            "nullable": true
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

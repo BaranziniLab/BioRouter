@@ -726,7 +726,9 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
 
   return (
     <div className="px-4 py-2">
-      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto">{renderGraph()}</pre>
+      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto">
+        {renderGraph()}
+      </pre>
       {code && (
         <div className="border-t border-border-subtle -mx-4 mt-2">
           <ToolCallExpandable
@@ -786,7 +788,9 @@ function ToolResultView({ result, isStartExpanded }: ToolResultViewProps) {
           />
         )}
         {hasResource(result) && (
-          <pre className="font-sans text-sm whitespace-pre-wrap break-all overflow-x-auto max-w-full">{JSON.stringify(result, null, 2)}</pre>
+          <pre className="font-sans text-sm whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+            {JSON.stringify(result, null, 2)}
+          </pre>
         )}
       </div>
     </ToolCallExpandable>
@@ -841,7 +845,10 @@ function ToolLogsView({
         className={`flex flex-col items-start space-y-2 overflow-y-auto p-4 ${working ? 'max-h-[4rem]' : 'max-h-[20rem]'}`}
       >
         {logs.map((log, i) => (
-          <span key={i} className="w-full whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
+          <span
+            key={i}
+            className="w-full whitespace-pre-wrap break-words font-sans text-sm text-text-muted"
+          >
             {log}
           </span>
         ))}

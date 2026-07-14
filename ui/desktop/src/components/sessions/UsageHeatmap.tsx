@@ -84,7 +84,15 @@ const full = new Intl.NumberFormat('en');
 /** The subset of a cell's box the tooltip needs, as plain numbers. */
 type Anchor = { left: number; top: number; bottom: number; width: number };
 
-function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
+function Tooltip({
+  cell,
+  anchor,
+  tokensComplete,
+}: {
+  cell: Cell;
+  anchor: Anchor;
+  tokensComplete: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -128,7 +136,10 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
       {d ? (
         <>
           <Row label="Sessions started" value={full.format(d.sessions)} />
-          <Row label="Tokens processed" value={full.format(d.tokens)} />
+          <Row
+            label="Tokens processed"
+            value={`${tokensComplete ? '' : '≥'}${full.format(d.tokens)}`}
+          />
           <Row label="Messages" value={full.format(d.messages)} />
           <p className="mt-2 border-t border-border-subtle pt-2 text-[11px] leading-snug text-text-subtle">
             Tokens are attributed to the turn that spent them.
@@ -190,6 +201,12 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
       <p className="mb-4 text-[13px] text-text-muted">
         Daily usage intensity — sessions started and tokens processed.
       </p>
+      {!activity.tokensComplete && (
+        <p className="mb-4 text-[11px] text-text-subtle" role="status">
+          Token values marked ≥ are known subtotals because older activity predates complete billing
+          accounting.
+        </p>
+      )}
 
       <div className="grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
         <span aria-hidden="true" />
@@ -237,7 +254,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
               onBlur={hide}
               aria-label={
                 cell.day
-                  ? `${cell.key}: ${cell.day.sessions} sessions, ${cell.day.tokens} tokens`
+                  ? `${cell.key}: ${cell.day.sessions} sessions, ${activity.tokensComplete ? '' : 'at least '}${cell.day.tokens} tokens`
                   : `${cell.key}: no activity`
               }
               className={[
@@ -262,12 +279,21 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
           <span className="ml-1">More</span>
         </div>
         <span className="tabular-nums">
-          {compact.format(activity.maxTokens)} tokens on your busiest day
+          {activity.tokensComplete
+            ? `${compact.format(activity.maxTokens)} tokens on your busiest day`
+            : `≥${compact.format(activity.maxTokens)} tokens on the highest measured day`}
         </span>
       </div>
 
       {hovered &&
-        createPortal(<Tooltip cell={hovered.cell} anchor={hovered.rect} />, document.body)}
+        createPortal(
+          <Tooltip
+            cell={hovered.cell}
+            anchor={hovered.rect}
+            tokensComplete={activity.tokensComplete}
+          />,
+          document.body
+        )}
     </div>
   );
 }

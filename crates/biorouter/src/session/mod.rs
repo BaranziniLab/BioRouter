@@ -11,6 +11,6 @@ pub use extension_data::{
     EnabledExtensionsState, ExtensionData, ExtensionState, TodoItem, TodoState, TodoStatus,
 };
 pub use session_manager::{
-    ActivityWindow, DailyActivity, Session, SessionInsights, SessionManager, SessionType,
-    SessionUpdateBuilder,
+    ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionManager,
+    SessionType, SessionUpdateBuilder, UsageGroup, UsageReportRow, UsageSummary, UsageTotals,
 };

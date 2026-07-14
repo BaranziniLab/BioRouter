@@ -23,8 +23,21 @@ pub use normalize::{ConversationNormalizer, SharedNormalizer};
 /// those copied every tool result in the session — the single largest per-turn
 /// allocation in a long session. Only a writer (`push`/`extend`/`pop`/…) pays for
 /// a copy, and only while another handle is alive.
-#[derive(Debug, Clone, ToSchema, PartialEq)]
-pub struct Conversation(#[schema(value_type = Vec<Message>)] Arc<Vec<Message>>);
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conversation(Arc<Vec<Message>>);
+
+impl<'schema> ToSchema<'schema> for Conversation {
+    fn schema() -> (
+        &'schema str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        (
+            "Conversation",
+            utoipa::openapi::schema::Array::new(utoipa::openapi::Ref::from_schema_name("Message"))
+                .into(),
+        )
+    }
+}
 
 impl Serialize for Conversation {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -586,6 +599,15 @@ mod tests {
     use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
     use rmcp::model::{CallToolRequestParams, Role};
     use rmcp::object;
+
+    #[test]
+    fn conversation_openapi_schema_is_a_message_array() {
+        let (_, schema) = <Conversation as utoipa::ToSchema>::schema();
+        let schema = serde_json::to_value(schema).unwrap();
+
+        assert_eq!(schema["type"], "array");
+        assert_eq!(schema["items"]["$ref"], "#/components/schemas/Message");
+    }
 
     macro_rules! assert_has_issues_unordered {
         ($fixed:expr, $issues:expr, $($expected:expr),+ $(,)?) => {

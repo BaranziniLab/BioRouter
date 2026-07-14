@@ -1,0 +1,58 @@
+{
+  "id": "spec-021-radiant",
+  "title": "Radiant",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-021-radiant/manifest.json",
+  "actions_expected": [
+    "flag_edge",
+    "grow_node",
+    "place_ring",
+    "prune",
+    "recenter",
+    "write_brief"
+  ],
+  "actions_actual": [
+    "flag_edge",
+    "grow_node",
+    "place_ring",
+    "prune",
+    "recenter",
+    "write_brief"
+  ],
+  "signals_expected": [
+    "node_dragged",
+    "node_pinned",
+    "node_selected",
+    "prune_requested"
+  ],
+  "signals_actual": [
+    "node_dragged",
+    "node_pinned",
+    "node_selected",
+    "prune_requested"
+  ],
+  "agents_expected": [
+    "Cartographer",
+    "Weeder",
+    "Scribe"
+  ],
+  "agents_actual": [
+    "cartographer",
+    "scribe",
+    "weeder"
+  ],
+  "regions": [
+    "brief",
+    "evidence",
+    "inspector",
+    "map",
+    "presence",
+    "progress",
+    "seeds",
+    "transport",
+    "weak_edges"
+  ],
+  "theme_expected": "journal",
+  "theme_actual": "journal",
+  "issues": []
+}

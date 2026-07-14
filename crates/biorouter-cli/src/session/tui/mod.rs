@@ -506,6 +506,7 @@ async fn drive_response(
     rx: &mut Events,
     user_message: Message,
 ) -> Result<()> {
+    session.last_abort = None;
     let config = SessionConfig {
         id: session.session_id.clone(),
         schedule_id: session.scheduled_job_id.clone(),
@@ -622,6 +623,16 @@ async fn drive_response(
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
                     // BR-52: the TUI reads token counts from the session row.
                     Some(Ok(AgentEvent::TokenUsage(_))) => {}
+                    Some(Ok(AgentEvent::TurnAborted { code, message })) => {
+                        // The assistant Message carrying the human-readable text was
+                        // already pushed; add a real error line so the turn does not
+                        // look like it simply finished.
+                        commit_stream_to_session(app, &mut session.messages);
+                        app.push_error(&format!("{}: {message}", code.wire_code()));
+                        session.last_abort = Some(code);
+                        cancel.cancel();
+                        break;
+                    }
                     Some(Err(e)) => {
                         // Commit any streamed text first so the error renders
                         // *after* it (and isn't wiped by the preview truncation).

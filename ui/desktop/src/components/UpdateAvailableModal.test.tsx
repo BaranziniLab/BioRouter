@@ -66,13 +66,14 @@ describe('UpdateAvailableModal — one-click flow', () => {
   });
 
   it('recovers a download already finished before mount via getUpdateState', async () => {
-    (window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }).electron.getUpdateState =
-      vi.fn().mockResolvedValue({
-        updateAvailable: true,
-        status: 'downloaded',
-        latestVersion: '1.86.0',
-        percent: 100,
-      });
+    (
+      window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }
+    ).electron.getUpdateState = vi.fn().mockResolvedValue({
+      updateAvailable: true,
+      status: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+    });
 
     render(<UpdateAvailableModal />);
     const installBtn = await screen.findByRole('button', { name: /Restart & Update/i });

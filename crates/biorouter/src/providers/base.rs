@@ -294,6 +294,10 @@ impl ConfigKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub model: String,
+    /// Concrete provider that served this call. Wrapper providers set this to
+    /// the selected child provider so accounting never guesses from the model.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub usage: Usage,
     /// The provider's stop/finish reason for the response, when reported
     /// (OpenAI-compatible streaming `choices[].finish_reason`, e.g. `"stop"`,
@@ -308,6 +312,7 @@ impl ProviderUsage {
     pub fn new(model: String, usage: Usage) -> Self {
         Self {
             model,
+            provider: None,
             usage,
             finish_reason: None,
         }
@@ -337,6 +342,7 @@ impl ProviderUsage {
     pub fn combine_with(&self, other: &ProviderUsage) -> ProviderUsage {
         ProviderUsage {
             model: self.model.clone(),
+            provider: other.provider.clone().or_else(|| self.provider.clone()),
             usage: self.usage + other.usage,
             // Prefer the most recent finish_reason (the terminal chunk's).
             finish_reason: other
@@ -349,9 +355,31 @@ impl ProviderUsage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Copy)]
 pub struct Usage {
+    /// Fresh (non-cached) input/prompt tokens. INVARIANT: this EXCLUDES the two
+    /// cache buckets below — the four token buckets (`input`, `output`,
+    /// `cache_read`, `cache_creation`) are disjoint by construction, so
+    /// [`Usage::billed_total`] is a plain sum that reconciles with vendor
+    /// billing dashboards. Parsers whose provider reports a cache-inclusive
+    /// input count subtract the cache out before storing it here (see the
+    /// per-provider notes on each `get_usage`).
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
+    /// Full context/window occupancy for this turn, for the live gauge. Kept as
+    /// each provider reports (or computes) it, which for cache-aware providers
+    /// already includes the cache tokens — so `total_tokens` is NOT the same as
+    /// `input + output`, and is NOT the billed number. Use [`Usage::billed_total`]
+    /// for billing/reconciliation.
     pub total_tokens: Option<i32>,
+    /// Input tokens served from the provider's prompt cache at a reduced rate.
+    /// Additive: NOT included in `input_tokens`. `serde(default)` so token rows
+    /// persisted before this field existed still deserialize (as `None`).
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<i32>,
+    /// Input tokens written to the provider's prompt cache (billed at a premium).
+    /// Additive: NOT included in `input_tokens`. `None` for providers that do not
+    /// distinguish a cache-write step (e.g. OpenAI auto-caching only reads).
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<i32>,
 }
 
 fn sum_optionals<T>(a: Option<T>, b: Option<T>) -> Option<T>
@@ -370,11 +398,18 @@ impl Add for Usage {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        Self::new(
+        let mut combined = Self::new(
             sum_optionals(self.input_tokens, other.input_tokens),
             sum_optionals(self.output_tokens, other.output_tokens),
             sum_optionals(self.total_tokens, other.total_tokens),
-        )
+        );
+        combined.cache_read_input_tokens =
+            sum_optionals(self.cache_read_input_tokens, other.cache_read_input_tokens);
+        combined.cache_creation_input_tokens = sum_optionals(
+            self.cache_creation_input_tokens,
+            other.cache_creation_input_tokens,
+        );
+        combined
     }
 }
 
@@ -405,7 +440,40 @@ impl Usage {
             input_tokens,
             output_tokens,
             total_tokens: calculated_total,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         }
+    }
+
+    /// Attach cache-token counts to a `Usage`. `cache_read` / `cache_creation`
+    /// are ADDITIVE to `input_tokens` (they must not already be folded into it),
+    /// which keeps [`Usage::billed_total`] a plain sum of disjoint buckets.
+    pub fn with_cache(mut self, cache_read: Option<i32>, cache_creation: Option<i32>) -> Self {
+        self.cache_read_input_tokens = cache_read;
+        self.cache_creation_input_tokens = cache_creation;
+        self
+    }
+
+    /// The number of tokens this turn is billed for: the sum of every disjoint
+    /// bucket — fresh input + output + cache-read + cache-creation. Returns
+    /// `None` only when no bucket has a value (so a genuinely empty usage is not
+    /// reported as `0`). Because the four buckets never overlap (see the field
+    /// invariants), this is the number that reconciles with a vendor's billing
+    /// dashboard — unlike `total_tokens`, which is context-window occupancy.
+    pub fn billed_total(&self) -> Option<i64> {
+        let has_any = self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cache_read_input_tokens.is_some()
+            || self.cache_creation_input_tokens.is_some();
+        if !has_any {
+            return None;
+        }
+        Some(
+            i64::from(self.input_tokens.unwrap_or(0))
+                + i64::from(self.output_tokens.unwrap_or(0))
+                + i64::from(self.cache_read_input_tokens.unwrap_or(0))
+                + i64::from(self.cache_creation_input_tokens.unwrap_or(0)),
+        )
     }
 }
 
@@ -686,6 +754,52 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.output_tokens, Some(20));
         assert_eq!(usage.total_tokens, Some(30));
+    }
+
+    #[test]
+    fn billed_total_sums_all_four_disjoint_buckets() {
+        // 100 fresh input + 50 output + 900 cache-read + 200 cache-creation
+        // = 1250 billed tokens. total_tokens (context occupancy) is separate.
+        let usage = Usage::new(Some(100), Some(50), Some(1250)).with_cache(Some(900), Some(200));
+        assert_eq!(usage.billed_total(), Some(1250));
+    }
+
+    #[test]
+    fn billed_total_without_cache_is_input_plus_output() {
+        let usage = Usage::new(Some(100), Some(50), Some(150));
+        assert_eq!(usage.billed_total(), Some(150));
+    }
+
+    #[test]
+    fn billed_total_treats_missing_buckets_as_zero_but_all_missing_as_none() {
+        // Only cache present: still billed (not None), and input/output count 0.
+        let only_cache = Usage::default().with_cache(Some(500), None);
+        assert_eq!(only_cache.billed_total(), Some(500));
+        // Nothing at all -> None (an empty usage must not read as $0/0 tokens).
+        assert_eq!(Usage::default().billed_total(), None);
+    }
+
+    #[test]
+    fn adding_usages_sums_cache_buckets_too() {
+        let a = Usage::new(Some(10), Some(1), Some(31)).with_cache(Some(20), None);
+        let b = Usage::new(Some(5), Some(2), Some(107)).with_cache(Some(100), Some(3));
+        let sum = a + b;
+        assert_eq!(sum.input_tokens, Some(15));
+        assert_eq!(sum.output_tokens, Some(3));
+        assert_eq!(sum.total_tokens, Some(138));
+        assert_eq!(sum.cache_read_input_tokens, Some(120));
+        assert_eq!(sum.cache_creation_input_tokens, Some(3));
+        assert_eq!(sum.billed_total(), Some(15 + 3 + 120 + 3));
+    }
+
+    #[test]
+    fn old_usage_json_without_cache_fields_deserializes_to_none() {
+        // A token row persisted before Phase 4 has no cache keys.
+        let legacy = r#"{"input_tokens":10,"output_tokens":20,"total_tokens":30}"#;
+        let usage: Usage = serde_json::from_str(legacy).unwrap();
+        assert_eq!(usage.cache_read_input_tokens, None);
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.billed_total(), Some(30));
     }
 
     #[test]

@@ -79,18 +79,14 @@ describe('isSharedDaemonEnabled', () => {
   it.each(['0', 'false', 'FALSE', 'off', 'No', ' false '])(
     'is off when BIOROUTER_SHARED_DAEMON=%s',
     (flag) => {
-      expect(isSharedDaemonEnabled({ BIOROUTER_SHARED_DAEMON: flag })).toBe(
-        false
-      );
+      expect(isSharedDaemonEnabled({ BIOROUTER_SHARED_DAEMON: flag })).toBe(false);
     }
   );
 
   it.each(['1', 'true', 'on', 'yes', 'anything'])(
     'is on when BIOROUTER_SHARED_DAEMON=%s',
     (flag) => {
-      expect(isSharedDaemonEnabled({ BIOROUTER_SHARED_DAEMON: flag })).toBe(
-        true
-      );
+      expect(isSharedDaemonEnabled({ BIOROUTER_SHARED_DAEMON: flag })).toBe(true);
     }
   );
 });

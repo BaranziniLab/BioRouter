@@ -16,6 +16,8 @@
 # 1. Add rule below: "clippy::your_rule|violation_parser"
 # 2. Generate baseline: ./scripts/clippy-baseline.sh generate clippy::your_rule
 
+set -o pipefail
+
 BASELINE_RULES=(
     "clippy::too_many_lines|function_name"
 )
@@ -26,16 +28,31 @@ parse_violation() {
 
     case "$violation_parser" in
         "function_name")
-            jq -r 'select(.message.code.code == "'"$rule_code"'") |
-                   "\(.message.spans[0].file_name)::\(.message.spans[0].text[0].text | split("fn ")[1] | split("(")[0])"'
+            jq -r --arg rule "$rule_code" '
+                select(.reason == "compiler-message" and .message.code.code == $rule) |
+                (.message.spans | map(select(.is_primary))[0] // .message.spans[0]) as $span |
+                ([$span.text[]?.text] | join(" ")) as $source |
+                ((try ($source | capture("\\bfn\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)").name)
+                  catch null) // ("line-" + ($span.line_start | tostring))) as $name |
+                "\($span.file_name)::\($name)"
+            '
             ;;
         "type_name")
-            jq -r 'select(.message.code.code == "'"$rule_code"'") |
-                   "\(.message.spans[0].file_name)::\(.message.spans[0].text[0].text | split(" ")[1] | split(" ")[0])"'
+            jq -r --arg rule "$rule_code" '
+                select(.reason == "compiler-message" and .message.code.code == $rule) |
+                (.message.spans | map(select(.is_primary))[0] // .message.spans[0]) as $span |
+                ([$span.text[]?.text] | join(" ")) as $source |
+                ((try ($source | capture("\\b(?:struct|enum)\\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)").name)
+                  catch null) // ("line-" + ($span.line_start | tostring))) as $name |
+                "\($span.file_name)::\($name)"
+            '
             ;;
         "file_only")
-            jq -r 'select(.message.code.code == "'"$rule_code"'") |
-                   "\(.message.spans[0].file_name)"'
+            jq -r --arg rule "$rule_code" '
+                select(.reason == "compiler-message" and .message.code.code == $rule) |
+                (.message.spans | map(select(.is_primary))[0] // .message.spans[0]) |
+                .file_name
+            '
             ;;
         *)
             echo "Unknown violation parser: $violation_parser" >&2
@@ -67,7 +84,7 @@ generate_baseline() {
 
     cargo clippy --jobs 2 --message-format=json -- -W "$rule_name" | \
         parse_violation "$rule_name" "$violation_parser" | \
-        sort > "$baseline_file"
+        sort -u > "$baseline_file"
 
     echo "✅ Generated baseline for $rule_name ($(wc -l < "$baseline_file") violations)"
 }
@@ -88,20 +105,21 @@ check_rule_from_json() {
     fi
 
     local temp_parsed=$(mktemp)
-    cat "$temp_json" | parse_violation "$rule_name" "$violation_parser" | sort > "$temp_parsed"
+    parse_violation "$rule_name" "$violation_parser" < "$temp_json" | sort -u > "$temp_parsed"
 
     local new_violations_file=$(mktemp)
-    diff <(sort "$baseline_file") <(sort "$temp_parsed") | grep "^>" | cut -c3- > "$new_violations_file"
+    comm -13 <(sort -u "$baseline_file") <(sort -u "$temp_parsed") > "$new_violations_file"
 
     if [[ -s "$new_violations_file" ]]; then
         echo "  ❌ $rule_name: NEW violations found:"
 
         while IFS= read -r violation; do
             # Extract all violations for this rule and find the matching one
-            cat "$temp_json" | jq -c 'select(.message.code.code == "'"$rule_name"'")' 2>/dev/null | while read -r json_line; do
+            jq -c 'select(.message.code.code == "'"$rule_name"'")' "$temp_json" 2>/dev/null | while read -r json_line; do
                 parsed_id=$(echo "$json_line" | parse_violation "$rule_name" "$violation_parser")
                 if [[ "$parsed_id" == "$violation" ]]; then
                     echo "$json_line" | jq -r '.message.rendered' | sed 's/^/    /'
+                    break
                 fi
             done
         done < "$new_violations_file"
@@ -127,7 +145,7 @@ check_all_baseline_rules() {
     done
 
     local temp_json=$(mktemp)
-    cargo clippy --jobs 2 --message-format=json -- $clippy_flags | tee "$temp_json"
+    cargo clippy --jobs 2 --message-format=json -- $clippy_flags > "$temp_json"
 
     local failed_rules=()
 
@@ -154,6 +172,6 @@ check_all_baseline_rules() {
     fi
 }
 
-if [[ "$1" == "generate" ]]; then
-    generate_baseline "$2"
+if [[ "${1:-}" == "generate" ]]; then
+    generate_baseline "${2:-}"
 fi

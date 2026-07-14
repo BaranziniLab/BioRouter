@@ -295,9 +295,7 @@ const MarkdownContent = memo(function MarkdownContent({
                 <button
                   type="button"
                   className="inline cursor-pointer break-all text-left text-text-accent underline underline-offset-2 decoration-border-strong hover:text-text-muted"
-                  onClick={() =>
-                    onOpenArtifact({ kind: 'externalUrl', title: href, url: href })
-                  }
+                  onClick={() => onOpenArtifact({ kind: 'externalUrl', title: href, url: href })}
                 >
                   {children}
                 </button>

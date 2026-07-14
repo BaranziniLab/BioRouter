@@ -20,6 +20,7 @@ pub mod files_server;
 pub mod knowledge;
 pub mod mcp_server_runner;
 mod memory;
+pub mod paths;
 pub mod secret_guard;
 pub mod tutorial;
 

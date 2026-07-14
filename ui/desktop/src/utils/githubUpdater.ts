@@ -126,8 +126,8 @@ export class GitHubUpdater {
           platform === 'darwin'
             ? [arch === 'arm64' ? 'arm64' : 'x64', '.dmg']
             : platform === 'win32'
-            ? ['win32', '.zip']
-            : ['.deb'];
+              ? ['win32', '.zip']
+              : ['.deb'];
         asset = release.assets.find((a) => {
           const n = a.name.toLowerCase();
           return tokens.every((t) => n.includes(t.toLowerCase()));

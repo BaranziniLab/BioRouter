@@ -150,7 +150,9 @@ export function ForceGraphCanvas({
     fgWithForce.d3Force('y', forceY(0).strength(0.07));
 
     const timeout = window.setTimeout(() => {
-      const fitPadding = compactCanvas ? 72 : Math.max(112, Math.min(size.width, size.height) * 0.16);
+      const fitPadding = compactCanvas
+        ? 72
+        : Math.max(112, Math.min(size.width, size.height) * 0.16);
       fg.zoomToFit?.(500, fitPadding);
     }, 900);
 
@@ -225,7 +227,12 @@ export function ForceGraphCanvas({
             ctx.textBaseline = 'middle';
             const text = prettyLabel(n.label, n.kind);
             const maxWidth = (compactCanvas ? 108 : 132) / globalScale;
-            const lines = wrapLabel(text, maxWidth, compactCanvas ? 2 : 3, (s) => ctx.measureText(s).width);
+            const lines = wrapLabel(
+              text,
+              maxWidth,
+              compactCanvas ? 2 : 3,
+              (s) => ctx.measureText(s).width
+            );
             const lineHeight = fs * 1.18;
             const startY = n.y - (lineHeight * (lines.length - 1)) / 2;
             for (let i = 0; i < lines.length; i++) {

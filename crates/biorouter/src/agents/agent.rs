@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -11,6 +12,7 @@ use uuid::Uuid;
 use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
 use crate::agents::effort::ReasoningEffort;
@@ -207,6 +209,18 @@ pub struct Agent {
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) sub_workflows: Mutex<HashMap<String, SubWorkflow>>,
+    /// Whether the generic `subagent` tool is offered at all.
+    ///
+    /// Default `true` (every existing caller). An Agent-Drafter app that declares
+    /// worker profiles sets this `false`, because otherwise TWO delegation
+    /// mechanisms are armed at once and the generic one is easier to reach: the
+    /// `subagent` tool's description auto-lists the very worker names the author
+    /// registered, and it takes a free-form `instructions` string. The model
+    /// picked it every time — spec-006 declared the same four workers *twice*
+    /// (`sub_agents` AND `agents`), and the declared profiles were dead config.
+    /// A tool that is absent from the tool list cannot be called; prose competing
+    /// with an available tool loses.
+    pub(super) subagent_tool_enabled: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -297,6 +311,21 @@ pub enum AgentEvent {
     /// The server used to re-read the counters from SQLite on *every* streamed
     /// chunk, which was pure redundant disk work on the hottest path.
     TokenUsage(TokenState),
+    /// The turn ended **without doing its work**.
+    ///
+    /// A provider failure used to be yielded only as an assistant `Message`
+    /// ("Ran into this error: …") after which the stream ended normally — so a
+    /// caller could not distinguish a 403 from a completed turn without
+    /// regex-matching English prose. `biorouter run` exited 0 on an auth failure
+    /// and telemetry recorded it as a success.
+    ///
+    /// The human-readable `Message` is still emitted first (the desktop UX shows
+    /// it); this event is the machine-checkable companion, and it is always
+    /// terminal. See [`crate::agents::turn_abort`].
+    TurnAborted {
+        code: TurnAbortCode,
+        message: String,
+    },
 }
 
 impl Default for Agent {
@@ -425,6 +454,7 @@ impl Agent {
             config,
             extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
             sub_workflows: Mutex::new(HashMap::new()),
+            subagent_tool_enabled: AtomicBool::new(true),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -1515,10 +1545,11 @@ impl Agent {
         session_config: &SessionConfig,
         turn_usage: Option<crate::providers::base::ProviderUsage>,
         budget: &mut BudgetTracker,
+        event_key: &str,
     ) -> Result<bool> {
         if let Some(usage) = turn_usage {
             self.record_budget_usage(budget, &usage).await;
-            self.update_session_metrics(session_config, &usage, false)
+            self.update_session_metrics(session_config, &usage, false, event_key)
                 .await?;
             return Ok(true);
         }
@@ -2309,7 +2340,21 @@ impl Agent {
         Ok(())
     }
 
+    /// Offer (or withhold) the generic `subagent` tool.
+    ///
+    /// Agent-Drafter apps with declared worker profiles call this with `false`, so
+    /// `consult` is the ONE delegation mechanism. Two armed mechanisms is what let
+    /// the main agent bypass the profiles the author declared.
+    pub fn set_subagent_tool_enabled(&self, enabled: bool) {
+        self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
+    }
+
     pub async fn subagents_enabled(&self, session_id: &str) -> bool {
+        // An app that delegates through `consult(agent: …)` must not ALSO be
+        // offered the generic `subagent` tool — see `subagent_tool_enabled`.
+        if !self.subagent_tool_enabled.load(Ordering::Relaxed) {
+            return false;
+        }
         if self.config.biorouter_mode != BioRouterMode::Auto {
             return false;
         }
@@ -2780,10 +2825,16 @@ impl Agent {
                     "auto",
                     None,
                 );
+                let usage_event_key = uuid::Uuid::new_v4().to_string();
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
                         session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                        self.update_session_metrics(&session_config, &summarization_usage, true).await?;
+                        self.update_session_metrics(
+                            &session_config,
+                            &summarization_usage,
+                            true,
+                            &usage_event_key,
+                        ).await?;
                         self.fire_compaction_hook(
                             crate::hooks::HookEvent::PostCompact,
                             &session_config.id,
@@ -2877,6 +2928,10 @@ impl Agent {
                 checkpoint_anchor_ts,
                 CheckpointKind::PreStep,
             ).await;
+            // Enforcement state is scoped to this user turn. The repetition
+            // inspector owns policy; this guard only applies its exact-signature
+            // deny decision.
+            let mut turn_guard = super::turn_guard::TurnToolGuard::new();
             let mut turns_taken = 0u32;
             // BR-63: the effort scales the exploration budget — `quick` halves it
             // (never below a usable floor, never above what the user configured),
@@ -3246,6 +3301,7 @@ impl Agent {
                     Some(provider) => Arc::clone(provider),
                     None => self.provider().await?,
                 };
+                let usage_event_key = uuid::Uuid::new_v4().to_string();
                 let mut stream = Self::stream_response_from_provider(
                     iteration_provider,
                     &system_prompt,
@@ -3274,6 +3330,10 @@ impl Agent {
                 // one chunk. Last snapshot wins; a cancelled turn keeps whatever the
                 // provider had reported so far.
                 let mut turn_usage: Option<crate::providers::base::ProviderUsage> = None;
+                // Set by an enforcing loop denial or a non-recoverable provider
+                // failure. The terminal event is emitted only after usage and
+                // conversation state are durable.
+                let mut pending_turn_abort: Option<(TurnAbortCode, String)> = None;
 
                 while let Some(next) = stream.next().await {
                     if is_token_cancelled(&cancel_token) {
@@ -3406,8 +3466,36 @@ impl Agent {
                                         &request_to_response_map,
                                         cancel_token.clone(),
                                     ).await?;
-
                                     loop_warnings = crate::tool_inspection::collect_warning_reasons(&inspection_results);
+
+                                    // RepetitionInspector is the sole policy authority.
+                                    // TurnToolGuard only converts its exact-request Deny
+                                    // into a terminal event; it has no independent counter
+                                    // or threshold.
+                                    if let Some((result, request)) = inspection_results
+                                        .iter()
+                                        .filter(|result| {
+                                            result.inspector_name
+                                                == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+                                                && result.action == InspectionAction::Deny
+                                        })
+                                        .find_map(|result| {
+                                            permission_check_result
+                                                .denied
+                                                .iter()
+                                                .find(|request| request.id == result.tool_request_id)
+                                                .map(|request| (result, request))
+                                        })
+                                    {
+                                        if let Some(code) = turn_guard.enforce_denial(request) {
+                                            warn!(
+                                                tool_request_id = %request.id,
+                                                "repetition policy denied a tool signature; terminating this user turn"
+                                            );
+                                            pending_turn_abort =
+                                                Some((code, result.reason.clone()));
+                                        }
+                                    }
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
 
@@ -3831,6 +3919,9 @@ impl Agent {
                                 }
 
                                 no_tools_called = false;
+                                if pending_turn_abort.is_some() {
+                                    break;
+                                }
                             }
                         }
                         Err(ProviderError::ContextLengthExceeded(_)) => {
@@ -3874,6 +3965,7 @@ impl Agent {
                                 "auto",
                                 Some("context_overflow"),
                             );
+                            let compaction_usage_event_key = uuid::Uuid::new_v4().to_string();
                             match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
@@ -3881,7 +3973,12 @@ impl Agent {
                                     // reply is spend like any other — bill it to the
                                     // budget too, not just the session gauge.
                                     self.record_budget_usage(&mut budget, &usage).await;
-                                    self.update_session_metrics(&session_config, &usage, true).await?;
+                                    self.update_session_metrics(
+                                        &session_config,
+                                        &usage,
+                                        true,
+                                        &compaction_usage_event_key,
+                                    ).await?;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
                                     self.fire_compaction_hook(
@@ -3951,7 +4048,15 @@ impl Agent {
                                             .session(&session_config.id)
                                             .count(mistakes.provider_errors()),
                                     );
-                                    yield AgentEvent::Message(Message::assistant().with_text(notice));
+                                    let message = Message::assistant().with_text(notice);
+                                    yield AgentEvent::Message(message.clone());
+                                    messages_to_add.push(message);
+                                    pending_turn_abort = Some((
+                                        TurnAbortCode::ProviderFailure {
+                                            kind: provider_err.kind(),
+                                        },
+                                        provider_err.to_string(),
+                                    ));
                                     break;
                                 }
                             }
@@ -3962,7 +4067,14 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                let usage_recorded = self.record_turn_usage(&session_config, turn_usage.take(), &mut budget).await?;
+                let usage_recorded = self
+                    .record_turn_usage(
+                        &session_config,
+                        turn_usage.take(),
+                        &mut budget,
+                        &usage_event_key,
+                    )
+                    .await?;
 
                 // BR-52: the counters just moved — publish them so downstream
                 // consumers (the SSE route) can attach a fresh `TokenState` to
@@ -3978,7 +4090,10 @@ impl Agent {
                         self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
                 }
                 let mut exit_chat = false;
-                if no_tools_called {
+                if pending_turn_abort.is_some() {
+                    // The typed failure is emitted after this iteration's messages
+                    // and usage have been persisted below.
+                } else if no_tools_called {
                     // Observability: a turn that ends without a tool call is either a
                     // natural completion ("stop"), a length-truncation ("length"), or
                     // an unreported end (None). Logged so "done" vs "cut off" is
@@ -4080,6 +4195,11 @@ impl Agent {
                         checkpoint_anchor_ts,
                         CheckpointKind::PostStep,
                     ).await;
+                }
+
+                if let Some((code, message)) = pending_turn_abort.take() {
+                    yield AgentEvent::TurnAborted { code, message };
+                    break;
                 }
 
                 // BR-61: a soft interrupt queued while the final provider response

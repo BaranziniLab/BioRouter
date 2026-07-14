@@ -30,11 +30,7 @@ import { updateSessionName } from '../api';
 
 export const DEFAULT_SESSION_NAME = 'New Session';
 
-const DEFAULT_NAME_PATTERNS: RegExp[] = [
-  /^New Session$/i,
-  /^New session \d+$/i,
-  /^Session \d+$/i,
-];
+const DEFAULT_NAME_PATTERNS: RegExp[] = [/^New Session$/i, /^New session \d+$/i, /^Session \d+$/i];
 
 export function isDefaultSessionName(name: string | null | undefined): boolean {
   if (!name) return true;
@@ -72,11 +68,7 @@ export function cacheSet(key: string, value: CacheEntry): void {
 
 /** Patch the cached session for `sessionId` with a new name / user_set_name
  * without forcing a full session refetch. No-op if the session isn't cached. */
-export function cacheUpdateName(
-  sessionId: string,
-  name: string,
-  userSetName: boolean
-): void {
+export function cacheUpdateName(sessionId: string, name: string, userSetName: boolean): void {
   const entry = resultsCache.get(sessionId);
   if (!entry) return;
   resultsCache.delete(sessionId);

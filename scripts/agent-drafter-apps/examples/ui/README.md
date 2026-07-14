@@ -26,3 +26,7 @@ Live (drives a real agent and asserts it emitted `ui` command frames):
 
     node ui/desktop/scripts/appcheck/check-ui-app.mjs http://127.0.0.1:3000 <id> \
       "<prompt>" --expect=panel,chart
+
+Controls that intentionally update only local presentation state must declare
+`data-br-local`; the executing smoke harness otherwise requires a prompt, call,
+or signal frame to reach the agent.

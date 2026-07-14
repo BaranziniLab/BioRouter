@@ -232,58 +232,61 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     }
   }, [llamaWarmupDialog]);
 
-  const changeModel = useCallback(async (sessionId: string | null, model: Model) => {
-    const modelName = model.name;
-    const providerName = model.provider;
-    let phase = 'agent';
+  const changeModel = useCallback(
+    async (sessionId: string | null, model: Model) => {
+      const modelName = model.name;
+      const providerName = model.provider;
+      let phase = 'agent';
 
-    try {
-      if (providerName === LOCAL_PROVIDER) {
-        const warmed = await prepareLlamaModel(model);
-        if (!warmed) {
-          return false;
+      try {
+        if (providerName === LOCAL_PROVIDER) {
+          const warmed = await prepareLlamaModel(model);
+          if (!warmed) {
+            return false;
+          }
         }
-      }
 
-      if (sessionId) {
-        await updateAgentProvider({
+        if (sessionId) {
+          await updateAgentProvider({
+            body: {
+              session_id: sessionId,
+              provider: providerName,
+              model: modelName,
+              context_limit: model.context_limit,
+              request_params: model.request_params,
+            },
+          });
+        }
+
+        phase = 'config';
+        await setConfigProvider({
           body: {
-            session_id: sessionId,
             provider: providerName,
             model: modelName,
-            context_limit: model.context_limit,
-            request_params: model.request_params,
           },
+          throwOnError: true,
         });
+
+        setCurrentProvider(providerName);
+        setCurrentModel(modelName);
+
+        toastSuccess({
+          title: CHANGE_MODEL_TOAST_TITLE,
+          msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
+        });
+        return true;
+      } catch (error) {
+        console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
+        toastError({
+          title: `${providerName}/${modelName} failed`,
+          msg: `${error}`,
+          traceback: error instanceof Error ? error.message : String(error),
+        });
+        return false;
       }
-
-      phase = 'config';
-      await setConfigProvider({
-        body: {
-          provider: providerName,
-          model: modelName,
-        },
-        throwOnError: true,
-      });
-
-      setCurrentProvider(providerName);
-      setCurrentModel(modelName);
-
-      toastSuccess({
-        title: CHANGE_MODEL_TOAST_TITLE,
-        msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
-      });
-      return true;
-    } catch (error) {
-      console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
-      toastError({
-        title: `${providerName}/${modelName} failed`,
-        msg: `${error}`,
-        traceback: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    }
-  }, [prepareLlamaModel]);
+    },
+    [prepareLlamaModel]
+  );
 
   const getFallbackModelAndProvider = useCallback(async () => {
     const provider = window.appConfig.get('BIOROUTER_DEFAULT_PROVIDER') as string;
@@ -494,9 +497,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           <DialogHeader>
             <DialogTitle>Warm up local model</DialogTitle>
             <DialogDescription>
-              {llamaWarmupDialog?.entry?.display_name ?? llamaWarmupDialog?.model.name} runs on
-              this computer. First use can take a while because the model may need to load,
-              download, and produce a test response.
+              {llamaWarmupDialog?.entry?.display_name ?? llamaWarmupDialog?.model.name} runs on this
+              computer. First use can take a while because the model may need to load, download, and
+              produce a test response.
             </DialogDescription>
           </DialogHeader>
 

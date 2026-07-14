@@ -1,0 +1,59 @@
+{
+  "id": "spec-018-systemdynamics-forge",
+  "title": "SystemDynamics Forge",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-018-systemdynamics-forge/manifest.json",
+  "actions_expected": [
+    "add_node",
+    "connect",
+    "find_dominant_loop",
+    "highlight_loop",
+    "run_simulation",
+    "set_equation"
+  ],
+  "actions_actual": [
+    "add_node",
+    "connect",
+    "find_dominant_loop",
+    "highlight_loop",
+    "run_simulation",
+    "set_equation"
+  ],
+  "signals_expected": [
+    "connector_drawn",
+    "equation_edited",
+    "node_dragged",
+    "node_selected"
+  ],
+  "signals_actual": [
+    "connector_drawn",
+    "equation_edited",
+    "node_dragged",
+    "node_selected"
+  ],
+  "agents_expected": [
+    "Architect",
+    "Loop Analyst",
+    "Calibrator"
+  ],
+  "agents_actual": [
+    "architect",
+    "calibrator",
+    "loop_analyst"
+  ],
+  "regions": [
+    "element-rail",
+    "inspector",
+    "loop-dominance-figure",
+    "parameter-table",
+    "presence",
+    "progress",
+    "sensitivity-plot",
+    "stock-flow-canvas",
+    "stock-plot-strip",
+    "transport"
+  ],
+  "theme_expected": "biorouter",
+  "theme_actual": "biorouter",
+  "issues": []
+}
