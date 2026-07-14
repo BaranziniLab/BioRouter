@@ -4913,7 +4913,7 @@ mod tests {
 
         // `month` is the current local YYYY-MM.
         assert_eq!(summary.month.len(), 7);
-        assert_eq!(&summary.month[4..5], "-");
+        assert_eq!(summary.month.chars().nth(4), Some('-'));
     }
 
     #[tokio::test]
@@ -5270,14 +5270,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, 12, "reconciliation must not consume migration v13");
-        let raw: (
+        type ReconciledUsageRow = (
             Option<String>,
             Option<String>,
             Option<i64>,
             Option<i64>,
             Option<i64>,
             Option<String>,
-        ) = sqlx::query_as(
+        );
+        let raw: ReconciledUsageRow = sqlx::query_as(
             "SELECT model_id, provider, cache_read_tokens, cache_creation_tokens, billed_total_tokens, session_type FROM token_events WHERE session_id = 's1'",
         )
         .fetch_one(pool)
