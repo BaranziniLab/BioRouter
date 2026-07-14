@@ -1,0 +1,62 @@
+{
+  "id": "spec-009-survival-atelier",
+  "title": "Survival Atelier",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-009-survival-atelier/manifest.json",
+  "actions_expected": [
+    "add_forest_row",
+    "add_stratum",
+    "draw_km",
+    "fit_cox",
+    "flag_ph",
+    "place_cindex"
+  ],
+  "actions_actual": [
+    "add_forest_row",
+    "add_stratum",
+    "draw_km",
+    "fit_cox",
+    "flag_ph",
+    "place_cindex"
+  ],
+  "signals_expected": [
+    "curve_selected",
+    "cutpoint_dragged",
+    "forest_row_clicked",
+    "stratum_chip_dropped"
+  ],
+  "signals_actual": [
+    "curve_selected",
+    "cutpoint_dragged",
+    "forest_row_clicked",
+    "stratum_chip_dropped"
+  ],
+  "agents_expected": [
+    "Modeler",
+    "Diagnostician",
+    "Confounder Hunter",
+    "Curator"
+  ],
+  "agents_actual": [
+    "confounder_hunter",
+    "curator",
+    "diagnostician",
+    "modeler"
+  ],
+  "regions": [
+    "canvas",
+    "cindex",
+    "covariates",
+    "diagnostics",
+    "forest",
+    "inspector",
+    "methods",
+    "notes",
+    "presence",
+    "risk",
+    "strata"
+  ],
+  "theme_expected": "journal",
+  "theme_actual": "journal",
+  "issues": []
+}

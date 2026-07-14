@@ -90,9 +90,9 @@ describe('HTML Security Detection', () => {
     describe('edge cases', () => {
       it('handles mixed content correctly', () => {
         // Dangerous HTML (script) mixed with an auto-link → still flagged.
-        expect(
-          containsHTML('Visit <https://example.com> and <script>alert(1)</script>')
-        ).toBe(true);
+        expect(containsHTML('Visit <https://example.com> and <script>alert(1)</script>')).toBe(
+          true
+        );
 
         // Auto-link mixed with a now-benign layout tag (<div>) → not flagged after hardening.
         expect(containsHTML('Visit <https://example.com> and <div>click here</div>')).toBe(false);

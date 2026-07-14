@@ -57,9 +57,70 @@ fn inject_after(html: &str, needle: &str, insert: &str) -> String {
 }
 
 const THEME_TAG: &str = "<style id=\"biorouter-theme\">";
+const THEME_OVERRIDES_TAG: &str = "<style id=\"biorouter-theme-overrides\">";
 
 fn theme_block() -> String {
     format!("{THEME_TAG}\n{THEME_CSS}\n</style>\n")
+}
+
+/// An extra `<style>` layer carrying the app's sanitized accent + custom token
+/// overrides. Emitted only when the app declares overrides, so a v1/base app's
+/// output is byte-identical to before. Scoped to `:root[data-br-pack]` (an
+/// attribute [`set_root_pack`] always writes when overrides exist), so these
+/// declarations win over both the base `:root` tokens and any pack layer.
+fn theme_overrides_block(manifest: &Manifest) -> Option<String> {
+    let accent = manifest.theme.sanitized_accent();
+    let tokens = manifest.theme.sanitized_tokens();
+    if accent.is_none() && tokens.is_empty() {
+        return None;
+    }
+    let mut decls = String::new();
+    if let Some(a) = accent {
+        decls.push_str(&format!("--br-accent: {a};"));
+    }
+    for (k, v) in &tokens {
+        decls.push_str(&format!(" {k}: {v};"));
+    }
+    Some(format!(
+        "{THEME_OVERRIDES_TAG}\n:root[data-br-pack] {{ {decls} }}\n</style>\n"
+    ))
+}
+
+/// The full injected head CSS: the base design system plus, when the app
+/// customises its theme, an overrides layer.
+fn theme_head(manifest: &Manifest) -> String {
+    let mut s = theme_block();
+    if let Some(ov) = theme_overrides_block(manifest) {
+        s.push_str(&ov);
+    }
+    s
+}
+
+/// The `data-br-pack` value to stamp on `<html>`, or `None` when the base look
+/// with no overrides is in effect (so nothing is written and v1 output is
+/// unchanged). Present for a non-base pack, or whenever overrides exist (the
+/// overrides style keys off the `[data-br-pack]` attribute).
+fn pack_attr_value(manifest: &Manifest) -> Option<&str> {
+    let pack = manifest.theme.resolved_pack();
+    if pack == crate::agent_drafter::manifest::DEFAULT_THEME_PACK && !manifest.theme.has_overrides()
+    {
+        None
+    } else {
+        Some(pack)
+    }
+}
+
+/// Stamp `data-br-pack="<pack>"` onto the document's `<html>` element. Robust to
+/// `<html>` and `<html lang="en">`; if the document has no `<html>` tag (a bare
+/// fragment) the string is returned unchanged — the base tokens still apply.
+fn set_root_pack(html: &str, pack: &str) -> String {
+    if let Some(pos) = html.to_lowercase().find("<html") {
+        let at = pos + "<html".len();
+        let (before, after) = html.split_at(at);
+        format!("{before} data-br-pack=\"{}\"{after}", html_escape(pack))
+    } else {
+        html.to_string()
+    }
 }
 
 /// The script that hands the app SDK its configuration.
@@ -68,10 +129,16 @@ fn theme_block() -> String {
 /// the SDK derives one from the page's own origin, which is what makes an app
 /// work no matter which port its daemon landed on. `endpoints` are additional
 /// fallbacks tried in order — exports use them to cover a `file://` open.
+///
+/// `ws_token` is the per-app socket token the SDK must present on the agent
+/// WebSocket (`?token=…`) — `serve_index` mints one per daemon run and injects
+/// it here so any page this daemon serves can authenticate. Exports pass `None`
+/// (their proxy mints its own token in a later phase).
 pub fn app_config_script(
     manifest: &Manifest,
     endpoint: Option<&str>,
     endpoints: &[String],
+    ws_token: Option<&str>,
 ) -> String {
     let greeting = manifest.agent.as_ref().and_then(|a| a.greeting.clone());
     let mut cfg = serde_json::json!({
@@ -82,10 +149,31 @@ pub fn app_config_script(
     if !endpoints.is_empty() {
         cfg["endpoints"] = serde_json::json!(endpoints);
     }
+    if let Some(token) = ws_token {
+        cfg["wsToken"] = serde_json::json!(token);
+    }
+    // The app's declared initial state. The SDK seeds its own document from this at
+    // construction, so `data-br-bind` KPIs paint their real values on FIRST LOAD —
+    // before the socket connects, and even in an export with no daemon reachable.
+    // Without it the shared doc is `{}` until a paid agent turn writes to it, every
+    // binding renders blank, and authors work around it with a private local object
+    // that then silently diverges from the doc the agent reads.
+    if let Some(initial) = manifest.surface.state_initial.as_ref() {
+        cfg["stateInitial"] = initial.clone();
+    }
     let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-    // JSON is valid JS; neutralise any `</script>` breakout from string fields.
+    // Emit the config as a NON-executable data island so the served page can ship
+    // the strict CSP (`script-src 'self'`, no `unsafe-inline`) that SDK v2 needs —
+    // the SDK's `readAppConfig()` reads `#biorouter-app-config`'s textContent and
+    // `JSON.parse`s it. `<` is a valid JSON string escape, so replacing every
+    // `<` keeps the JSON well-formed while neutralising any `</script>` breakout
+    // from string fields (the HTML parser ends a <script> on `</script`, regardless
+    // of type). No legacy `window.BIOROUTER_APP_CONFIG` inline script is emitted:
+    // the SDK still falls back to that global, but nothing on the served/exported
+    // path needs it (rebuild-on-drift keeps every vendored SDK current), and an
+    // executable inline script would defeat the CSP.
     let json = json.replace('<', "\\u003c");
-    format!("<script>window.BIOROUTER_APP_CONFIG = {json};</script>\n")
+    format!("<script type=\"application/json\" id=\"biorouter-app-config\">{json}</script>\n")
 }
 
 /// Assemble the HTML `biorouterd` serves for a live app at `/apps/<id>/`.
@@ -98,8 +186,9 @@ pub fn assemble_app(
     index_html: &str,
     base_href: Option<&str>,
     endpoint: Option<&str>,
+    ws_token: Option<&str>,
 ) -> String {
-    assemble_app_with_endpoints(manifest, index_html, base_href, endpoint, &[])
+    assemble_app_with_endpoints(manifest, index_html, base_href, endpoint, &[], ws_token)
 }
 
 /// [`assemble_app`], plus fallback endpoints the SDK tries when the primary one
@@ -110,20 +199,25 @@ pub fn assemble_app_with_endpoints(
     base_href: Option<&str>,
     endpoint: Option<&str>,
     endpoints: &[String],
+    ws_token: Option<&str>,
 ) -> String {
     let mut head = String::new();
     if let Some(base) = base_href {
         head.push_str(&format!("<base href=\"{}\">\n", html_escape(base)));
     }
-    head.push_str(&theme_block());
+    head.push_str(&theme_head(manifest));
     let mut html = inject_after(index_html, "<head>", &head);
     // If there was no <head>, inject_after fell back to prepending; ensure the
     // theme is still present (it is, since `head` was prepended).
     if !html.contains(THEME_TAG) {
-        html = format!("{}{html}", theme_block());
+        html = format!("{}{html}", theme_head(manifest));
+    }
+    // Select the app's theme pack (and enable its override layer) on <html>.
+    if let Some(pack) = pack_attr_value(manifest) {
+        html = set_root_pack(&html, pack);
     }
 
-    let mut tail = app_config_script(manifest, endpoint, endpoints);
+    let mut tail = app_config_script(manifest, endpoint, endpoints, ws_token);
     tail.push_str("<script src=\"dist/app.js\"></script>\n");
     inject_before(&html, "</body>", &tail, true)
 }
@@ -131,10 +225,13 @@ pub fn assemble_app_with_endpoints(
 /// A lightweight static preview for inline chat display. No live agent — apps
 /// are launched in the browser. Shows the styled UI plus a launch hint banner.
 pub fn assemble_card(manifest: &Manifest, index_html: &str) -> String {
-    let head = theme_block();
+    let head = theme_head(manifest);
     let mut html = inject_after(index_html, "<head>", &head);
     if !html.contains(THEME_TAG) {
         html = format!("{head}{html}");
+    }
+    if let Some(pack) = pack_attr_value(manifest) {
+        html = set_root_pack(&html, pack);
     }
     let banner = format!(
         "<div style=\"position:sticky;top:0;z-index:10;background:var(--br-medium);\
@@ -169,6 +266,10 @@ fn package_json(manifest: &Manifest) -> String {
 /// launch paths can't drift.
 ///
 /// Defines `BIOROUTERD`, `PORT`, and `BASE` (e.g. `http://127.0.0.1:3000`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated launcher is one contiguous shell program; splitting its literal would obscure control flow"
+)]
 fn launcher_lib(id: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
@@ -192,6 +293,9 @@ find_biorouterd() {{
   # would abort the whole launcher with "unbound variable" before the PATH
   # lookup ever ran.
   if [ -n "${{BIOROUTERD_BIN:-}}" ] && [ -x "${{BIOROUTERD_BIN:-}}" ]; then echo "${{BIOROUTERD_BIN}}"; return 0; fi
+  # A "fat" export bundles the daemon under payload/bin — prefer it so the
+  # folder is self-contained (no BioRouter install required on the target).
+  if [ -x "$DIR/payload/bin/biorouterd" ]; then echo "$DIR/payload/bin/biorouterd"; return 0; fi
   if command -v biorouterd >/dev/null 2>&1; then command -v biorouterd; return 0; fi
   for p in \
     "$HOME/.local/bin/biorouterd" \
@@ -262,6 +366,73 @@ open_url() {{
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"
   else echo "Open this URL in your browser: $1"; fi
 }}
+
+# ── 5. First-run payload install (full-mode exports only) ─────────────────
+# A "full" export carries the app's server-side dependencies under payload/:
+# knowledge bases (.brkb archives), skills (plain directory trees), and
+# export.json (the audit manifest). On the FIRST run we import them into the
+# recipient's store, guarded by a marker so re-runs are no-ops. A launcher-mode
+# export has no payload/ dir, so this is a clean no-op there.
+#
+# Consent: the payload list is printed and an interactive y/N confirmation is
+# required. Set BIOROUTER_EXPORT_YES=1 to skip the prompt (CI / headless).
+install_payload() {{
+  [ -d "$DIR/payload" ] || return 0                     # launcher-mode export: nothing to install
+  CFG="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter"
+  MARKER="$CFG/.apps-payload-installed-$APP_ID"
+  [ -f "$MARKER" ] && return 0                          # already installed on a previous run
+
+  # Collect what there is to install (knowledge bases + skills). A payload that
+  # only carries a bundled daemon (payload/bin) has nothing to import here.
+  kbs=""; skills=""
+  if [ -d "$DIR/payload/knowledge" ]; then
+    for f in "$DIR/payload/knowledge/"*.brkb; do [ -e "$f" ] && kbs="$kbs $f"; done
+  fi
+  if [ -d "$DIR/payload/skills" ]; then
+    for d in "$DIR/payload/skills/"*/; do [ -e "$d" ] && skills="$skills $d"; done
+  fi
+  [ -z "$kbs" ] && [ -z "$skills" ] && return 0
+
+  echo ""
+  echo "This app ships a payload to install into your BioRouter (see payload/export.json):"
+  for f in $kbs;    do echo "  - knowledge base: $(basename "$f")"; done
+  for d in $skills; do echo "  - skill: $(basename "$d")"; done
+
+  if [ "${{BIOROUTER_EXPORT_YES:-}}" != "1" ]; then
+    printf "Install this payload now? [y/N] "
+    read -r reply || reply=""
+    case "$reply" in
+      y|Y|yes|YES) ;;
+      *) echo "Skipping payload install. Re-run to install it later."; return 0 ;;
+    esac
+  fi
+
+  mkdir -p "$CFG/skills"
+  # Knowledge bases: the `biorouter` CLI has no `knowledge import` subcommand as
+  # of the 2026-07 tree, so we stage each .brkb under
+  # ~/.config/biorouter/knowledge-imports/ and point the user at the Knowledge
+  # panel's importer. If a future CLI grows `knowledge import`, prefer it.
+  for f in $kbs; do
+    if command -v biorouter >/dev/null 2>&1 && biorouter knowledge import --help >/dev/null 2>&1; then
+      biorouter knowledge import "$f" && echo "  - imported $(basename "$f")" || echo "  ! import failed for $(basename "$f")"
+    else
+      mkdir -p "$CFG/knowledge-imports"
+      cp "$f" "$CFG/knowledge-imports/"
+      echo "  - staged $(basename "$f") in $CFG/knowledge-imports/ (import it from BioRouter's Knowledge panel)"
+    fi
+  done
+  # Skills install straight into the skills dir the daemon already reads.
+  for d in $skills; do
+    name="$(basename "$d")"
+    rm -rf "$CFG/skills/$name"
+    cp -R "$d" "$CFG/skills/$name"
+    echo "  - installed skill $name"
+  done
+
+  mkdir -p "$CFG"
+  : > "$MARKER"
+  echo "Payload installed."
+}}
 "#
     )
 }
@@ -280,12 +451,178 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/biorouter-launch.sh"
 
 install_app
+install_payload          # no-op for launcher-mode exports (no payload/ dir)
 start_daemon
 BASE="http://127.0.0.1:$PORT"
 verify_app
 open_url "$BASE/apps/$APP_ID/"
 "#
     .to_string()
+}
+
+/// The Windows launcher (`run.ps1`), invoked by `run.bat`. Mirrors
+/// `biorouter-launch.sh` + `run.sh`: locate a `biorouterd` (bundled
+/// `payload\bin` first for fat exports, then PATH / known install dirs), install
+/// the app into the local store, run the first-run payload install (with
+/// consent), start the daemon headlessly, and open the app in the default
+/// browser. The page is served *by* the daemon, so the SDK derives its
+/// WebSocket endpoint — and the per-app token, which rides the query string —
+/// from the page origin; nothing is hard-coded. Windows parity is validated in
+/// CI later; this keeps the surface simple and self-documenting.
+///
+/// Built with `.replace` rather than `format!` so the many PowerShell braces
+/// need no doubling.
+fn run_ps1(id: &str) -> String {
+    // App ids are slugified (a-z0-9-), so they are safe to embed in a
+    // double-quoted PowerShell string literal without escaping.
+    RUN_PS1_TEMPLATE.replace("__APP_ID__", id)
+}
+
+const RUN_PS1_TEMPLATE: &str = r#"#Requires -Version 5.0
+# Windows launcher for the exported BioRouter app "__APP_ID__".
+$ErrorActionPreference = "Stop"
+$AppId = "__APP_ID__"
+$Dir   = Split-Path -Parent $MyInvocation.MyCommand.Definition
+# BioRouter uses an XDG-style config dir; honour XDG_CONFIG_HOME, else ~/.config.
+if ($env:XDG_CONFIG_HOME) { $Cfg = Join-Path $env:XDG_CONFIG_HOME "biorouter" }
+else { $Cfg = Join-Path $HOME ".config\biorouter" }
+$Store = Join-Path $Cfg "agent_drafter\$AppId"
+
+function Find-Biorouterd {
+  if ($env:BIOROUTERD_BIN -and (Test-Path $env:BIOROUTERD_BIN)) { return $env:BIOROUTERD_BIN }
+  $bundled = Join-Path $Dir "payload\bin\biorouterd.exe"
+  if (Test-Path $bundled) { return $bundled }               # fat export: self-contained
+  $cmd = Get-Command biorouterd -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  foreach ($p in @(
+      (Join-Path $env:LOCALAPPDATA "Programs\BioRouter\resources\bin\biorouterd.exe"),
+      "C:\Program Files\BioRouter\resources\bin\biorouterd.exe")) {
+    if ($p -and (Test-Path $p)) { return $p }
+  }
+  throw "biorouterd not found. Install BioRouter, or set BIOROUTERD_BIN."
+}
+
+# Copy the runtime files into the store so the daemon can resolve the app.
+function Install-App {
+  if (-not (Test-Path (Join-Path $Dir "manifest.json"))) {
+    throw "manifest.json missing from this folder - re-export the app."
+  }
+  New-Item -ItemType Directory -Force -Path $Store | Out-Null
+  Copy-Item (Join-Path $Dir "manifest.json") (Join-Path $Store "manifest.json") -Force
+  if (Test-Path (Join-Path $Dir "index.html")) {
+    Copy-Item (Join-Path $Dir "index.html") (Join-Path $Store "index.html") -Force
+  }
+  foreach ($sub in @("src", "dist", "assets")) {
+    if (Test-Path (Join-Path $Dir $sub)) {
+      $dst = Join-Path $Store $sub
+      if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+      Copy-Item (Join-Path $Dir $sub) $dst -Recurse -Force
+    }
+  }
+}
+
+# First-run payload install (full-mode exports). Mirrors bash install_payload:
+# import knowledge bases + skills once, guarded by a marker, consent required
+# (set BIOROUTER_EXPORT_YES=1 to skip the prompt).
+function Install-Payload {
+  $payload = Join-Path $Dir "payload"
+  if (-not (Test-Path $payload)) { return }                 # launcher-mode export
+  $marker = Join-Path $Cfg ".apps-payload-installed-$AppId"
+  if (Test-Path $marker) { return }                         # already installed
+
+  $kbs = @(); $skills = @()
+  $kdir = Join-Path $payload "knowledge"
+  if (Test-Path $kdir) { $kbs = @(Get-ChildItem -Path $kdir -Filter *.brkb -ErrorAction SilentlyContinue) }
+  $sdir = Join-Path $payload "skills"
+  if (Test-Path $sdir) { $skills = @(Get-ChildItem -Path $sdir -Directory -ErrorAction SilentlyContinue) }
+  if ($kbs.Count -eq 0 -and $skills.Count -eq 0) { return }
+
+  Write-Host ""
+  Write-Host "This app ships a payload to install into your BioRouter (see payload/export.json):"
+  foreach ($f in $kbs)    { Write-Host "  - knowledge base: $($f.Name)" }
+  foreach ($d in $skills) { Write-Host "  - skill: $($d.Name)" }
+
+  if ($env:BIOROUTER_EXPORT_YES -ne "1") {
+    $reply = Read-Host "Install this payload now? [y/N]"
+    if ($reply -notmatch '^(y|Y|yes|YES)$') {
+      Write-Host "Skipping payload install. Re-run to install it later."
+      return
+    }
+  }
+
+  New-Item -ItemType Directory -Force -Path (Join-Path $Cfg "skills") | Out-Null
+  # No `biorouter knowledge import` CLI subcommand exists yet (2026-07 tree), so
+  # stage each .brkb and point the user at the Knowledge panel importer. Prefer
+  # the CLI if a future version grows the command.
+  foreach ($f in $kbs) {
+    $bio = Get-Command biorouter -ErrorAction SilentlyContinue
+    $canImport = $false
+    if ($bio) { & $bio.Source knowledge import --help *> $null; $canImport = ($LASTEXITCODE -eq 0) }
+    if ($canImport) {
+      & $bio.Source knowledge import $f.FullName
+      Write-Host "  - imported $($f.Name)"
+    } else {
+      $imp = Join-Path $Cfg "knowledge-imports"
+      New-Item -ItemType Directory -Force -Path $imp | Out-Null
+      Copy-Item $f.FullName $imp -Force
+      Write-Host "  - staged $($f.Name) in $imp (import it from BioRouter's Knowledge panel)"
+    }
+  }
+  foreach ($d in $skills) {
+    $dst = Join-Path (Join-Path $Cfg "skills") $d.Name
+    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    Copy-Item $d.FullName $dst -Recurse -Force
+    Write-Host "  - installed skill $($d.Name)"
+  }
+
+  New-Item -ItemType Directory -Force -Path $Cfg | Out-Null
+  New-Item -ItemType File -Force -Path $marker | Out-Null
+  Write-Host "Payload installed."
+}
+
+function Test-Port([int]$Port) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/status" -TimeoutSec 1 -UseBasicParsing
+    return ($r.StatusCode -eq 200)
+  } catch { return $false }
+}
+
+# Reuse a running daemon, else spawn one headlessly and wait for /status.
+function Start-Daemon {
+  $preferred = if ($env:BIOROUTERD_PORT) { [int]$env:BIOROUTERD_PORT } else { 3000 }
+  foreach ($p in @($preferred, 3000, 3001, 3002, 3003)) {
+    if (Test-Port $p) { Write-Host "Using the BioRouter daemon already on :$p"; return $p }
+  }
+  $bin = Find-Biorouterd
+  foreach ($p in @($preferred, 3001, 3002, 3003)) {
+    Write-Host "Starting $bin on :$p ..."
+    $env:BIOROUTER_PORT = "$p"
+    Start-Process -FilePath $bin -ArgumentList "agent" -WindowStyle Hidden | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {
+      if (Test-Port $p) { return $p }
+      Start-Sleep -Milliseconds 500
+    }
+  }
+  throw "could not start biorouterd."
+}
+
+Install-App
+Install-Payload
+$Port = Start-Daemon
+$Base = "http://127.0.0.1:$Port"
+$code = 0
+try { $code = (Invoke-WebRequest -Uri "$Base/apps/$AppId/" -TimeoutSec 5 -UseBasicParsing).StatusCode } catch { $code = 0 }
+if ($code -ne 200) { throw "the daemon on :$Port does not serve '$AppId' (HTTP $code)." }
+Write-Host "Opening $Base/apps/$AppId/"
+Start-Process "$Base/apps/$AppId/"
+"#;
+
+/// The thin `run.bat` wrapper: double-clickable on Windows, it just runs
+/// `run.ps1` with an unrestricted policy for this one invocation. Kept as a
+/// separate file so Explorer shows a runnable `.bat` (a bare `.ps1` opens in an
+/// editor by default).
+fn run_bat() -> String {
+    "@echo off\r\nrem Windows launcher for the exported BioRouter app.\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0run.ps1\"\r\n".to_string()
 }
 
 /// The dev server: static files from *this* folder (so `npm run build` edits are
@@ -296,6 +633,10 @@ open_url "$BASE/apps/$APP_ID/"
 /// `index.html` hard-coded `ws://127.0.0.1:3000`, so the app broke whenever the
 /// daemon wasn't on 3000 (the desktop app starts it on an ephemeral port). Now
 /// everything is same-origin and the port is discovered at runtime.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated dev server is one contiguous JavaScript module; splitting its literal would obscure control flow"
+)]
 fn serve_mjs(id: &str, default_port: u16) -> String {
     format!(
         r#"// Dev server for the exported BioRouter app "{id}".
@@ -504,18 +845,29 @@ daemon using whatever LLM provider you have configured.
 
 ## Run it
 
-Double-click **`run.command`** (macOS) or run **`bash run.sh`** (Linux/WSL).
+Double-click **`run.command`** (macOS), run **`bash run.sh`** (Linux/WSL), or
+double-click **`run.bat`** (Windows — it runs `run.ps1`).
 
 That's the whole thing. The launcher:
 
 1. installs the app into your local BioRouter store (`manifest.json` and all),
-2. reuses a running `biorouterd`, or starts one on the first free port,
-3. checks the daemon can actually serve the app, and
-4. opens it in your browser.
+2. installs any first-run payload this export carries (`payload/` — knowledge
+   bases and skills — with your consent; see `payload/export.json`),
+3. reuses a running `biorouterd`, or starts one on the first free port,
+4. checks the daemon can actually serve the app, and
+5. opens it in your browser.
 
 No Node, no `npm install`, no build step. You need BioRouter installed with a
-provider configured (`biorouter configure`). If `biorouterd` lives somewhere
-unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
+provider configured (`biorouter configure`) — unless this is a **fat** export,
+which bundles `biorouterd` under `payload/bin/` and needs nothing installed. If
+`biorouterd` lives somewhere unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
+
+- **macOS quarantine (fat exports):** a bundled `payload/bin/biorouterd`
+  downloaded from the internet is quarantined by Gatekeeper. If macOS blocks it,
+  right-click the launcher (or the binary) and choose **Open** once to approve
+  it. Per-app notarized packaging is a later milestone.
+- **Non-interactive install:** set `BIOROUTER_EXPORT_YES=1` to accept the
+  payload install without the interactive prompt.
 
 ## Editing the UI
 
@@ -569,10 +921,13 @@ pub fn scaffold_standalone(
     //
     // An explicit `endpoint` (a remote daemon) still wins.
     let fallbacks = vec![format!("ws://127.0.0.1:3000/apps/{}/agent", manifest.id)];
+    // No `ws_token` in an export: the exported page is served by `serve.mjs` /
+    // the launcher's proxy, which mints and injects its own token in a later
+    // phase — this daemon's per-run token would be meaningless there.
     let assembled = if endpoint.is_some() {
-        assemble_app(manifest, index_html, None, endpoint)
+        assemble_app(manifest, index_html, None, endpoint, None)
     } else {
-        assemble_app_with_endpoints(manifest, index_html, None, None, &fallbacks)
+        assemble_app_with_endpoints(manifest, index_html, None, None, &fallbacks, None)
     };
 
     // The manifest IS the app's registration: `serve_index` and `agent_ws` both
@@ -594,6 +949,9 @@ pub fn scaffold_standalone(
         ),
         ("run.command".to_string(), run_script()),
         ("run.sh".to_string(), run_script()),
+        // Windows launchers: run.bat (double-clickable) shells out to run.ps1.
+        ("run.ps1".to_string(), run_ps1(&manifest.id)),
+        ("run.bat".to_string(), run_bat()),
     ];
     for (path, content) in src_files {
         files.push((path.clone(), content.clone()));
@@ -648,6 +1006,8 @@ mod tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: crate::agent_drafter::manifest::SurfaceDecl::default(),
+            theme: crate::agent_drafter::manifest::ThemeConfig::default(),
         }
     }
 
@@ -667,10 +1027,14 @@ mod tests {
             "<html><head></head><body>hi</body></html>",
             Some("/apps/demo/"),
             None,
+            None,
         );
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("<base href=\"/apps/demo/\">"));
-        assert!(out.contains("BIOROUTER_APP_CONFIG"));
+        // Config ships as a non-executable JSON data island (CSP-friendly), never
+        // an inline executable `window.BIOROUTER_APP_CONFIG` script.
+        assert!(out.contains("<script type=\"application/json\" id=\"biorouter-app-config\">"));
+        assert!(!out.contains("window.BIOROUTER_APP_CONFIG"));
         assert!(out.contains("\"appId\":\"demo\""));
         assert!(out.contains("dist/app.js"));
         // theme precedes the bundle script
@@ -678,9 +1042,29 @@ mod tests {
     }
 
     #[test]
+    fn app_config_script_embeds_ws_token_when_given() {
+        let m = manifest(ArtifactKind::Agentic);
+        // No token → no wsToken key at all (exports, previews).
+        let none = app_config_script(&m, None, &[], None);
+        assert!(!none.contains("wsToken"), "absent token must not appear");
+        // A token → surfaced verbatim in the config JSON the SDK reads.
+        let with = app_config_script(&m, None, &[], Some("deadbeefcafef00d0123456789abcdef"));
+        assert!(with.contains("\"wsToken\":\"deadbeefcafef00d0123456789abcdef\""));
+        // And it flows through the full assemble path.
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            Some("deadbeefcafef00d0123456789abcdef"),
+        );
+        assert!(out.contains("\"wsToken\":\"deadbeefcafef00d0123456789abcdef\""));
+    }
+
+    #[test]
     fn assemble_app_handles_missing_head_and_body() {
         let m = manifest(ArtifactKind::Agentic);
-        let out = assemble_app(&m, "<div>bare</div>", None, None);
+        let out = assemble_app(&m, "<div>bare</div>", None, None, None);
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("dist/app.js"));
     }
@@ -689,7 +1073,13 @@ mod tests {
     fn config_neutralizes_script_breakout() {
         let mut m = manifest(ArtifactKind::Agentic);
         m.agent.as_mut().unwrap().greeting = Some("</script><script>alert(1)</script>".into());
-        let out = assemble_app(&m, "<html><head></head><body></body></html>", None, None);
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
         assert!(!out.contains("</script><script>alert(1)"));
         assert!(out.contains("\\u003c"));
     }
@@ -701,6 +1091,130 @@ mod tests {
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("Applications panel"));
         assert!(out.contains("<h1>Hi</h1>"));
+    }
+
+    // ── Theme packs (Apps SDK v2, Pillar 6) ─────────────────────────────────
+
+    #[test]
+    fn base_theme_leaves_v1_output_untouched() {
+        // The default `biorouter` pack with no overrides must stamp no attribute
+        // and inject no overrides layer, so a v1 app renders byte-for-byte as it
+        // used to.
+        let m = manifest(ArtifactKind::Static);
+        assert!(m.theme.is_default());
+        let out = assemble_app(
+            &m,
+            "<html lang=\"en\"><head></head><body>hi</body></html>",
+            None,
+            None,
+            None,
+        );
+        // `data-br-pack` appears in theme.css pack selectors, so check the
+        // stamped ATTRIBUTE specifically (right after `<html`).
+        assert!(
+            !out.contains("<html data-br-pack"),
+            "base pack stamps no attribute"
+        );
+        assert!(!out.contains("biorouter-theme-overrides"));
+    }
+
+    #[test]
+    fn named_pack_lands_on_html_element() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "clinical".into(),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html lang=\"en\"><head></head><body>hi</body></html>",
+            None,
+            None,
+            None,
+        );
+        assert!(
+            out.contains("<html data-br-pack=\"clinical\" lang=\"en\">"),
+            "pack must stamp <html>: {out}"
+        );
+        // No custom overrides declared → no overrides style layer.
+        assert!(!out.contains("biorouter-theme-overrides"));
+    }
+
+    #[test]
+    fn theme_overrides_are_injected_and_sanitized() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        use std::collections::HashMap;
+        let mut tokens = HashMap::new();
+        tokens.insert("--br-radius".to_string(), "2px".to_string()); // safe
+        tokens.insert("color".to_string(), "red".to_string()); // bad key: dropped
+        tokens.insert("--br-bg".to_string(), "red; } body{}".to_string()); // breakout: dropped
+        let mut m = manifest(ArtifactKind::Agentic);
+        m.theme = ThemeConfig {
+            pack: "midnight".into(),
+            accent: Some("#8b5cf6".into()),
+            tokens,
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        assert!(out.contains("biorouter-theme-overrides"));
+        assert!(
+            out.contains("--br-accent: #8b5cf6;"),
+            "accent override: {out}"
+        );
+        assert!(
+            out.contains("--br-radius: 2px;"),
+            "safe token override kept"
+        );
+        assert!(!out.contains("color: red"), "unsafe key dropped");
+        assert!(!out.contains("red; }"), "breakout value dropped");
+        // Overrides key off the pack attribute, which is stamped for midnight.
+        assert!(out.contains("<html data-br-pack=\"midnight\">"));
+    }
+
+    #[test]
+    fn overrides_on_base_pack_still_stamp_the_attribute() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "biorouter".into(),
+            accent: Some("#123456".into()),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        // The base pack needs the attribute too so `:root[data-br-pack]` matches.
+        assert!(out.contains("<html data-br-pack=\"biorouter\">"));
+        assert!(out.contains("--br-accent: #123456;"));
+    }
+
+    #[test]
+    fn unknown_pack_falls_back_to_base_and_stamps_nothing() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "neon-hacker".into(),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        // resolved_pack() → biorouter, no overrides → no attribute stamped.
+        assert!(!out.contains("<html data-br-pack"));
     }
 
     fn export(m: &Manifest, endpoint: Option<&str>) -> Vec<(String, String)> {
@@ -803,11 +1317,83 @@ mod tests {
             serve.contains("\"demo\""),
             "app id must be embedded as JSON"
         );
+        // The per-app WS token rides the query string, so the proxy must forward
+        // the FULL req.url (path + query) upstream, not just the path.
+        assert!(
+            serve.contains("path: req.url"),
+            "proxy must preserve query strings (the ws token rides the query)"
+        );
         // It fronts the daemon's auth-exempt /apps routes, so it must never
         // leave loopback — binding 0.0.0.0 would expose an unauthenticated agent.
         assert!(
             serve.contains(r#"server.listen(port, "127.0.0.1""#),
             "the dev server must bind loopback only"
+        );
+    }
+
+    /// The OS-agnostic launcher set: `run.ps1` (PowerShell) + `run.bat` (thin
+    /// wrapper) ship alongside the shell launchers, so the exported folder runs
+    /// on Windows too.
+    #[test]
+    fn windows_launchers_are_generated_and_wired() {
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        let ps1 = file(&files, "run.ps1");
+        let bat = file(&files, "run.bat");
+
+        // The batch wrapper just invokes run.ps1 under a bypassed policy.
+        assert!(
+            bat.to_lowercase().contains("powershell") && bat.contains("-File \"%~dp0run.ps1\""),
+            "run.bat must shell out to run.ps1: {bat}"
+        );
+        assert!(bat.contains("-ExecutionPolicy Bypass"));
+
+        // run.ps1 installs the payload, prefers a bundled daemon, and opens the
+        // daemon origin (so the WS token rides the query string — nothing is
+        // hard-coded).
+        assert!(
+            ps1.contains("Install-Payload"),
+            "run.ps1 must install payload"
+        );
+        assert!(
+            ps1.contains("payload\\bin\\biorouterd.exe"),
+            "prefers bundled daemon"
+        );
+        assert!(ps1.contains("/apps/$AppId/"), "opens the daemon origin");
+        // The app id is embedded, not a leftover placeholder.
+        assert!(ps1.contains("$AppId = \"demo\""));
+        assert!(!ps1.contains("__APP_ID__"));
+        // Consent + skip hook.
+        assert!(ps1.contains("BIOROUTER_EXPORT_YES"));
+    }
+
+    /// The shell launcher library exposes the first-run payload installer, and
+    /// `run.sh` invokes it. Launcher-mode exports (no `payload/` dir) short-out
+    /// harmlessly.
+    #[test]
+    fn launcher_lib_installs_payload_with_consent() {
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        let lib = file(&files, "biorouter-launch.sh");
+        let run = file(&files, "run.sh");
+
+        assert!(lib.contains("install_payload()"), "defines install_payload");
+        assert!(
+            lib.contains(r#"[ -d "$DIR/payload" ] || return 0"#),
+            "no-op without a payload dir"
+        );
+        assert!(
+            lib.contains(".apps-payload-installed-$APP_ID"),
+            "guarded by a marker"
+        );
+        assert!(lib.contains("BIOROUTER_EXPORT_YES"), "consent skip hook");
+        assert!(
+            lib.contains("payload/bin/biorouterd"),
+            "prefers the bundled daemon"
+        );
+        assert!(
+            run.contains("install_payload"),
+            "run.sh calls install_payload"
         );
     }
 

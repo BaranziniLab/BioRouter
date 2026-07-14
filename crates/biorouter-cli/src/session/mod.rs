@@ -21,6 +21,7 @@ use tokio::signal::ctrl_c;
 use tokio_util::task::AbortOnDropHandle;
 
 pub use self::export::message_to_markdown;
+use biorouter::agents::turn_abort::{exit as abort_exit, TurnAbortCode, TurnFailed};
 use biorouter::agents::AgentEvent;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::Permission;
@@ -82,7 +83,12 @@ struct JsonOutput {
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonMetadata {
     total_tokens: Option<i32>,
+    /// `"completed"` or `"failed"`. Derived from [`CliSession::last_abort`], not
+    /// hardcoded — a turn that never ran must not report success.
     status: String,
+    /// The abort code, when `status == "failed"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -101,6 +107,13 @@ enum StreamEvent {
         mode: String,
     },
     Error {
+        error: String,
+    },
+    /// The turn ended without doing its work. Emitted *before* `Complete`, so a
+    /// stream-json consumer that only watches for `complete` still terminates,
+    /// but one that checks for failure can see it.
+    Aborted {
+        code: String,
         error: String,
     },
     Complete {
@@ -185,6 +198,11 @@ pub struct CliSession {
     edit_mode: Option<EditMode>,
     retry_config: Option<RetryConfig>,
     output_format: String,
+    /// Set when the last turn ended without doing its work (a provider failure, a
+    /// tool loop, a worker timeout). Drives the process exit code and the
+    /// `status` field in `--output-format json`, both of which used to claim
+    /// success no matter what happened.
+    last_abort: Option<TurnAbortCode>,
 }
 
 // Cache structure for completion data
@@ -266,7 +284,21 @@ impl CliSession {
             edit_mode,
             retry_config,
             output_format,
+            last_abort: None,
         }
+    }
+
+    /// The abort code of the last turn, if it ended without doing its work.
+    pub fn last_abort(&self) -> Option<&TurnAbortCode> {
+        self.last_abort.as_ref()
+    }
+
+    /// The process exit code this session should end with: 0 when every turn
+    /// completed, otherwise the code for the abort that ended the last one.
+    pub fn exit_code(&self) -> u8 {
+        self.last_abort
+            .as_ref()
+            .map_or(abort_exit::OK, TurnAbortCode::exit_code)
     }
 
     pub fn session_id(&self) -> &String {
@@ -942,7 +974,12 @@ impl CliSession {
         Ok(())
     }
 
-    /// Process a single message and exit
+    /// Process a single message and exit.
+    ///
+    /// A turn that aborted (provider failure, tool loop, worker timeout) returns
+    /// `Err(TurnFailed)` — it is **not** a success. `main` downcasts that to pick
+    /// the process exit code, and `log_session_completion` stops recording the
+    /// run as successful. Before this, a 403'd run exited 0.
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
         let result = self
@@ -950,6 +987,10 @@ impl CliSession {
             .await;
         self.fire_session_end_hooks("prompt_input_exit").await;
         result?;
+        if let Some(code) = self.last_abort.clone() {
+            let message = format!("the turn did not complete: {}", code.wire_code());
+            return Err(TurnFailed::new(code, message).into());
+        }
         Ok(())
     }
 
@@ -959,6 +1000,7 @@ impl CliSession {
         interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
+        self.last_abort = None;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
@@ -1103,6 +1145,20 @@ impl CliSession {
                         // BR-52: token accounting is rendered from the session row
                         // in the CLI; the carried snapshot is informational here.
                         Some(Ok(AgentEvent::TokenUsage(_))) => {}
+                        Some(Ok(AgentEvent::TurnAborted { code, message })) => {
+                            // The human-readable Message was already yielded and
+                            // rendered. Record the machine-checkable failure so the
+                            // process exits nonzero and `--output-format json` stops
+                            // claiming "completed".
+                            if is_stream_json_mode {
+                                emit_stream_event(&StreamEvent::Aborted {
+                                    code: code.wire_code().to_string(),
+                                    error: message.clone(),
+                                });
+                            }
+                            self.last_abort = Some(code);
+                            break;
+                        }
                         Some(Err(e)) => {
                             handle_agent_error(&e, is_stream_json_mode);
                             cancel_token_clone.cancel();
@@ -1133,6 +1189,14 @@ impl CliSession {
         }
 
         if is_json_mode {
+            // A turn that aborted is NOT "completed". This used to be hardcoded,
+            // so a harness parsing the JSON was told a 403'd run succeeded.
+            let status = if self.last_abort.is_some() {
+                "failed"
+            } else {
+                "completed"
+            };
+            let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
             let metadata = match self
                 .agent
                 .config
@@ -1142,11 +1206,13 @@ impl CliSession {
             {
                 Ok(session) => JsonMetadata {
                     total_tokens: session.total_tokens,
-                    status: "completed".to_string(),
+                    status: status.to_string(),
+                    error,
                 },
                 Err(_) => JsonMetadata {
                     total_tokens: None,
-                    status: "completed".to_string(),
+                    status: status.to_string(),
+                    error,
                 },
             };
             let json_output = JsonOutput {

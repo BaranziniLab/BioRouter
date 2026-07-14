@@ -164,8 +164,8 @@ export default function UpdateAvailableModal() {
           {state.phase === 'available' && (
             <div className="space-y-2">
               <p className="text-sm text-text-default">
-                A new version is downloading in the background. You can keep working — we&apos;ll let
-                you know the moment it&apos;s ready to install.
+                A new version is downloading in the background. You can keep working — we&apos;ll
+                let you know the moment it&apos;s ready to install.
               </p>
               <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
                 <div

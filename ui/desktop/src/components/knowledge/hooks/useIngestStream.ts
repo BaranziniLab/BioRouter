@@ -52,7 +52,7 @@ export function useIngestStream() {
   const runStream = useCallback(
     async (
       path: string,
-      requestInit: Pick<RequestInit, 'body' | 'headers'>,
+      requestInit: Pick<RequestInit, 'body' | 'headers'>
     ): Promise<StreamRunResult> => {
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -161,7 +161,7 @@ export function useIngestStream() {
         return { status: 'aborted' };
       }
     },
-    [],
+    []
   );
 
   const start = useCallback(

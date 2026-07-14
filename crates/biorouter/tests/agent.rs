@@ -463,6 +463,12 @@ mod tests {
                         // We should update the conversation here, but we're not reading it
                     }
                     Ok(AgentEvent::TokenUsage(_)) => {}
+                    Ok(AgentEvent::TurnAborted { code, message }) => {
+                        return Err(anyhow::anyhow!(
+                            "turn aborted ({}): {message}",
+                            code.wire_code()
+                        ));
+                    }
                     Err(e) => {
                         return Err(e);
                     }
@@ -640,6 +646,12 @@ mod tests {
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_)) => {}
                     Ok(AgentEvent::TokenUsage(_)) => {}
+                    Ok(AgentEvent::TurnAborted { code, message }) => {
+                        return Err(anyhow::anyhow!(
+                            "turn aborted ({}): {message}",
+                            code.wire_code()
+                        ));
+                    }
                     Err(e) => {
                         return Err(e);
                     }
@@ -770,6 +782,12 @@ mod tests {
                     AgentEvent::McpNotification(_)
                     | AgentEvent::ModelChange { .. }
                     | AgentEvent::HistoryReplaced(_) => {}
+                    AgentEvent::TurnAborted { code, message } => {
+                        return Err(anyhow::anyhow!(
+                            "turn aborted ({}): {message}",
+                            code.wire_code()
+                        ));
+                    }
                 }
             }
             Ok(responses)

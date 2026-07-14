@@ -67,6 +67,7 @@ pub mod session;
 pub mod setup;
 pub mod status;
 pub mod tunnel;
+pub mod usage;
 pub mod utils;
 pub mod workflow;
 pub mod workflow_utils;
@@ -88,6 +89,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(config_management::routes(state.clone()))
         .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))
+        .merge(usage::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))

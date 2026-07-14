@@ -532,6 +532,12 @@ impl InternalToolCall {
         self.name == other.name && arg_similarity(&self.normalized, &other.normalized) >= threshold
     }
 
+    /// A stable key for "this exact call". Two calls with the same name and the
+    /// same arguments have the same signature within a user turn.
+    fn signature(&self) -> String {
+        format!("{}\n{}", self.name, self.parameters)
+    }
+
     fn from_tool_call(tool_call: &CallToolRequestParams) -> Self {
         let name = tool_call.name.to_string();
         let parameters = tool_call
@@ -792,9 +798,9 @@ fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
 
 /// Staged repetition guard (BR-29).
 ///
-/// Consecutive identical tool calls (same name, byte-identical arguments) are
-/// counted across history + the current batch. Two thresholds, both expressed as
-/// "the Nth identical call in a row":
+/// Exact tool-call signatures (same name, byte-identical arguments) are counted
+/// within the current user turn, including the current batch. A new user turn
+/// resets the count.
 ///
 /// * `soft_warn_at` — the call still runs, but a non-blocking warning is emitted
 ///   (`InspectionAction::Warn`) and injected into the model's context so it can
@@ -813,10 +819,10 @@ fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
 /// pre-empted — only the call after it can).
 #[derive(Debug)]
 pub struct RepetitionInspector {
-    /// Nth identical call in a row that earns a non-blocking warning.
+    /// Nth identical call in one user turn that earns a non-blocking warning.
     /// `None` (or `>= hard_stop_at`) disables the soft stage.
     soft_warn_at: Option<u32>,
-    /// Nth identical call in a row that is denied. `None` disables the guard.
+    /// Nth identical call in one user turn that is denied. `None` disables the guard.
     hard_stop_at: Option<u32>,
     /// BR-30 near-duplicate + oscillation heuristics.
     semantic: SemanticLoopConfig,
@@ -826,7 +832,7 @@ pub struct RepetitionInspector {
 
 impl RepetitionInspector {
     /// Hard-stop-only guard: deny once a call has repeated *more than*
-    /// `max_repetitions` times in a row. No soft stage, no semantic heuristics.
+    /// `max_repetitions` times in one user turn. No soft stage or semantic heuristics.
     pub fn new(max_repetitions: Option<u32>) -> Self {
         Self {
             soft_warn_at: None,
@@ -869,7 +875,7 @@ impl RepetitionInspector {
     fn hard_stop_reason(tool_name: &str, repeat_count: u32) -> String {
         format!(
             "BioRouter stopped this tool call: '{tool_name}' has now been called \
-             with identical arguments {repeat_count} times in a row. The user did \
+             with identical arguments {repeat_count} times in this user turn. The user did \
              NOT decline it — this is an automatic repetition guard. Repeating the \
              same call will not produce a different result. Change approach: vary \
              the arguments, use a different tool, or explain what is blocking you \
@@ -881,8 +887,8 @@ impl RepetitionInspector {
     fn soft_warn_reason(tool_name: &str, repeat_count: u32, hard_stop_at: u32) -> String {
         format!(
             "Repetition warning: you have called '{tool_name}' with identical \
-             arguments {repeat_count} times in a row. It will be stopped \
-             automatically on the {hard_stop_at}th consecutive identical call. \
+             arguments {repeat_count} times in this user turn. It will be stopped \
+             automatically on the {hard_stop_at}th identical call this turn. \
              Change approach now: vary the arguments, use a different tool, or \
              explain what is blocking you and stop."
         )
@@ -1090,27 +1096,14 @@ impl ToolInspector for RepetitionInspector {
             return Ok(results);
         }
 
-        let mut last_call: Option<InternalToolCall> = None;
-        let mut repeat_count = 0u32;
-
-        for call in messages
-            .iter()
-            .flat_map(|message| message.content.iter())
-            .filter_map(|content| content.as_tool_request())
-            .filter_map(InternalToolCall::from_request)
-        {
-            if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
-                repeat_count += 1;
-            } else {
-                repeat_count = 1;
-                last_call = Some(call);
-            }
+        let turn_calls = calls_since_last_user_turn(messages);
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        for call in &turn_calls {
+            *seen.entry(call.signature()).or_insert(0) += 1;
         }
 
-        // BR-30: the semantic heuristics look at a bounded window of recent
-        // calls (the current turn), not the whole transcript.
         let mut window = if self.semantic.enabled {
-            calls_since_last_user_turn(messages)
+            turn_calls
         } else {
             Vec::new()
         };
@@ -1127,12 +1120,9 @@ impl ToolInspector for RepetitionInspector {
 
         for tool_request in tool_requests {
             if let Some(call) = InternalToolCall::from_request(tool_request) {
-                if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
-                    repeat_count += 1;
-                } else {
-                    repeat_count = 1;
-                    last_call = Some(call.clone());
-                }
+                let count = seen.entry(call.signature()).or_insert(0);
+                *count += 1;
+                let repeat_count = *count;
 
                 window.push(call);
                 if window.len() > LOOP_WINDOW {

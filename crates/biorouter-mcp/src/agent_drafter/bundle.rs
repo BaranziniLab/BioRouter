@@ -308,6 +308,245 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             }
         }
     }
+
+    // (6) Apps SDK v2 — custom components (fail closed, design §3.3) + reactive
+    // state bindings (design §3.2). The manifest's declared `surface` is the
+    // contract the agent's component instances are validated against server-side,
+    // so any drift between what `main.ts` registers and what the manifest declares
+    // is a build error.
+    let declared_components = manifest
+        .as_ref()
+        .map(|m| m.surface.components.clone())
+        .unwrap_or_default();
+    let declared_names: std::collections::HashSet<&str> = declared_components
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    let has_state_schema = manifest
+        .as_ref()
+        .is_some_and(|m| m.surface.state_schema.is_some());
+
+    // Every registration across the app's *authored* TS. `sdk.ts` is the provided
+    // runtime (it defines `register`, it doesn't call it), so skip it — otherwise
+    // its own API surface would false-positive.
+    let authored_ts = read_authored_ts(project_dir);
+    let mut undeclared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut has_dynamic_registration = false;
+    for reg in registered_components(&authored_ts) {
+        match reg {
+            Some(name) if declared_names.contains(name.as_str()) => {}
+            Some(name) => {
+                undeclared.insert(name);
+            }
+            None => has_dynamic_registration = true,
+        }
+    }
+    // (6a) Registered but not declared → fail closed: the server can't validate the
+    // agent's instances of a component the manifest never declares.
+    for name in &undeclared {
+        error(&mut out, &format!(
+            "src/ registers a custom component \"{name}\" (components.register) that the manifest's surface.components never declares. Declare it with a props schema so the agent's instances are validated server-side, or remove the registration — custom components fail closed."
+        ));
+    }
+    // (6b) Fail closed on a dynamic registration name: without a string literal the
+    // props schema can't be statically extracted and declared.
+    if has_dynamic_registration {
+        error(&mut out, "A components.register(...) call uses a non-literal component name. Component registrations must use a string literal so the schema can be declared and validated (custom components fail closed) — e.g. components.register(\"pathway_map\", { … }).");
+    }
+    // (6c) Declared but never registered in main.ts → the agent can emit instances
+    // the app has no renderer for.
+    let main_registered: std::collections::HashSet<String> =
+        registered_components(&main).into_iter().flatten().collect();
+    for decl in &declared_components {
+        if !main_registered.contains(&decl.name) {
+            error(&mut out, &format!(
+                "manifest declares component \"{name}\" in surface.components but src/main.ts never registers it (components.register(\"{name}\", …)). Register it in main.ts or remove the declaration.",
+                name = decl.name
+            ));
+        }
+    }
+
+    // (6d) Prop-fed HTML sink: component props are agent-controlled (prompt-
+    // injectable). Feeding them straight into innerHTML/insertAdjacentHTML injects
+    // markup into the app's own origin.
+    let prop_fed_sink = strip_js_comments(&main).split([';', '\n']).any(|stmt| {
+        (stmt.contains("innerHTML") || stmt.contains("insertAdjacentHTML"))
+            && stmt.contains("props.")
+    });
+    if prop_fed_sink {
+        warning(&mut out, "src/main.ts feeds component `props` into innerHTML/insertAdjacentHTML. Component props are agent-controlled (prompt-injectable) — render them via textContent or sanitize the HTML instead of injecting markup into the app's own origin.");
+    }
+
+    // (6e) Reactive-state bindings without a declared schema. The default structural
+    // caps still apply, but a state_schema validates the agent's writes precisely.
+    if il.contains("data-br-bind") && !has_state_schema {
+        warning(&mut out, "index.html uses data-br-bind* bindings but the manifest declares no surface.state_schema. Declare a state_schema so the agent's writes to the shared state document are validated before they reach these bindings.");
+    }
+
+    // (6f) `data-br-bind-attr` refuses event-handler (on*) and `style` targets at
+    // runtime because bound state is agent-controlled — the binding layer must be a
+    // non-executing sink. Make it a build error so the author fixes it before the
+    // binding silently no-ops.
+    for attr in bind_attr_targets(&index) {
+        let a = attr.to_ascii_lowercase();
+        if a.starts_with("on") || a == "style" {
+            error(&mut out, &format!(
+                "index.html binds data-br-bind-attr to the \"{attr}\" attribute, which the runtime refuses: event-handler (on*) and `style` bindings are blocked because bound state is agent-controlled. Bind a safe attribute instead (text via data-br-bind, or href/src/class/title/aria-*)."
+            ));
+        }
+    }
+
+    // (7) Apps SDK v2 — typed actions (Pillar 1) + app→agent signals (Phase 3).
+    // The manifest's `surface.actions` / `surface.signals` are the contract the
+    // agent's `app_call` and subscriptions are validated against server-side, so
+    // any drift between what `main.ts` wires up and what the manifest declares is
+    // a build error (typed actions fail closed, mirroring custom components).
+    let declared_actions: Vec<String> = manifest
+        .as_ref()
+        .map(|m| m.surface.actions.iter().map(|a| a.name.clone()).collect())
+        .unwrap_or_default();
+    let declared_action_names: std::collections::HashSet<&str> =
+        declared_actions.iter().map(|s| s.as_str()).collect();
+
+    // Every `actions.register(...)` in src/main.ts (where the author wires the
+    // handlers the agent calls). Literal names carry `Some`, dynamic ones `None`.
+    let action_regs = literal_call_args(&main, "actions", "register");
+    let registered_action_names: std::collections::HashSet<String> =
+        action_regs.iter().flatten().cloned().collect();
+
+    // (7a) Declared but never registered → the agent can `app_call` a verb the app
+    // has no handler for.
+    for name in &declared_actions {
+        if !registered_action_names.contains(name) {
+            error(&mut out, &format!(
+                "manifest declares action \"{name}\" in surface.actions but src/main.ts never registers it (actions.register(\"{name}\", …)). Register it in main.ts or remove the declaration."
+            ));
+        }
+    }
+    // (7b) Registered with a literal name that isn't declared → fail closed: the
+    // server can't validate an `app_call` for an action the manifest never declares.
+    for reg in action_regs.iter().flatten() {
+        if !declared_action_names.contains(reg.as_str()) {
+            error(&mut out, &format!(
+                "src/main.ts registers an action \"{reg}\" (actions.register) that the manifest's surface.actions never declares. Declare it with a params schema so the agent's app_call is validated server-side, or remove the registration — typed actions fail closed."
+            ));
+        }
+    }
+    // (7c) Fail closed on a dynamic registration name: without a string literal the
+    // params schema can't be statically declared and validated.
+    if action_regs.iter().any(|r| r.is_none()) {
+        error(&mut out, "An actions.register(...) call uses a non-literal action name. Action registrations must use a string literal so the action can be declared and validated (typed actions fail closed) — e.g. actions.register(\"run_query\", { … }).");
+    }
+
+    // (7d) Signals the app emits, across all authored TS (`sdk.ts` excluded — it
+    // provides `emit`, it doesn't call it). Every literal must be declared so the
+    // agent can subscribe to it.
+    let declared_signals: Vec<String> = manifest
+        .as_ref()
+        .map(|m| m.surface.signals.iter().map(|s| s.name.clone()).collect())
+        .unwrap_or_default();
+    let declared_signal_names: std::collections::HashSet<&str> =
+        declared_signals.iter().map(|s| s.as_str()).collect();
+    let signal_emits = literal_call_args(&authored_ts, "signals", "emit");
+    let mut undeclared_signals: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut has_dynamic_emit = false;
+    for emit in &signal_emits {
+        match emit {
+            Some(name) if declared_signal_names.contains(name.as_str()) => {}
+            Some(name) => {
+                undeclared_signals.insert(name.clone());
+            }
+            None => has_dynamic_emit = true,
+        }
+    }
+    for name in &undeclared_signals {
+        error(&mut out, &format!(
+            "src/ emits a signal \"{name}\" (signals.emit) that the manifest's surface.signals never declares. Declare it in surface.signals so the agent can subscribe to it, or remove the emit."
+        ));
+    }
+    // Dynamic emit → Warning only: emits are validated server-side at runtime, so a
+    // computed name is survivable (unlike a registration, which fails closed).
+    if has_dynamic_emit {
+        warning(&mut out, "A signals.emit(...) call uses a non-literal signal name. Emits are validated server-side at runtime, so a dynamic name is survivable, but it can't be checked against surface.signals here — prefer a string-literal signal name.");
+    }
+
+    // (7e) An app that declares typed actions but still hand-assembles an English
+    // prompt into `.run(...)` is bypassing the typed path. Heuristic: a `.run(` line
+    // whose argument opens with a template literal, or a line splicing string
+    // fragments together (`" +` / `+ "`).
+    if !declared_actions.is_empty() {
+        let concat_into_run = main.lines().any(|line| match line.split_once(".run(") {
+            Some((_, after)) => {
+                let arg = after.trim_start();
+                arg.starts_with('`') || line.contains("\" +") || line.contains("+ \"")
+            }
+            None => false,
+        });
+        if concat_into_run {
+            warning(&mut out, "src/main.ts assembles an English prompt into .run(...), but this app declares typed actions — prefer br.call(name, args) over assembling English prompts.");
+        }
+    }
+
+    // ── A drag-only surface is unreachable by anything but a human mouse ──────
+    //
+    // The SDK shipped no drag runtime while theme.css advertised drop zones, so
+    // the model hand-rolled HTML5 `draggable="true"` + `dragstart`/`drop`. HTML5
+    // DnD is not driven by synthetic pointer moves: a coordinate drag from an
+    // automated or assistive pointer produces NO `dragstart`. Spec-009's core
+    // interaction — building a stratum by dragging covariates — could not be
+    // performed by anything except a person with a working mouse.
+    //
+    // `br.dnd.catalog(...)` gives pointer + click + keyboard parity and emits the
+    // declared signal itself. A lint error with no working alternative would just
+    // make the model hand-roll something worse, so the primitive is what makes this
+    // rule fair.
+    let uses_html5_dnd = il.contains("draggable=\"true\"")
+        || il.contains("draggable='true'")
+        || main.contains("dragstart")
+        || main.contains("dataTransfer");
+    let uses_dnd_primitive =
+        main.contains("br.dnd") || main.contains(".dnd.catalog") || il.contains("data-br-dnd");
+    let has_fallback = main.contains("keydown") || main.contains("\"click\"");
+
+    if uses_html5_dnd && !uses_dnd_primitive && !has_fallback {
+        error(
+            &mut out,
+            "this app's drag interaction is HTML5 drag-and-drop with no click or keyboard \
+             fallback, so it is unreachable by keyboard, touch, and any automated or assistive \
+             pointer (synthetic pointer moves do not fire `dragstart`). Use \
+             `br.dnd.catalog({ source, target, signal, onDrop })`, which gives pointer, click \
+             and keyboard parity and emits the declared signal for you.",
+        );
+    } else if uses_html5_dnd && !uses_dnd_primitive {
+        warning(
+            &mut out,
+            "this app hand-rolls HTML5 drag-and-drop. It will not respond to a synthetic or \
+             assistive pointer. Prefer `br.dnd.catalog(...)`.",
+        );
+    }
+
+    // ── A binding with no initial value renders blank on first load ───────────
+    //
+    // Bindings were evaluated against an empty document until the first (paid)
+    // agent turn wrote to it, so every KPI showed blank. That is *why* authors kept
+    // a private local state object — which then diverged from the doc the agent
+    // reads. Declaring `surface.state_initial` is the fix; not declaring it is the
+    // bug's root.
+    if let Some(m) = manifest.as_ref() {
+        let binds_something = il.contains("data-br-bind");
+        if binds_something && m.surface.state_initial.is_none() {
+            warning(
+                &mut out,
+                "index.html has `data-br-bind` bindings but the manifest declares no \
+                 `surface.state_initial`, so every bound element renders BLANK until the first \
+                 agent turn writes to the shared state. Declare the initial document \
+                 (`declare_surface` → `state_initial`) rather than keeping a private local \
+                 `state` object — a local copy silently diverges from the document the agent reads.",
+            );
+        }
+    }
+
     out
 }
 
@@ -333,6 +572,134 @@ fn region_names(index: &str) -> Vec<&str> {
         }
     }
     names
+}
+
+/// Concatenate the app's *authored* TypeScript — everything under `src/` except
+/// the vendored `sdk.ts`, which is a provided runtime (it defines `register`, it
+/// does not call it) rather than authored code. Used to find component
+/// registrations without false-positiving on the SDK's own API surface.
+fn read_authored_ts(project_dir: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(project_dir.join("src")) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let is_ts = path.extension().is_some_and(|e| e == "ts");
+            let is_sdk = path.file_name().is_some_and(|n| n == "sdk.ts");
+            if is_ts && !is_sdk {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    parts.push(s);
+                }
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+/// Custom-component registrations found in authored TS. Each entry is the
+/// string-literal name (`Some`) or `None` for a dynamic/non-literal first
+/// argument — which fails closed, because a schema can't be statically declared
+/// for a name computed at runtime. Comments are ignored.
+fn registered_components(src: &str) -> Vec<Option<String>> {
+    let src = strip_js_comments(src);
+    let needle = "components.register(";
+    let mut out = Vec::new();
+    for (idx, _) in src.match_indices(needle) {
+        // Whole-word `components`: don't match `subcomponents.register(` etc.
+        let boundary_ok = idx == 0 || {
+            let b = src.as_bytes()[idx - 1];
+            !(b.is_ascii_alphanumeric() || b == b'_')
+        };
+        if !boundary_ok {
+            continue;
+        }
+        // `idx` is a match start, so `idx + needle.len()` is always a valid char
+        // boundary; `.get(..)` keeps clippy's `string_slice` lint happy without an
+        // indexing panic risk.
+        let rest = src.get(idx + needle.len()..).unwrap_or("").trim_start();
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(q) if q == '"' || q == '\'' => match chars.as_str().split_once(q) {
+                Some((name, _)) => out.push(Some(name.to_string())),
+                None => out.push(None), // unterminated literal → treat as dynamic
+            },
+            _ => out.push(None), // non-string-literal first arg → dynamic
+        }
+    }
+    out
+}
+
+/// String-literal first arguments of a whole-word `<object>.<method>(` call in
+/// `src`. Each entry is `Some(name)` for a string-literal first argument, or
+/// `None` for a dynamic/non-literal one (a name computed at runtime, which can't
+/// be statically checked). Comments are ignored, and `object` is matched as a
+/// whole word so `subactions.register(` never masquerades as `actions.register(`.
+/// The shape mirrors [`registered_components`], generalised for the SDK v2
+/// `actions.register` / `signals.emit` call sites.
+fn literal_call_args(src: &str, object: &str, method: &str) -> Vec<Option<String>> {
+    let src = strip_js_comments(src);
+    let needle = format!("{object}.{method}(");
+    let mut out = Vec::new();
+    for (idx, _) in src.match_indices(needle.as_str()) {
+        let boundary_ok = idx == 0 || {
+            let b = src.as_bytes()[idx - 1];
+            !(b.is_ascii_alphanumeric() || b == b'_')
+        };
+        if !boundary_ok {
+            continue;
+        }
+        // `idx` is a match start, so `idx + needle.len()` is always a valid char
+        // boundary; `.get(..)` keeps clippy's `string_slice` lint happy without an
+        // indexing panic risk.
+        let rest = src.get(idx + needle.len()..).unwrap_or("").trim_start();
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(q) if q == '"' || q == '\'' => match chars.as_str().split_once(q) {
+                Some((name, _)) => out.push(Some(name.to_string())),
+                None => out.push(None), // unterminated literal → treat as dynamic
+            },
+            _ => out.push(None), // non-string-literal first arg → dynamic
+        }
+    }
+    out
+}
+
+/// Attribute names targeted by `data-br-bind-attr` bindings in the markup.
+/// Tolerant of the two plausible encodings: the value form
+/// `data-br-bind-attr="href:/url title:/tip"` (attr is the part before `:`/`=`)
+/// and the name-suffix form `data-br-bind-attr-href="/url"`.
+fn bind_attr_targets(index: &str) -> Vec<String> {
+    let mut attrs = Vec::new();
+    for chunk in index.split("data-br-bind-attr").skip(1) {
+        let mut chars = chunk.chars();
+        if chars.next() == Some('-') {
+            // suffix form: data-br-bind-attr-<attr>=…
+            let attr: String = chars
+                .as_str()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !attr.is_empty() {
+                attrs.push(attr);
+            }
+            continue;
+        }
+        // value form: (optional `=` + whitespace) then a quoted "attr:path …" list.
+        let rest = chunk.trim_start_matches(|c: char| c == '=' || c.is_whitespace());
+        let mut rc = rest.chars();
+        if let Some(q) = rc.next() {
+            if q == '"' || q == '\'' {
+                if let Some((val, _)) = rc.as_str().split_once(q) {
+                    for token in val.split_whitespace() {
+                        let attr = token.split([':', '=']).next().unwrap_or("").trim();
+                        if !attr.is_empty() {
+                            attrs.push(attr.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    attrs
 }
 
 /// Element ids that `main.ts` looks up: `getElementById("x")` and CSS-id
@@ -1271,6 +1638,14 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
         )
     }
 
+    /// A manifest carrying a raw `surface` JSON object (SDK v2 contract).
+    fn manifest_with_surface(surface: &str) -> String {
+        format!(
+            r#"{{"id":"a","title":"A","description":"","kind":"agentic","entry":"index.html",
+                "created_at":0,"updated_at":0,"surface":{surface}}}"#
+        )
+    }
+
     const CHATTY_INDEX: &str = r#"<html><body><main class="br-container">
         <div class="br-card" data-br-chat></div></main></body></html>"#;
     const CHATTY_MAIN: &str = "import { createApp } from \"./sdk\";\ncreateApp();\n";
@@ -1338,5 +1713,206 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
             )),
         );
         assert!(out.contains("it has none"), "{out}");
+    }
+
+    // ── SDK v2: custom components + reactive-state bindings ─────────────────
+
+    /// (Rule 1) A component declared in surface.components but never registered in
+    /// main.ts is an error; registering it clears it.
+    #[test]
+    fn lint_flags_declared_component_not_registered_in_main() {
+        let surface = r#"{"components":[{"name":"pathway_map"}]}"#;
+        let missing = lint_with(
+            CHATTY_INDEX,
+            CHATTY_MAIN,
+            Some(&manifest_with_surface(surface)),
+        );
+        assert!(missing.contains("never registers it"), "{missing}");
+        assert!(missing.contains("pathway_map"), "{missing}");
+
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.components.register(\"pathway_map\", { mount() {} });\n";
+        let ok = lint_with(CHATTY_INDEX, main, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("never registers it"), "{ok}");
+    }
+
+    /// (Rule 2) A registration with a literal name that isn't declared is an error;
+    /// a registration with a NON-literal (dynamic) name fails closed regardless.
+    #[test]
+    fn lint_flags_registered_but_undeclared_and_fails_closed_on_dynamic_name() {
+        // Literal name, no surface declaration → error.
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.components.register(\"gene_card\", { mount() {} });\n";
+        let undeclared = lint_with(CHATTY_INDEX, main, Some(&manifest_json("Answer.", true)));
+        assert!(undeclared.contains("gene_card"), "{undeclared}");
+        assert!(undeclared.contains("never declares"), "{undeclared}");
+
+        // Dynamic name → fail closed with the string-literal error.
+        let dynamic = "import { createApp } from \"./sdk\";\nconst br = createApp();\nconst n = pick();\nbr.components.register(n, { mount() {} });\n";
+        let dyn_out = lint_with(CHATTY_INDEX, dynamic, Some(&manifest_json("Answer.", true)));
+        assert!(dyn_out.contains("non-literal component name"), "{dyn_out}");
+        assert!(
+            dyn_out.to_lowercase().contains("error"),
+            "must block: {dyn_out}"
+        );
+
+        // Declared + literal → passes both checks.
+        let surface = r#"{"components":[{"name":"gene_card"}]}"#;
+        let ok = lint_with(CHATTY_INDEX, main, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("never declares"), "{ok}");
+        assert!(!ok.contains("non-literal"), "{ok}");
+    }
+
+    /// (Rule 3) Feeding agent-controlled `props` into an HTML sink warns; textContent
+    /// does not.
+    #[test]
+    fn lint_warns_when_component_props_feed_an_html_sink() {
+        let surface = r#"{"components":[{"name":"card"}]}"#;
+        let bad = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.components.register(\"card\", { mount(el, props) { el.innerHTML = props.body; } });\n";
+        let out = lint_with(CHATTY_INDEX, bad, Some(&manifest_with_surface(surface)));
+        assert!(out.contains("innerHTML/insertAdjacentHTML"), "{out}");
+
+        // insertAdjacentHTML variant also warns.
+        let bad2 = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.components.register(\"card\", { mount(el, props) { el.insertAdjacentHTML(\"beforeend\", props.html); } });\n";
+        let out2 = lint_with(CHATTY_INDEX, bad2, Some(&manifest_with_surface(surface)));
+        assert!(out2.contains("innerHTML/insertAdjacentHTML"), "{out2}");
+
+        // textContent is a safe sink → no warning.
+        let good = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.components.register(\"card\", { mount(el, props) { el.textContent = props.body; } });\n";
+        let ok = lint_with(CHATTY_INDEX, good, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("innerHTML/insertAdjacentHTML"), "{ok}");
+    }
+
+    /// (Rule 4) Bindings in the markup without a declared state schema warn; a
+    /// state_schema silences it.
+    #[test]
+    fn lint_warns_on_bindings_without_a_state_schema() {
+        let index = r#"<html><body><main class="br-container">
+            <div class="br-card" data-br-chat></div>
+            <span data-br-bind="/cohort/count"></span></main></body></html>"#;
+        let out = lint_with(index, CHATTY_MAIN, Some(&manifest_json("Answer.", true)));
+        assert!(out.contains("no surface.state_schema"), "{out}");
+
+        let surface = r#"{"state_schema":{"type":"object"}}"#;
+        let ok = lint_with(index, CHATTY_MAIN, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("no surface.state_schema"), "{ok}");
+    }
+
+    /// (Rule 5) Binding `data-br-bind-attr` to an on* handler or `style` is a
+    /// build error; a safe attribute (href) is not.
+    #[test]
+    fn lint_errors_on_bind_attr_to_event_handler_or_style() {
+        let on_attr = r#"<html><body><main class="br-container">
+            <div class="br-card" data-br-chat></div>
+            <button data-br-bind-attr="onclick:/handler">go</button></main></body></html>"#;
+        let out = lint_with(on_attr, CHATTY_MAIN, None);
+        assert!(out.contains("the runtime refuses"), "{out}");
+        assert!(out.to_lowercase().contains("error"), "must block: {out}");
+
+        let style_attr = r#"<html><body><main class="br-container">
+            <div class="br-card" data-br-chat></div>
+            <div data-br-bind-attr="style:/css"></div></main></body></html>"#;
+        let styled = lint_with(style_attr, CHATTY_MAIN, None);
+        assert!(styled.contains("the runtime refuses"), "{styled}");
+
+        // href is a safe target → no bind-attr error (a state-schema warning is fine).
+        let href_attr = r#"<html><body><main class="br-container">
+            <div class="br-card" data-br-chat></div>
+            <a data-br-bind-attr="href:/url">link</a></main></body></html>"#;
+        let ok = lint_with(href_attr, CHATTY_MAIN, None);
+        assert!(!ok.contains("data-br-bind-attr to the"), "{ok}");
+    }
+
+    // ── SDK v2 Phase 3: typed actions + app→agent signals ──────────────────
+
+    /// (Rule 7a) An action declared in surface.actions but never registered in
+    /// main.ts is an error; registering it clears the finding.
+    #[test]
+    fn lint_flags_declared_action_not_registered_in_main() {
+        let surface = r#"{"actions":[{"name":"run_query"}]}"#;
+        let missing = lint_with(
+            CHATTY_INDEX,
+            CHATTY_MAIN,
+            Some(&manifest_with_surface(surface)),
+        );
+        assert!(missing.contains("never registers it"), "{missing}");
+        assert!(missing.contains("run_query"), "{missing}");
+
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.actions.register(\"run_query\", () => {});\n";
+        let ok = lint_with(CHATTY_INDEX, main, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("never registers it"), "{ok}");
+    }
+
+    /// (Rules 7b/7c) A registration with a literal name that isn't declared is an
+    /// error; a NON-literal (dynamic) name fails closed regardless.
+    #[test]
+    fn lint_flags_registered_but_undeclared_action_and_fails_closed_on_dynamic_name() {
+        // Literal name, no surface declaration → error.
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.actions.register(\"save\", () => {});\n";
+        let undeclared = lint_with(CHATTY_INDEX, main, Some(&manifest_json("Answer.", true)));
+        assert!(undeclared.contains("save"), "{undeclared}");
+        assert!(undeclared.contains("never declares"), "{undeclared}");
+
+        // Dynamic name → fail closed with the string-literal error.
+        let dynamic = "import { createApp } from \"./sdk\";\nconst br = createApp();\nconst n = pick();\nbr.actions.register(n, () => {});\n";
+        let dyn_out = lint_with(CHATTY_INDEX, dynamic, Some(&manifest_json("Answer.", true)));
+        assert!(dyn_out.contains("non-literal action name"), "{dyn_out}");
+        assert!(
+            dyn_out.to_lowercase().contains("error"),
+            "must block: {dyn_out}"
+        );
+
+        // Declared + literal → passes both checks.
+        let surface = r#"{"actions":[{"name":"save"}]}"#;
+        let ok = lint_with(CHATTY_INDEX, main, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("never declares"), "{ok}");
+        assert!(!ok.contains("non-literal"), "{ok}");
+    }
+
+    /// (Rule 7d) A signal emitted with a literal name the manifest never declares
+    /// is an error; a dynamic emit name is only a warning (runtime-validated); a
+    /// declared literal is clean.
+    #[test]
+    fn lint_flags_undeclared_signal_emit_and_warns_on_dynamic_name() {
+        // Literal, undeclared → error.
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.signals.emit(\"row_selected\", { id: 1 });\n";
+        let undeclared = lint_with(CHATTY_INDEX, main, Some(&manifest_json("Answer.", true)));
+        assert!(undeclared.contains("row_selected"), "{undeclared}");
+        assert!(undeclared.contains("never declares"), "{undeclared}");
+
+        // Dynamic name → warning, not a build-blocking error.
+        let dynamic = "import { createApp } from \"./sdk\";\nconst br = createApp();\nconst s = pick();\nbr.signals.emit(s, {});\n";
+        let dyn_out = lint_with(CHATTY_INDEX, dynamic, Some(&manifest_json("Answer.", true)));
+        assert!(dyn_out.contains("non-literal signal name"), "{dyn_out}");
+        assert!(
+            !dyn_out.to_lowercase().contains("error"),
+            "dynamic emit is survivable: {dyn_out}"
+        );
+
+        // Declared literal → clean.
+        let surface = r#"{"signals":[{"name":"row_selected"}]}"#;
+        let ok = lint_with(CHATTY_INDEX, main, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("never declares"), "{ok}");
+    }
+
+    /// (Rule 7e) Assembling an English prompt into `.run(...)` while the manifest
+    /// declares typed actions warns; using `br.call(...)` does not.
+    #[test]
+    fn lint_warns_on_prompt_concat_when_typed_actions_exist() {
+        let surface = r#"{"actions":[{"name":"run_query"}]}"#;
+        let concat = "import { createApp } from \"./sdk\";\nconst br = createApp();\nconst q = \"genes\";\nbr.run(`find ${q} in the graph`);\n";
+        let out = lint_with(CHATTY_INDEX, concat, Some(&manifest_with_surface(surface)));
+        assert!(out.contains("prefer br.call(name, args)"), "{out}");
+
+        // Explicit `" +` / `+ "` concatenation also warns.
+        let plus = "import { createApp } from \"./sdk\";\nconst br = createApp();\nconst q = \"x\";\nbr.run(\"find \" + q + \" now\");\n";
+        let plus_out = lint_with(CHATTY_INDEX, plus, Some(&manifest_with_surface(surface)));
+        assert!(
+            plus_out.contains("prefer br.call(name, args)"),
+            "{plus_out}"
+        );
+
+        // Using the typed path (br.call) → no warning.
+        let typed = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.actions.register(\"run_query\", () => {});\nbr.call(\"run_query\", { q: \"genes\" });\n";
+        let ok = lint_with(CHATTY_INDEX, typed, Some(&manifest_with_surface(surface)));
+        assert!(!ok.contains("prefer br.call(name, args)"), "{ok}");
     }
 }

@@ -14,10 +14,7 @@ export default function ModelSettingsButtons({ setView }: ConfigureModelButtonsP
 
   return (
     <div className="flex gap-2 pt-4">
-      <Button
-        variant="default"
-        onClick={() => setIsAddModelModalOpen(true)}
-      >
+      <Button variant="default" onClick={() => setIsAddModelModalOpen(true)}>
         Switch models
       </Button>
       {isAddModelModalOpen ? (

@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { Settings } from '../../icons/app-icons';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../ui/dialog';
 import UpdateSection from './UpdateSection';
+import UsageSection from '../usage/UsageSection';
 
 import { COST_TRACKING_ENABLED, UPDATES_ENABLED } from '../../../updates';
 import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
@@ -214,6 +215,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           )}
         </div>
       </div>
+
+      {/* Usage — accumulated (billed) tokens + cost, month-to-date vs budget */}
+      {COST_TRACKING_ENABLED && showPricing && <UsageSection />}
 
       {/* Theme */}
       <div className="biorouter-settings-section">

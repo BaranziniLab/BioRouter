@@ -238,8 +238,10 @@ type ToastLoadingProps = {
 };
 
 export function toastLoading({ title, msg, toastOptions }: ToastLoadingProps) {
-  return toast.loading(
-    <NotificationContent status="loading" title={title} message={msg} />,
-    { ...commonToastOptions, icon: false, autoClose: false, ...toastOptions }
-  );
+  return toast.loading(<NotificationContent status="loading" title={title} message={msg} />, {
+    ...commonToastOptions,
+    icon: false,
+    autoClose: false,
+    ...toastOptions,
+  });
 }

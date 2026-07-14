@@ -121,11 +121,7 @@ export function findSpawnPosition({
  * so any spatial arrangement reachable by gap-aligned snapping is on the
  * candidate list. Windows are processed closest-to-anchor first so they
  * grab the prime adjacent slots before more distant ones are placed. */
-export function organize(
-  windows: readonly WindowRect[],
-  anchorId: string,
-  gap = 16
-): WindowRect[] {
+export function organize(windows: readonly WindowRect[], anchorId: string, gap = 16): WindowRect[] {
   if (windows.length < 2) return windows.map((w) => ({ ...w }));
 
   const result = windows.map((w) => ({ ...w }));
@@ -283,8 +279,7 @@ export function organize(
       // window-step further) — turning L-shapes into proper 2x2 grids
       // when the user's positions are consistent with one.
       const sharedBonus = Math.max(w.w, w.h) + gap;
-      const score = (c: { dist: number; shared: number }) =>
-        c.dist - c.shared * sharedBonus;
+      const score = (c: { dist: number; shared: number }) => c.dist - c.shared * sharedBonus;
       candidates.sort((a, b) => score(a) - score(b));
       w.x = candidates[0].x;
       w.y = candidates[0].y;
@@ -334,9 +329,18 @@ export function organizeForceDirected(
         // Pick the smallest penalty (minimum-move separation).
         let best: 'xL' | 'xR' | 'yT' | 'yB' = 'xL';
         let bestVal = xPenL;
-        if (xPenR < bestVal) { best = 'xR'; bestVal = xPenR; }
-        if (yPenT < bestVal) { best = 'yT'; bestVal = yPenT; }
-        if (yPenB < bestVal) { best = 'yB'; bestVal = yPenB; }
+        if (xPenR < bestVal) {
+          best = 'xR';
+          bestVal = xPenR;
+        }
+        if (yPenT < bestVal) {
+          best = 'yT';
+          bestVal = yPenT;
+        }
+        if (yPenB < bestVal) {
+          best = 'yB';
+          bestVal = yPenB;
+        }
         const aIsAnchor = i === anchorIdx;
         const bIsAnchor = j === anchorIdx;
         const aShare = aIsAnchor ? 0 : bIsAnchor ? bestVal : bestVal / 2;

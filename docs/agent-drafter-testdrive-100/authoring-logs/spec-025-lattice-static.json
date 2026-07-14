@@ -1,0 +1,55 @@
+{
+  "id": "spec-025-lattice",
+  "title": "Lattice",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-025-lattice/manifest.json",
+  "actions_expected": [
+    "dim_node",
+    "draft_experiment",
+    "link_prior",
+    "promote",
+    "score_testability",
+    "spawn_children"
+  ],
+  "actions_actual": [
+    "dim_node",
+    "draft_experiment",
+    "link_prior",
+    "promote",
+    "score_testability",
+    "spawn_children"
+  ],
+  "signals_expected": [
+    "constraint_edited",
+    "node_killed",
+    "node_promoted",
+    "node_selected"
+  ],
+  "signals_actual": [
+    "constraint_edited",
+    "node_killed",
+    "node_promoted",
+    "node_selected"
+  ],
+  "agents_expected": [
+    "Generator",
+    "Falsifier",
+    "Planner"
+  ],
+  "agents_actual": [
+    "falsifier",
+    "generator",
+    "planner"
+  ],
+  "regions": [
+    "figure",
+    "inspector",
+    "lattice",
+    "progress",
+    "seed",
+    "warnings"
+  ],
+  "theme_expected": "midnight",
+  "theme_actual": "midnight",
+  "issues": []
+}

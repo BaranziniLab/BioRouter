@@ -8,6 +8,7 @@ use biorouter_mcp::{
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell as ClapShell};
 
+use crate::commands::apps::{handle_apps_list, handle_apps_open, handle_apps_serve};
 use crate::commands::bench::agent_generator;
 use crate::commands::configure::handle_configure;
 use crate::commands::info::handle_info;
@@ -1031,6 +1032,33 @@ enum KnowledgeCommand {
 }
 
 #[derive(Subcommand)]
+enum AppsCommand {
+    /// List installed BioRouter apps
+    #[command(about = "List installed BioRouter apps")]
+    List {
+        /// Emit machine-readable JSON instead of a table
+        #[arg(long, help = "Emit machine-readable JSON instead of a table")]
+        json: bool,
+    },
+
+    /// Open an app in your default browser
+    #[command(about = "Open an app in your default browser")]
+    Open {
+        /// App id (see `biorouter apps list`)
+        #[arg(help = "App id (see `biorouter apps list`)")]
+        id: String,
+    },
+
+    /// Serve an app in the foreground until Ctrl-C
+    #[command(about = "Serve an app in the foreground until Ctrl-C")]
+    Serve {
+        /// App id (see `biorouter apps list`)
+        #[arg(help = "App id (see `biorouter apps list`)")]
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Configure Biorouter settings
     #[command(about = "Configure Biorouter settings")]
@@ -1180,11 +1208,46 @@ enum Command {
         command: SkillCommand,
     },
 
+    /// List, open, and serve BioRouter apps (built by Agent Drafter)
+    #[command(
+        about = "List, open, and serve BioRouter apps",
+        long_about = "List, open, and serve the BioRouter apps built by Agent Drafter.\n\n\
+                      `open`/`serve` reuse a `biorouterd` already listening on the configured\n\
+                      port (BIOROUTER_PORT, default 3000) or start one for you, then open\n\
+                      http://127.0.0.1:<port>/apps/<id>/ in your browser.\n\n\
+                      In-terminal rendering of an app is out of scope; apps open in a real browser."
+    )]
+    Apps {
+        #[command(subcommand)]
+        command: AppsCommand,
+    },
+
     /// Manage scheduled jobs
     #[command(about = "Manage scheduled jobs", visible_alias = "sched")]
     Schedule {
         #[command(subcommand)]
         command: SchedulerCommand,
+    },
+
+    /// Report token + cost usage per day or per model, with a month-to-date
+    /// summary against the configured monthly budget.
+    #[command(about = "Report token and cost usage (per day / per model, month-to-date)")]
+    Usage {
+        /// Start of the range, `YYYY-MM-DD` (local). Defaults to 30 days ago.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        from: Option<String>,
+
+        /// End of the range, `YYYY-MM-DD` (local, inclusive). Defaults to today.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        to: Option<String>,
+
+        /// Break the range down per model instead of per day.
+        #[arg(long = "by-model", help = "Group usage by model instead of by day")]
+        by_model: bool,
+
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long, help = "Print machine-readable JSON")]
+        json: bool,
     },
 
     /// Check system prerequisites (git, uv, node, …) and the CLI install
@@ -1368,10 +1431,12 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Projects) => "projects",
         Some(Command::Run { .. }) => "run",
         Some(Command::Schedule { .. }) => "schedule",
+        Some(Command::Usage { .. }) => "usage",
         Some(Command::Models { .. }) => "models",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
+        Some(Command::Apps { .. }) => "apps",
         Some(Command::Doctor { .. }) => "doctor",
         Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
@@ -1933,6 +1998,14 @@ async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
     }
 }
 
+async fn handle_apps_subcommand(command: AppsCommand) -> Result<()> {
+    match command {
+        AppsCommand::List { json } => handle_apps_list(json).await,
+        AppsCommand::Open { id } => handle_apps_open(id).await,
+        AppsCommand::Serve { id } => handle_apps_serve(id).await,
+    }
+}
+
 async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
     match command {
         TermCommand::Init {
@@ -2046,6 +2119,12 @@ pub async fn cli() -> anyhow::Result<()> {
             .await
         }
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
+        Some(Command::Usage {
+            from,
+            to,
+            by_model,
+            json,
+        }) => crate::commands::usage::handle_usage(from, to, by_model, json).await,
         Some(Command::Doctor { format, no_update }) => {
             crate::commands::doctor::handle_doctor(&format, !no_update).await
         }
@@ -2056,6 +2135,7 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
+        Some(Command::Apps { command }) => handle_apps_subcommand(command).await,
         Some(Command::Web {
             port,
             host,

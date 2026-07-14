@@ -380,6 +380,97 @@ fn kind_from_code(code: ErrorCode) -> Option<ToolErrorKind> {
     }
 }
 
+const TEXT_KIND_PATTERNS: &[(ToolErrorKind, &[&str])] = &[
+    (
+        ToolErrorKind::Timeout,
+        &["timed out", "timeout", "deadline exceeded", "etimedout"],
+    ),
+    (
+        ToolErrorKind::PermissionDenied,
+        &[
+            "permission denied",
+            "access denied",
+            "access is denied",
+            "eacces",
+            "eperm",
+            "operation not permitted",
+            "not authorized",
+            "unauthorized",
+            "forbidden",
+            "403",
+            "401",
+            "read-only file system",
+            "declined to run this tool",
+            "did not run this tool",
+        ],
+    ),
+    (
+        ToolErrorKind::NotFound,
+        &[
+            "no such file",
+            "no such directory",
+            "not found",
+            "does not exist",
+            "doesn't exist",
+            "enoent",
+            "cannot find",
+            "unknown tool",
+            "404",
+        ],
+    ),
+    (
+        ToolErrorKind::Transient,
+        &[
+            "connection reset",
+            "connection refused",
+            "connection closed",
+            "broken pipe",
+            "temporarily unavailable",
+            "service unavailable",
+            "try again later",
+            "rate limit",
+            "too many requests",
+            "429",
+            "502",
+            "503",
+            "504",
+            "econnreset",
+            "econnrefused",
+            "network is unreachable",
+            "dns",
+            "resource busy",
+            "would block",
+        ],
+    ),
+    (
+        ToolErrorKind::InvalidArgs,
+        &[
+            "invalid params",
+            "invalid parameter",
+            "invalid argument",
+            "invalid input",
+            "missing required",
+            "required property",
+            "unknown field",
+            "failed to parse arguments",
+            "schema validation",
+            "is not of type",
+            "expected object",
+            "expected string",
+        ],
+    ),
+    (
+        ToolErrorKind::Internal,
+        &[
+            "panicked at",
+            "internal error",
+            "protocol error",
+            "serialization failed",
+            "tool result validation failed",
+        ],
+    ),
+];
+
 /// Curated substring heuristics over the error text — the graceful-degradation
 /// path for an opaque third-party MCP error, which is the common case.
 ///
@@ -389,108 +480,13 @@ fn kind_from_code(code: ErrorCode) -> Option<ToolErrorKind> {
 /// [`ToolErrorKind::ToolFailure`] rather than being forced into a class.
 pub fn kind_from_text(text: &str) -> ToolErrorKind {
     let haystack = text.to_ascii_lowercase();
-    let has = |needle: &str| haystack.contains(needle);
 
-    if ["timed out", "timeout", "deadline exceeded", "etimedout"]
-        .iter()
-        .any(|n| has(n))
-    {
-        return ToolErrorKind::Timeout;
+    for (kind, patterns) in TEXT_KIND_PATTERNS {
+        if patterns.iter().any(|needle| haystack.contains(needle)) {
+            return *kind;
+        }
     }
-    if [
-        "permission denied",
-        "access denied",
-        "access is denied",
-        "eacces",
-        "eperm",
-        "operation not permitted",
-        "not authorized",
-        "unauthorized",
-        "forbidden",
-        "403",
-        "401",
-        "read-only file system",
-        "declined to run this tool",
-        "did not run this tool",
-    ]
-    .iter()
-    .any(|n| has(n))
-    {
-        return ToolErrorKind::PermissionDenied;
-    }
-    if [
-        "no such file",
-        "no such directory",
-        "not found",
-        "does not exist",
-        "doesn't exist",
-        "enoent",
-        "cannot find",
-        "unknown tool",
-        "404",
-    ]
-    .iter()
-    .any(|n| has(n))
-    {
-        return ToolErrorKind::NotFound;
-    }
-    if [
-        "connection reset",
-        "connection refused",
-        "connection closed",
-        "broken pipe",
-        "temporarily unavailable",
-        "service unavailable",
-        "try again later",
-        "rate limit",
-        "too many requests",
-        "429",
-        "502",
-        "503",
-        "504",
-        "econnreset",
-        "econnrefused",
-        "network is unreachable",
-        "dns",
-        "resource busy",
-        "would block",
-    ]
-    .iter()
-    .any(|n| has(n))
-    {
-        return ToolErrorKind::Transient;
-    }
-    if [
-        "invalid params",
-        "invalid parameter",
-        "invalid argument",
-        "invalid input",
-        "missing required",
-        "required property",
-        "unknown field",
-        "failed to parse arguments",
-        "schema validation",
-        "is not of type",
-        "expected object",
-        "expected string",
-    ]
-    .iter()
-    .any(|n| has(n))
-    {
-        return ToolErrorKind::InvalidArgs;
-    }
-    if [
-        "panicked at",
-        "internal error",
-        "protocol error",
-        "serialization failed",
-        "tool result validation failed",
-    ]
-    .iter()
-    .any(|n| has(n))
-    {
-        return ToolErrorKind::Internal;
-    }
+
     ToolErrorKind::ToolFailure
 }
 

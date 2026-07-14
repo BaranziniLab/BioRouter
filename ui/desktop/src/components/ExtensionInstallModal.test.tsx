@@ -129,7 +129,10 @@ describe('ExtensionInstallModal', () => {
       const eventHandler = getAddExtensionEventHandler();
 
       await act(async () => {
-        await eventHandler({}, 'biorouter://extension?cmd=npx&arg=blocked-extension&name=BlockedExt');
+        await eventHandler(
+          {},
+          'biorouter://extension?cmd=npx&arg=blocked-extension&name=BlockedExt'
+        );
       });
 
       expect(screen.getByText('Extension Installation Blocked')).toBeInTheDocument();

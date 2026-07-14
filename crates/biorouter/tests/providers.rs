@@ -210,6 +210,17 @@ impl ProviderTester {
     }
 
     async fn test_context_length_exceeded_error(&self) -> Result<()> {
+        // Anthropic context windows change independently of this client. A live
+        // over-limit request either stops being over-limit or risks submitting
+        // an unexpectedly billable million-token prompt. The provider's exact
+        // error-payload mapping is covered deterministically in anthropic.rs;
+        // this suite still exercises Anthropic live through its basic and tool
+        // requests, plus image requests when the fixture is available.
+        if self.name.eq_ignore_ascii_case("anthropic") {
+            println!("Skipping Anthropic live over-limit request; response mapping is unit-tested");
+            return Ok(());
+        }
+
         let large_message_content = if self.name.to_lowercase() == "google" {
             "hello ".repeat(1_300_000)
         } else {

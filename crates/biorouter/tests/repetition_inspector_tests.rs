@@ -8,6 +8,7 @@ use biorouter::tool_monitor::{
 };
 use rmcp::model::CallToolRequestParams;
 use rmcp::object;
+use serde_json::json;
 
 fn tool_call(name: &str, id: i32) -> CallToolRequestParams {
     CallToolRequestParams {
@@ -30,12 +31,12 @@ fn tool_request(id: &str, call: CallToolRequestParams) -> ToolRequest {
 
 // This test targets the production RepetitionInspector::inspect path.
 // It verifies that within a single batch of tool requests:
-// - consecutive identical tool calls are allowed up to max_repetitions times
-// - the (max_repetitions + 1)th identical call is denied
-// - changing the parameters resets the repetition count and allows the call
+// - each exact tool + canonical-arguments signature has its own count
+// - the (max_repetitions + 1)th occurrence of one signature is denied
+// - a different argument signature has an independent count
 #[tokio::test]
-async fn test_repetition_inspector_denies_after_exceeding_and_resets_on_param_change() {
-    // Allow at most 2 consecutive identical calls
+async fn test_repetition_inspector_counts_each_exact_signature_independently() {
+    // Allow at most 2 occurrences of either exact signature.
     let inspector = RepetitionInspector::new(Some(2));
 
     let call_v1 = tool_call("fetch_user", 123);
@@ -45,7 +46,7 @@ async fn test_repetition_inspector_denies_after_exceeding_and_resets_on_param_ch
         tool_request("call_1", call_v1.clone()), // 1st identical → allowed
         tool_request("call_2", call_v1.clone()), // 2nd identical → allowed (at limit)
         tool_request("call_3", call_v1),         // 3rd identical → denied
-        tool_request("call_4", call_v2.clone()), // param change → resets, allowed
+        tool_request("call_4", call_v2.clone()), // different signature → allowed
         tool_request("call_5", call_v2.clone()), // 2nd with new params → allowed (at limit)
         tool_request("call_6", call_v2),         // 3rd with new params → denied
     ];
@@ -60,7 +61,7 @@ async fn test_repetition_inspector_denies_after_exceeding_and_resets_on_param_ch
         .await
         .expect("inspection should succeed");
 
-    // Only the calls that exceed the consecutive limit are denied.
+    // Only the calls that exceed their signature's limit are denied.
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].tool_request_id, "call_3");
     assert_eq!(results[0].action, InspectionAction::Deny);
@@ -76,9 +77,9 @@ async fn test_repetition_inspector_denies_current_request_after_history_repeats(
     let call = tool_call("fetch_user", 123);
     let messages = vec![
         Message::assistant().with_tool_request("call_1", Ok(call.clone())),
-        Message::user().with_text("tool response"),
+        Message::user().with_tool_response("call_1", Ok(tool_ok("tool response"))),
         Message::assistant().with_tool_request("call_2", Ok(call.clone())),
-        Message::user().with_text("tool response"),
+        Message::user().with_tool_response("call_2", Ok(tool_ok("tool response"))),
     ];
     let request_message = Message::assistant().with_tool_request("call_3", Ok(call));
     let request = request_message
@@ -109,9 +110,9 @@ async fn test_repetition_inspector_allows_changed_arguments_after_history_repeat
     let prior_call = tool_call("fetch_user", 123);
     let messages = vec![
         Message::assistant().with_tool_request("call_1", Ok(prior_call.clone())),
-        Message::user().with_text("tool response"),
+        Message::user().with_tool_response("call_1", Ok(tool_ok("tool response"))),
         Message::assistant().with_tool_request("call_2", Ok(prior_call)),
-        Message::user().with_text("tool response"),
+        Message::user().with_tool_response("call_2", Ok(tool_ok("tool response"))),
     ];
     let request_message =
         Message::assistant().with_tool_request("call_3", Ok(tool_call("fetch_user", 456)));
@@ -135,11 +136,170 @@ async fn test_repetition_inspector_allows_changed_arguments_after_history_repeat
     assert!(results.is_empty());
 }
 
+/// Exact signatures are counted across intervening calls within one user turn.
+/// Alternating `A, B, A, B` must not hide the third occurrence of `A`.
+#[tokio::test]
+async fn test_interleaved_exact_signature_is_detected() {
+    let inspector = RepetitionInspector::new(Some(2));
+    let looping = tool_call("ui_describe", 1);
+    let filler = tool_call("ui_render", 99);
+    let messages = vec![
+        Message::assistant().with_tool_request("call_1", Ok(looping.clone())),
+        Message::user().with_tool_response("call_1", Ok(tool_ok("done"))),
+        Message::assistant().with_tool_request("call_2", Ok(filler.clone())),
+        Message::user().with_tool_response("call_2", Ok(tool_ok("done"))),
+        Message::assistant().with_tool_request("call_3", Ok(looping.clone())),
+        Message::user().with_tool_response("call_3", Ok(tool_ok("done"))),
+        Message::assistant().with_tool_request("call_4", Ok(filler)),
+        Message::user().with_tool_response("call_4", Ok(tool_ok("done"))),
+    ];
+
+    let results = inspector
+        .inspect(
+            &[tool_request("call_5", looping)],
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tool_request_id, "call_5");
+    assert_eq!(results[0].action, InspectionAction::Deny);
+    assert_eq!(results[0].inspector_name, "repetition");
+}
+
+/// Calls to one tool with different canonical arguments are different
+/// signatures and therefore represent progress rather than repetition.
+#[tokio::test]
+async fn test_distinct_argument_signatures_are_never_a_loop() {
+    let inspector = RepetitionInspector::new(Some(2));
+    let messages = vec![
+        Message::assistant().with_tool_request("call_1", Ok(tool_call("fetch_user", 1))),
+        Message::assistant().with_tool_request("call_2", Ok(tool_call("fetch_user", 2))),
+        Message::assistant().with_tool_request("call_3", Ok(tool_call("fetch_user", 3))),
+    ];
+
+    let results = inspector
+        .inspect(
+            &[tool_request("call_4", tool_call("fetch_user", 4))],
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    assert!(
+        results.is_empty(),
+        "different argument signatures must not share a count: {results:?}"
+    );
+}
+
+/// The tool name is part of the signature: identical arguments sent to a
+/// different tool must not inherit another tool's repetition count.
+#[tokio::test]
+async fn test_tool_name_is_part_of_the_exact_signature() {
+    let inspector = RepetitionInspector::new(Some(2));
+    let messages = vec![
+        Message::assistant().with_tool_request("call_1", Ok(tool_call("fetch_user", 7))),
+        Message::assistant().with_tool_request("call_2", Ok(tool_call("fetch_user", 7))),
+    ];
+
+    let results = inspector
+        .inspect(
+            &[tool_request("call_3", tool_call("update_user", 7))],
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    assert!(
+        results.is_empty(),
+        "a different tool name must start a different signature: {results:?}"
+    );
+}
+
+/// JSON object key order is not part of a tool call's meaning. Canonical
+/// arguments with reversed insertion order must share the same signature.
+#[tokio::test]
+async fn test_canonical_argument_order_shares_one_signature() {
+    let inspector = RepetitionInspector::new(Some(2));
+
+    let mut first_args = serde_json::Map::new();
+    first_args.insert("patient".to_string(), json!(7));
+    first_args.insert("region".to_string(), json!("west"));
+    let mut reversed_args = serde_json::Map::new();
+    reversed_args.insert("region".to_string(), json!("west"));
+    reversed_args.insert("patient".to_string(), json!(7));
+
+    let first = call_with("fetch_user", serde_json::Value::Object(first_args));
+    let reversed = call_with("fetch_user", serde_json::Value::Object(reversed_args));
+    let messages = vec![
+        Message::assistant().with_tool_request("call_1", Ok(first.clone())),
+        Message::assistant().with_tool_request("call_2", Ok(reversed)),
+    ];
+
+    let results = inspector
+        .inspect(
+            &[tool_request("call_3", first)],
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    assert_eq!(results.len(), 1, "canonical key order must compare equal");
+    assert_eq!(results[0].action, InspectionAction::Deny);
+}
+
+/// The newest genuine user message starts a fresh signature window. Tool
+/// responses before or after it do not create additional resets.
+#[tokio::test]
+async fn test_exact_signature_count_resets_after_newest_user_message() {
+    let inspector = RepetitionInspector::new(Some(2));
+    let call = tool_call("fetch_user", 123);
+    let messages = vec![
+        Message::assistant().with_tool_request("old_1", Ok(call.clone())),
+        Message::user().with_tool_response("old_1", Ok(tool_ok("done"))),
+        Message::assistant().with_tool_request("old_2", Ok(call.clone())),
+        Message::user().with_tool_response("old_2", Ok(tool_ok("done"))),
+        Message::user().with_text("try that lookup again with the new context"),
+        Message::assistant().with_tool_request("new_1", Ok(call.clone())),
+        Message::user().with_tool_response("new_1", Ok(tool_ok("done"))),
+    ];
+
+    let results = inspector
+        .inspect(
+            &[
+                tool_request("new_2", call.clone()),
+                tool_request("new_3", call),
+            ],
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "only the third call in the new turn stops"
+    );
+    assert_eq!(results[0].tool_request_id, "new_3");
+    assert_eq!(results[0].action, InspectionAction::Deny);
+}
+
 // BR-29: the guard is staged. The soft stage nudges the model (the call still
 // runs); only a model that keeps repeating itself through the nudge is stopped.
 #[tokio::test]
 async fn test_staged_repetition_warns_before_it_stops() {
-    // Warn on the 3rd identical call in a row, deny on the 5th.
+    // Warn on the 3rd occurrence of one signature, deny on the 5th.
     let inspector = RepetitionInspector::staged(3, 5);
     let call = tool_call("fetch_user", 123);
 
@@ -360,7 +520,6 @@ use biorouter::tool_monitor::{
     SemanticLoopConfig, REPETITION_NEAR_DUP_HARD_FINDING_ID, REPETITION_NEAR_DUP_SOFT_FINDING_ID,
     REPETITION_OSCILLATION_HARD_FINDING_ID, REPETITION_OSCILLATION_SOFT_FINDING_ID,
 };
-use serde_json::json;
 
 /// A tool call with arbitrary arguments (the `tool_call` helper above only
 /// varies an integer `id`).
@@ -400,7 +559,7 @@ fn requests(calls: Vec<CallToolRequestParams>) -> Vec<ToolRequest> {
         .collect()
 }
 
-// The BR-30 case the byte-exact guard misses entirely: the model keeps calling
+// The BR-30 case the exact-signature guard misses entirely: the model keeps calling
 // the same tool, nudging the arguments by a character each time.
 #[tokio::test]
 async fn test_near_duplicate_arg_tweaks_are_flagged() {
@@ -485,7 +644,7 @@ async fn test_ab_ab_oscillation_is_flagged() {
     );
 }
 
-// The byte-exact guard (BR-29) owns plain repetition; BR-30 must not pile a
+// The exact-signature guard (BR-29) owns plain repetition; BR-30 must not pile a
 // second nudge onto the same call.
 #[tokio::test]
 async fn test_exact_repeats_get_exactly_one_verdict() {
@@ -515,7 +674,7 @@ async fn test_exact_repeats_get_exactly_one_verdict() {
         assert!(
             finding == Some(REPETITION_SOFT_FINDING_ID)
                 || finding == Some(REPETITION_HARD_FINDING_ID),
-            "byte-exact repeats belong to the BR-29 guard, got {finding:?}"
+            "exact-signature repeats belong to the BR-29 guard, got {finding:?}"
         );
     }
 }
@@ -584,7 +743,7 @@ async fn test_oscillation_hard_stop_is_opt_in() {
     );
 }
 
-// The whole feature is switchable off, back to byte-exact detection only.
+// The whole feature is switchable off, back to exact-signature detection only.
 #[tokio::test]
 async fn test_semantic_detection_can_be_disabled() {
     let inspector = RepetitionInspector::staged(3, 5).with_semantic(SemanticLoopConfig::disabled());
@@ -690,7 +849,7 @@ async fn test_window_resets_on_a_real_user_turn_only() {
 // BR-31: repeated-failing-result / no-progress detection
 //
 // The gap these cover: the model varies the arguments every time (so neither the
-// byte-exact guard nor the near-duplicate heuristic fires) but every call comes
+// exact-signature guard nor the near-duplicate heuristic fires) but every call comes
 // back with the *same error*. Only the results reveal the loop.
 // ---------------------------------------------------------------------------
 

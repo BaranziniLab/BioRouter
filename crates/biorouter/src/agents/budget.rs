@@ -344,15 +344,10 @@ mod tests {
     }
 
     fn usage(model: &str, input: i32, output: i32) -> ProviderUsage {
-        ProviderUsage {
-            model: model.to_string(),
-            usage: Usage {
-                input_tokens: Some(input),
-                output_tokens: Some(output),
-                total_tokens: Some(input + output),
-            },
-            finish_reason: None,
-        }
+        ProviderUsage::new(
+            model.to_string(),
+            Usage::new(Some(input), Some(output), Some(input + output)),
+        )
     }
 
     #[test]

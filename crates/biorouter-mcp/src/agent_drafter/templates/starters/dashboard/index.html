@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">Dashboard</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+
+    <!-- Presence: the agent's step progress renders here (see main.ts). -->
+    <div data-br-progress class="br-run-status" style="margin-top: 12px;"></div>
+
+    <!-- KPI grid — each tile is bound to a shared state path the agent writes
+         with the set_metric action. -->
+    <div class="br-grid br-grid--3" style="margin-top: 16px;">
+      <div class="br-kpi br-card">
+        <p class="br-text--muted" style="margin: 0;">Cohorts</p>
+        <p class="br-stat" style="color: var(--br-accent);" data-br-bind="/metrics/cohorts/value">—</p>
+        <p class="br-text--muted" style="margin: 0;" data-br-bind="/metrics/cohorts/delta"></p>
+      </div>
+      <div class="br-kpi br-card">
+        <p class="br-text--muted" style="margin: 0;">Samples</p>
+        <p class="br-stat" style="color: var(--br-accent);" data-br-bind="/metrics/samples/value">—</p>
+        <p class="br-text--muted" style="margin: 0;" data-br-bind="/metrics/samples/delta"></p>
+      </div>
+      <div class="br-kpi br-card">
+        <p class="br-text--muted" style="margin: 0;">Alerts</p>
+        <p class="br-stat" style="color: var(--br-accent);" data-br-bind="/metrics/alerts/value">—</p>
+        <p class="br-text--muted" style="margin: 0;" data-br-bind="/metrics/alerts/delta"></p>
+      </div>
+    </div>
+
+    <div class="br-row" style="display: flex; gap: 12px; margin-top: 16px;">
+      <button id="refresh" class="br-btn">Refresh metrics</button>
+    </div>
+
+    <!-- Detail / narrative panel the agent can render into. -->
+    <section class="br-output" id="out" data-br-region="detail" style="margin-top: 16px;"></section>
+    <p class="br-footer">Powered by BioRouter · Dashboard archetype</p>
+  </main>
+</body>
+</html>
