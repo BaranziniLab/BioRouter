@@ -1168,7 +1168,7 @@ impl Agent {
         let text = result
             .content
             .iter()
-            .filter_map(|content| content.as_text().map(|text| text.text.as_ref()))
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
             .collect::<Vec<_>>()
             .join("\n\n");
 
