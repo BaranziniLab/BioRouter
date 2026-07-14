@@ -90,12 +90,53 @@ mod tests {
         vec![("BIOROUTER_HOOK_EVENT".to_string(), "PreToolUse".to_string())]
     }
 
+    fn stdin_echo_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "more"
+        } else {
+            "cat"
+        }
+    }
+
+    fn env_stderr_exit_two_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "echo event=%BIOROUTER_HOOK_EVENT% 1>&2 & exit /b 2"
+        } else {
+            "echo \"event=$BIOROUTER_HOOK_EVENT\" >&2; exit 2"
+        }
+    }
+
+    fn success_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "exit /b 0"
+        } else {
+            "exit 0"
+        }
+    }
+
+    fn slow_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "ping -n 30 127.0.0.1 >NUL"
+        } else {
+            "sleep 30"
+        }
+    }
+
+    fn cwd_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "cd"
+        } else {
+            "pwd"
+        }
+    }
+
     #[tokio::test]
     async fn hook_receives_payload_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
         let result = run_command_hook(
-            "cat",
+            stdin_echo_command(),
             r#"{"hook_event_name":"PreToolUse"}"#,
-            Path::new("/tmp"),
+            dir.path(),
             &envs(),
             Duration::from_secs(10),
         )
@@ -107,10 +148,11 @@ mod tests {
 
     #[tokio::test]
     async fn hook_sees_env_and_exit_two_stderr() {
+        let dir = tempfile::tempdir().unwrap();
         let result = run_command_hook(
-            "echo \"event=$BIOROUTER_HOOK_EVENT\" >&2; exit 2",
+            env_stderr_exit_two_command(),
             "{}",
-            Path::new("/tmp"),
+            dir.path(),
             &envs(),
             Duration::from_secs(10),
         )
@@ -122,10 +164,11 @@ mod tests {
 
     #[tokio::test]
     async fn hook_that_ignores_stdin_still_completes() {
+        let dir = tempfile::tempdir().unwrap();
         let result = run_command_hook(
-            "exit 0",
+            success_command(),
             "{\"big\":\"payload\"}",
-            Path::new("/tmp"),
+            dir.path(),
             &[],
             Duration::from_secs(10),
         )
@@ -137,10 +180,11 @@ mod tests {
     #[tokio::test]
     async fn timeout_kills_hook() {
         let started = std::time::Instant::now();
+        let dir = tempfile::tempdir().unwrap();
         let result = run_command_hook(
-            "sleep 30",
+            slow_command(),
             "{}",
-            Path::new("/tmp"),
+            dir.path(),
             &[],
             Duration::from_millis(300),
         )
@@ -152,9 +196,15 @@ mod tests {
     #[tokio::test]
     async fn runs_in_given_cwd() {
         let dir = tempfile::tempdir().unwrap();
-        let result = run_command_hook("pwd", "{}", dir.path(), &[], Duration::from_secs(10))
-            .await
-            .unwrap();
+        let result = run_command_hook(
+            cwd_command(),
+            "{}",
+            dir.path(),
+            &[],
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
         let canonical = dir.path().canonicalize().unwrap();
         assert!(result
             .stdout

@@ -410,6 +410,15 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_name_neutralizes_moim_tags_and_controls() {
+        assert_eq!(
+            sanitize_name("weird<info-msg>line\nbreak</info-msg>"),
+            "weird\u{fffd}line\u{fffd}break\u{fffd}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn test_filename_cannot_break_moim_block() {
         let dir = tempfile::tempdir().unwrap();
         // A Unix filename can't contain '/', so a literal "</info-msg>" can't

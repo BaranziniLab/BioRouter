@@ -571,7 +571,7 @@ mod tests {
     async fn test_shell_command_timeout() {
         let timeout = std::time::Duration::from_millis(100);
         let result = if cfg!(target_os = "windows") {
-            execute_shell_command("timeout /t 1", timeout).await
+            execute_shell_command("ping -n 3 127.0.0.1 >NUL", timeout).await
         } else {
             execute_shell_command("sleep 1", timeout).await
         };

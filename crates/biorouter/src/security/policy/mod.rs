@@ -198,14 +198,15 @@ impl PolicyEngine {
         let mut failures = Vec::new();
         for cr in &self.rules {
             // Run each rule under a platform it declares (Windows rules need a
-            // Windows cwd/home to classify their targets). A rule with no
-            // `platforms` runs under the host, preserving the pre-BR-68 oracle.
+            // Windows cwd/home to classify their targets). The shared baseline's
+            // embedded examples are POSIX fixtures, so keep their oracle
+            // deterministic instead of interpreting them in the host dialect.
             let platform = cr
                 .rule
                 .platforms
                 .first()
                 .copied()
-                .unwrap_or_else(Platform::host);
+                .unwrap_or(Platform::Linux);
             let (cwd, home) = self_test_fixture(platform);
             let env = EnvFacts::for_platform(platform, cwd, home);
             for cmd in &cr.rule.tests.matches {

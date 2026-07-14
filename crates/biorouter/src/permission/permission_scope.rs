@@ -785,6 +785,10 @@ mod tests {
     fn describe_is_readable() {
         let temp = TempDir::new().unwrap();
         assert_eq!(prefix("git status").describe(), "`git status`");
-        assert!(dir_scope(temp.path()).describe().starts_with("in /"));
+        let canonical = temp.path().canonicalize().unwrap();
+        assert_eq!(
+            dir_scope(temp.path()).describe(),
+            format!("in {}", canonical.display())
+        );
     }
 }

@@ -879,6 +879,10 @@ impl HooksManager {
 mod tests {
     use super::*;
 
+    fn test_cwd() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+    }
+
     fn manager_with_yaml(yaml: &str) -> Arc<HooksManager> {
         let config: HooksConfig = serde_yaml::from_str(yaml).unwrap();
         Arc::new(HooksManager::with_config(
@@ -888,39 +892,107 @@ mod tests {
         ))
     }
 
+    fn manager_with_yaml_commands(
+        template: &str,
+        commands: &[(&str, String)],
+    ) -> Arc<HooksManager> {
+        let yaml = commands
+            .iter()
+            .fold(template.to_string(), |yaml, (token, command)| {
+                yaml.replace(token, &serde_json::to_string(command).unwrap())
+            });
+        manager_with_yaml(&yaml)
+    }
+
+    fn stdout_command(value: &str) -> String {
+        if cfg!(target_os = "windows") {
+            let escaped = value
+                .replace('^', "^^")
+                .replace('&', "^&")
+                .replace('|', "^|")
+                .replace('<', "^<")
+                .replace('>', "^>");
+            format!("echo {escaped}")
+        } else {
+            let quoted = value.replace('\'', "'\"'\"'");
+            format!("printf '%s\\n' '{quoted}'")
+        }
+    }
+
+    fn stderr_exit_two_command(reason: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("{} 1>&2 & exit /b 2", stdout_command(reason))
+        } else {
+            format!("{} >&2; exit 2", stdout_command(reason))
+        }
+    }
+
+    fn exit_command(code: u8) -> String {
+        if cfg!(target_os = "windows") {
+            format!("exit /b {code}")
+        } else {
+            format!("exit {code}")
+        }
+    }
+
+    fn delayed_stdout_command(value: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("ping -n 2 127.0.0.1 >NUL & {}", stdout_command(value))
+        } else {
+            format!("sleep 0.4; {}", stdout_command(value))
+        }
+    }
+
+    fn stop_active_probe_command() -> String {
+        let block = stdout_command(r#"{"decision":"block","reason":"first"}"#);
+        if cfg!(target_os = "windows") {
+            format!("findstr /C:false >NUL && {block}")
+        } else {
+            format!("if grep -q '\"stop_hook_active\":false' -; then {block}; fi")
+        }
+    }
+
+    fn transcript_probe_command() -> String {
+        let block = stdout_command(r#"{"decision":"block","reason":"saw tail"}"#);
+        if cfg!(target_os = "windows") {
+            format!("findstr /C:TAIL_MARKER >NUL && {block}")
+        } else {
+            format!("if grep -q 'TAIL_MARKER' -; then {block}; fi")
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_runs_matching_hooks_only() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 PreToolUse:
   - matcher: "developer__shell"
     hooks:
       - type: command
-        command: "echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"shell blocked\"}}'"
+        command: $DENY
   - matcher: "other_tool"
     hooks:
       - type: command
-        command: "exit 2"
+        command: $UNMATCHED
 "#,
+            &[
+                (
+                    "$DENY",
+                    stdout_command(
+                        r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"shell blocked"}}"#,
+                    ),
+                ),
+                ("$UNMATCHED", exit_command(2)),
+            ],
         );
         let aggregate = manager
-            .pre_tool_use(
-                "s1",
-                Path::new("/tmp"),
-                "developer__shell",
-                &serde_json::json!({}),
-            )
+            .pre_tool_use("s1", test_cwd(), "developer__shell", &serde_json::json!({}))
             .await;
         assert!(aggregate.is_denied());
         assert_eq!(aggregate.deny_reason(), Some("shell blocked"));
 
         let aggregate = manager
-            .pre_tool_use(
-                "s1",
-                Path::new("/tmp"),
-                "unmatched_tool",
-                &serde_json::json!({}),
-            )
+            .pre_tool_use("s1", test_cwd(), "unmatched_tool", &serde_json::json!({}))
             .await;
         assert!(aggregate.decision.is_none());
     }
@@ -928,7 +1000,11 @@ PreToolUse:
     // ---- BR-28: fire() aggregates are captured, not dropped ----
 
     fn notification_payload(session_id: &str) -> HookPayload {
-        let mut payload = HookPayload::new(HookEvent::Notification, session_id, "/tmp");
+        let mut payload = HookPayload::new(
+            HookEvent::Notification,
+            session_id,
+            test_cwd().to_string_lossy(),
+        );
         payload.message = Some("Permission required for developer__shell".to_string());
         payload
     }
@@ -938,22 +1014,26 @@ PreToolUse:
     /// dropped with the detached task's aggregate.
     #[tokio::test]
     async fn fired_hook_aggregate_is_captured_and_settled() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Notification:
   - hooks:
       - type: command
-        command: "echo '{\"systemMessage\":\"guard script ran\"}'"
+        command: $MESSAGE
       - type: command
         command: "definitely-not-a-real-binary-biorouter"
 "#,
+            &[(
+                "$MESSAGE",
+                stdout_command(r#"{"systemMessage":"guard script ran"}"#),
+            )],
         );
 
         manager.fire(
             HookEvent::Notification,
             Some("permission_prompt".to_string()),
             notification_payload("s1"),
-            PathBuf::from("/tmp"),
+            test_cwd().to_path_buf(),
         );
 
         let settled = manager.settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN).await;
@@ -980,19 +1060,20 @@ Notification:
     /// turn, and a settled task is no longer registered as pending.
     #[tokio::test]
     async fn join_fired_awaits_outstanding_tasks() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Notification:
   - hooks:
       - type: command
-        command: "echo '{\"systemMessage\":\"done\"}'"
+        command: $MESSAGE
 "#,
+            &[("$MESSAGE", stdout_command(r#"{"systemMessage":"done"}"#))],
         );
         manager.fire(
             HookEvent::Notification,
             None,
             notification_payload("s1"),
-            PathBuf::from("/tmp"),
+            test_cwd().to_path_buf(),
         );
         assert_eq!(manager.pending_fire_count(), 1);
 
@@ -1005,19 +1086,23 @@ Notification:
     /// keeps the task registered, and the next boundary picks the outcome up.
     #[tokio::test]
     async fn slow_fired_hook_misses_its_budget_and_settles_later() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Notification:
   - hooks:
       - type: command
-        command: "sleep 0.4; echo '{\"systemMessage\":\"late but not lost\"}'"
+        command: $MESSAGE
 "#,
+            &[(
+                "$MESSAGE",
+                delayed_stdout_command(r#"{"systemMessage":"late but not lost"}"#),
+            )],
         );
         manager.fire(
             HookEvent::Notification,
             None,
             notification_payload("s1"),
-            PathBuf::from("/tmp"),
+            test_cwd().to_path_buf(),
         );
 
         // First boundary: the hook is still running, so nothing is surfaced —
@@ -1041,20 +1126,21 @@ Notification:
     /// swallow another's hook output (a `HooksManager` is shared across sessions).
     #[tokio::test]
     async fn fired_outcomes_drain_per_session() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Notification:
   - hooks:
       - type: command
-        command: "echo '{\"systemMessage\":\"ping\"}'"
+        command: $MESSAGE
 "#,
+            &[("$MESSAGE", stdout_command(r#"{"systemMessage":"ping"}"#))],
         );
         for session in ["s1", "s2"] {
             manager.fire(
                 HookEvent::Notification,
                 None,
                 notification_payload(session),
-                PathBuf::from("/tmp"),
+                test_cwd().to_path_buf(),
             );
         }
         manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
@@ -1073,7 +1159,7 @@ Notification:
             HookEvent::Notification,
             None,
             notification_payload("s1"),
-            PathBuf::from("/tmp"),
+            test_cwd().to_path_buf(),
         );
         assert!(manager
             .settle_fired("s1", FIRE_JOIN_BUDGET_SHUTDOWN)
@@ -1170,20 +1256,21 @@ Notification:
     /// A session that never settles must not grow the buffer without bound.
     #[tokio::test]
     async fn fired_outcome_buffer_is_bounded() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Notification:
   - hooks:
       - type: command
-        command: "echo '{\"systemMessage\":\"x\"}'"
+        command: $MESSAGE
 "#,
+            &[("$MESSAGE", stdout_command(r#"{"systemMessage":"x"}"#))],
         );
         for _ in 0..(MAX_FIRED_OUTCOMES + 8) {
             manager.fire(
                 HookEvent::Notification,
                 None,
                 notification_payload("orphan"),
-                PathBuf::from("/tmp"),
+                test_cwd().to_path_buf(),
             );
         }
         manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
@@ -1196,7 +1283,7 @@ Notification:
     /// commands pay for the hook, every other shell call skips it entirely.
     #[tokio::test]
     async fn input_matcher_narrows_a_group_to_matching_tool_input() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 PreToolUse:
   - matcher: "developer__shell"
@@ -1204,14 +1291,15 @@ PreToolUse:
       command: "rm\\s+-rf"
     hooks:
       - type: command
-        command: "echo 'no recursive deletes' >&2; exit 2"
+        command: $DENY
 "#,
+            &[("$DENY", stderr_exit_two_command("no recursive deletes"))],
         );
 
         let denied = manager
             .pre_tool_use(
                 "s1",
-                Path::new("/tmp"),
+                test_cwd(),
                 "developer__shell",
                 &serde_json::json!({"command": "rm -rf /tmp/x"}),
             )
@@ -1223,7 +1311,7 @@ PreToolUse:
         let allowed = manager
             .pre_tool_use(
                 "s1",
-                Path::new("/tmp"),
+                test_cwd(),
                 "developer__shell",
                 &serde_json::json!({"command": "ls -la"}),
             )
@@ -1236,25 +1324,32 @@ PreToolUse:
     /// `input_matcher` never fires on an event that carries no tool input.
     #[tokio::test]
     async fn whole_input_regex_form_and_no_input_events() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 PreToolUse:
   - input_matcher: "/etc/"
     hooks:
       - type: command
-        command: "echo 'system path' >&2; exit 2"
+        command: $DENY
 Stop:
   - input_matcher: ".*"
     hooks:
       - type: command
-        command: "echo '{\"decision\":\"block\",\"reason\":\"never\"}'"
+        command: $STOP
 "#,
+            &[
+                ("$DENY", stderr_exit_two_command("system path")),
+                (
+                    "$STOP",
+                    stdout_command(r#"{"decision":"block","reason":"never"}"#),
+                ),
+            ],
         );
 
         let denied = manager
             .pre_tool_use(
                 "s1",
-                Path::new("/tmp"),
+                test_cwd(),
                 "developer__text_editor",
                 &serde_json::json!({"command": "write", "path": "/etc/hosts"}),
             )
@@ -1264,7 +1359,7 @@ Stop:
         let allowed = manager
             .pre_tool_use(
                 "s1",
-                Path::new("/tmp"),
+                test_cwd(),
                 "developer__text_editor",
                 &serde_json::json!({"command": "write", "path": "/home/me/notes.md"}),
             )
@@ -1273,25 +1368,32 @@ Stop:
 
         // Stop carries no tool_input, so the input-matched group cannot fire.
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
     }
 
     #[tokio::test]
     async fn multiple_hooks_merge_most_restrictive() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 PreToolUse:
   - hooks:
       - type: command
-        command: "echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"allow\"}}'"
+        command: $ALLOW
       - type: command
-        command: "echo blocked >&2; exit 2"
+        command: $DENY
 "#,
+            &[
+                (
+                    "$ALLOW",
+                    stdout_command(r#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#),
+                ),
+                ("$DENY", stderr_exit_two_command("blocked")),
+            ],
         );
         let aggregate = manager
-            .pre_tool_use("s1", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s1", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.is_denied());
         assert_eq!(aggregate.deny_reason(), Some("blocked"));
@@ -1299,18 +1401,19 @@ PreToolUse:
 
     #[tokio::test]
     async fn failing_hook_is_failure_open() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 PreToolUse:
   - hooks:
       - type: command
-        command: "exit 1"
+        command: $FAIL
       - type: command
         command: "definitely-not-a-real-binary-biorouter"
 "#,
+            &[("$FAIL", exit_command(1))],
         );
         let aggregate = manager
-            .pre_tool_use("s1", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s1", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.decision.is_none());
         assert!(!aggregate.errors.is_empty());
@@ -1318,16 +1421,20 @@ PreToolUse:
 
     #[tokio::test]
     async fn stop_cap_enforced() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Stop:
   - hooks:
       - type: command
-        command: "echo '{\"decision\":\"block\",\"reason\":\"keep going\"}'"
+        command: $BLOCK
 "#,
+            &[(
+                "$BLOCK",
+                stdout_command(r#"{"decision":"block","reason":"keep going"}"#),
+            )],
         );
         for _ in 0..STOP_HOOK_BLOCK_CAP {
-            let verdict = manager.stop("s1", Path::new("/tmp"), None).await;
+            let verdict = manager.stop("s1", test_cwd(), None).await;
             assert_eq!(
                 verdict,
                 StopHookVerdict::Blocked {
@@ -1336,12 +1443,12 @@ Stop:
             );
         }
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::CapReached
         );
         manager.reset_stop_blocks("s1").await;
         assert!(matches!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Blocked { .. }
         ));
     }
@@ -1350,7 +1457,7 @@ Stop:
     async fn stop_without_hooks_proceeds() {
         let manager = manager_with_yaml("{}");
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
     }
@@ -1359,43 +1466,45 @@ Stop:
     async fn stop_hook_active_flag_set_on_second_block() {
         // Hook echoes back whether stop_hook_active was true by blocking
         // only when it is false — second call should then proceed.
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Stop:
   - hooks:
       - type: command
-        command: "if grep -q '\"stop_hook_active\":false' -; then echo '{\"decision\":\"block\",\"reason\":\"first\"}'; fi"
+        command: $PROBE
 "#,
+            &[("$PROBE", stop_active_probe_command())],
         );
         assert!(matches!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Blocked { .. }
         ));
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
     }
 
     #[tokio::test]
     async fn session_start_fires_once() {
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 SessionStart:
   - hooks:
       - type: command
-        command: "echo 'remember the lab protocol'"
+        command: $MESSAGE
 "#,
+            &[("$MESSAGE", stdout_command("remember the lab protocol"))],
         );
         let first = manager
-            .session_start_once("s1", Path::new("/tmp"), "startup")
+            .session_start_once("s1", test_cwd(), "startup")
             .await;
         assert_eq!(
             first.unwrap().joined_context().as_deref(),
             Some("remember the lab protocol")
         );
         assert!(manager
-            .session_start_once("s1", Path::new("/tmp"), "startup")
+            .session_start_once("s1", test_cwd(), "startup")
             .await
             .is_none());
     }
@@ -1408,19 +1517,19 @@ SessionStart:
                 "s1",
                 HookEvent::PreToolUse,
                 vec![HookDefinition::Command {
-                    command: "echo blocked >&2; exit 2".to_string(),
+                    command: stderr_exit_two_command("blocked"),
                     timeout: None,
                 }],
             )
             .await;
 
         let aggregate = manager
-            .pre_tool_use("s1", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s1", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.is_denied());
 
         let aggregate = manager
-            .pre_tool_use("s2", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s2", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.decision.is_none());
 
@@ -1429,7 +1538,7 @@ SessionStart:
             .await;
         assert!(!manager.has_session_hooks("s1", HookEvent::PreToolUse).await);
         let aggregate = manager
-            .pre_tool_use("s1", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s1", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.decision.is_none());
     }
@@ -1439,7 +1548,7 @@ SessionStart:
         let manager = manager_with_yaml("{}");
         // No config hooks and no session hooks: proceed.
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
 
@@ -1448,28 +1557,27 @@ SessionStart:
                 "s1",
                 HookEvent::Stop,
                 vec![HookDefinition::Command {
-                    command: "echo '{\"decision\":\"block\",\"reason\":\"goal not met\"}'"
-                        .to_string(),
+                    command: stdout_command(r#"{"decision":"block","reason":"goal not met"}"#),
                     timeout: None,
                 }],
             )
             .await;
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Blocked {
                 reason: "goal not met".to_string()
             }
         );
         // Other sessions are unaffected.
         assert_eq!(
-            manager.stop("other", Path::new("/tmp"), None).await,
+            manager.stop("other", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
 
         manager.clear_session_hooks("s1", HookEvent::Stop).await;
         manager.reset_stop_blocks("s1").await;
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
     }
@@ -1478,17 +1586,18 @@ SessionStart:
     async fn stop_passes_transcript_tail_to_hooks() {
         // The hook blocks only when the transcript tail contains the marker,
         // proving the tail reaches hook stdin.
-        let manager = manager_with_yaml(
+        let manager = manager_with_yaml_commands(
             r#"
 Stop:
   - hooks:
       - type: command
-        command: "if grep -q 'TAIL_MARKER' -; then echo '{\"decision\":\"block\",\"reason\":\"saw tail\"}'; fi"
+        command: $PROBE
 "#,
+            &[("$PROBE", transcript_probe_command())],
         );
         assert_eq!(
             manager
-                .stop("s1", Path::new("/tmp"), Some("TAIL_MARKER".to_string()))
+                .stop("s1", test_cwd(), Some("TAIL_MARKER".to_string()))
                 .await,
             StopHookVerdict::Blocked {
                 reason: "saw tail".to_string()
@@ -1496,7 +1605,7 @@ Stop:
         );
         manager.reset_stop_blocks("s1").await;
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Proceed
         );
     }
@@ -1580,7 +1689,7 @@ PreToolUse:
 "#,
         );
         let aggregate = manager
-            .pre_tool_use("s1", Path::new("/tmp"), "any", &serde_json::json!({}))
+            .pre_tool_use("s1", test_cwd(), "any", &serde_json::json!({}))
             .await;
         assert!(aggregate.decision.is_none());
         assert!(!aggregate.errors.is_empty());
@@ -1598,12 +1707,19 @@ PreToolUse:
     /// merge takes the most-restrictive decision, so a managed block wins.
     #[tokio::test]
     async fn managed_stop_hook_block_survives_user_hook() {
-        let global: HooksConfig =
-            serde_yaml::from_str("Stop:\n  - hooks: [{ type: command, command: \"echo ok\" }]\n")
-                .unwrap();
-        let managed = managed_from_yaml(
-            "hooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: \"echo '{\\\"decision\\\":\\\"block\\\",\\\"reason\\\":\\\"managed policy: finish the audit\\\"}'\"\n",
+        let global_yaml = format!(
+            "Stop:\n  - hooks: [{{ type: command, command: {} }}]\n",
+            serde_json::to_string(&stdout_command("ok")).unwrap()
         );
+        let global: HooksConfig = serde_yaml::from_str(&global_yaml).unwrap();
+        let managed_yaml = format!(
+            "hooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: {}\n",
+            serde_json::to_string(&stdout_command(
+                r#"{"decision":"block","reason":"managed policy: finish the audit"}"#,
+            ))
+            .unwrap()
+        );
+        let managed = managed_from_yaml(&managed_yaml);
         let manager = Arc::new(HooksManager::with_config_and_managed(
             global,
             false,
@@ -1611,7 +1727,7 @@ PreToolUse:
             managed,
         ));
         assert_eq!(
-            manager.stop("s1", Path::new("/tmp"), None).await,
+            manager.stop("s1", test_cwd(), None).await,
             StopHookVerdict::Blocked {
                 reason: "managed policy: finish the audit".to_string()
             }
@@ -1635,7 +1751,7 @@ PreToolUse:
             managed,
         ));
         let groups = manager
-            .resolved_groups(HookEvent::PreToolUse, Path::new("/tmp"))
+            .resolved_groups(HookEvent::PreToolUse, test_cwd())
             .await;
         assert_eq!(groups.len(), 2);
         assert!(matches!(

@@ -42,7 +42,7 @@ static GLOBAL_ENV: Lazy<Arc<RwLock<Environment<'static>>>> = Lazy::new(|| {
     // Pre-load all core templates from the embedded dir.
     for file in CORE_PROMPTS_DIR.files() {
         let name = file.path().to_string_lossy().to_string();
-        let source = String::from_utf8_lossy(file.contents()).to_string();
+        let source = String::from_utf8_lossy(file.contents()).replace("\r\n", "\n");
 
         // Since we're using 'static lifetime for the Environment, we need to ensure
         // the strings we add as templates live for the entire program duration.

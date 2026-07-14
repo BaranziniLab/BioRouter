@@ -277,13 +277,18 @@ mod tests {
         );
     }
 
-    /// A command the BR-20 floor does NOT catch (recursive delete of a *system*
-    /// directory, not the root/home) is denied by the policy engine, with a
-    /// `POL-` finding — independent of `SECURITY_PROMPT_ENABLED`, even in Auto.
+    /// A system-directory operation outside the BR-20 floor is denied by the
+    /// policy engine, with a `POL-` finding — independent of
+    /// `SECURITY_PROMPT_ENABLED`, even in Auto.
     #[tokio::test]
-    async fn test_policy_engine_denies_system_dir_rm() {
+    async fn test_policy_engine_denies_system_dir_operation() {
         let inspector = SecurityInspector::new();
-        let tool_requests = vec![shell_request("req_etc", "rm -rf /etc")];
+        let command = if cfg!(windows) {
+            r"takeown /f C:\Windows /r"
+        } else {
+            "rm -rf /etc"
+        };
+        let tool_requests = vec![shell_request("req_system", command)];
 
         let results = inspector
             .inspect(
@@ -297,8 +302,8 @@ mod tests {
 
         let deny = results
             .iter()
-            .find(|r| r.tool_request_id == "req_etc")
-            .expect("system-dir rm should produce an inspection result");
+            .find(|r| r.tool_request_id == "req_system")
+            .expect("system-dir operation should produce an inspection result");
         assert_eq!(deny.action, InspectionAction::Deny);
         assert_eq!(deny.inspector_name, "security");
         assert!(

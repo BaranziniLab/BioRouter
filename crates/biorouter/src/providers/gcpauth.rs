@@ -915,13 +915,17 @@ iXVBc2YmAuU8hiOFUPxtyQfNzG5fQ0rhJSewdtyWxIadJSLj6fsK+AEsNQ==
             .times(1)
             .return_once(|_| Err(env::VarError::NotPresent));
 
-        let home_var = if cfg!(windows) { "APPDATA" } else { "HOME" };
+        let (home_var, config_dir) = if cfg!(windows) {
+            ("APPDATA", r"C:\Users\testuser\AppData\Roaming")
+        } else {
+            ("HOME", "/home/testuser")
+        };
         context
             .env_mock
             .expect_get_var()
             .with(eq(home_var))
             .times(1)
-            .return_once(|_| Ok("/home/testuser".to_string()));
+            .return_once(move |_| Ok(config_dir.to_string()));
 
         // Mock file content
         let creds_content = r#"{
@@ -932,10 +936,12 @@ iXVBc2YmAuU8hiOFUPxtyQfNzG5fQ0rhJSewdtyWxIadJSLj6fsK+AEsNQ==
     }"#;
 
         let expected_path = if cfg!(windows) {
-            "/home/testuser/gcloud/application_default_credentials.json".to_string()
+            PathBuf::from(config_dir).join(r"gcloud\application_default_credentials.json")
         } else {
-            "/home/testuser/.config/gcloud/application_default_credentials.json".to_string()
-        };
+            PathBuf::from(config_dir).join(".config/gcloud/application_default_credentials.json")
+        }
+        .to_string_lossy()
+        .into_owned();
 
         context
             .fs_mock
@@ -1049,24 +1055,30 @@ iXVBc2YmAuU8hiOFUPxtyQfNzG5fQ0rhJSewdtyWxIadJSLj6fsK+AEsNQ==
             .return_once(|_| Ok("invalid json".to_string()));
 
         // Mock HOME/APPDATA environment variable
-        let home_var = if cfg!(windows) { "APPDATA" } else { "HOME" };
+        let (home_var, config_dir) = if cfg!(windows) {
+            ("APPDATA", r"C:\Users\user\AppData\Roaming")
+        } else {
+            ("HOME", "/home/user")
+        };
         context
             .env_mock
             .expect_get_var()
             .with(eq(home_var))
             .times(1)
-            .return_once(|_| Ok("/home/user".to_string()));
+            .return_once(move |_| Ok(config_dir.to_string()));
 
         // Mock filesystem read for the default credentials path
         let default_creds_path = if cfg!(windows) {
-            "/home/user/gcloud/application_default_credentials.json"
+            PathBuf::from(config_dir).join(r"gcloud\application_default_credentials.json")
         } else {
-            "/home/user/.config/gcloud/application_default_credentials.json"
-        };
+            PathBuf::from(config_dir).join(".config/gcloud/application_default_credentials.json")
+        }
+        .to_string_lossy()
+        .into_owned();
         context
             .fs_mock
             .expect_read_to_string()
-            .with(eq(default_creds_path.to_string()))
+            .with(eq(default_creds_path))
             .times(1)
             .return_once(|_| {
                 Err(std::io::Error::new(
