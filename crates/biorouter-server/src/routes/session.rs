@@ -262,6 +262,7 @@ pub struct SessionModelUsageResponse {
         (status = 200, description = "Per-model usage for the session", body = SessionModelUsageResponse),
         (status = 400, description = "Invalid session id"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
     security(
@@ -280,7 +281,13 @@ async fn get_session_usage(
         .session_manager()
         .get_session_model_usage(&session_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|error| {
+            if error.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     Ok(Json(SessionModelUsageResponse { models }))
 }
 
@@ -818,9 +825,9 @@ mod diverge_tests {
                     provider: Some("openai".to_string()),
                     input_tokens: 300,
                     output_tokens: 70,
-                    total_tokens: 370,
-                    cache_read_tokens: 800,
-                    cache_creation_tokens: 0,
+                    total_tokens: Some(370),
+                    cache_read_tokens: Some(800),
+                    cache_creation_tokens: Some(0),
                     turns: 2,
                 },
                 ModelUsageRow {
@@ -828,9 +835,9 @@ mod diverge_tests {
                     provider: None,
                     input_tokens: 1,
                     output_tokens: 2,
-                    total_tokens: 3,
-                    cache_read_tokens: 0,
-                    cache_creation_tokens: 0,
+                    total_tokens: Some(3),
+                    cache_read_tokens: Some(0),
+                    cache_creation_tokens: Some(0),
                     turns: 1,
                 },
             ],
@@ -868,6 +875,14 @@ mod diverge_tests {
         let state = AppState::new().await.unwrap();
         let (status, _) = get_usage(state, "bad.id").await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn usage_route_returns_not_found_for_missing_session() {
+        let state = AppState::new().await.unwrap();
+        let (status, _) = get_usage(state, "29990101_99999").await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
     /// `days` is attacker-controlled; the server clamps it rather than building a

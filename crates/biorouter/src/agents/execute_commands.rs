@@ -104,6 +104,7 @@ impl Agent {
             None,
         );
 
+        let usage_event_key = uuid::Uuid::new_v4().to_string();
         let (compacted_conversation, summarization_usage) = compact_messages(
             self.provider().await?.as_ref(),
             &conversation,
@@ -126,7 +127,7 @@ impl Agent {
         // Without this, session.total_tokens stays at the pre-compact value:
         // the UI gauge keeps reading the old number, and the next reply's
         // check_if_compaction_needed re-triggers a full LLM summarization.
-        self.update_session_metrics(session_config, &summarization_usage, true)
+        self.update_session_metrics(session_config, &summarization_usage, true, &usage_event_key)
             .await?;
 
         Ok(Some(Message::assistant().with_system_notification(

@@ -94,24 +94,32 @@ pub struct UsageSummaryResponse {
     pub monthly_token_limit: Option<i64>,
     /// Configured monthly dollar budget, or `null` when unset.
     pub monthly_dollar_limit: Option<f64>,
-    /// MTD tokens as a percent of the token limit; `null` when no limit is set.
+    /// MTD billed tokens as a percent of the token limit; `null` when no limit
+    /// is set or the historical billed total is incomplete.
     pub token_percent: Option<f64>,
     /// MTD cost as a percent of the dollar limit; `null` when no limit is set or
-    /// the MTD cost is unknown (some models are unpriced).
+    /// the MTD cost is unknown or only a lower bound.
     pub dollar_percent: Option<f64>,
 }
 
 /// Assemble the summary response from the raw totals + configured limits. Pure,
 /// so the percent math is unit-tested without a database or config file.
 fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSummaryResponse {
-    let token_percent = percent_of(
-        summary.month_to_date.total_tokens as f64,
-        limits.monthly_token_limit.map(|l| l as f64),
-    );
-    let dollar_percent = summary
-        .month_to_date
-        .cost
-        .and_then(|cost| percent_of(cost, limits.monthly_dollar_limit));
+    let token_percent = summary.month_to_date.total_tokens.and_then(|tokens| {
+        percent_of(
+            tokens as f64,
+            limits.monthly_token_limit.map(|limit| limit as f64),
+        )
+    });
+    let dollar_percent =
+        if summary.month_to_date.has_unpriced || summary.month_to_date.cost_excludes_cache {
+            None
+        } else {
+            summary
+                .month_to_date
+                .cost
+                .and_then(|cost| percent_of(cost, limits.monthly_dollar_limit))
+        };
 
     UsageSummaryResponse {
         summary,
@@ -160,9 +168,9 @@ mod tests {
         UsageTotals {
             input_tokens: total_tokens,
             output_tokens: 0,
-            total_tokens,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
+            total_tokens: Some(total_tokens),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             turns: 1,
             cost,
             has_unpriced,
@@ -218,6 +226,33 @@ mod tests {
     }
 
     #[test]
+    fn dollar_percent_is_null_when_cost_is_only_a_known_subtotal() {
+        let summary = summary_with_mtd(totals(500, Some(25.0), true));
+        let resp = build_summary_response(
+            summary,
+            UsageLimits {
+                monthly_token_limit: None,
+                monthly_dollar_limit: Some(100.0),
+            },
+        );
+        assert_eq!(
+            resp.dollar_percent, None,
+            "partial cost is not a budget percent"
+        );
+
+        let mut cache_partial = totals(500, Some(25.0), false);
+        cache_partial.cost_excludes_cache = true;
+        let resp = build_summary_response(
+            summary_with_mtd(cache_partial),
+            UsageLimits {
+                monthly_token_limit: None,
+                monthly_dollar_limit: Some(100.0),
+            },
+        );
+        assert_eq!(resp.dollar_percent, None);
+    }
+
+    #[test]
     fn summary_response_flattens_to_camelcase() {
         let summary = summary_with_mtd(totals(1_000, Some(2.5), false));
         let resp = build_summary_response(
@@ -261,9 +296,9 @@ mod tests {
                     provider: None,
                     input_tokens: 10,
                     output_tokens: 5,
-                    total_tokens: 15,
-                    cache_read_tokens: 0,
-                    cache_creation_tokens: 0,
+                    total_tokens: Some(15),
+                    cache_read_tokens: Some(0),
+                    cache_creation_tokens: Some(0),
                     turns: 1,
                     cost: Some(1.25),
                     has_unpriced: true,
@@ -275,9 +310,9 @@ mod tests {
                     provider: Some("zai".to_string()),
                     input_tokens: 20,
                     output_tokens: 10,
-                    total_tokens: 30,
-                    cache_read_tokens: 900,
-                    cache_creation_tokens: 0,
+                    total_tokens: Some(30),
+                    cache_read_tokens: Some(900),
+                    cache_creation_tokens: Some(0),
                     turns: 2,
                     cost: None,
                     has_unpriced: true,

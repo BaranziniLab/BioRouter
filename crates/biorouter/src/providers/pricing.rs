@@ -1,3 +1,6 @@
+use crate::providers::base::ProviderMetadata;
+use crate::providers::canonical::maybe_get_canonical_model;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderModelPricing {
     pub input_token_cost: f64,
@@ -87,6 +90,22 @@ pub fn model_cost_with_cache(
     cache_creation_tokens: i64,
 ) -> Option<TurnCost> {
     let pricing = provider_model_pricing(provider, model)?;
+    Some(cost_with_pricing(
+        &pricing,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    ))
+}
+
+pub fn cost_with_pricing(
+    pricing: &ProviderModelPricing,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+) -> TurnCost {
     let mut cost = input_tokens as f64 * pricing.input_token_cost
         + output_tokens as f64 * pricing.output_token_cost;
     let mut cache_excluded = false;
@@ -104,17 +123,70 @@ pub fn model_cost_with_cache(
         }
     }
 
-    Some(TurnCost {
+    TurnCost {
         cost,
         cache_excluded,
-    })
+    }
 }
 
 pub fn provider_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
     let provider = provider.to_ascii_lowercase();
     let model = model.to_ascii_lowercase();
+    let explicit = explicit_provider_model_pricing(&provider, &model);
 
-    match provider.as_str() {
+    if explicit.is_some() || blocks_fallback_pricing(&provider) {
+        return explicit;
+    }
+
+    canonical_model_pricing(&provider, &model)
+}
+
+pub async fn resolved_provider_model_pricing(
+    provider: &str,
+    model: &str,
+) -> Option<ProviderModelPricing> {
+    let provider = provider.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    let explicit = explicit_provider_model_pricing(&provider, &model);
+    if explicit.is_some() || blocks_fallback_pricing(&provider) {
+        return explicit;
+    }
+
+    let metadata = crate::providers::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name.eq_ignore_ascii_case(&provider))
+        .map(|(metadata, _)| metadata);
+    if let Some(pricing) = metadata
+        .as_ref()
+        .and_then(|metadata| pricing_from_provider_metadata(metadata, &model))
+    {
+        return Some(pricing);
+    }
+
+    canonical_model_pricing(&provider, &model)
+}
+
+pub fn pricing_from_provider_metadata(
+    metadata: &ProviderMetadata,
+    model: &str,
+) -> Option<ProviderModelPricing> {
+    let model = metadata
+        .known_models
+        .iter()
+        .find(|candidate| candidate.name.eq_ignore_ascii_case(model))?;
+    Some(ProviderModelPricing {
+        input_token_cost: model.input_token_cost?,
+        output_token_cost: model.output_token_cost?,
+        cache_read_cost: None,
+        cache_write_cost: None,
+        currency: model.currency.clone().unwrap_or_else(|| "$".to_string()),
+        context_length: u32::try_from(model.context_limit).ok(),
+    })
+}
+
+fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
+    match provider {
         "openrouter" => openrouter_pricing(&model),
         "groq" => groq_pricing(&model),
         "zai" | "z.ai" | "z-ai" => zai_pricing(&model),
@@ -133,6 +205,36 @@ pub fn provider_model_pricing(provider: &str, model: &str) -> Option<ProviderMod
     }
 }
 
+fn blocks_fallback_pricing(provider: &str) -> bool {
+    matches!(
+        provider,
+        "anthropic"
+            | "claude"
+            | "bedrock"
+            | "aws_bedrock"
+            | "aws-bedrock"
+            | "ollama"
+            | "llamacpp"
+            | "github_copilot"
+            | "codex"
+            | "claude_code"
+            | "gemini_cli"
+            | "cursor_agent"
+    )
+}
+
+fn canonical_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
+    let canonical = maybe_get_canonical_model(provider, model)?;
+    Some(ProviderModelPricing {
+        input_token_cost: canonical.pricing.prompt?,
+        output_token_cost: canonical.pricing.completion?,
+        cache_read_cost: None,
+        cache_write_cost: None,
+        currency: "$".to_string(),
+        context_length: u32::try_from(canonical.context_length).ok(),
+    })
+}
+
 /// Pricing for the Claude families, matched by substring so it handles both
 /// native ids (`claude-sonnet-4-20250514`) and Bedrock ids
 /// (`us.anthropic.claude-sonnet-4-20250514-v1:0`). Rates are per-million USD;
@@ -143,16 +245,23 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
     if !model.contains("claude") {
         return None;
     }
-    // Order matters: check the more specific tiers before the sonnet default.
-    let pricing = if model.contains("opus") {
-        ProviderModelPricing::usd_per_million_cached(15.0, 75.0, 200_000)
+    // Never infer a price for an unknown Claude tier. A guessed Sonnet price can
+    // make a partial report look exact and silently misstate a user's budget.
+    if model.contains("opus") {
+        Some(ProviderModelPricing::usd_per_million_cached(
+            15.0, 75.0, 200_000,
+        ))
     } else if model.contains("haiku") {
-        ProviderModelPricing::usd_per_million_cached(0.80, 4.00, 200_000)
+        Some(ProviderModelPricing::usd_per_million_cached(
+            0.80, 4.00, 200_000,
+        ))
+    } else if model.contains("sonnet") {
+        Some(ProviderModelPricing::usd_per_million_cached(
+            3.00, 15.00, 200_000,
+        ))
     } else {
-        // Sonnet, and any unrecognised Claude tier, price as Sonnet-class.
-        ProviderModelPricing::usd_per_million_cached(3.00, 15.00, 200_000)
-    };
-    Some(pricing)
+        None
+    }
 }
 
 fn openrouter_pricing(model: &str) -> Option<ProviderModelPricing> {
@@ -275,6 +384,7 @@ fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::base::ModelInfo;
 
     #[test]
     fn openrouter_uses_openrouter_specific_price() {
@@ -289,6 +399,37 @@ mod tests {
         let pricing = provider_model_pricing("zai", "glm-5.2").unwrap();
         assert_eq!(pricing.input_token_cost, 1.40 / 1_000_000.0);
         assert_eq!(pricing.output_token_cost, 4.40 / 1_000_000.0);
+    }
+
+    #[test]
+    fn canonical_models_are_resolved_through_the_shared_pricing_function() {
+        let pricing = provider_model_pricing("openai", "gpt-4o").unwrap();
+        assert_eq!(pricing.input_token_cost, 2.50 / 1_000_000.0);
+        assert_eq!(pricing.output_token_cost, 10.00 / 1_000_000.0);
+        assert_eq!(pricing.cache_read_cost, None);
+        assert_eq!(pricing.cache_write_cost, None);
+    }
+
+    #[test]
+    fn declarative_provider_metadata_resolves_configured_prices() {
+        let metadata = ProviderMetadata::with_models(
+            "custom_acme",
+            "Acme",
+            "test",
+            "acme-model",
+            vec![ModelInfo::with_cost(
+                "acme-model",
+                32_000,
+                0.000_002,
+                0.000_008,
+            )],
+            "",
+            vec![],
+        );
+        let pricing = pricing_from_provider_metadata(&metadata, "acme-model").unwrap();
+        assert_eq!(pricing.input_token_cost, 0.000_002);
+        assert_eq!(pricing.output_token_cost, 0.000_008);
+        assert_eq!(pricing.context_length, Some(32_000));
     }
 
     #[test]
@@ -341,6 +482,12 @@ mod tests {
         assert_eq!(opus.input_token_cost, 15.0 / 1_000_000.0);
         let haiku = provider_model_pricing("anthropic", "claude-haiku-4-5").unwrap();
         assert_eq!(haiku.input_token_cost, 0.80 / 1_000_000.0);
+    }
+
+    #[test]
+    fn unknown_claude_tier_is_unpriced_instead_of_assumed_sonnet() {
+        assert!(provider_model_pricing("anthropic", "claude-fable-5").is_none());
+        assert!(provider_model_pricing("bedrock", "us.anthropic.claude-fable-5-v1:0").is_none());
     }
 
     #[test]

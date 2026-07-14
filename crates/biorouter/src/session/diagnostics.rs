@@ -84,13 +84,14 @@ pub struct UsageDiagnostics {
     pub last_turn_total_tokens: Option<i32>,
     pub last_turn_input_tokens: Option<i32>,
     pub last_turn_output_tokens: Option<i32>,
-    /// Lifetime accumulated counters — the billed magnitude for this session.
+    /// Lifetime accumulated counters. New events are billed totals; legacy
+    /// databases can contain context totals, so the ledger summary is authoritative.
     pub accumulated_total_tokens: Option<i64>,
     pub accumulated_input_tokens: Option<i64>,
     pub accumulated_output_tokens: Option<i64>,
     /// Cache tokens summed over this session's turns.
-    pub session_cache_read_tokens: i64,
-    pub session_cache_creation_tokens: i64,
+    pub session_cache_read_tokens: Option<i64>,
+    pub session_cache_creation_tokens: Option<i64>,
     /// Per-`(model, provider)` breakdown for this session.
     pub per_model: Vec<ModelUsageRow>,
     /// Current local month, `YYYY-MM`.
@@ -108,8 +109,12 @@ impl UsageDiagnostics {
         let per_model = session_manager.get_session_model_usage(session_id).await?;
         let summary = session_manager.get_usage_summary().await?;
 
-        let session_cache_read_tokens = per_model.iter().map(|r| r.cache_read_tokens).sum();
-        let session_cache_creation_tokens = per_model.iter().map(|r| r.cache_creation_tokens).sum();
+        let session_cache_read_tokens = per_model
+            .iter()
+            .try_fold(0_i64, |sum, row| Some(sum + row.cache_read_tokens?));
+        let session_cache_creation_tokens = per_model
+            .iter()
+            .try_fold(0_i64, |sum, row| Some(sum + row.cache_creation_tokens?));
 
         Ok(Self {
             session_id: session_id.to_string(),
@@ -138,7 +143,7 @@ impl UsageDiagnostics {
             opt_i32(self.last_turn_input_tokens),
             opt_i32(self.last_turn_output_tokens),
         ));
-        out.push_str("Accumulated across all turns (the billed magnitude):\n");
+        out.push_str("Accumulated session counters (legacy rows may use context totals):\n");
         out.push_str(&format!(
             "  total={}  input={}  output={}\n",
             opt_i64(self.accumulated_total_tokens),
@@ -147,7 +152,8 @@ impl UsageDiagnostics {
         ));
         out.push_str(&format!(
             "  cache_read={}  cache_creation={}\n\n",
-            self.session_cache_read_tokens, self.session_cache_creation_tokens,
+            opt_i64(self.session_cache_read_tokens),
+            opt_i64(self.session_cache_creation_tokens),
         ));
 
         out.push_str("Per-model (this session):\n");
@@ -158,9 +164,9 @@ impl UsageDiagnostics {
                 row.model_id.as_deref().unwrap_or("unknown"),
                 row.input_tokens,
                 row.output_tokens,
-                row.cache_read_tokens,
-                row.cache_creation_tokens,
-                row.total_tokens,
+                opt_i64(row.cache_read_tokens),
+                opt_i64(row.cache_creation_tokens),
+                opt_i64(row.total_tokens),
                 row.turns,
             ));
         }
@@ -185,10 +191,11 @@ fn totals_text(t: &UsageTotals) -> String {
     let cost = t.cost.map_or_else(
         || "unpriced".to_string(),
         |c| {
-            let flag = if t.cost_excludes_cache {
-                " (excludes cache)"
-            } else {
-                ""
+            let flag = match (t.has_unpriced, t.cost_excludes_cache) {
+                (true, true) => " (known subtotal; unpriced usage and cache excluded)",
+                (true, false) => " (known subtotal; some usage unpriced)",
+                (false, true) => " (known subtotal; cache excluded)",
+                (false, false) => "",
             };
             format!("${c:.4}{flag}")
         },
@@ -197,9 +204,9 @@ fn totals_text(t: &UsageTotals) -> String {
         "  input={} output={} cache_read={} cache_creation={} total={} turns={} cost={}\n",
         t.input_tokens,
         t.output_tokens,
-        t.cache_read_tokens,
-        t.cache_creation_tokens,
-        t.total_tokens,
+        opt_i64(t.cache_read_tokens),
+        opt_i64(t.cache_creation_tokens),
+        opt_i64(t.total_tokens),
         t.turns,
         cost,
     )
@@ -315,21 +322,21 @@ mod tests {
             Some("claude-sonnet-4-20250514"),
             Some("anthropic"),
             Some(200),
-            None,
+            Some(0),
         )
         .await
         .unwrap();
 
         let diag = UsageDiagnostics::collect(&sm, &session.id).await.unwrap();
         // Session cache totals sum across turns: read 500+200=700, creation 100.
-        assert_eq!(diag.session_cache_read_tokens, 700);
-        assert_eq!(diag.session_cache_creation_tokens, 100);
+        assert_eq!(diag.session_cache_read_tokens, Some(700));
+        assert_eq!(diag.session_cache_creation_tokens, Some(100));
         assert_eq!(diag.per_model.len(), 1);
-        assert_eq!(diag.per_model[0].cache_read_tokens, 700);
+        assert_eq!(diag.per_model[0].cache_read_tokens, Some(700));
         assert_eq!(diag.per_model[0].turns, 2);
         // MTD picks up both turns; priced because Claude is on the pricing card.
         assert!(diag.month_to_date.cost.is_some());
-        assert_eq!(diag.month_to_date.cache_read_tokens, 700);
+        assert_eq!(diag.month_to_date.cache_read_tokens, Some(700));
 
         let text = diag.to_text();
         assert!(text.contains("Last turn"));

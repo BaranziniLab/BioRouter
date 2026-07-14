@@ -684,6 +684,7 @@ where
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
+                        provider: None,
                         finish_reason: None,
                     });
 
