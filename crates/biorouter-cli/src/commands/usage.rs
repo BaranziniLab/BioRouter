@@ -293,13 +293,12 @@ mod tests {
     fn row(
         label: &str,
         is_model: bool,
-        input: i64,
-        output: i64,
-        total: i64,
+        tokens: (i64, i64, i64),
         turns: i64,
         cost: Option<f64>,
         has_unpriced: bool,
     ) -> UsageReportRow {
+        let (input, output, total) = tokens;
         UsageReportRow {
             date: (!is_model).then(|| label.to_string()),
             model_id: is_model.then(|| label.to_string()),
@@ -358,9 +357,7 @@ mod tests {
             row(
                 "2026-07-10",
                 false,
-                1_000_000,
-                0,
-                1_000_000,
+                (1_000_000, 0, 1_000_000),
                 5,
                 Some(1.40),
                 true,
@@ -368,9 +365,7 @@ mod tests {
             row(
                 "2026-07-11",
                 false,
-                2_000_000,
-                1_000_000,
-                3_000_000,
+                (2_000_000, 1_000_000, 3_000_000),
                 3,
                 Some(7.20),
                 false,
@@ -406,9 +401,7 @@ mod tests {
             row(
                 "glm-5.2",
                 true,
-                3_000_000,
-                1_000_000,
-                4_000_000,
+                (3_000_000, 1_000_000, 4_000_000),
                 8,
                 Some(8.60),
                 false,
@@ -462,9 +455,7 @@ mod tests {
         let rows = vec![row(
             "2026-07-10",
             false,
-            1_000_000,
-            0,
-            1_000_000,
+            (1_000_000, 0, 1_000_000),
             5,
             Some(1.40),
             false,
