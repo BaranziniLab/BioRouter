@@ -742,6 +742,68 @@ impl DeveloperServer {
         })
     }
 
+    /// The session working directory to run in, honoring existence: the session
+    /// dir if it still exists, else `BIOROUTER_WORKING_DIR` if it exists, else
+    /// `None` (inherit the process cwd). A candidate that has vanished (deleted
+    /// after selection, or a stale session row) is logged and skipped instead of
+    /// jamming every shell command with an opaque spawn error. Shared by the
+    /// shell and the text_editor jail so both agree on where "here" is.
+    fn session_cwd_or_fallback(&self) -> Option<PathBuf> {
+        if let Some(dir) = &self.working_dir {
+            if dir.is_dir() {
+                return Some(dir.clone());
+            }
+            tracing::warn!(
+                dir = %dir.display(),
+                "session working directory no longer exists; falling back to BIOROUTER_WORKING_DIR / process cwd"
+            );
+        }
+        if let Some(dir) = std::env::var("BIOROUTER_WORKING_DIR")
+            .ok()
+            .map(PathBuf::from)
+        {
+            if dir.is_dir() {
+                return Some(dir);
+            }
+            tracing::warn!(
+                dir = %dir.display(),
+                "BIOROUTER_WORKING_DIR does not exist; falling back to process cwd"
+            );
+        }
+        None
+    }
+
+    /// Existence-checked variant of [`resolve_shell_cwd`], keeping the same
+    /// resolution order but validating the target:
+    /// - a per-call `working_directory` override that does not exist or is not a
+    ///   directory is a hard error naming the path (the caller explicitly asked
+    ///   for it, so never run somewhere else silently);
+    /// - a missing session dir / `BIOROUTER_WORKING_DIR` is not fatal — it warns
+    ///   and falls back to the next candidate so the shell keeps working.
+    fn resolve_shell_cwd_checked(
+        &self,
+        override_dir: Option<&str>,
+    ) -> Result<Option<PathBuf>, ErrorData> {
+        if override_dir.map(str::trim).is_some_and(|s| !s.is_empty()) {
+            // Same absolute/relative-to-session resolution as the pure helper.
+            let resolved = self
+                .resolve_shell_cwd(override_dir)
+                .expect("a non-empty override always resolves to Some");
+            if !resolved.is_dir() {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    format!(
+                        "working_directory `{}` does not exist or is not a directory",
+                        resolved.display()
+                    ),
+                    None,
+                ));
+            }
+            return Ok(Some(resolved));
+        }
+        Ok(self.session_cwd_or_fallback())
+    }
+
     pub fn bash_env_file(mut self, value: Option<PathBuf>) -> Self {
         self.bash_env_file = value;
         self
@@ -1114,8 +1176,10 @@ impl DeveloperServer {
         self.validate_shell_command(command)?;
 
         // Resolve the directory this command runs in: a per-call override, else
-        // the session working directory, else the process cwd.
-        let working_dir = self.resolve_shell_cwd(params.working_directory.as_deref());
+        // the session working directory, else the process cwd. A missing
+        // override errors here; a vanished session/env dir warns and falls back
+        // so the shell keeps working. Applies to both foreground and background.
+        let working_dir = self.resolve_shell_cwd_checked(params.working_directory.as_deref())?;
 
         // Background mode: start the command in its own process group, register
         // it, and return a job_id immediately instead of waiting for it.
@@ -1589,8 +1653,7 @@ impl DeveloperServer {
     /// Prefers the session working directory (so the text_editor jail tracks the
     /// same directory the shell runs in), falling back to the process cwd.
     fn effective_cwd(&self) -> PathBuf {
-        self.working_dir
-            .clone()
+        self.session_cwd_or_fallback()
             .unwrap_or_else(|| std::env::current_dir().expect("should have a current working dir"))
     }
 
@@ -1933,6 +1996,203 @@ mod tests {
         );
     }
 
+    /// #2 regression: a per-call `working_directory` that does not exist is an
+    /// explicit request that must fail loudly, naming the path — never silently
+    /// run somewhere else.
+    #[test]
+    fn shell_cwd_missing_override_is_error() {
+        let server = DeveloperServer::new();
+        let missing = "/no/such/dir/for/biorouter-test";
+        let err = server
+            .resolve_shell_cwd_checked(Some(missing))
+            .expect_err("a missing override must error");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains(missing),
+            "error should name the offending path: {}",
+            err.message
+        );
+    }
+
+    /// #2 regression: a per-call override pointing at a file (not a directory)
+    /// is likewise rejected.
+    #[test]
+    fn shell_cwd_override_that_is_a_file_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        let server = DeveloperServer::new();
+        let err = server
+            .resolve_shell_cwd_checked(Some(file.to_str().unwrap()))
+            .expect_err("a file override must error");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// #2 regression: a session working dir that no longer exists must NOT jam
+    /// the shell — resolution falls back to the next candidate.
+    #[test]
+    #[serial]
+    fn shell_cwd_missing_session_dir_falls_back() {
+        // Isolate from a stray BIOROUTER_WORKING_DIR so the fallback lands on
+        // the process cwd (None).
+        let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::remove_var("BIOROUTER_WORKING_DIR");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let server = DeveloperServer::new().with_working_dir(dir.clone());
+        // While it exists, it is honored.
+        assert_eq!(
+            server.resolve_shell_cwd_checked(None).unwrap(),
+            Some(dir.clone())
+        );
+        // Once deleted, resolution falls back rather than returning the dead dir.
+        drop(tmp);
+        let resolved = server.resolve_shell_cwd_checked(None).unwrap();
+        assert_ne!(
+            resolved,
+            Some(dir),
+            "must not resolve to the deleted session dir"
+        );
+        assert_eq!(resolved, None, "with no env dir, falls back to process cwd");
+
+        if let Some(v) = saved {
+            std::env::set_var("BIOROUTER_WORKING_DIR", v);
+        }
+    }
+
+    /// #2 regression: a missing session dir falls THROUGH to a still-present
+    /// BIOROUTER_WORKING_DIR before the process cwd.
+    #[test]
+    #[serial]
+    fn shell_cwd_missing_session_dir_falls_back_to_env() {
+        let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        let env_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("BIOROUTER_WORKING_DIR", env_dir.path());
+
+        let gone = tempfile::tempdir().unwrap();
+        let gone_path = gone.path().to_path_buf();
+        drop(gone);
+        let server = DeveloperServer::new().with_working_dir(gone_path);
+        assert_eq!(
+            server.resolve_shell_cwd_checked(None).unwrap(),
+            Some(env_dir.path().to_path_buf())
+        );
+
+        match saved {
+            Some(v) => std::env::set_var("BIOROUTER_WORKING_DIR", v),
+            None => std::env::remove_var("BIOROUTER_WORKING_DIR"),
+        }
+    }
+
+    /// #2 regression: BIOROUTER_WORKING_DIR pointing at a missing dir warns and
+    /// falls back to the process cwd instead of erroring.
+    #[test]
+    #[serial]
+    fn shell_cwd_missing_env_dir_falls_back() {
+        let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::set_var("BIOROUTER_WORKING_DIR", "/no/such/env/dir/biorouter");
+        let server = DeveloperServer::new();
+        assert_eq!(server.resolve_shell_cwd_checked(None).unwrap(), None);
+
+        match saved {
+            Some(v) => std::env::set_var("BIOROUTER_WORKING_DIR", v),
+            None => std::env::remove_var("BIOROUTER_WORKING_DIR"),
+        }
+    }
+
+    /// #2 wiring: an actually-executed shell command runs in the session dir.
+    #[test]
+    #[serial]
+    fn shell_executes_in_session_dir() {
+        run_shell_test(|| async {
+            let tmp = tempfile::tempdir().unwrap();
+            // Resolve symlinks (macOS /var → /private/var) so `pwd` matches.
+            let dir = std::fs::canonicalize(tmp.path()).unwrap();
+            let server = DeveloperServer::new().with_working_dir(dir.clone());
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: "pwd".to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(4242),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await
+                .expect("pwd should run");
+            let text = result
+                .content
+                .iter()
+                .find_map(|c| c.as_text())
+                .expect("shell output has text")
+                .text
+                .clone();
+            assert!(
+                text.contains(dir.to_str().unwrap()),
+                "pwd should report the session dir {}, got: {text}",
+                dir.display()
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// #2 wiring: when the session dir has been deleted, the shell still runs
+    /// (falling back to the process cwd) instead of failing to spawn.
+    #[test]
+    #[serial]
+    fn shell_survives_deleted_session_dir() {
+        run_shell_test(|| async {
+            let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+            std::env::remove_var("BIOROUTER_WORKING_DIR");
+
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().to_path_buf();
+            drop(tmp);
+            let server = DeveloperServer::new().with_working_dir(dir);
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: "pwd".to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(4343),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await;
+            assert!(
+                result.is_ok(),
+                "shell must keep working after the session dir disappears: {result:?}"
+            );
+
+            cleanup_test_service(running_service, peer);
+            if let Some(v) = saved {
+                std::env::set_var("BIOROUTER_WORKING_DIR", v);
+            }
+        });
+    }
+
     /// #2: the text_editor path jail follows the session working directory too,
     /// so file edits and shell commands agree on where "here" is.
     #[test]
@@ -1945,6 +2205,28 @@ mod tests {
             .is_ok());
         // A path outside the session dir is rejected by the jail.
         assert!(server.resolve_path("/etc/hosts").is_err());
+    }
+
+    /// #2 regression: if the session dir is deleted, the editor jail falls back
+    /// to a real cwd (the same view the shell uses) rather than failing to
+    /// canonicalize a nonexistent root.
+    #[test]
+    #[serial]
+    fn editor_path_jail_falls_back_when_session_dir_missing() {
+        let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::remove_var("BIOROUTER_WORKING_DIR");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        drop(tmp);
+        let server = DeveloperServer::new().with_working_dir(dir);
+        // A relative path resolves against the fallback cwd and does not blow up
+        // on a missing session root.
+        assert!(server.resolve_path("scratch.txt").is_ok());
+
+        if let Some(v) = saved {
+            std::env::set_var("BIOROUTER_WORKING_DIR", v);
+        }
     }
 
     /// Creates a test transport using in-memory streams instead of stdio
