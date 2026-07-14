@@ -93,6 +93,13 @@ pub struct DivergeSessionRequest {
     /// never carried over.
     #[serde(default)]
     truncate_after: Option<i64>,
+    /// Optional anchor by durable message id (`Message.id`), the BR-45 fork
+    /// point. Preferred over `truncate_after`: it is unambiguous when two
+    /// messages share a whole second and it records the branch's fork point. It
+    /// takes precedence when both are supplied; `truncate_after` stays for
+    /// back-compatibility with older clients.
+    #[serde(default)]
+    truncate_after_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -632,11 +639,17 @@ async fn diverge_session(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     // diverge_session does the placeholder-aware, sibling-numbered naming,
-    // records the lineage pointer, and trims the branch to end at the last
-    // complete assistant answer (anchored by `truncate_after` when the
-    // per-message button supplies it).
+    // records the lineage pointer + fork point, and trims the branch to end at
+    // the last complete assistant answer. Anchored by the durable message id
+    // (`truncate_after_id`) when supplied — unambiguous even for two same-second
+    // messages — else by the legacy `truncate_after` timestamp.
     let new_session = manager
-        .diverge_session(&session_id, request.name, request.truncate_after)
+        .diverge_session_at(
+            &session_id,
+            request.name,
+            request.truncate_after,
+            request.truncate_after_id,
+        )
         .await
         .map_err(|e| {
             tracing::error!("Failed to diverge session {}: {}", session_id, e);

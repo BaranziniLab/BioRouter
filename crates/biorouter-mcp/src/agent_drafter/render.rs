@@ -972,6 +972,87 @@ pub const EXECUTABLE_EXPORT_FILES: &[&str] = &["run.command", "run.sh", "biorout
 mod tests {
     use super::*;
     use crate::agent_drafter::store::{AgentConfig, ArtifactKind, ModelSelection};
+    use std::path::{Path, PathBuf};
+
+    fn command_has_version(program: &Path, work_dir: &Path) -> bool {
+        std::process::Command::new(program)
+            .arg("--version")
+            .current_dir(work_dir)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    #[cfg(not(windows))]
+    fn find_usable_bash(work_dir: &Path) -> Option<PathBuf> {
+        let bash = PathBuf::from("bash");
+        command_has_version(&bash, work_dir).then_some(bash)
+    }
+
+    #[cfg(windows)]
+    fn push_git_bash_candidates(candidates: &mut Vec<PathBuf>, git_root: &Path) {
+        candidates.push(git_root.join("bin").join("bash.exe"));
+        candidates.push(git_root.join("usr").join("bin").join("bash.exe"));
+    }
+
+    #[cfg(windows)]
+    fn where_paths(program: &str, work_dir: &Path) -> Vec<PathBuf> {
+        let Ok(output) = std::process::Command::new("where.exe")
+            .arg(program)
+            .current_dir(work_dir)
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn find_usable_bash(work_dir: &Path) -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(program_files) = std::env::var_os(variable) {
+                push_git_bash_candidates(
+                    &mut candidates,
+                    &PathBuf::from(program_files).join("Git"),
+                );
+            }
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            push_git_bash_candidates(
+                &mut candidates,
+                &PathBuf::from(local_app_data).join("Programs").join("Git"),
+            );
+        }
+
+        for git in where_paths("git.exe", work_dir) {
+            if let Some(git_root) = git.ancestors().find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("git"))
+            }) {
+                push_git_bash_candidates(&mut candidates, git_root);
+            }
+        }
+        candidates.extend(
+            where_paths("bash.exe", work_dir)
+                .into_iter()
+                .filter(|path| {
+                    let path = path.to_string_lossy().replace('\\', "/");
+                    path.to_ascii_lowercase().contains("/git/")
+                }),
+        );
+
+        candidates
+            .into_iter()
+            .find(|candidate| command_has_version(candidate, work_dir))
+    }
 
     fn manifest(kind: ArtifactKind) -> Manifest {
         Manifest {
@@ -1417,8 +1498,8 @@ mod tests {
 
     /// The export tests otherwise only match substrings. This actually *parses*
     /// the generated `serve.mjs` (ESM + top-level await) and shell launchers, so
-    /// a template edit that produces a syntax error can't ship silently. Skips
-    /// cleanly when `node`/`bash` aren't on PATH (e.g. a minimal CI image).
+    /// a template edit that produces a syntax error can't ship silently. Checks
+    /// each tool only when a usable installation is available.
     #[test]
     fn generated_serve_and_launchers_are_syntactically_valid() {
         use std::io::Write;
@@ -1433,18 +1514,19 @@ mod tests {
             p
         };
         let serve = write("serve.mjs");
-        let run = write("run.sh");
-        let lib = write("biorouter-launch.sh");
+        let run = file(&files, "run.sh");
+        let lib = file(&files, "biorouter-launch.sh");
 
         use std::process::Command;
-        let has = |prog: &str| Command::new(prog).arg("--version").output().is_ok();
 
-        if has("node") {
+        let node = PathBuf::from("node");
+        if command_has_version(&node, dir.path()) {
             // `node --check` infers ESM from the `.mjs` extension, so top-level
             // await parses. (`--input-type` is stdin/eval-only, not for a file.)
-            let out = Command::new("node")
+            let out = Command::new(&node)
                 .arg("--check")
                 .arg(&serve)
+                .current_dir(dir.path())
                 .output()
                 .unwrap();
             assert!(
@@ -1453,17 +1535,24 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
-        if has("bash") {
-            for launcher in [&run, &lib] {
-                let out = Command::new("bash")
+        if let Some(bash) = find_usable_bash(dir.path()) {
+            for (name, launcher) in [("run.sh", run), ("biorouter-launch.sh", lib)] {
+                // Parse the same on-disk artifact users run. A relative POSIX
+                // path works for both Unix Bash and Git Bash, without handing
+                // Bash a native Windows temp path or piping its program text.
+                std::fs::write(dir.path().join(name), launcher).unwrap();
+                let out = Command::new(&bash)
                     .arg("-n")
-                    .arg(launcher)
+                    .arg(format!("./{name}"))
+                    .current_dir(dir.path())
                     .output()
                     .unwrap();
                 assert!(
                     out.status.success(),
-                    "generated launcher {} is not valid bash:\n{}",
-                    launcher.display(),
+                    "generated launcher {} is not valid bash ({}):\nstdout:\n{}\nstderr:\n{}",
+                    name,
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
@@ -1483,12 +1572,16 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let script = format!("set -euo pipefail\n. '{}'\nfind_biorouterd", lib.display());
-            let out = Command::new("bash")
+            let script =
+                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd");
+            let out = Command::new(&bash)
                 .args(["-c", &script])
-                .env_clear()
-                .env("PATH", format!("{}:/usr/bin:/bin", stub_dir.display()))
-                .env("HOME", dir.path())
+                .current_dir(&stub_dir)
+                .env_remove("BIOROUTERD_BIN")
+                .env_remove("XDG_CONFIG_HOME")
+                .env("DIR", ".")
+                .env("PATH", ".:/usr/bin:/bin")
+                .env("HOME", ".")
                 .output()
                 .unwrap();
             assert!(
@@ -1498,7 +1591,7 @@ mod tests {
             );
             assert_eq!(
                 String::from_utf8_lossy(&out.stdout).trim(),
-                stub.display().to_string(),
+                "./biorouterd",
                 "find_biorouterd should locate the on-PATH biorouterd"
             );
         }

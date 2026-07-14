@@ -4,7 +4,6 @@ use biorouter::config::Config;
 use biorouter::conversation::message::{
     ActionRequiredData, Message, MessageContent, ToolRequest, ToolResponse,
 };
-use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::utils::safe_truncate;
 use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -947,6 +946,11 @@ fn print_params(value: &Option<JsonObject>, depth: usize, debug: bool) {
 }
 
 fn shorten_path(path: &str, debug: bool) -> String {
+    let home = etcetera::home_dir().ok();
+    shorten_path_with_home(path, debug, home.as_deref())
+}
+
+fn shorten_path_with_home(path: &str, debug: bool, home: Option<&Path>) -> String {
     // In debug mode, return the full path
     if debug {
         return path.to_string();
@@ -955,7 +959,6 @@ fn shorten_path(path: &str, debug: bool) -> String {
     let path = Path::new(path);
 
     // First try to convert to ~ if it's in home directory
-    let home = etcetera::home_dir().ok();
     let path_str = if let Some(home) = home {
         if let Ok(stripped) = path.strip_prefix(home) {
             format!("~/{}", stripped.display())
@@ -1132,35 +1135,17 @@ pub fn display_context_usage(total_tokens: usize, context_limit: usize) {
     );
 }
 
-fn estimate_cost_usd(
-    provider: &str,
-    model: &str,
-    input_tokens: usize,
-    output_tokens: usize,
-) -> Option<f64> {
-    // Mirror the server's `/config/pricing` precedence so the CLI shows the same
-    // cost the desktop does: provider-specific overrides first, then the
-    // canonical model catalog. Both cost fields are already per-token.
-    if let Some(pricing) = biorouter::providers::pricing::provider_model_pricing(provider, model) {
-        return Some(
-            pricing.input_token_cost * input_tokens as f64
-                + pricing.output_token_cost * output_tokens as f64,
-        );
-    }
-
-    let canonical_model = maybe_get_canonical_model(provider, model)?;
-
-    let input_cost_per_token = canonical_model.pricing.prompt?;
-    let output_cost_per_token = canonical_model.pricing.completion?;
-
-    let input_cost = input_cost_per_token * input_tokens as f64;
-    let output_cost = output_cost_per_token * output_tokens as f64;
-    Some(input_cost + output_cost)
-}
-
 /// Display cost information, if price data is available.
 pub fn display_cost_usage(provider: &str, model: &str, input_tokens: usize, output_tokens: usize) {
-    if let Some(cost) = estimate_cost_usd(provider, model, input_tokens, output_tokens) {
+    // Priced by the shared estimator (provider overrides, then the canonical
+    // catalog), so the CLI's cost line, the server's `/config/pricing` and the
+    // BR-35 per-reply dollar budget can never disagree about what a turn cost.
+    if let Some(cost) = biorouter::providers::pricing::estimate_cost_usd(
+        provider,
+        model,
+        input_tokens as u64,
+        output_tokens as u64,
+    ) {
         use console::style;
         eprintln!(
             "Cost: {} USD ({} tokens: in {}, out {})",
@@ -1284,7 +1269,6 @@ pub fn preview() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_title_from_ui_uri() {
@@ -1333,29 +1317,22 @@ mod tests {
 
     #[test]
     fn test_home_directory_conversion() {
-        // Save the current home dir
-        let original_home = env::var("HOME").ok();
-
-        // Set a test home directory
-        env::set_var("HOME", "/Users/testuser");
+        let home = Path::new("root").join("testuser");
+        let path_in_home = home.join("documents").join("file.txt");
 
         assert_eq!(
-            shorten_path("/Users/testuser/documents/file.txt", false),
-            "~/documents/file.txt"
+            shorten_path_with_home(path_in_home.to_str().unwrap(), false, Some(&home)),
+            format!("~/{}", Path::new("documents").join("file.txt").display())
         );
 
-        // A path that starts similarly to home but isn't in home
+        let sibling_path = Path::new("root")
+            .join("testuser2")
+            .join("documents")
+            .join("file.txt");
         assert_eq!(
-            shorten_path("/Users/testuser2/documents/file.txt", false),
-            "/Users/testuser2/documents/file.txt"
+            shorten_path_with_home(sibling_path.to_str().unwrap(), false, Some(&home)),
+            sibling_path.display().to_string()
         );
-
-        // Restore the original home dir
-        if let Some(home) = original_home {
-            env::set_var("HOME", home);
-        } else {
-            env::remove_var("HOME");
-        }
     }
 
     #[test]

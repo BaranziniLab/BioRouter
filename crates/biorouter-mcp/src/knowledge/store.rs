@@ -1,8 +1,10 @@
 use crate::knowledge::{git::GitRepo, types::ChangeKind};
 use anyhow::{Context, Result};
-use bm25::{Language, SearchEngineBuilder};
+use bm25::{Language, SearchEngine, SearchEngineBuilder};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +22,15 @@ pub struct PageContent {
     /// Raw YAML frontmatter from the page file.
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub frontmatter: serde_yaml::Value,
+}
+
+pub(crate) fn logical_path(prefix: &str, relative: &Path) -> String {
+    let relative = relative
+        .iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{prefix}/{relative}")
 }
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
@@ -40,8 +51,7 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
         if p.is_dir() {
             walk_md(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("knowledge/{rel}");
+            let logical = logical_path("knowledge", p.strip_prefix(base).unwrap());
             if let Some(pre) = prefix {
                 if !logical.starts_with(pre) {
                     continue;
@@ -162,11 +172,40 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchScope {
     Knowledge,
     RawSources,
     All,
+}
+
+/// A BM25 index cached per `(kb_root, scope)`. `paths[i]` is the logical path of
+/// the document the engine assigned id `i`; the engine keeps each document's body
+/// internally, so the search results carry it back for snippet extraction. The
+/// `fingerprint` captures the corpus's (path, len, mtime) set so the cache
+/// self-invalidates when any indexed file is added, removed, or edited — no
+/// coupling to the write paths is required.
+struct CachedIndex {
+    fingerprint: u64,
+    paths: Vec<String>,
+    engine: SearchEngine<u32>,
+}
+
+/// Previously every `kb_search` rebuilt the whole BM25 index from scratch —
+/// re-reading every doc, cloning bodies, and re-embedding the corpus — then
+/// threw it away. For KB-heavy sessions (the ingest/query sub-agent loop searches
+/// the same base repeatedly) that is O(corpus) per search. Cache the built engine
+/// and reuse it while the corpus is unchanged, turning a repeat search into
+/// O(query) (BR-59, perf lens P-42).
+type SearchCache = HashMap<(PathBuf, SearchScope), CachedIndex>;
+static SEARCH_CACHE: LazyLock<Mutex<SearchCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn lock_search_cache() -> std::sync::MutexGuard<'static, SearchCache> {
+    SEARCH_CACHE.lock().unwrap_or_else(|poisoned| {
+        let mut guard = poisoned.into_inner();
+        guard.clear();
+        guard
+    })
 }
 
 pub fn search(kb_root: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
@@ -179,11 +218,103 @@ pub fn search_with_scope(
     limit: usize,
     scope: SearchScope,
 ) -> Result<Vec<SearchHit>> {
-    let mut docs: Vec<(String, String)> = Vec::new(); // (logical_path, body)
+    let files = list_doc_files(kb_root, scope)?; // (logical_path, abs_path), sorted
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fingerprint = corpus_fingerprint(&files);
+    let key = (kb_root.to_path_buf(), scope);
+
+    // Fast path: reuse the cached index if the corpus is unchanged.
+    {
+        let cache = lock_search_cache();
+        if let Some(cached) = cache.get(&key) {
+            if cached.fingerprint == fingerprint {
+                return Ok(hits_from(&cached.engine, &cached.paths, query, limit));
+            }
+        }
+    }
+
+    // Miss: (re)build the index off-lock, run the query, then cache it. Two racing
+    // misses may both build; the last insert wins and both return correct hits.
+    let mut paths = Vec::with_capacity(files.len());
+    let mut bodies = Vec::with_capacity(files.len());
+    for (logical, abs) in &files {
+        paths.push(logical.clone());
+        bodies.push(std::fs::read_to_string(abs)?);
+    }
+    let engine = SearchEngineBuilder::<u32>::with_corpus(Language::English, bodies).build();
+    let hits = hits_from(&engine, &paths, query, limit);
+
+    let mut cache = lock_search_cache();
+    cache.insert(
+        key,
+        CachedIndex {
+            fingerprint,
+            paths,
+            engine,
+        },
+    );
+    Ok(hits)
+}
+
+/// Run the query against a built engine and map results back to hits. `paths[id]`
+/// gives the logical path; `sr.document.contents` is the indexed body (used for
+/// the snippet), so no separate copy of the corpus text is kept in the cache.
+fn hits_from(
+    engine: &SearchEngine<u32>,
+    paths: &[String],
+    query: &str,
+    limit: usize,
+) -> Vec<SearchHit> {
+    engine
+        .search(query, limit)
+        .into_iter()
+        .map(|sr| {
+            let idx = sr.document.id as usize;
+            SearchHit {
+                path: paths.get(idx).cloned().unwrap_or_default(),
+                score: sr.score,
+                snippet: snippet_of(&sr.document.contents, query, 200),
+            }
+        })
+        .collect()
+}
+
+/// A cheap content-independent digest of the corpus: for each indexed file, its
+/// logical path, byte length, and mtime. Any add / remove / edit changes it. This
+/// walks + stats the tree but does not read file contents, so it is far cheaper
+/// than the full index rebuild it guards.
+fn corpus_fingerprint(files: &[(String, PathBuf)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (logical, abs) in files {
+        logical.hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(abs) {
+            meta.len().hash(&mut hasher);
+            if let Ok(modified) = meta.modified() {
+                if let Ok(since) = modified.duration_since(UNIX_EPOCH) {
+                    since.as_nanos().hash(&mut hasher);
+                } else if let Ok(before) = SystemTime::UNIX_EPOCH.duration_since(modified) {
+                    // mtime before the epoch: fold it in with a distinct tag.
+                    (u64::MAX - before.as_secs()).hash(&mut hasher);
+                }
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// Enumerate the files an index of `scope` covers, as `(logical_path, abs_path)`
+/// pairs sorted by logical path for a stable fingerprint. Does not read contents.
+fn list_doc_files(kb_root: &Path, scope: SearchScope) -> Result<Vec<(String, PathBuf)>> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
     if matches!(scope, SearchScope::Knowledge | SearchScope::All) {
         let knowledge_dir = kb_root.join("knowledge");
         if knowledge_dir.exists() {
-            collect_docs_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut docs)?;
+            list_md_files_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut out)?;
         }
     }
     if matches!(scope, SearchScope::RawSources | SearchScope::All) {
@@ -197,54 +328,41 @@ pub fn search_with_scope(
                 let id = entry.file_name().to_string_lossy().to_string();
                 let source_md = entry.path().join("source.md");
                 if source_md.exists() {
-                    let body = std::fs::read_to_string(&source_md)?;
-                    docs.push((format!("raw/{id}/source.md"), body));
+                    out.push((format!("raw/{id}/source.md"), source_md));
                 }
             }
         }
     }
-    if docs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Build a corpus with u32 indices; SearchEngineBuilder::with_corpus auto-generates IDs.
-    let bodies: Vec<String> = docs.iter().map(|(_, b)| b.clone()).collect();
-    let engine = SearchEngineBuilder::<u32>::with_corpus(Language::English, bodies).build();
-    let results = engine.search(query, limit);
-    let hits: Vec<SearchHit> = results
-        .into_iter()
-        .map(|sr| {
-            let idx = sr.document.id as usize;
-            let (path, body) = &docs[idx];
-            SearchHit {
-                path: path.clone(),
-                score: sr.score,
-                snippet: snippet_of(body, query, 200),
-            }
-        })
-        .collect();
-    Ok(hits)
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
 }
 
-fn collect_docs_under(
+fn list_md_files_under(
     base: &Path,
     dir: &Path,
     prefix: &str,
-    out: &mut Vec<(String, String)>,
+    out: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
         if p.is_dir() {
-            collect_docs_under(base, &p, prefix, out)?;
+            list_md_files_under(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("{prefix}/{rel}");
-            let body = std::fs::read_to_string(&p)?;
-            out.push((logical, body));
+            let logical = logical_path(prefix, p.strip_prefix(base).unwrap());
+            out.push((logical, p));
         }
     }
     Ok(())
+}
+
+/// Test-only observer of the cached index fingerprint for a `(kb_root, scope)`.
+#[cfg(test)]
+pub(crate) fn cached_fingerprint(kb_root: &Path, scope: SearchScope) -> Option<u64> {
+    let cache = lock_search_cache();
+    cache
+        .get(&(kb_root.to_path_buf(), scope))
+        .map(|c| c.fingerprint)
 }
 
 fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
@@ -291,6 +409,15 @@ fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use crate::knowledge::service::KnowledgeService;
+
+    #[test]
+    fn logical_paths_always_use_forward_slashes() {
+        let relative = Path::new("concepts").join("a.md");
+        assert_eq!(
+            logical_path("knowledge", &relative),
+            "knowledge/concepts/a.md"
+        );
+    }
 
     fn fresh() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -454,5 +581,64 @@ mod tests {
         let all = search(&kb, "raw-only", 5).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].path, "raw/raw-a/source.md");
+    }
+
+    #[test]
+    fn search_index_is_cached_and_reused_while_unchanged() {
+        let (_dir, kb) = fresh();
+        write_page(
+            &kb,
+            "knowledge/entities/hrv.md",
+            "---\ntitle: HRV\n---\n\nHeart rate variability is a key marker.",
+            "a",
+            None,
+        )
+        .unwrap();
+
+        // No index is cached until the first search builds one.
+        assert_eq!(cached_fingerprint(&kb, SearchScope::All), None);
+
+        let hits1 = search(&kb, "heart rate variability", 5).unwrap();
+        assert!(hits1.iter().any(|h| h.path.ends_with("hrv.md")));
+        let fp1 =
+            cached_fingerprint(&kb, SearchScope::All).expect("index cached after first search");
+
+        // A second identical search reuses the cached index: same fingerprint,
+        // byte-identical results.
+        let hits2 = search(&kb, "heart rate variability", 5).unwrap();
+        assert_eq!(hits1, hits2);
+        assert_eq!(Some(fp1), cached_fingerprint(&kb, SearchScope::All));
+    }
+
+    #[test]
+    fn search_cache_invalidates_when_corpus_changes() {
+        let (_dir, kb) = fresh();
+        write_page(
+            &kb,
+            "knowledge/entities/hrv.md",
+            "---\ntitle: HRV\n---\n\nHeart rate variability is a key marker.",
+            "a",
+            None,
+        )
+        .unwrap();
+        let _ = search(&kb, "heart rate variability", 5).unwrap();
+        let fp1 = cached_fingerprint(&kb, SearchScope::All).unwrap();
+
+        // Adding a page changes the corpus, so the fingerprint (and thus the
+        // cached index) must change on the next search, and the new page must be
+        // findable — proving the stale index was not reused.
+        write_page(
+            &kb,
+            "knowledge/concepts/sleep.md",
+            "---\ntitle: Sleep\n---\n\nSleep quality affects recovery.",
+            "b",
+            None,
+        )
+        .unwrap();
+        let hits = search(&kb, "sleep quality recovery", 5).unwrap();
+        assert!(hits.iter().any(|h| h.path.ends_with("sleep.md")));
+
+        let fp2 = cached_fingerprint(&kb, SearchScope::All).unwrap();
+        assert_ne!(fp1, fp2, "adding a page must change the cached fingerprint");
     }
 }

@@ -59,7 +59,9 @@ describe('createUserMessage', () => {
   });
 
   it('throws if an image read fails', async () => {
-    const mockFn = (window as unknown as { electron: { readTempImageAsBase64: ReturnType<typeof vi.fn> } }).electron.readTempImageAsBase64;
+    const mockFn = (
+      window as unknown as { electron: { readTempImageAsBase64: ReturnType<typeof vi.fn> } }
+    ).electron.readTempImageAsBase64;
     mockFn.mockRejectedValueOnce(new Error('boom'));
     await expect(
       createUserMessage('hi', [{ path: '/tmp/biorouter-images/broken.png', kind: 'image' }])

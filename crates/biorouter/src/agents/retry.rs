@@ -13,7 +13,6 @@ use crate::agents::types::{
 use crate::config::Config;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::tool_monitor::RepetitionInspector;
 
 /// Result of a retry logic evaluation
 #[derive(Debug, Clone, PartialEq)]
@@ -40,8 +39,6 @@ const BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS: &str =
 pub struct RetryManager {
     /// Current number of retry attempts
     attempts: Arc<Mutex<u32>>,
-    /// Optional repetition inspector for reset operations
-    repetition_inspector: Option<Arc<Mutex<Option<RepetitionInspector>>>>,
 }
 
 impl Default for RetryManager {
@@ -55,17 +52,6 @@ impl RetryManager {
     pub fn new() -> Self {
         Self {
             attempts: Arc::new(Mutex::new(0)),
-            repetition_inspector: None,
-        }
-    }
-
-    /// Create a new retry manager with repetition inspector
-    pub fn with_repetition_inspector(
-        repetition_inspector: Arc<Mutex<Option<RepetitionInspector>>>,
-    ) -> Self {
-        Self {
-            attempts: Arc::new(Mutex::new(0)),
-            repetition_inspector: Some(repetition_inspector),
         }
     }
 
@@ -73,13 +59,6 @@ impl RetryManager {
     pub async fn reset_attempts(&self) {
         let mut attempts = self.attempts.lock().await;
         *attempts = 0;
-
-        // Reset repetition inspector if available
-        if let Some(inspector) = &self.repetition_inspector {
-            if let Some(inspector) = inspector.lock().await.as_mut() {
-                inspector.reset();
-            }
-        }
     }
 
     /// Increment the retry attempts counter and return the new value
@@ -187,7 +166,156 @@ fn get_on_failure_timeout(retry_config: &RetryConfig) -> Duration {
     Duration::from_secs(timeout_seconds)
 }
 
-/// Execute all success checks and return true if all pass
+/// Outcome of a single [`SuccessCheck`].
+///
+/// Shared by the workflow retry path ([`execute_success_checks`]) and the
+/// interactive done-ness gate ([`collect_check_failures`], BR-48), so both
+/// evaluate a check with identical semantics — the gate just surfaces the
+/// `Fail` reason to the model instead of resetting progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckOutcome {
+    /// The check held.
+    Pass,
+    /// The check did not hold; the string is a short, human-readable reason.
+    Fail(String),
+}
+
+/// Cap on how much command output is echoed into a failure reason, so a single
+/// failing check cannot inject a huge blob back into the conversation.
+const CHECK_OUTPUT_TAIL_CHARS: usize = 600;
+
+/// The trailing `CHECK_OUTPUT_TAIL_CHARS` characters of some command output,
+/// trimmed, for a compact failure reason.
+fn output_tail(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= CHECK_OUTPUT_TAIL_CHARS {
+        trimmed.to_string()
+    } else {
+        let tail: String = trimmed
+            .chars()
+            .skip(count - CHECK_OUTPUT_TAIL_CHARS)
+            .collect();
+        format!("…{tail}")
+    }
+}
+
+/// Resolve a possibly-relative check path against `cwd` when one is given.
+fn resolve_check_path(path: &str, cwd: Option<&std::path::Path>) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    match cwd {
+        Some(dir) if p.is_relative() => dir.join(p),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// Run one [`SuccessCheck`], returning whether it held. `cwd`, when set, is the
+/// working directory shell commands run in and the base for relative paths (the
+/// session working dir for the interactive gate; `None` keeps the workflow
+/// path's historical process-cwd behavior).
+///
+/// Returns `Err` only when a check could not be evaluated at all (e.g. a shell
+/// command timed out) — callers decide whether that is fatal (workflow) or just
+/// another surfaced failure (gate).
+pub async fn run_success_check(
+    check: &SuccessCheck,
+    timeout: Duration,
+    cwd: Option<&std::path::Path>,
+) -> Result<CheckOutcome> {
+    match check {
+        SuccessCheck::Shell { command } => {
+            let result = execute_shell_command_in(command, timeout, cwd).await?;
+            if result.status.success() {
+                Ok(CheckOutcome::Pass)
+            } else {
+                let stderr = output_tail(&result.stderr);
+                let detail = if stderr.is_empty() {
+                    output_tail(&result.stdout)
+                } else {
+                    stderr
+                };
+                Ok(CheckOutcome::Fail(format!(
+                    "command `{command}` exited with status {}{}",
+                    result.status,
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {detail}")
+                    }
+                )))
+            }
+        }
+        SuccessCheck::FileExists { path } => {
+            let resolved = resolve_check_path(path, cwd);
+            if resolved.exists() {
+                Ok(CheckOutcome::Pass)
+            } else {
+                Ok(CheckOutcome::Fail(format!(
+                    "expected file `{path}` does not exist"
+                )))
+            }
+        }
+        SuccessCheck::OutputContains { command, substring } => {
+            let result = execute_shell_command_in(command, timeout, cwd).await?;
+            let mut combined = String::from_utf8_lossy(&result.stdout).into_owned();
+            combined.push_str(&String::from_utf8_lossy(&result.stderr));
+            if combined.contains(substring.as_str()) {
+                Ok(CheckOutcome::Pass)
+            } else {
+                Ok(CheckOutcome::Fail(format!(
+                    "output of `{command}` did not contain `{substring}`"
+                )))
+            }
+        }
+        SuccessCheck::JsonSchema { path, schema } => {
+            let resolved = resolve_check_path(path, cwd);
+            let contents = match tokio::fs::read_to_string(&resolved).await {
+                Ok(contents) => contents,
+                Err(e) => {
+                    return Ok(CheckOutcome::Fail(format!("could not read `{path}`: {e}")));
+                }
+            };
+            let value: serde_json::Value = match serde_json::from_str(&contents) {
+                Ok(value) => value,
+                Err(e) => {
+                    return Ok(CheckOutcome::Fail(format!(
+                        "`{path}` is not valid JSON: {e}"
+                    )));
+                }
+            };
+            let validator = match jsonschema::validator_for(schema) {
+                Ok(validator) => validator,
+                Err(e) => {
+                    // A malformed schema is a configuration error, not the
+                    // agent's fault — surface it so it can be fixed, don't crash.
+                    return Ok(CheckOutcome::Fail(format!(
+                        "invalid JSON Schema for `{path}` check: {e}"
+                    )));
+                }
+            };
+            let errors: Vec<String> = validator
+                .iter_errors(&value)
+                .map(|error| format!("{}: {error}", error.instance_path))
+                .collect();
+            if errors.is_empty() {
+                Ok(CheckOutcome::Pass)
+            } else {
+                Ok(CheckOutcome::Fail(format!(
+                    "`{path}` does not match the required JSON Schema: {}",
+                    errors.join("; ")
+                )))
+            }
+        }
+    }
+}
+
+/// Execute all success checks and return true if all pass.
+///
+/// Short-circuits on the first failure and runs in the process working
+/// directory, preserving the workflow retry path's behavior. New non-shell
+/// variants (BR-48) are handled via [`run_success_check`], so workflows get
+/// them for free.
 pub async fn execute_success_checks(
     checks: &[SuccessCheck],
     retry_config: &RetryConfig,
@@ -195,36 +323,62 @@ pub async fn execute_success_checks(
     let timeout = get_retry_timeout(retry_config);
 
     for check in checks {
-        match check {
-            SuccessCheck::Shell { command } => {
-                let result = execute_shell_command(command, timeout).await?;
-                if !result.status.success() {
-                    warn!(
-                        "Success check failed: command '{}' exited with status {}, stderr: {}",
-                        command,
-                        result.status,
-                        String::from_utf8_lossy(&result.stderr)
-                    );
-                    return Ok(false);
-                }
-                info!(
-                    "Success check passed: command '{}' completed successfully",
-                    command
-                );
+        match run_success_check(check, timeout, None).await? {
+            CheckOutcome::Pass => {
+                info!("Success check passed: {check:?}");
+            }
+            CheckOutcome::Fail(reason) => {
+                warn!("Success check failed: {reason}");
+                return Ok(false);
             }
         }
     }
     Ok(true)
 }
 
-/// Execute a shell command with cross-platform compatibility and mandatory timeout
+/// Run every check and collect the reasons of those that failed (empty = all
+/// passed). Unlike [`execute_success_checks`] this does NOT short-circuit — the
+/// done-ness gate (BR-48) wants the full list so the model can fix everything at
+/// once — and a check that could not be evaluated (timeout/IO error) becomes a
+/// surfaced failure rather than aborting the gate. `cwd` is the session working
+/// directory the checks run against.
+pub async fn collect_check_failures(
+    checks: &[SuccessCheck],
+    timeout: Duration,
+    cwd: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for check in checks {
+        match run_success_check(check, timeout, cwd).await {
+            Ok(CheckOutcome::Pass) => {}
+            Ok(CheckOutcome::Fail(reason)) => failures.push(reason),
+            Err(e) => failures.push(format!("check could not run: {e}")),
+        }
+    }
+    failures
+}
+
+/// Execute a shell command with cross-platform compatibility and mandatory
+/// timeout, in the process working directory.
 pub async fn execute_shell_command(
     command: &str,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output> {
+    execute_shell_command_in(command, timeout, None).await
+}
+
+/// Like [`execute_shell_command`] but runs `command` in `cwd` when one is given
+/// (BR-48: the interactive done-ness gate runs its checks in the session
+/// working directory; the workflow path passes `None` for the historical
+/// process-cwd behavior).
+pub async fn execute_shell_command_in(
+    command: &str,
+    timeout: std::time::Duration,
+    cwd: Option<&std::path::Path>,
+) -> Result<std::process::Output> {
     debug!(
-        "Executing shell command with timeout {:?}: {}",
-        timeout, command
+        "Executing shell command with timeout {:?} (cwd={:?}): {}",
+        timeout, cwd, command
     );
 
     let future = async {
@@ -239,6 +393,10 @@ pub async fn execute_shell_command(
             cmd.env("BIOROUTER_TERMINAL", "1");
             cmd
         };
+
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
 
         let output = cmd
             .stdout(Stdio::piped())
@@ -413,7 +571,7 @@ mod tests {
     async fn test_shell_command_timeout() {
         let timeout = std::time::Duration::from_millis(100);
         let result = if cfg!(target_os = "windows") {
-            execute_shell_command("timeout /t 1", timeout).await
+            execute_shell_command("ping -n 3 127.0.0.1 >NUL", timeout).await
         } else {
             execute_shell_command("sleep 1", timeout).await
         };
@@ -496,5 +654,147 @@ mod tests {
         assert_eq!(retry_timeout, Duration::from_secs(60));
         assert_eq!(on_failure_timeout, Duration::from_secs(300));
         assert_ne!(retry_timeout, on_failure_timeout);
+    }
+
+    // ---- BR-48: non-shell check variants + cwd resolution + collect-all ----
+
+    const T: Duration = Duration::from_secs(30);
+
+    #[tokio::test]
+    async fn file_exists_check_passes_and_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("out.csv"), b"a,b\n1,2\n").unwrap();
+
+        // Relative path resolves against the supplied cwd.
+        let present = SuccessCheck::FileExists {
+            path: "out.csv".to_string(),
+        };
+        assert_eq!(
+            run_success_check(&present, T, Some(dir.path()))
+                .await
+                .unwrap(),
+            CheckOutcome::Pass
+        );
+
+        let missing = SuccessCheck::FileExists {
+            path: "nope.csv".to_string(),
+        };
+        match run_success_check(&missing, T, Some(dir.path()))
+            .await
+            .unwrap()
+        {
+            CheckOutcome::Fail(reason) => assert!(reason.contains("nope.csv")),
+            CheckOutcome::Pass => panic!("missing file must fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn output_contains_check_ignores_exit_status() {
+        // Passes on substring even though a plain Shell check of the same output
+        // would only look at the (here successful) exit code.
+        let pass = SuccessCheck::OutputContains {
+            command: "echo '3 passed, 0 failed'".to_string(),
+            substring: "0 failed".to_string(),
+        };
+        assert_eq!(
+            run_success_check(&pass, T, None).await.unwrap(),
+            CheckOutcome::Pass
+        );
+
+        let fail = SuccessCheck::OutputContains {
+            command: "echo '2 passed, 1 failed'".to_string(),
+            substring: "0 failed".to_string(),
+        };
+        match run_success_check(&fail, T, None).await.unwrap() {
+            CheckOutcome::Fail(reason) => assert!(reason.contains("did not contain")),
+            CheckOutcome::Pass => panic!("absent substring must fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn json_schema_check_validates_file_contents() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
+        });
+
+        // Conforming file passes.
+        std::fs::write(dir.path().join("ok.json"), br#"{"name":"x"}"#).unwrap();
+        let ok = SuccessCheck::JsonSchema {
+            path: "ok.json".to_string(),
+            schema: schema.clone(),
+        };
+        assert_eq!(
+            run_success_check(&ok, T, Some(dir.path())).await.unwrap(),
+            CheckOutcome::Pass
+        );
+
+        // Schema violation fails with a path-scoped reason.
+        std::fs::write(dir.path().join("bad.json"), br#"{"name":42}"#).unwrap();
+        let bad = SuccessCheck::JsonSchema {
+            path: "bad.json".to_string(),
+            schema: schema.clone(),
+        };
+        match run_success_check(&bad, T, Some(dir.path())).await.unwrap() {
+            CheckOutcome::Fail(reason) => assert!(reason.contains("JSON Schema")),
+            CheckOutcome::Pass => panic!("schema mismatch must fail"),
+        }
+
+        // Missing file fails rather than erroring.
+        let gone = SuccessCheck::JsonSchema {
+            path: "gone.json".to_string(),
+            schema,
+        };
+        match run_success_check(&gone, T, Some(dir.path())).await.unwrap() {
+            CheckOutcome::Fail(reason) => assert!(reason.contains("could not read")),
+            CheckOutcome::Pass => panic!("missing json file must fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_check_failures_reports_all_not_just_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let checks = vec![
+            SuccessCheck::Shell {
+                command: "true".to_string(), // passes
+            },
+            SuccessCheck::Shell {
+                command: "false".to_string(), // fails
+            },
+            SuccessCheck::FileExists {
+                path: "missing.txt".to_string(), // fails
+            },
+        ];
+        let failures = collect_check_failures(&checks, T, Some(dir.path())).await;
+        // The passing check is omitted; both failures surface (no short-circuit).
+        assert_eq!(failures.len(), 2, "all failures collected: {failures:?}");
+        assert!(failures.iter().any(|f| f.contains("status")));
+        assert!(failures.iter().any(|f| f.contains("missing.txt")));
+
+        // All-pass yields an empty list (the gate's "done" signal).
+        let all_pass = vec![SuccessCheck::Shell {
+            command: "true".to_string(),
+        }];
+        assert!(collect_check_failures(&all_pass, T, Some(dir.path()))
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn shell_check_runs_in_supplied_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("marker"), b"").unwrap();
+        // `ls marker` only succeeds when the command runs inside `dir`.
+        let check = SuccessCheck::Shell {
+            command: "ls marker".to_string(),
+        };
+        assert_eq!(
+            run_success_check(&check, T, Some(dir.path()))
+                .await
+                .unwrap(),
+            CheckOutcome::Pass
+        );
     }
 }

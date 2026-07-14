@@ -3,6 +3,29 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
+const WRITE_LOCK_PATH: &str = ".biorouter-knowledge/write.lock";
+
+fn stage_all(index: &mut git2::Index) -> Result<()> {
+    let write_lock = Path::new(WRITE_LOCK_PATH);
+    if index.get_path(write_lock, 0).is_some() {
+        index.remove_path(write_lock)?;
+    }
+
+    let mut skip_write_lock = |path: &Path, _matched_pathspec: &[u8]| {
+        if path == write_lock {
+            1
+        } else {
+            0
+        }
+    };
+    index.add_all(
+        ["*"].iter(),
+        git2::IndexAddOption::DEFAULT,
+        Some(&mut skip_write_lock),
+    )?;
+    Ok(())
+}
+
 pub struct GitRepo {
     inner: git2::Repository,
 }
@@ -33,7 +56,7 @@ impl GitRepo {
         delta: Option<&str>,
     ) -> Result<String> {
         let mut index = self.inner.index()?;
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        stage_all(&mut index)?;
         index.write()?;
         let tree_oid = index.write_tree()?;
         let tree = self.inner.find_tree(tree_oid)?;
@@ -146,7 +169,7 @@ impl GitRepo {
     pub fn commit_on_txn(&self, _txn: &Txn, message: &str) -> Result<String> {
         // Same as commit_all but caller already on the txn branch.
         let mut index = self.inner.index()?;
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        stage_all(&mut index)?;
         index.write()?;
         let tree_oid = index.write_tree()?;
         let tree = self.inner.find_tree(tree_oid)?;
@@ -271,7 +294,7 @@ impl GitRepo {
     /// when a txn is active and the caller has already switched HEAD.
     pub fn commit_on_txn_in_progress(&self, message: &str) -> Result<String> {
         let mut index = self.inner.index()?;
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        stage_all(&mut index)?;
         index.write()?;
         let tree_oid = index.write_tree()?;
         let tree = self.inner.find_tree(tree_oid)?;
@@ -309,6 +332,32 @@ mod tests {
         assert_eq!(log[0].kind, ChangeKind::Ingest);
         assert_eq!(log[0].summary, "first source");
         assert_eq!(log[0].delta.as_deref(), Some("+1 page"));
+    }
+
+    #[test]
+    fn commit_all_never_tracks_the_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        let lock = dir.path().join(WRITE_LOCK_PATH);
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::write(&lock, "transient").unwrap();
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&lock_file).unwrap();
+        std::fs::write(dir.path().join("a.md"), "tracked").unwrap();
+
+        let sha = repo
+            .commit_all(ChangeKind::Manual, "skip lock", None)
+            .unwrap();
+
+        assert_eq!(repo.read_file_at(&sha, WRITE_LOCK_PATH).unwrap(), None);
+        assert_eq!(
+            repo.read_file_at(&sha, "a.md").unwrap().as_deref(),
+            Some("tracked")
+        );
     }
 
     #[test]

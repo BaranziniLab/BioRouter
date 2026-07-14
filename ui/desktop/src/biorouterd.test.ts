@@ -1,4 +1,5 @@
 import type { App } from 'electron';
+import type { PathLike, Stats } from 'node:fs';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -6,6 +7,28 @@ const mocks = vi.hoisted(() => ({
   logError: vi.fn(),
   spawn: vi.fn(),
 }));
+
+// This test exercises env-passing and secret-redaction, not the real binary.
+// `getBiorouterdBinaryPath` does a live filesystem probe for a compiled
+// `biorouterd`, which exists in a normal dev tree (`target/debug/`) but NOT in
+// an isolated build (e.g. a custom CARGO_TARGET_DIR) or a fresh CI checkout —
+// there the probe throws and the test fails for reasons unrelated to what it
+// asserts. Mock `node:fs` so the probe resolves the first candidate path
+// without needing an artifact on disk; spawn is already mocked, so no binary is
+// ever executed. `fs` is used *only* by the binary-path resolver here, so this
+// leaves all other behavior intact.
+const isBiorouterdPath = (p: PathLike): boolean => {
+  const s = p.toString();
+  return s.endsWith('biorouterd') || s.endsWith('biorouterd.exe');
+};
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const existsSync = (p: PathLike): boolean => (isBiorouterdPath(p) ? true : actual.existsSync(p));
+  const statSync = (p: PathLike): Stats =>
+    isBiorouterdPath(p) ? ({ isFile: () => true } as unknown as Stats) : actual.statSync(p);
+  const mocked = { ...actual, existsSync, statSync };
+  return { ...mocked, default: mocked };
+});
 
 vi.mock('./utils/logger', () => ({
   default: {

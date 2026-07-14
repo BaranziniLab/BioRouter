@@ -9,15 +9,23 @@ export const DIMMED_OPACITY = 0.22;
 
 /// Width by source-page credibility tier. The graph uses a single solid-line
 /// treatment so edge styling stays visually quiet behind node labels.
-export function edgeStyle(tier: CredibilityTier | null | undefined): { width: number; dash: number[] | null } {
+export function edgeStyle(tier: CredibilityTier | null | undefined): {
+  width: number;
+  dash: number[] | null;
+} {
   switch (tier) {
     case 'peer_reviewed':
-    case 'book':       return { width: 0.85, dash: null };
-    case 'preprint':   return { width: 0.78, dash: null };
-    case 'gray_lit':   return { width: 0.74, dash: null };
+    case 'book':
+      return { width: 0.85, dash: null };
+    case 'preprint':
+      return { width: 0.78, dash: null };
+    case 'gray_lit':
+      return { width: 0.74, dash: null };
     case 'web':
-    case 'personal':   return { width: 0.68, dash: null };
-    default:           return { width: 0.68, dash: null };
+    case 'personal':
+      return { width: 0.68, dash: null };
+    default:
+      return { width: 0.68, dash: null };
   }
 }
 

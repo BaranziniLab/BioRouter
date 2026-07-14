@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod diagnostics;
 pub mod formatter;
 pub mod graph;
 pub mod languages;
@@ -136,6 +137,35 @@ impl CodeAnalyzer {
 
         tracing::info!("Analysis complete");
         Ok(CallToolResult::success(Formatter::format_results(output)))
+    }
+
+    /// Run offline syntax diagnostics on a single file (BR-47).
+    ///
+    /// Reads the file fresh from disk, parses it with tree-sitter, and returns
+    /// its ERROR / MISSING nodes as [`diagnostics::Diagnostic`]s. Returns an empty
+    /// vec — never an error — for anything not worth flagging: an unsupported or
+    /// grammar-mismatched language ([`diagnostics::is_diagnosable_language`]), an
+    /// unreadable or binary file, a file too large to parse cheaply, or a clean
+    /// parse. Diagnostics are advisory; failing to produce them must never fail
+    /// the edit that triggered them, so every failure path degrades to "no
+    /// diagnostics".
+    pub fn diagnose_file(&self, path: &Path) -> Vec<diagnostics::Diagnostic> {
+        let language = lang::get_language_identifier(path);
+        if !diagnostics::is_diagnosable_language(language) {
+            return Vec::new();
+        }
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return Vec::new(),
+        };
+        if content.len() > diagnostics::MAX_DIAGNOSE_BYTES {
+            return Vec::new();
+        }
+        let tree = match self.parser_manager.parse(&content, language) {
+            Ok(tree) => tree,
+            Err(_) => return Vec::new(),
+        };
+        diagnostics::collect_syntax_errors(&tree, &content, diagnostics::MAX_DIAGNOSTICS_PER_FILE)
     }
 
     fn determine_mode(&self, params: &AnalyzeParams, path: &Path) -> AnalysisMode {

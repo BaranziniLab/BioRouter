@@ -173,7 +173,10 @@ async fn aborts_from_turn(agent: &Agent, session_id: &str) -> Result<Vec<TurnAbo
         id: session_id.to_string(),
         schedule_id: None,
         max_turns: Some(4),
+        max_tool_calls: None,
+        budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
     let stream = agent
         .reply(Message::user().with_text("go"), session_config, None)
@@ -269,7 +272,10 @@ async fn the_human_readable_error_message_is_still_emitted() {
         id: session_id.clone(),
         schedule_id: None,
         max_turns: Some(4),
+        max_tool_calls: None,
+        budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
     let stream = agent
         .reply(Message::user().with_text("go"), session_config, None)

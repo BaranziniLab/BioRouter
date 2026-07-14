@@ -10,7 +10,6 @@ afterEach(() => {
 });
 
 // Mock console methods to avoid noise in tests
-// eslint-disable-next-line no-undef
 global.console = {
   ...console,
   log: vi.fn(),

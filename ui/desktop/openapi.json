@@ -18,6 +18,8 @@
         "tags": [
           "super::routes::action_required"
         ],
+        "summary": "Deliver a tool-permission decision to the prompt that is waiting for it.",
+        "description": "**Idempotent** (BR-62). The decision is routed by tool request id to that\nprompt's own channel, so a decision for an id nobody is waiting on — a\ndouble-clicked Allow, a card the user answered after the prompt expired or the\nturn was cancelled, a stale client replaying an old confirmation — is dropped\nrather than applied to whatever tool call happens to be pending now. (Before\nBR-62 confirmations went to a single per-agent channel, so a late \"allow\"\nreally could approve an unrelated later tool call.)\n\nBoth outcomes are a 200: a duplicate click is a no-op, not a failure. The\n`status` field reports which happened — `delivered` when a live prompt took\nthe decision, `unknown` when nothing was waiting on that id.",
         "operationId": "confirm_tool_action",
         "requestBody": {
           "content": {
@@ -31,7 +33,7 @@
         },
         "responses": {
           "200": {
-            "description": "Tool confirmation action is confirmed",
+            "description": "Decision processed; `status` is `delivered` or `unknown`",
             "content": {
               "application/json": {
                 "schema": {}
@@ -40,6 +42,63 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/active_work": {
+      "get": {
+        "tags": [
+          "active_work"
+        ],
+        "operationId": "list_active_work",
+        "responses": {
+          "200": {
+            "description": "Current background jobs, subagents, and in-flight scheduled runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveWorkResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/active_work/{id}/cancel": {
+      "post": {
+        "tags": [
+          "active_work"
+        ],
+        "operationId": "cancel_active_work",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Active-work item id from GET /active_work",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancel requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelActiveWorkResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such active-work item"
           },
           "500": {
             "description": "Internal server error"
@@ -121,6 +180,44 @@
           },
           "424": {
             "description": "Agent not initialized"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/agent/cancel": {
+      "post": {
+        "tags": [
+          "super::routes::reply"
+        ],
+        "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
+        "operationId": "cancel_turn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cancel processed; `cancelled` reports whether a turn was running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelTurnResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
           },
           "500": {
             "description": "Internal server error"
@@ -1352,6 +1449,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/interrupt": {
+      "post": {
+        "tags": [
+          "super::routes::reply"
+        ],
+        "summary": "Soft interrupt: queue a user message to be injected into the session's",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".",
+        "operationId": "interrupt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterruptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Message queued for injection into the running turn"
+          },
+          "400": {
+            "description": "Empty message text"
+          },
+          "409": {
+            "description": "No turn is in flight for this session"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         }
       }
@@ -4152,8 +4283,24 @@
               "id": {
                 "type": "string"
               },
+              "preview": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolPreview"
+                  }
+                ],
+                "nullable": true
+              },
               "prompt": {
                 "type": "string",
+                "nullable": true
+              },
+              "risk": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolRisk"
+                  }
+                ],
                 "nullable": true
               },
               "toolName": {
@@ -4224,6 +4371,69 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          }
+        }
+      },
+      "ActiveWorkItemDto": {
+        "type": "object",
+        "description": "One active unit of work, kind-tagged so the GUI can render/route uniformly.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "cancellable"
+        ],
+        "properties": {
+          "cancellable": {
+            "type": "boolean",
+            "description": "Whether `POST /active_work/{id}/cancel` can stop it."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Extra context (full command, child session id, workflow source).",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique id; also the handle for `POST /active_work/{id}/cancel`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`background_job`, `subagent`, or `scheduled_run`."
+          },
+          "runningForSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock seconds this item has been running where known.",
+            "nullable": true
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Owning/related session id where known.",
+            "nullable": true
+          },
+          "startedAt": {
+            "type": "string",
+            "description": "RFC3339 start time where known.",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "description": "Short human-readable label (command, task prompt, or schedule id)."
+          }
+        }
+      },
+      "ActiveWorkResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActiveWorkItemDto"
             }
           }
         }
@@ -4402,6 +4612,47 @@
           }
         }
       },
+      "CancelActiveWorkResponse": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelTurnRequest": {
+        "type": "object",
+        "description": "Request body for the addressable cancel route.",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CancelTurnResponse": {
+        "type": "object",
+        "description": "Response body for the addressable cancel route.",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "True when a running turn was found and its cancellation token tripped.\nFalse means there was nothing to cancel — which is a success, not an error."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The id of the turn that was cancelled, when there was one.",
+            "nullable": true
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "enum": [
@@ -4428,8 +4679,21 @@
             },
             "nullable": true
           },
+          "reasoning_effort": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ],
+            "nullable": true
+          },
           "session_id": {
             "type": "string"
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.",
+            "nullable": true
           },
           "user_message": {
             "$ref": "#/components/schemas/Message"
@@ -5007,6 +5271,11 @@
             "type": "integer",
             "format": "int64",
             "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer — an in-flight turn captured mid-generation is\nnever carried over.",
+            "nullable": true
+          },
+          "truncateAfterId": {
+            "type": "string",
+            "description": "Optional anchor by durable message id (`Message.id`), the BR-45 fork\npoint. Preferred over `truncate_after`: it is unambiguous when two\nmessages share a whole second and it records the branch's fork point. It\ntakes precedence when both are supplied; `truncate_after` stays for\nback-compatibility with older clients.",
             "nullable": true
           }
         }
@@ -5803,6 +6072,22 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InterruptRequest": {
+        "type": "object",
+        "description": "Request body for the soft-interrupt route.",
+        "required": [
+          "session_id",
+          "text"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
           }
         }
       },
@@ -6699,6 +6984,14 @@
           "model_name": {
             "type": "string"
           },
+          "reasoning_effort": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ],
+            "nullable": true
+          },
           "request_params": {
             "type": "object",
             "description": "Provider-specific request parameters (e.g., anthropic_beta headers)",
@@ -7336,6 +7629,15 @@
           }
         }
       },
+      "ReasoningEffort": {
+        "type": "string",
+        "description": "How hard the agent should think this turn.",
+        "enum": [
+          "quick",
+          "normal",
+          "deep"
+        ]
+      },
       "RedactedThinkingContent": {
         "type": "object",
         "required": [
@@ -7716,6 +8018,11 @@
             "type": "integer",
             "format": "int64",
             "description": "Lifetime totals. New usage writes use the four-bucket billed total;\ndatabases created before billed-bucket accounting may contain legacy\ncontext totals here, so reporting and budgets use `token_events` instead.\nThese counters grow without bound, so SQLite and Rust both use 64-bit.",
+            "nullable": true
+          },
+          "branch_point_msg_uid": {
+            "type": "string",
+            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at — the fork point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
             "nullable": true
           },
           "conversation": {
@@ -8302,7 +8609,7 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "Execute a shell command and check its exit status",
+            "description": "Execute a shell command and check its exit status (0 = pass).",
             "required": [
               "command",
               "type"
@@ -8319,9 +8626,78 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: pass when a file exists at `path`. A relative `path` resolves\nagainst the session working directory (interactive gate) or the process\nworking directory (workflow retry).",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The file (or directory) that must exist."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileExists"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored — this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
+            "required": [
+              "command",
+              "substring",
+              "type"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The shell command whose output is inspected."
+              },
+              "substring": {
+                "type": "string",
+                "description": "The substring the output must contain."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "OutputContains"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: pass when the JSON file at `path` parses and validates against the\ninline JSON Schema `schema` (same engine as the workflow final-output\ncontract, [`crate::agents::final_output_tool`]).",
+            "required": [
+              "path",
+              "schema",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The JSON file to validate."
+              },
+              "schema": {
+                "description": "The JSON Schema the file's contents must satisfy."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "JsonSchema"
+                ]
+              }
+            }
           }
         ],
-        "description": "A single success check to validate workflow completion",
+        "description": "A single success check to validate workflow completion, or (BR-48) to gate\nan interactive chat turn from finishing with unmet conditions.\n\nOriginally a single `Shell` variant used only by the workflow retry path.\nBR-48 added the non-shell variants and a done-ness gate so an interactive\nsession can also declare \"not done until these hold\" — see\n[`crate::agents::done_gate`].",
         "discriminator": {
           "propertyName": "type"
         }
@@ -8599,6 +8975,159 @@
           }
         }
       },
+      "ToolPreview": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A command that will be handed to a shell verbatim.",
+            "required": [
+              "command",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "shell"
+                ]
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "The command was clipped to fit the frame."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An edit to a file that already exists, as a line diff.",
+            "required": [
+              "path",
+              "lines",
+              "added",
+              "removed",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "added": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fileEdit"
+                ]
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ToolPreviewLine"
+                }
+              },
+              "path": {
+                "type": "string"
+              },
+              "removed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Lines beyond the cap were dropped; `added`/`removed` still count the whole edit."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Creation of a new file, as its full (clipped) contents.",
+            "required": [
+              "path",
+              "content",
+              "lineCount",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fileWrite"
+                ]
+              },
+              "lineCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Anything else: the arguments, pretty-printed, so no tool confirms blind.",
+            "required": [
+              "json",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "json": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "arguments"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "description": "What a pending tool call will do, in a shape the confirmation card can render.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "ToolPreviewLine": {
+        "type": "object",
+        "description": "One line of a rendered diff, with its provenance.",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ToolPreviewLineKind"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolPreviewLineKind": {
+        "type": "string",
+        "description": "One line of a rendered diff.",
+        "enum": [
+          "context",
+          "added",
+          "removed"
+        ]
+      },
       "ToolRequest": {
         "type": "object",
         "required": [
@@ -8637,6 +9166,16 @@
             "type": "object"
           }
         }
+      },
+      "ToolRisk": {
+        "type": "string",
+        "description": "Per-action risk grade for a tool call.\n\nThe `Ord` derive is load-bearing: `Low < Medium < High < Unknown`, so an\nun-gradeable tool sorts above every graded one and a naive `>= threshold`\ncomparison already fails closed. [`SmartApproveConfig::requires_confirmation`]\nstill treats `Unknown` explicitly so it can be opted out of.\n\nBR-63 also ships the grade to the confirmation card, so it is a wire type:\nit serialises as `\"low\" | \"medium\" | \"high\" | \"unknown\"`.",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "unknown"
+        ]
       },
       "TunnelInfo": {
         "type": "object",

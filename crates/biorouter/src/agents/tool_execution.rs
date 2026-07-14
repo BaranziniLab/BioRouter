@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_stream::try_stream;
 use futures::stream::{self, BoxStream};
 use futures::{Stream, StreamExt};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::permission::PermissionLevel;
 use crate::mcp_utils::ToolResult;
-use crate::permission::Permission;
+use crate::permission::{Permission, PermissionConfirmation};
 use rmcp::model::{Content, ServerNotification};
 
 // ToolCallResult combines the result of a tool call with an optional notification stream that
@@ -35,19 +36,6 @@ use crate::conversation::message::{Message, ToolRequest};
 use crate::session::Session;
 use crate::tool_inspection::get_security_finding_id_from_results;
 
-/// What the model is told when BioRouter's OWN loop guard blocks a call.
-///
-/// This used to reuse [`DECLINED_RESPONSE`] — "The user has declined to run this
-/// tool" — which is a **lie**: the user declined nothing, the repetition inspector
-/// did. The model could not tell a human refusal from a loop guard, so it could
-/// not learn "do something different"; it just retried, was denied again, and rode
-/// the loop to the turn cap. Saying what actually happened is the minimum; the
-/// tool is also removed from the tool list, so the retry is impossible anyway.
-pub const LOOP_BLOCKED_RESPONSE: &str = "This exact call (same tool, same arguments) has already \
-    been made several times and produced no new information, so it has been BLOCKED and the tool \
-    is now disabled for the rest of this turn. The user did not decline it — you are in a loop. \
-    Do something different, or stop and explain what you are stuck on.";
-
 pub const DECLINED_RESPONSE: &str = "The user has declined to run this tool. \
     DO NOT attempt to call this tool again. \
     If there are no alternative methods to proceed, clearly explain the situation and STOP.";
@@ -61,6 +49,117 @@ pub const CHAT_MODE_TOOL_SKIPPED_RESPONSE: &str = "Let the user know the tool ca
                                         2. **Outline Steps** - Break down the steps.\n \
                                         If needed, adjust the explanation based on user preferences or questions.";
 
+pub const EXPIRED_RESPONSE: &str = "The permission prompt for this tool call expired before the \
+    user answered it, so the tool was NOT run. The user is likely away. Do not silently retry the \
+    same call — summarize what you were about to do and stop.";
+
+pub const CANCELLED_RESPONSE: &str = "The user cancelled this turn before deciding on this tool \
+    call, so the tool was NOT run.";
+
+/// How long a tool-permission prompt stays answerable before it expires (BR-62).
+///
+/// Deliberately generous: the human on the other end may be reading the diff, in
+/// another window, or at lunch, and a premature expiry is indistinguishable from
+/// a denial they never made. The TTL exists to bound the *pathological* case —
+/// a confirmation that can never arrive because the client crashed, navigated
+/// away, or dropped the card — which before BR-62 parked the turn (and the
+/// session's turn lock) forever.
+const DEFAULT_CONFIRMATION_TIMEOUT_SECS: u64 = 3600;
+
+/// Resolve the permission-prompt TTL, honoring `BIOROUTER_CONFIRMATION_TIMEOUT_SECS`.
+fn confirmation_timeout() -> Option<Duration> {
+    parse_confirmation_timeout(std::env::var("BIOROUTER_CONFIRMATION_TIMEOUT_SECS").ok())
+}
+
+/// The TTL policy, split out from the env read so it can be tested without
+/// mutating process-global state.
+///
+/// `0` disables the TTL and restores the pre-BR-62 behaviour of waiting forever
+/// (still cancellable), for anyone who would rather block than risk an expiry.
+/// Unset or unparseable falls back to the default.
+fn parse_confirmation_timeout(raw: Option<String>) -> Option<Duration> {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CONFIRMATION_TIMEOUT_SECS);
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+/// How a wait for a tool-permission decision ended (BR-62).
+enum ConfirmationWait {
+    /// The user (or a client acting for them) decided.
+    Confirmed(PermissionConfirmation),
+    /// The TTL elapsed, or the prompt was dropped without a decision.
+    Expired,
+    /// The turn was cancelled out from under the prompt.
+    Cancelled,
+}
+
+/// Wait for this prompt's decision, bounded on three sides.
+///
+/// Before BR-62 this was a bare `recv()` on a per-agent channel: the only way out
+/// was a decision, so a cancel could not unblock it and a decision that never came
+/// hung the turn forever. Now the decision races the turn's cancellation token and
+/// a TTL, so every path out of the prompt is one the loop can handle.
+async fn await_confirmation(
+    rx: oneshot::Receiver<PermissionConfirmation>,
+    cancellation_token: Option<CancellationToken>,
+    timeout: Option<Duration>,
+) -> ConfirmationWait {
+    let cancelled = async move {
+        match cancellation_token {
+            Some(token) => token.cancelled_owned().await,
+            // No token: this arm must never win the race.
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let expired = async move {
+        match timeout {
+            Some(ttl) => tokio::time::sleep(ttl).await,
+            // TTL disabled: this arm must never win the race.
+            None => std::future::pending::<()>().await,
+        }
+    };
+
+    tokio::select! {
+        // Biased so a decision that genuinely landed is honored even if the turn
+        // is cancelled or the TTL fires in the same instant — the user answered.
+        biased;
+        decision = rx => match decision {
+            Ok(confirmation) => ConfirmationWait::Confirmed(confirmation),
+            // Our sender was dropped without a decision (the prompt was forgotten
+            // out from under us). Treat it as an expiry rather than parking on a
+            // channel nobody holds.
+            Err(_) => ConfirmationWait::Expired,
+        },
+        () = cancelled => ConfirmationWait::Cancelled,
+        () = expired => ConfirmationWait::Expired,
+    }
+}
+
+/// Record `text` as the tool response for `request`, marked as an error.
+///
+/// Every tool request must end with a tool response — a request with none breaks
+/// the *next* provider call — so declines, expiries and cancels all funnel here.
+async fn write_tool_response(
+    request: &ToolRequest,
+    request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    text: &str,
+) {
+    if let Some(response_msg) = request_to_response_map.get(&request.id) {
+        let mut response = response_msg.lock().await;
+        *response = response.clone().with_tool_response_with_metadata(
+            request.id.clone(),
+            Ok(rmcp::model::CallToolResult {
+                content: vec![Content::text(text)],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+            request.metadata.as_ref(),
+        );
+    }
+}
+
 impl Agent {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn handle_approval_tool_requests<'a>(
@@ -73,7 +172,7 @@ impl Agent {
         inspection_results: &'a [crate::tool_inspection::InspectionResult],
     ) -> BoxStream<'a, anyhow::Result<Message>> {
         try_stream! {
-        for request in tool_requests.iter() {
+        for (idx, request) in tool_requests.iter().enumerate() {
             if let Ok(tool_call) = request.tool_call.clone() {
                 // PermissionRequest hooks may resolve the approval without
                 // prompting the user (allow -> dispatch, deny -> declined).
@@ -87,6 +186,26 @@ impl Agent {
                         .hooks_manager
                         .permission_request(&session.id, &session.working_dir, &tool_call.name, &tool_input)
                         .await;
+                    // BR-19: this gate used to read only `aggregate.decision`, so a
+                    // PermissionRequest hook's `additionalContext` / `systemMessage`
+                    // was computed and thrown away. Stage them for the turn's
+                    // injection point (a message yielded from here never enters the
+                    // conversation, only the event stream).
+                    if !aggregate.additional_context.is_empty() || !aggregate.system_messages.is_empty() {
+                        self.hooks_manager.stage_tool_hook(
+                            &session.id,
+                            crate::hooks::StagedToolHook {
+                                event: crate::hooks::HookEvent::PermissionRequest,
+                                tool_request_id: request.id.clone(),
+                                tool_name: tool_call.name.to_string(),
+                                // Rewrites are PreToolUse-only: by here the call is
+                                // already recorded in the transcript.
+                                updated_input: None,
+                                additional_context: aggregate.additional_context.clone(),
+                                system_messages: aggregate.system_messages.clone(),
+                            },
+                        );
+                    }
                     aggregate.decision
                 };
 
@@ -171,73 +290,124 @@ impl Agent {
                         }
                     });
 
+                // BR-63: give the card enough to decide with. The BR-18 registry
+                // already grades every tool it handed the model this turn, and
+                // the preview turns the raw arguments into the thing the user
+                // actually needs to see — the command, or the diff.
+                let arguments = tool_call.arguments.clone().unwrap_or_default();
+                let risk = self.tool_risks.risk_for(&tool_call.name);
+                let preview = crate::conversation::tool_preview::ToolPreview::for_tool_call(
+                    &tool_call.name,
+                    &arguments,
+                );
+                // BR-62: register this prompt's own channel BEFORE the card is
+                // yielded, so an instant answer cannot arrive before there is a
+                // sender to route it to.
+                let confirmation_rx = self.register_confirmation(&request.id);
+
                 let confirmation = Message::assistant()
-                    .with_action_required(
+                    .with_action_required_with_context(
                         request.id.clone(),
                         tool_call.name.to_string().clone(),
-                        tool_call.arguments.clone().unwrap_or_default(),
+                        arguments,
                         security_message,
+                        Some(risk),
+                        preview,
                     )
                     .user_only();
                 yield confirmation;
 
-                let mut rx = self.confirmation_rx.lock().await;
-                while let Some((req_id, confirmation)) = rx.recv().await {
-                    if req_id == request.id {
-                        // Log user decision if this was a security alert
-                        if let Some(finding_id) = get_security_finding_id_from_results(&request.id, inspection_results) {
-                            tracing::info!(
-                                counter.biorouter.prompt_injection_user_decisions = 1,
-                                decision = ?confirmation.permission,
-                                finding_id = %finding_id,
-                                "User security decision"
-                            );
-                        }
+                // The wait is now bounded on three sides: the decision itself, a
+                // cancel of the turn (so a programmatic `/agent/cancel` unblocks
+                // it — before BR-62 only tearing the SSE socket down did), and a
+                // TTL (so a decision that never arrives cannot park the turn
+                // forever).
+                let wait = await_confirmation(
+                    confirmation_rx,
+                    cancellation_token.clone(),
+                    confirmation_timeout(),
+                )
+                .await;
+                // Answered, expired, or cancelled — either way this id is no
+                // longer accepting a decision.
+                self.forget_confirmation(&request.id);
 
-                        if confirmation.permission == Permission::AllowOnce || confirmation.permission == Permission::AlwaysAllow {
-                            let (req_id, tool_result) = self.dispatch_tool_call(tool_call.clone(), request.id.clone(), cancellation_token.clone(), session).await;
-                            let mut futures = tool_futures.lock().await;
-
-                            futures.push((req_id, match tool_result {
-                                Ok(result) => tool_stream(
-                                    result.notification_stream.unwrap_or_else(|| Box::new(stream::empty())),
-                                    result.result,
+                let confirmation = match wait {
+                    ConfirmationWait::Confirmed(confirmation) => confirmation,
+                    ConfirmationWait::Expired => {
+                        tracing::warn!(
+                            tool_name = %tool_call.name,
+                            request_id = %request.id,
+                            "Tool permission prompt expired without a decision"
+                        );
+                        write_tool_response(request, request_to_response_map, EXPIRED_RESPONSE).await;
+                        yield Message::assistant()
+                            .with_system_notification(
+                                crate::conversation::message::SystemNotificationType::InlineMessage,
+                                format!(
+                                    "The permission prompt for {} expired before it was answered. The tool was not run.",
+                                    tool_call.name
                                 ),
-                                Err(e) => tool_stream(
-                                    Box::new(stream::empty()),
-                                    futures::future::ready(Err(e)),
-                                ),
-                            }));
-
-                            // Update the shared permission manager when user selects "Always Allow"
-                            if confirmation.permission == Permission::AlwaysAllow {
-                                self.tool_inspection_manager
-                                    .update_permission_manager(&tool_call.name, PermissionLevel::AlwaysAllow)
-                                    .await;
-                            }
-                        } else {
-                            // User declined - update the specific response message for this request
-                            if let Some(response_msg) = request_to_response_map.get(&request.id) {
-                                let mut response = response_msg.lock().await;
-                                *response = response.clone().with_tool_response_with_metadata(
-                                    request.id.clone(),
-                                    Ok(rmcp::model::CallToolResult {
-                                        content: vec![Content::text(DECLINED_RESPONSE)],
-                                        structured_content: None,
-                                        is_error: Some(true),
-                                        meta: None,
-                                    }),
-                                    request.metadata.as_ref(),
-                                );
-                            }
-
-                            if confirmation.permission == Permission::AlwaysDeny {
-                                self.tool_inspection_manager
-                                    .update_permission_manager(&tool_call.name, PermissionLevel::NeverAllow)
-                                    .await;
-                            }
+                            )
+                            .user_only();
+                        continue;
+                    }
+                    ConfirmationWait::Cancelled => {
+                        tracing::info!(
+                            tool_name = %tool_call.name,
+                            request_id = %request.id,
+                            "Turn cancelled while awaiting tool permission"
+                        );
+                        // Answer this prompt *and* every prompt we would have
+                        // shown after it, so the cancelled turn still leaves a
+                        // well-formed conversation (a tool request with no
+                        // response breaks the next provider call).
+                        for pending in &tool_requests[idx..] {
+                            write_tool_response(pending, request_to_response_map, CANCELLED_RESPONSE).await;
                         }
-                        break; // Exit the loop once the matching `req_id` is found
+                        break;
+                    }
+                };
+
+                // Log user decision if this was a security alert
+                if let Some(finding_id) = get_security_finding_id_from_results(&request.id, inspection_results) {
+                    tracing::info!(
+                        counter.biorouter.prompt_injection_user_decisions = 1,
+                        decision = ?confirmation.permission,
+                        finding_id = %finding_id,
+                        "User security decision"
+                    );
+                }
+
+                if confirmation.permission == Permission::AllowOnce || confirmation.permission == Permission::AlwaysAllow {
+                    let (req_id, tool_result) = self.dispatch_tool_call(tool_call.clone(), request.id.clone(), cancellation_token.clone(), session).await;
+                    let mut futures = tool_futures.lock().await;
+
+                    futures.push((req_id, match tool_result {
+                        Ok(result) => tool_stream(
+                            result.notification_stream.unwrap_or_else(|| Box::new(stream::empty())),
+                            result.result,
+                        ),
+                        Err(e) => tool_stream(
+                            Box::new(stream::empty()),
+                            futures::future::ready(Err(e)),
+                        ),
+                    }));
+
+                    // Update the shared permission manager when user selects "Always Allow"
+                    if confirmation.permission == Permission::AlwaysAllow {
+                        self.tool_inspection_manager
+                            .update_permission_manager(&tool_call.name, PermissionLevel::AlwaysAllow)
+                            .await;
+                    }
+                } else {
+                    // User declined - update the specific response message for this request
+                    write_tool_response(request, request_to_response_map, DECLINED_RESPONSE).await;
+
+                    if confirmation.permission == Permission::AlwaysDeny {
+                        self.tool_inspection_manager
+                            .update_permission_manager(&tool_call.name, PermissionLevel::NeverAllow)
+                            .await;
                     }
                 }
             }
@@ -271,5 +441,123 @@ impl Agent {
             }
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::permission::permission_confirmation::PrincipalType;
+
+    fn allow_once() -> PermissionConfirmation {
+        PermissionConfirmation {
+            principal_type: PrincipalType::Tool,
+            permission: Permission::AllowOnce,
+        }
+    }
+
+    #[test]
+    fn timeout_defaults_when_unset_or_garbage() {
+        assert_eq!(
+            parse_confirmation_timeout(None),
+            Some(Duration::from_secs(DEFAULT_CONFIRMATION_TIMEOUT_SECS))
+        );
+        assert_eq!(
+            parse_confirmation_timeout(Some("not-a-number".into())),
+            Some(Duration::from_secs(DEFAULT_CONFIRMATION_TIMEOUT_SECS))
+        );
+    }
+
+    #[test]
+    fn timeout_is_configurable_and_zero_disables_it() {
+        assert_eq!(
+            parse_confirmation_timeout(Some("90".into())),
+            Some(Duration::from_secs(90))
+        );
+        // 0 opts back into the pre-BR-62 "wait forever" behaviour.
+        assert_eq!(parse_confirmation_timeout(Some("0".into())), None);
+    }
+
+    #[tokio::test]
+    async fn a_decision_resolves_the_wait() {
+        let (tx, rx) = oneshot::channel();
+        tx.send(allow_once()).unwrap();
+
+        let wait = await_confirmation(rx, Some(CancellationToken::new()), None).await;
+
+        assert!(matches!(
+            wait,
+            ConfirmationWait::Confirmed(c) if c.permission == Permission::AllowOnce
+        ));
+    }
+
+    /// The BR-62 headline: a cancel now unblocks a prompt the turn is parked on.
+    /// Before, the only way out of the wait was a decision, so a programmatic
+    /// cancel left the turn (and its session turn lock) hung forever.
+    #[tokio::test]
+    async fn cancellation_unblocks_the_wait() {
+        let (_tx, rx) = oneshot::channel();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let wait = await_confirmation(rx, Some(token), None).await;
+
+        assert!(matches!(wait, ConfirmationWait::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn ttl_expires_the_wait() {
+        // Sender held alive, so only the TTL can end this wait.
+        let (_tx, rx) = oneshot::channel();
+
+        let wait = await_confirmation(
+            rx,
+            Some(CancellationToken::new()),
+            Some(Duration::from_millis(10)),
+        )
+        .await;
+
+        assert!(matches!(wait, ConfirmationWait::Expired));
+    }
+
+    /// A prompt dropped without a decision must not park the loop on a channel
+    /// nobody holds.
+    #[tokio::test]
+    async fn a_dropped_prompt_expires_the_wait() {
+        let (tx, rx) = oneshot::channel::<PermissionConfirmation>();
+        drop(tx);
+
+        let wait = await_confirmation(rx, Some(CancellationToken::new()), None).await;
+
+        assert!(matches!(wait, ConfirmationWait::Expired));
+    }
+
+    /// A decision that landed is honored even if the turn is cancelled in the
+    /// same instant — the user did answer, and the `biased` select respects that.
+    #[tokio::test]
+    async fn a_landed_decision_beats_a_simultaneous_cancel() {
+        let (tx, rx) = oneshot::channel();
+        tx.send(allow_once()).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let wait = await_confirmation(rx, Some(token), Some(Duration::from_millis(0))).await;
+
+        assert!(matches!(wait, ConfirmationWait::Confirmed(_)));
+    }
+
+    /// With no cancellation token and no TTL the wait must still be driven purely
+    /// by the decision — neither dummy arm may fire.
+    #[tokio::test]
+    async fn no_token_and_no_ttl_waits_for_the_decision() {
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = tx.send(allow_once());
+        });
+
+        let wait = await_confirmation(rx, None, None).await;
+
+        assert!(matches!(wait, ConfirmationWait::Confirmed(_)));
     }
 }

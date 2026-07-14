@@ -61,15 +61,50 @@ impl RetryConfig {
     }
 }
 
-/// A single success check to validate workflow completion
+/// A single success check to validate workflow completion, or (BR-48) to gate
+/// an interactive chat turn from finishing with unmet conditions.
+///
+/// Originally a single `Shell` variant used only by the workflow retry path.
+/// BR-48 added the non-shell variants and a done-ness gate so an interactive
+/// session can also declare "not done until these hold" — see
+/// [`crate::agents::done_gate`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type")]
 pub enum SuccessCheck {
-    /// Execute a shell command and check its exit status
+    /// Execute a shell command and check its exit status (0 = pass).
     #[serde(alias = "shell")]
     Shell {
         /// The shell command to execute
         command: String,
+    },
+    /// BR-48: pass when a file exists at `path`. A relative `path` resolves
+    /// against the session working directory (interactive gate) or the process
+    /// working directory (workflow retry).
+    #[serde(alias = "file_exists", alias = "fileexists")]
+    FileExists {
+        /// The file (or directory) that must exist.
+        path: String,
+    },
+    /// BR-48: run `command` and pass when its combined stdout+stderr contains
+    /// `substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is
+    /// ignored — this checks the *content* of the output (e.g. `0 failed`,
+    /// `PASS`, a coverage percentage).
+    #[serde(alias = "output_contains", alias = "outputcontains")]
+    OutputContains {
+        /// The shell command whose output is inspected.
+        command: String,
+        /// The substring the output must contain.
+        substring: String,
+    },
+    /// BR-48: pass when the JSON file at `path` parses and validates against the
+    /// inline JSON Schema `schema` (same engine as the workflow final-output
+    /// contract, [`crate::agents::final_output_tool`]).
+    #[serde(alias = "json_schema", alias = "jsonschema")]
+    JsonSchema {
+        /// The JSON file to validate.
+        path: String,
+        /// The JSON Schema the file's contents must satisfy.
+        schema: serde_json::Value,
     },
 }
 
@@ -89,7 +124,25 @@ pub struct SessionConfig {
     pub schedule_id: Option<String>,
     /// Maximum number of turns (iterations) allowed without user input
     pub max_turns: Option<u32>,
+    /// Maximum number of tool calls allowed in a single reply, across all
+    /// iterations. Bounds runaway fan-out that the per-iteration `max_turns`
+    /// cap misses (one iteration can dispatch many parallel tool calls).
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    /// Per-reply wall-clock / token / dollar ceiling (BR-35). Bounds how long a
+    /// reply runs and what it costs, which the iteration caps above do not:
+    /// 429 backoff compounds *inside* an iteration, and one iteration can pull a
+    /// whole 200k-token context. Unset axes fall back to the global config keys
+    /// (`BIOROUTER_REPLY_BUDGET_*`); unset everywhere means unbounded, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<crate::agents::budget::ReplyBudget>,
     /// Retry configuration for automated validation and recovery
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_config: Option<RetryConfig>,
+    /// BR-63: how hard to think on this turn (quick / normal / deep). `None`
+    /// falls back to the session's sticky `/effort` setting, and then to
+    /// `Normal` — which is a strict no-op, so an unset effort behaves exactly
+    /// as before. See [`crate::agents::effort`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<crate::agents::effort::ReasoningEffort>,
 }

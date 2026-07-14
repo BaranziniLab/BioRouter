@@ -1,7 +1,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::session::extension_data;
-use crate::session::extension_data::ExtensionState;
+use crate::session::extension_data::{ExtensionState, TodoState, TodoStatus};
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -15,9 +15,40 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "todo";
 
+/// Default cap on the number of items a checklist may hold (per session).
+const DEFAULT_MAX_ITEMS: usize = 200;
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TodoWriteParams {
+    /// The full checklist as markdown. One item per line, e.g.
+    /// `- [ ] task`, `- [~] in progress`, `- [x] done`. Replaces the whole
+    /// list — prefer `todo_add`/`todo_update` for incremental changes.
     content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct TodoAddParams {
+    /// New tasks to append. Each becomes a pending item with a fresh id.
+    items: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct TodoUpdateParams {
+    /// The id (the `#N` shown in the checklist) of the item to update.
+    id: String,
+    /// New status: `pending`, `in_progress`, or `completed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    /// Optional replacement text for the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct PlanWriteParams {
+    /// The living plan: a maintained, step-by-step plan you keep updated as you
+    /// work. Pass an empty string to clear it.
+    plan: String,
 }
 
 pub struct TodoClient {
@@ -43,25 +74,25 @@ impl TodoClient {
             server_info: Implementation {
                 name: EXTENSION_NAME.to_string(),
                 title: Some("Todo".to_string()),
-                version: "1.0.0".to_string(),
+                version: "1.1.0".to_string(),
                 icons: None,
                 website_url: None,
             },
             instructions: Some(
                 indoc! {r#"
-                Your todo content is automatically available in your context.
+                Your plan and todo checklist are automatically re-injected into
+                your context each turn, so you don't need to repeat them.
 
-                Workflow:
-                - Start: write initial checklist
-                - During: update progress
-                - End: verify all complete
+                Structured, per-item workflow:
+                - Start: `plan_write` the approach, then `todo_write` the initial
+                  checklist (one `- [ ]` line per task).
+                - During: `todo_update` a single item's status as you go
+                  (`in_progress` when you pick it up, `completed` when done).
+                  Prefer `todo_add`/`todo_update` over rewriting the whole list.
+                - End: verify every item is `completed` (or explain why not).
 
-                Template:
-                - [x] Requirement 1
-                - [ ] Task
-                  - [ ] Sub-task
-                - [ ] Requirement 2
-                - [ ] Another task
+                Statuses: pending, in_progress, completed. Items are addressed by
+                the `#N` id shown next to each line.
             "#}
                 .to_string(),
             ),
@@ -70,25 +101,54 @@ impl TodoClient {
         Ok(Self { info, context })
     }
 
-    async fn handle_write_todo(
+    /// Load the session's todo state (migrating any legacy blob), let `f`
+    /// mutate it, then persist. Returns `f`'s success message.
+    async fn with_state<F>(&self, session_id: &str, f: F) -> Result<String, String>
+    where
+        F: FnOnce(&mut TodoState) -> Result<String, String>,
+    {
+        let manager = &self.context.session_manager;
+        let mut session = manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|_| "Failed to read session metadata".to_string())?;
+
+        let mut state = TodoState::load(&session.extension_data).unwrap_or_default();
+        let message = f(&mut state)?;
+
+        state
+            .to_extension_data(&mut session.extension_data)
+            .map_err(|_| "Failed to serialize TODO state".to_string())?;
+
+        manager
+            .update(session_id)
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .map_err(|_| "Failed to update session metadata".to_string())?;
+
+        Ok(message)
+    }
+
+    fn max_items() -> usize {
+        std::env::var("BIOROUTER_TODO_MAX_ITEMS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MAX_ITEMS)
+    }
+
+    async fn handle_write(
         &self,
         session_id: &str,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
-        let content = arguments
-            .as_ref()
-            .ok_or("Missing arguments")?
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: content")?
-            .to_string();
+        let content = string_arg(&arguments, "content")?;
 
         let char_count = content.chars().count();
         let max_chars = std::env::var("BIOROUTER_TODO_MAX_CHARS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(50_000);
-
         if max_chars > 0 && char_count > max_chars {
             return Err(format!(
                 "Todo list too large: {} chars (max: {})",
@@ -96,62 +156,213 @@ impl TodoClient {
             ));
         }
 
-        let manager = &self.context.session_manager;
-        match manager.get_session(session_id, false).await {
-            Ok(mut session) => {
-                let todo_state = extension_data::TodoState::new(content);
-                if todo_state
-                    .to_extension_data(&mut session.extension_data)
-                    .is_ok()
-                {
-                    match manager
-                        .update(session_id)
-                        .extension_data(session.extension_data)
-                        .apply()
-                        .await
-                    {
-                        Ok(_) => Ok(vec![Content::text(format!(
-                            "Updated ({} chars)",
-                            char_count
-                        ))]),
-                        Err(_) => Err("Failed to update session metadata".to_string()),
-                    }
-                } else {
-                    Err("Failed to serialize TODO state".to_string())
+        let max_items = Self::max_items();
+        let message = self
+            .with_state(session_id, move |state| {
+                state.set_from_markdown(&content);
+                if max_items > 0 && state.items.len() > max_items {
+                    return Err(format!(
+                        "Todo list too long: {} items (max: {})",
+                        state.items.len(),
+                        max_items
+                    ));
                 }
-            }
-            Err(_) => Err("Failed to read session metadata".to_string()),
+                Ok(format!("Todo list set: {} item(s)", state.items.len()))
+            })
+            .await?;
+        Ok(vec![Content::text(message)])
+    }
+
+    async fn handle_add(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let items = string_array_arg(&arguments, "items")?;
+        if items.is_empty() {
+            return Err("Missing required parameter: items".to_string());
         }
+        let max_items = Self::max_items();
+        let message = self
+            .with_state(session_id, move |state| {
+                let ids = state.add_items(items);
+                if ids.is_empty() {
+                    return Err("No non-empty items to add".to_string());
+                }
+                if max_items > 0 && state.items.len() > max_items {
+                    return Err(format!(
+                        "Todo list too long: {} items (max: {})",
+                        state.items.len(),
+                        max_items
+                    ));
+                }
+                Ok(format!("Added {} item(s): #{}", ids.len(), ids.join(", #")))
+            })
+            .await?;
+        Ok(vec![Content::text(message)])
+    }
+
+    async fn handle_update(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.as_ref().ok_or("Missing arguments")?;
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: id")?
+            .to_string();
+
+        let status = match args.get("status").and_then(|v| v.as_str()) {
+            Some(raw) => Some(TodoStatus::parse(raw).ok_or_else(|| {
+                format!("Unknown status: {raw} (use pending/in_progress/completed)")
+            })?),
+            None => None,
+        };
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if status.is_none() && text.is_none() {
+            return Err("Provide a new status and/or text to update".to_string());
+        }
+
+        let message = self
+            .with_state(session_id, move |state| {
+                if state.update_item(&id, status, text) {
+                    Ok(format!("Updated item #{id}"))
+                } else {
+                    Err(format!("No todo item with id #{id}"))
+                }
+            })
+            .await?;
+        Ok(vec![Content::text(message)])
+    }
+
+    async fn handle_plan_write(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let plan = string_arg(&arguments, "plan")?;
+
+        let char_count = plan.chars().count();
+        let max_chars = std::env::var("BIOROUTER_TODO_MAX_CHARS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50_000);
+        if max_chars > 0 && char_count > max_chars {
+            return Err(format!(
+                "Plan too large: {} chars (max: {})",
+                char_count, max_chars
+            ));
+        }
+
+        let message = self
+            .with_state(session_id, move |state| {
+                let trimmed = plan.trim();
+                if trimmed.is_empty() {
+                    state.plan = None;
+                    Ok("Plan cleared".to_string())
+                } else {
+                    state.plan = Some(trimmed.to_string());
+                    Ok("Plan updated".to_string())
+                }
+            })
+            .await?;
+        Ok(vec![Content::text(message)])
     }
 
     fn get_tools() -> Vec<Tool> {
-        let schema = schema_for!(TodoWriteParams);
-        let schema_value =
-            serde_json::to_value(schema).expect("Failed to serialize TodoWriteParams schema");
+        vec![
+            tool_from_schema::<TodoWriteParams>(
+                "todo_write",
+                indoc! {r#"
+                    Replace the entire todo checklist with a markdown checklist.
 
-        vec![Tool::new(
-            "todo_write".to_string(),
-            indoc! {r#"
-                    Overwrite the entire TODO content.
-
-                    The content persists across conversation turns and compaction. Use this for:
-                    - Task tracking and progress updates
-                    - Important notes and reminders
-
-                    WARNING: This operation completely replaces the existing content. Always include
-                    all content you want to keep, not just the changes.
-                "#}
-            .to_string(),
-            schema_value.as_object().unwrap().clone(),
-        )
-        .annotate(ToolAnnotations {
-            title: Some("Write TODO".to_string()),
-            read_only_hint: Some(false),
-            destructive_hint: Some(true),
-            idempotent_hint: Some(false),
-            open_world_hint: Some(false),
-        })]
+                    Use this to seed the initial checklist. One item per line:
+                    `- [ ] task`, `- [~] in progress`, `- [x] done`. For
+                    incremental changes prefer `todo_add` (append) and
+                    `todo_update` (flip a single item's status) so you never
+                    accidentally truncate the list.
+                "#},
+                true,
+            ),
+            tool_from_schema::<TodoAddParams>(
+                "todo_add",
+                indoc! {r#"
+                    Append one or more new pending items to the checklist without
+                    rewriting the existing ones. Each item gets a fresh `#N` id.
+                "#},
+                false,
+            ),
+            tool_from_schema::<TodoUpdateParams>(
+                "todo_update",
+                indoc! {r#"
+                    Update a single checklist item by its `#N` id — change its
+                    status (pending/in_progress/completed) and/or its text —
+                    without touching the rest of the list.
+                "#},
+                false,
+            ),
+            tool_from_schema::<PlanWriteParams>(
+                "plan_write",
+                indoc! {r#"
+                    Set or update the living plan: a maintained, step-by-step
+                    plan you keep current as you work. Re-injected into your
+                    context each turn alongside the checklist. Empty string
+                    clears it.
+                "#},
+                false,
+            ),
+        ]
     }
+}
+
+/// Read a required string argument.
+fn string_arg(arguments: &Option<JsonObject>, key: &str) -> Result<String, String> {
+    arguments
+        .as_ref()
+        .ok_or("Missing arguments")?
+        .get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing required parameter: {key}"))
+        .map(|s| s.to_string())
+}
+
+/// Read a required array-of-strings argument.
+fn string_array_arg(arguments: &Option<JsonObject>, key: &str) -> Result<Vec<String>, String> {
+    let value = arguments
+        .as_ref()
+        .ok_or("Missing arguments")?
+        .get(key)
+        .ok_or_else(|| format!("Missing required parameter: {key}"))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("Parameter {key} must be an array of strings"))?;
+    Ok(array
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect())
+}
+
+fn tool_from_schema<T: JsonSchema>(name: &str, description: &str, destructive: bool) -> Tool {
+    let schema = schema_for!(T);
+    let schema_value = serde_json::to_value(schema).expect("Failed to serialize schema");
+    Tool::new(
+        name.to_string(),
+        description.to_string(),
+        schema_value.as_object().unwrap().clone(),
+    )
+    .annotate(ToolAnnotations {
+        title: Some(name.to_string()),
+        read_only_hint: Some(false),
+        destructive_hint: Some(destructive),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(false),
+    })
 }
 
 #[async_trait]
@@ -177,7 +388,10 @@ impl McpClientTrait for TodoClient {
     ) -> Result<CallToolResult, Error> {
         let session_id = &meta.session_id;
         let content = match name {
-            "todo_write" => self.handle_write_todo(session_id, arguments).await,
+            "todo_write" => self.handle_write(session_id, arguments).await,
+            "todo_add" => self.handle_add(session_id, arguments).await,
+            "todo_update" => self.handle_update(session_id, arguments).await,
+            "plan_write" => self.handle_plan_write(session_id, arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -202,14 +416,13 @@ impl McpClientTrait for TodoClient {
             .await
             .ok()?;
 
-        match extension_data::TodoState::from_extension_data(&metadata.extension_data) {
-            Some(state) if !state.content.trim().is_empty() => {
-                Some(format!("Current tasks and notes:\n{}\n", state.content))
-            }
-            _ => Some(
-                "Current tasks and notes:\nOnce given a task, immediately update your todo with all explicit and implicit requirements\n"
-                    .to_string(),
-            ),
+        // Only the live plan/task state belongs here; the behavioral rule (plan
+        // up front, keep a todo list) lives in system.md so it holds even
+        // without this extension. See BR-4 / BR-60.
+        let state = extension_data::TodoState::load(&metadata.extension_data)?;
+        if state.is_empty() {
+            return None;
         }
+        Some(format!("Current tasks and notes:\n{}", state.render()))
     }
 }

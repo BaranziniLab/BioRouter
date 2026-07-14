@@ -1,10 +1,37 @@
 import { useCallback, useState } from 'react';
 
 export type StagedSource =
-  | { kind: 'file'; id: string; file: File; label?: string; status: 'pending' | 'ingesting' | 'done' | 'error'; error?: string }
-  | { kind: 'path'; id: string; path: string; label: string; status: 'pending' | 'ingesting' | 'done' | 'error'; error?: string }
-  | { kind: 'url'; id: string; url: string; status: 'pending' | 'ingesting' | 'done' | 'error'; error?: string }
-  | { kind: 'text'; id: string; text: string; title?: string; status: 'pending' | 'ingesting' | 'done' | 'error'; error?: string };
+  | {
+      kind: 'file';
+      id: string;
+      file: File;
+      label?: string;
+      status: 'pending' | 'ingesting' | 'done' | 'error';
+      error?: string;
+    }
+  | {
+      kind: 'path';
+      id: string;
+      path: string;
+      label: string;
+      status: 'pending' | 'ingesting' | 'done' | 'error';
+      error?: string;
+    }
+  | {
+      kind: 'url';
+      id: string;
+      url: string;
+      status: 'pending' | 'ingesting' | 'done' | 'error';
+      error?: string;
+    }
+  | {
+      kind: 'text';
+      id: string;
+      text: string;
+      title?: string;
+      status: 'pending' | 'ingesting' | 'done' | 'error';
+      error?: string;
+    };
 
 export function useStagedSources() {
   const [items, setItems] = useState<StagedSource[]>([]);
@@ -16,7 +43,7 @@ export function useStagedSources() {
   const update = useCallback(
     (id: string, patch: Partial<StagedSource>) =>
       setItems((xs) => xs.map((s) => (s.id === id ? ({ ...s, ...patch } as StagedSource) : s))),
-    [],
+    []
   );
 
   const clear = useCallback(() => setItems([]), []);

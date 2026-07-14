@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use thiserror::Error;
 use utoipa::ToSchema;
 
+use crate::agents::effort::ReasoningEffort;
+
 const DEFAULT_CONTEXT_LIMIT: usize = 128_000;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -368,6 +370,15 @@ pub struct ModelConfig {
     /// Provider-specific request parameters (e.g., anthropic_beta headers)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_params: Option<HashMap<String, Value>>,
+    /// BR-63: how hard to think on this call. Set per-turn from the session's
+    /// reasoning-effort control; `None` (the default) means "whatever the
+    /// provider/model already does", so nothing about the request changes.
+    /// Each provider format takes what it understands — `reasoning_effort` for
+    /// the OpenAI families, a `thinking` budget for Anthropic — and ignores it
+    /// otherwise, so an unsupported provider degrades to no-op rather than
+    /// erroring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,6 +433,7 @@ impl ModelConfig {
             toolshim_model,
             fast_model: None,
             request_params,
+            reasoning_effort: None,
         })
     }
 
@@ -631,6 +643,12 @@ impl ModelConfig {
         self
     }
 
+    /// BR-63: pin the reasoning effort for calls made with this config.
+    pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
+        self
+    }
+
     /// Switch to the configured fast model, treating it as the separate model it
     /// is: it gets **its own** context window (and its own predefined request
     /// params), not the main model's. Sampling settings that describe how we call
@@ -655,6 +673,9 @@ impl ModelConfig {
         config.max_tokens = self.max_tokens;
         config.toolshim = self.toolshim;
         config.toolshim_model = self.toolshim_model.clone();
+        // Effort describes *how we call a model*, not which model it is, so the
+        // turn's effort carries over to the fast model too (BR-63).
+        config.reasoning_effort = self.reasoning_effort;
         // Keep `fast_model` set so callers can tell a fast config from the main
         // one (see `Provider::complete_fast`'s fallback check).
         config.fast_model = self.fast_model.clone();

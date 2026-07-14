@@ -58,18 +58,21 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       return distanceFromBottom <= BOTTOM_SCROLL_THRESHOLD;
     }, []);
 
-    const scrollToBottom = React.useCallback((behavior: ScrollBehavior = 'smooth') => {
-      if (viewportRef.current) {
-        viewportRef.current.scrollTo({
-          top: viewportRef.current.scrollHeight,
-          behavior,
-        });
-        // When explicitly scrolling to bottom, reset the following state
-        setIsFollowing(true);
-        userScrolledUpRef.current = false;
-        onScrollChange?.(true);
-      }
-    }, [onScrollChange]);
+    const scrollToBottom = React.useCallback(
+      (behavior: ScrollBehavior = 'smooth') => {
+        if (viewportRef.current) {
+          viewportRef.current.scrollTo({
+            top: viewportRef.current.scrollHeight,
+            behavior,
+          });
+          // When explicitly scrolling to bottom, reset the following state
+          setIsFollowing(true);
+          userScrolledUpRef.current = false;
+          onScrollChange?.(true);
+        }
+      },
+      [onScrollChange]
+    );
 
     const scrollToPosition = React.useCallback(
       ({ top, behavior = 'smooth' }: { top: number; behavior?: ScrollBehavior }) => {
@@ -203,7 +206,11 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         data-scrolled={isScrolled}
         {...props}
       >
-        <div className={cn('absolute top-0 left-0 right-0 z-10 transition-opacity duration-[var(--motion-base)]')} />
+        <div
+          className={cn(
+            'absolute top-0 left-0 right-0 z-10 transition-opacity duration-[var(--motion-base)]'
+          )}
+        />
         <ScrollAreaPrimitive.Viewport
           ref={viewportRef}
           className="h-full w-full rounded-[inherit] [&>div]:!block"

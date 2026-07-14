@@ -18,7 +18,8 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 const DEFAULT_SCHEMA: &str = include_str!("schema_default.md");
 const DEFAULT_INDEX: &str = "# Index\n\n_no pages yet_\n";
 const DEFAULT_LOG: &str = "# Log\n\n";
-const GITIGNORE: &str = "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n";
+const GITIGNORE: &str =
+    "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n.biorouter-knowledge/write.lock\n";
 
 /// Cross-reference rules block appended to legacy `schema.md` files that
 /// pre-date the Plan 5 Task 2 schema hardening. Kept in sync with the

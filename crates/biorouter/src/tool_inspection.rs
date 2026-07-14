@@ -28,6 +28,10 @@ pub enum InspectionAction {
     Deny,
     /// Require user approval before execution (with optional warning message)
     RequireApproval(Option<String>),
+    /// Advisory only (BR-29 soft stage): the tool still runs and the permission
+    /// verdict is untouched, but `reason` is injected into the model's context so
+    /// it can correct course before a later hard stop.
+    Warn,
 }
 
 /// Trait for all tool inspectors
@@ -80,10 +84,30 @@ impl ToolInspectionManager {
         biorouter_mode: BioRouterMode,
         session: &Session,
     ) -> Result<Vec<InspectionResult>> {
+        self.inspect_tools_excluding(&[], tool_requests, messages, biorouter_mode, session)
+            .await
+    }
+
+    /// Run every inspector *except* the named ones.
+    ///
+    /// BR-19: used to re-validate a tool call whose input a PreToolUse hook
+    /// rewrote. The rewrite must not be a way around the security/permission
+    /// gates, so the other inspectors run again on the new arguments — but the
+    /// hook inspector is excluded, because re-running it would execute the
+    /// user's hook commands a second time (side effects) and let a rewrite
+    /// trigger another rewrite.
+    pub async fn inspect_tools_excluding(
+        &self,
+        excluded: &[&str],
+        tool_requests: &[ToolRequest],
+        messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+    ) -> Result<Vec<InspectionResult>> {
         let mut all_results = Vec::new();
 
         for inspector in &self.inspectors {
-            if !inspector.is_enabled() {
+            if !inspector.is_enabled() || excluded.contains(&inspector.name()) {
                 continue;
             }
 
@@ -254,10 +278,46 @@ pub fn apply_inspection_results_to_permissions(
                 // This inspector allows it, but don't override other inspectors' decisions
                 // If it's already denied or needs approval, leave it that way
             }
+            InspectionAction::Warn => {
+                // Advisory only: the tool still runs exactly as the other
+                // inspectors decided. The reason is surfaced to the model
+                // separately (see `collect_warning_reasons`).
+            }
         }
     }
 
     permission_result
+}
+
+/// Collect the advisory (`InspectionAction::Warn`) reasons from a round of
+/// inspection, in inspector order and de-duplicated.
+///
+/// These are the soft-stage nudges — a loop guard telling the model it is
+/// repeating itself, for instance. They do not change any permission verdict;
+/// the agent injects them into the model's context for the next turn.
+pub fn collect_warning_reasons(inspection_results: &[InspectionResult]) -> Vec<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    for result in inspection_results {
+        if result.action != InspectionAction::Warn {
+            continue;
+        }
+        let reason = result.reason.trim();
+        if reason.is_empty() || reasons.iter().any(|existing| existing == reason) {
+            continue;
+        }
+        reasons.push(reason.to_string());
+    }
+    reasons
+}
+
+/// Frame soft-stage warnings as a single system-authored guidance block. Unlike
+/// hook output (untrusted, third-party text), these strings are authored by
+/// BioRouter itself, so they are presented as first-party guidance.
+pub fn frame_loop_warnings(reasons: &[String]) -> String {
+    format!(
+        "<biorouter-loop-guard>\n{}\n</biorouter-loop-guard>",
+        reasons.join("\n")
+    )
 }
 
 pub fn get_security_finding_id_from_results(

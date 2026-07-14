@@ -506,11 +506,15 @@ async fn drive_response(
     rx: &mut Events,
     user_message: Message,
 ) -> Result<()> {
+    session.last_abort = None;
     let config = SessionConfig {
         id: session.session_id.clone(),
         schedule_id: session.scheduled_job_id.clone(),
         max_turns: session.max_turns,
+        max_tool_calls: None,
+        budget: None,
         retry_config: session.retry_config.clone(),
+        reasoning_effort: None,
     };
     let debug = session.debug;
     let cancel = CancellationToken::new();
@@ -525,9 +529,22 @@ async fn drive_response(
         .reply(user_message, config, Some(cancel.clone()))
         .await?;
     let mut tick = tokio::time::interval(Duration::from_millis(110));
+    // BR-53: cap redraws to ~60 fps *while streaming text* so a fast token
+    // stream doesn't re-render the whole Markdown preview on every delta (the
+    // reparse is deferred into `draw` via `render_stream_if_dirty`). When no
+    // text is streaming (spinner, tool output, idle) we draw every iteration, so
+    // interactive latency is unchanged.
+    let frame = Duration::from_millis(16);
+    let mut last_draw = std::time::Instant::now()
+        .checked_sub(frame)
+        .unwrap_or_else(std::time::Instant::now);
 
     loop {
-        tui.draw(app)?;
+        let now = std::time::Instant::now();
+        if app.stream_start.is_none() || now.duration_since(last_draw) >= frame {
+            tui.draw(app)?;
+            last_draw = now;
+        }
         tokio::select! {
             _ = tick.tick() => { app.spin = app.spin.wrapping_add(1); }
             ev = rx.recv() => {
@@ -604,12 +621,15 @@ async fn drive_response(
                     Some(Ok(AgentEvent::McpNotification(_))) => {}
                     Some(Ok(AgentEvent::HistoryReplaced(c))) => { session.messages = c; }
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
+                    // BR-52: the TUI reads token counts from the session row.
+                    Some(Ok(AgentEvent::TokenUsage(_))) => {}
                     Some(Ok(AgentEvent::TurnAborted { code, message })) => {
                         // The assistant Message carrying the human-readable text was
                         // already pushed; add a real error line so the turn does not
                         // look like it simply finished.
                         commit_stream_to_session(app, &mut session.messages);
                         app.push_error(&format!("{}: {message}", code.wire_code()));
+                        session.last_abort = Some(code);
                         cancel.cancel();
                         break;
                     }
@@ -814,6 +834,10 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
 // ── rendering ────────────────────────────────────────────────────────────────
 
 fn draw(f: &mut Frame, app: &mut App) {
+    // BR-53: flush any streamed delta buffered since the last frame into the
+    // Markdown preview. Doing it here (once per frame) rather than in
+    // `stream_delta` (once per token) is what caps the reparse at frame rate.
+    app.render_stream_if_dirty();
     // Inset the whole UI so nothing renders edge-to-edge: 4 columns of left/right
     // padding and 1 row top/bottom.
     let area = f.area().inner(Margin::new(4, 1));

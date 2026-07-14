@@ -19,6 +19,7 @@ use biorouter::agents::ExtensionConfig;
 use biorouter::config::resolve_extensions_for_new_session;
 use biorouter::config::{BioRouterMode, Config};
 use biorouter::model::ModelConfig;
+use biorouter::permission::{grade_tool, SmartApproveConfig};
 use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
@@ -520,6 +521,12 @@ async fn get_tools(
     let session_id = query.session_id;
     let agent = state.get_agent_for_route(session_id.clone()).await?;
     let permission_manager = agent.config.permission_manager.clone();
+    // BR-18: SmartApprove now auto-approves read-only-annotated tools, so the
+    // level shown here has to reflect the risk grade the inspector will actually
+    // apply — otherwise the settings UI keeps claiming a plain file read will
+    // prompt. Graded from the same annotations, through the same predicate the
+    // inspector uses, so the two cannot disagree.
+    let smart = SmartApproveConfig::from_config();
 
     let mut tools: Vec<ToolInfo> = agent
         .list_tools(&session_id, query.extension_name)
@@ -530,7 +537,17 @@ async fn get_tools(
                 .get_user_permission(&tool.name)
                 .or_else(|| {
                     if biorouter_mode == BioRouterMode::SmartApprove {
-                        permission_manager.get_smart_approve_permission(&tool.name)
+                        permission_manager
+                            .get_smart_approve_permission(&tool.name)
+                            .or_else(|| {
+                                smart.enabled.then(|| {
+                                    if smart.requires_confirmation(grade_tool(&tool)) {
+                                        PermissionLevel::AskBefore
+                                    } else {
+                                        PermissionLevel::AlwaysAllow
+                                    }
+                                })
+                            })
                     } else if biorouter_mode == BioRouterMode::Approve {
                         Some(PermissionLevel::AskBefore)
                     } else {
@@ -697,6 +714,21 @@ async fn stop_agent(
     Json(payload): Json<StopAgentRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id;
+
+    // BR-62: stop the *turn*, not just the agent entry. Evicting the session from
+    // the LRU below drops the manager's handle, but an in-flight `/reply` task
+    // holds its own `Arc<Agent>` and kept running — so "stop" left a turn burning
+    // tokens and streaming into a socket nobody was reading. Trip the running
+    // turn's cancellation token first; the reply task then unwinds and releases
+    // the turn lock. No-op when nothing is running.
+    if let Some(turn_id) = state.cancel_turn(&session_id) {
+        tracing::info!(
+            "Stop for session {} cancelled in-flight turn {}",
+            session_id,
+            turn_id
+        );
+    }
+
     state
         .agent_manager
         .remove_session(&session_id)

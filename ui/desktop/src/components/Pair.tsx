@@ -17,7 +17,12 @@ interface PairProps {
   initialAttachments?: UserAttachment[];
 }
 
-export default function Pair({ setChat, sessionId, initialMessage, initialAttachments }: PairProps) {
+export default function Pair({
+  setChat,
+  sessionId,
+  initialMessage,
+  initialAttachments,
+}: PairProps) {
   return (
     <BaseChat
       setChat={setChat}

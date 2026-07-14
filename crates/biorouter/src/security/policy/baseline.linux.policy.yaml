@@ -1,0 +1,175 @@
+# BioRouter Linux command-policy tier (BR-68).
+#
+# The shared baseline already covers `rm -rf` on system dirs, `mkfs`, `dd`, fork
+# bomb, `chmod/chown -R /`, `curl|bash`, and power-off. These are the
+# Linux-specific additions, `platforms: [linux]` (a few `[linux, macos]` where
+# the tool exists on both). Self-tests run under a Linux fixture.
+
+rules:
+  - id: linux_redirect_to_device
+    description: Redirecting output onto a raw block device
+    justification: >-
+      `> /dev/sda` overwrites the raw disk (and `> /etc/passwd` clobbers a system
+      file). The redirect target is not an argv token, so it is matched on the
+      raw command shape.
+    decision: deny
+    priority: 900
+    platforms: [linux, macos]
+    match:
+      arg_regex: '(?i)>>?\s*/dev/(?:[sh]d[a-z]|nvme\d|mmcblk\d|vd[a-z]|xvd[a-z]|disk\d|loop\d|dm-\d|md\d)'
+    tests:
+      matches:
+        - 'echo x > /dev/sda'
+        - 'cat img > /dev/nvme0n1'
+      not_matches:
+        - 'echo x > /dev/null'
+        - 'echo x > ./out.txt'
+
+  - id: linux_shred_device
+    description: Shredding a raw block device
+    justification: >-
+      `shred /dev/sda` overwrites the whole disk, destroying every filesystem on
+      it. Shred a file instead.
+    decision: deny
+    priority: 900
+    platforms: [linux, macos]
+    match:
+      binary: [shred]
+      path_glob:
+        - "/dev/**"
+    tests:
+      matches:
+        - 'shred -n 1 /dev/sda'
+        - 'shred -v /dev/nvme0n1'
+      not_matches:
+        - 'shred -u secret.txt'
+
+  - id: linux_mv_system_dir
+    description: Moving a system directory out of place
+    justification: >-
+      `mv /etc /tmp/etc.bak` relocates a system directory and can render the
+      machine unbootable. Operate on a copy, or a project-local path.
+    decision: deny
+    priority: 850
+    platforms: [linux, macos]
+    match:
+      binary: [mv]
+      target_blast: [root, system_dir]
+    tests:
+      matches:
+        - 'mv /etc /tmp/etc.bak'
+        - 'mv /usr/lib /tmp/lib'
+      not_matches:
+        - 'mv ./etc ./etc.bak'
+        - 'mv file.txt ./backup/'
+
+  - id: linux_umount_root
+    description: Unmounting or remounting the root filesystem
+    justification: >-
+      `umount -l /` or `mount -o remount,ro /` detaches / read-only-remounts the
+      root filesystem, halting the running system.
+    decision: deny
+    priority: 850
+    platforms: [linux]
+    match:
+      binary: [umount, mount]
+      target_blast: [root]
+    tests:
+      matches:
+        - 'umount -l /'
+        - 'mount -o remount,ro /'
+      not_matches:
+        - 'mount /dev/sdb1 /mnt'
+        - 'umount /mnt/usb'
+
+  - id: linux_chattr_immutable_system
+    description: Changing immutable/append-only attributes on a system path
+    justification: >-
+      `chattr -i` / `+i` on a system directory can lock out or corrupt package
+      management. Confirm this is intended.
+    decision: ask
+    priority: 400
+    platforms: [linux]
+    match:
+      binary: [chattr]
+      target_blast: [root, system_dir]
+    tests:
+      matches:
+        - 'chattr -i /etc/resolv.conf'
+        - 'chattr +i /usr/bin/env'
+      not_matches:
+        - 'chattr +i ./notes.txt'
+
+  - id: linux_systemctl_mask_critical
+    description: Masking a critical system service
+    justification: >-
+      `systemctl mask sshd` (or dbus / systemd-* / NetworkManager) can lock you
+      out of a remote box or leave it unbootable. Confirm the target service.
+    decision: ask
+    priority: 400
+    platforms: [linux]
+    match:
+      arg_regex: '(?i)systemctl\s+mask\s+\S*(sshd|ssh|dbus|systemd-|networkmanager|network)'
+    tests:
+      matches:
+        - 'systemctl mask sshd'
+        - 'systemctl mask systemd-logind'
+      not_matches:
+        - 'systemctl status sshd'
+        - 'systemctl mask myapp.service'
+
+  - id: linux_iptables_flush
+    description: Flushing the firewall ruleset
+    justification: >-
+      `iptables -F` / `nft flush ruleset` drops the firewall, which can sever
+      network/SSH access to a remote host. Confirm before running.
+    decision: ask
+    priority: 300
+    platforms: [linux]
+    match:
+      arg_regex: '(?i)(iptables(\s+-\S+)*\s+(-F|--flush)|nft\s+flush\s+ruleset)'
+    tests:
+      matches:
+        - 'iptables -F'
+        - 'nft flush ruleset'
+      not_matches:
+        - 'iptables -L'
+        - 'iptables -A INPUT -p tcp --dport 22 -j ACCEPT'
+
+  - id: linux_pkg_force_remove
+    description: Force-removing an essential package
+    justification: >-
+      Force-removing an essential package (`rpm -e --nodeps glibc`,
+      `dpkg --force-all -r`, `pacman -Rdd`, `apt-get remove --force-yes`) can
+      break the toolchain or the system. Confirm the package.
+    decision: ask
+    priority: 300
+    platforms: [linux]
+    match:
+      arg_regex: '(?i)(rpm\s+-e[^\n]*--nodeps|dpkg[^\n]*--force-all|apt-get[^\n]*remove[^\n]*--force|pacman\s+-R[a-z]*dd)'
+    tests:
+      matches:
+        - 'rpm -e --nodeps glibc'
+        - 'pacman -Rdd systemd'
+      not_matches:
+        - 'apt-get remove nginx'
+        - 'rpm -e oldpkg'
+
+  - id: container_escape
+    description: Container-escape / host-mount container invocation
+    justification: >-
+      `docker run --privileged`, `-v /:/host`, `--pid=host`, `nsenter -t 1`, or
+      `chroot /host` break container isolation and reach the host. Legitimate in
+      some GPU/passthrough workflows, so this asks rather than blocks.
+    decision: ask
+    priority: 300
+    platforms: [linux, macos]
+    match:
+      arg_regex: '(?i)(docker\s+run[^\n]*(--privileged|--pid=host|--net=host|-v\s+/:)|nsenter\s+(-\S+\s+)*-t\s+1|chroot\s+/host)'
+    tests:
+      matches:
+        - 'docker run --privileged -v /:/host alpine'
+        - 'nsenter -t 1 -m -u -i -n'
+      not_matches:
+        - 'docker run --rm -v ./data:/data alpine'
+        - 'docker ps'

@@ -10,7 +10,9 @@ use std::collections::HashSet;
 use std::fmt;
 use utoipa::ToSchema;
 
+use crate::conversation::tool_preview::ToolPreview;
 use crate::conversation::tool_result_serde;
+use crate::permission::tool_risk::ToolRisk;
 use crate::utils::sanitize_unicode_tags;
 
 #[derive(ToSchema)]
@@ -121,6 +123,17 @@ pub enum ActionRequiredData {
         tool_name: String,
         arguments: JsonObject,
         prompt: Option<String>,
+        /// BR-63: the BR-18 risk grade for this call, so the card can say *how
+        /// dangerous* the tool is, not just that it wants permission.
+        ///
+        /// Optional (and `default`) so confirmations persisted before BR-63
+        /// still deserialize.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        risk: Option<ToolRisk>,
+        /// BR-63: what the call will actually do — the resolved shell command,
+        /// the diff of the edit — so approval is an informed decision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<ToolPreview>,
     },
     Elicitation {
         id: String,
@@ -305,12 +318,28 @@ impl MessageContent {
         arguments: JsonObject,
         prompt: Option<String>,
     ) -> Self {
+        Self::action_required_with_context(id, tool_name, arguments, prompt, None, None)
+    }
+
+    /// BR-63: a confirmation that also carries the risk grade and a preview of
+    /// the pending call. The agent loop uses this; [`Self::action_required`]
+    /// remains for callers with nothing extra to say.
+    pub fn action_required_with_context<S: Into<String>>(
+        id: S,
+        tool_name: String,
+        arguments: JsonObject,
+        prompt: Option<String>,
+        risk: Option<ToolRisk>,
+        preview: Option<ToolPreview>,
+    ) -> Self {
         MessageContent::ActionRequired(ActionRequired {
             data: ActionRequiredData::ToolConfirmation {
                 id: id.into(),
                 tool_name,
                 arguments,
                 prompt,
+                risk,
+                preview,
             },
         })
     }
@@ -580,6 +609,14 @@ impl MessageMetadata {
     }
 }
 
+/// Mint a fresh, durable message id. UUIDv7 is time-ordered, so ids sort by
+/// creation time (aids debugging and stable ordering). This is the stable
+/// per-message handle that survives history rewrites (compaction/edit/diverge),
+/// unlike the old positional `msg_{session}_{idx}` id (BR-45).
+pub fn new_message_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 #[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]
 /// A message to or from an LLM
 #[serde(rename_all = "camelCase")]
@@ -631,6 +668,15 @@ impl Message {
     pub fn with_id<S: Into<String>>(mut self, id: S) -> Self {
         self.id = Some(id.into());
         self
+    }
+
+    /// Ensure the message carries a stable, durable id, minting a fresh one
+    /// (`new_message_id`) only when absent. Used at persistence time so every
+    /// message gets an id that survives history rewrites (BR-45).
+    pub fn ensure_id(&mut self) {
+        if self.id.is_none() {
+            self.id = Some(new_message_id());
+        }
     }
 
     /// Add any MessageContent to the message
@@ -712,6 +758,22 @@ impl Message {
     ) -> Self {
         self.with_content(MessageContent::action_required(
             id, tool_name, arguments, prompt,
+        ))
+    }
+
+    /// BR-63: an action-required confirmation carrying the call's risk grade and
+    /// a preview of what it will do.
+    pub fn with_action_required_with_context<S: Into<String>>(
+        self,
+        id: S,
+        tool_name: String,
+        arguments: JsonObject,
+        prompt: Option<String>,
+        risk: Option<ToolRisk>,
+        preview: Option<ToolPreview>,
+    ) -> Self {
+        self.with_content(MessageContent::action_required_with_context(
+            id, tool_name, arguments, prompt, risk, preview,
         ))
     }
 

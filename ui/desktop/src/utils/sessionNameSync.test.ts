@@ -59,7 +59,8 @@ describe('cache', () => {
   beforeEach(() => {
     // Hack: clear by overwriting every known key. The cache itself is a
     // module singleton, so we touch the keys we set in tests.
-    for (const k of ['s1', 's2', 's3']) cacheSet(k, { messages: [], session: makeSession({ id: k }) });
+    for (const k of ['s1', 's2', 's3'])
+      cacheSet(k, { messages: [], session: makeSession({ id: k }) });
     for (const k of ['s1', 's2', 's3']) cacheUpdateName(k, 'reset', false);
   });
 

@@ -31,7 +31,7 @@ pub enum TurnAbortCode {
     ProviderFailure { kind: ProviderErrorKind },
     /// The model called the same tool with the same arguments until the loop
     /// guard terminated the turn (Wave 4).
-    ToolLoop { tool: String, repeats: u32 },
+    ToolLoop { tool: String },
     /// A worker profile consulted by the main agent never answered (Wave 4).
     WorkerTimeout { agent: String, elapsed_s: u64 },
 }
@@ -128,7 +128,6 @@ mod tests {
             },
             TurnAbortCode::ToolLoop {
                 tool: "ui_describe".into(),
-                repeats: 6,
             },
             TurnAbortCode::WorkerTimeout {
                 agent: "fine_mapper".into(),
@@ -144,7 +143,6 @@ mod tests {
     fn wire_codes_round_trip_through_serde() {
         let code = TurnAbortCode::ToolLoop {
             tool: "ui_describe".into(),
-            repeats: 6,
         };
         let json = serde_json::to_value(&code).unwrap();
         assert_eq!(json["reason"], "tool_loop");

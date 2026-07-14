@@ -17,7 +17,7 @@ use crate::providers::toolshim::{
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
-use crate::agents::subagent_tool::SUBAGENT_TOOL_NAME;
+use crate::agents::subagent_tool::{SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME};
 use crate::session::session_manager::UsageLedgerEntry;
 #[cfg(test)]
 use crate::session::SessionType;
@@ -131,12 +131,26 @@ impl Agent {
         if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
             tools.retain(|tool| {
-                tool.name.starts_with(&code_exec_prefix) || tool.name == SUBAGENT_TOOL_NAME
+                tool.name.starts_with(&code_exec_prefix)
+                    || tool.name == SUBAGENT_TOOL_NAME
+                    // BR-40: `subagent_status` survives the code-execution filter
+                    // alongside `subagent` — a model that can spawn a background
+                    // child but cannot poll it would strand every handle.
+                    || tool.name == SUBAGENT_STATUS_TOOL_NAME
             });
         }
 
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // BR-18: re-grade the risk registry from *this* tool list — the exact set
+        // the model can call from. Doing it here (rather than off the extension
+        // manager alone) means platform, frontend, subagent and final-output tools
+        // are graded too, and a tool that just disappeared (extension disabled,
+        // code-execution filter applied) stops being auto-approvable. Cheap: a
+        // hashmap rebuild over a few dozen already-materialised tools, on a path
+        // that is already doing a `list_tools` + prompt render.
+        self.tool_risks.refresh_from_tools(&tools);
 
         // Prepare system prompt
         let extensions_info = self.extension_manager.get_extensions_info().await;
@@ -144,6 +158,13 @@ impl Agent {
         // Get model name from provider
         let provider = self.provider().await?;
         let model_config = provider.get_model_config();
+
+        // BR-3: pick the system-prompt variant for this provider/model so small
+        // local models get extra scaffolding while strong models stay lean.
+        let prompt_variant = crate::agents::prompt_manager::PromptVariant::select(
+            provider.get_name(),
+            &model_config.model_name,
+        );
 
         let prompt_manager = self.prompt_manager.lock().await;
         let mut system_prompt = prompt_manager
@@ -153,6 +174,7 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_hints(working_dir)
             .with_enable_subagents(self.subagents_enabled(session_id).await)
+            .with_prompt_variant(prompt_variant)
             .build();
 
         // Handle toolshim if enabled
@@ -354,65 +376,74 @@ impl Agent {
         is_compaction_usage: bool,
         event_key: &str,
     ) -> Result<()> {
-        let session_id = session_config.id.as_str();
-        let manager = self.config.session_manager.clone();
-
-        let (current_total, current_input, current_output) = if is_compaction_usage {
-            // After compaction: summary output becomes new input context
-            let new_input = usage.usage.output_tokens;
-            (new_input, new_input, None)
-        } else {
-            (
-                usage.usage.total_tokens,
-                usage.usage.input_tokens,
-                usage.usage.output_tokens,
-            )
+        let provider_name = match usage.provider.clone() {
+            Some(provider) => Some(provider),
+            None => self
+                .provider()
+                .await
+                .ok()
+                .map(|provider| provider.get_name().to_string()),
         };
-
-        let billed_total = usage.usage.billed_total();
-        let has_usage = billed_total.is_some() || usage.usage.total_tokens.is_some();
-        if has_usage {
-            // Provider name is the live provider instance's name; the model comes
-            // from the turn's own `ProviderUsage`, so a mid-thread model switch is
-            // attributed to the model that actually served each turn.
-            let provider_name = match usage.provider.clone() {
-                Some(provider) => Some(provider),
-                None => self.provider().await.ok().map(|p| p.get_name().to_string()),
-            };
-            manager
-                .apply_usage_event(UsageLedgerEntry {
-                    event_key: event_key.to_string(),
-                    session_id: session_id.to_string(),
-                    schedule_id: session_config.schedule_id.clone(),
-                    current_total_tokens: current_total,
-                    current_input_tokens: current_input,
-                    current_output_tokens: current_output,
-                    billed_total_tokens: billed_total,
-                    input_tokens: usage.usage.input_tokens,
-                    output_tokens: usage.usage.output_tokens,
-                    model_id: Some(usage.model.clone()),
-                    provider: provider_name,
-                    // Current parsers use None for a non-applicable/absent
-                    // cache bucket. Persist an explicit measured zero so NULL
-                    // remains reserved for legacy or incomplete history.
-                    cache_read_tokens: Some(usage.usage.cache_read_input_tokens.unwrap_or(0)),
-                    cache_creation_tokens: Some(
-                        usage.usage.cache_creation_input_tokens.unwrap_or(0),
-                    ),
-                })
-                .await?;
-        } else {
-            // A response with no usage must not blank the last live gauge, but
-            // schedule metadata still follows the active session config.
-            manager
-                .update(session_id)
-                .schedule_id(session_config.schedule_id.clone())
-                .apply()
-                .await?;
-        }
-
-        Ok(())
+        apply_session_metrics(
+            &self.config.session_manager,
+            session_config,
+            usage,
+            is_compaction_usage,
+            event_key,
+            provider_name,
+        )
+        .await
     }
+}
+
+pub(crate) async fn apply_session_metrics(
+    manager: &crate::session::SessionManager,
+    session_config: &crate::agents::types::SessionConfig,
+    usage: &ProviderUsage,
+    is_compaction_usage: bool,
+    event_key: &str,
+    provider_name: Option<String>,
+) -> Result<()> {
+    let session_id = session_config.id.as_str();
+    let (current_total, current_input, current_output) = if is_compaction_usage {
+        let new_input = usage.usage.output_tokens;
+        (new_input, new_input, None)
+    } else {
+        (
+            usage.usage.total_tokens,
+            usage.usage.input_tokens,
+            usage.usage.output_tokens,
+        )
+    };
+
+    let billed_total = usage.usage.billed_total();
+    if billed_total.is_some() || usage.usage.total_tokens.is_some() {
+        manager
+            .apply_usage_event(UsageLedgerEntry {
+                event_key: event_key.to_string(),
+                session_id: session_id.to_string(),
+                schedule_id: session_config.schedule_id.clone(),
+                current_total_tokens: current_total,
+                current_input_tokens: current_input,
+                current_output_tokens: current_output,
+                billed_total_tokens: billed_total,
+                input_tokens: usage.usage.input_tokens,
+                output_tokens: usage.usage.output_tokens,
+                model_id: Some(usage.model.clone()),
+                provider: provider_name,
+                cache_read_tokens: Some(usage.usage.cache_read_input_tokens.unwrap_or(0)),
+                cache_creation_tokens: Some(usage.usage.cache_creation_input_tokens.unwrap_or(0)),
+            })
+            .await?;
+    } else {
+        manager
+            .update(session_id)
+            .schedule_id(session_config.schedule_id.clone())
+            .apply()
+            .await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

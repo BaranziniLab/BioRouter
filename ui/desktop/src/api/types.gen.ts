@@ -12,7 +12,9 @@ export type ActionRequiredData = {
     actionType: 'toolConfirmation';
     arguments: JsonObject;
     id: string;
+    preview?: ToolPreview | null;
     prompt?: string | null;
+    risk?: ToolRisk | null;
     toolName: string;
 } | {
     actionType: 'elicitation';
@@ -28,6 +30,48 @@ export type ActionRequiredData = {
 export type ActiveKbResponse = {
     active_kb?: string | null;
     hidden_kbs: Array<string>;
+};
+
+/**
+ * One active unit of work, kind-tagged so the GUI can render/route uniformly.
+ */
+export type ActiveWorkItemDto = {
+    /**
+     * Whether `POST /active_work/{id}/cancel` can stop it.
+     */
+    cancellable: boolean;
+    /**
+     * Extra context (full command, child session id, workflow source).
+     */
+    detail?: string | null;
+    /**
+     * Unique id; also the handle for `POST /active_work/{id}/cancel`.
+     */
+    id: string;
+    /**
+     * `background_job`, `subagent`, or `scheduled_run`.
+     */
+    kind: string;
+    /**
+     * Wall-clock seconds this item has been running where known.
+     */
+    runningForSeconds?: number | null;
+    /**
+     * Owning/related session id where known.
+     */
+    sessionId?: string | null;
+    /**
+     * RFC3339 start time where known.
+     */
+    startedAt?: string | null;
+    /**
+     * Short human-readable label (command, task prompt, or schedule id).
+     */
+    title: string;
+};
+
+export type ActiveWorkResponse = {
+    items: Array<ActiveWorkItemDto>;
 };
 
 /**
@@ -92,11 +136,46 @@ export type CallToolResponse = {
     structured_content?: unknown;
 };
 
+export type CancelActiveWorkResponse = {
+    message: string;
+};
+
+/**
+ * Request body for the addressable cancel route.
+ */
+export type CancelTurnRequest = {
+    session_id: string;
+};
+
+/**
+ * Response body for the addressable cancel route.
+ */
+export type CancelTurnResponse = {
+    /**
+     * True when a running turn was found and its cancellation token tripped.
+     * False means there was nothing to cancel — which is a success, not an error.
+     */
+    cancelled: boolean;
+    /**
+     * The id of the turn that was cancelled, when there was one.
+     */
+    turn_id?: string | null;
+};
+
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
+    reasoning_effort?: ReasoningEffort | null;
     session_id: string;
+    /**
+     * Client-generated idempotency key naming *this* turn (BR-62). Optional, but
+     * a client that retries `/reply` — an SSE reconnect, a fetch retry on a
+     * flaky network — should send the same key it sent the first time. The retry
+     * then comes back as a 409 with `duplicate: true`, meaning "that turn is
+     * still running", instead of being mistaken for a genuine second turn.
+     */
+    turn_id?: string | null;
     user_message: Message;
     workflow_name?: string | null;
     workflow_version?: string | null;
@@ -333,6 +412,14 @@ export type DivergeSessionRequest = {
      * never carried over.
      */
     truncateAfter?: number | null;
+    /**
+     * Optional anchor by durable message id (`Message.id`), the BR-45 fork
+     * point. Preferred over `truncate_after`: it is unambiguous when two
+     * messages share a whole second and it records the branch's fork point. It
+     * takes precedence when both are supplied; `truncate_after` stays for
+     * back-compatibility with older clients.
+     */
+    truncateAfterId?: string | null;
 };
 
 export type DivergeSessionResponse = {
@@ -606,6 +693,14 @@ export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
     sessionId?: string | null;
+};
+
+/**
+ * Request body for the soft-interrupt route.
+ */
+export type InterruptRequest = {
+    session_id: string;
+    text: string;
 };
 
 export type JsonObject = {
@@ -888,6 +983,7 @@ export type ModelConfig = {
     fast_model?: string | null;
     max_tokens?: number | null;
     model_name: string;
+    reasoning_effort?: ReasoningEffort | null;
     /**
      * Provider-specific request parameters (e.g., anthropic_beta headers)
      */
@@ -1165,6 +1261,11 @@ export type ReadResourceResponse = {
     uri: string;
 };
 
+/**
+ * How hard the agent should think this turn.
+ */
+export type ReasoningEffort = 'quick' | 'normal' | 'deep';
+
 export type RedactedThinkingContent = {
     data: string;
 };
@@ -1312,6 +1413,14 @@ export type Session = {
      * These counters grow without bound, so SQLite and Rust both use 64-bit.
      */
     accumulated_total_tokens?: number | null;
+    /**
+     * The durable `msg_uid` of the exact parent message this session was
+     * branched at — the fork point (BR-45). Paired with `diverged_from`
+     * (parent session), it is the edge label of the branch forest. `None` for
+     * normally-created sessions. Anchoring on this stable id instead of a
+     * whole-second timestamp is what fixes the same-second over-truncation.
+     */
+    branch_point_msg_uid?: string | null;
     conversation?: Conversation | null;
     created_at: string;
     /**
@@ -1530,7 +1639,13 @@ export type SubWorkflow = {
 };
 
 /**
- * Execute a shell command and check its exit status
+ * A single success check to validate workflow completion, or (BR-48) to gate
+ * an interactive chat turn from finishing with unmet conditions.
+ *
+ * Originally a single `Shell` variant used only by the workflow retry path.
+ * BR-48 added the non-shell variants and a done-ness gate so an interactive
+ * session can also declare "not done until these hold" — see
+ * [`crate::agents::done_gate`].
  */
 export type SuccessCheck = {
     /**
@@ -1538,6 +1653,32 @@ export type SuccessCheck = {
      */
     command: string;
     type: 'Shell';
+} | {
+    /**
+     * The file (or directory) that must exist.
+     */
+    path: string;
+    type: 'FileExists';
+} | {
+    /**
+     * The shell command whose output is inspected.
+     */
+    command: string;
+    /**
+     * The substring the output must contain.
+     */
+    substring: string;
+    type: 'OutputContains';
+} | {
+    /**
+     * The JSON file to validate.
+     */
+    path: string;
+    /**
+     * The JSON Schema the file's contents must satisfy.
+     */
+    schema: unknown;
+    type: 'JsonSchema';
 };
 
 export type SystemInfo = {
@@ -1634,6 +1775,51 @@ export type ToolPermission = {
     tool_name: string;
 };
 
+/**
+ * What a pending tool call will do, in a shape the confirmation card can render.
+ */
+export type ToolPreview = {
+    command: string;
+    kind: 'shell';
+    /**
+     * The command was clipped to fit the frame.
+     */
+    truncated: boolean;
+} | {
+    added: number;
+    kind: 'fileEdit';
+    lines: Array<ToolPreviewLine>;
+    path: string;
+    removed: number;
+    /**
+     * Lines beyond the cap were dropped; `added`/`removed` still count the whole edit.
+     */
+    truncated: boolean;
+} | {
+    content: string;
+    kind: 'fileWrite';
+    lineCount: number;
+    path: string;
+    truncated: boolean;
+} | {
+    json: string;
+    kind: 'arguments';
+    truncated: boolean;
+};
+
+/**
+ * One line of a rendered diff, with its provenance.
+ */
+export type ToolPreviewLine = {
+    kind: ToolPreviewLineKind;
+    text: string;
+};
+
+/**
+ * One line of a rendered diff.
+ */
+export type ToolPreviewLineKind = 'context' | 'added' | 'removed';
+
 export type ToolRequest = {
     _meta?: {
         [key: string]: unknown;
@@ -1656,6 +1842,19 @@ export type ToolResponse = {
         [key: string]: unknown;
     };
 };
+
+/**
+ * Per-action risk grade for a tool call.
+ *
+ * The `Ord` derive is load-bearing: `Low < Medium < High < Unknown`, so an
+ * un-gradeable tool sorts above every graded one and a naive `>= threshold`
+ * comparison already fails closed. [`SmartApproveConfig::requires_confirmation`]
+ * still treats `Unknown` explicitly so it can be opted out of.
+ *
+ * BR-63 also ships the grade to the confirmation card, so it is a wire type:
+ * it serialises as `"low" | "medium" | "high" | "unknown"`.
+ */
+export type ToolRisk = 'low' | 'medium' | 'high' | 'unknown';
 
 export type TunnelInfo = {
     hostname: string;
@@ -1946,10 +2145,58 @@ export type ConfirmToolActionErrors = {
 
 export type ConfirmToolActionResponses = {
     /**
-     * Tool confirmation action is confirmed
+     * Decision processed; `status` is `delivered` or `unknown`
      */
     200: unknown;
 };
+
+export type ListActiveWorkData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/active_work';
+};
+
+export type ListActiveWorkResponses = {
+    /**
+     * Current background jobs, subagents, and in-flight scheduled runs
+     */
+    200: ActiveWorkResponse;
+};
+
+export type ListActiveWorkResponse = ListActiveWorkResponses[keyof ListActiveWorkResponses];
+
+export type CancelActiveWorkData = {
+    body?: never;
+    path: {
+        /**
+         * Active-work item id from GET /active_work
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/active_work/{id}/cancel';
+};
+
+export type CancelActiveWorkErrors = {
+    /**
+     * No such active-work item
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CancelActiveWorkResponses = {
+    /**
+     * Cancel requested
+     */
+    200: CancelActiveWorkResponse;
+};
+
+export type CancelActiveWorkResponse2 = CancelActiveWorkResponses[keyof CancelActiveWorkResponses];
 
 export type AgentAddExtensionData = {
     body: AddExtensionRequest;
@@ -2016,6 +2263,33 @@ export type CallToolResponses = {
 };
 
 export type CallToolResponse2 = CallToolResponses[keyof CallToolResponses];
+
+export type CancelTurnData = {
+    body: CancelTurnRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/cancel';
+};
+
+export type CancelTurnErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CancelTurnResponses = {
+    /**
+     * Cancel processed; `cancelled` reports whether a turn was running
+     */
+    200: CancelTurnResponse;
+};
+
+export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
 
 export type ListAppsData = {
     body?: never;
@@ -2950,6 +3224,35 @@ export type StartTetrateSetupResponses = {
 };
 
 export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTetrateSetupResponses];
+
+export type InterruptData = {
+    body: InterruptRequest;
+    path?: never;
+    query?: never;
+    url: '/interrupt';
+};
+
+export type InterruptErrors = {
+    /**
+     * Empty message text
+     */
+    400: unknown;
+    /**
+     * No turn is in flight for this session
+     */
+    409: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type InterruptResponses = {
+    /**
+     * Message queued for injection into the running turn
+     */
+    202: unknown;
+};
 
 export type GetActiveData = {
     body?: never;

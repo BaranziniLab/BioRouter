@@ -82,7 +82,9 @@ export function resolveKnownModelInfo(
   modelName: string
 ): ModelInfo | undefined {
   const normalizedName = modelName.toLowerCase().trim();
-  const exact = metadata.known_models.find((model) => model.name.toLowerCase().trim() === normalizedName);
+  const exact = metadata.known_models.find(
+    (model) => model.name.toLowerCase().trim() === normalizedName
+  );
   if (exact) return exact;
 
   if (normalizedName.includes('codex')) return undefined;

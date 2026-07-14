@@ -316,3 +316,27 @@ impl Provider for AnthropicProvider {
         self.supports_streaming
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn maps_anthropic_over_limit_response_to_context_length_error() {
+        let response = ApiResponse {
+            status: StatusCode::BAD_REQUEST,
+            payload: Some(json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "prompt is too long: 1000001 tokens > 1000000 maximum"
+                }
+            })),
+        };
+
+        let error = AnthropicProvider::anthropic_api_call_result(response).unwrap_err();
+
+        assert!(matches!(error, ProviderError::ContextLengthExceeded(_)));
+    }
+}

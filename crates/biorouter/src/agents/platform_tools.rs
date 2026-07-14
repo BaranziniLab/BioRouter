@@ -3,6 +3,48 @@ use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule";
 pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conversation";
+pub const PLATFORM_READ_SESSION_BLOB_TOOL_NAME: &str = "platform__read_session_blob";
+
+/// BR-7: read back a tool result that was too large to keep inline in the
+/// conversation. Only offered when lazy blob loading is on — otherwise the
+/// payloads are spliced back in at load time and the model never sees a stub.
+pub fn read_session_blob_tool() -> Tool {
+    Tool::new(
+        PLATFORM_READ_SESSION_BLOB_TOOL_NAME.to_string(),
+        indoc! {r#"
+            Read back the full output of an earlier tool call that was too large
+            to keep in the conversation.
+
+            When a tool returns a very large result, BioRouter stores it with the
+            session and leaves a stub in its place — a size summary, a head/tail
+            preview, and a blob id. Use this tool with that blob id to get the
+            rest, instead of re-running the original tool.
+
+            Read a slice, don't dump the whole thing:
+              - `pattern`: a regular expression; only matching lines are returned
+                (the fastest way to find what you need in a big result).
+              - `offset` / `limit`: a 1-based line range.
+            Output is capped; narrow the query if it comes back truncated.
+        "#}
+        .to_string(),
+        object!({
+            "type": "object",
+            "required": ["blob_id"],
+            "properties": {
+                "blob_id": {"type": "string", "description": "The blob id printed in the stub that replaced the tool result"},
+                "pattern": {"type": "string", "description": "Regular expression; return only lines that match it"},
+                "offset": {"type": "integer", "description": "1-based first line to return (default 1)"},
+                "limit": {"type": "integer", "description": "Maximum number of lines to return (default 200)"}
+            }
+        }),
+    ).annotate(ToolAnnotations {
+        title: Some("Read a stored tool result".to_string()),
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(false),
+    })
+}
 
 /// Tool that lets the user, mid-chat, fold conversation history (this session
 /// and/or other sessions) into a knowledge base — "remember this chat".
