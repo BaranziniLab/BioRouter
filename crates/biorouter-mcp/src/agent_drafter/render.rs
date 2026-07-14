@@ -1455,24 +1455,22 @@ mod tests {
         }
         if has("bash") {
             for (name, launcher) in [("run.sh", run), ("biorouter-launch.sh", lib)] {
-                let mut child = Command::new("bash")
+                // Parse the same on-disk artifact users run. A relative POSIX
+                // path works for both Unix Bash and Git Bash, without handing
+                // Bash a native Windows temp path or piping its program text.
+                std::fs::write(dir.path().join(name), launcher).unwrap();
+                let out = Command::new("bash")
                     .arg("-n")
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
+                    .arg(format!("./{name}"))
+                    .current_dir(dir.path())
+                    .output()
                     .unwrap();
-                child
-                    .stdin
-                    .take()
-                    .unwrap()
-                    .write_all(launcher.as_bytes())
-                    .unwrap();
-                let out = child.wait_with_output().unwrap();
                 assert!(
                     out.status.success(),
-                    "generated launcher {} is not valid bash:\n{}",
+                    "generated launcher {} is not valid bash ({}):\nstdout:\n{}\nstderr:\n{}",
                     name,
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
