@@ -1475,10 +1475,16 @@ impl Agent {
                     "auto",
                     None,
                 );
+                let usage_event_key = uuid::Uuid::new_v4().to_string();
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
                         session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                        self.update_session_metrics(&session_config, &summarization_usage, true).await?;
+                        self.update_session_metrics(
+                            &session_config,
+                            &summarization_usage,
+                            true,
+                            &usage_event_key,
+                        ).await?;
                         self.fire_compaction_hook(
                             crate::hooks::HookEvent::PostCompact,
                             &session_config.id,
@@ -1600,6 +1606,7 @@ impl Agent {
                     &working_dir,
                 ).await;
 
+                let usage_event_key = uuid::Uuid::new_v4().to_string();
                 let mut stream = Self::stream_response_from_provider(
                     self.provider().await?,
                     &system_prompt,
@@ -1995,10 +2002,16 @@ impl Agent {
                                 "auto",
                                 Some("context_overflow"),
                             );
+                            let compaction_usage_event_key = uuid::Uuid::new_v4().to_string();
                             match compact_messages(self.provider().await?.as_ref(), &conversation, false).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                                    self.update_session_metrics(&session_config, &usage, true).await?;
+                                    self.update_session_metrics(
+                                        &session_config,
+                                        &usage,
+                                        true,
+                                        &compaction_usage_event_key,
+                                    ).await?;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
                                     self.fire_compaction_hook(
@@ -2033,7 +2046,12 @@ impl Agent {
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
                 if let Some(usage) = turn_usage.take() {
-                    self.update_session_metrics(&session_config, &usage, false).await?;
+                    self.update_session_metrics(
+                        &session_config,
+                        &usage,
+                        false,
+                        &usage_event_key,
+                    ).await?;
                 }
 
                 if tools_updated {

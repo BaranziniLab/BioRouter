@@ -18,7 +18,7 @@ use crate::providers::toolshim::{
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
 use crate::agents::subagent_tool::SUBAGENT_TOOL_NAME;
-use crate::session::session_manager::TokenDelta;
+use crate::session::session_manager::UsageLedgerEntry;
 #[cfg(test)]
 use crate::session::SessionType;
 use rmcp::model::Tool;
@@ -352,15 +352,10 @@ impl Agent {
         session_config: &crate::agents::types::SessionConfig,
         usage: &ProviderUsage,
         is_compaction_usage: bool,
+        event_key: &str,
     ) -> Result<()> {
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
-
-        let delta = TokenDelta {
-            input: usage.usage.input_tokens,
-            output: usage.usage.output_tokens,
-            total: usage.usage.total_tokens,
-        };
 
         let (current_total, current_input, current_output) = if is_compaction_usage {
             // After compaction: summary output becomes new input context
@@ -374,43 +369,45 @@ impl Agent {
             )
         };
 
-        let mut update = manager
-            .update(session_id)
-            .schedule_id(session_config.schedule_id.clone())
-            // The lifetime counters accumulate atomically in SQL. Reading the row
-            // into Rust and writing back lost an update whenever two turns raced.
-            .accumulate_tokens(delta);
-
-        // A turn that reports no usage at all must not blank the live gauge — the
-        // session's context-window readout should keep the last real value.
-        if current_total.is_some() || current_input.is_some() || current_output.is_some() {
-            update = update
-                .total_tokens(current_total)
-                .input_tokens(current_input)
-                .output_tokens(current_output);
-        }
-
-        update.apply().await?;
-
-        // Append the per-turn event that makes a real per-day token series
-        // possible. Compaction is a genuine provider call and is billed, so it is
-        // recorded like any other turn.
-        if let Some(total) = usage.usage.total_tokens {
+        let billed_total = usage.usage.billed_total();
+        let has_usage = billed_total.is_some() || usage.usage.total_tokens.is_some();
+        if has_usage {
             // Provider name is the live provider instance's name; the model comes
             // from the turn's own `ProviderUsage`, so a mid-thread model switch is
             // attributed to the model that actually served each turn.
-            let provider_name = self.provider().await.ok().map(|p| p.get_name().to_string());
+            let provider_name = match usage.provider.clone() {
+                Some(provider) => Some(provider),
+                None => self.provider().await.ok().map(|p| p.get_name().to_string()),
+            };
             manager
-                .record_token_event(
-                    session_id,
-                    usage.usage.input_tokens,
-                    usage.usage.output_tokens,
-                    total,
-                    Some(usage.model.as_str()),
-                    provider_name.as_deref(),
-                    usage.usage.cache_read_input_tokens,
-                    usage.usage.cache_creation_input_tokens,
-                )
+                .apply_usage_event(UsageLedgerEntry {
+                    event_key: event_key.to_string(),
+                    session_id: session_id.to_string(),
+                    schedule_id: session_config.schedule_id.clone(),
+                    current_total_tokens: current_total,
+                    current_input_tokens: current_input,
+                    current_output_tokens: current_output,
+                    billed_total_tokens: billed_total,
+                    input_tokens: usage.usage.input_tokens,
+                    output_tokens: usage.usage.output_tokens,
+                    model_id: Some(usage.model.clone()),
+                    provider: provider_name,
+                    // Current parsers use None for a non-applicable/absent
+                    // cache bucket. Persist an explicit measured zero so NULL
+                    // remains reserved for legacy or incomplete history.
+                    cache_read_tokens: Some(usage.usage.cache_read_input_tokens.unwrap_or(0)),
+                    cache_creation_tokens: Some(
+                        usage.usage.cache_creation_input_tokens.unwrap_or(0),
+                    ),
+                })
+                .await?;
+        } else {
+            // A response with no usage must not blank the last live gauge, but
+            // schedule metadata still follows the active session config.
+            manager
+                .update(session_id)
+                .schedule_id(session_config.schedule_id.clone())
+                .apply()
                 .await?;
         }
 

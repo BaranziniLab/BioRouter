@@ -294,6 +294,10 @@ impl ConfigKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub model: String,
+    /// Concrete provider that served this call. Wrapper providers set this to
+    /// the selected child provider so accounting never guesses from the model.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub usage: Usage,
     /// The provider's stop/finish reason for the response, when reported
     /// (OpenAI-compatible streaming `choices[].finish_reason`, e.g. `"stop"`,
@@ -308,6 +312,7 @@ impl ProviderUsage {
     pub fn new(model: String, usage: Usage) -> Self {
         Self {
             model,
+            provider: None,
             usage,
             finish_reason: None,
         }
@@ -337,6 +342,7 @@ impl ProviderUsage {
     pub fn combine_with(&self, other: &ProviderUsage) -> ProviderUsage {
         ProviderUsage {
             model: self.model.clone(),
+            provider: other.provider.clone().or_else(|| self.provider.clone()),
             usage: self.usage + other.usage,
             // Prefer the most recent finish_reason (the terminal chunk's).
             finish_reason: other

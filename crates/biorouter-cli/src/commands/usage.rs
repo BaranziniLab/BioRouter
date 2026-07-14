@@ -75,14 +75,21 @@ fn usage_json(
     summary: &UsageSummary,
     limits: &UsageLimits,
 ) -> Result<String> {
-    let token_percent = percent_of(
-        summary.month_to_date.total_tokens as f64,
-        limits.monthly_token_limit.map(|l| l as f64),
-    );
-    let dollar_percent = summary
-        .month_to_date
-        .cost
-        .and_then(|c| percent_of(c, limits.monthly_dollar_limit));
+    let token_percent = summary.month_to_date.total_tokens.and_then(|tokens| {
+        percent_of(
+            tokens as f64,
+            limits.monthly_token_limit.map(|limit| limit as f64),
+        )
+    });
+    let dollar_percent =
+        if summary.month_to_date.has_unpriced || summary.month_to_date.cost_excludes_cache {
+            None
+        } else {
+            summary
+                .month_to_date
+                .cost
+                .and_then(|cost| percent_of(cost, limits.monthly_dollar_limit))
+        };
 
     let value = serde_json::json!({
         "report": {
@@ -115,12 +122,25 @@ fn fmt_tokens(n: i64) -> String {
     }
 }
 
+fn fmt_optional_tokens(tokens: Option<i64>) -> String {
+    tokens.map_or_else(|| "—".to_string(), fmt_tokens)
+}
+
 fn fmt_cost(cost: Option<f64>) -> String {
     match cost {
         // Sub-cent but non-zero: show enough precision to not read as $0.00.
         Some(c) if c > 0.0 && c < 0.01 => format!("${c:.4}"),
         Some(c) => format!("${c:.2}"),
         None => "—".to_string(),
+    }
+}
+
+fn fmt_cost_with_completeness(cost: Option<f64>, partial: bool) -> String {
+    let formatted = fmt_cost(cost);
+    if partial && cost.is_some() {
+        format!("≥{formatted}")
+    } else {
+        formatted
     }
 }
 
@@ -185,15 +205,19 @@ fn format_usage_text(
                 "  {label:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
                 fmt_tokens(row.input_tokens),
                 fmt_tokens(row.output_tokens),
-                fmt_tokens(row.cache_read_tokens + row.cache_creation_tokens),
-                fmt_tokens(row.total_tokens),
+                fmt_optional_tokens(
+                    row.cache_read_tokens
+                        .zip(row.cache_creation_tokens)
+                        .map(|(read, creation)| read + creation),
+                ),
+                fmt_optional_tokens(row.total_tokens),
                 row.turns,
-                fmt_cost(row.cost),
+                fmt_cost_with_completeness(row.cost, row.has_unpriced || row.cost_excludes_cache),
             ));
         }
         if any_unpriced {
             out.push_str(
-                "  Note: some rows include models with no known pricing; their cost is excluded (—).\n",
+                "  Note: some rows include unpriced or incomplete usage; shown costs are known subtotals.\n",
             );
         }
         if any_cost_excludes_cache {
@@ -209,35 +233,51 @@ fn format_usage_text(
     let mtd = &summary.month_to_date;
     out.push_str(&format!(
         "  Tokens: {}   Cost: {}   Turns: {}\n",
-        fmt_tokens(mtd.total_tokens),
-        fmt_cost(mtd.cost),
+        fmt_optional_tokens(mtd.total_tokens),
+        fmt_cost_with_completeness(mtd.cost, mtd.has_unpriced || mtd.cost_excludes_cache),
         mtd.turns,
     ));
-    let mtd_cache = mtd.cache_read_tokens + mtd.cache_creation_tokens;
-    if mtd_cache > 0 {
+    let mtd_cache = mtd
+        .cache_read_tokens
+        .zip(mtd.cache_creation_tokens)
+        .map(|(read, creation)| read + creation);
+    if mtd_cache.is_some_and(|tokens| tokens > 0) {
         out.push_str(&format!(
             "  Cache: {} read, {} write\n",
-            fmt_tokens(mtd.cache_read_tokens),
-            fmt_tokens(mtd.cache_creation_tokens),
+            fmt_optional_tokens(mtd.cache_read_tokens),
+            fmt_optional_tokens(mtd.cache_creation_tokens),
         ));
+    } else if mtd_cache.is_none() {
+        out.push_str("  Cache: — (incomplete historical accounting)\n");
     }
     if let Some(limit) = limits.monthly_token_limit {
-        let pct = percent_of(mtd.total_tokens as f64, Some(limit as f64)).unwrap_or(0.0);
-        out.push_str(&format!(
-            "  Token budget: {} / {}  ({pct:.1}%)\n",
-            fmt_tokens(mtd.total_tokens),
-            fmt_tokens(limit),
-        ));
+        match mtd
+            .total_tokens
+            .and_then(|tokens| percent_of(tokens as f64, Some(limit as f64)))
+        {
+            Some(pct) => out.push_str(&format!(
+                "  Token budget: {} / {}  ({pct:.1}%)\n",
+                fmt_optional_tokens(mtd.total_tokens),
+                fmt_tokens(limit),
+            )),
+            None => out.push_str(&format!(
+                "  Token budget: — / {}  (billed total incomplete)\n",
+                fmt_tokens(limit),
+            )),
+        }
     }
     if let Some(limit) = limits.monthly_dollar_limit {
-        match mtd.cost.and_then(|c| percent_of(c, Some(limit))) {
+        let exact_cost = (!mtd.has_unpriced && !mtd.cost_excludes_cache)
+            .then_some(mtd.cost)
+            .flatten();
+        match exact_cost.and_then(|cost| percent_of(cost, Some(limit))) {
             Some(pct) => out.push_str(&format!(
                 "  Dollar budget: {} / ${:.2}  ({pct:.1}%)\n",
                 fmt_cost(mtd.cost),
                 limit,
             )),
             None => out.push_str(&format!(
-                "  Dollar budget: — / ${limit:.2}  (cost unavailable — some models unpriced)\n"
+                "  Dollar budget: — / ${limit:.2}  (cost unavailable or incomplete)\n"
             )),
         }
     }
@@ -266,9 +306,9 @@ mod tests {
             provider: is_model.then(|| "zai".to_string()),
             input_tokens: input,
             output_tokens: output,
-            total_tokens: total,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
+            total_tokens: Some(total),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             turns,
             cost,
             has_unpriced,
@@ -280,9 +320,9 @@ mod tests {
         let totals = || UsageTotals {
             input_tokens: total,
             output_tokens: 0,
-            total_tokens: total,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
+            total_tokens: Some(total),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             turns: 3,
             cost,
             has_unpriced: cost.is_none(),
@@ -357,7 +397,7 @@ mod tests {
         assert!(text.contains("50.0%"), "{text}");
         assert!(text.contains("Month to date (2026-07)"));
         // At least one row is partially unpriced → the note appears.
-        assert!(text.contains("no known pricing"), "{text}");
+        assert!(text.contains("known subtotals"), "{text}");
     }
 
     #[test]
@@ -380,9 +420,9 @@ mod tests {
                 provider: None,
                 input_tokens: 500,
                 output_tokens: 500,
-                total_tokens: 1_000,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
+                total_tokens: Some(1_000),
+                cache_read_tokens: Some(0),
+                cache_creation_tokens: Some(0),
                 turns: 2,
                 cost: None,
                 has_unpriced: true,
@@ -469,9 +509,9 @@ mod tests {
             provider: Some("anthropic".to_string()),
             input_tokens: 1_000,
             output_tokens: 200,
-            total_tokens: 1_800,
-            cache_read_tokens: 500,
-            cache_creation_tokens: 100,
+            total_tokens: Some(1_800),
+            cache_read_tokens: Some(500),
+            cache_creation_tokens: Some(100),
             turns: 1,
             cost: Some(0.01),
             has_unpriced: false,

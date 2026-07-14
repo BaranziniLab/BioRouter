@@ -519,6 +519,7 @@ where
                     ProviderUsage {
                         usage: get_usage(u),
                         model: model.clone(),
+                        provider: None,
                         finish_reason: last_finish_reason.clone(),
                     }
                 })
@@ -587,6 +588,7 @@ where
                                     tool_usage = Some(ProviderUsage {
                                         usage: get_usage(raw_usage),
                                         model: model.clone(),
+                                        provider: None,
                                         finish_reason: last_finish_reason.clone(),
                                     });
                                 }
