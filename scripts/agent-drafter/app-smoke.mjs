@@ -360,8 +360,17 @@ async function checkBindingsPaintOnFirstLoad(page) {
  * record. Only the wire knows.
  */
 async function checkControlsDeliverATurn(page) {
+  const fields = await page.$$(
+    "input:not([type]), input[type=text], input[type=search], input[type=number], textarea"
+  );
+  for (const field of fields) {
+    if (!(await field.isVisible().catch(() => false))) continue;
+    if ((await field.inputValue().catch(() => "")).trim()) continue;
+    await field.fill("Smoke test input").catch(() => {});
+  }
+
   const controls = await page.$$(
-    "button:not([disabled]), [role=button]:not([aria-disabled=true]), [data-br-action]"
+    "button:not([disabled]):not([data-br-local]), [role=button]:not([aria-disabled=true]):not([data-br-local]), [data-br-action]:not([data-br-local])"
   );
   if (!controls.length) return;
 

@@ -190,11 +190,18 @@ fn lint_reports_on_the_whole_corpus() {
 
 fn first_line(msg: &str) -> String {
     let one = msg.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.len() > 110 {
-        format!("{}…", &one[..110])
-    } else {
-        one
+    let mut chars = one.chars();
+    let preview: String = chars.by_ref().take(110).collect();
+    match chars.next() {
+        Some(_) => format!("{preview}…"),
+        None => one,
     }
+}
+
+#[test]
+fn first_line_truncates_unicode_on_a_character_boundary() {
+    let input = "é".repeat(111);
+    assert_eq!(first_line(&input), format!("{}…", "é".repeat(110)));
 }
 
 /// The executing check must SEPARATE a working app from a broken one.

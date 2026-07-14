@@ -319,211 +319,245 @@ impl Archetype {
     /// authoritative source), NOT parsed from the template header comments.
     /// `Chat` declares nothing (identical to a v1 app).
     fn surface(self) -> SurfaceDecl {
-        use serde_json::json;
-        let action = |name: &str, description: &str, params: serde_json::Value| ActionDecl {
-            name: name.into(),
-            description: description.into(),
-            params,
-            ..Default::default()
-        };
-        let signal = |name: &str, payload: serde_json::Value| SignalDecl {
-            name: name.into(),
-            payload: Some(payload),
-            ..Default::default()
-        };
         match self {
-            Self::Explorer => SurfaceDecl {
-                state_initial: Some(json!({ "query": "", "selection": {} })),
-                state_schema: Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" },
-                        "selection": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "label": { "type": "string" },
-                                "type": { "type": "string" }
-                            }
-                        }
-                    }
-                })),
-                actions: vec![action(
-                    "focus_node",
-                    "Center and select a graph node.",
-                    json!({
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "label": { "type": "string" },
-                            "type": { "type": "string" }
-                        },
-                        "required": ["id"]
-                    }),
-                )],
-                signals: vec![
-                    signal(
-                        "node_selected",
-                        json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
-                    ),
-                    signal(
-                        "search_submitted",
-                        json!({ "type": "object", "properties": { "query": { "type": "string" } } }),
-                    ),
-                ],
-                components: vec![],
-            },
-            Self::Dashboard => SurfaceDecl {
-                state_initial: Some(json!({ "metrics": {} })),
-                state_schema: Some(json!({
-                    "type": "object",
-                    "properties": { "metrics": { "type": "object" } }
-                })),
-                actions: vec![action(
-                    "set_metric",
-                    "Write one KPI tile into shared state.",
-                    json!({
-                        "type": "object",
-                        "properties": {
-                            "key": { "type": "string" },
-                            "value": {},
-                            "delta": {}
-                        },
-                        "required": ["key"]
-                    }),
-                )],
-                signals: vec![signal(
-                    "refresh_requested",
-                    json!({ "type": "object", "properties": { "at": { "type": "number" } } }),
-                )],
-                components: vec![],
-            },
-            Self::Workbench => SurfaceDecl {
-                state_initial: Some(json!({ "filter": "", "detail": {} })),
-                state_schema: Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "filter": { "type": "string" },
-                        "detail": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "title": { "type": "string" },
-                                "body": { "type": "string" }
-                            }
-                        }
-                    }
-                })),
-                actions: vec![action(
-                    "open_row",
-                    "Open one table row into the detail panel.",
-                    json!({
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "title": { "type": "string" },
-                            "body": { "type": "string" }
-                        },
-                        "required": ["id"]
-                    }),
-                )],
-                signals: vec![
-                    signal(
-                        "row_selected",
-                        json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
-                    ),
-                    signal(
-                        "filter_changed",
-                        json!({ "type": "object", "properties": { "filter": { "type": "string" } } }),
-                    ),
-                ],
-                components: vec![],
-            },
-            Self::Wizard => SurfaceDecl {
-                state_initial: Some(json!({ "step": 1, "form": { "name": "", "goal": "" } })),
-                state_schema: Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "step": { "type": "integer" },
-                        "form": {
-                            "type": "object",
-                            "properties": {
-                                "name": { "type": "string" },
-                                "goal": { "type": "string" }
-                            }
-                        }
-                    }
-                })),
-                actions: vec![action(
-                    "go_to_step",
-                    "Move the wizard to a stage.",
-                    json!({
-                        "type": "object",
-                        "properties": { "step": { "type": "integer", "minimum": 1, "maximum": 2 } },
-                        "required": ["step"]
-                    }),
-                )],
-                signals: vec![
-                    signal(
-                        "step_changed",
-                        json!({ "type": "object", "properties": { "step": { "type": "integer" } } }),
-                    ),
-                    signal(
-                        "submitted",
-                        json!({ "type": "object", "properties": { "name": { "type": "string" } } }),
-                    ),
-                ],
-                components: vec![],
-            },
-            Self::Canvas => SurfaceDecl {
-                state_initial: Some(json!({ "scene": { "x": 0, "y": 0 } })),
-                state_schema: Some(json!({
-                    "type": "object",
-                    "properties": {
-                        "scene": {
-                            "type": "object",
-                            "properties": {
-                                "x": { "type": "number" },
-                                "y": { "type": "number" }
-                            }
-                        }
-                    }
-                })),
-                actions: vec![
-                    action(
-                        "move_avatar",
-                        "Move the avatar on the grid.",
-                        json!({
-                            "type": "object",
-                            "properties": {
-                                "direction": { "enum": ["up", "down", "left", "right"] },
-                                "steps": { "type": "integer", "minimum": 1, "maximum": 20 }
-                            },
-                            "required": ["direction"]
-                        }),
-                    ),
-                    action("reset_scene", "Return the avatar to center.", json!({})),
-                ],
-                signals: vec![signal(
-                    "avatar_moved",
-                    json!({
-                        "type": "object",
-                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
-                    }),
-                )],
-                components: vec![ComponentDecl {
-                    name: "scene".into(),
-                    props: json!({
-                        "type": "object",
-                        "properties": {
-                            "x": { "type": "number" },
-                            "y": { "type": "number" }
-                        }
-                    }),
-                }],
-            },
+            Self::Explorer => explorer_surface(),
+            Self::Dashboard => dashboard_surface(),
+            Self::Workbench => workbench_surface(),
+            Self::Wizard => wizard_surface(),
+            Self::Canvas => canvas_surface(),
             Self::Chat => SurfaceDecl::default(),
         }
+    }
+}
+
+fn surface_action(name: &str, description: &str, params: serde_json::Value) -> ActionDecl {
+    ActionDecl {
+        name: name.into(),
+        description: description.into(),
+        params,
+        ..Default::default()
+    }
+}
+
+fn surface_signal(name: &str, payload: serde_json::Value) -> SignalDecl {
+    SignalDecl {
+        name: name.into(),
+        payload: Some(payload),
+        ..Default::default()
+    }
+}
+
+fn explorer_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "query": "", "selection": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "selection": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "label": { "type": "string" },
+                        "type": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "focus_node",
+            "Center and select a graph node.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "label": { "type": "string" },
+                    "type": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "node_selected",
+                serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+            ),
+            surface_signal(
+                "search_submitted",
+                serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn dashboard_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "metrics": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": { "metrics": { "type": "object" } }
+        })),
+        actions: vec![surface_action(
+            "set_metric",
+            "Write one KPI tile into shared state.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "value": {},
+                    "delta": {}
+                },
+                "required": ["key"]
+            }),
+        )],
+        signals: vec![surface_signal(
+            "refresh_requested",
+            serde_json::json!({ "type": "object", "properties": { "at": { "type": "number" } } }),
+        )],
+        components: vec![],
+    }
+}
+
+fn workbench_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "filter": "", "detail": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filter": { "type": "string" },
+                "detail": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "title": { "type": "string" },
+                        "body": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "open_row",
+            "Open one table row into the detail panel.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "row_selected",
+                serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+            ),
+            surface_signal(
+                "filter_changed",
+                serde_json::json!({ "type": "object", "properties": { "filter": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn wizard_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({
+            "step": 1,
+            "form": { "name": "", "goal": "" }
+        })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "step": { "type": "integer" },
+                "form": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "goal": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "go_to_step",
+            "Move the wizard to a stage.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "step": { "type": "integer", "minimum": 1, "maximum": 2 }
+                },
+                "required": ["step"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "step_changed",
+                serde_json::json!({ "type": "object", "properties": { "step": { "type": "integer" } } }),
+            ),
+            surface_signal(
+                "submitted",
+                serde_json::json!({ "type": "object", "properties": { "name": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn canvas_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "scene": { "x": 0, "y": 0 } })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "scene": {
+                    "type": "object",
+                    "properties": {
+                        "x": { "type": "number" },
+                        "y": { "type": "number" }
+                    }
+                }
+            }
+        })),
+        actions: vec![
+            surface_action(
+                "move_avatar",
+                "Move the avatar on the grid.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "direction": { "enum": ["up", "down", "left", "right"] },
+                        "steps": { "type": "integer", "minimum": 1, "maximum": 20 }
+                    },
+                    "required": ["direction"]
+                }),
+            ),
+            surface_action(
+                "reset_scene",
+                "Return the avatar to center.",
+                serde_json::json!({}),
+            ),
+        ],
+        signals: vec![surface_signal(
+            "avatar_moved",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+            }),
+        )],
+        components: vec![ComponentDecl {
+            name: "scene".into(),
+            props: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" }
+                }
+            }),
+        }],
     }
 }
 
@@ -870,6 +904,158 @@ fn decode_agent_field<T: DeserializeOwned>(
             format!("{field} must match the Agent Drafter manifest schema: {e}"),
         )
     })
+}
+
+fn create_app_kind(p: &CreateAppParams) -> Result<ArtifactKind, ErrorData> {
+    match p.kind.as_deref() {
+        Some(kind) => ArtifactKind::parse(kind).ok_or_else(|| {
+            err(
+                ErrorCode::INVALID_PARAMS,
+                "kind must be 'static' or 'agentic'",
+            )
+        }),
+        None => Ok(ArtifactKind::Agentic),
+    }
+}
+
+fn create_app_archetype(p: &CreateAppParams) -> Result<Archetype, ErrorData> {
+    match p
+        .archetype
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(archetype) => Archetype::parse(archetype).ok_or_else(|| {
+            err(
+                ErrorCode::INVALID_PARAMS,
+                "archetype must be one of: explorer, dashboard, workbench, wizard, canvas, chat",
+            )
+        }),
+        None => Ok(Archetype::infer(&p.title, &p.description)),
+    }
+}
+
+fn create_app_files(
+    p: &CreateAppParams,
+    kind: ArtifactKind,
+    archetype: Archetype,
+) -> (bool, Vec<(String, String)>) {
+    let entry = "index.html";
+    let provided: std::collections::HashSet<&str> =
+        p.files.iter().map(|file| file.path.as_str()).collect();
+    let use_starter = kind == ArtifactKind::Agentic
+        && archetype != Archetype::Chat
+        && p.html.is_none()
+        && !provided.contains("src/main.ts");
+    let entry_html = match &p.html {
+        Some(html) => html.clone(),
+        None if use_starter => archetype
+            .index_html(&p.title, &p.description)
+            .unwrap_or_else(|| render::starter(&p.title, &p.description)),
+        None => render::starter(&p.title, &p.description),
+    };
+    let mut files = vec![(entry.to_string(), entry_html)];
+    if kind == ArtifactKind::Agentic {
+        for (path, content) in bundle::default_sources() {
+            let path = path.to_string_lossy().to_string();
+            if path == entry || provided.contains(path.as_str()) {
+                continue;
+            }
+            let content = if path == "src/main.ts" && use_starter {
+                archetype.main_ts().map(str::to_string).unwrap_or(content)
+            } else {
+                content
+            };
+            files.push((path, content));
+        }
+    }
+    files.extend(
+        p.files
+            .iter()
+            .filter(|file| file.path != entry)
+            .map(|file| (file.path.clone(), file.content.clone())),
+    );
+    (use_starter, files)
+}
+
+fn created_agent_config(p: &mut CreateAppParams) -> Result<AgentConfig, ErrorData> {
+    let model = p
+        .model
+        .take()
+        .map(ModelSelection::from)
+        .filter(|m| m.is_set());
+    let mut agent = AgentConfig {
+        system_prompt: p.system_prompt.take().unwrap_or_default(),
+        greeting: p.greeting.take(),
+        tools: Vec::new(),
+        model,
+        extensions: std::mem::take(&mut p.extensions),
+        skills: std::mem::take(&mut p.skills),
+        knowledge_base: p
+            .knowledge_base
+            .take()
+            .filter(|value| !value.trim().is_empty()),
+        max_turns: None,
+        ..Default::default()
+    };
+    if let Some(value) = p.capabilities.take() {
+        agent.capabilities = decode_agent_field::<Capabilities>(value, "capabilities")?;
+    }
+    if let Some(value) = p.guardrails.take() {
+        agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(value, "guardrails")?);
+    }
+    if let Some(value) = p.reliability.take() {
+        agent.reliability = Some(decode_agent_field::<ReliabilityConfig>(
+            value,
+            "reliability",
+        )?);
+    }
+    if let Some(value) = p.orchestration.take() {
+        agent.orchestration = decode_agent_field::<Orchestration>(value, "orchestration")?;
+    }
+    agent.output_type = p.output_type.take();
+    agent.durable_session = p.durable_session.take();
+    Ok(agent)
+}
+
+fn persist_created_app(
+    store: &ArtifactStore,
+    manifest: &mut Manifest,
+    mut p: CreateAppParams,
+    kind: ArtifactKind,
+    archetype: Archetype,
+    use_starter: bool,
+    has_session: bool,
+) -> Result<(), ErrorData> {
+    if kind != ArtifactKind::Agentic {
+        if has_session {
+            store.save_manifest(manifest).map_err(internal)?;
+        }
+        return Ok(());
+    }
+
+    let agent = created_agent_config(&mut p)?;
+    let catalog = catalog::Catalog::discover();
+    validate::check_all(
+        agent.knowledge_base.as_deref(),
+        &agent.skills,
+        &agent.extensions,
+        &catalog,
+    )
+    .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+    manifest.agent = Some(agent);
+
+    if let Some(surface) = p.surface.take() {
+        if !surface.is_empty() {
+            manifest.surface = surface.into_decl();
+        }
+    } else if use_starter {
+        manifest.surface = archetype.surface();
+    }
+    if let Some(theme) = p.theme.take() {
+        manifest.theme = theme.into_config();
+    }
+    store.save_manifest(manifest).map_err(internal)
 }
 
 fn now_secs() -> u64 {
@@ -1750,170 +1936,33 @@ impl AgentDrafterServer {
         if p.title.trim().is_empty() {
             return Err(err(ErrorCode::INVALID_PARAMS, "title must not be empty"));
         }
-        let kind = match p.kind.as_deref() {
-            Some(k) => ArtifactKind::parse(k).ok_or_else(|| {
-                err(
-                    ErrorCode::INVALID_PARAMS,
-                    "kind must be 'static' or 'agentic'",
-                )
-            })?,
-            None => ArtifactKind::Agentic,
-        };
-        // Resolve the starter archetype (Apps SDK v2, §3.6). Explicit wins;
-        // otherwise infer from the brief. Archetypes only shape *agentic* apps
-        // (static apps have no `src/main.ts`); `chat` reproduces the pre-v2
-        // default so existing behavior is unchanged.
-        let archetype = match p.archetype.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(a) => Archetype::parse(a).ok_or_else(|| {
-                err(
-                    ErrorCode::INVALID_PARAMS,
-                    "archetype must be one of: explorer, dashboard, workbench, wizard, canvas, chat",
-                )
-            })?,
-            None => Archetype::infer(&p.title, &p.description),
-        };
-
-        let entry = "index.html";
-        let provided: std::collections::HashSet<&str> =
-            p.files.iter().map(|f| f.path.as_str()).collect();
-        let main_provided = provided.contains("src/main.ts");
-        // A starter's index.html + src/main.ts + surface are a matched set. Seed
-        // them only when the caller supplied NEITHER html NOR src/main.ts — if
-        // they override one, seeding the other from the archetype would mismatch
-        // (an id the paired file references wouldn't exist). Otherwise fall back
-        // to the pre-v2 default (their html / render::starter + default main.ts,
-        // no surface).
-        let use_starter = kind == ArtifactKind::Agentic
-            && archetype != Archetype::Chat
-            && p.html.is_none()
-            && !main_provided;
-
-        // Entry HTML: caller's html wins; else the archetype starter (when the
-        // whole set is seeded); else the default chat starter.
-        let entry_html = match p.html {
-            Some(h) => h,
-            None if use_starter => archetype
-                .index_html(&p.title, &p.description)
-                .unwrap_or_else(|| render::starter(&p.title, &p.description)),
-            None => render::starter(&p.title, &p.description),
-        };
-
-        // Compose file set: entry + default TS sources + caller overrides. When
-        // the starter set is seeded, swap the default `src/main.ts` for the
-        // archetype's starter main.ts.
-        let mut files: Vec<(String, String)> = vec![(entry.to_string(), entry_html)];
-        if kind == ArtifactKind::Agentic {
-            for (path, content) in bundle::default_sources() {
-                let ps = path.to_string_lossy().to_string();
-                if ps == entry || provided.contains(ps.as_str()) {
-                    continue;
-                }
-                let content = if ps == "src/main.ts" && use_starter {
-                    archetype.main_ts().map(str::to_string).unwrap_or(content)
-                } else {
-                    content
-                };
-                files.push((ps, content));
-            }
-        }
-        for f in p.files {
-            if f.path != entry {
-                files.push((f.path, f.content));
-            }
-        }
-
+        let kind = create_app_kind(&p)?;
+        let archetype = create_app_archetype(&p)?;
+        let (use_starter, files) = create_app_files(&p, kind, archetype);
         let store = self.store();
         let mut manifest = match p.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(explicit) => {
-                store.create_with_id(explicit, &p.title, &p.description, kind, entry, &files)
-            }
-            None => store.create(&p.title, &p.description, kind, entry, &files),
+            Some(explicit) => store.create_with_id(
+                explicit,
+                &p.title,
+                &p.description,
+                kind,
+                "index.html",
+                &files,
+            ),
+            None => store.create(&p.title, &p.description, kind, "index.html", &files),
         }
         .map_err(internal)?;
-
         manifest.session_id = session_id.clone();
 
-        if kind == ArtifactKind::Agentic {
-            // Provider-agnostic by default: leave the model unset so the app uses
-            // whatever provider/model the user has configured in BioRouter. Pin a
-            // specific provider+model only when the caller explicitly chose one —
-            // any BioRouter-supported provider works.
-            let model = p.model.map(ModelSelection::from).filter(|m| m.is_set());
-            let mut agent = AgentConfig {
-                system_prompt: p.system_prompt.unwrap_or_default(),
-                greeting: p.greeting,
-                tools: Vec::new(),
-                model,
-                extensions: p.extensions,
-                skills: p.skills,
-                knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
-                max_turns: None,
-                ..Default::default()
-            };
-            if let Some(v) = p.capabilities {
-                agent.capabilities = decode_agent_field::<Capabilities>(v, "capabilities")?;
-            }
-            if let Some(v) = p.guardrails {
-                agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(v, "guardrails")?);
-            }
-            if let Some(v) = p.reliability {
-                agent.reliability =
-                    Some(decode_agent_field::<ReliabilityConfig>(v, "reliability")?);
-            }
-            if let Some(v) = p.orchestration {
-                agent.orchestration = decode_agent_field::<Orchestration>(v, "orchestration")?;
-            }
-            if let Some(v) = p.output_type {
-                agent.output_type = Some(v);
-            }
-            if let Some(durable) = p.durable_session {
-                agent.durable_session = Some(durable);
-            }
-
-            // Same write-boundary rule as `configure_app`: an id that does not
-            // exist on this install cannot be saved. Rejecting here (rather than
-            // discovering it at runtime) is what stops the app from being born
-            // with tools armed against nothing.
-            let catalog = catalog::Catalog::discover();
-            validate::check_all(
-                agent.knowledge_base.as_deref(),
-                &agent.skills,
-                &agent.extensions,
-                &catalog,
-            )
-            .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
-
-            manifest.agent = Some(agent);
-
-            // Seed the declared surface.
-            //
-            // Precedence: a caller-supplied `surface` always wins; otherwise the
-            // archetype's surface, but ONLY when we also seeded the archetype's
-            // code (a surface declaring actions that the caller's own `main.ts`
-            // never registers is worse than none — lint fails it immediately).
-            //
-            // This used to be gated on `use_starter` alone, which is false whenever
-            // the caller supplies its own index.html — i.e. every one of the 18
-            // apps in the test drive. They all began life with `surface: {}` and
-            // were forced into a manifest-rewrite guessing loop by a fail-closed
-            // lint. A caller that owns the code must now DECLARE the contract;
-            // `lint_app` errors if it registers actions without declaring them.
-            if let Some(surface) = p.surface {
-                if !surface.is_empty() {
-                    manifest.surface = surface.into_decl();
-                }
-            } else if use_starter {
-                manifest.surface = archetype.surface();
-            }
-            if let Some(theme) = p.theme {
-                manifest.theme = theme.into_config();
-            }
-            store.save_manifest(&manifest).map_err(internal)?;
-        } else if session_id.is_some() {
-            // Static apps were already persisted by `create`; re-save so the
-            // freshly-stamped session id lands on disk.
-            store.save_manifest(&manifest).map_err(internal)?;
-        }
+        persist_created_app(
+            &store,
+            &mut manifest,
+            p,
+            kind,
+            archetype,
+            use_starter,
+            session_id.is_some(),
+        )?;
 
         let arch_note = if kind == ArtifactKind::Agentic {
             format!(" [{} archetype]", archetype.as_str())
@@ -2113,7 +2162,6 @@ impl AgentDrafterServer {
             }
 
             store.save_manifest(&parsed).map_err(internal)?;
-            manifest = parsed;
             store.touch(&p.id).map_err(internal)?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "updated {}/manifest.json",

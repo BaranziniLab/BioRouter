@@ -95,7 +95,11 @@ describe('ApplicationItem', () => {
       />
     );
 
-    expect(screen.getByText('midnight')).toBeInTheDocument();
+    const themeBadge = screen.getByText('midnight');
+    expect(themeBadge).toBeInTheDocument();
+    expect(themeBadge.querySelector('[aria-hidden="true"]')).toHaveClass(
+      'app-theme-swatch--midnight'
+    );
     expect(screen.getByText('2 actions · 1 signal')).toBeInTheDocument();
   });
 
@@ -141,9 +145,7 @@ describe('ApplicationsView export dialog', () => {
   let writeFile: ReturnType<typeof vi.fn>;
 
   const exportCalls = () =>
-    fetchMock.mock.calls
-      .map(([url]) => String(url))
-      .filter((url) => url.includes('/export'));
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/export'));
 
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Checkbox } from '@radix-ui/themes';
 import { Button } from '../ui/button';
 import CustomRadio from '../ui/CustomRadio';
 import {
@@ -32,19 +33,18 @@ function IncludeCheckbox({
   hint: string;
 }) {
   return (
-    <label htmlFor={id} className="flex items-start gap-2 cursor-pointer py-1">
-      <input
-        type="checkbox"
+    <div className="biorouter-list-row flex min-h-10 items-start gap-2 rounded-none px-1 py-2">
+      <Checkbox
         id={id}
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 accent-[var(--background-accent)]"
+        onCheckedChange={(value) => onChange(value === true)}
+        className="mt-0.5"
       />
-      <span className="min-w-0">
+      <label htmlFor={id} className="min-w-0 cursor-pointer">
         <span className="block text-sm text-text-default">{label}</span>
         <span className="block text-xs text-text-muted">{hint}</span>
-      </span>
-    </label>
+      </label>
+    </div>
   );
 }
 
@@ -126,7 +126,7 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
         </div>
 
         {mode === 'full' && (
-          <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-3">
+          <div className="flex flex-col border-y border-border-subtle">
             {kb && (
               <IncludeCheckbox
                 id="export-include-kb"
@@ -151,9 +151,7 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
                 key={ext}
                 id={`export-include-extension-${ext}`}
                 checked={selectedExtensions.has(ext)}
-                onChange={(checked) =>
-                  setSelectedExtensions((prev) => toggle(prev, ext, checked))
-                }
+                onChange={(checked) => setSelectedExtensions((prev) => toggle(prev, ext, checked))}
                 label={`Extension: ${ext}`}
                 hint="Bundled or pinned for first-run install; built-ins already travel with the daemon."
               />
