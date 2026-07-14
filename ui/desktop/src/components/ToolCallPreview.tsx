@@ -9,9 +9,10 @@
  * Long previews collapse to a fixed window with a "Show all" toggle so a 200-line
  * diff cannot push the buttons off screen — the decision must always stay in reach.
  */
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ChevronDown, ChevronUp, Code, FileText, Info, Terminal } from './icons/app-icons';
 import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../api';
+import { Button } from './ui/button';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
@@ -80,6 +81,7 @@ function PreviewFrame({
   children: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const bodyId = useId();
   const showToggle = collapsible && !expanded;
 
   return (
@@ -93,6 +95,7 @@ function PreviewFrame({
       </div>
 
       <div
+        id={bodyId}
         data-testid="tool-preview-body"
         // A collapsed preview is clipped, not unmounted: the toggle then only
         // changes height, and screen readers still see the whole call.
@@ -102,9 +105,14 @@ function PreviewFrame({
       </div>
 
       {collapsible && (
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="xs"
+          shape="pill"
           onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
           className="flex w-full items-center justify-center gap-1 border-t border-border-subtle py-1.5 text-xs text-text-muted transition-colors hover:text-text-default"
         >
           {showToggle ? (
@@ -116,7 +124,7 @@ function PreviewFrame({
               Show less <ChevronUp className="h-3.5 w-3.5" />
             </>
           )}
-        </button>
+        </Button>
       )}
 
       {truncated && <TruncationNote />}
