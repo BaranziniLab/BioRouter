@@ -15,14 +15,18 @@
 //! `export_app` produces a standalone runnable TypeScript project.
 
 pub mod bundle;
+pub mod catalog;
 pub mod control;
+pub mod declare;
+pub mod evidence;
 pub mod manifest;
 pub mod render;
+pub mod resolved;
 pub mod store;
+pub mod validate;
 pub mod vault;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use etcetera::{choose_app_strategy, AppStrategy};
 use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -35,7 +39,7 @@ use rmcp::{
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::{de::DeserializeOwned, Deserialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Meta key the agent loop uses to pass the current chat session id into MCP
 /// tool calls. Must match `biorouter::session_context::SESSION_ID_HEADER`
@@ -43,7 +47,10 @@ use std::path::PathBuf;
 /// the same way `knowledge::server` does).
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
-use manifest::{Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig};
+use manifest::{
+    ActionDecl, Capabilities, ComponentDecl, GuardrailsConfig, ModelSettings, Orchestration,
+    ReliabilityConfig, SignalDecl, SurfaceDecl,
+};
 use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 
 /// Optional suggestions only. Apps are **provider-agnostic**: by default an app
@@ -105,6 +112,27 @@ pub struct CreateAppParams {
     /// Short description of what the app does.
     #[serde(default)]
     pub description: String,
+    /// The app's declared contract: state schema, the actions the AGENT may call
+    /// on the app, the signals the APP sends the agent, and any custom components.
+    ///
+    /// Declare it HERE, at creation. An agentic app whose `src/main.ts` registers
+    /// actions but declares no surface has an agent with no verbs it can call —
+    /// and lint fails it. When you supply your own `html`/`src/main.ts` (the normal
+    /// case for a real spec), nothing else seeds a surface for you.
+    #[serde(default)]
+    pub surface: Option<declare::SurfaceParam>,
+    /// The app's theme pack (+ optional accent / token overrides).
+    #[serde(default)]
+    pub theme: Option<declare::ThemeParam>,
+    /// Starter archetype (Apps SDK v2): "explorer", "dashboard", "workbench",
+    /// "wizard", "canvas", or "chat". Omit to infer one from the title +
+    /// description (a non-chat archetype unless the brief asks for a chat /
+    /// assistant / Q&A). When the caller supplies no `html`/`src/main.ts`, the
+    /// chosen archetype seeds a working, lint-clean index.html + src/main.ts and
+    /// the matching declared `surface` (actions / signals / components /
+    /// state_schema). Only shapes agentic apps; static apps ignore it.
+    #[serde(default)]
+    pub archetype: Option<String>,
     /// "agentic" (default — wired to a BioRouter agent) or "static".
     #[serde(default)]
     pub kind: Option<String>,
@@ -156,6 +184,383 @@ pub struct CreateAppParams {
     pub durable_session: Option<bool>,
 }
 
+// ---------------------------------------------------------------------------
+// Archetype starters (Apps SDK v2, Pillar 6 — design §3.6)
+// ---------------------------------------------------------------------------
+
+/// HTML-escape a title/description before substituting it into a starter
+/// template. (`render::html_escape` is private to `render`, so mirror it here
+/// for the archetype path.)
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The starter archetype a fresh agentic app is seeded from. Each non-`Chat`
+/// archetype ships a distinct `index.html` + `src/main.ts` (under
+/// `templates/starters/<archetype>/`) plus a declared manifest `surface`, so a
+/// new app is a *working, lint-clean example of that shape* rather than a chat
+/// box — the structural answer to "every generated app is a chatbot" (design
+/// §2.3 item 1, §3.6). `Chat` is today's default template, kept as one option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archetype {
+    /// Network/graph the agent renders + inspector + search.
+    Explorer,
+    /// KPI grid bound to shared state + a refresh action.
+    Dashboard,
+    /// Data table + row-select signal + a bound detail panel.
+    Workbench,
+    /// Staged form that writes shared state, then submits.
+    Wizard,
+    /// Author-registered draw surface + agent-called actions (the avatar shape).
+    Canvas,
+    /// The pre-v2 default: a chat card wired to the agent.
+    Chat,
+}
+
+impl Archetype {
+    /// Parse an explicit `archetype` argument (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "explorer" => Some(Self::Explorer),
+            "dashboard" => Some(Self::Dashboard),
+            "workbench" => Some(Self::Workbench),
+            "wizard" => Some(Self::Wizard),
+            "canvas" => Some(Self::Canvas),
+            "chat" => Some(Self::Chat),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explorer => "explorer",
+            Self::Dashboard => "dashboard",
+            Self::Workbench => "workbench",
+            Self::Wizard => "wizard",
+            Self::Canvas => "canvas",
+            Self::Chat => "chat",
+        }
+    }
+
+    /// Infer an archetype from the title + description when the caller didn't
+    /// pick one. Keywords match against whole words by prefix (so "metrics" →
+    /// "metric", "simulation" → "simulat"), which avoids false hits like
+    /// "platform" matching "form". The fallback is `Dashboard`; `Chat` is chosen
+    /// only when the brief actually asks for a chat / assistant / Q&A.
+    pub fn infer(title: &str, description: &str) -> Self {
+        let hay = format!("{title} {description}").to_lowercase();
+        let words: Vec<&str> = hay
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let has = |kws: &[&str]| words.iter().any(|w| kws.iter().any(|k| w.starts_with(k)));
+        if has(&["graph", "network", "explore"]) {
+            Self::Explorer
+        } else if has(&["dashboard", "metric", "kpi"]) {
+            Self::Dashboard
+        } else if has(&["table", "cohort", "browse", "workbench"]) {
+            Self::Workbench
+        } else if has(&["wizard", "form", "survey", "questionnaire", "intake"]) {
+            Self::Wizard
+        } else if has(&["canvas", "scene", "avatar", "game", "simulat", "animat"]) {
+            Self::Canvas
+        } else if has(&["chat", "assistant", "chatbot", "conversation", "qa"])
+            || hay.contains("q&a")
+        {
+            Self::Chat
+        } else {
+            Self::Dashboard
+        }
+    }
+
+    /// The starter `index.html` (with `{{TITLE}}` / `{{DESCRIPTION}}`
+    /// placeholders) for a non-chat archetype. `Chat` returns `None` — it reuses
+    /// the default `render::starter`.
+    fn index_template(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Explorer => include_str!("templates/starters/explorer/index.html"),
+            Self::Dashboard => include_str!("templates/starters/dashboard/index.html"),
+            Self::Workbench => include_str!("templates/starters/workbench/index.html"),
+            Self::Wizard => include_str!("templates/starters/wizard/index.html"),
+            Self::Canvas => include_str!("templates/starters/canvas/index.html"),
+            Self::Chat => return None,
+        })
+    }
+
+    /// The starter `src/main.ts` for a non-chat archetype. `Chat` returns `None`
+    /// — it reuses `bundle::default_sources`.
+    fn main_ts(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Explorer => include_str!("templates/starters/explorer/main.ts"),
+            Self::Dashboard => include_str!("templates/starters/dashboard/main.ts"),
+            Self::Workbench => include_str!("templates/starters/workbench/main.ts"),
+            Self::Wizard => include_str!("templates/starters/wizard/main.ts"),
+            Self::Canvas => include_str!("templates/starters/canvas/main.ts"),
+            Self::Chat => return None,
+        })
+    }
+
+    /// Render the starter index HTML with the title/description substituted
+    /// (`None` for `Chat`).
+    fn index_html(self, title: &str, description: &str) -> Option<String> {
+        self.index_template().map(|t| {
+            t.replace("{{TITLE}}", &escape_html(title))
+                .replace("{{DESCRIPTION}}", &escape_html(description))
+        })
+    }
+
+    /// The manifest `surface` seeded for this archetype: the actions / signals /
+    /// components / state_schema its starter `main.ts` registers, so the agent's
+    /// `app_call`s, subscriptions, and component instances validate server-side
+    /// and the seeded project lints clean. This is a small in-code table (the
+    /// authoritative source), NOT parsed from the template header comments.
+    /// `Chat` declares nothing (identical to a v1 app).
+    fn surface(self) -> SurfaceDecl {
+        match self {
+            Self::Explorer => explorer_surface(),
+            Self::Dashboard => dashboard_surface(),
+            Self::Workbench => workbench_surface(),
+            Self::Wizard => wizard_surface(),
+            Self::Canvas => canvas_surface(),
+            Self::Chat => SurfaceDecl::default(),
+        }
+    }
+}
+
+fn surface_action(name: &str, description: &str, params: serde_json::Value) -> ActionDecl {
+    ActionDecl {
+        name: name.into(),
+        description: description.into(),
+        params,
+        ..Default::default()
+    }
+}
+
+fn surface_signal(name: &str, payload: serde_json::Value) -> SignalDecl {
+    SignalDecl {
+        name: name.into(),
+        payload: Some(payload),
+        ..Default::default()
+    }
+}
+
+fn explorer_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "query": "", "selection": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "selection": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "label": { "type": "string" },
+                        "type": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "focus_node",
+            "Center and select a graph node.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "label": { "type": "string" },
+                    "type": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "node_selected",
+                serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+            ),
+            surface_signal(
+                "search_submitted",
+                serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn dashboard_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "metrics": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": { "metrics": { "type": "object" } }
+        })),
+        actions: vec![surface_action(
+            "set_metric",
+            "Write one KPI tile into shared state.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "value": {},
+                    "delta": {}
+                },
+                "required": ["key"]
+            }),
+        )],
+        signals: vec![surface_signal(
+            "refresh_requested",
+            serde_json::json!({ "type": "object", "properties": { "at": { "type": "number" } } }),
+        )],
+        components: vec![],
+    }
+}
+
+fn workbench_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "filter": "", "detail": {} })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filter": { "type": "string" },
+                "detail": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "title": { "type": "string" },
+                        "body": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "open_row",
+            "Open one table row into the detail panel.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "required": ["id"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "row_selected",
+                serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+            ),
+            surface_signal(
+                "filter_changed",
+                serde_json::json!({ "type": "object", "properties": { "filter": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn wizard_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({
+            "step": 1,
+            "form": { "name": "", "goal": "" }
+        })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "step": { "type": "integer" },
+                "form": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "goal": { "type": "string" }
+                    }
+                }
+            }
+        })),
+        actions: vec![surface_action(
+            "go_to_step",
+            "Move the wizard to a stage.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "step": { "type": "integer", "minimum": 1, "maximum": 2 }
+                },
+                "required": ["step"]
+            }),
+        )],
+        signals: vec![
+            surface_signal(
+                "step_changed",
+                serde_json::json!({ "type": "object", "properties": { "step": { "type": "integer" } } }),
+            ),
+            surface_signal(
+                "submitted",
+                serde_json::json!({ "type": "object", "properties": { "name": { "type": "string" } } }),
+            ),
+        ],
+        components: vec![],
+    }
+}
+
+fn canvas_surface() -> SurfaceDecl {
+    SurfaceDecl {
+        state_initial: Some(serde_json::json!({ "scene": { "x": 0, "y": 0 } })),
+        state_schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "scene": {
+                    "type": "object",
+                    "properties": {
+                        "x": { "type": "number" },
+                        "y": { "type": "number" }
+                    }
+                }
+            }
+        })),
+        actions: vec![
+            surface_action(
+                "move_avatar",
+                "Move the avatar on the grid.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "direction": { "enum": ["up", "down", "left", "right"] },
+                        "steps": { "type": "integer", "minimum": 1, "maximum": 20 }
+                    },
+                    "required": ["direction"]
+                }),
+            ),
+            surface_action(
+                "reset_scene",
+                "Return the avatar to center.",
+                serde_json::json!({}),
+            ),
+        ],
+        signals: vec![surface_signal(
+            "avatar_moved",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+            }),
+        )],
+        components: vec![ComponentDecl {
+            name: "scene".into(),
+            props: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" },
+                    "y": { "type": "number" }
+                }
+            }),
+        }],
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConfigureAppParams {
     /// App id.
@@ -175,9 +580,20 @@ pub struct ConfigureAppParams {
     /// Replace the skills list.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-    /// Set (or clear, with empty string) the knowledge base id.
+    /// Set (or clear, with empty string) the knowledge base id. Must name a
+    /// knowledge base that is actually installed — call `list_platform_catalog`
+    /// first. An id that does not exist here is rejected; use `requires` to record
+    /// the need instead.
     #[serde(default)]
     pub knowledge_base: Option<String>,
+    /// Platform capabilities this app needs that may not exist on this install.
+    ///
+    /// Use this instead of inventing an id. `[{"kind":"knowledge_base",
+    /// "id":"clinvar","reason":"variant annotations"}]` says "this app wants a
+    /// ClinVar KB" honestly; configuring `knowledge_base: "clinvar"` when no such
+    /// KB exists arms tools scoped to nothing and fails the app's first turn.
+    #[serde(default)]
+    pub requires: Option<Vec<crate::agent_drafter::store::Requirement>>,
     /// Bound the agent's tool-calling loop per message. Raise this for
     /// workflow-style apps that chain many tool calls; lower it to keep apps
     /// snappy. Unset → a safe server default.
@@ -248,6 +664,93 @@ pub struct ReadAppParams {
     /// File to read. If omitted, returns the manifest.
     #[serde(default)]
     pub path: Option<String>,
+    /// Manifest view (ignored when `path` is set):
+    /// - `"resolved"` (default) — a canonical, fully-populated skeleton: every
+    ///   optional block present, the theme pack resolved, and `_server_managed`
+    ///   naming the keys you must not write. Edit this.
+    /// - `"raw"` — the bytes exactly as stored on disk (a diff against defaults,
+    ///   so a field holding its default value is *absent*, not visible).
+    #[serde(default)]
+    pub view: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeclareSurfaceParams {
+    /// App id.
+    pub id: String,
+    /// The contract to declare.
+    pub surface: declare::SurfaceParam,
+    /// `true` upserts actions/signals/components by name (leaving others alone);
+    /// `false` (default) replaces the whole surface.
+    #[serde(default)]
+    pub merge: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetThemeParams {
+    /// App id.
+    pub id: String,
+    /// Theme pack (+ optional accent / token overrides).
+    pub theme: declare::ThemeParam,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProfileParam {
+    /// The profile KEY. This is what `consult(agent: "<key>")` targets, so it must
+    /// be a stable identifier: lowercase letters, digits and underscores only
+    /// (`prosecutor`, `fine_mapper`). A capitalised or spaced key is rejected —
+    /// the lookup is an exact match, and a display-name key silently fails to
+    /// resolve at runtime. Put the display name in `description`.
+    pub key: String,
+    /// Human-readable name/role, shown in the UI. Free-form.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The worker's system prompt.
+    pub system_prompt: String,
+    /// Provider + model for this worker. Omit to inherit the app's.
+    #[serde(default)]
+    pub model: Option<ModelParam>,
+    /// Extensions this worker may use. Must exist on this install.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Skills this worker may use. Must be installed.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Bound on this worker's tool-calling loop.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeclareProfilesParams {
+    /// App id.
+    pub id: String,
+    /// The worker profiles. Replaces any existing profiles unless merge=true.
+    pub agents: Vec<ProfileParam>,
+    /// `true` upserts by key; `false` (default) replaces the whole set.
+    #[serde(default)]
+    pub merge: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetRoutesParams {
+    /// App id.
+    pub id: String,
+    /// The named model routes. Replaces any existing routes.
+    pub routes: Vec<declare::RouteParam>,
+}
+
+/// Replace entries with a matching name, append the rest. Used by
+/// `declare_surface(merge: true)` so an author can add one action without
+/// re-sending the whole contract.
+fn upsert_by_name<T>(existing: &mut Vec<T>, incoming: Vec<T>, key: impl Fn(&T) -> String) {
+    for item in incoming {
+        let k = key(&item);
+        match existing.iter().position(|e| key(e) == k) {
+            Some(i) => existing[i] = item,
+            None => existing.push(item),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -256,7 +759,7 @@ pub struct AppIdParams {
     pub id: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportAppParams {
     /// App id.
     pub id: String,
@@ -265,6 +768,26 @@ pub struct ExportAppParams {
     /// Override the agent WebSocket endpoint the exported app connects to.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// Export mode: `"launcher"` (default) ships only the app + launch scripts,
+    /// running against whatever knowledge bases / skills / extensions already
+    /// exist on the target machine. `"full"` additionally stages the app's
+    /// server-side payload under `payload/` and writes an audit manifest
+    /// (`export.json`) — see Task 2/3 of the standalone-export design (§3.9).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Full-mode payload selection: `{"knowledge_bases": [ids], "skills":
+    /// [names], "extensions": [names]}`. Any omitted key falls back to what the
+    /// app's agent config references (KB → `agent.knowledge_base`; skills →
+    /// `agent.skills`; extensions → `agent.extensions` minus built-ins). Ignored
+    /// in launcher mode.
+    #[serde(default)]
+    pub include: Option<serde_json::Value>,
+    /// Bundle the daemon binary for a self-contained ("fat") export:
+    /// `"none"` (default) or `"current"` (the current platform's `biorouterd`).
+    /// `"all"` (universal, every platform) is out of scope in this build and is
+    /// treated as `"current"` with a note.
+    #[serde(default)]
+    pub bundle_daemon: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,12 +808,60 @@ impl Default for AgentDrafterServer {
     }
 }
 
-/// Shared default store root (`~/.config/biorouter/agent_drafter`). Public so the
-/// server's `/apps` routes resolve the same location.
+/// Shared default store root (`<config>/agent_drafter`). Public so the server's
+/// `/apps` routes resolve the same location. Honours `BIOROUTER_PATH_ROOT` via
+/// [`crate::paths`], so a sandboxed run never writes into the user's global store.
 pub fn default_root() -> PathBuf {
-    choose_app_strategy(crate::APP_STRATEGY.clone())
-        .map(|s| s.in_config_dir("agent_drafter"))
-        .unwrap_or_else(|_| PathBuf::from(".config/biorouter/agent_drafter"))
+    crate::paths::in_config_dir("agent_drafter")
+}
+
+/// Run `scripts/agent-drafter/app-smoke.mjs` against a built app.
+///
+/// The executing check lives in Node because it needs a real browser: only a real
+/// browser dispatches native range key handling, real pointer drags, and computed
+/// styles — the three things the remaining findings depend on. jsdom cannot see any
+/// of them, which is exactly why the audit could not either.
+fn run_smoke(dir: &Path) -> Result<String, String> {
+    if std::env::var("BIOROUTER_APP_SMOKE")
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("off")
+    {
+        return Ok("smoke check skipped (BIOROUTER_APP_SMOKE=off)".to_string());
+    }
+
+    let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
+    let out = std::process::Command::new("node")
+        .arg(&script)
+        .arg(dir)
+        .output()
+        .map_err(|e| format!("could not run node: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match out.status.code() {
+        Some(0) => Ok(format!("smoke check PASSED.\n{stdout}")),
+        Some(1) => Ok(format!(
+            "smoke check found real defects — a user would hit these:\n{stdout}"
+        )),
+        _ => Err(format!("{stderr}{stdout}").trim().to_string()),
+    }
+}
+
+/// Locate the smoke script relative to the running binary or the source tree.
+fn smoke_script_path() -> Option<PathBuf> {
+    let rel = "scripts/agent-drafter/app-smoke.mjs";
+    // Dev tree: walk up from CARGO_MANIFEST_DIR.
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .parent()?
+        .join(rel);
+    if src.exists() {
+        return Some(src);
+    }
+    // Installed: next to the executable.
+    let exe = std::env::current_exe().ok()?;
+    let near = exe.parent()?.join(rel);
+    near.exists().then_some(near)
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> ErrorData {
@@ -333,6 +904,158 @@ fn decode_agent_field<T: DeserializeOwned>(
             format!("{field} must match the Agent Drafter manifest schema: {e}"),
         )
     })
+}
+
+fn create_app_kind(p: &CreateAppParams) -> Result<ArtifactKind, ErrorData> {
+    match p.kind.as_deref() {
+        Some(kind) => ArtifactKind::parse(kind).ok_or_else(|| {
+            err(
+                ErrorCode::INVALID_PARAMS,
+                "kind must be 'static' or 'agentic'",
+            )
+        }),
+        None => Ok(ArtifactKind::Agentic),
+    }
+}
+
+fn create_app_archetype(p: &CreateAppParams) -> Result<Archetype, ErrorData> {
+    match p
+        .archetype
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(archetype) => Archetype::parse(archetype).ok_or_else(|| {
+            err(
+                ErrorCode::INVALID_PARAMS,
+                "archetype must be one of: explorer, dashboard, workbench, wizard, canvas, chat",
+            )
+        }),
+        None => Ok(Archetype::infer(&p.title, &p.description)),
+    }
+}
+
+fn create_app_files(
+    p: &CreateAppParams,
+    kind: ArtifactKind,
+    archetype: Archetype,
+) -> (bool, Vec<(String, String)>) {
+    let entry = "index.html";
+    let provided: std::collections::HashSet<&str> =
+        p.files.iter().map(|file| file.path.as_str()).collect();
+    let use_starter = kind == ArtifactKind::Agentic
+        && archetype != Archetype::Chat
+        && p.html.is_none()
+        && !provided.contains("src/main.ts");
+    let entry_html = match &p.html {
+        Some(html) => html.clone(),
+        None if use_starter => archetype
+            .index_html(&p.title, &p.description)
+            .unwrap_or_else(|| render::starter(&p.title, &p.description)),
+        None => render::starter(&p.title, &p.description),
+    };
+    let mut files = vec![(entry.to_string(), entry_html)];
+    if kind == ArtifactKind::Agentic {
+        for (path, content) in bundle::default_sources() {
+            let path = path.to_string_lossy().to_string();
+            if path == entry || provided.contains(path.as_str()) {
+                continue;
+            }
+            let content = if path == "src/main.ts" && use_starter {
+                archetype.main_ts().map(str::to_string).unwrap_or(content)
+            } else {
+                content
+            };
+            files.push((path, content));
+        }
+    }
+    files.extend(
+        p.files
+            .iter()
+            .filter(|file| file.path != entry)
+            .map(|file| (file.path.clone(), file.content.clone())),
+    );
+    (use_starter, files)
+}
+
+fn created_agent_config(p: &mut CreateAppParams) -> Result<AgentConfig, ErrorData> {
+    let model = p
+        .model
+        .take()
+        .map(ModelSelection::from)
+        .filter(|m| m.is_set());
+    let mut agent = AgentConfig {
+        system_prompt: p.system_prompt.take().unwrap_or_default(),
+        greeting: p.greeting.take(),
+        tools: Vec::new(),
+        model,
+        extensions: std::mem::take(&mut p.extensions),
+        skills: std::mem::take(&mut p.skills),
+        knowledge_base: p
+            .knowledge_base
+            .take()
+            .filter(|value| !value.trim().is_empty()),
+        max_turns: None,
+        ..Default::default()
+    };
+    if let Some(value) = p.capabilities.take() {
+        agent.capabilities = decode_agent_field::<Capabilities>(value, "capabilities")?;
+    }
+    if let Some(value) = p.guardrails.take() {
+        agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(value, "guardrails")?);
+    }
+    if let Some(value) = p.reliability.take() {
+        agent.reliability = Some(decode_agent_field::<ReliabilityConfig>(
+            value,
+            "reliability",
+        )?);
+    }
+    if let Some(value) = p.orchestration.take() {
+        agent.orchestration = decode_agent_field::<Orchestration>(value, "orchestration")?;
+    }
+    agent.output_type = p.output_type.take();
+    agent.durable_session = p.durable_session.take();
+    Ok(agent)
+}
+
+fn persist_created_app(
+    store: &ArtifactStore,
+    manifest: &mut Manifest,
+    mut p: CreateAppParams,
+    kind: ArtifactKind,
+    archetype: Archetype,
+    use_starter: bool,
+    has_session: bool,
+) -> Result<(), ErrorData> {
+    if kind != ArtifactKind::Agentic {
+        if has_session {
+            store.save_manifest(manifest).map_err(internal)?;
+        }
+        return Ok(());
+    }
+
+    let agent = created_agent_config(&mut p)?;
+    let catalog = catalog::Catalog::discover();
+    validate::check_all(
+        agent.knowledge_base.as_deref(),
+        &agent.skills,
+        &agent.extensions,
+        &catalog,
+    )
+    .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+    manifest.agent = Some(agent);
+
+    if let Some(surface) = p.surface.take() {
+        if !surface.is_empty() {
+            manifest.surface = surface.into_decl();
+        }
+    } else if use_starter {
+        manifest.surface = archetype.surface();
+    }
+    if let Some(theme) = p.theme.take() {
+        manifest.theme = theme.into_config();
+    }
+    store.save_manifest(manifest).map_err(internal)
 }
 
 fn now_secs() -> u64 {
@@ -465,6 +1188,328 @@ pub fn export_scaffold(
     Ok(scaffold)
 }
 
+// ---------------------------------------------------------------------------
+// Full-export payload staging (design §3.9 — Task 2/3)
+// ---------------------------------------------------------------------------
+
+/// The biorouter-mcp built-in MCP server names (see `BUILTIN_EXTENSIONS` in
+/// `lib.rs`). Built-in extensions travel with the daemon, so a full export never
+/// stages them — only *external* extensions are recorded as registry references
+/// in `export.json`. Hardcoded (with this comment) because the app manifest only
+/// stores extension *names*, not whether each is built in.
+pub(crate) const BUILTIN_EXTENSION_NAMES: &[&str] = &[
+    "developer",
+    "computercontroller",
+    "autovisualiser",
+    "memory",
+    "tutorial",
+    "agent_drafter",
+    "knowledge",
+];
+
+fn is_builtin_extension(name: &str) -> bool {
+    BUILTIN_EXTENSION_NAMES.contains(&name)
+}
+
+/// Resolve a `KnowledgeService` for reading the author's knowledge bases while
+/// staging a full export. Honours `BIOROUTER_KNOWLEDGE_DIR` (an override used by
+/// tests and power users); otherwise the canonical store the `/knowledge` routes
+/// use. `None` when the store can't be opened → the caller notes the KBs were
+/// skipped rather than failing the export.
+fn knowledge_service_for_export() -> Option<crate::knowledge::service::KnowledgeService> {
+    use crate::knowledge::service::KnowledgeService;
+    if let Ok(dir) = std::env::var("BIOROUTER_KNOWLEDGE_DIR") {
+        if !dir.trim().is_empty() {
+            return Some(KnowledgeService::new(PathBuf::from(dir)));
+        }
+    }
+    KnowledgeService::new_default().ok()
+}
+
+/// The installed-skills directory (`<config>/skills`). Honours
+/// `BIOROUTER_SKILLS_DIR` as a test/override hook, mirroring [`default_root`]'s
+/// config-dir resolution.
+fn skills_root_for_export() -> PathBuf {
+    if let Ok(dir) = std::env::var("BIOROUTER_SKILLS_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    crate::paths::in_config_dir("skills")
+}
+
+/// Locate a `biorouterd` binary to bundle for a fat export. This code runs
+/// inside `biorouterd` (GUI) **or** `biorouter` (CLI), so `current_exe` is not
+/// necessarily the daemon — we look next to it (the GUI ships them side by
+/// side), then on `PATH`. `BIOROUTERD_BIN` overrides (and is the test hook).
+/// `None` → the caller falls back to a thin export.
+fn find_biorouterd_binary() -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) {
+        "biorouterd.exe"
+    } else {
+        "biorouterd"
+    };
+    if let Ok(p) = std::env::var("BIOROUTERD_BIN") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Recursively copy `src` into `dst` (used to stage a skill directory tree).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract a `Vec<String>` from `include[key]` when it is an array of strings.
+/// `None` (key absent) means the caller falls back to the agent-config default;
+/// `Some(vec![])` (key present but empty) means "select none".
+fn selected_list(include: Option<&serde_json::Value>, key: &str) -> Option<Vec<String>> {
+    let arr = include?.get(key)?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// The pieces staged for a full export, recorded in `export.json` and surfaced
+/// as notes in the tool result.
+struct StagedPayload {
+    /// `{id, file, bytes}` per staged `.brkb`.
+    knowledge_bases: Vec<serde_json::Value>,
+    /// `{name, path}` per staged skill directory.
+    skills: Vec<serde_json::Value>,
+    /// `{name, source:"registry", note}` per external extension.
+    extensions: Vec<serde_json::Value>,
+    /// Human-readable notes (skips, failures) — never fatal.
+    notes: Vec<String>,
+}
+
+impl StagedPayload {
+    fn empty() -> Self {
+        Self {
+            knowledge_bases: Vec::new(),
+            skills: Vec::new(),
+            extensions: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+/// Stage the app's server-side payload under `<target>/payload/` (full mode).
+///
+/// Selection is per-item: an explicit `include` list wins; an omitted key falls
+/// back to what the app's agent config references (KB → `agent.knowledge_base`,
+/// skills → `agent.skills`, extensions → `agent.extensions` minus built-ins).
+/// A missing KB / skill is skipped with a note — it never fails the export.
+fn stage_full_payload(
+    manifest: &Manifest,
+    target: &std::path::Path,
+    include: Option<&serde_json::Value>,
+) -> StagedPayload {
+    let agent = manifest.agent.clone().unwrap_or_default();
+
+    let mut kb_ids = selected_list(include, "knowledge_bases")
+        .unwrap_or_else(|| agent.knowledge_base.clone().into_iter().collect());
+    let mut skill_names = selected_list(include, "skills").unwrap_or_else(|| agent.skills.clone());
+    let mut ext_names = selected_list(include, "extensions").unwrap_or_else(|| {
+        agent
+            .extensions
+            .iter()
+            .filter(|e| !is_builtin_extension(e))
+            .cloned()
+            .collect()
+    });
+    // Deterministic, deduped ordering so the export is auditable + reproducible.
+    for v in [&mut kb_ids, &mut skill_names, &mut ext_names] {
+        v.sort();
+        v.dedup();
+    }
+
+    let payload_dir = target.join("payload");
+    let mut out = StagedPayload::empty();
+
+    // ── Knowledge bases → payload/knowledge/<id>.brkb ──────────────────────
+    if !kb_ids.is_empty() {
+        match knowledge_service_for_export() {
+            Some(svc) => {
+                let kdir = payload_dir.join("knowledge");
+                for kb in &kb_ids {
+                    match svc.export_brkb(kb) {
+                        Ok(bytes) => {
+                            let fname = format!("{kb}.brkb");
+                            let ok = std::fs::create_dir_all(&kdir).is_ok()
+                                && std::fs::write(kdir.join(&fname), &bytes).is_ok();
+                            if ok {
+                                out.knowledge_bases.push(serde_json::json!({
+                                    "id": kb,
+                                    "file": format!("payload/knowledge/{fname}"),
+                                    "bytes": bytes.len(),
+                                }));
+                            } else {
+                                out.notes.push(format!(
+                                    "could not write knowledge base '{kb}' into the payload; skipped"
+                                ));
+                            }
+                        }
+                        Err(e) => out
+                            .notes
+                            .push(format!("skipped knowledge base '{kb}': {e}")),
+                    }
+                }
+            }
+            None => out.notes.push(format!(
+                "knowledge store unavailable; skipped {} knowledge base(s)",
+                kb_ids.len()
+            )),
+        }
+    }
+
+    // ── Skills → payload/skills/<name>/ (plain directory copy) ─────────────
+    // A plain recursive copy is used rather than a marketplace-format zip: it is
+    // simpler, needs no extra crate, and the launcher installs it with a plain
+    // dir copy into the skills dir. (The design allows either.)
+    if !skill_names.is_empty() {
+        let skills_root = skills_root_for_export();
+        let sdir = payload_dir.join("skills");
+        for name in &skill_names {
+            let src = skills_root.join(name);
+            if src.is_dir() {
+                let dst = sdir.join(name);
+                if copy_dir_recursive(&src, &dst).is_ok() {
+                    out.skills.push(serde_json::json!({
+                        "name": name,
+                        "path": format!("payload/skills/{name}"),
+                    }));
+                } else {
+                    out.notes.push(format!(
+                        "could not copy skill '{name}' into the payload; skipped"
+                    ));
+                }
+            } else {
+                out.notes
+                    .push(format!("skill '{name}' not installed; skipped"));
+            }
+        }
+    }
+
+    // ── External extensions → recorded as registry references only ─────────
+    // Staging installed `.brxt` bundles (the installed-bundle layout) is out of
+    // scope; a full export records external extensions as pinned registry
+    // references the first-run installer resolves from BAAM.
+    for name in &ext_names {
+        out.extensions.push(serde_json::json!({
+            "name": name,
+            "source": "registry",
+            "note": "install from the BAAM registry on the target; .brxt bundle staging is out of scope",
+        }));
+    }
+
+    out
+}
+
+/// Assemble the deterministic `export.json` payload manifest (design §3.9 —
+/// Task 3). `required_credentials` and `runtime_requirements` are empty: the app
+/// manifest does not carry the extensions' declared credential env keys or
+/// runtime prerequisites (those live in each extension's own bundle metadata /
+/// the BAAM registry, not in the app manifest), so they cannot be enumerated
+/// here without the registry. The first-run credential dialog (§3.9 item 3)
+/// resolves what a specific extension needs.
+fn build_export_json(
+    id: &str,
+    mode: &str,
+    staged: &StagedPayload,
+    bundled_daemon: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "app": id,
+        "mode": mode,
+        "knowledge_bases": staged.knowledge_bases,
+        "skills": staged.skills,
+        "extensions": staged.extensions,
+        "bundled_daemon": bundled_daemon,
+        "required_credentials": [],
+        "runtime_requirements": [],
+    })
+}
+
+/// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
+/// export. Returns the `export.json` record on success (or `None` → thin), plus
+/// a note either way.
+fn stage_current_daemon(target: &std::path::Path) -> (Option<serde_json::Value>, String) {
+    let bin_name = if cfg!(windows) {
+        "biorouterd.exe"
+    } else {
+        "biorouterd"
+    };
+    match find_biorouterd_binary() {
+        Some(bin) => {
+            let dst = target.join("payload").join("bin").join(bin_name);
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(&bin, &dst) {
+                Ok(bytes) => {
+                    make_executable(&dst);
+                    let rec = serde_json::json!({
+                        "platform": std::env::consts::OS,
+                        "arch": std::env::consts::ARCH,
+                        "file": format!("payload/bin/{bin_name}"),
+                        "bytes": bytes,
+                    });
+                    (
+                        Some(rec),
+                        format!(
+                            "bundled the {}-{} daemon at payload/bin/{bin_name} (fat export)",
+                            std::env::consts::OS,
+                            std::env::consts::ARCH
+                        ),
+                    )
+                }
+                Err(e) => (
+                    None,
+                    format!("could not copy biorouterd into the payload ({e}); thin export instead"),
+                ),
+            }
+        }
+        None => (
+            None,
+            "biorouterd not found for a fat export; thin export instead (the launcher locates or installs a daemon at run time)".to_string(),
+        ),
+    }
+}
+
 #[tool_router(router = tool_router)]
 impl AgentDrafterServer {
     pub fn new() -> Self {
@@ -504,6 +1549,96 @@ impl AgentDrafterServer {
               WebSocket, streams markdown, handles multimodal (image) input, and can
               auto-mount a chat panel into any element with `data-br-chat`.
             - `dist/app.js` — the esbuild bundle (produced by `build_app`).
+
+            ARCHETYPES FIRST — the #1 rule: do NOT make every app a chat box.
+            `create_app` seeds a starter **archetype** (pass `archetype`, or one
+            is inferred from the title/description). Each non-chat archetype ships
+            a working, lint-clean `index.html` + `src/main.ts` + a declared
+            `surface` you then extend — teaching by example. Pick the shape that
+            fits the task:
+            - `explorer`  — a graph/network the agent renders + inspector + search.
+            - `dashboard` — a KPI grid bound to shared state + a refresh action.
+            - `workbench` — a data table + row-select signal + a bound detail panel.
+            - `wizard`    — a staged form that writes state, then submits.
+            - `canvas`    — an author-registered draw surface + agent-called
+              actions (the avatar / scene / simulation shape).
+            - `chat`      — today's chat card; pick it ONLY for a pure
+              assistant/Q&A. `chat` is one option among six, never the default.
+            One compact exemplar per archetype (the starter files are the full
+            version — read/extend them, don't rewrite from scratch):
+              // explorer: agent centers a node; the inspector is bound to it.
+              br.actions.register("focus_node", (a) => br.state.set("/selection", a));
+              // dashboard: agent writes a KPI tile; the bound grid re-renders it.
+              br.actions.register("set_metric", (m) => br.state.set("/metrics/"+m.key, m));
+              // workbench: agent opens a row into the bound detail panel.
+              br.actions.register("open_row", (r) => br.state.set("/detail", r));
+              // wizard: submit sends a typed turn carrying the collected form.
+              submit.onclick = () => br.call("submit", {{ name, goal }});
+              // canvas: agent moves the avatar; the scene redraws from /scene.
+              br.actions.register("move_avatar", (a) => world.move(a.direction, a.steps));
+              // chat: the default — createApp() auto-mounts a [data-br-chat] panel.
+
+            DECLARE THE SURFACE — an app's contract is `manifest.surface` (seed it
+            in `create_app`, or edit the seeded one). Registrations in `main.ts`
+            must match the declarations exactly — typed actions/components fail
+            closed:
+            - `actions`     — verbs the AGENT may call (`app_call`). Register each
+              with `br.actions.register("name", fn)`; the handler's return value
+              resolves the agent's tool call.
+            - `signals`     — app→agent notifications the agent may subscribe to.
+              Emit with `br.signals.emit("name", payload)`; every emitted name
+              must be declared.
+            - `components`  — custom catalog kinds you draw. Register with
+              `br.components.register("name", {{ mount, update? }})`; props are
+              agent-controlled (untrusted) — render via textContent, not innerHTML.
+            - `state_schema`— JSON Schema for the shared state doc. Declare one
+              whenever you use `data-br-bind`, so the agent's writes are validated.
+
+            WIRE TYPED CALLS, NOT PROMPT STRINGS — when the app declares actions,
+            drive the agent with structured data, not hand-assembled English:
+              const r = await br.call("rank_genes", {{ cohort, top: 10 }}); // typed
+            Keep `br.run(prompt, '#out')` for genuine natural-language asks
+            ("explain this selection") and to stream markdown into a result
+            surface — but do NOT concatenate control state into a prompt string
+            when a typed action/call fits. The agent invokes your actions via
+            `app_call`; you never parse prose to discover intent.
+
+            SHARED REACTIVE STATE + BINDINGS — one JSON state document both sides
+            write:
+              <span data-br-bind="/cohort/count"></span>   // re-renders on write
+              br.state.set("/cohort/count", 42);            // author write (agent too)
+            Bindings are a non-executing sink (textContent / safe attributes only).
+            Bind the parts of the UI the agent should keep live; the runtime
+            re-renders only the bound nodes, so focus/scroll/input survive.
+
+            THE DYNAVIS RULE — after fulfilling a natural-language request that
+            CHANGED a parameter, emit a *persistent bound control* for it, so the
+            user refines by direct manipulation instead of re-prompting. E.g.
+            after "make the KM curve use a 90-day window", `ui_patch` in a slider
+            bound to `/plot/km_window`. NL bootstraps; a synthesized control
+            refines — the single most user-validated GenUI pattern. Reach for it
+            every time a prompt tuned a knob.
+
+            PRESENCE & NARRATION — make agent UI changes legible, not startling:
+            - The SDK renders an ambient activity chip for every `ui_*` frame;
+              give `ui_highlight` a `narrate` note ("scoring the top variants…").
+            - Observe, don't hijack: agent updates MARK rather than steal focus
+              (no auto-scroll unless you pass `scroll:true`).
+            - Prefer `ui_ask` (blocking) for a required answer; `ui_suggest`
+              (dismissible chips) for optional nudges.
+
+            PUBLICATION FIGURES — for a real scientific figure (volcano, Manhattan,
+            Kaplan-Meier, Sankey, chord, map, Mermaid…) have the agent emit a
+            `ui_figure` (an Auto Visualiser fragment) into your results region,
+            rather than a hand-rolled chart. Reserve the lighter `ui_chart` /
+            `ui_graph` for quick inline glances.
+
+            THEME PACK — choose a `theme` pack that fits the domain instead of
+            shipping the default light theme everywhere: `biorouter` (default),
+            `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` (each
+            with a dark variant). Compose within the pack's tokens; for
+            distinctive, non-generic layouts within the token system, consult the
+            **frontend-design** skill.
 
             DESIGN CONTRACT — the user's requested product design is the source of
             truth. Do not force a pre-designed app pattern, dashboard structure, or
@@ -551,15 +1686,17 @@ impl AgentDrafterServer {
             Driving the agent from `src/main.ts`:
               import {{ createApp }} from "./sdk";
               const br = createApp({{ autoChat: false }});   // false → build your OWN UI
-              await br.run("...prompt...", '#out');            // stream markdown+visuals into the result element
+              const r = await br.call("act", {{ arg: 1 }});   // typed turn + structured result
+              await br.run("...prompt...", '#out');            // stream markdown+visuals into a result element
               const text = await br.ask("...");               // collect full reply as a string
               await br.prompt("...", {{ images: [{{ mimeType, data }}] }}); // multimodal
+              br.actions.register("verb", (args) => {{ /* agent-called */ }}); // app_call handler
+              br.signals.emit("event", payload);              // notify a subscribed agent
               br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
 
-            VARY THE INTERFACE — do NOT make every app a chat box. Prefer a custom
-            UI driven by `createApp({{ autoChat: false }})` and wire controls to
-            `br.run(prompt, target)`. The design system provides themed,
-            BioRouter-native controls — use a mix that fits the task:
+            CONTROL PALETTE — the starter archetypes already wire a custom UI; when
+            you add or replace controls, use the themed, BioRouter-native ones and
+            wire them to `br.call(...)` / `br.run(...)` — a mix that fits the task:
             - buttons / button grids: `br-btn`, `br-grid`
             - dropdowns: `<select class="br-select">`
             - sliders: `<input type="range" class="br-slider">` (+ `br-slider-val`)
@@ -569,13 +1706,15 @@ impl AgentDrafterServer {
             - drag & drop: `br-dropzone` (drop files/text) and `br-draglist`/`br-dragitem` (reorder)
             - region/map pick: `br-mapgrid`/`br-region` (clickable cells; no external map lib)
             - results: a `<div class="br-output" data-placeholder="…">` target for `br.run`
-            Build the prompt from the control state (slider values, selected
-            chips, dropdown choice, dragged order, clicked region, dropped text)
-            and call `br.run(...)` on `change`/`click`/`drop`. Each new app should
-            look and interact differently from the others.
+            On `change`/`click`/`drop`: prefer a typed `br.call(action, args)` or
+            an emitted signal built from the control state; fall back to
+            `br.run(...)` only for a genuine natural-language ask. Each app should
+            look and interact differently from the others — the archetypes make
+            that the default, not an afterthought.
 
             Typical workflow:
-            1. `create_app` (title, description, optional html/files, system_prompt,
+            1. `create_app` (title, description, `archetype`, optional html/files,
+              system_prompt,
               greeting, model, extensions, skills, knowledge_base, capabilities,
               guardrails, reliability, orchestration, output_type). A preview card
               is shown to the user.
@@ -587,6 +1726,19 @@ impl AgentDrafterServer {
 
             Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps —
             you can query and modify any previously-built app.
+
+            KNOW YOUR ENVIRONMENT BEFORE YOU CONFIGURE IT. Call
+            `list_platform_catalog` before naming any knowledge base, skill, or
+            extension. It returns exactly what this install has. Ids that are not
+            in it are REJECTED — configuring a knowledge base or skill that does
+            not exist arms tools scoped to nothing and makes the app fail on its
+            first turn. If the app needs something this machine does not have,
+            that is fine and normal: leave the id unset and record the need in
+            `requires` (e.g.
+            `[{{"kind":"knowledge_base","id":"clinvar","reason":"variant annotations"}}]`).
+            The user is shown the unmet requirement honestly. NEVER invent an id
+            to express a need — `requires` is what that is for. (In particular
+            `br.kb` is the CLIENT API your app calls at runtime, never an id.)
 
             WORKFLOW-STYLE APPS (multi-step agentic loops, not just chat): every
             user message runs BioRouter's full agent loop — the agent can call
@@ -692,6 +1844,12 @@ impl AgentDrafterServer {
             4. Observable: long-running agent work exposes a visible progress
                surface (`br.run`, `[data-br-chat]`, `br-run-status`, or
                `mountTimeline`) so users can debug step-by-step execution.
+            5. Surface integrity (SDK v2, fail-closed): every `actions.register` /
+               `components.register` name must be declared in `manifest.surface`
+               and vice-versa; emitted signal names must be declared;
+               `data-br-bind*` bindings want a `state_schema`; component props may
+               not flow into innerHTML. The seeded starters already satisfy this —
+               keep declarations and registrations in lockstep when you extend them.
             Always `build_app` after editing `src/`, address the harness findings,
             and verify via `launch_app` before `export_app`.
         "#};
@@ -778,97 +1936,43 @@ impl AgentDrafterServer {
         if p.title.trim().is_empty() {
             return Err(err(ErrorCode::INVALID_PARAMS, "title must not be empty"));
         }
-        let kind = match p.kind.as_deref() {
-            Some(k) => ArtifactKind::parse(k).ok_or_else(|| {
-                err(
-                    ErrorCode::INVALID_PARAMS,
-                    "kind must be 'static' or 'agentic'",
-                )
-            })?,
-            None => ArtifactKind::Agentic,
-        };
-        let entry = "index.html";
-        let entry_html = p
-            .html
-            .unwrap_or_else(|| render::starter(&p.title, &p.description));
-
-        // Compose file set: entry + default TS sources + caller overrides.
-        let mut files: Vec<(String, String)> = vec![(entry.to_string(), entry_html)];
-        let provided: std::collections::HashSet<&str> =
-            p.files.iter().map(|f| f.path.as_str()).collect();
-        if kind == ArtifactKind::Agentic {
-            for (path, content) in bundle::default_sources() {
-                let ps = path.to_string_lossy().to_string();
-                if ps != entry && !provided.contains(ps.as_str()) {
-                    files.push((ps, content));
-                }
-            }
-        }
-        for f in p.files {
-            if f.path != entry {
-                files.push((f.path, f.content));
-            }
-        }
-
+        let kind = create_app_kind(&p)?;
+        let archetype = create_app_archetype(&p)?;
+        let (use_starter, files) = create_app_files(&p, kind, archetype);
         let store = self.store();
         let mut manifest = match p.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(explicit) => {
-                store.create_with_id(explicit, &p.title, &p.description, kind, entry, &files)
-            }
-            None => store.create(&p.title, &p.description, kind, entry, &files),
+            Some(explicit) => store.create_with_id(
+                explicit,
+                &p.title,
+                &p.description,
+                kind,
+                "index.html",
+                &files,
+            ),
+            None => store.create(&p.title, &p.description, kind, "index.html", &files),
         }
         .map_err(internal)?;
-
         manifest.session_id = session_id.clone();
 
-        if kind == ArtifactKind::Agentic {
-            // Provider-agnostic by default: leave the model unset so the app uses
-            // whatever provider/model the user has configured in BioRouter. Pin a
-            // specific provider+model only when the caller explicitly chose one —
-            // any BioRouter-supported provider works.
-            let model = p.model.map(ModelSelection::from).filter(|m| m.is_set());
-            let mut agent = AgentConfig {
-                system_prompt: p.system_prompt.unwrap_or_default(),
-                greeting: p.greeting,
-                tools: Vec::new(),
-                model,
-                extensions: p.extensions,
-                skills: p.skills,
-                knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
-                max_turns: None,
-                ..Default::default()
-            };
-            if let Some(v) = p.capabilities {
-                agent.capabilities = decode_agent_field::<Capabilities>(v, "capabilities")?;
-            }
-            if let Some(v) = p.guardrails {
-                agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(v, "guardrails")?);
-            }
-            if let Some(v) = p.reliability {
-                agent.reliability =
-                    Some(decode_agent_field::<ReliabilityConfig>(v, "reliability")?);
-            }
-            if let Some(v) = p.orchestration {
-                agent.orchestration = decode_agent_field::<Orchestration>(v, "orchestration")?;
-            }
-            if let Some(v) = p.output_type {
-                agent.output_type = Some(v);
-            }
-            if let Some(durable) = p.durable_session {
-                agent.durable_session = Some(durable);
-            }
-            manifest.agent = Some(agent);
-            store.save_manifest(&manifest).map_err(internal)?;
-        } else if session_id.is_some() {
-            // Static apps were already persisted by `create`; re-save so the
-            // freshly-stamped session id lands on disk.
-            store.save_manifest(&manifest).map_err(internal)?;
-        }
+        persist_created_app(
+            &store,
+            &mut manifest,
+            p,
+            kind,
+            archetype,
+            use_starter,
+            session_id.is_some(),
+        )?;
 
+        let arch_note = if kind == ArtifactKind::Agentic {
+            format!(" [{} archetype]", archetype.as_str())
+        } else {
+            String::new()
+        };
         self.card_result(
             &manifest,
             &format!(
-                "Created {kind:?} app '{}' (id: {}). Author src/main.ts and index.html, then build_app + launch_app.",
+                "Created {kind:?} app '{}' (id: {}){arch_note}. Author src/main.ts and index.html, then build_app + launch_app.",
                 manifest.title, manifest.id
             ),
         )
@@ -909,6 +2013,21 @@ impl AgentDrafterServer {
         if let Some(kb) = p.knowledge_base {
             agent.knowledge_base = Some(kb).filter(|s| !s.trim().is_empty());
         }
+        if let Some(req) = p.requires {
+            agent.requires = req;
+        }
+
+        // An id that does not exist here cannot be saved. The catalog is what
+        // makes this checkable; the error names what IS installed so the retry is
+        // grounded rather than another guess.
+        let catalog = catalog::Catalog::discover();
+        validate::check_all(
+            agent.knowledge_base.as_deref(),
+            &agent.skills,
+            &agent.extensions,
+            &catalog,
+        )
+        .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
         if let Some(mt) = p.max_turns {
             agent.max_turns = Some(mt).filter(|&n| n > 0);
         }
@@ -992,10 +2111,14 @@ impl AgentDrafterServer {
         };
 
         if path == "manifest.json" {
-            let parsed: Manifest = serde_json::from_str(&updated_content).map_err(|e| {
+            let mut parsed: Manifest = serde_json::from_str(&updated_content).map_err(|e| {
                 err(
                     ErrorCode::INVALID_PARAMS,
-                    format!("manifest.json must be valid Agent Drafter manifest JSON: {e}"),
+                    format!(
+                        "manifest.json must be valid Agent Drafter manifest JSON: {e}. \
+                         Read it back with `read_app` (the default resolved view shows every \
+                         field, including ones holding their default) and edit that."
+                    ),
                 )
             })?;
             if parsed.id != p.id {
@@ -1007,6 +2130,43 @@ impl AgentDrafterServer {
                     ),
                 ));
             }
+
+            // MERGE, don't replace. The raw bytes used to be written verbatim, so
+            // any server-owned field the caller omitted was silently destroyed:
+            // `built_at` and `sdk_hash` (the app then looked unbuilt and its
+            // vendored SDK unfingerprinted), `session_id` (the GUI lost the
+            // originating conversation), and a truthful `created_at`. A model
+            // composing a manifest has no way to know these values and no business
+            // inventing them — so we restore them from disk regardless of what it
+            // wrote.
+            let on_disk = store
+                .load_manifest(&p.id)
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, format!("no app '{}': {e}", p.id)))?;
+            parsed.id = on_disk.id.clone();
+            parsed.created_at = on_disk.created_at;
+            parsed.built_at = on_disk.built_at;
+            parsed.sdk_hash = on_disk.sdk_hash.clone();
+            parsed.session_id = on_disk.session_id.clone();
+
+            // Same write-boundary rule as create/configure: a manifest cannot name
+            // a knowledge base, skill, or extension that does not exist here.
+            if let Some(agent) = parsed.agent.as_ref() {
+                let catalog = catalog::Catalog::discover();
+                validate::check_all(
+                    agent.knowledge_base.as_deref(),
+                    &agent.skills,
+                    &agent.extensions,
+                    &catalog,
+                )
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+            }
+
+            store.save_manifest(&parsed).map_err(internal)?;
+            store.touch(&p.id).map_err(internal)?;
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "updated {}/manifest.json",
+                p.id
+            ))]));
         }
 
         store
@@ -1088,7 +2248,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "lint_app",
-        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), and is it on-theme (BioRouter classes/tokens)? Fix ERRORs before launch/export."
+        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (BioRouter classes/tokens), and — for SDK v2 apps — do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
     )]
     pub async fn lint_app(
         &self,
@@ -1181,6 +2341,222 @@ impl AgentDrafterServer {
     }
 
     #[tool(
+        name = "declare_surface",
+        description = "Declare (or update) an app's CONTRACT: its state schema, the actions the \
+                       AGENT may call on the app, the signals the APP sends the agent, and any \
+                       custom components. This is the typed way to do it — do NOT rewrite \
+                       manifest.json. Every action you declare must be registered in src/main.ts \
+                       with `br.actions.register(...)`, and vice versa; lint enforces both \
+                       directions. Pass merge=true to upsert by name, false (default) to replace."
+    )]
+    pub async fn declare_surface(
+        &self,
+        params: Parameters<DeclareSurfaceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let incoming = p.surface.into_decl();
+        if p.merge.unwrap_or(false) {
+            upsert_by_name(&mut manifest.surface.actions, incoming.actions, |a| {
+                a.name.clone()
+            });
+            upsert_by_name(&mut manifest.surface.signals, incoming.signals, |s| {
+                s.name.clone()
+            });
+            upsert_by_name(&mut manifest.surface.components, incoming.components, |c| {
+                c.name.clone()
+            });
+            if incoming.state_schema.is_some() {
+                manifest.surface.state_schema = incoming.state_schema;
+            }
+            // `state_initial` was missing from this merge, so `declare_surface(merge:
+            // true)` SILENTLY DROPPED it — the caller declared an initial document,
+            // got a success result, and the manifest was unchanged. Found by pointing
+            // the fixed platform's own agent at a broken app: it cost 8 extra
+            // round-trips of "declare it again, it still isn't there".
+            //
+            // Exactly the class of bug this campaign is about — a tool that reports
+            // success while doing nothing.
+            if incoming.state_initial.is_some() {
+                manifest.surface.state_initial = incoming.state_initial;
+            }
+        } else {
+            manifest.surface = incoming;
+        }
+
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "declared surface for {}: {} action(s), {} signal(s), {} component(s)",
+            p.id,
+            manifest.surface.actions.len(),
+            manifest.surface.signals.len(),
+            manifest.surface.components.len(),
+        ))]))
+    }
+
+    #[tool(
+        name = "set_theme",
+        description = "Set an app's theme pack (biorouter | clinical | lab-notebook | terminal | \
+                       journal | midnight), with an optional accent colour and `--br-*` token \
+                       overrides. The pack is an enum — an unknown name is rejected rather than \
+                       silently falling back to the default."
+    )]
+    pub async fn set_theme(
+        &self,
+        params: Parameters<SetThemeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        manifest.theme = p.theme.into_config();
+        let pack = manifest.resolved_theme_pack().to_string();
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} now renders with the '{pack}' theme pack",
+            p.id
+        ))]))
+    }
+
+    #[tool(
+        name = "declare_profiles",
+        description = "Declare an app's WORKER AGENT PROFILES for multi-agent work (adversarial                        panels, collaborative pipelines). Each profile is a full alternate agent —                        its own model, system prompt, extensions and skills — that the main agent                        reaches with `consult(agent: \"<key>\")`. Keys must be stable identifiers                        (lowercase/digits/underscore); a display name like \"Prosecutor\" is                        rejected because `consult` resolves keys exactly. Workers do NOT get the                        app's UI tools unless you explicitly grant them — the main agent owns the                        page."
+    )]
+    pub async fn declare_profiles(
+        &self,
+        params: Parameters<DeclareProfilesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let catalog = catalog::Catalog::discover();
+        let mut profiles: std::collections::HashMap<String, store::AgentConfig> =
+            std::collections::HashMap::new();
+
+        for prof in p.agents {
+            declare::validate_profile_key(&prof.key)
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+            validate::check_all(None, &prof.skills, &prof.extensions, &catalog).map_err(|e| {
+                err(
+                    ErrorCode::INVALID_PARAMS,
+                    format!("profile '{}': {e}", prof.key),
+                )
+            })?;
+
+            let cfg = store::AgentConfig {
+                system_prompt: prof.system_prompt,
+                greeting: prof.description,
+                model: prof.model.map(ModelSelection::from).filter(|m| m.is_set()),
+                extensions: prof.extensions,
+                skills: prof.skills,
+                max_turns: prof.max_turns,
+                ..Default::default()
+            };
+            profiles.insert(prof.key, cfg);
+        }
+
+        let agent = manifest.agent.get_or_insert_with(Default::default);
+        if p.merge.unwrap_or(false) {
+            agent.orchestration.agents.extend(profiles);
+        } else {
+            agent.orchestration.agents = profiles;
+        }
+        let mut keys: Vec<String> = agent.orchestration.agents.keys().cloned().collect();
+        keys.sort();
+
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} declares {} worker profile(s): {}. The main agent reaches them with \
+             consult(agent=\"<key>\") — use these exact keys.",
+            p.id,
+            keys.len(),
+            keys.join(", ")
+        ))]))
+    }
+
+    #[tool(
+        name = "set_routes",
+        description = "Declare named model routes (e.g. `fast`, `deep`) an app's `call` may \
+                       select per invocation."
+    )]
+    pub async fn set_routes(
+        &self,
+        params: Parameters<SetRoutesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let agent = manifest.agent.get_or_insert_with(Default::default);
+        agent.orchestration.routes = declare::routes_from_params(p.routes);
+        let n = agent.orchestration.routes.len();
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} now declares {n} model route(s)",
+            p.id
+        ))]))
+    }
+
+    #[tool(
+        name = "smoke_app",
+        description = "EXECUTE the app in a real browser against a mock daemon and report what                        actually happens. This is the check that catches what lint cannot: a                        control that fires and delivers NO turn (the handler completes, the                        console is clean, and nothing reaches the agent), a bound KPI that renders                        blank before any turn, a slider no arrow key can move, a drag surface only                        a human mouse can drive, and progress that displaces the result. Run it                        after build_app. A finding here is a real defect a user would hit."
+    )]
+    pub async fn smoke_app(
+        &self,
+        params: Parameters<AppIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let store = self.store();
+        let dir = store.artifact_dir(&params.0.id);
+        if !dir.join("index.html").exists() {
+            return Err(err(
+                ErrorCode::INVALID_PARAMS,
+                format!("no app '{}'", params.0.id),
+            ));
+        }
+        let text = match run_smoke(&dir) {
+            Ok(text) => text,
+            Err(e) => format!(
+                "smoke check could not run: {e}\n\nThis is NOT a pass — the app was never \
+                 executed. Install a browser (`npx playwright install chromium`) or set \
+                 BIOROUTER_APP_SMOKE=off to skip deliberately."
+            ),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        name = "list_platform_catalog",
+        description = "List what this BioRouter install ACTUALLY has: installed knowledge bases, \
+                       installed skills, and available extensions. Call this BEFORE configure_app \
+                       whenever an app needs a knowledge base, a skill, or an extension. Only ids \
+                       returned here may be configured — an id that does not exist is rejected, \
+                       because configuring one arms tools scoped to nothing and fails the app's \
+                       first turn. If the app needs something this install does not have, leave \
+                       the id unset and record it in `requires` instead; wanting an absent \
+                       capability is legal and is reported honestly to the user."
+    )]
+    pub async fn list_platform_catalog(&self) -> Result<CallToolResult, ErrorData> {
+        let catalog = catalog::Catalog::discover();
+        let json = serde_json::to_string_pretty(&catalog).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
         name = "list_apps",
         description = "List all BioRouter apps (optionally filtered by kind)."
     )]
@@ -1227,7 +2603,11 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "read_app",
-        description = "Read an app's manifest, or a specific file within it."
+        description = "Read an app's manifest, or a specific file within it. The manifest is \
+                       returned as a RESOLVED view by default: every optional block is present \
+                       and the theme pack is resolved, so a field holding its default value is \
+                       visible rather than absent. Edit that skeleton. Pass view=\"raw\" for the \
+                       exact on-disk bytes."
     )]
     pub async fn read_app(
         &self,
@@ -1237,10 +2617,16 @@ impl AgentDrafterServer {
         let store = self.store();
         match p.path {
             None => {
+                let view = resolved::ManifestView::parse(p.view.as_deref())
+                    .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
                 let m = store
                     .load_manifest(&p.id)
                     .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
-                let json = serde_json::to_string_pretty(&m).map_err(internal)?;
+                let value = match view {
+                    resolved::ManifestView::Resolved => resolved::resolved_view(&m),
+                    resolved::ManifestView::Raw => serde_json::to_value(&m).map_err(internal)?,
+                };
+                let json = serde_json::to_string_pretty(&value).map_err(internal)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Some(path) => {
@@ -1314,14 +2700,88 @@ impl AgentDrafterServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Exported '{}' to {} ({} files). To run it: double-click run.command (macOS) or `bash run.sh`. \
+        // ── Standalone export v2 (design §3.9): mode + payload + fat daemon ──
+        // Launcher mode = today's scaffold exactly (above). Full mode also
+        // stages the app's server-side payload and writes an audit manifest.
+        let mode = match p.mode.as_deref() {
+            Some("full") => "full",
+            _ => "launcher", // default; unknown values degrade to launcher
+        };
+        let mut notes: Vec<String> = Vec::new();
+        // Re-load the manifest to resolve the payload selection from the agent
+        // config; export_scaffold already validated the app exists.
+        let manifest = store.load_manifest(&p.id).map_err(internal)?;
+
+        let staged = if mode == "full" {
+            stage_full_payload(&manifest, &target, p.include.as_ref())
+        } else {
+            StagedPayload::empty()
+        };
+        notes.extend(staged.notes.iter().cloned());
+
+        // Fat export: bundle the current-platform daemon (both modes may opt in).
+        let bundle_mode = p.bundle_daemon.as_deref().unwrap_or("none");
+        let daemon_record = match bundle_mode {
+            "none" => None,
+            other => {
+                if other == "all" {
+                    notes.push(
+                        "bundle_daemon=\"all\" (universal) is out of scope in this build; \
+                         staging the current platform's daemon instead"
+                            .to_string(),
+                    );
+                } else if other != "current" {
+                    notes.push(format!(
+                        "unknown bundle_daemon=\"{other}\"; treating it as \"current\""
+                    ));
+                }
+                let (rec, note) = stage_current_daemon(&target);
+                notes.push(note);
+                rec
+            }
+        };
+
+        // Write export.json whenever the export carries a payload: full mode, or
+        // a bundled daemon in launcher mode (a "fat launcher").
+        let wrote_manifest = if mode == "full" || daemon_record.is_some() {
+            let ejson = build_export_json(&p.id, mode, &staged, daemon_record.as_ref());
+            let ejpath = target.join("export.json");
+            std::fs::write(
+                &ejpath,
+                serde_json::to_string_pretty(&ejson).unwrap_or_default(),
+            )
+            .map_err(internal)?;
+            true
+        } else {
+            false
+        };
+
+        // ── Result summary ─────────────────────────────────────────────────
+        let mut msg = format!(
+            "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
+             To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
              That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
              no npm install, no build step.",
             p.id,
             target.display(),
             scaffold.len()
-        ))]))
+        );
+        if mode == "full" {
+            msg.push_str(&format!(
+                "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
+                staged.knowledge_bases.len(),
+                staged.skills.len(),
+                staged.extensions.len()
+            ));
+        }
+        if wrote_manifest {
+            msg.push_str(" Wrote export.json (audit manifest).");
+        }
+        for n in &notes {
+            msg.push_str(&format!("\n- {n}"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     #[tool(
@@ -1369,6 +2829,22 @@ mod tests {
     use rmcp::model::RawContent;
     use tempfile::TempDir;
 
+    /// Opt this test out of catalog strictness.
+    ///
+    /// Six tests here configure knowledge bases / skills that deliberately do not
+    /// exist — `export_full_mode_skips_missing_kb` *is* the missing-KB path, and
+    /// the config round-trip tests only care that the fields survive a save/load.
+    /// Under the write-boundary rule (Wave 1) an id that is not installed cannot be
+    /// saved, which is correct for real authoring and wrong for these fixtures.
+    ///
+    /// This is process-global, which is safe **only** because no test in this
+    /// binary asserts that a rejection happens; those live in the separate
+    /// `tests/catalog_write_boundary.rs` integration binary, which runs in its own
+    /// process with strictness on (the default).
+    fn relax_catalog_strictness() {
+        std::env::set_var("BIOROUTER_APPS_CATALOG_STRICT", "0");
+    }
+
     fn server() -> (TempDir, AgentDrafterServer) {
         let dir = TempDir::new().unwrap();
         let s = AgentDrafterServer::with_root(dir.path().to_path_buf());
@@ -1399,6 +2875,9 @@ mod tests {
             title: title.into(),
             id: None,
             description: String::new(),
+            surface: None,
+            theme: None,
+            archetype: None,
             kind: kind.map(|k| k.to_string()),
             html: None,
             files: vec![],
@@ -1468,6 +2947,7 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_model_and_extensions() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         s.create_app_inner(create("Cfg", Some("static")), None)
             .await
@@ -1491,6 +2971,7 @@ mod tests {
             orchestration: None,
             output_type: None,
             durable_session: None,
+            requires: None,
         }))
         .await
         .unwrap();
@@ -1506,6 +2987,7 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_advanced_agent_design_fields() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         s.create_app_inner(create("Harnessed", None), None)
             .await
@@ -1576,6 +3058,7 @@ mod tests {
                 }
             })),
             durable_session: Some(false),
+            requires: None,
         }))
         .await
         .unwrap();
@@ -1636,6 +3119,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_layout_and_workflow_prompt_build_and_pass_launch_harness() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         let mut p = create("Cohort Review Console", None);
         p.id = Some("cohort-review-console".into());
@@ -1710,6 +3194,7 @@ run.addEventListener("click", async () => {
             orchestration: None,
             output_type: None,
             durable_session: None,
+            requires: None,
         }))
         .await
         .unwrap();
@@ -1854,6 +3339,7 @@ run.addEventListener("click", async () => {
             .read_app(Parameters(ReadAppParams {
                 id: "advanced-agent".into(),
                 path: None,
+                view: None,
             }))
             .await
             .unwrap();
@@ -1960,6 +3446,7 @@ br.run("hello", "#missing");
                 id: "broken-harness".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .is_err());
@@ -2055,6 +3542,7 @@ br.run("hello", "#missing");
             .read_app(Parameters(ReadAppParams {
                 id: "one".into(),
                 path: None,
+                view: None,
             }))
             .await
             .unwrap();
@@ -2080,6 +3568,7 @@ br.run("hello", "#missing");
                 id: "exporter".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2099,7 +3588,8 @@ br.run("hello", "#missing");
         }
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(index.contains("dist/app.js"));
-        assert!(index.contains("BIOROUTER_APP_CONFIG"));
+        // Config is the non-executable JSON island (CSP parity with served apps).
+        assert!(index.contains("<script type=\"application/json\" id=\"biorouter-app-config\">"));
 
         // The exported manifest is what registers the app with a daemon.
         let m: Manifest = serde_json::from_str(
@@ -2142,6 +3632,7 @@ br.run("hello", "#missing");
             id: "vaulted".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             endpoint: None,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -2159,8 +3650,466 @@ br.run("hello", "#missing");
                 id: "ghost".into(),
                 target_dir: "/tmp/x".into(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .is_err());
+    }
+
+    // ── Standalone export v2 (design §3.9) ─────────────────────────────────
+
+    /// Removes an env var on drop so a panicking `#[serial]` test can't leak it
+    /// into the next one.
+    struct EnvGuard(&'static str);
+    impl EnvGuard {
+        fn set(key: &'static str, val: &std::path::Path) -> Self {
+            std::env::set_var(key, val);
+            EnvGuard(key)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+
+    /// Launcher mode (the default) is unchanged: no `payload/`, no `export.json`.
+    #[tokio::test]
+    async fn export_launcher_mode_writes_no_payload() {
+        let (_d, s) = server();
+        let mut p = create("Launcher", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        s.export_app(Parameters(ExportAppParams {
+            id: "launcher".into(),
+            target_dir: out.path().to_string_lossy().to_string(),
+            mode: Some("launcher".into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        assert!(
+            !out.path().join("payload").exists(),
+            "no payload in launcher mode"
+        );
+        assert!(
+            !out.path().join("export.json").exists(),
+            "no export.json in launcher mode"
+        );
+        // The Windows launchers still ship in every export.
+        assert!(out.path().join("run.ps1").exists());
+        assert!(out.path().join("run.bat").exists());
+    }
+
+    /// Full mode stages the app's KB + skill payload and writes a deterministic
+    /// `export.json`. Uses env overrides so the KB / skills roots point at temp
+    /// fixtures (hence `#[serial]`).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_stages_payload_and_writes_export_json() {
+        relax_catalog_strictness();
+        // Fake knowledge store with one KB directory the brkb exporter can walk.
+        let kroot = TempDir::new().unwrap();
+        let kb_dir = kroot.path().join("ms-cohort").join("knowledge");
+        std::fs::create_dir_all(&kb_dir).unwrap();
+        std::fs::write(kb_dir.join("index.md"), "# MS cohort\n").unwrap();
+        // Fake skills dir with one installed skill.
+        let sroot = TempDir::new().unwrap();
+        std::fs::create_dir_all(sroot.path().join("ggplot")).unwrap();
+        std::fs::write(sroot.path().join("ggplot").join("SKILL.md"), "# ggplot\n").unwrap();
+
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+        let _sg = EnvGuard::set("BIOROUTER_SKILLS_DIR", sroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Cohort", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("ms-cohort".into());
+        p.skills = vec!["ggplot".into()];
+        // developer is builtin (travels with the daemon); spokeagent is external.
+        p.extensions = vec!["developer".into(), "spokeagent".into()];
+        s.create_app_inner(p, None).await.unwrap();
+
+        // Give the app a vault to prove full mode still excludes it.
+        let vault = s.store().artifact_dir("cohort").join(".vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("K.enc"), "sealed").unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "cohort".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        // Payload dirs.
+        assert!(
+            out.path().join("payload/knowledge/ms-cohort.brkb").exists(),
+            "KB staged as a .brkb"
+        );
+        assert!(
+            out.path().join("payload/skills/ggplot/SKILL.md").exists(),
+            "skill staged as a dir tree"
+        );
+        assert!(
+            !out.path().join(".vault").exists(),
+            "vault excluded in full mode"
+        );
+
+        // export.json structure.
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .expect("export.json must parse");
+        assert_eq!(ej["version"], 1);
+        assert_eq!(ej["app"], "cohort");
+        assert_eq!(ej["mode"], "full");
+        assert_eq!(ej["knowledge_bases"][0]["id"], "ms-cohort");
+        assert_eq!(
+            ej["knowledge_bases"][0]["file"],
+            "payload/knowledge/ms-cohort.brkb"
+        );
+        assert!(ej["knowledge_bases"][0]["bytes"].as_u64().unwrap() > 0);
+        assert_eq!(ej["skills"][0]["name"], "ggplot");
+        assert_eq!(ej["skills"][0]["path"], "payload/skills/ggplot");
+        // Only the external extension is recorded; the builtin is not.
+        assert_eq!(ej["extensions"].as_array().unwrap().len(), 1);
+        assert_eq!(ej["extensions"][0]["name"], "spokeagent");
+        assert_eq!(ej["extensions"][0]["source"], "registry");
+        assert!(ej["required_credentials"].as_array().unwrap().is_empty());
+        assert!(ej["runtime_requirements"].as_array().unwrap().is_empty());
+        assert!(ej["bundled_daemon"].is_null(), "thin export → no daemon");
+
+        assert!(text_of(&res).contains("full mode"));
+    }
+
+    /// A KB id that doesn't exist is skipped with a note — the export still
+    /// succeeds and `export.json` records an empty `knowledge_bases` list.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_skips_missing_kb() {
+        relax_catalog_strictness();
+        let kroot = TempDir::new().unwrap(); // empty store — no such KB
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Ghostkb", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("does-not-exist".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "ghostkb".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(
+            ej["knowledge_bases"].as_array().unwrap().is_empty(),
+            "missing KB is skipped, not staged"
+        );
+        assert!(text_of(&res).contains("skipped knowledge base 'does-not-exist'"));
+    }
+
+    /// An explicit empty `include.knowledge_bases` selects nothing even when the
+    /// agent config references a KB (per-item opt-out).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_explicit_empty_include_selects_none() {
+        relax_catalog_strictness();
+        let kroot = TempDir::new().unwrap();
+        std::fs::create_dir_all(kroot.path().join("kb1").join("knowledge")).unwrap();
+        std::fs::write(kroot.path().join("kb1").join("knowledge").join("i.md"), "x").unwrap();
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Opt Out", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("kb1".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        s.export_app(Parameters(ExportAppParams {
+            id: "opt-out".into(),
+            target_dir: out.path().to_string_lossy().to_string(),
+            mode: Some("full".into()),
+            include: Some(serde_json::json!({ "knowledge_bases": [] })),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        assert!(
+            !out.path().join("payload/knowledge").exists(),
+            "explicit empty include stages no KB"
+        );
+    }
+
+    /// `bundle_daemon="current"` copies a `biorouterd` (located via the
+    /// `BIOROUTERD_BIN` hook) into `payload/bin/` and records it in export.json.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_current_stages_binary() {
+        // A fake daemon binary on disk; find_biorouterd_binary honours BIOROUTERD_BIN first.
+        let bin_dir = TempDir::new().unwrap();
+        let fake = bin_dir.path().join("biorouterd");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+
+        let (_d, s) = server();
+        let mut p = create("Fat", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "fat".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        let bin_name = if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        };
+        let staged = out.path().join("payload/bin").join(bin_name);
+        assert!(staged.exists(), "daemon staged under payload/bin");
+        // A fat launcher still writes export.json recording the bundled daemon.
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(
+            !ej["bundled_daemon"].is_null(),
+            "records the bundled daemon"
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["file"],
+            format!("payload/bin/{bin_name}")
+        );
+        assert!(text_of(&res).contains("fat export"));
+    }
+
+    /// When no daemon can be found, `bundle_daemon="current"` degrades to a thin
+    /// export with a note instead of failing.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_falls_back_to_thin_when_daemon_absent() {
+        // Point BIOROUTERD_BIN at a non-existent path and blank PATH so discovery
+        // fails deterministically.
+        std::env::set_var("BIOROUTERD_BIN", "/nonexistent/biorouterd-xyz");
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", "");
+
+        let (_d, s) = server();
+        let mut p = create("NoDaemon", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "nodaemon".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        std::env::remove_var("BIOROUTERD_BIN");
+        if let Some(pp) = saved_path {
+            std::env::set_var("PATH", pp);
+        }
+
+        assert!(!out.path().join("payload/bin").exists(), "no daemon staged");
+        assert!(text_of(&res).contains("thin export"));
+    }
+
+    // ── Archetype starters (Apps SDK v2, Pillar 6) ─────────────────────────────
+
+    /// The killer test: creating an app for every archetype seeds the matching
+    /// starter and the seeded project lints with **no ERROR-level findings**.
+    #[tokio::test]
+    async fn starters_seed_and_lint_clean_for_every_archetype() {
+        let (_d, s) = server();
+        // (archetype, distinguishing index badge, distinguishing main.ts marker)
+        let cases = [
+            ("explorer", "Explorer", "focus_node"),
+            ("dashboard", "Dashboard", "set_metric"),
+            ("workbench", "Workbench", "open_row"),
+            ("wizard", "Wizard", "go_to_step"),
+            ("canvas", "Canvas", "move_avatar"),
+            ("chat", "BioRouter App", "createApp();"),
+        ];
+        for (arch, badge, marker) in cases {
+            let id = format!("app-{arch}");
+            let mut p = create("Starter", None);
+            p.id = Some(id.clone());
+            p.archetype = Some(arch.to_string());
+            s.create_app_inner(p, None).await.unwrap();
+
+            let index = s.store().read_file(&id, "index.html").unwrap();
+            let main = s.store().read_file(&id, "src/main.ts").unwrap();
+            assert!(index.contains(badge), "{arch}: index missing '{badge}'");
+            assert!(main.contains(marker), "{arch}: main.ts missing '{marker}'");
+
+            let findings = bundle::lint_app(&s.store().artifact_dir(&id));
+            let errors: Vec<String> = findings
+                .iter()
+                .filter(|f| f.level == bundle::LintLevel::Error)
+                .map(|f| f.msg.clone())
+                .collect();
+            assert!(errors.is_empty(), "{arch}: lint errors: {errors:#?}");
+        }
+    }
+
+    #[test]
+    fn infers_archetype_from_brief() {
+        assert_eq!(
+            Archetype::infer("Gene network explorer", ""),
+            Archetype::Explorer
+        );
+        assert_eq!(
+            Archetype::infer("Trial metrics dashboard", ""),
+            Archetype::Dashboard
+        );
+        assert_eq!(
+            Archetype::infer("Cohort browser", "browse the sample table"),
+            Archetype::Workbench
+        );
+        assert_eq!(
+            Archetype::infer("Intake wizard", "a short survey form"),
+            Archetype::Wizard
+        );
+        assert_eq!(
+            Archetype::infer("Avatar scene", "a little game"),
+            Archetype::Canvas
+        );
+        assert_eq!(
+            Archetype::infer("Lab helper", "a chat Q&A assistant"),
+            Archetype::Chat
+        );
+        // No keyword → dashboard, never chat by default.
+        assert_eq!(
+            Archetype::infer("Baranzini tool", "a helpful thing"),
+            Archetype::Dashboard
+        );
+        // Whole-word prefix matching: "platform"/"perform" must NOT hit "form".
+        assert_eq!(
+            Archetype::infer("Analytics platform", "perform well"),
+            Archetype::Dashboard
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_archetype_overrides_inference() {
+        let (_d, s) = server();
+        // Title screams "dashboard", but the caller explicitly asked for canvas.
+        let mut p = create("Trial metrics dashboard", None);
+        p.id = Some("override".into());
+        p.archetype = Some("canvas".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let index = s.store().read_file("override", "index.html").unwrap();
+        assert!(index.contains("Canvas"));
+        let m = s.store().load_manifest("override").unwrap();
+        assert!(
+            m.surface.components.iter().any(|c| c.name == "scene"),
+            "canvas must seed the scene component"
+        );
+
+        // A bogus archetype is a clean INVALID_PARAMS, not a panic.
+        let mut bad = create("X", None);
+        bad.archetype = Some("spaceship".into());
+        assert!(s.create_app_inner(bad, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_default_preserved_for_chatty_prompts() {
+        let (_d, s) = server();
+        let mut p = create("Support assistant", None);
+        p.id = Some("chatty".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let index = s.store().read_file("chatty", "index.html").unwrap();
+        assert!(index.contains("data-br-chat"), "chat keeps the chat card");
+        let main = s.store().read_file("chatty", "src/main.ts").unwrap();
+        assert!(
+            main.contains("createApp();"),
+            "chat keeps the default main.ts"
+        );
+        let m = s.store().load_manifest("chatty").unwrap();
+        assert!(m.surface.is_empty(), "chat declares no v2 surface");
+    }
+
+    #[tokio::test]
+    async fn surface_seeded_for_canvas_and_explorer() {
+        let (_d, s) = server();
+
+        let mut c = create("Simulation", None);
+        c.id = Some("sim".into());
+        c.archetype = Some("canvas".into());
+        s.create_app_inner(c, None).await.unwrap();
+        let cm = s.store().load_manifest("sim").unwrap();
+        assert!(cm.surface.components.iter().any(|c| c.name == "scene"));
+        assert!(cm.surface.actions.iter().any(|a| a.name == "move_avatar"));
+        assert!(cm.surface.actions.iter().any(|a| a.name == "reset_scene"));
+        assert!(cm
+            .surface
+            .signals
+            .iter()
+            .any(|sig| sig.name == "avatar_moved"));
+        assert!(cm.surface.state_schema.is_some());
+
+        let mut e = create("Graph tool", None);
+        e.id = Some("graph".into());
+        e.archetype = Some("explorer".into());
+        s.create_app_inner(e, None).await.unwrap();
+        let em = s.store().load_manifest("graph").unwrap();
+        assert!(em.surface.actions.iter().any(|a| a.name == "focus_node"));
+        assert!(em
+            .surface
+            .signals
+            .iter()
+            .any(|sig| sig.name == "search_submitted"));
+        assert!(em.surface.state_schema.is_some());
+
+        // A caller-supplied main.ts must NOT get a mismatched surface stamped on.
+        let mut byo = create("Bring your own", None);
+        byo.id = Some("byo".into());
+        byo.archetype = Some("canvas".into());
+        byo.files = vec![FileSpec {
+            path: "src/main.ts".into(),
+            content: "import { createApp } from \"./sdk\";\ncreateApp();\n".into(),
+        }];
+        s.create_app_inner(byo, None).await.unwrap();
+        assert!(
+            s.store().load_manifest("byo").unwrap().surface.is_empty(),
+            "no surface when the caller supplies their own main.ts"
+        );
     }
 }

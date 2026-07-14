@@ -18,30 +18,29 @@ import { toastSuccess, toastError } from '../../toasts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import {
   appUrl,
+  buildExportUrl,
   configuredBaseUrl,
   deleteAgentDrafterApp,
   requireOk,
   secretHeader,
 } from './appManagement';
+import type { AppManifest, ExportOptions } from './appManagement';
+import ExportAppDialog from './ExportAppDialog';
 
-/** An Agent-Drafter-built app, as returned by biorouterd `GET /apps`. */
-interface AppManifest {
-  id: string;
-  title: string;
-  description?: string;
-  kind: 'static' | 'agentic';
-  created_at?: number;
-  updated_at?: number;
-  built_at?: number | null;
-  /** Chat session this app was built in, when known (lets us reopen it). */
-  session_id?: string;
-  agent?: {
-    model?: { provider?: string; model?: string };
-    extensions?: string[];
-    skills?: string[];
-    knowledge_base?: string;
-  } | null;
-}
+/**
+ * Representative accent per curated theme pack (Apps SDK v2, Pillar 6), for the
+ * small swatch on the app card. Mirrors the `--br-accent` of each
+ * `[data-br-pack]` layer in `agent_drafter/templates/theme.css`. The base
+ * `biorouter` pack gets no badge (it is the default look).
+ */
+const PACK_SWATCH_CLASSES: Record<string, string> = {
+  clinical: 'app-theme-swatch--clinical',
+  'lab-notebook': 'app-theme-swatch--lab-notebook',
+  terminal: 'app-theme-swatch--terminal',
+  journal: 'app-theme-swatch--journal',
+  midnight: 'app-theme-swatch--midnight',
+};
+const DEFAULT_THEME_PACK = 'biorouter';
 
 /** Format a Unix-seconds timestamp as a short, readable date (e.g. "Jun 24, 2026"). */
 function formatDate(secs?: number | null): string {
@@ -63,6 +62,7 @@ export default function ApplicationsView() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [launchingAppId, setLaunchingAppId] = useState<string | null>(null);
   const [exportingAppId, setExportingAppId] = useState<string | null>(null);
+  const [appToExport, setAppToExport] = useState<AppManifest | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,6 +85,9 @@ export default function ApplicationsView() {
     load();
   }, [load]);
 
+  // Launch opens the app's own served URL in the real browser — archetype-
+  // agnostic by construction (nothing here assumes a chat-shaped app), so the
+  // v2 non-chat starters need no special affordance (plan Phase 5 item 5).
   const launch = async (app: AppManifest) => {
     if (launchingAppId === app.id) return;
     const baseUrl = configuredBaseUrl();
@@ -111,11 +114,13 @@ export default function ApplicationsView() {
     });
   };
 
-  const exportApp = async (app: AppManifest) => {
+  const exportApp = async (app: AppManifest, options: ExportOptions) => {
     if (exportingAppId === app.id) return;
     setExportingAppId(app.id);
     try {
-      const res = await fetch(`${configuredBaseUrl()}/apps/${encodeURIComponent(app.id)}/export`, {
+      // Older daemons ignore the query params and return the same scaffold
+      // map, so this degrades gracefully to a launcher export.
+      const res = await fetch(buildExportUrl(configuredBaseUrl(), app.id, options), {
         headers: await secretHeader(),
       });
       await requireOk(res);
@@ -232,7 +237,7 @@ export default function ApplicationsView() {
                     app={app}
                     onLaunch={() => launch(app)}
                     onOpenConversation={() => openConversation(app)}
-                    onExport={() => exportApp(app)}
+                    onExport={() => setAppToExport(app)}
                     onDelete={() => setAppToDelete(app)}
                     isLaunching={launchingAppId === app.id}
                     isExporting={exportingAppId === app.id}
@@ -243,6 +248,19 @@ export default function ApplicationsView() {
           </ReadableContent>
         </SearchView>
       </div>
+
+      {appToExport && (
+        <ExportAppDialog
+          key={appToExport.id}
+          app={appToExport}
+          onCancel={() => setAppToExport(null)}
+          onConfirm={(options) => {
+            const app = appToExport;
+            setAppToExport(null);
+            void exportApp(app, options);
+          }}
+        />
+      )}
 
       <ConfirmationModal
         isOpen={appToDelete !== null}
@@ -283,6 +301,17 @@ export function ApplicationItem({
 }: ApplicationItemProps) {
   const model = app.agent?.model?.model;
   const kb = app.agent?.knowledge_base;
+  // Apps SDK v2 audit badges: the archetype isn't stored on the manifest, so
+  // surface the app's v2-ness through what is — a non-default theme pack and
+  // the declared surface (actions/signals). v1 manifests carry neither key.
+  const themePack = app.theme?.pack;
+  const actionCount = app.surface?.actions?.length ?? 0;
+  const signalCount = app.surface?.signals?.length ?? 0;
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  const surfaceSummary = [
+    ...(actionCount > 0 ? [plural(actionCount, 'action')] : []),
+    ...(signalCount > 0 ? [plural(signalCount, 'signal')] : []),
+  ].join(' · ');
   return (
     <div
       className="biorouter-list-row flex items-start py-3 px-3 group gap-3"
@@ -294,6 +323,31 @@ export function ApplicationItem({
           <span className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0">
             {app.kind}
           </span>
+          {themePack && themePack !== DEFAULT_THEME_PACK && (
+            <span
+              className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0 inline-flex items-center gap-1"
+              title={`Theme pack: ${themePack}`}
+            >
+              <span
+                aria-hidden="true"
+                className={[
+                  'app-theme-swatch inline-block w-2 h-2 rounded-full',
+                  PACK_SWATCH_CLASSES[themePack],
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              />
+              {themePack}
+            </span>
+          )}
+          {surfaceSummary && (
+            <span
+              className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0"
+              title="Declared app surface: verbs the agent can call and signals it can subscribe to"
+            >
+              {surfaceSummary}
+            </span>
+          )}
         </div>
         {app.description && (
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{app.description}</p>

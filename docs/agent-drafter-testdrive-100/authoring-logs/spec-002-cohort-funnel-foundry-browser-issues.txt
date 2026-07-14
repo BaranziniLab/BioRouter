@@ -1,0 +1,17 @@
+Browser refinement required after static pass:
+
+- HTML5 drag from the visible eGFR<30 chip into #stageDropTarget produced no
+  stage in two CUA drag attempts. This may partly reflect browser automation's
+  HTML5 DataTransfer support, so preserve drag but add an accessible click/
+  keyboard fallback that performs the same local add + signal.
+- Ask architect was activated by Playwright, coordinate CUA, and DOM-node CUA.
+  The button remained enabled and console stayed clean, but no message reached
+  the app session and #log never entered the synchronous br.run starting state.
+- The secondary note handler definitely ran (input cleared after Send), yet its
+  br.run likewise sent no prompt and changed no output. The WebSocket remained
+  connected and the page showed Session ready / data, ui.
+
+Requested refinement: replace custom-control br.run calls with structured
+br.call/br.prompt turns that work like Spec 001's proven br.call path while the
+separate #progress mountTimeline remains visible; add click/keyboard chip
+fallback; rebuild and retest.

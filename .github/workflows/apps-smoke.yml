@@ -1,0 +1,47 @@
+name: Apps smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/apps-smoke.yml"
+      - "crates/biorouter-mcp/**"
+      - "scripts/agent-drafter/**"
+      - "scripts/agent-drafter-apps/**"
+      - "ui/desktop/package.json"
+      - "ui/desktop/package-lock.json"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: apps-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference-apps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: apps-smoke
+      - name: Install Rust native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
+      - name: Install desktop test runtime
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run reference apps in Chromium
+        run: cargo test -p biorouter-mcp --test ui_example_apps every_example_passes_the_executing_smoke_harness -- --ignored --nocapture

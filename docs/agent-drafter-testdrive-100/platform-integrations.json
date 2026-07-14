@@ -1,0 +1,2365 @@
+{
+  "catalog": {
+    "builtin_extensions": [
+      "agent_drafter",
+      "autovisualiser",
+      "computercontroller",
+      "developer",
+      "knowledge",
+      "memory",
+      "tutorial"
+    ],
+    "external_extensions_connectors": [],
+    "skills": [],
+    "knowledge_bases": []
+  },
+  "summary": {
+    "built": 20,
+    "with_integration_issues": 20,
+    "with_runtime_integration_tool_attempts": 7
+  },
+  "results": [
+    {
+      "number": 1,
+      "id": "spec-001-variant-tribunal",
+      "title": "Variant Tribunal",
+      "built": true,
+      "platform_line": "br.kb (ClinVar/literature), scientific figures (lollipop/track), deep model route for adjudication, genomics skills.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "genomics"
+        ],
+        "knowledge_base": null,
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "skills__loadSkill"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: genomics",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 2,
+      "id": "spec-002-cohort-funnel-foundry",
+      "title": "Cohort Funnel Foundry",
+      "built": true,
+      "platform_line": "institutional model route (PHI-safe SQL), br.kb (phenotype defs), workflows (materialize), scientific figures (attrition funnel).",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "phenotype-defs",
+        "knowledge_grants": [
+          "phenotype-defs"
+        ],
+        "routes": [],
+        "workflows": [
+          "deep",
+          "fast",
+          "materialize"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: phenotype-defs",
+        "unavailable KB grants: phenotype-defs",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 3,
+      "id": "spec-003-pathway-seance",
+      "title": "Pathway S\u00e9ance",
+      "built": true,
+      "platform_line": "br.kb graph search, scientific figures (network), deep route for bridging inference, pathway-analysis skill.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": null,
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "knowledge__kb_get_graph",
+          "knowledge__kb_list_bases",
+          "knowledge__kb_search",
+          "skills__loadSkill"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog"
+      ]
+    },
+    {
+      "number": 4,
+      "id": "spec-004-trial-regia",
+      "title": "Trial Regia",
+      "built": true,
+      "platform_line": "institutional model route, br.kb (site/enrollment data), scientific figures (Kaplan-Meier, forest), clinical-biostatistics skill, workflows (protocol export).",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": true
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "trial-regia-site-data",
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "skills__loadSkill"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable knowledge_base: trial-regia-site-data",
+        "requested model routes are not configured",
+        "requested workflow is not configured"
+      ]
+    },
+    {
+      "number": 5,
+      "id": "spec-005-omics-loom",
+      "title": "Omics Loom",
+      "built": true,
+      "platform_line": "br.kb (ID mapping), scientific figures (volcano/heatmap/network), deep route, differential-expression + multi-omics-integration skills.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "differential-expression",
+          "multi-omics-integration"
+        ],
+        "knowledge_base": "omics-id-mapping",
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: differential-expression, multi-omics-integration",
+        "unavailable knowledge_base: omics-id-mapping"
+      ]
+    },
+    {
+      "number": 6,
+      "id": "spec-006-ward-board",
+      "title": "Ward Board",
+      "built": true,
+      "platform_line": "institutional model route (PHI-safe), br.kb (guidelines), scientific figures (trend/sparkline), clinical-databases skill.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "clinical-databases"
+        ],
+        "knowledge_base": "clinical-guidelines",
+        "knowledge_grants": [
+          "clinical-guidelines"
+        ],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: clinical-databases",
+        "unavailable knowledge_base: clinical-guidelines",
+        "unavailable KB grants: clinical-guidelines",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 7,
+      "id": "spec-007-provenance-autopsy",
+      "title": "Provenance Autopsy",
+      "built": true,
+      "platform_line": "br.kb (pipeline docs), model routes (fast trace, deep root-cause), workflows (re-run step), reproducibility skills.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "knowledge"
+        ],
+        "skills": [
+          "reproducibility"
+        ],
+        "knowledge_base": "pipeline-docs",
+        "knowledge_grants": [
+          "pipeline-docs"
+        ],
+        "routes": [],
+        "workflows": [
+          "rerun_step"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: reproducibility",
+        "unavailable knowledge_base: pipeline-docs",
+        "unavailable KB grants: pipeline-docs",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 8,
+      "id": "spec-008-manhattan-signal-room",
+      "title": "Manhattan Signal Room",
+      "built": true,
+      "platform_line": "br.kb (eQTL/gene annotation), scientific figures (Manhattan, locus-zoom), deep route (fine-mapping), statistical-genetics skills.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "statistical-genetics"
+        ],
+        "knowledge_base": null,
+        "knowledge_grants": [],
+        "routes": [
+          "deep",
+          "fast"
+        ],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "knowledge__kb_search",
+          "skills__loadSkill",
+          "skills__searchSkills"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: statistical-genetics"
+      ]
+    },
+    {
+      "number": 9,
+      "id": "spec-009-survival-atelier",
+      "title": "Survival Atelier",
+      "built": true,
+      "platform_line": "institutional model route, br.kb (confounder priors), scientific figures (Kaplan-Meier, forest), clinical-biostatistics skill.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "clinical-biostatistics"
+        ],
+        "knowledge_base": "confounder-priors",
+        "knowledge_grants": [
+          "confounder-priors"
+        ],
+        "routes": [
+          "deep",
+          "fast"
+        ],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: clinical-biostatistics",
+        "unavailable knowledge_base: confounder-priors",
+        "unavailable KB grants: confounder-priors"
+      ]
+    },
+    {
+      "number": 10,
+      "id": "spec-010-diagnosis-odyssey",
+      "title": "Diagnosis Odyssey",
+      "built": true,
+      "platform_line": "br.kb (HPO/OMIM/gene-disease graph), scientific figures (network), deep route (differential reasoning), rare-disease + clinical-databases skills.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [
+          "clinical-databases",
+          "rare-disease"
+        ],
+        "knowledge_base": "hpo-omim-gene-disease",
+        "knowledge_grants": [
+          "hpo-omim-gene-disease"
+        ],
+        "routes": [
+          "deep",
+          "fast"
+        ],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "knowledge__kb_search"
+        ],
+        "route_referenced_in_client": true,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "requested skill capability unavailable in isolated catalog",
+        "unavailable skills: clinical-databases, rare-disease",
+        "unavailable knowledge_base: hpo-omim-gene-disease",
+        "unavailable KB grants: hpo-omim-gene-disease"
+      ]
+    },
+    {
+      "number": 11,
+      "id": "spec-011-reaction-diffusion-foundry",
+      "title": "Reaction-Diffusion Foundry",
+      "built": true,
+      "platform_line": "model routes (fast for per-frame scoring, deep for regime planning), scientific figures for spectral fingerprints, KB of canonical Gray-Scott regimes, workflow to batch-sweep overnight.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "gray-scott-regimes",
+        "knowledge_grants": [
+          "gray-scott-regimes"
+        ],
+        "routes": [
+          "deep",
+          "fast"
+        ],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "knowledge__kb_search"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: gray-scott-regimes",
+        "unavailable KB grants: gray-scott-regimes",
+        "requested workflow is not configured"
+      ]
+    },
+    {
+      "number": 12,
+      "id": "spec-012-contagion-studio",
+      "title": "Contagion Studio",
+      "built": true,
+      "platform_line": "KB of NPI effect sizes, model routes (fast sweeps / deep policy synthesis), scientific figures for age-stratified panels, workflow to sweep parameter grids, table export.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": true
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "npi-effect-sizes",
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": []
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: npi-effect-sizes",
+        "requested model routes are not configured",
+        "requested workflow is not configured"
+      ]
+    },
+    {
+      "number": 13,
+      "id": "spec-013-orbital-sandbox",
+      "title": "Orbital Sandbox",
+      "built": true,
+      "platform_line": "model routes (fast integration steps / deep resonance analysis), scientific figures for phase portraits, KB of restricted three-body solutions, workflow to batch-sweep initial conditions.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "restricted-three-body-solutions",
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": [
+          "batch_sweep_initial_conditions"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: restricted-three-body-solutions",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 14,
+      "id": "spec-014-serengeti-engine",
+      "title": "Serengeti Engine",
+      "built": true,
+      "platform_line": "KB of ecological parameter ranges, model routes (fast stepping / deep regime classification), scientific figures for phase portraits, workflow to sweep initial densities overnight.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "ecology-parameter-ranges",
+        "knowledge_grants": [],
+        "routes": [],
+        "workflows": [
+          "overnight_density_sweep"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: ecology-parameter-ranges",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 15,
+      "id": "spec-015-foldscape",
+      "title": "FoldScape",
+      "built": true,
+      "platform_line": "KB of rotamer libraries and \u0394\u0394G data, model routes (fast scoring / deep mutation reasoning), scientific figures for Ramachandran + contact maps, workflow to batch-mutate a scanning panel.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "foldscape-rotamer-ddg",
+        "knowledge_grants": [
+          "foldscape-rotamer-ddg"
+        ],
+        "routes": [
+          "deep_mutation_reasoning",
+          "fast_scoring"
+        ],
+        "workflows": [
+          "batch_mutation_scanning_panel"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: foldscape-rotamer-ddg",
+        "unavailable KB grants: foldscape-rotamer-ddg"
+      ]
+    },
+    {
+      "number": 16,
+      "id": "spec-016-aerocanvas",
+      "title": "AeroCanvas",
+      "built": true,
+      "platform_line": "model routes (fast per-frame solve / deep shape optimization), scientific figures for Cp distributions and polars, KB of airfoil families (NACA series), workflow to sweep Reynolds numbers.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser"
+        ],
+        "skills": [],
+        "knowledge_base": "airfoil-families",
+        "knowledge_grants": [
+          "airfoil-families"
+        ],
+        "routes": [
+          "deep_shape_optimization",
+          "fast_per_frame_solve"
+        ],
+        "workflows": [
+          "sweep_reynolds_numbers"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: airfoil-families",
+        "unavailable KB grants: airfoil-families"
+      ]
+    },
+    {
+      "number": 17,
+      "id": "spec-017-automata-loom",
+      "title": "Automata Loom",
+      "built": true,
+      "platform_line": "KB of known CA rules and named patterns (Life lexicon), model routes (fast stepping / deep classification), scientific figures for \u03bb-entropy plots, workflow to batch-scan rule space overnight.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "ca-rules-lexicon",
+        "knowledge_grants": [
+          "ca-rules-lexicon"
+        ],
+        "routes": [
+          "deep_classification",
+          "fast_stepping"
+        ],
+        "workflows": [
+          "batch_scan_rule_space"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [
+          "knowledge__kb_list_bases",
+          "knowledge__kb_search"
+        ],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: ca-rules-lexicon",
+        "unavailable KB grants: ca-rules-lexicon"
+      ]
+    },
+    {
+      "number": 18,
+      "id": "spec-018-systemdynamics-forge",
+      "title": "SystemDynamics Forge",
+      "built": true,
+      "platform_line": "KB of canonical system archetypes (limits to growth, etc.), model routes (fast simulation / deep loop analysis), scientific figures for loop-dominance and sensitivity, workflow to sweep policy levers.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "system-dynamics-archetypes",
+        "knowledge_grants": [
+          "system-dynamics-archetypes"
+        ],
+        "routes": [],
+        "workflows": [
+          "policy_lever_sweep"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: system-dynamics-archetypes",
+        "unavailable KB grants: system-dynamics-archetypes",
+        "requested model routes are not configured"
+      ]
+    },
+    {
+      "number": 19,
+      "id": "spec-019-circuit-bench",
+      "title": "Circuit Bench",
+      "built": true,
+      "platform_line": "model routes (fast solve / deep topology synthesis), scientific figures for Bode/pole-zero plots, KB of filter topologies and op-amp specs, workflow to Monte-Carlo tolerance sweeps.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "analog-circuit-bench",
+        "knowledge_grants": [
+          "analog-circuit-bench"
+        ],
+        "routes": [
+          "deep_topology_synthesis",
+          "fast_solve"
+        ],
+        "workflows": [
+          "monte_carlo_tolerance_sweep"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": true,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: analog-circuit-bench",
+        "unavailable KB grants: analog-circuit-bench"
+      ]
+    },
+    {
+      "number": 20,
+      "id": "spec-020-diffusion-delta",
+      "title": "Diffusion Delta",
+      "built": true,
+      "platform_line": "KB of dispersion coefficients and terrain data, model routes (fast advection steps / deep worst-case analysis), scientific figures for breakthrough curves, extensions for geospatial basemaps, workflow to sweep wind scenarios.",
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": true,
+        "export": false
+      },
+      "configured": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "skills": [],
+        "knowledge_base": "dispersion-coefficients-terrain",
+        "knowledge_grants": [
+          "dispersion-coefficients-terrain"
+        ],
+        "routes": [
+          "deep_worst_case_analysis",
+          "fast_advection_steps"
+        ],
+        "workflows": [
+          "wind_scenario_sweep"
+        ]
+      },
+      "available": {
+        "extensions": [
+          "autovisualiser",
+          "knowledge"
+        ],
+        "external_extensions_connectors": [],
+        "skills": [],
+        "knowledge_bases": []
+      },
+      "exercised": {
+        "integration_tools": [],
+        "route_referenced_in_client": false,
+        "workflow_tool_seen": false
+      },
+      "issues": [
+        "requested KB capability unavailable in isolated catalog",
+        "unavailable knowledge_base: dispersion-coefficients-terrain",
+        "unavailable KB grants: dispersion-coefficients-terrain"
+      ]
+    },
+    {
+      "number": 21,
+      "title": "Radiant",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` graph/search core; deep model route for briefs, fast for growth; scientific `figure` embeds a mini evidence plot in the inspector."
+    },
+    {
+      "number": 22,
+      "title": "Crossfire",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` search for evidence; deep route for Prosecutor's counter-arguments; `figure` renders a forest-plot of the cited trials in the inspector."
+    },
+    {
+      "number": 23,
+      "title": "Longitude",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` search/graph for citations; fast route for card placement, deep for lineage reasoning; `figure` plots a citations-per-year sparkline in the inspector."
+    },
+    {
+      "number": 24,
+      "title": "Quorum",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "`br.kb` search + `page` for full-text; `systematic-review`/`clinical-biostatistics` skills; deep route for appraisal; `figure` renders the PRISMA flow diagram on export."
+    },
+    {
+      "number": 25,
+      "title": "Lattice",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` for grounding + prior-art; `single-cell`/`crispr-screens` skills for assay plans; deep route for generation, fast for scoring; `figure` sketches an expected-effect plot per hypothesis."
+    },
+    {
+      "number": 26,
+      "title": "Ledger",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` page/search for full-text stance mining; deep route for auditing quotes; `differential-expression`/`clinical-biostatistics` skills where claims are quantitative; `figure` renders a support-tally bar per claim."
+    },
+    {
+      "number": 27,
+      "title": "Fault Lines",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` search/page for finding extraction; deep route for adjudication; `scientific-research` skill; `figure` overlays the two conflicting effect sizes on one plot."
+    },
+    {
+      "number": 28,
+      "title": "Vantage",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` per-persona grounding; deep route for synthesis, fast for stance cards; `scientific-research`/`anti-ai-writing` skills for prose quality; `figure` optional stakeholder-impact plot."
+    },
+    {
+      "number": 29,
+      "title": "Watershed",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` search + a scheduled **workflow** for cadence; fast route for embedding, deep for basin briefs; `spatial-transcriptomics`/`scientific-research` skills; `figure` plots each basin's papers-per-week trend."
+    },
+    {
+      "number": 30,
+      "title": "Keystone",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`br.kb` graph/page for citation scaffolding + retraction lookup; deep route for collapse simulation; `scientific-research` skill; `figure` plots the integrity score across pull scenarios."
+    },
+    {
+      "number": 31,
+      "title": "Anomaly Atlas",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (fast scan / deep reproduce), scientific `figure` for the z-distribution, KB to store the case file, `table` + `plot` widgets."
+    },
+    {
+      "number": 32,
+      "title": "Trace Weaver",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`network` force-graph, `figure` flamegraph, model routes (fast trace / deep replay), extensions for log ingestion, KB postmortem archive."
+    },
+    {
+      "number": 33,
+      "title": "Causal Court",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for causal reasoning), `figure` for effect-size forest plots, KB evidence store, skills for causal-inference methods."
+    },
+    {
+      "number": 34,
+      "title": "Drift Sentinel",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`plot` multi-lane, `figure` for CUSUM charts, model routes (fast scan / deep corroborate), extensions for sensor feeds, KB calibration log."
+    },
+    {
+      "number": 35,
+      "title": "Ledger Loom",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`network` force-graph, `table` dossier, model routes (deep for typology reasoning), KB SAR archive, skills for AML typologies."
+    },
+    {
+      "number": 36,
+      "title": "Split Verdict",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`figure` for CI forest + funnel, model routes (deep for stats reasoning), skills for experimentation stats, KB experiment readouts."
+    },
+    {
+      "number": 37,
+      "title": "Chain of Custody",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`map` (Leaflet) + `plot` timeline, `figure` for temperature trace, model routes (deep for deviation reasoning), extensions for logistics feeds, KB trace reports."
+    },
+    {
+      "number": 38,
+      "title": "Cohort Contrast",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`figure` for distribution overlays + SMD forest, model routes (deep for matching reasoning), skills for clinical biostatistics, KB phenotype library."
+    },
+    {
+      "number": 39,
+      "title": "Log Loom",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`plot` template river, `log` widget, model routes (fast cluster / deep correlate), extensions for log sources, KB incident cases."
+    },
+    {
+      "number": 40,
+      "title": "Recon Board",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "`canvas` author-drawn surface, `network` for entity links, model routes (deep for link reasoning), extensions/skills for OSINT + AML, KB theory-of-the-case archive."
+    },
+    {
+      "number": 41,
+      "title": "ContagionScope",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "Auto-Visualiser `figure` for case curves; KB of prior outbreak parameters; deep model route for projections; fast route for narration."
+    },
+    {
+      "number": 42,
+      "title": "ExpeditionForge",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of terrain/permit rules; elevation `figure`; deep route for routing; workflows for permit checklists."
+    },
+    {
+      "number": 43,
+      "title": "RelayOptimizer",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "Fast model route for rapid re-solves; deep route for full network optimization; KPI/plot widgets; skills for VRP heuristics."
+    },
+    {
+      "number": 44,
+      "title": "IsoReach",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of census/transit data; equity `figure`; deep route for isochrone scoring; workflows for siting reports."
+    },
+    {
+      "number": 45,
+      "title": "StormWatch",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of resource inventories + hazard feeds; ETA KPIs; fast route for triage; deep route for staging optimization; workflows for order broadcasts."
+    },
+    {
+      "number": 46,
+      "title": "BioSentinel",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "KB of sensor metadata + regulatory thresholds; time-series `figure`; deep route for dispersion modeling; scientific figures for exceedance charts."
+    },
+    {
+      "number": 47,
+      "title": "TerraFuture",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of parcel/zoning + demographic data; jobs/traffic `figure`; deep route for impact simulation; workflows for scenario reports."
+    },
+    {
+      "number": 48,
+      "title": "TrailWeave",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of trail/water/closure data; elevation `figure`; deep route for day-balancing; skills for backcountry logistics."
+    },
+    {
+      "number": 49,
+      "title": "VectorFront",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of vector ecology + climate reanalysis; transmission `figure`; deep route for coupled modeling; workflows for intervention costing."
+    },
+    {
+      "number": 50,
+      "title": "GridHarbor",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of DEM/bathymetry + asset registries; benefit-cost `figure`; deep route for flood modeling; workflows for adaptation costing."
+    },
+    {
+      "number": 51,
+      "title": "Gridwright \u2014 Editorial Layout Studio",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for planning, fast for reflow), scientific `figure` widget for embedded data-graphics frames, KB for a house style guide, skills: `taste-skill`/`frontend-design`."
+    },
+    {
+      "number": 52,
+      "title": "Palette S\u00e9ance \u2014 Brand Moodboard System",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB (`br.kb` brand archives + past decks), model routes (deep for critique), scientific `figure` for contrast/harmony charts, skills: `frontend-design`, extensions for image sourcing."
+    },
+    {
+      "number": 53,
+      "title": "Panelith \u2014 Storyboard & Comic Board",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "model routes (deep for beat logic, fast for reframes), scientific `figure` for pacing/tension curves, skills: `taste-skill`, workflows for export to a shot-list doc."
+    },
+    {
+      "number": 54,
+      "title": "Reverb Loom \u2014 Soundscape Arranger",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for arrangement, fast for automation tweaks), scientific `figure` for spectral/LUFS plots, extensions for audio synthesis, skills: `frontend-design`."
+    },
+    {
+      "number": 55,
+      "title": "Kern & Karma \u2014 Typography Lab",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for graph reasoning, local for fast respacing), scientific `figure` for kerning-rhythm plots, KB for foundry specimen archives, skills: `taste-skill`."
+    },
+    {
+      "number": 56,
+      "title": "Voxel Atelier \u2014 3D Scene Composer",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for composition, fast for transforms), scientific `figure` for exposure histograms, extensions for asset/geometry generation, skills: `frontend-design`."
+    },
+    {
+      "number": 57,
+      "title": "Bindery \u2014 Generative Book & Zine Layout",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "KB (`br.kb` for reference texts/citations), model routes (deep for pagination logic), scientific `figure` for embedded data pages, workflows for export to print-ready PDF, skills: `taste-skill`."
+    },
+    {
+      "number": 58,
+      "title": "Loomframe \u2014 Motion Title Sequencer",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "model routes (deep for choreography, fast for easing tweaks), scientific `figure` for velocity/overshoot plots, skills: `frontend-design`, workflows to export a Lottie/spec sheet."
+    },
+    {
+      "number": 59,
+      "title": "Chroma Diplomat \u2014 Color System Studio",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for negotiation logic, fast for re-audit), scientific `figure` for the contrast/APCA matrix, KB for brand + a11y guidelines, skills: `frontend-design`."
+    },
+    {
+      "number": 60,
+      "title": "Set & Setting \u2014 Environmental Diorama Composer",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": true,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for composition, fast for tint/parallax), scientific `figure` for balance/saliency heatmaps, extensions for illustrated-asset generation, skills: `frontend-design`, `taste-skill`."
+    },
+    {
+      "number": 61,
+      "title": "Hexfront: The Council of Generals",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for arbitration, fast for piece moves); scientific `figure` for attrition curves; KB of doctrine; consult tool between generals."
+    },
+    {
+      "number": 62,
+      "title": "Biosphere: The Tending Table",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of trophic ecology; scientific `figure` for population dynamics; model routes (fast for spawns, deep for cascade sims); consult between Steward and Skeptic."
+    },
+    {
+      "number": 63,
+      "title": "The Long Table: Diplomacy Room",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "br.kb (treaty precedent) heavily; deep model route for trade discovery; scientific `figure` territory map; consult between Envoys and Mediator."
+    },
+    {
+      "number": 64,
+      "title": "Vault-7: The Escape Room Engine",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (fast for NPC lines, deep for puzzle-graph consistency); KB of puzzle mechanics; consult between Trickster and Warden; scheduled countdown via signals."
+    },
+    {
+      "number": 65,
+      "title": "Bastion: Tower-Defense as Roadmap",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "workflows (import a real plan); model routes (deep for wave generation); scientific `figure` for burndown; consult between Architect and Red-Team."
+    },
+    {
+      "number": 66,
+      "title": "Gait Studio: The Motion Coaches",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of PT protocols; scientific `figure` for ROM-over-session; model routes (fast for adaptation, deep for compensation analysis); consult between Adaptor and Safety-Officer."
+    },
+    {
+      "number": 67,
+      "title": "Terra Nova: The Colony Council",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for Auditor shocks, fast for zoning); scientific `figure` for resource trends; workflows to seed a scenario; consult between Planner and Auditor."
+    },
+    {
+      "number": 68,
+      "title": "Pendulum: The Physics Playground Tutors",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "scientific `figure` for energy/trajectory; model routes (deep for failure prediction); KB of mechanics principles; consult between Physicist and Breaker."
+    },
+    {
+      "number": 69,
+      "title": "Reef Wardens: The Living Aquarium",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of aquarium husbandry; scientific `figure` for chemistry trends; model routes (fast for stocking, deep for disease diagnosis); consult between Vet and Ethicist-critic."
+    },
+    {
+      "number": 70,
+      "title": "Ironclad: The Heist Table",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (deep for Guard-Sim adversarial rehearsal); scientific `figure` for the run timeline; KB of security patterns; consult between Planner and Guard-Sim."
+    },
+    {
+      "number": 71,
+      "title": "Aurora Grid Balancer",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "deep/fast model routes, scientific `figure` load plots, KB of switching-order runbooks, N-1 contingency skill."
+    },
+    {
+      "number": 72,
+      "title": "Incident Warroom Timeline",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "KB of historical incidents, deep model route for correlation, runbook skill, log/table catalog widgets."
+    },
+    {
+      "number": 73,
+      "title": "FleetOps Orchestrator",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "fast route for tracking, deep route for VRP optimization, map widget, labor-rules skill, KPI tiles."
+    },
+    {
+      "number": 74,
+      "title": "Quant Desk Sentinel",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "fast route for marks, deep route for attribution/stress, table+heatmap+kpi widgets, mandate-rules skill, factor-model KB."
+    },
+    {
+      "number": 75,
+      "title": "Pipeline Nexus",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "network graph widget, log widget, deep route for diagnosis, known-errors KB, retry/rollout runbook skill."
+    },
+    {
+      "number": 76,
+      "title": "Brewhouse Console",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "deep route for kinetic modeling, scientific `figure` trend plots, batch-record KB, QA-deviation skill, fast route for telemetry."
+    },
+    {
+      "number": 77,
+      "title": "Sky Sentinel ATC-Ops",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "fast route for track updates, deep route for flow prediction, map/scope widget, separation-rules skill, procedures KB."
+    },
+    {
+      "number": 78,
+      "title": "Approvals Queue Command",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "deep route for investigation, policy/precedent KB, table widget, fraud-signal skill, audit-trail workflow."
+    },
+    {
+      "number": 79,
+      "title": "Datacenter Thermal Bridge",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "fast route for telemetry, deep route for PUE modeling, scientific `figure` power plots, floor-plan canvas widget, capacity-planning KB."
+    },
+    {
+      "number": 80,
+      "title": "Observatory Nightwatch",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "deep route for schedule optimization, scientific `figure` frame previews, ephemeris/target KB, weather-hold skill, fast route for conditions telemetry."
+    },
+    {
+      "number": 81,
+      "title": "Proof Forge",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": true
+      },
+      "platform_line": "deep model route for proof search; scientific figures for the exported proof tree; a `formal-logic` skill for rule semantics."
+    },
+    {
+      "number": 82,
+      "title": "Wet-Bench Virtuoso",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "scientific figures for gel/qPCR output; `single-cell`/`variant-calling` skills for downstream steps; KB for protocol references."
+    },
+    {
+      "number": 83,
+      "title": "Chrono-Reconstruct",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "br.kb search/page for primary sources; deep model route for source cross-examination; `scientific-research` skill for citation credibility."
+    },
+    {
+      "number": 84,
+      "title": "Circuit Sandbox",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "local model route for fast SPICE checks; scientific figures for waveform plots; a `circuits` skill for component models."
+    },
+    {
+      "number": 85,
+      "title": "Immersion Atrium",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "fast model route for low-latency in-scene reply; deep route for grammar critique; a `language-immersion` skill; scientific figures for progress plots."
+    },
+    {
+      "number": 86,
+      "title": "Derivation Loom",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "deep model route for symbolic verification; scientific figures for plotting the derived law; a `physics-derivations` skill; KB for standard-form references."
+    },
+    {
+      "number": 87,
+      "title": "Anatomy Atelier",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "br.kb for pathology/imaging pages; scientific figures for cross-section plots; deep route for clinical reasoning; an `anatomy` skill."
+    },
+    {
+      "number": 88,
+      "title": "Cipher Workshop",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "local model route for fast frequency reasoning; deep route for crib inference; scientific figures for frequency plots; a `cryptography` skill."
+    },
+    {
+      "number": 89,
+      "title": "Ecosystem Terrarium",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "local route for fast ODE steps; deep route for intervention search; scientific figures for population curves; an `ecology`/`systems-biology` skill."
+    },
+    {
+      "number": 90,
+      "title": "Kernel Foundry",
+      "built": false,
+      "requested": {
+        "knowledge_base": false,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": false,
+        "workflow": false,
+        "scientific_figure": true,
+        "export": false
+      },
+      "platform_line": "local route for fast machine-stepping; deep route for trace grading; scientific figures for queue-occupancy plots; an `os-internals` skill."
+    },
+    {
+      "number": 91,
+      "title": "Roadmap Regatta",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "model routes (fast for placement, deep for red-team), br.kb for prior roadmap retros, workflows to export the locked plan, kpi widget for lane load."
+    },
+    {
+      "number": 92,
+      "title": "Tradeoff Radar",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": false,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "figure (radar), br.kb vendor briefs, model routes (deep for Contrarian), skills for scoring rubric, table export of the decision matrix."
+    },
+    {
+      "number": 93,
+      "title": "Redline Room",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "br.kb policy corpus, model routes (deep for Adversary), skills (anti-ai-writing for tone), workflows to export the finalized doc, table for a clause-coverage matrix."
+    },
+    {
+      "number": 94,
+      "title": "Scenario Matrix",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "br.kb signal library, model routes (deep for stress-tests), figure for a probability heatmap, workflows to export bets, kpi for portfolio-of-bets confidence."
+    },
+    {
+      "number": 95,
+      "title": "Negotiation Table",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "model routes (deep for Counterpart realism), br.kb comparable-deals, figure for ZOPA/utility frontier, skills for negotiation tactics, workflows to export the term sheet."
+    },
+    {
+      "number": 96,
+      "title": "Budget Loom",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "figure (Sankey + tornado sensitivity), model routes (deep for optimization), br.kb prior-year budgets, workflows to export the allocation, kpi for outcome coverage."
+    },
+    {
+      "number": 97,
+      "title": "Decision Room",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "br.kb evidence retrieval, model routes (fast for Scribe, deep for Devil), workflows to file the decision + action items, table for the vote tally, log widget for the meeting trail."
+    },
+    {
+      "number": 98,
+      "title": "Portfolio Kanban Arena",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": false,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": false
+      },
+      "platform_line": "model routes (fast for sequencing, deep for forecasting), figure (throughput distribution), br.kb delivery history, workflows to sync the board, kpi for cycle-time."
+    },
+    {
+      "number": 99,
+      "title": "Policy Sandbox",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "geo + figure widgets, br.kb evidence + parameter priors, model routes (deep for red-team), skills (clinical-biostatistics), workflows to export a policy brief."
+    },
+    {
+      "number": 100,
+      "title": "Resume Atelier",
+      "built": false,
+      "requested": {
+        "knowledge_base": true,
+        "skill": true,
+        "extension": false,
+        "connector": false,
+        "model_route": true,
+        "workflow": true,
+        "scientific_figure": false,
+        "export": true
+      },
+      "platform_line": "br.kb role rubrics + exemplar resumes, model routes (deep for rewrites), skills (anti-ai-writing, frontend-design for layout), workflows to export PDF, table for the ATS keyword matrix."
+    }
+  ]
+}

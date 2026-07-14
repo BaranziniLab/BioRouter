@@ -1,0 +1,56 @@
+{
+  "id": "spec-023-longitude",
+  "title": "Longitude",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-023-longitude/manifest.json",
+  "actions_expected": [
+    "annotate",
+    "collapse_era",
+    "draw_lineage",
+    "mark_fork",
+    "place_card",
+    "scrub_to"
+  ],
+  "actions_actual": [
+    "annotate",
+    "collapse_era",
+    "draw_lineage",
+    "mark_fork",
+    "place_card",
+    "scrub_to"
+  ],
+  "signals_expected": [
+    "branch_requested",
+    "card_selected",
+    "lane_toggled",
+    "playhead_moved"
+  ],
+  "signals_actual": [
+    "branch_requested",
+    "card_selected",
+    "lane_toggled",
+    "playhead_moved"
+  ],
+  "agents_expected": [
+    "Archivist",
+    "Genealogist",
+    "Annotator"
+  ],
+  "agents_actual": [
+    "annotator",
+    "archivist",
+    "genealogist"
+  ],
+  "regions": [
+    "agent-notes",
+    "era-ruler",
+    "figure",
+    "inspector",
+    "lane-rail",
+    "timeline",
+    "transport"
+  ],
+  "theme_expected": "lab-notebook",
+  "theme_actual": "lab-notebook",
+  "issues": []
+}

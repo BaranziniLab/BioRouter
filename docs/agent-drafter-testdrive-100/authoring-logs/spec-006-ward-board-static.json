@@ -1,0 +1,57 @@
+{
+  "id": "spec-006-ward-board",
+  "title": "Ward Board",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-006-ward-board/manifest.json",
+  "actions_expected": [
+    "add_problem",
+    "draft_orders",
+    "expand_card",
+    "pin_consideration",
+    "place_acuity",
+    "rank_differential"
+  ],
+  "actions_actual": [
+    "add_problem",
+    "draft_orders",
+    "expand_card",
+    "pin_consideration",
+    "place_acuity",
+    "rank_differential"
+  ],
+  "signals_expected": [
+    "card_reordered",
+    "card_selected",
+    "order_toggled",
+    "problem_dismissed"
+  ],
+  "signals_actual": [
+    "card_reordered",
+    "card_selected",
+    "order_toggled",
+    "problem_dismissed"
+  ],
+  "agents_expected": [
+    "Hospitalist",
+    "Subspecialist",
+    "Devil's Advocate",
+    "Documentarian"
+  ],
+  "agents_actual": [
+    "devils_advocate",
+    "documentarian",
+    "hospitalist",
+    "subspecialist"
+  ],
+  "regions": [
+    "board",
+    "inspector",
+    "note",
+    "progress",
+    "rail",
+    "vitals"
+  ],
+  "theme_expected": "clinical",
+  "theme_actual": "clinical",
+  "issues": []
+}

@@ -1,0 +1,58 @@
+{
+  "id": "spec-010-diagnosis-odyssey",
+  "title": "Diagnosis Odyssey",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-010-diagnosis-odyssey/manifest.json",
+  "actions_expected": [
+    "advance_to",
+    "fade_branch",
+    "focus_candidate",
+    "light_node",
+    "pin_test",
+    "place_yield"
+  ],
+  "actions_actual": [
+    "advance_to",
+    "fade_branch",
+    "focus_candidate",
+    "light_node",
+    "pin_test",
+    "place_yield"
+  ],
+  "signals_expected": [
+    "branch_pruned",
+    "node_clicked",
+    "phenotype_toggled",
+    "test_ordered"
+  ],
+  "signals_actual": [
+    "branch_pruned",
+    "node_clicked",
+    "phenotype_toggled",
+    "test_ordered"
+  ],
+  "agents_expected": [
+    "Pathfinder",
+    "Refuter",
+    "Test Recommender",
+    "Chronicler"
+  ],
+  "agents_actual": [
+    "chronicler",
+    "pathfinder",
+    "refuter",
+    "test_recommender"
+  ],
+  "regions": [
+    "graph",
+    "inspector",
+    "odyssey",
+    "phenotypes",
+    "trail"
+  ],
+  "theme_expected": "biorouter",
+  "theme_actual": null,
+  "issues": [
+    "theme.pack is None; expected 'biorouter'"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "id": "spec-002-cohort-funnel-foundry",
+  "title": "Cohort Funnel Foundry",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-002-cohort-funnel-foundry/manifest.json",
+  "actions_expected": [
+    "add_stage",
+    "flag_stage",
+    "place_power_gauge",
+    "preview_sql",
+    "reorder_stage",
+    "set_count"
+  ],
+  "actions_actual": [
+    "add_stage",
+    "flag_stage",
+    "place_power_gauge",
+    "preview_sql",
+    "reorder_stage",
+    "set_count"
+  ],
+  "signals_expected": [
+    "chip_dropped",
+    "stage_reordered",
+    "stage_selected",
+    "threshold_edited"
+  ],
+  "signals_actual": [
+    "chip_dropped",
+    "stage_reordered",
+    "stage_selected",
+    "threshold_edited"
+  ],
+  "agents_expected": [
+    "Architect",
+    "Auditor",
+    "Statistician",
+    "Scribe"
+  ],
+  "agents_actual": [
+    "architect",
+    "auditor",
+    "scribe",
+    "statistician"
+  ],
+  "regions": [
+    "attrition-kpi",
+    "criterion-library",
+    "drop-reasons",
+    "funnel-canvas",
+    "inspector",
+    "log",
+    "power-gauge",
+    "progress",
+    "transport"
+  ],
+  "theme_expected": "terminal",
+  "theme_actual": "terminal",
+  "issues": []
+}

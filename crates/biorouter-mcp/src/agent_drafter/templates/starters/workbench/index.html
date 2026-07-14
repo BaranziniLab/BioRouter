@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">Workbench</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+
+    <!-- Presence: the agent's step progress renders here (see main.ts). -->
+    <div data-br-progress class="br-run-status" style="margin-top: 12px;"></div>
+
+    <div class="br-row" style="display: flex; gap: 12px; margin-top: 12px;">
+      <input id="filter" class="br-input" placeholder="Filter rows…" style="flex: 1;" />
+      <button id="apply" class="br-btn">Apply</button>
+    </div>
+
+    <div class="br-grid br-grid--2" style="margin-top: 16px;">
+      <!-- The agent renders a `table` catalog kind here via
+           ui_render(target="@region:rows", …); row selection emits row_selected. -->
+      <section class="br-card" data-br-region="rows" style="min-height: 300px;"></section>
+
+      <!-- Detail: bound to the shared /detail doc, filled by the open_row action. -->
+      <aside class="br-card">
+        <h2 style="font-size: 14px; margin: 0 0 8px;" data-br-bind="/detail/title">Detail</h2>
+        <p class="br-text--muted" data-br-bind="/detail/body">Select a row to inspect it.</p>
+      </aside>
+    </div>
+
+    <section class="br-output" id="out" data-br-region="summary" style="margin-top: 16px;"></section>
+    <p class="br-footer">Powered by BioRouter · Workbench archetype</p>
+  </main>
+</body>
+</html>

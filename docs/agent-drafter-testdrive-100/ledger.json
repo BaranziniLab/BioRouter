@@ -1,0 +1,1951 @@
+{
+  "spec-001-variant-tribunal": {
+    "number": 1,
+    "rounds": [
+      {
+        "duration_s": 335.0,
+        "kind": "isolation-abort",
+        "rc": 130,
+        "reason": "Agent Drafter default_root ignored BIOROUTER_PATH_ROOT; draft quarantined from global store into .br-testdrive and harness corrected with XDG_CONFIG_HOME"
+      },
+      {
+        "duration_s": 147.1,
+        "kind": "static-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 171.0,
+        "kind": "static-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 76.0,
+        "kind": "manual-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 152.9,
+        "kind": "manual-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 40.3,
+        "kind": "manual-fix",
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "cite",
+        "focus_locus",
+        "highlight_track",
+        "set_verdict",
+        "stage_route",
+        "toggle_criterion"
+      ],
+      "actions_expected": [
+        "cite",
+        "focus_locus",
+        "highlight_track",
+        "set_verdict",
+        "stage_route",
+        "toggle_criterion"
+      ],
+      "agents_actual": [
+        "chief_justice",
+        "clerk",
+        "defense",
+        "prosecutor"
+      ],
+      "agents_expected": [
+        "Prosecutor",
+        "Defense",
+        "Chief Justice",
+        "Clerk"
+      ],
+      "built": true,
+      "id": "spec-001-variant-tribunal",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-001-variant-tribunal/manifest.json",
+      "regions": [
+        "criteria",
+        "genome",
+        "presence",
+        "rail",
+        "record",
+        "tracks",
+        "variant-queue",
+        "verdict"
+      ],
+      "signals_actual": [
+        "criterion_clicked",
+        "track_region_drawn",
+        "variant_selected",
+        "verdict_challenged"
+      ],
+      "signals_expected": [
+        "criterion_clicked",
+        "track_region_drawn",
+        "variant_selected",
+        "verdict_challenged"
+      ],
+      "theme_actual": "clinical",
+      "theme_expected": "clinical",
+      "title": "Variant Tribunal"
+    },
+    "title": "Variant Tribunal"
+  },
+  "spec-002-cohort-funnel-foundry": {
+    "number": 2,
+    "rounds": [
+      {
+        "duration_s": 294.4,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 91.7,
+        "kind": "manual-fix",
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_stage",
+        "flag_stage",
+        "place_power_gauge",
+        "preview_sql",
+        "reorder_stage",
+        "set_count"
+      ],
+      "actions_expected": [
+        "add_stage",
+        "flag_stage",
+        "place_power_gauge",
+        "preview_sql",
+        "reorder_stage",
+        "set_count"
+      ],
+      "agents_actual": [
+        "architect",
+        "auditor",
+        "scribe",
+        "statistician"
+      ],
+      "agents_expected": [
+        "Architect",
+        "Auditor",
+        "Statistician",
+        "Scribe"
+      ],
+      "built": true,
+      "id": "spec-002-cohort-funnel-foundry",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-002-cohort-funnel-foundry/manifest.json",
+      "regions": [
+        "attrition-kpi",
+        "criterion-library",
+        "drop-reasons",
+        "funnel-canvas",
+        "inspector",
+        "log",
+        "power-gauge",
+        "progress",
+        "transport"
+      ],
+      "signals_actual": [
+        "chip_dropped",
+        "stage_reordered",
+        "stage_selected",
+        "threshold_edited"
+      ],
+      "signals_expected": [
+        "chip_dropped",
+        "stage_reordered",
+        "stage_selected",
+        "threshold_edited"
+      ],
+      "theme_actual": "terminal",
+      "theme_expected": "terminal",
+      "title": "Cohort Funnel Foundry"
+    },
+    "title": "Cohort Funnel Foundry"
+  },
+  "spec-003-pathway-seance": {
+    "number": 3,
+    "rounds": [
+      {
+        "duration_s": 356.4,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 116.3,
+        "kind": "manual-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 4.0,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_node",
+        "dim_edge",
+        "focus_node",
+        "link",
+        "propose_bridge",
+        "stage_layout"
+      ],
+      "actions_expected": [
+        "add_node",
+        "dim_edge",
+        "focus_node",
+        "link",
+        "propose_bridge",
+        "stage_layout"
+      ],
+      "agents_actual": [
+        "bridger",
+        "cartographer",
+        "narrator",
+        "skeptic"
+      ],
+      "agents_expected": [
+        "Cartographer",
+        "Skeptic",
+        "Bridger",
+        "Narrator"
+      ],
+      "built": true,
+      "id": "spec-003-pathway-seance",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-003-pathway-seance/manifest.json",
+      "regions": [
+        "bridges",
+        "brief",
+        "dossier",
+        "graph",
+        "inspector",
+        "presence",
+        "progress",
+        "seeds"
+      ],
+      "signals_actual": [
+        "bridge_accepted",
+        "edge_selected",
+        "lasso",
+        "legend_toggled",
+        "node_selected"
+      ],
+      "signals_expected": [
+        "bridge_accepted",
+        "edge_selected",
+        "lasso",
+        "legend_toggled",
+        "node_selected"
+      ],
+      "theme_actual": "midnight",
+      "theme_expected": "midnight",
+      "title": "Pathway S\u00e9ance"
+    },
+    "title": "Pathway S\u00e9ance"
+  },
+  "spec-004-trial-regia": {
+    "number": 4,
+    "rounds": [
+      {
+        "duration_s": 507.8,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 95.7,
+        "kind": "static-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 185.1,
+        "kind": "manual-fix",
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "compute_power",
+        "export_protocol",
+        "flag_cell",
+        "place_km_projection",
+        "place_visit",
+        "set_endpoint"
+      ],
+      "actions_expected": [
+        "compute_power",
+        "export_protocol",
+        "flag_cell",
+        "place_km_projection",
+        "place_visit",
+        "set_endpoint"
+      ],
+      "agents_actual": [
+        "biostatistician",
+        "designer",
+        "operationalizer",
+        "regulatory_critic"
+      ],
+      "agents_expected": [
+        "Designer",
+        "Biostatistician",
+        "Regulatory Critic",
+        "Operationalizer"
+      ],
+      "built": true,
+      "id": "spec-004-trial-regia",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-004-trial-regia/manifest.json",
+      "regions": [
+        "agent-composer",
+        "agent-notes",
+        "feasibility-kpi",
+        "flags",
+        "forest-figure",
+        "inspector",
+        "km-figure",
+        "library",
+        "progress",
+        "soa",
+        "timeline"
+      ],
+      "signals_actual": [
+        "arm_added",
+        "cell_edited",
+        "effect_size_dragged",
+        "endpoint_selected"
+      ],
+      "signals_expected": [
+        "arm_added",
+        "cell_edited",
+        "effect_size_dragged",
+        "endpoint_selected"
+      ],
+      "theme_actual": "journal",
+      "theme_expected": "journal",
+      "title": "Trial Regia"
+    },
+    "title": "Trial Regia"
+  },
+  "spec-005-omics-loom": {
+    "number": 5,
+    "rounds": [
+      {
+        "duration_s": 294.4,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 2.7,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "cluster_heatmap",
+        "draw_cross_edge",
+        "focus_feature",
+        "highlight_volcano",
+        "link_brush",
+        "place_kpi"
+      ],
+      "actions_expected": [
+        "cluster_heatmap",
+        "draw_cross_edge",
+        "focus_feature",
+        "highlight_volcano",
+        "link_brush",
+        "place_kpi"
+      ],
+      "agents_actual": [
+        "aligner",
+        "contrarian",
+        "correlator",
+        "weaver"
+      ],
+      "agents_expected": [
+        "Aligner",
+        "Correlator",
+        "Contrarian",
+        "Weaver"
+      ],
+      "built": true,
+      "id": "spec-005-omics-loom",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-005-omics-loom/manifest.json",
+      "regions": [
+        "annotations",
+        "heatmap",
+        "inspector",
+        "kpi",
+        "layers",
+        "network",
+        "progress",
+        "search-results",
+        "synthesis",
+        "transport",
+        "volcano"
+      ],
+      "signals_actual": [
+        "brush",
+        "heatmap_cell_selected",
+        "layer_toggled",
+        "point_clicked"
+      ],
+      "signals_expected": [
+        "brush",
+        "heatmap_cell_selected",
+        "layer_toggled",
+        "point_clicked"
+      ],
+      "theme_actual": "lab-notebook",
+      "theme_expected": "lab-notebook",
+      "title": "Omics Loom"
+    },
+    "title": "Omics Loom"
+  },
+  "spec-006-ward-board": {
+    "number": 6,
+    "rounds": [
+      {
+        "duration_s": 353.7,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 5.4,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_problem",
+        "draft_orders",
+        "expand_card",
+        "pin_consideration",
+        "place_acuity",
+        "rank_differential"
+      ],
+      "actions_expected": [
+        "add_problem",
+        "draft_orders",
+        "expand_card",
+        "pin_consideration",
+        "place_acuity",
+        "rank_differential"
+      ],
+      "agents_actual": [
+        "devils_advocate",
+        "documentarian",
+        "hospitalist",
+        "subspecialist"
+      ],
+      "agents_expected": [
+        "Hospitalist",
+        "Subspecialist",
+        "Devil's Advocate",
+        "Documentarian"
+      ],
+      "built": true,
+      "id": "spec-006-ward-board",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-006-ward-board/manifest.json",
+      "regions": [
+        "board",
+        "inspector",
+        "note",
+        "progress",
+        "rail",
+        "vitals"
+      ],
+      "signals_actual": [
+        "card_reordered",
+        "card_selected",
+        "order_toggled",
+        "problem_dismissed"
+      ],
+      "signals_expected": [
+        "card_reordered",
+        "card_selected",
+        "order_toggled",
+        "problem_dismissed"
+      ],
+      "theme_actual": "clinical",
+      "theme_expected": "clinical",
+      "title": "Ward Board"
+    },
+    "title": "Ward Board"
+  },
+  "spec-007-provenance-autopsy": {
+    "number": 7,
+    "rounds": [
+      {
+        "duration_s": 263.8,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 3.6,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "focus_step",
+        "highlight_path",
+        "mark_diff",
+        "place_integrity",
+        "set_bisect_bound",
+        "trace_upstream"
+      ],
+      "actions_expected": [
+        "focus_step",
+        "highlight_path",
+        "mark_diff",
+        "place_integrity",
+        "set_bisect_bound",
+        "trace_upstream"
+      ],
+      "agents_actual": [
+        "bisector",
+        "diff_hunter",
+        "reporter",
+        "tracer"
+      ],
+      "agents_expected": [
+        "Tracer",
+        "Diff Hunter",
+        "Bisector",
+        "Reporter"
+      ],
+      "built": true,
+      "id": "spec-007-provenance-autopsy",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-007-provenance-autopsy/manifest.json",
+      "regions": [
+        "artifacts",
+        "dag",
+        "diff",
+        "evidence",
+        "findings",
+        "inspector",
+        "provenance-table",
+        "transport"
+      ],
+      "signals_actual": [
+        "cell_clicked",
+        "row_selected",
+        "run_compared",
+        "suspicion_marked"
+      ],
+      "signals_expected": [
+        "cell_clicked",
+        "row_selected",
+        "run_compared",
+        "suspicion_marked"
+      ],
+      "theme_actual": "terminal",
+      "theme_expected": "terminal",
+      "title": "Provenance Autopsy"
+    },
+    "title": "Provenance Autopsy"
+  },
+  "spec-008-manhattan-signal-room": {
+    "number": 8,
+    "rounds": [
+      {
+        "duration_s": 282.8,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 4.2,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "focus_snp",
+        "link_to_gene",
+        "open_locuszoom",
+        "pin_peak",
+        "place_inflation",
+        "shade_credible_set"
+      ],
+      "actions_expected": [
+        "focus_snp",
+        "link_to_gene",
+        "open_locuszoom",
+        "pin_peak",
+        "place_inflation",
+        "shade_credible_set"
+      ],
+      "agents_actual": [
+        "colocalizer",
+        "fine_mapper",
+        "interpreter",
+        "prospector"
+      ],
+      "agents_expected": [
+        "Prospector",
+        "Fine-Mapper",
+        "Colocalizer",
+        "Interpreter"
+      ],
+      "built": true,
+      "id": "spec-008-manhattan-signal-room",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-008-manhattan-signal-room/manifest.json",
+      "regions": [
+        "inflation",
+        "inspector",
+        "locusbrief",
+        "locuszoom",
+        "manhattan",
+        "peakrail",
+        "progress",
+        "transport"
+      ],
+      "signals_actual": [
+        "peak_clicked",
+        "region_zoomed",
+        "snp_selected",
+        "tissue_toggled"
+      ],
+      "signals_expected": [
+        "peak_clicked",
+        "region_zoomed",
+        "snp_selected",
+        "tissue_toggled"
+      ],
+      "theme_actual": "midnight",
+      "theme_expected": "midnight",
+      "title": "Manhattan Signal Room"
+    },
+    "title": "Manhattan Signal Room"
+  },
+  "spec-009-survival-atelier": {
+    "number": 9,
+    "rounds": [
+      {
+        "duration_s": 304.7,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 5.7,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_forest_row",
+        "add_stratum",
+        "draw_km",
+        "fit_cox",
+        "flag_ph",
+        "place_cindex"
+      ],
+      "actions_expected": [
+        "add_forest_row",
+        "add_stratum",
+        "draw_km",
+        "fit_cox",
+        "flag_ph",
+        "place_cindex"
+      ],
+      "agents_actual": [
+        "confounder_hunter",
+        "curator",
+        "diagnostician",
+        "modeler"
+      ],
+      "agents_expected": [
+        "Modeler",
+        "Diagnostician",
+        "Confounder Hunter",
+        "Curator"
+      ],
+      "built": true,
+      "id": "spec-009-survival-atelier",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-009-survival-atelier/manifest.json",
+      "regions": [
+        "canvas",
+        "cindex",
+        "covariates",
+        "diagnostics",
+        "forest",
+        "inspector",
+        "methods",
+        "notes",
+        "presence",
+        "risk",
+        "strata"
+      ],
+      "signals_actual": [
+        "curve_selected",
+        "cutpoint_dragged",
+        "forest_row_clicked",
+        "stratum_chip_dropped"
+      ],
+      "signals_expected": [
+        "curve_selected",
+        "cutpoint_dragged",
+        "forest_row_clicked",
+        "stratum_chip_dropped"
+      ],
+      "theme_actual": "journal",
+      "theme_expected": "journal",
+      "title": "Survival Atelier"
+    },
+    "title": "Survival Atelier"
+  },
+  "spec-010-diagnosis-odyssey": {
+    "number": 10,
+    "rounds": [
+      {
+        "duration_s": 325.4,
+        "kind": "build",
+        "rc": 0
+      },
+      {
+        "duration_s": 32.3,
+        "kind": "static-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 30.1,
+        "kind": "static-fix",
+        "rc": 0
+      },
+      {
+        "duration_s": 150.1,
+        "kind": "manual-fix",
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "advance_to",
+        "fade_branch",
+        "focus_candidate",
+        "light_node",
+        "pin_test",
+        "place_yield"
+      ],
+      "actions_expected": [
+        "advance_to",
+        "fade_branch",
+        "focus_candidate",
+        "light_node",
+        "pin_test",
+        "place_yield"
+      ],
+      "agents_actual": [
+        "chronicler",
+        "pathfinder",
+        "refuter",
+        "test_recommender"
+      ],
+      "agents_expected": [
+        "Pathfinder",
+        "Refuter",
+        "Test Recommender",
+        "Chronicler"
+      ],
+      "built": true,
+      "id": "spec-010-diagnosis-odyssey",
+      "issues": [
+        "theme.pack is None; expected 'biorouter'"
+      ],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-010-diagnosis-odyssey/manifest.json",
+      "regions": [
+        "graph",
+        "inspector",
+        "odyssey",
+        "phenotypes",
+        "trail"
+      ],
+      "signals_actual": [
+        "branch_pruned",
+        "node_clicked",
+        "phenotype_toggled",
+        "test_ordered"
+      ],
+      "signals_expected": [
+        "branch_pruned",
+        "node_clicked",
+        "phenotype_toggled",
+        "test_ordered"
+      ],
+      "theme_actual": null,
+      "theme_expected": "biorouter",
+      "title": "Diagnosis Odyssey"
+    },
+    "title": "Diagnosis Odyssey"
+  },
+  "spec-011-reaction-diffusion-foundry": {
+    "number": 11,
+    "rounds": [
+      {
+        "duration_s": 5.9,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.1,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.7,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.2,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 8.7,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.0,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 324.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "capture_frame",
+        "paint_seed",
+        "run_stage",
+        "score_pattern",
+        "set_param",
+        "stage_regime"
+      ],
+      "actions_expected": [
+        "capture_frame",
+        "paint_seed",
+        "run_stage",
+        "score_pattern",
+        "set_param",
+        "stage_regime"
+      ],
+      "agents_actual": [
+        "cartographer",
+        "morphologist",
+        "perturbationist"
+      ],
+      "agents_expected": [
+        "Cartographer",
+        "Perturbationist",
+        "Morphologist"
+      ],
+      "built": true,
+      "id": "spec-011-reaction-diffusion-foundry",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-011-reaction-diffusion-foundry/manifest.json",
+      "regions": [
+        "agent-notes",
+        "canvas-cell",
+        "inspector",
+        "phase",
+        "presence",
+        "progress",
+        "reagent-rail",
+        "spectral",
+        "timeline",
+        "transport"
+      ],
+      "signals_actual": [
+        "brush_stroke",
+        "param_dragged",
+        "region_lassoed",
+        "target_chosen"
+      ],
+      "signals_expected": [
+        "brush_stroke",
+        "param_dragged",
+        "region_lassoed",
+        "target_chosen"
+      ],
+      "theme_actual": "lab-notebook",
+      "theme_expected": "lab-notebook",
+      "title": "Reaction-Diffusion Foundry"
+    },
+    "title": "Reaction-Diffusion Foundry"
+  },
+  "spec-012-contagion-studio": {
+    "number": 12,
+    "rounds": [
+      {
+        "duration_s": 5.4,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.4,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 6.2,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 275.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_intervention",
+        "compare_scenarios",
+        "fit_model",
+        "highlight_threshold",
+        "run_forecast",
+        "set_rate"
+      ],
+      "actions_expected": [
+        "add_intervention",
+        "compare_scenarios",
+        "fit_model",
+        "highlight_threshold",
+        "run_forecast",
+        "set_rate"
+      ],
+      "agents_actual": [
+        "adversary",
+        "fitter",
+        "policyanalyst",
+        "reporter"
+      ],
+      "agents_expected": [
+        "Fitter",
+        "Adversary",
+        "Policy Analyst",
+        "Reporter"
+      ],
+      "built": true,
+      "id": "spec-012-contagion-studio",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-012-contagion-studio/manifest.json",
+      "regions": [
+        "comparison",
+        "compartment-rail",
+        "inspector",
+        "kpi",
+        "notes",
+        "plot",
+        "progress",
+        "table",
+        "timeline",
+        "transport"
+      ],
+      "signals_actual": [
+        "marker_dragged",
+        "rate_slider",
+        "region_scrubbed",
+        "scenario_selected"
+      ],
+      "signals_expected": [
+        "marker_dragged",
+        "rate_slider",
+        "region_scrubbed",
+        "scenario_selected"
+      ],
+      "theme_actual": "clinical",
+      "theme_expected": "clinical",
+      "title": "Contagion Studio"
+    },
+    "title": "Contagion Studio"
+  },
+  "spec-013-orbital-sandbox": {
+    "number": 13,
+    "rounds": [
+      {
+        "duration_s": 5.6,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.5,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 5.3,
+        "kind": "provider-blocked",
+        "provider_error": true,
+        "rc": 75
+      },
+      {
+        "duration_s": 263.5,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "detect_resonance",
+        "ghost_trajectory",
+        "place_body",
+        "run_integration",
+        "set_velocity",
+        "stabilize"
+      ],
+      "actions_expected": [
+        "detect_resonance",
+        "ghost_trajectory",
+        "place_body",
+        "run_integration",
+        "set_velocity",
+        "stabilize"
+      ],
+      "agents_actual": [
+        "chaos_auditor",
+        "ephemeris_scribe",
+        "navigator"
+      ],
+      "agents_expected": [
+        "Navigator",
+        "Chaos Auditor",
+        "Ephemeris Scribe"
+      ],
+      "built": true,
+      "id": "spec-013-orbital-sandbox",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-013-orbital-sandbox/manifest.json",
+      "regions": [
+        "agent-notes",
+        "body-list",
+        "body-rail",
+        "canvas-surface",
+        "elements-table",
+        "inspector",
+        "orbital-canvas",
+        "phase-plot",
+        "progress",
+        "transport"
+      ],
+      "signals_actual": [
+        "body_added",
+        "body_dragged",
+        "timescale_changed",
+        "vector_pulled"
+      ],
+      "signals_expected": [
+        "body_added",
+        "body_dragged",
+        "timescale_changed",
+        "vector_pulled"
+      ],
+      "theme_actual": "midnight",
+      "theme_expected": "midnight",
+      "title": "Orbital Sandbox"
+    },
+    "title": "Orbital Sandbox"
+  },
+  "spec-014-serengeti-engine": {
+    "number": 14,
+    "rounds": [
+      {
+        "duration_s": 367.2,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "balance",
+        "classify_regime",
+        "paint_terrain",
+        "run_generations",
+        "set_species_rate",
+        "spawn_herd"
+      ],
+      "actions_expected": [
+        "balance",
+        "classify_regime",
+        "paint_terrain",
+        "run_generations",
+        "set_species_rate",
+        "spawn_herd"
+      ],
+      "agents_actual": [
+        "invasive_species",
+        "naturalist",
+        "ranger"
+      ],
+      "agents_expected": [
+        "Ranger",
+        "Invasive Species",
+        "Naturalist"
+      ],
+      "built": true,
+      "id": "spec-014-serengeti-engine",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-014-serengeti-engine/manifest.json",
+      "regions": [
+        "ecosystem",
+        "field-notes",
+        "inspector",
+        "phase-figure",
+        "presence",
+        "progress",
+        "rate-controls",
+        "species-rail",
+        "transport"
+      ],
+      "signals_actual": [
+        "herd_dropped",
+        "quadrant_selected",
+        "rate_slider",
+        "terrain_painted"
+      ],
+      "signals_expected": [
+        "herd_dropped",
+        "quadrant_selected",
+        "rate_slider",
+        "terrain_painted"
+      ],
+      "theme_actual": "journal",
+      "theme_expected": "journal",
+      "title": "Serengeti Engine"
+    },
+    "title": "Serengeti Engine"
+  },
+  "spec-015-foldscape": {
+    "number": 15,
+    "rounds": [
+      {
+        "duration_s": 317.3,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      },
+      {
+        "duration_s": 24.1,
+        "kind": "static-fix",
+        "provider_error": false,
+        "rc": 0
+      },
+      {
+        "duration_s": 36.7,
+        "kind": "static-fix",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "highlight_residues",
+        "mutate",
+        "orient_structure",
+        "run_minimization",
+        "score_state",
+        "set_dihedral"
+      ],
+      "actions_expected": [
+        "highlight_residues",
+        "mutate",
+        "orient_structure",
+        "run_minimization",
+        "score_state",
+        "set_dihedral"
+      ],
+      "agents_actual": [
+        "folder",
+        "mutagenesis_critic",
+        "validator"
+      ],
+      "agents_expected": [
+        "Folder",
+        "Mutagenesis Critic",
+        "Validator"
+      ],
+      "built": true,
+      "id": "spec-015-foldscape",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-015-foldscape/manifest.json",
+      "regions": [
+        "contact-map",
+        "energy-plot",
+        "inspector",
+        "presence",
+        "progress",
+        "ramachandran",
+        "residue-rail",
+        "structure",
+        "transport"
+      ],
+      "signals_actual": [
+        "dihedral_dragged",
+        "mutation_chosen",
+        "residue_selected",
+        "structure_rotated"
+      ],
+      "signals_expected": [
+        "dihedral_dragged",
+        "mutation_chosen",
+        "residue_selected",
+        "structure_rotated"
+      ],
+      "theme_actual": "biorouter",
+      "theme_expected": "biorouter",
+      "title": "FoldScape"
+    },
+    "title": "FoldScape"
+  },
+  "spec-016-aerocanvas": {
+    "number": 16,
+    "rounds": [
+      {
+        "duration_s": 282.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "inject_dye",
+        "reshape_airfoil",
+        "run_solve",
+        "set_inlet",
+        "set_reynolds",
+        "sweep_aoa"
+      ],
+      "actions_expected": [
+        "inject_dye",
+        "reshape_airfoil",
+        "run_solve",
+        "set_inlet",
+        "set_reynolds",
+        "sweep_aoa"
+      ],
+      "agents_actual": [
+        "aerodynamicist",
+        "instrumenter",
+        "turbulence_skeptic"
+      ],
+      "agents_expected": [
+        "Aerodynamicist",
+        "Turbulence Skeptic",
+        "Instrumenter"
+      ],
+      "built": true,
+      "id": "spec-016-aerocanvas",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-016-aerocanvas/manifest.json",
+      "regions": [
+        "conditions",
+        "cp",
+        "flowfield",
+        "inspector",
+        "polar",
+        "presence",
+        "transport"
+      ],
+      "signals_actual": [
+        "aoa_slider",
+        "control_point_dragged",
+        "inlet_vector_pulled",
+        "obstacle_drawn"
+      ],
+      "signals_expected": [
+        "aoa_slider",
+        "control_point_dragged",
+        "inlet_vector_pulled",
+        "obstacle_drawn"
+      ],
+      "theme_actual": "terminal",
+      "theme_expected": "terminal",
+      "title": "AeroCanvas"
+    },
+    "title": "AeroCanvas"
+  },
+  "spec-017-automata-loom": {
+    "number": 17,
+    "rounds": [
+      {
+        "duration_s": 302.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "classify_rule",
+        "highlight_structure",
+        "mutate_rule",
+        "run_generations",
+        "set_rule",
+        "stamp_pattern"
+      ],
+      "actions_expected": [
+        "classify_rule",
+        "highlight_structure",
+        "mutate_rule",
+        "run_generations",
+        "set_rule",
+        "stamp_pattern"
+      ],
+      "agents_actual": [
+        "archivist",
+        "explorer",
+        "taxonomist"
+      ],
+      "agents_expected": [
+        "Explorer",
+        "Taxonomist",
+        "Archivist"
+      ],
+      "built": true,
+      "id": "spec-017-automata-loom",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-017-automata-loom/manifest.json",
+      "regions": [
+        "agent-notes",
+        "discovery-log",
+        "inspector",
+        "lambda-entropy-plot",
+        "loom-canvas",
+        "period-velocity-table",
+        "presence",
+        "progress",
+        "rule-rail",
+        "topline",
+        "transport"
+      ],
+      "signals_actual": [
+        "cell_painted",
+        "region_boxed",
+        "rule_bit_toggled",
+        "seed_stamped"
+      ],
+      "signals_expected": [
+        "cell_painted",
+        "region_boxed",
+        "rule_bit_toggled",
+        "seed_stamped"
+      ],
+      "theme_actual": "terminal",
+      "theme_expected": "terminal",
+      "title": "Automata Loom"
+    },
+    "title": "Automata Loom"
+  },
+  "spec-018-systemdynamics-forge": {
+    "number": 18,
+    "rounds": [
+      {
+        "duration_s": 495.2,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_node",
+        "connect",
+        "find_dominant_loop",
+        "highlight_loop",
+        "run_simulation",
+        "set_equation"
+      ],
+      "actions_expected": [
+        "add_node",
+        "connect",
+        "find_dominant_loop",
+        "highlight_loop",
+        "run_simulation",
+        "set_equation"
+      ],
+      "agents_actual": [
+        "architect",
+        "calibrator",
+        "loop_analyst"
+      ],
+      "agents_expected": [
+        "Architect",
+        "Loop Analyst",
+        "Calibrator"
+      ],
+      "built": true,
+      "id": "spec-018-systemdynamics-forge",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-018-systemdynamics-forge/manifest.json",
+      "regions": [
+        "element-rail",
+        "inspector",
+        "loop-dominance-figure",
+        "parameter-table",
+        "presence",
+        "progress",
+        "sensitivity-plot",
+        "stock-flow-canvas",
+        "stock-plot-strip",
+        "transport"
+      ],
+      "signals_actual": [
+        "connector_drawn",
+        "equation_edited",
+        "node_dragged",
+        "node_selected"
+      ],
+      "signals_expected": [
+        "connector_drawn",
+        "equation_edited",
+        "node_dragged",
+        "node_selected"
+      ],
+      "theme_actual": "biorouter",
+      "theme_expected": "biorouter",
+      "title": "SystemDynamics Forge"
+    },
+    "title": "SystemDynamics Forge"
+  },
+  "spec-019-circuit-bench": {
+    "number": 19,
+    "rounds": [
+      {
+        "duration_s": 303.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "place_part",
+        "probe_node",
+        "run_analysis",
+        "set_value",
+        "sweep_frequency",
+        "wire"
+      ],
+      "actions_expected": [
+        "place_part",
+        "probe_node",
+        "run_analysis",
+        "set_value",
+        "sweep_frequency",
+        "wire"
+      ],
+      "agents_actual": [
+        "designer",
+        "spice_analyst",
+        "tolerance_critic"
+      ],
+      "agents_expected": [
+        "Designer",
+        "SPICE Analyst",
+        "Tolerance Critic"
+      ],
+      "built": true,
+      "id": "spec-019-circuit-bench",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-019-circuit-bench/manifest.json",
+      "regions": [
+        "agent-notes",
+        "bode-figure",
+        "inspector",
+        "oscilloscope-plot",
+        "parts-rail",
+        "presence",
+        "progress-region",
+        "schematic",
+        "schematic-canvas",
+        "tolerance-alerts",
+        "transport",
+        "value-editor"
+      ],
+      "signals_actual": [
+        "node_probed",
+        "part_dragged",
+        "value_edited",
+        "wire_drawn"
+      ],
+      "signals_expected": [
+        "node_probed",
+        "part_dragged",
+        "value_edited",
+        "wire_drawn"
+      ],
+      "theme_actual": "lab-notebook",
+      "theme_expected": "lab-notebook",
+      "title": "Circuit Bench"
+    },
+    "title": "Circuit Bench"
+  },
+  "spec-020-diffusion-delta": {
+    "number": 20,
+    "rounds": [
+      {
+        "duration_s": 433.0,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "mark_exceedance",
+        "paint_source",
+        "place_monitor",
+        "run_transport",
+        "set_field",
+        "set_wind"
+      ],
+      "actions_expected": [
+        "mark_exceedance",
+        "paint_source",
+        "place_monitor",
+        "run_transport",
+        "set_field",
+        "set_wind"
+      ],
+      "agents_actual": [
+        "dispersion_modeler",
+        "meteorologist",
+        "risk_assessor"
+      ],
+      "agents_expected": [
+        "Meteorologist",
+        "Dispersion Modeler",
+        "Risk Assessor"
+      ],
+      "built": true,
+      "id": "spec-020-diffusion-delta",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-020-diffusion-delta/manifest.json",
+      "regions": [
+        "dosage-kpi",
+        "field-rail",
+        "inspector",
+        "map",
+        "monitor-table",
+        "notes",
+        "plot",
+        "presence",
+        "progress",
+        "site-monitors",
+        "transport"
+      ],
+      "signals_actual": [
+        "barrier_drawn",
+        "monitor_placed",
+        "source_painted",
+        "wind_dial"
+      ],
+      "signals_expected": [
+        "barrier_drawn",
+        "monitor_placed",
+        "source_painted",
+        "wind_dial"
+      ],
+      "theme_actual": "midnight",
+      "theme_expected": "midnight",
+      "title": "Diffusion Delta"
+    },
+    "title": "Diffusion Delta"
+  },
+  "spec-021-radiant": {
+    "number": 21,
+    "rounds": [
+      {
+        "duration_s": 253.0,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "flag_edge",
+        "grow_node",
+        "place_ring",
+        "prune",
+        "recenter",
+        "write_brief"
+      ],
+      "actions_expected": [
+        "flag_edge",
+        "grow_node",
+        "place_ring",
+        "prune",
+        "recenter",
+        "write_brief"
+      ],
+      "agents_actual": [
+        "cartographer",
+        "scribe",
+        "weeder"
+      ],
+      "agents_expected": [
+        "Cartographer",
+        "Weeder",
+        "Scribe"
+      ],
+      "built": true,
+      "id": "spec-021-radiant",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-021-radiant/manifest.json",
+      "regions": [
+        "brief",
+        "evidence",
+        "inspector",
+        "map",
+        "presence",
+        "progress",
+        "seeds",
+        "transport",
+        "weak_edges"
+      ],
+      "signals_actual": [
+        "node_dragged",
+        "node_pinned",
+        "node_selected",
+        "prune_requested"
+      ],
+      "signals_expected": [
+        "node_dragged",
+        "node_pinned",
+        "node_selected",
+        "prune_requested"
+      ],
+      "theme_actual": "journal",
+      "theme_expected": "journal",
+      "title": "Radiant"
+    },
+    "title": "Radiant"
+  },
+  "spec-022-crossfire": {
+    "number": 22,
+    "rounds": [
+      {
+        "duration_s": 338.6,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "add_claim",
+        "attach_evidence",
+        "collapse",
+        "focus_node",
+        "mark_unresolved",
+        "score_branch"
+      ],
+      "actions_expected": [
+        "add_claim",
+        "attach_evidence",
+        "collapse",
+        "focus_node",
+        "mark_unresolved",
+        "score_branch"
+      ],
+      "agents_actual": [
+        "advocate",
+        "prosecutor",
+        "referee"
+      ],
+      "agents_expected": [
+        "Advocate",
+        "Prosecutor",
+        "Referee"
+      ],
+      "built": true,
+      "id": "spec-022-crossfire",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-022-crossfire/manifest.json",
+      "regions": [
+        "claim_stack",
+        "figure",
+        "inspector",
+        "presence",
+        "progress",
+        "tree",
+        "verdict"
+      ],
+      "signals_actual": [
+        "evidence_challenged",
+        "node_selected",
+        "stance_flipped",
+        "verdict_frozen"
+      ],
+      "signals_expected": [
+        "evidence_challenged",
+        "node_selected",
+        "stance_flipped",
+        "verdict_frozen"
+      ],
+      "theme_actual": "terminal",
+      "theme_expected": "terminal",
+      "title": "Crossfire"
+    },
+    "title": "Crossfire"
+  },
+  "spec-023-longitude": {
+    "number": 23,
+    "rounds": [
+      {
+        "duration_s": 324.1,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      },
+      {
+        "duration_s": 25.9,
+        "kind": "static-fix",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "annotate",
+        "collapse_era",
+        "draw_lineage",
+        "mark_fork",
+        "place_card",
+        "scrub_to"
+      ],
+      "actions_expected": [
+        "annotate",
+        "collapse_era",
+        "draw_lineage",
+        "mark_fork",
+        "place_card",
+        "scrub_to"
+      ],
+      "agents_actual": [
+        "annotator",
+        "archivist",
+        "genealogist"
+      ],
+      "agents_expected": [
+        "Archivist",
+        "Genealogist",
+        "Annotator"
+      ],
+      "built": true,
+      "id": "spec-023-longitude",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-023-longitude/manifest.json",
+      "regions": [
+        "agent-notes",
+        "era-ruler",
+        "figure",
+        "inspector",
+        "lane-rail",
+        "timeline",
+        "transport"
+      ],
+      "signals_actual": [
+        "branch_requested",
+        "card_selected",
+        "lane_toggled",
+        "playhead_moved"
+      ],
+      "signals_expected": [
+        "branch_requested",
+        "card_selected",
+        "lane_toggled",
+        "playhead_moved"
+      ],
+      "theme_actual": "lab-notebook",
+      "theme_expected": "lab-notebook",
+      "title": "Longitude"
+    },
+    "title": "Longitude"
+  },
+  "spec-024-quorum": {
+    "number": 24,
+    "rounds": [
+      {
+        "duration_s": 261.8,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "extract_fields",
+        "flag_conflict",
+        "focus_card",
+        "grade_bias",
+        "move_card",
+        "update_prisma"
+      ],
+      "actions_expected": [
+        "extract_fields",
+        "flag_conflict",
+        "focus_card",
+        "grade_bias",
+        "move_card",
+        "update_prisma"
+      ],
+      "agents_actual": [
+        "appraiser",
+        "extractor",
+        "screener"
+      ],
+      "agents_expected": [
+        "Screener",
+        "Extractor",
+        "Appraiser"
+      ],
+      "built": true,
+      "id": "spec-024-quorum",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-024-quorum/manifest.json",
+      "regions": [
+        "audit",
+        "board",
+        "figure",
+        "inspector",
+        "prisma",
+        "progress",
+        "protocol",
+        "transport"
+      ],
+      "signals_actual": [
+        "card_dragged",
+        "conflict_resolved",
+        "criterion_edited",
+        "field_overridden"
+      ],
+      "signals_expected": [
+        "card_dragged",
+        "conflict_resolved",
+        "criterion_edited",
+        "field_overridden"
+      ],
+      "theme_actual": "clinical",
+      "theme_expected": "clinical",
+      "title": "Quorum"
+    },
+    "title": "Quorum"
+  },
+  "spec-025-lattice": {
+    "number": 25,
+    "rounds": [
+      {
+        "duration_s": 298.3,
+        "kind": "build",
+        "provider_error": false,
+        "rc": 0
+      }
+    ],
+    "static_review": {
+      "actions_actual": [
+        "dim_node",
+        "draft_experiment",
+        "link_prior",
+        "promote",
+        "score_testability",
+        "spawn_children"
+      ],
+      "actions_expected": [
+        "dim_node",
+        "draft_experiment",
+        "link_prior",
+        "promote",
+        "score_testability",
+        "spawn_children"
+      ],
+      "agents_actual": [
+        "falsifier",
+        "generator",
+        "planner"
+      ],
+      "agents_expected": [
+        "Generator",
+        "Falsifier",
+        "Planner"
+      ],
+      "built": true,
+      "id": "spec-025-lattice",
+      "issues": [],
+      "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-025-lattice/manifest.json",
+      "regions": [
+        "figure",
+        "inspector",
+        "lattice",
+        "progress",
+        "seed",
+        "warnings"
+      ],
+      "signals_actual": [
+        "constraint_edited",
+        "node_killed",
+        "node_promoted",
+        "node_selected"
+      ],
+      "signals_expected": [
+        "constraint_edited",
+        "node_killed",
+        "node_promoted",
+        "node_selected"
+      ],
+      "theme_actual": "midnight",
+      "theme_expected": "midnight",
+      "title": "Lattice"
+    },
+    "title": "Lattice"
+  }
+}

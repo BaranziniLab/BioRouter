@@ -1,0 +1,57 @@
+{
+  "id": "spec-024-quorum",
+  "title": "Quorum",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-024-quorum/manifest.json",
+  "actions_expected": [
+    "extract_fields",
+    "flag_conflict",
+    "focus_card",
+    "grade_bias",
+    "move_card",
+    "update_prisma"
+  ],
+  "actions_actual": [
+    "extract_fields",
+    "flag_conflict",
+    "focus_card",
+    "grade_bias",
+    "move_card",
+    "update_prisma"
+  ],
+  "signals_expected": [
+    "card_dragged",
+    "conflict_resolved",
+    "criterion_edited",
+    "field_overridden"
+  ],
+  "signals_actual": [
+    "card_dragged",
+    "conflict_resolved",
+    "criterion_edited",
+    "field_overridden"
+  ],
+  "agents_expected": [
+    "Screener",
+    "Extractor",
+    "Appraiser"
+  ],
+  "agents_actual": [
+    "appraiser",
+    "extractor",
+    "screener"
+  ],
+  "regions": [
+    "audit",
+    "board",
+    "figure",
+    "inspector",
+    "prisma",
+    "progress",
+    "protocol",
+    "transport"
+  ],
+  "theme_expected": "clinical",
+  "theme_actual": "clinical",
+  "issues": []
+}
