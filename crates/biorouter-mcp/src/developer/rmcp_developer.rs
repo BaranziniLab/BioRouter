@@ -2376,9 +2376,8 @@ mod tests {
     fn test_windows_specific_commands() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
 
-            let server = create_test_server();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
@@ -2409,11 +2408,21 @@ mod tests {
                     .is_some_and(|text| text.text.contains("biorouter-windows-shell-ok"))
             }));
 
-            // Test that resolve_path works with Windows paths
-            let windows_path = r"C:\Windows\System32";
-            if Path::new(windows_path).exists() {
-                let resolved = server.resolve_path(windows_path);
-                assert!(resolved.is_ok());
+            let allowed_dir = temp_dir.path().join("windows-path-test");
+            std::fs::create_dir(&allowed_dir).unwrap();
+            assert_eq!(
+                server
+                    .resolve_path(allowed_dir.to_str().unwrap())
+                    .expect("an absolute Windows path inside the working directory should resolve"),
+                allowed_dir
+            );
+
+            let system_dir = r"C:\Windows\System32";
+            if Path::new(system_dir).exists() {
+                let error = server
+                    .resolve_path(system_dir)
+                    .expect_err("a path outside the working directory must remain jailed");
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
             }
 
             // Force cleanup before runtime shutdown
@@ -3907,9 +3916,8 @@ mod tests {
     fn test_shell_output_truncation() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
 
-            let server = create_test_server();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
