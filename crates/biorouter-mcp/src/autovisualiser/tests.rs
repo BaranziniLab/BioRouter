@@ -467,5 +467,115 @@ async fn test_mermaid_blob_has_escaped_code() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// render_standalone_figure — the embedding API (figures inside apps).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn standalone_figure_returns_self_contained_html() {
+    let html = render_standalone_figure(
+        "show_chart",
+        json!({"data": {
+            "type": "bar",
+            "labels": ["A", "B"],
+            "datasets": [{"label": "S", "data": [1.0, 2.0]}]
+        }}),
+    )
+    .await
+    .expect("show_chart should render");
+
+    // A complete standalone document...
+    assert!(html.contains("<!DOCTYPE") || html.contains("<html"));
+    // ...with the chart library inlined (not a CDN reference).
+    assert!(html.contains("Chart.js v"), "Chart.js should be inlined");
+    assert!(html.contains("<script>"));
+    assert!(!html.contains("cdn.jsdelivr.net"));
+}
+
+#[tokio::test]
+async fn standalone_figure_accepts_prefixless_name() {
+    // "volcano" must resolve to render_volcano just like the dashboard panels.
+    let html = render_standalone_figure(
+        "volcano",
+        json!({"data": {"points": [{"label": "MYC", "log2fc": 2.4, "negLog10P": 4.0}]}}),
+    )
+    .await
+    .expect("prefixless 'volcano' should render");
+    assert!(html.contains("<!DOCTYPE") || html.contains("<html"));
+}
+
+#[tokio::test]
+async fn standalone_figure_dashboard_works() {
+    // A report embedded in an app is legitimate: render_dashboard must dispatch.
+    let html = render_standalone_figure(
+        "render_dashboard",
+        json!({
+            "title": "Embedded report",
+            "panels": [
+                {"title": "Counts", "figure": {"tool": "show_chart", "params": {"data": {
+                    "type": "bar", "labels": ["A"], "datasets": [{"label": "S", "data": [1.0]}]
+                }}}}
+            ]
+        }),
+    )
+    .await
+    .expect("render_dashboard should render");
+    assert!(html.contains("Embedded report"));
+    // A report inlines its libraries too — never a CDN reference.
+    assert!(!html.contains("cdn.jsdelivr.net"));
+}
+
+#[tokio::test]
+async fn standalone_figure_unknown_tool_errs_with_suggestions() {
+    let err = render_standalone_figure("totally_made_up", json!({"data": {}}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("Unknown visualization"), "got: {err}");
+    // Names the caller can reach for instead.
+    assert!(
+        err.contains("render_volcano") || err.contains("show_chart"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn standalone_figure_invalid_args_err_is_friendly() {
+    // show_chart validates that at least one dataset is present.
+    let err = render_standalone_figure(
+        "show_chart",
+        json!({"data": {"type": "bar", "datasets": []}}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("at least one dataset"), "got: {err}");
+}
+
+#[tokio::test]
+async fn standalone_figure_ignores_cdn_env_flag() {
+    // The standalone path forces inlining via a task-local checked *before* the
+    // BIOROUTER_AUTOVIS_CDN env read, so a figure is self-contained even when the
+    // desktop app has CDN mode on. We assert the override mechanism directly here
+    // rather than mutating the process-wide env var, which would race the other
+    // figure unit tests that assert no CDN (see autovis_dashboard_cdn.rs, which is
+    // a separate binary for exactly that reason).
+    let cdn_inside = common::with_inline_assets(async { common::use_cdn() }).await;
+    assert!(!cdn_inside, "with_inline_assets must force use_cdn() off");
+
+    // And end-to-end: the emitted document inlines the library, never a CDN tag.
+    let html = render_standalone_figure(
+        "show_chart",
+        json!({"data": {
+            "type": "line",
+            "labels": ["A"],
+            "datasets": [{"label": "S", "data": [1.0]}]
+        }}),
+    )
+    .await
+    .unwrap();
+    assert!(html.contains("Chart.js v"));
+    assert!(!html.contains("cdn.jsdelivr.net"));
+    assert!(!html.contains("<script src="));
+}
+
 include!("tests_extra.rs");
 include!("tests_dashboard.rs");

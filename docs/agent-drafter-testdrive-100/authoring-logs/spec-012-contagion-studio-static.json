@@ -1,0 +1,61 @@
+{
+  "id": "spec-012-contagion-studio",
+  "title": "Contagion Studio",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-012-contagion-studio/manifest.json",
+  "actions_expected": [
+    "add_intervention",
+    "compare_scenarios",
+    "fit_model",
+    "highlight_threshold",
+    "run_forecast",
+    "set_rate"
+  ],
+  "actions_actual": [
+    "add_intervention",
+    "compare_scenarios",
+    "fit_model",
+    "highlight_threshold",
+    "run_forecast",
+    "set_rate"
+  ],
+  "signals_expected": [
+    "marker_dragged",
+    "rate_slider",
+    "region_scrubbed",
+    "scenario_selected"
+  ],
+  "signals_actual": [
+    "marker_dragged",
+    "rate_slider",
+    "region_scrubbed",
+    "scenario_selected"
+  ],
+  "agents_expected": [
+    "Fitter",
+    "Adversary",
+    "Policy Analyst",
+    "Reporter"
+  ],
+  "agents_actual": [
+    "adversary",
+    "fitter",
+    "policyanalyst",
+    "reporter"
+  ],
+  "regions": [
+    "comparison",
+    "compartment-rail",
+    "inspector",
+    "kpi",
+    "notes",
+    "plot",
+    "progress",
+    "table",
+    "timeline",
+    "transport"
+  ],
+  "theme_expected": "clinical",
+  "theme_actual": "clinical",
+  "issues": []
+}

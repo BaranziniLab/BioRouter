@@ -459,6 +459,12 @@ mod tests {
                     Ok(AgentEvent::HistoryReplaced(_updated_conversation)) => {
                         // We should update the conversation here, but we're not reading it
                     }
+                    Ok(AgentEvent::TurnAborted { code, message }) => {
+                        return Err(anyhow::anyhow!(
+                            "turn aborted ({}): {message}",
+                            code.wire_code()
+                        ));
+                    }
                     Err(e) => {
                         return Err(e);
                     }

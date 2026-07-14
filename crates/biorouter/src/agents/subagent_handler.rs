@@ -226,6 +226,14 @@ fn get_agent_messages(
                 Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
                     conversation = updated_conversation;
                 }
+                Ok(AgentEvent::TurnAborted { code, message }) => {
+                    // The subagent's turn failed. Its assistant Message (the
+                    // human-readable "Ran into this error: …") is already in the
+                    // conversation, so the parent still sees *what* happened; stop
+                    // consuming rather than pretending the subagent finished.
+                    tracing::error!(abort = code.wire_code(), "Subagent turn aborted: {message}");
+                    break;
+                }
                 Err(e) => {
                     tracing::error!("Error receiving message from subagent: {}", e);
                     break;

@@ -81,3 +81,7 @@ biorouter-testing-apps/
 
 # Signing certificates — never commit (also covered by notarization/)
 *.p12
+
+# Test-drive runtime: drafted apps, daemon logs (which contain the spawn env,
+# including provider API keys), and an embedded KB git repo. Never committed.
+.br-testdrive/

@@ -32,7 +32,79 @@ pub enum ProviderError {
     NotImplemented(String),
 }
 
+/// The coarse class of a provider failure — enough for a caller to decide
+/// "retry", "fix your credentials", or "give up", without string-matching the
+/// error message.
+///
+/// Exists because a 403 and a transient 502 were both flattened into the same
+/// assistant chat message, so nothing downstream could tell a misconfigured key
+/// from a blip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderErrorKind {
+    /// 401/403 — the credentials are wrong, absent, or not allowed here.
+    Auth,
+    /// 429 — back off and retry.
+    RateLimit,
+    /// 5xx from the provider.
+    Server,
+    /// The request never got a usable answer (timeout, DNS, connection reset).
+    Network,
+    /// The prompt exceeded the model's context window.
+    ContextLength,
+    /// Anything else.
+    Other,
+}
+
+impl ProviderErrorKind {
+    /// True when the operator must fix a credential — the one class that will
+    /// never succeed on retry.
+    pub fn is_auth(&self) -> bool {
+        matches!(self, Self::Auth)
+    }
+
+    /// True when retrying the same request could plausibly succeed.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::RateLimit | Self::Server | Self::Network)
+    }
+}
+
 impl ProviderError {
+    /// Classify this error. Used to decide the CLI exit code and the wire frame
+    /// for [`crate::agents::turn_abort::TurnAbortCode::ProviderFailure`].
+    pub fn kind(&self) -> ProviderErrorKind {
+        match self {
+            ProviderError::Authentication(_) => ProviderErrorKind::Auth,
+            ProviderError::RateLimitExceeded { .. } => ProviderErrorKind::RateLimit,
+            ProviderError::ServerError(_) => ProviderErrorKind::Server,
+            ProviderError::ContextLengthExceeded(_) => ProviderErrorKind::ContextLength,
+            // `RequestFailed` is what `From<anyhow::Error>` produces for a
+            // reqwest failure, so it covers timeouts/connection errors — but it
+            // also carries HTTP status text for some providers. Sniff the status
+            // so a 401/403 surfaced this way is still classified as auth rather
+            // than as a retryable network blip.
+            ProviderError::RequestFailed(details) => {
+                let d = details.to_ascii_lowercase();
+                if d.contains("401") || d.contains("403") || d.contains("unauthorized") {
+                    ProviderErrorKind::Auth
+                } else if d.contains("429") {
+                    ProviderErrorKind::RateLimit
+                } else if d.contains("500")
+                    || d.contains("502")
+                    || d.contains("503")
+                    || d.contains("504")
+                {
+                    ProviderErrorKind::Server
+                } else {
+                    ProviderErrorKind::Network
+                }
+            }
+            ProviderError::ExecutionError(_)
+            | ProviderError::UsageError(_)
+            | ProviderError::NotImplemented(_) => ProviderErrorKind::Other,
+        }
+    }
+
     pub fn telemetry_type(&self) -> &'static str {
         match self {
             ProviderError::Authentication(_) => "auth",

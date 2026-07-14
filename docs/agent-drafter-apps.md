@@ -8,6 +8,212 @@ streams the answer (text / markdown / tool activity) back into the app. Apps are
 *launched in the browser* (GUI auto-opens the default browser; CLI prints a URL),
 not embedded in a chat iframe.
 
+---
+
+# SDK v2
+
+Apps SDK v2 (design: `docs/superpowers/specs/2026-07-12-apps-sdk-v2-design.md`)
+turns the app from "a chat box the agent answers in" into a **typed, two-way
+surface the agent drives**. The full developer reference — every `br.*` signature,
+the manifest schema, the widget catalog, the frame tables, and the export format —
+lives in [`docs/apps-sdk-reference.md`](apps-sdk-reference.md). This section is the
+map; that file is the territory. The sections **below "## What changed"** are the
+original v1 redesign notes, kept for history; where v1 text conflicts with the
+below, v2 wins (superseded bits are flagged inline).
+
+## The nine pillars
+
+v2 is nine independently-shippable pillars. Pillars 1–5 rebuild the interaction
+core: **(1) the App Contract** — the manifest grows a declared `surface`
+(`state_schema`, `actions` the agent calls via `app_call`, `signals` the agent
+subscribes to, custom `components`), enforced server-side and lint-checked against
+the code that registers it; **(2) shared reactive state** — one JSON document per
+session that both sides write, as a snapshot-plus-RFC-6902-patch stream, with
+declarative `data-br-bind` / `-bind-attr` / `-bind-show` bindings that re-render
+only changed nodes; **(3) Catalog v2** — a flat, id-keyed, morphing widget set
+(`ui_patch` edits nodes by id, preserving focus/scroll) plus a science pack
+(`network`, `plot`, `figure`, `kpi`, `log`, `markdown`, `image`) and
+author-registered custom components; **(4) platform encapsulation** — knowledge
+bases and provider routing behind `br.kb` / `br.model`, resolved server-side so
+keys never touch the page; **(5) the interaction loop** — coalesced app→agent
+signals, an ambient presence chip that narrates every agent UI change, and
+`ui_ask` for blocking mid-turn questions (the DynaVis rule: after an NL request
+tunes a knob, synthesize a persistent bound control for it).
+
+Pillars 6–9 cover surface and lifecycle: **(6) aesthetics** — six curated theme
+packs, a bounded `ui_layout` grid grammar, and six archetype starters so a fresh
+app is a working example of its shape, not a chatbot; **(7) security extensions** —
+a per-app WebSocket token + origin pin, the fail-closed `ui_html` sanitizer,
+textContent-only bindings, KB grants scoped to enumerated ids, a provider-class
+rule (sensitive data can't route to an external commercial provider), and a table
+of payload caps; **(8) multi-agent** — both the sub-agents-as-tools path
+(`orchestration.sub_agents`) and named worker *profiles* (`orchestration.agents`
+→ `br.agent(name)` + the agent-side `consult` tool, advertised in `ready.profiles`)
+ship, with the caveat that cross-profile turns are **serialized** (parallel across
+profiles is a stretch goal); **(9) lifecycle** — the Applications-panel round-trip
+and a standalone export that can carry the app's server-side payload. The
+multi-agent-profiles work is **actively landing** in this branch — treat the code
+as authoritative for its exact current shape.
+
+## Protocol v2 overview
+
+The app talks to `biorouterd` over one WebSocket (`GET /apps/<id>/agent`). The
+server opens with a **`ready` frame** (`protocol: 2`) advertising capability
+tokens (`manifest.agent.capabilities.advertised()`), the catalog + state versions,
+and the declared `surface` (signals with coalesce windows, action names). The
+client feature-detects with `br.has(token)`. Frames are **versioned**: every
+server-issued `ui` command frame carries `type:"ui"` + `v` (`CATALOG_VERSION`,
+currently 1). **Fallback is forgiving** — an unknown `ui` `cmd` is ignored, an
+unknown widget kind renders a neutral `[unsupported: …]` placeholder, and a stale
+bundle drops v2 frames it doesn't understand until rebuilt.
+
+Three things ride these frames beyond the v1 agent stream:
+
+- **The state document** (Pillar 2): the server is the ordering authority. The
+  app's `br.state.set/remove/update` send `state_write { set|patch, baseVersion }`;
+  the agent's `ui_state` / `ui_patch_state` mutate the same doc; both directions
+  get rebroadcast as `state` snapshot/patch frames. A version conflict resnapshots
+  the client.
+- **The catalog** (Pillar 3): `ui_panel` / `ui_render` mount id-keyed instances;
+  `ui_patch { ops: add|replace|set_props|remove }` edits them in place.
+- **The app contract** (Pillar 1): `app_call` → the app's registered action
+  handler → `app_result`; `br.call({outputSchema})` → the agent's `emit_result`
+  → an `output { value }` frame; app→agent `signal`s (subscribed via
+  `ui_subscribe`). Every app-originated payload is wrapped in an untrusted
+  `<app-data>` … `</app-data>` envelope the system prompt marks as data, not
+  instructions.
+
+> **Superseded:** the v1 "WebSocket protocol" section below predates protocol v2
+> (no `ready.protocol`/`surface`, no state/call/signal/kb frames). Use the
+> [reference frame tables](apps-sdk-reference.md#5-protocol-appendix) instead.
+>
+> **`ui_error` — consumed server-side:** the SDK emits `ui_error` frames
+> (render/action failures, rate-limited with a `droppedCount`); the daemon now
+> buffers them (cap 5) and delivers them to the model under the artifact-repair
+> grace discipline — riding the next turn as an `[app ui errors]` `<app-data>`
+> envelope, or auto-starting one repair turn within 15 s of the last turn ending
+> (capped at once per 60 s). `ui_suggest` is now a real MCP tool (non-blocking
+> suggestion chips, ≤5), alongside the blocking `ui_ask`.
+
+## Capability matrix
+
+Deny-by-default, except `ui` (its blast radius is the app's own page). Grants live
+under `manifest.agent.capabilities`.
+
+| Capability | Default | Effect |
+|---|---|---|
+| `ui.enabled` | **on** | The `ui_*` tool set. `false` → a text-only app. |
+| `ui.allow_theme` | on | `ui_theme` may restyle (pack / accent / mode / density). |
+| `ui.allow_layout` | on | `ui_layout` may switch the region layout. |
+| `ui.allow_ask` | on | `ui_ask` may block a turn on a user form. |
+| `ui.allow_signals` | on | `ui_subscribe` may listen to declared app signals (listen only). |
+| `ui.allow_html` | **off** | `ui_html` may inject server-sanitized rich HTML (XSS surface — opt-in). |
+| `ui.allow_autorun` | **off** | An app signal may autonomously *start a turn* (spends provider quota — **user-granted only**, never agent-self-granted). Needs the signal to opt in (`surface.signals[].autorun:true`) + server budgets (6/min, 60/session). |
+| `ui.max_panels` / `ui.ask_timeout_s` | 12 / 300 s | Panel cap (oldest evicted) / `ui_ask` timeout. |
+| `files` | none | Mounted host dirs (`entries[]`, `ro`/`rw`, `out_dir`), `max_file_bytes`. |
+| `data.sources[]` | none | `knowledge` / `spoke` / `omop` / `cdw` / `sql`. `ids` scope KB access; `read_only:false` grants KB writes. |
+| `compute` | none | `sandbox` (`none`/`local`/`docker`), `timeout_s`, `network`, `max_mem`, `cpus`, `image`. |
+| `vault` | none | Secret names referenceable via `{{vault:NAME}}`. |
+| `memory` | off | Scratch KB + optional session-end distillation (`mode` `off`/`read`/`read_write`). |
+| `tracing` | off | Span export (`redact` on by default; `processor` langfuse/phoenix/otlp). |
+| `events[]` | none | Agent→app lifecycle stream to `br.on()` (`tool`/`handoff`/`compaction`/…). |
+
+> **Autorun (shipped, capability-gated):** `ui.allow_autorun` (design §3.5/§3.7)
+> lets a declared signal that opts in (`surface.signals[].autorun:true`)
+> autonomously start a turn — **default off, user-granted only** (the agent can
+> never self-grant), and bounded by per-minute/per-session budgets. Without the
+> grant, or without the per-signal opt-in, signals stay queue-only (context for
+> the next turn, never a turn trigger).
+
+## Archetypes + starters
+
+`create_app { archetype }` (or an inferred one from the title/description) seeds a
+working, lint-clean `index.html` + `src/main.ts` **plus** the matching declared
+`manifest.surface`, so a new app is an example of its shape rather than a chat box.
+Six archetypes (`Archetype` in `mod.rs`, starters in `templates/starters/`):
+
+| Archetype | Shape |
+|---|---|
+| `explorer` | A network/graph the agent renders + inspector + search (actions: `focus_node`; signals: `node_selected`, `search_submitted`). |
+| `dashboard` | A KPI grid bound to `/metrics/*` + a refresh action (`set_metric`; `refresh_requested`). |
+| `workbench` | A data table + row-select signal + a bound detail panel (`open_row`; `row_selected`, `filter_changed`). |
+| `wizard` | A staged form that writes state, then submits (`go_to_step`; `step_changed`, `submitted`). |
+| `canvas` | An author-registered draw surface + agent-called actions — the avatar/scene shape (`move_avatar`, `reset_scene`; `avatar_moved`; a `scene` component). |
+| `chat` | The pre-v2 chat card; one option among six, never the default. |
+
+## Theme packs
+
+`manifest.theme` selects one of six packs (`THEME_PACKS`): `biorouter` (base look,
+no overrides), `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` —
+each a `[data-br-pack]` token layer with a dark variant. An unknown pack resolves
+back to `biorouter`. `theme.accent` + `theme.tokens` (only `--br-*` custom
+properties) are sanitized at render time; `ui_theme` can switch packs at runtime
+when `allow_theme` holds. (Design listed a `glass` pack; the shipped set is the
+six above.)
+
+## Export modes
+
+`export_app { id, target_dir, mode?, include?, bundle_daemon? }`:
+
+- **`launcher`** (default) — app + launch scripts only; runs against whatever KBs
+  / skills / extensions already exist on the target.
+- **`full`** — also stages the server-side payload under `payload/`
+  (`knowledge/<id>.brkb`, `skills/<name>/`) and writes `export.json`. Per-item
+  selection via `include`, else derived from the agent config.
+
+`bundle_daemon: "current"` stages this platform's `biorouterd` under
+`payload/bin/` (a "fat" export); `"all"` is out of scope and treated as
+`"current"`. External extensions are recorded as **registry references** in
+`export.json`, not staged as `.brxt` bundles (out of scope). Every export ships
+directly-runnable launchers for all three OSes (`run.command` / `run.sh` /
+`run.bat`+`run.ps1`, shared `biorouter-launch.sh`, `serve.mjs` loopback proxy) and
+a prebuilt `dist/app.js` — no build step. See the
+[export guide](apps-sdk-reference.md#7-export-guide).
+
+## Multi-agent
+
+Two mechanisms ship. **Sub-agents-as-tools** (`orchestration.sub_agents`): each
+declared sub-agent is materialized as an engine recipe
+(`materialize_subagent_recipe` in `apps.rs`) and exposed to the primary agent as
+an agent-as-tool. **Named worker profiles** (`orchestration.agents`, validated by
+`validate_profiles` in `apps.rs`, cap `MAX_PROFILES = 8`): each is a full alternate
+`AgentConfig` with its own session/provider/subset-checked capabilities, advertised
+in `ready.profiles`. The app addresses one via `br.agent(name)` (frames carry
+`agent: name`); the main agent delegates mid-turn via the `consult` tool (main-only,
+depth 1). **Serialized, not parallel** — one worker (or the main agent) runs at a
+time on the app socket; parallel-across-profiles turns are a stretch goal. This
+feature is **actively landing** in the `feat/apps-sdk-v2` branch; see
+`docs/apps-sdk-reference.md` §3.10 and treat the code (`consult` in `control.rs`,
+`AgentFacade` in `sdk.ts`) as authoritative.
+
+## CLI (`biorouter apps`)
+
+Apps are browser-rendered, but the CLI gives list/open/serve parity
+(`crates/biorouter-cli/src/commands/apps.rs`):
+
+```bash
+biorouter apps list [--json]     # table of installed apps (id, title, archetype, updated)
+biorouter apps open <id>         # ensure a daemon is up; open http://127.0.0.1:<port>/apps/<id>/
+biorouter apps serve <id>        # ensure a daemon is up; print the URL; stay foreground if it started one
+```
+
+Daemon management is minimal: it health-checks `BIOROUTER_PORT` (default 3000) via
+the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
+`biorouterd agent`. In-terminal rendering of an app is out of scope.
+
+## Testing story
+
+| Command | Gates |
+|---|---|
+| `cargo test -p biorouter-mcp --lib agent_drafter::` | store, tools, render, bundler, the `ui_*` tools, manifest/theme/surface types |
+| `cargo test -p biorouter-mcp --test ui_example_apps` | example UI apps emit `ui` frames deterministically |
+| `cargo test -p biorouter-server --lib routes::apps` | WS frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
+| `node scripts/agent-drafter/ui-control-harness.mjs` | SDK v2 self-test — real `sdk.ts` in jsdom vs a mock daemon: state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb`, `br.model`, theme/layout, presence, `wsToken` (needs esbuild + jsdom) |
+| `node scripts/agent-drafter/ui-control-harness.mjs --app <dir>` | serve a built app for a real browser (`/__emit` + `/__frames`) |
+| `ui/desktop/scripts/appcheck/check-ui-app.mjs` | real agent; asserts `ui` frames arrive |
+
+---
+
 ## What changed
 
 | Before | After |
@@ -51,6 +257,12 @@ not embedded in a chat iframe.
 
 ## WebSocket protocol (browser ⇄ backend)
 
+> **Superseded by protocol v2** (see the SDK v2 "Protocol v2 overview" above and
+> the [reference frame tables](apps-sdk-reference.md#5-protocol-appendix)). The
+> frames below are the v1 subset; v2 adds the `ready.protocol`/`surface` fields
+> and the `state_write` / `call` / `signal` / `kb` / `app_result` / `model_status`
+> frames.
+
 Client → server: `{"type":"prompt","text":"…","images":[{"mimeType","data"}]}`,
 `{"type":"cancel"}`, `{"type":"tokens"}`, `{"type":"history"}`,
 `{"type":"modelselect",…}`, `{"type":"approve"|"reject",…}`,
@@ -65,6 +277,11 @@ Server → client: `{"type":"ready","capabilities":[…]}`, `{"type":"message","
 `{"type":"error","message"}`.
 
 ## Agent-driven UI (the `ui_*` tools)
+
+> **Extended in v2.** This v1 table lists the original 11 tools; v2 adds
+> `ui_patch_state`, `ui_patch`, `ui_html`, `ui_figure`, `app_call`, `emit_result`,
+> and `ui_subscribe` (18 total). Full table + widget catalog in the
+> [reference](apps-sdk-reference.md#4-agent-driven-ui-the-ui_-tools).
 
 An app's agent **drives the app**, it doesn't just answer inside it. A per-session
 in-process MCP server (`agent_drafter/control.rs`, injected by `configure_agent`

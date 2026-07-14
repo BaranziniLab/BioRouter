@@ -5,12 +5,14 @@
 //! Layout mirrors the conventions used by `memory`/`knowledge`:
 //! `~/.config/biorouter/agent_drafter/<id>/`.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use super::manifest::{
-    Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig,
+    Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig, SurfaceDecl,
+    ThemeConfig,
 };
 
 /// Whether an artifact embeds live agent capability.
@@ -116,6 +118,59 @@ pub struct AgentConfig {
     /// per-connection sessions. Use [`AgentConfig::durable_session`] to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durable_session: Option<bool>,
+    /// Platform capabilities this app *wants* that may or may not exist here.
+    ///
+    /// This is the vocabulary the manifest was missing. An app whose spec calls
+    /// for a ClinVar knowledge base, on a machine with no ClinVar knowledge base,
+    /// previously had exactly one way to express that: invent
+    /// `knowledge_base: "clinvar"` — a lie that armed KB tools scoped to nothing
+    /// and failed on turn 1. Now the honest statement is representable:
+    /// `requires: [{kind: knowledge_base, id: "clinvar", reason: "…"}]` with the
+    /// id left unset. An unmet requirement is a lint **warning** and a runtime
+    /// banner, never a fabricated config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<Requirement>,
+    /// When this config is a WORKER PROFILE: how many seconds it gets to answer a
+    /// `consult` before it is cancelled.
+    ///
+    /// `max_turns` bounds tool CALLS, not wall clock — a worker can sit inside a
+    /// single slow tool indefinitely. The deadline used to be a compile-time
+    /// constant with no configuration path at all. Clamped 5..=600 at use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consult_timeout_s: Option<u64>,
+}
+
+/// The kind of platform capability a [`Requirement`] refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementKind {
+    KnowledgeBase,
+    Skill,
+    Extension,
+    DataSource,
+}
+
+impl RequirementKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::KnowledgeBase => "knowledge_base",
+            Self::Skill => "skill",
+            Self::Extension => "extension",
+            Self::DataSource => "data_source",
+        }
+    }
+}
+
+/// A platform capability the app needs, and whether this install can provide it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Requirement {
+    pub kind: RequirementKind,
+    /// The id the app would use *if it existed here* (e.g. `"clinvar"`). This is
+    /// a statement of need, not a configuration — nothing is armed from it.
+    pub id: String,
+    /// Why the app needs it. Shown to the user in the degraded-capability banner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 impl AgentConfig {
@@ -135,7 +190,14 @@ pub struct Manifest {
     pub kind: ArtifactKind,
     /// Entry file rendered for previews/exports.
     pub entry: String,
+    /// Server-managed. `#[serde(default)]` because a model composing a manifest
+    /// from scratch has no way to know these and no business inventing them —
+    /// requiring them made `update_app` fail with `missing field created_at`,
+    /// which is the error that kicked off the manifest-rewrite guessing loop.
+    /// `update_app` restores the real values from disk after parsing.
+    #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentConfig>,
@@ -162,6 +224,29 @@ pub struct Manifest {
     /// app there. Apps created before this was recorded have `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The declared app contract (Apps SDK v2): typed state schema, actions,
+    /// signals, and custom components. Absent/empty → a v1 app with no declared
+    /// surface, which deserializes and re-serializes unchanged.
+    #[serde(default, skip_serializing_if = "SurfaceDecl::is_empty")]
+    pub surface: SurfaceDecl,
+    /// The app's theme selection (Apps SDK v2, Pillar 6): a curated pack plus
+    /// optional accent / custom token overrides. Absent/default → the base
+    /// `biorouter` look, so a v1 manifest deserializes and re-serializes
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "ThemeConfig::is_default")]
+    pub theme: ThemeConfig,
+}
+
+impl Manifest {
+    /// The theme pack this app actually renders with.
+    ///
+    /// Read this instead of `manifest.theme.pack`: the field is omitted from the
+    /// serialized manifest when it holds the default, so its *absence* means
+    /// "the default pack", never "no pack". An unknown pack on disk also resolves
+    /// to the default here, matching what the renderer does.
+    pub fn resolved_theme_pack(&self) -> &str {
+        self.theme.resolved_pack()
+    }
 }
 
 fn now_secs() -> u64 {
@@ -293,6 +378,8 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: SurfaceDecl::default(),
+            theme: ThemeConfig::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -338,6 +425,8 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: SurfaceDecl::default(),
+            theme: ThemeConfig::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -535,6 +624,48 @@ mod tests {
         let agent = m.agent.unwrap();
         assert!(!agent.capabilities.ui.enabled);
         assert!(agent.capabilities.advertised().is_empty());
+    }
+
+    #[test]
+    fn theme_persists_and_defaults_are_omitted() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let (_d, s) = store();
+        let mut m = s
+            .create("Themed", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        // A default theme is not serialized, so a v1 manifest stays clean.
+        assert!(m.theme.is_default());
+        let json = std::fs::read_to_string(s.root().join("themed").join("manifest.json")).unwrap();
+        assert!(
+            !json.contains("\"theme\""),
+            "default theme must be omitted: {json}"
+        );
+
+        // A customised theme survives save → load.
+        let mut tokens = std::collections::HashMap::new();
+        tokens.insert("--br-radius".to_string(), "4px".to_string());
+        m.theme = ThemeConfig {
+            pack: "terminal".into(),
+            accent: Some("#3ddc84".into()),
+            tokens,
+        };
+        s.save_manifest(&m).unwrap();
+        let loaded = s.load_manifest("themed").unwrap();
+        assert_eq!(loaded.theme.pack, "terminal");
+        assert_eq!(loaded.theme.accent.as_deref(), Some("#3ddc84"));
+        assert_eq!(
+            loaded.theme.tokens.get("--br-radius").map(String::as_str),
+            Some("4px")
+        );
+
+        // A legacy manifest with no theme block loads with the base pack.
+        let legacy: Manifest = serde_json::from_str(
+            r#"{"id":"x","title":"X","description":"","kind":"static",
+                "entry":"index.html","created_at":0,"updated_at":0}"#,
+        )
+        .unwrap();
+        assert!(legacy.theme.is_default());
+        assert_eq!(legacy.theme.resolved_pack(), "biorouter");
     }
 
     #[test]

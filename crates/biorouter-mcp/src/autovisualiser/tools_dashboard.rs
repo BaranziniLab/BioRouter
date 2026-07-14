@@ -383,31 +383,43 @@ impl AutoVisualiserRouter {
     ) -> Result<(String, Vec<Asset>), ErrorData> {
         let name = normalize_tool_name(&figure.tool);
         let params = figure.params.clone();
+        let (result, assets) = common::render_fragment(self.call_figure_tool(&name, params)).await;
+        Ok((common::html_from_result(&result?)?, assets))
+    }
 
+    /// Dispatch a normalized single-figure tool name to its implementation.
+    ///
+    /// This is the one table mapping `render_*`/`show_chart` names onto the real
+    /// tool methods and their parameter structs. Both the dashboard (which wraps
+    /// this in [`common::render_fragment`]) and the standalone embedding API
+    /// ([`render_standalone_figure`]) go through here, so a figure is
+    /// byte-for-byte identical however it is reached. `render_dashboard` is not in
+    /// this table — it composes these figures rather than being one.
+    async fn call_figure_tool(
+        &self,
+        name: &str,
+        params: Value,
+    ) -> Result<CallToolResult, ErrorData> {
         // Deserialize into the tool's own parameter struct, then call it.
         macro_rules! dispatch {
             ($($tool:literal => ($method:ident, $params_ty:ty)),+ $(,)?) => {
-                match name.as_str() {
+                match name {
                     $(
                         $tool => {
                             let typed: $params_ty = serde_json::from_value(params)
                                 .map_err(|e| invalid(format!("`{}` arguments are invalid: {e}", $tool)))?;
-                            let (result, assets) =
-                                common::render_fragment(self.$method(Parameters(typed))).await;
-                            (result?, assets)
+                            self.$method(Parameters(typed)).await
                         }
                     )+
-                    other => {
-                        return Err(invalid(format!(
-                            "Unknown visualization '{other}'. Use one of the Auto Visualiser \
-                             render_* tool names, e.g. render_volcano, render_heatmap, show_chart."
-                        )));
-                    }
+                    other => Err(invalid(format!(
+                        "Unknown visualization '{other}'. Use one of the Auto Visualiser \
+                         render_* tool names, e.g. render_volcano, render_heatmap, show_chart."
+                    ))),
                 }
             };
         }
 
-        let (result, assets) = dispatch! {
+        dispatch! {
             "show_chart"             => (show_chart, ShowChartParams),
             "render_sankey"          => (render_sankey, RenderSankeyParams),
             "render_radar"           => (render_radar, RenderRadarParams),
@@ -440,9 +452,7 @@ impl AutoVisualiserRouter {
             "render_state_diagram"   => (render_state_diagram, RenderStateParams),
             "render_class_diagram"   => (render_class_diagram, RenderClassParams),
             "render_choropleth"      => (render_choropleth, RenderChoroplethParams),
-        };
-
-        Ok((common::html_from_result(&result)?, assets))
+        }
     }
 
     /// Combine several figures into one documented, self-contained report.
@@ -736,3 +746,34 @@ const ASSET_ORDER: [Asset; 5] = [
     Asset::Leaflet,
     Asset::Mermaid,
 ];
+
+/// Render one named Auto Visualiser figure as a complete, self-contained
+/// HTML document (inlined assets), for embedding in a sandboxed iframe.
+/// `tool` is the tool name with or without the `render_`/`show_` prefix
+/// (e.g. "kaplan_meier", "render_kaplan_meier", "show_chart").
+/// Returns Err with a human-fixable message for unknown tools or invalid args.
+///
+/// `render_dashboard` is accepted too — a report embedded in an app is
+/// legitimate. `args` are exactly the arguments the tool takes on its own
+/// (e.g. `{"data": …}`).
+///
+/// Assets are always inlined, ignoring `BIOROUTER_AUTOVIS_CDN`: the document
+/// lands in a `srcdoc` iframe the Electron CDN→inline rewriter cannot reach, so a
+/// remote `<script src=…>` would be blocked by the renderer CSP and render blank
+/// — the same reasoning that makes a dashboard inline its libraries.
+pub async fn render_standalone_figure(tool: &str, args: Value) -> Result<String, String> {
+    let router = AutoVisualiserRouter::new();
+    let name = normalize_tool_name(tool);
+    let result = common::with_inline_assets(async move {
+        if name == "render_dashboard" {
+            let params: RenderDashboardParams = serde_json::from_value(args)
+                .map_err(|e| invalid(format!("`render_dashboard` arguments are invalid: {e}")))?;
+            router.render_dashboard(Parameters(params)).await
+        } else {
+            router.call_figure_tool(&name, args).await
+        }
+    })
+    .await
+    .map_err(|e| e.message.to_string())?;
+    common::html_from_result(&result).map_err(|e| e.message.to_string())
+}

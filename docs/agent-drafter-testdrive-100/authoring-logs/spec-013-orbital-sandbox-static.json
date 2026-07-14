@@ -1,0 +1,59 @@
+{
+  "id": "spec-013-orbital-sandbox",
+  "title": "Orbital Sandbox",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-013-orbital-sandbox/manifest.json",
+  "actions_expected": [
+    "detect_resonance",
+    "ghost_trajectory",
+    "place_body",
+    "run_integration",
+    "set_velocity",
+    "stabilize"
+  ],
+  "actions_actual": [
+    "detect_resonance",
+    "ghost_trajectory",
+    "place_body",
+    "run_integration",
+    "set_velocity",
+    "stabilize"
+  ],
+  "signals_expected": [
+    "body_added",
+    "body_dragged",
+    "timescale_changed",
+    "vector_pulled"
+  ],
+  "signals_actual": [
+    "body_added",
+    "body_dragged",
+    "timescale_changed",
+    "vector_pulled"
+  ],
+  "agents_expected": [
+    "Navigator",
+    "Chaos Auditor",
+    "Ephemeris Scribe"
+  ],
+  "agents_actual": [
+    "chaos_auditor",
+    "ephemeris_scribe",
+    "navigator"
+  ],
+  "regions": [
+    "agent-notes",
+    "body-list",
+    "body-rail",
+    "canvas-surface",
+    "elements-table",
+    "inspector",
+    "orbital-canvas",
+    "phase-plot",
+    "progress",
+    "transport"
+  ],
+  "theme_expected": "midnight",
+  "theme_actual": "midnight",
+  "issues": []
+}

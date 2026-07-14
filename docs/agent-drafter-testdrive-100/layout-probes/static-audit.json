@@ -1,0 +1,65 @@
+{
+  "provider": "versa_azure",
+  "model": "gpt-5.5-2026-04-24",
+  "passed": 5,
+  "total": 5,
+  "results": [
+    {
+      "id": "layout-probe-kpi-mosaic",
+      "family": "dashboard",
+      "theme": "clinical",
+      "built": true,
+      "regions": [
+        "command-ribbon",
+        "kpi-mosaic",
+        "narrative-drawer",
+        "story-band"
+      ],
+      "issues": []
+    },
+    {
+      "id": "layout-probe-centered-wizard",
+      "family": "wizard",
+      "theme": "journal",
+      "built": true,
+      "regions": [
+        "result_canvas"
+      ],
+      "issues": []
+    },
+    {
+      "id": "layout-probe-radial-canvas",
+      "family": "canvas",
+      "theme": "midnight",
+      "built": true,
+      "regions": [
+        "canvas",
+        "focal",
+        "narration"
+      ],
+      "issues": []
+    },
+    {
+      "id": "layout-probe-tabletop-workbench",
+      "family": "workbench",
+      "theme": "lab-notebook",
+      "built": true,
+      "regions": [
+        "summary",
+        "tabletop"
+      ],
+      "issues": []
+    },
+    {
+      "id": "layout-probe-constellation",
+      "family": "explorer",
+      "theme": "terminal",
+      "built": true,
+      "regions": [
+        "agent-log",
+        "constellation"
+      ],
+      "issues": []
+    }
+  ]
+}

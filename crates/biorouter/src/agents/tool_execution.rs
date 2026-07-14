@@ -35,6 +35,19 @@ use crate::conversation::message::{Message, ToolRequest};
 use crate::session::Session;
 use crate::tool_inspection::get_security_finding_id_from_results;
 
+/// What the model is told when BioRouter's OWN loop guard blocks a call.
+///
+/// This used to reuse [`DECLINED_RESPONSE`] — "The user has declined to run this
+/// tool" — which is a **lie**: the user declined nothing, the repetition inspector
+/// did. The model could not tell a human refusal from a loop guard, so it could
+/// not learn "do something different"; it just retried, was denied again, and rode
+/// the loop to the turn cap. Saying what actually happened is the minimum; the
+/// tool is also removed from the tool list, so the retry is impossible anyway.
+pub const LOOP_BLOCKED_RESPONSE: &str = "This exact call (same tool, same arguments) has already \
+    been made several times and produced no new information, so it has been BLOCKED and the tool \
+    is now disabled for the rest of this turn. The user did not decline it — you are in a loop. \
+    Do something different, or stop and explain what you are stuck on.";
+
 pub const DECLINED_RESPONSE: &str = "The user has declined to run this tool. \
     DO NOT attempt to call this tool again. \
     If there are no alternative methods to proceed, clearly explain the situation and STOP.";
