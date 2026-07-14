@@ -132,6 +132,17 @@ describe('UsagePanel', () => {
     // Model table: glm row with hand-checked cells + unknown null-cost row.
     const table = screen.getByTestId('usage-model-table');
     const glmRow = within(table).getByText('zai/glm-5.2').closest('tr')!;
+    expect(table).toHaveClass('border-collapse');
+    expect(within(table).getAllByRole('row')[0]).toHaveClass(
+      'h-8',
+      'border-b',
+      'border-border-subtle'
+    );
+    expect(glmRow).toHaveClass('h-10', 'border-b', 'border-border-subtle');
+    expect(within(glmRow).getAllByRole('cell')[0]).toHaveClass('font-mono');
+    for (const cell of within(glmRow).getAllByRole('cell').slice(1)) {
+      expect(cell).toHaveClass('tabular-nums');
+    }
     expect(
       within(glmRow)
         .getAllByRole('cell')
@@ -178,10 +189,40 @@ describe('UsagePanel', () => {
     expect(within(tokenGauge).getByText('(50.0%)')).toBeTruthy();
     expect(within(tokenGauge).getByText(/33,000,000 \/ 66,000,000/)).toBeTruthy();
     // Fill width tracks the percent.
-    expect(screen.getByTestId('usage-gauge-tokens-fill').style.width).toBe('50%');
+    const tokenFill = screen.getByTestId('usage-gauge-tokens-fill');
+    expect(tokenFill.style.width).toBe('50%');
+    expect(tokenFill).toHaveClass('bg-heat-3');
 
     const dollarGauge = screen.getByTestId('usage-gauge-dollars');
     expect(within(dollarGauge).getByText('(50.0%)')).toBeTruthy();
+  });
+
+  it('uses semantic danger styling and clamps an over-budget gauge', () => {
+    render(
+      <UsagePanel
+        summary={summary({
+          monthlyTokenLimit: 30_000_000,
+          tokenPercent: 110,
+        })}
+        dayRows={dayRows}
+        modelRows={modelRows}
+      />
+    );
+
+    const gauge = screen.getByTestId('usage-gauge-tokens');
+    expect(within(gauge).getByText('(110.0%)')).toHaveClass('text-text-danger');
+    const fill = screen.getByTestId('usage-gauge-tokens-fill');
+    expect(fill).toHaveClass('bg-background-danger');
+    expect(fill.style.width).toBe('100%');
+  });
+
+  it('uses the usage heat ramp for day bars', () => {
+    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+
+    for (const fill of screen.getAllByTestId('usage-day-bar-fill')) {
+      expect(fill).toHaveClass('bg-heat-3');
+      expect(fill.parentElement).toHaveClass('bg-heat-0');
+    }
   });
 
   it('marks the dollar gauge unavailable when MTD cost is unknown', () => {
