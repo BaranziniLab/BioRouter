@@ -2377,7 +2377,7 @@ impl SessionStorage {
                 .into_iter()
                 .flatten()
             {
-                q = q.bind(i64::from(value));
+                q = q.bind(value);
             }
         }
         if let Some(sid) = builder.schedule_id {
