@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::agent_drafter::store::Manifest;
 
@@ -781,6 +782,24 @@ pub struct BuildReport {
     pub log: String,
 }
 
+static NPX_ESBUILD_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_npx_esbuild(program: &str) -> Option<MutexGuard<'static, ()>> {
+    let is_npx = Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("npx"));
+    is_npx.then(|| {
+        NPX_ESBUILD_LOCK
+            .lock()
+            .expect("npx esbuild lock should not be poisoned")
+    })
+}
+
+fn npx_cache_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("biorouter-npx-cache-{}", std::process::id()))
+}
+
 /// Locate an esbuild executable. Returns `(program, leading_args)` so the caller
 /// can support both a direct binary and `npx esbuild`.
 fn find_esbuild() -> Option<(String, Vec<String>)> {
@@ -915,7 +934,11 @@ fn run_esbuild(
     entry: &Path,
     out: &Path,
 ) -> std::io::Result<BuildReport> {
+    let npx_guard = lock_npx_esbuild(program);
     let mut cmd = Command::new(program);
+    if npx_guard.is_some() {
+        cmd.env("npm_config_cache", npx_cache_dir());
+    }
     cmd.args(lead);
     cmd.arg(entry);
     cmd.arg("--bundle");
@@ -925,6 +948,7 @@ fn run_esbuild(
     cmd.arg(format!("--outfile={}", out.display()));
     cmd.arg("--log-level=warning");
     let output = cmd.output()?;
+    drop(npx_guard);
     let log = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1313,6 +1337,8 @@ pub fn default_sources() -> Vec<(PathBuf, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
@@ -1461,6 +1487,33 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let report = build_app(dir.path()).unwrap();
         assert!(!report.ok);
+    }
+
+    #[test]
+    fn npx_esbuild_fallback_is_serialized() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let workers = (0..4)
+            .map(|_| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    let guard = lock_npx_esbuild("npx.cmd");
+                    let running = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(running, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(guard);
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        assert!(lock_npx_esbuild("esbuild").is_none());
     }
 
     #[test]
