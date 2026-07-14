@@ -35,6 +35,13 @@ describe('billedTokensSummary', () => {
     expect(summary).toContain('300 cache read');
     expect(summary).toContain('50 cache write');
   });
+
+  it('labels incomplete history as a lower bound without turning unknown cache into zero', () => {
+    const summary = billedTokensSummary(100, 20, null, 5, null);
+    expect(summary).toContain('≥125 billed tokens');
+    expect(summary).toContain('— cache read');
+    expect(summary).not.toContain('0 cache read');
+  });
 });
 
 describe('cost estimates', () => {

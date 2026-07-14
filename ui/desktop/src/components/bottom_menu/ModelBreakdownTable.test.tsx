@@ -125,4 +125,32 @@ describe('ModelBreakdownTable', () => {
     expect(cells[5].textContent).toBe('1,300,000');
     expect(cells[6].textContent).toBe('13,300,000');
   });
+
+  it('shows nullable cache buckets as unknown and the measured buckets as a lower bound', () => {
+    render(
+      <ModelBreakdownTable
+        rows={[
+          {
+            provider: 'anthropic',
+            model: 'legacy-model',
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheReadTokens: null,
+            cacheCreationTokens: 5,
+            totalTokens: null,
+            turns: 2,
+            totalCost: 1.25,
+            costIsPartial: true,
+          },
+        ]}
+      />
+    );
+
+    const row = screen.getByText('anthropic/legacy-model').closest('tr')!;
+    expect(
+      within(row)
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent)
+    ).toEqual(['anthropic/legacy-model', '2', '100', '—', '5', '20', '≥125', '≥$1.25']);
+  });
 });

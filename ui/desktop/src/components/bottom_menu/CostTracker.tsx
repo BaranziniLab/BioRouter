@@ -5,6 +5,7 @@ import { Button } from '../ui/button';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
 import type { ModelCostRow, SessionCostRow, SessionCosts } from '../../hooks/useCostTracking';
+import { knownBilledTokens, sumBilledTokens } from '../../utils/usageAccounting';
 import { ModelBreakdownTable } from './ModelBreakdownTable';
 
 interface CostTrackerProps {
@@ -60,17 +61,48 @@ const BILLED_EXPLAINER =
 export function billedTokensSummary(
   inputTokens: number,
   outputTokens: number,
-  cacheReadTokens = 0,
-  cacheCreationTokens = 0
+  cacheReadTokens: number | null = 0,
+  cacheCreationTokens: number | null = 0,
+  exactTotal?: number | null
 ): string {
-  const total = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  const knownSubtotal = knownBilledTokens({
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+  });
+  const total =
+    exactTotal === undefined
+      ? cacheReadTokens === null || cacheCreationTokens === null
+        ? null
+        : knownSubtotal
+      : exactTotal;
   const buckets = [
     `${inputTokens.toLocaleString()} fresh in`,
-    `${cacheReadTokens.toLocaleString()} cache read`,
-    `${cacheCreationTokens.toLocaleString()} cache write`,
+    `${cacheReadTokens === null ? '—' : cacheReadTokens.toLocaleString()} cache read`,
+    `${cacheCreationTokens === null ? '—' : cacheCreationTokens.toLocaleString()} cache write`,
     `${outputTokens.toLocaleString()} out`,
   ];
-  return `${total.toLocaleString()} billed tokens (${buckets.join(' + ')}, accumulated across all turns)`;
+  const headline =
+    total === null
+      ? knownSubtotal > 0
+        ? `≥${knownSubtotal.toLocaleString()} billed tokens`
+        : '— billed tokens'
+      : `${total.toLocaleString()} billed tokens`;
+  return `${headline} (${buckets.join(' + ')}, accumulated across all turns)`;
+}
+
+function sumNullableTokens(
+  rows: ModelCostRow[],
+  key: 'cacheReadTokens' | 'cacheCreationTokens'
+): number | null {
+  let total = 0;
+  for (const row of rows) {
+    const value = row[key];
+    if (value === null) return null;
+    total += value;
+  }
+  return total;
 }
 
 export function formatTooltipMoney(amount: number | null, currency = '$'): string {
@@ -165,15 +197,11 @@ export function CostTracker({
 
   if (modelCostRows && modelCostRows.length > 0) {
     const estimate = aggregateModelRowsCost(modelCostRows);
-    const totals = modelCostRows.reduce(
-      (sum, row) => ({
-        input: sum.input + row.inputTokens,
-        output: sum.output + row.outputTokens,
-        cacheRead: sum.cacheRead + (row.cacheReadTokens ?? 0),
-        cacheCreation: sum.cacheCreation + (row.cacheCreationTokens ?? 0),
-      }),
-      { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }
-    );
+    const inputTotal = modelCostRows.reduce((sum, row) => sum + row.inputTokens, 0);
+    const outputTotal = modelCostRows.reduce((sum, row) => sum + row.outputTokens, 0);
+    const cacheReadTotal = sumNullableTokens(modelCostRows, 'cacheReadTokens');
+    const cacheCreationTotal = sumNullableTokens(modelCostRows, 'cacheCreationTokens');
+    const exactTotal = sumBilledTokens(modelCostRows);
     return (
       <Tooltip>
         <CostTrigger estimate={estimate} />
@@ -181,10 +209,11 @@ export function CostTracker({
           <div className="flex flex-col gap-2">
             <div className="whitespace-pre-line">
               {`${billedTokensSummary(
-                totals.input,
-                totals.output,
-                totals.cacheRead,
-                totals.cacheCreation
+                inputTotal,
+                outputTotal,
+                cacheReadTotal,
+                cacheCreationTotal,
+                exactTotal
               )}\n${BILLED_EXPLAINER}`}
             </div>
             <div className="font-medium">Per-model breakdown</div>
