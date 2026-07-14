@@ -44,6 +44,11 @@ export type ActivityWindow = {
     maxSessions: number;
     maxTokens: number;
     start: string;
+    /**
+     * False when at least one event in the window predates billed-token
+     * accounting; numeric token fields are then known subtotals, not zero/exact.
+     */
+    tokensComplete: boolean;
 };
 
 export type AddExtensionRequest = {
@@ -948,17 +953,21 @@ export type ModelUsageRow = {
     /**
      * Input tokens written to the prompt cache.
      */
-    cacheCreationTokens: number;
+    cacheCreationTokens?: number | null;
     /**
-     * Input tokens served from the prompt cache (0 for turns recorded before
-     * cache capture landed — the column is NULL there and `COALESCE`s to 0).
+     * Input tokens served from the prompt cache. `None` means at least one
+     * contributing event predates cache accounting or did not report it.
      */
-    cacheReadTokens: number;
+    cacheReadTokens?: number | null;
     inputTokens: number;
     modelId?: string | null;
     outputTokens: number;
     provider?: string | null;
-    totalTokens: number;
+    /**
+     * Billed tokens across all four disjoint buckets. `None` means at least
+     * one contributing event has no reconstructable billed total.
+     */
+    totalTokens?: number | null;
     /**
      * Number of billed turns attributed to this group.
      */
@@ -1007,6 +1016,8 @@ export type PreviewResponse = {
 };
 
 export type PricingData = {
+    cache_read_cost?: number | null;
+    cache_write_cost?: number | null;
     context_length?: number | null;
     currency: string;
     input_token_cost: number;
@@ -1295,10 +1306,10 @@ export type Session = {
     accumulated_input_tokens?: number | null;
     accumulated_output_tokens?: number | null;
     /**
-     * Lifetime totals: the sum of every turn's usage, i.e. tokens actually
-     * processed and billed. They grow without bound and overflowed `i32` at
-     * ~2.1e9 — in release that wraps *negative* and then subtracts from the
-     * insights `SUM`. SQLite's INTEGER is already 64-bit.
+     * Lifetime totals. New usage writes use the four-bucket billed total;
+     * databases created before billed-bucket accounting may contain legacy
+     * context totals here, so reporting and budgets use `token_events` instead.
+     * These counters grow without bound, so SQLite and Rust both use 64-bit.
      */
     accumulated_total_tokens?: number | null;
     conversation?: Conversation | null;
@@ -1355,10 +1366,10 @@ export type SessionExtensionsResponse = {
 export type SessionInsights = {
     sessionsLast30Days: number;
     sessionsLast7Days: number;
-    tokensLast30Days: number;
-    tokensLast7Days: number;
+    tokensLast30Days?: number | null;
+    tokensLast7Days?: number | null;
     totalSessions: number;
-    totalTokens: number;
+    totalTokens?: number | null;
 };
 
 export type SessionListResponse = {
@@ -1758,19 +1769,20 @@ export type UsageReportResponse = {
  * present unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of
  * the priced turns in the bucket, or `None` when *every* contributing turn was
  * unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
- * flags a bucket that mixes priced and unpriced turns, so a day cost can be
- * read as "at least this much" rather than exact.
+ * flags a bucket that mixes priced, unpriced, or incomplete turns, so a day
+ * cost can be read as "at least this much" rather than exact.
  */
 export type UsageReportRow = {
-    cacheCreationTokens: number;
+    cacheCreationTokens?: number | null;
     /**
-     * Prompt-cache read/creation tokens in the bucket (0 when unrecorded).
+     * Prompt-cache read/creation tokens in the bucket. `None` preserves
+     * historical incompleteness; it must not be presented as a measured zero.
      */
-    cacheReadTokens: number;
+    cacheReadTokens?: number | null;
     cost?: number | null;
     /**
-     * `true` when the bucket's `cost` omits cache tokens because a contributing
-     * priced model has no cache rate on file — so `cost` is a lower bound.
+     * `true` when cache cost is omitted because a contributing model has no
+     * cache rate or an event did not report a required cache bucket.
      */
     costExcludesCache: boolean;
     date?: string | null;
@@ -1779,7 +1791,10 @@ export type UsageReportRow = {
     modelId?: string | null;
     outputTokens: number;
     provider?: string | null;
-    totalTokens: number;
+    /**
+     * Billed tokens, or `None` when the bucket includes incomplete history.
+     */
+    totalTokens?: number | null;
     turns: number;
 };
 
@@ -1798,7 +1813,7 @@ export type UsageSummary = {
 export type UsageSummaryResponse = UsageSummary & {
     /**
      * MTD cost as a percent of the dollar limit; `null` when no limit is set or
-     * the MTD cost is unknown (some models are unpriced).
+     * the MTD cost is unknown or only a lower bound.
      */
     dollarPercent?: number | null;
     /**
@@ -1810,7 +1825,8 @@ export type UsageSummaryResponse = UsageSummary & {
      */
     monthlyTokenLimit?: number | null;
     /**
-     * MTD tokens as a percent of the token limit; `null` when no limit is set.
+     * MTD billed tokens as a percent of the token limit; `null` when no limit
+     * is set or the historical billed total is incomplete.
      */
     tokenPercent?: number | null;
 };
@@ -1819,11 +1835,12 @@ export type UsageSummaryResponse = UsageSummary & {
  * Token + cost totals for a time span, priced through [`model_cost_with_cache`].
  */
 export type UsageTotals = {
-    cacheCreationTokens: number;
+    cacheCreationTokens?: number | null;
     /**
-     * Prompt-cache read/creation tokens in the span (0 when unrecorded).
+     * Prompt-cache read/creation tokens in the span. `None` means the span
+     * includes at least one event without cache-bucket accounting.
      */
-    cacheReadTokens: number;
+    cacheReadTokens?: number | null;
     /**
      * Dollar cost of the priced turns, or `None` when nothing in the span is
      * priced. Priced-but-partial spans return the priced sum with
@@ -1831,14 +1848,17 @@ export type UsageTotals = {
      */
     cost?: number | null;
     /**
-     * `true` when `cost` omits cache tokens (a priced model without a cache
-     * rate carried cache tokens) — the figure is then a lower bound.
+     * `true` when cache cost is omitted because pricing or cache accounting is
+     * incomplete — the figure is then a lower bound.
      */
     costExcludesCache: boolean;
     hasUnpriced: boolean;
     inputTokens: number;
     outputTokens: number;
-    totalTokens: number;
+    /**
+     * Billed tokens, or `None` when the span includes incomplete history.
+     */
+    totalTokens?: number | null;
     turns: number;
 };
 
@@ -4504,6 +4524,10 @@ export type GetSessionUsageErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
     /**
      * Internal server error
      */

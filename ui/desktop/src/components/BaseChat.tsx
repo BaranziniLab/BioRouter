@@ -1107,8 +1107,8 @@ function BaseChatContent({
   );
   const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
-  // Prefer accumulated counters, then let the per-model ledger restore any
-  // cache buckets an older counter payload omitted.
+  // The per-model ledger can supersede live counters only when every row has a
+  // certified billed total; incomplete historical rows stay visibly unknown.
   const totalSessionTokens = mostCompleteBilledTokens(
     selectBilledTokens(tokenState, session),
     modelRows

@@ -1,5 +1,6 @@
 import type { ModelCostRow } from '../../hooks/useCostTracking';
 import { UNKNOWN_MODEL_LABEL } from '../../hooks/useCostTracking';
+import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
 import { formatTooltipMoney } from './CostTracker';
 
 interface ModelBreakdownTableProps {
@@ -25,6 +26,17 @@ function costCell(
   return row.costIsPartial ? `≥${formatted}` : formatted;
 }
 
+function tokenCell(tokens: number | null): string {
+  return tokens === null ? '—' : tokens.toLocaleString();
+}
+
+function billedTokenCell(row: ModelCostRow): string {
+  const exact = billedTokens(row);
+  if (exact !== null) return tokenCell(exact);
+  const subtotal = knownBilledTokens(row);
+  return subtotal > 0 ? `≥${tokenCell(subtotal)}` : '—';
+}
+
 /**
  * Per-model usage breakdown for the cost popover, rendered from the real
  * `token_events` rollup (Issue #1). Rows arrive already priced; a `null` cost
@@ -38,7 +50,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
   return (
     <table className="w-full border-collapse text-left text-xs" data-testid="model-breakdown-table">
       <thead>
-        <tr className="text-text-muted">
+        <tr className="h-8 border-b border-border-subtle text-[11px] uppercase tracking-wider text-text-muted">
           <th className="pr-3 font-medium">Model</th>
           <th className="px-2 text-right font-medium">Turns</th>
           <th className="px-2 text-right font-medium">Fresh in</th>
@@ -51,16 +63,17 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={modelLabel(row)}>
+          <tr
+            key={modelLabel(row)}
+            className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
+          >
             <td className="pr-3 font-mono">{modelLabel(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.turns.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
-            <td className="px-2 text-right tabular-nums">{row.cacheReadTokens.toLocaleString()}</td>
-            <td className="px-2 text-right tabular-nums">
-              {row.cacheCreationTokens.toLocaleString()}
-            </td>
+            <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheReadTokens)}</td>
+            <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheCreationTokens)}</td>
             <td className="px-2 text-right tabular-nums">{row.outputTokens.toLocaleString()}</td>
-            <td className="px-2 text-right tabular-nums">{row.totalTokens.toLocaleString()}</td>
+            <td className="px-2 text-right tabular-nums">{billedTokenCell(row)}</td>
             <td className="pl-2 text-right tabular-nums">{costCell(row, currency)}</td>
           </tr>
         ))}

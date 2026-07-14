@@ -10,13 +10,13 @@ export interface ModelCostRow {
   model?: string;
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  totalTokens: number;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  totalTokens: number | null;
   turns: number;
   /** Client-side cost from the pricing table, or null when pricing is unknown. */
   totalCost: number | null;
-  /** The known subtotal omits at least one positive token bucket. */
+  /** Historical usage or pricing cannot certify the known subtotal as exact. */
   costIsPartial: boolean;
 }
 
@@ -86,6 +86,7 @@ export async function buildModelCostRows(
     rows.map(async (row) => {
       const provider = row.provider ?? undefined;
       const model = row.modelId ?? undefined;
+      const exactTotal = billedTokens(row);
       let totalCost: number | null = null;
       let costIsPartial = false;
       if (provider && model) {
@@ -99,7 +100,12 @@ export async function buildModelCostRows(
           ] as const;
           let knownSubtotal = 0;
           let hasKnownRate = false;
+          costIsPartial = exactTotal === null;
           for (const [tokens, rate] of buckets) {
+            if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens < 0) {
+              costIsPartial = true;
+              continue;
+            }
             if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) {
               knownSubtotal += tokens * rate;
               hasKnownRate = true;
@@ -107,7 +113,10 @@ export async function buildModelCostRows(
               costIsPartial = true;
             }
           }
-          if (hasKnownRate || billedTokens(row) === 0) {
+          if (exactTotal === 0) {
+            totalCost = 0;
+            costIsPartial = false;
+          } else if (hasKnownRate && (!costIsPartial || knownSubtotal > 0)) {
             totalCost = knownSubtotal;
           }
         }
@@ -117,9 +126,9 @@ export async function buildModelCostRows(
         model,
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
-        cacheReadTokens: row.cacheReadTokens,
-        cacheCreationTokens: row.cacheCreationTokens,
-        totalTokens: billedTokens(row),
+        cacheReadTokens: row.cacheReadTokens ?? null,
+        cacheCreationTokens: row.cacheCreationTokens ?? null,
+        totalTokens: exactTotal,
         turns: row.turns,
         totalCost,
         costIsPartial,

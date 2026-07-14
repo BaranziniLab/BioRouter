@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { UsagePanel, formatCost, formatCostEstimate, formatTokens, modelLabel } from './UsagePanel';
+import {
+  UsagePanel,
+  formatBilledTokens,
+  formatCost,
+  formatCostEstimate,
+  formatTokens,
+  modelLabel,
+} from './UsagePanel';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 
 const dayRows: UsageReportRow[] = [
@@ -102,6 +109,31 @@ describe('formatters', () => {
   it('formats tokens with thousands separators', () => {
     expect(formatTokens(13_300_000)).toBe('13,300,000');
     expect(formatTokens(0)).toBe('0');
+    expect(formatTokens(null)).toBe('—');
+  });
+
+  it('distinguishes exact totals, known subtotals, and wholly unknown totals', () => {
+    expect(formatBilledTokens(summary().monthToDate)).toBe('33,000,000');
+    expect(
+      formatBilledTokens({
+        ...summary().monthToDate,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: null,
+        cacheCreationTokens: 5,
+        totalTokens: null,
+      })
+    ).toBe('≥125');
+    expect(
+      formatBilledTokens({
+        ...summary().monthToDate,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: null,
+        cacheCreationTokens: null,
+        totalTokens: null,
+      })
+    ).toBe('—');
   });
 
   it('formats cost, folding sub-cent and null', () => {
@@ -192,30 +224,29 @@ describe('UsagePanel', () => {
     expect(screen.queryByTestId('usage-gauge-dollars')).toBeNull();
   });
 
-  it('renders the token + dollar gauges with percents when limits are set', () => {
+  it('renders the server-provided token and dollar percentages without recomputing them', () => {
     render(
       <UsagePanel
         summary={summary({
           monthlyTokenLimit: 66_000_000,
           monthlyDollarLimit: 250,
-          tokenPercent: 50,
-          dollarPercent: 50,
+          tokenPercent: 37.5,
+          dollarPercent: 41.25,
         })}
         dayRows={dayRows}
         modelRows={modelRows}
       />
     );
     const tokenGauge = screen.getByTestId('usage-gauge-tokens');
-    // 33M / 66M = 50%.
-    expect(within(tokenGauge).getByText('(50.0%)')).toBeTruthy();
+    expect(within(tokenGauge).getByText('(37.5%)')).toBeTruthy();
     expect(within(tokenGauge).getByText(/33,000,000 \/ 66,000,000/)).toBeTruthy();
     // Fill width tracks the percent.
     const tokenFill = screen.getByTestId('usage-gauge-tokens-fill');
-    expect(tokenFill.style.width).toBe('50%');
+    expect(tokenFill.style.width).toBe('37.5%');
     expect(tokenFill).toHaveClass('bg-heat-3');
 
     const dollarGauge = screen.getByTestId('usage-gauge-dollars');
-    expect(within(dollarGauge).getByText('(50.0%)')).toBeTruthy();
+    expect(within(dollarGauge).getByText('(41.3%)')).toBeTruthy();
   });
 
   it('uses semantic danger styling and clamps an over-budget gauge', () => {
@@ -357,7 +388,7 @@ describe('UsagePanel', () => {
             hasUnpriced: true,
           },
           monthlyDollarLimit: 100,
-          dollarPercent: 12,
+          dollarPercent: null,
         })}
         dayRows={[]}
         modelRows={[]}
@@ -374,7 +405,7 @@ describe('UsagePanel', () => {
     expect(screen.queryByTestId('usage-gauge-dollars-fill')).toBeNull();
   });
 
-  it('includes cache buckets in the token gauge even if an older total omitted them', () => {
+  it('shows incomplete billed history as a lower bound and leaves the gauge unavailable', () => {
     render(
       <UsagePanel
         summary={summary({
@@ -384,10 +415,10 @@ describe('UsagePanel', () => {
             outputTokens: 200,
             cacheReadTokens: 500,
             cacheCreationTokens: 100,
-            totalTokens: 1_200,
+            totalTokens: null,
           },
           monthlyTokenLimit: 1_800,
-          tokenPercent: 66.7,
+          tokenPercent: null,
         })}
         dayRows={[]}
         modelRows={[]}
@@ -395,7 +426,40 @@ describe('UsagePanel', () => {
     );
 
     const gauge = screen.getByTestId('usage-gauge-tokens');
-    expect(within(gauge).getByText(/1,800 \/ 1,800/)).toBeTruthy();
-    expect(within(gauge).getByText('(100.0%)')).toBeTruthy();
+    expect(within(gauge).getByText(/≥1,800 \/ 1,800/)).toBeTruthy();
+    expect(
+      within(gauge).getByText(
+        'Budget percentage unavailable because billed token history is incomplete.'
+      )
+    ).toBeTruthy();
+    expect(screen.queryByTestId('usage-gauge-tokens-fill')).toBeNull();
+    expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
+  });
+
+  it('renders nullable model cache buckets as em dashes and billed tokens as a lower bound', () => {
+    const incompleteModel: UsageReportRow = {
+      date: null,
+      modelId: 'legacy-model',
+      provider: 'anthropic',
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: null,
+      cacheReadTokens: null,
+      cacheCreationTokens: 5,
+      turns: 2,
+      cost: 1.25,
+      hasUnpriced: true,
+      costExcludesCache: true,
+    };
+
+    render(<UsagePanel summary={summary()} dayRows={[]} modelRows={[incompleteModel]} />);
+
+    const row = screen.getByText('anthropic/legacy-model').closest('tr')!;
+    expect(
+      within(row)
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent)
+    ).toEqual(['anthropic/legacy-model', '2', '100', '—', '5', '20', '≥125', '≥$1.25']);
+    expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
   });
 });

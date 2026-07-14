@@ -52,13 +52,74 @@ describe('buildModelCostRows', () => {
     expect(rows[0].costIsPartial).toBe(false);
   });
 
-  it('recovers cache tokens when an older total omitted them', async () => {
+  it('preserves the backend total instead of replacing it with a bucket sum', async () => {
     const rows = await buildModelCostRows(
       [row({ totalTokens: 120 })],
       vi.fn().mockResolvedValue({ input_token_cost: 0.01, output_token_cost: 0.02 })
     );
 
-    expect(rows[0].totalTokens).toBe(470);
+    expect(rows[0].totalTokens).toBe(120);
+  });
+
+  it('keeps incomplete token buckets nullable and prices only the known subtotal', async () => {
+    const rows = await buildModelCostRows(
+      [row({ cacheReadTokens: null, cacheCreationTokens: null, totalTokens: null })],
+      vi.fn().mockResolvedValue({
+        input_token_cost: 0.01,
+        output_token_cost: 0.02,
+        cache_read_cost: 0.001,
+        cache_write_cost: 0.0125,
+      })
+    );
+
+    expect(rows[0]).toMatchObject({
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      totalTokens: null,
+      totalCost: 1.4,
+      costIsPartial: true,
+    });
+  });
+
+  it('does not forge a zero cost when every measured bucket is zero but history is incomplete', async () => {
+    const rows = await buildModelCostRows(
+      [
+        row({
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: null,
+          cacheCreationTokens: null,
+          totalTokens: null,
+        }),
+      ],
+      vi.fn().mockResolvedValue({
+        input_token_cost: 0.01,
+        output_token_cost: 0.02,
+        cache_read_cost: 0.001,
+        cache_write_cost: 0.0125,
+      })
+    );
+
+    expect(rows[0].totalCost).toBeNull();
+    expect(rows[0].costIsPartial).toBe(true);
+  });
+
+  it('keeps a certified zero billed total as an exact zero cost', async () => {
+    const rows = await buildModelCostRows(
+      [
+        row({
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: null,
+          cacheCreationTokens: null,
+          totalTokens: 0,
+        }),
+      ],
+      vi.fn().mockResolvedValue({ input_token_cost: 0.01, output_token_cost: 0.02 })
+    );
+
+    expect(rows[0].totalCost).toBe(0);
+    expect(rows[0].costIsPartial).toBe(false);
   });
 
   it('never converts unknown or partial rows into exact legacy costs', () => {

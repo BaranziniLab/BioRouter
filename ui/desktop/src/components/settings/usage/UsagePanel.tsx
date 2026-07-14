@@ -1,5 +1,9 @@
 import type { UsageReportRow, UsageSummaryResponse, UsageTotals } from '../../../api';
-import { billedTokens, cacheTokens as combinedCacheTokens } from '../../../utils/usageAccounting';
+import {
+  billedTokens,
+  cacheTokens as combinedCacheTokens,
+  knownBilledTokens,
+} from '../../../utils/usageAccounting';
 
 export interface UsagePanelProps {
   summary: UsageSummaryResponse;
@@ -7,8 +11,8 @@ export interface UsagePanelProps {
   modelRows: UsageReportRow[];
 }
 
-export function formatTokens(n: number): string {
-  return n.toLocaleString('en-US');
+export function formatTokens(n: number | null | undefined): string {
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n.toLocaleString('en-US') : '—';
 }
 
 export function formatCost(cost: number | null | undefined): string {
@@ -30,8 +34,15 @@ export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): s
 
 export function cacheTokens(
   row: Pick<UsageReportRow, 'cacheReadTokens' | 'cacheCreationTokens'>
-): number {
+): number | null {
   return combinedCacheTokens(row);
+}
+
+export function formatBilledTokens(row: UsageReportRow | UsageTotals): string {
+  const exact = billedTokens(row);
+  if (exact !== null) return formatTokens(exact);
+  const knownSubtotal = knownBilledTokens(row);
+  return knownSubtotal > 0 ? `≥${formatTokens(knownSubtotal)}` : '—';
 }
 
 function costIsPartial(row: Pick<UsageReportRow, 'hasUnpriced' | 'costExcludesCache'>) {
@@ -44,20 +55,40 @@ function rowHasUnknownCost(
   return row.hasUnpriced || (row.turns > 0 && formatCost(row.cost) === '—');
 }
 
-function usageTotal(row: UsageReportRow | UsageTotals) {
-  return billedTokens(row);
+function hasIncompleteTokens(row: UsageReportRow | UsageTotals): boolean {
+  return (
+    billedTokens(row) === null || row.cacheReadTokens == null || row.cacheCreationTokens == null
+  );
+}
+
+function showsCacheBuckets(row: UsageReportRow | UsageTotals): boolean {
+  return (
+    row.cacheReadTokens == null ||
+    row.cacheCreationTokens == null ||
+    row.cacheReadTokens > 0 ||
+    row.cacheCreationTokens > 0
+  );
+}
+
+function chartTokens(row: UsageReportRow | UsageTotals): number {
+  return billedTokens(row) ?? knownBilledTokens(row);
+}
+
+function serverPercent(percent: number | null | undefined): number | null {
+  return typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 ? percent : null;
 }
 
 export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
   const mtd = summary.monthToDate;
-  const mtdTokens = usageTotal(mtd);
-  const maxDayTotal = Math.max(1, ...dayRows.map(usageTotal));
+  const maxDayTotal = Math.max(1, ...dayRows.map(chartTokens));
   const anyUnpriced =
     rowHasUnknownCost(mtd) || dayRows.some(rowHasUnknownCost) || modelRows.some(rowHasUnknownCost);
   const anyCache =
-    cacheTokens(mtd) > 0 ||
-    dayRows.some((row) => cacheTokens(row) > 0) ||
-    modelRows.some((row) => cacheTokens(row) > 0);
+    showsCacheBuckets(mtd) || dayRows.some(showsCacheBuckets) || modelRows.some(showsCacheBuckets);
+  const anyIncompleteTokens =
+    hasIncompleteTokens(mtd) ||
+    dayRows.some(hasIncompleteTokens) ||
+    modelRows.some(hasIncompleteTokens);
   const anyCostExcludesCache =
     mtd.costExcludesCache ||
     dayRows.some((row) => row.costExcludesCache) ||
@@ -65,15 +96,26 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
   const mtdCostPartial = costIsPartial(mtd);
   const knownMtdCost =
     mtd.cost != null && Number.isFinite(mtd.cost) && mtd.cost >= 0 ? mtd.cost : null;
-  const tokenPercent =
-    summary.monthlyTokenLimit != null && summary.monthlyTokenLimit > 0
-      ? (mtdTokens / summary.monthlyTokenLimit) * 100
-      : null;
-  const dollarComplete = knownMtdCost !== null && !mtdCostPartial;
-  const dollarPercent =
-    dollarComplete && summary.monthlyDollarLimit != null && summary.monthlyDollarLimit > 0
-      ? (knownMtdCost / summary.monthlyDollarLimit) * 100
-      : null;
+  const tokenPercent = serverPercent(summary.tokenPercent);
+  const dollarPercent = serverPercent(summary.dollarPercent);
+  const tokenUnavailableReason =
+    tokenPercent !== null
+      ? null
+      : summary.monthlyTokenLimit != null && summary.monthlyTokenLimit <= 0
+        ? 'Budget percentage unavailable for a zero token limit.'
+        : billedTokens(mtd) === null
+          ? 'Budget percentage unavailable because billed token history is incomplete.'
+          : 'Budget percentage unavailable.';
+  const dollarUnavailableReason =
+    dollarPercent !== null
+      ? null
+      : summary.monthlyDollarLimit != null && summary.monthlyDollarLimit <= 0
+        ? 'Budget percentage unavailable for a zero dollar limit.'
+        : knownMtdCost === null
+          ? 'Budget percentage unavailable because cost is unknown.'
+          : mtdCostPartial
+            ? 'Budget percentage unavailable because the known cost is only a partial subtotal.'
+            : 'Budget percentage unavailable.';
 
   return (
     <div className="flex flex-col gap-5" data-testid="usage-panel">
@@ -83,13 +125,13 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
           <p className="text-xs text-text-muted">{summary.month}</p>
         </div>
         <p className="mt-0.5 text-xs text-text-muted">
-          {formatTokens(mtdTokens)} billed tokens
+          {formatBilledTokens(mtd)} billed tokens
           {' · '}
           {formatCostEstimate(mtd.cost, mtdCostPartial)}
           {' · '}
           {mtd.turns.toLocaleString('en-US')} turns
         </p>
-        {cacheTokens(mtd) > 0 && (
+        {showsCacheBuckets(mtd) && (
           <p className="mt-0.5 text-xs text-text-muted" data-testid="usage-mtd-cache">
             {formatTokens(mtd.cacheReadTokens)} cache read
             {' · '}
@@ -101,12 +143,10 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
           <UsageGauge
             testid="usage-gauge-tokens"
             label="Token budget"
-            used={formatTokens(mtdTokens)}
+            used={formatBilledTokens(mtd)}
             limit={formatTokens(summary.monthlyTokenLimit)}
             percent={tokenPercent}
-            unavailableReason={
-              tokenPercent === null ? 'Budget percentage unavailable for a zero token limit.' : null
-            }
+            unavailableReason={tokenUnavailableReason}
           />
         )}
         {summary.monthlyDollarLimit != null && (
@@ -116,15 +156,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             used={formatCostEstimate(mtd.cost, mtdCostPartial)}
             limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
             percent={dollarPercent}
-            unavailableReason={
-              dollarComplete
-                ? dollarPercent === null
-                  ? 'Budget percentage unavailable for a zero dollar limit.'
-                  : null
-                : knownMtdCost === null
-                  ? 'Budget percentage unavailable because cost is unknown.'
-                  : 'Budget percentage unavailable because the known cost is only a partial subtotal.'
-            }
+            unavailableReason={dollarUnavailableReason}
           />
         )}
       </div>
@@ -136,9 +168,14 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
         ) : (
           <div className="flex flex-col gap-1" data-testid="usage-day-bars">
             {dayRows.map((row) => {
-              const total = usageTotal(row);
+              const total = chartTokens(row);
+              const totalLabel = formatBilledTokens(row);
               return (
-                <div key={row.date} className="flex min-h-10 items-center gap-2 text-xs">
+                <div
+                  key={row.date}
+                  className="flex min-h-10 items-center gap-2 text-xs"
+                  aria-label={`${row.date}: ${totalLabel} billed tokens`}
+                >
                   <span className="w-24 shrink-0 text-text-muted tabular-nums">{row.date}</span>
                   <div className="h-4 flex-1 overflow-hidden rounded-sm bg-heat-0">
                     <div
@@ -148,7 +185,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
                     />
                   </div>
                   <span className="w-28 shrink-0 text-right text-text-default tabular-nums">
-                    {formatTokens(total)} billed
+                    {totalLabel} billed
                   </span>
                   {anyCache && (
                     <span
@@ -214,9 +251,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
                     <td className="px-2 text-right tabular-nums">
                       {formatTokens(row.outputTokens)}
                     </td>
-                    <td className="px-2 text-right tabular-nums">
-                      {formatTokens(usageTotal(row))}
-                    </td>
+                    <td className="px-2 text-right tabular-nums">{formatBilledTokens(row)}</td>
                     <td className="pl-2 text-right tabular-nums">
                       {formatCostEstimate(row.cost, costIsPartial(row))}
                     </td>
@@ -228,17 +263,24 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
         )}
       </div>
 
+      {anyIncompleteTokens && (
+        <p className="text-xs text-text-muted" data-testid="usage-incomplete-note" role="status">
+          Some historical token buckets are incomplete. Values marked ≥ are known subtotals; — means
+          no trustworthy total is available.
+        </p>
+      )}
+
       {anyUnpriced && (
         <p className="text-xs text-text-muted" data-testid="usage-unpriced-note">
-          Some models have no known pricing. Unknown rows show — and mixed totals show ≥ because
-          only the known subtotal can be reported.
+          Some usage could not be fully priced. Unknown costs show —; mixed or incomplete totals
+          show ≥ because only the known subtotal can be reported.
         </p>
       )}
 
       {anyCostExcludesCache && (
         <p className="text-xs text-text-muted" data-testid="usage-cache-excluded-note">
-          Some priced models have no cache pricing. Their cache tokens remain in billed token
-          totals, but their cache cost is excluded, so the shown cost is a lower bound.
+          Some cache cost is unavailable because a model has no cache rate or historical cache
+          accounting is incomplete. The shown cost is a lower bound.
         </p>
       )}
     </div>
