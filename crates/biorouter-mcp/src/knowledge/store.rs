@@ -24,6 +24,15 @@ pub struct PageContent {
     pub frontmatter: serde_yaml::Value,
 }
 
+pub(crate) fn logical_path(prefix: &str, relative: &Path) -> String {
+    let relative = relative
+        .iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{prefix}/{relative}")
+}
+
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
     let knowledge_dir = kb_root.join("knowledge");
     if !knowledge_dir.exists() {
@@ -42,8 +51,7 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
         if p.is_dir() {
             walk_md(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("knowledge/{rel}");
+            let logical = logical_path("knowledge", p.strip_prefix(base).unwrap());
             if let Some(pre) = prefix {
                 if !logical.starts_with(pre) {
                     continue;
@@ -341,8 +349,7 @@ fn list_md_files_under(
         if p.is_dir() {
             list_md_files_under(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("{prefix}/{rel}");
+            let logical = logical_path(prefix, p.strip_prefix(base).unwrap());
             out.push((logical, p));
         }
     }
@@ -402,6 +409,15 @@ fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use crate::knowledge::service::KnowledgeService;
+
+    #[test]
+    fn logical_paths_always_use_forward_slashes() {
+        let relative = Path::new("concepts").join("a.md");
+        assert_eq!(
+            logical_path("knowledge", &relative),
+            "knowledge/concepts/a.md"
+        );
+    }
 
     fn fresh() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();

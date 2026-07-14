@@ -843,6 +843,25 @@ mod tests {
         }
     }
 
+    async fn collect_output_until(
+        jobs: &BackgroundJobs,
+        id: &str,
+        needle: &str,
+        max_ms: u64,
+    ) -> String {
+        let job = jobs.job(id).await.unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_millis(max_ms);
+        let mut collected = String::new();
+        while Instant::now() <= deadline {
+            collected.push_str(&BackgroundJobs::drain_new_output(&job).await);
+            if collected.contains(needle) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        collected
+    }
+
     #[tokio::test]
     async fn start_lists_and_completes_with_output() {
         let jobs = new_jobs();
@@ -902,16 +921,17 @@ mod tests {
     #[tokio::test]
     async fn output_is_incremental() {
         let jobs = new_jobs();
-        let id = jobs
-            .spawn("echo first; sleep 0.3; echo second", None, None)
-            .await
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let first = BackgroundJobs::drain_new_output(&jobs.job(&id).await.unwrap()).await;
+        let command = if cfg!(windows) {
+            "Write-Output first; Start-Sleep -Milliseconds 2000; Write-Output second"
+        } else {
+            "echo first; sleep 2; echo second"
+        };
+        let id = jobs.spawn(command, None, None).await.unwrap();
+        let first = collect_output_until(&jobs, &id, "first", 5000).await;
         assert!(first.contains("first"), "first read: {first}");
         assert!(!first.contains("second"), "second leaked early: {first}");
-        wait_terminal(&jobs, &id, 5000).await;
-        let second = BackgroundJobs::drain_new_output(&jobs.job(&id).await.unwrap()).await;
+        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
+        let second = collect_output_until(&jobs, &id, "second", 1000).await;
         assert!(second.contains("second"), "second read: {second}");
         assert!(!second.contains("first"), "first duplicated: {second}");
     }

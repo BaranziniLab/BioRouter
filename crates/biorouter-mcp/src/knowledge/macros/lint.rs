@@ -7,7 +7,7 @@ use crate::knowledge::{
     git::GitRepo,
     paths, raw,
     service::KnowledgeService,
-    store::split_frontmatter,
+    store::{logical_path, split_frontmatter},
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
@@ -153,8 +153,7 @@ fn collect_pages(base: &Path, dir: &Path, out: &mut HashMap<String, String>) -> 
         if p.is_dir() {
             collect_pages(base, &p, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("knowledge/{rel}");
+            let logical = logical_path("knowledge", p.strip_prefix(base).unwrap());
             let body = std::fs::read_to_string(&p)?;
             out.insert(logical, body);
         }
