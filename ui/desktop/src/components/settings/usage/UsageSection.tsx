@@ -5,6 +5,7 @@ import {
   UsageReportRow,
   UsageSummaryResponse,
 } from '../../../api';
+import { Button } from '../../ui/button';
 import { Skeleton } from '../../ui/skeleton';
 import { UsagePanel } from './UsagePanel';
 
@@ -77,18 +78,16 @@ export default function UsageSection() {
         </div>
         <div className="flex gap-1" role="group" aria-label="Usage range">
           {RANGES.map((r) => (
-            <button
+            <Button
               key={r.days}
               type="button"
+              size="xs"
+              variant={days === r.days ? 'secondary' : 'ghost'}
+              aria-pressed={days === r.days}
               onClick={() => setDays(r.days)}
-              className={`px-2 py-1 text-xs rounded-md border ${
-                days === r.days
-                  ? 'border-text-default text-text-default'
-                  : 'border-border-subtle text-text-muted hover:text-text-default'
-              }`}
             >
               {r.label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>

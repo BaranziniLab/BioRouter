@@ -102,9 +102,9 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             {dayRows.map((row) => (
               <div key={row.date} className="flex items-center gap-2 text-xs">
                 <span className="w-24 shrink-0 text-text-muted tabular-nums">{row.date}</span>
-                <div className="flex-1 h-4 bg-background-muted rounded-sm overflow-hidden">
+                <div className="flex-1 h-4 bg-heat-0 rounded-sm overflow-hidden">
                   <div
-                    className="h-full bg-text-default/70 rounded-sm"
+                    className="h-full bg-heat-3 rounded-sm"
                     style={{ width: `${Math.max(2, (row.totalTokens / maxDayTotal) * 100)}%` }}
                     data-testid="usage-day-bar-fill"
                   />
@@ -128,36 +128,39 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
           <p className="text-xs text-text-muted">No usage in this range.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs" data-testid="usage-model-table">
+            <table className="w-full border-collapse text-xs" data-testid="usage-model-table">
               <thead>
-                <tr className="text-text-muted text-left">
-                  <th className="font-medium py-1 pr-2">Model</th>
-                  <th className="font-medium py-1 px-2 text-right">Turns</th>
-                  <th className="font-medium py-1 px-2 text-right">Input</th>
-                  <th className="font-medium py-1 px-2 text-right">Output</th>
-                  {anyCache && <th className="font-medium py-1 px-2 text-right">Cache</th>}
-                  <th className="font-medium py-1 pl-2 text-right">Cost</th>
+                <tr className="h-8 border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-text-muted">
+                  <th className="pr-2 font-medium">Model</th>
+                  <th className="px-2 text-right font-medium">Turns</th>
+                  <th className="px-2 text-right font-medium">Input</th>
+                  <th className="px-2 text-right font-medium">Output</th>
+                  {anyCache && <th className="px-2 text-right font-medium">Cache</th>}
+                  <th className="pl-2 text-right font-medium">Cost</th>
                 </tr>
               </thead>
               <tbody>
                 {modelRows.map((row, i) => (
-                  <tr key={`${modelLabel(row)}-${i}`} className="text-text-default">
-                    <td className="py-1 pr-2">{modelLabel(row)}</td>
-                    <td className="py-1 px-2 text-right tabular-nums">
+                  <tr
+                    key={`${modelLabel(row)}-${i}`}
+                    className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
+                  >
+                    <td className="pr-2 font-mono">{modelLabel(row)}</td>
+                    <td className="px-2 text-right tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="py-1 px-2 text-right tabular-nums">
+                    <td className="px-2 text-right tabular-nums">
                       {formatTokens(row.inputTokens)}
                     </td>
-                    <td className="py-1 px-2 text-right tabular-nums">
+                    <td className="px-2 text-right tabular-nums">
                       {formatTokens(row.outputTokens)}
                     </td>
                     {anyCache && (
-                      <td className="py-1 px-2 text-right tabular-nums">
+                      <td className="px-2 text-right tabular-nums">
                         {formatTokens(cacheTokens(row))}
                       </td>
                     )}
-                    <td className="py-1 pl-2 text-right tabular-nums">{formatCost(row.cost)}</td>
+                    <td className="pl-2 text-right tabular-nums">{formatCost(row.cost)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -203,16 +206,16 @@ function UsageGauge({ testid, label, used, limit, percent, unavailable }: UsageG
         <span className="text-text-default tabular-nums">
           {used} / {limit}
           {!unavailable && percent != null && (
-            <span className={`ml-1 ${over ? 'text-red-500' : 'text-text-muted'}`}>
+            <span className={`ml-1 ${over ? 'text-text-danger' : 'text-text-muted'}`}>
               ({pct.toFixed(1)}%)
             </span>
           )}
           {unavailable && <span className="ml-1 text-text-muted">(cost unavailable)</span>}
         </span>
       </div>
-      <div className="h-2 mt-1 bg-background-muted rounded-full overflow-hidden">
+      <div className="h-2 mt-1 bg-heat-0 rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full ${over ? 'bg-red-500' : 'bg-text-default/70'}`}
+          className={`h-full rounded-full ${over ? 'bg-background-danger' : 'bg-heat-3'}`}
           style={{ width: `${clamped}%` }}
           data-testid={`${testid}-fill`}
         />
