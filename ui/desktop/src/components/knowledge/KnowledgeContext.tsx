@@ -53,10 +53,7 @@ export function KnowledgeProvider({
   const [bases, setBases] = useState<Manifest[]>([]);
   const [loading, setLoading] = useState(true);
   const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
-  const hiddenStorageKey = useMemo(
-    () => hiddenStorageKeyForSession(sessionId),
-    [sessionId]
-  );
+  const hiddenStorageKey = useMemo(() => hiddenStorageKeyForSession(sessionId), [sessionId]);
   const [activeKbId, setActiveKbIdState] = useState<string | null>(() =>
     localStorage.getItem(storageKeyForSession(sessionId))
   );
@@ -67,7 +64,9 @@ export function KnowledgeProvider({
         return [];
       }
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === 'string')
+        : [];
     } catch {
       return [];
     }
@@ -95,21 +94,30 @@ export function KnowledgeProvider({
     [hiddenStorageKey, sessionId, storageKey]
   );
 
-  const setActiveKbId = useCallback((id: string | null) => {
-    syncSelection(id, hiddenKbIds);
-  }, [hiddenKbIds, syncSelection]);
+  const setActiveKbId = useCallback(
+    (id: string | null) => {
+      syncSelection(id, hiddenKbIds);
+    },
+    [hiddenKbIds, syncSelection]
+  );
 
-  const setHiddenKbIds = useCallback((ids: string[]) => {
-    const nextIds = Array.from(new Set(ids)).sort();
-    syncSelection(activeKbId, nextIds);
-  }, [activeKbId, syncSelection]);
+  const setHiddenKbIds = useCallback(
+    (ids: string[]) => {
+      const nextIds = Array.from(new Set(ids)).sort();
+      syncSelection(activeKbId, nextIds);
+    },
+    [activeKbId, syncSelection]
+  );
 
-  const toggleKbHidden = useCallback((id: string) => {
-    const nextIds = hiddenKbIds.includes(id)
-      ? hiddenKbIds.filter((hiddenId) => hiddenId !== id)
-      : [...hiddenKbIds, id];
-    setHiddenKbIds(nextIds);
-  }, [hiddenKbIds, setHiddenKbIds]);
+  const toggleKbHidden = useCallback(
+    (id: string) => {
+      const nextIds = hiddenKbIds.includes(id)
+        ? hiddenKbIds.filter((hiddenId) => hiddenId !== id)
+        : [...hiddenKbIds, id];
+      setHiddenKbIds(nextIds);
+    },
+    [hiddenKbIds, setHiddenKbIds]
+  );
 
   const hideAllKnowledgeBases = useCallback(() => {
     setHiddenKbIds(bases.map((base) => base.id));

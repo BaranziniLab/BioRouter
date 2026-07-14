@@ -2,14 +2,54 @@ use crate::conversation::message::{Message, MessageContent, MessageMetadata};
 use rmcp::model::Role;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 use thiserror::Error;
 use utoipa::ToSchema;
 
 pub mod message;
+pub mod normalize;
+pub mod tool_preview;
 pub mod tool_result_serde;
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
-pub struct Conversation(Vec<Message>);
+pub use normalize::{ConversationNormalizer, SharedNormalizer};
+
+/// The message history of one session.
+///
+/// BR-56: the transcript is held behind an `Arc` and mutated copy-on-write
+/// (`Arc::make_mut`), so `clone()` is a refcount bump rather than a deep copy of
+/// every message. The agent loop clones the conversation several times per turn
+/// (to hand it to `fix_conversation`, to MOIM injection, to the compaction
+/// check, to the reply route's stream task); with a plain `Vec<Message>` each of
+/// those copied every tool result in the session — the single largest per-turn
+/// allocation in a long session. Only a writer (`push`/`extend`/`pop`/…) pays for
+/// a copy, and only while another handle is alive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conversation(Arc<Vec<Message>>);
+
+impl<'schema> ToSchema<'schema> for Conversation {
+    fn schema() -> (
+        &'schema str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        (
+            "Conversation",
+            utoipa::openapi::schema::Array::new(utoipa::openapi::Ref::from_schema_name("Message"))
+                .into(),
+        )
+    }
+}
+
+impl Serialize for Conversation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_ref().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Conversation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<Message>::deserialize(deserializer).map(|messages| Self(Arc::new(messages)))
+    }
+}
 
 #[derive(Error, Debug)]
 #[error("invalid conversation: {reason}")]
@@ -30,7 +70,7 @@ impl Conversation {
     where
         I: IntoIterator<Item = Message>,
     {
-        Self(messages.into_iter().collect())
+        Self(Arc::new(messages.into_iter().collect()))
     }
 
     pub fn empty() -> Self {
@@ -41,9 +81,21 @@ impl Conversation {
         &self.0
     }
 
+    /// Take ownership of the messages, avoiding a copy when this is the only
+    /// handle to the transcript (BR-56). A caller that still holds another clone
+    /// pays for the copy-on-write here, exactly as `Arc::make_mut` would.
+    pub fn into_messages(self) -> Vec<Message> {
+        Arc::try_unwrap(self.0).unwrap_or_else(|shared| shared.as_ref().clone())
+    }
+
+    /// The copy-on-write handle used by every mutating method.
+    fn messages_mut(&mut self) -> &mut Vec<Message> {
+        Arc::make_mut(&mut self.0)
+    }
+
     pub fn push(&mut self, message: Message) {
-        if let Some(last) = self
-            .0
+        let messages = self.messages_mut();
+        if let Some(last) = messages
             .last_mut()
             .filter(|m| m.id.is_some() && m.id == message.id)
         {
@@ -58,7 +110,7 @@ impl Conversation {
                 }
             }
         } else {
-            self.0.push(message);
+            messages.push(message);
         }
     }
 
@@ -92,15 +144,15 @@ impl Conversation {
     }
 
     pub fn pop(&mut self) -> Option<Message> {
-        self.0.pop()
+        self.messages_mut().pop()
     }
 
     pub fn truncate(&mut self, len: usize) {
-        self.0.truncate(len);
+        self.messages_mut().truncate(len);
     }
 
     pub fn clear(&mut self) {
-        self.0.clear();
+        self.messages_mut().clear();
     }
 
     pub fn filtered_messages<F>(&self, filter: F) -> Vec<Message>
@@ -123,7 +175,7 @@ impl Conversation {
     }
 
     fn validate(self) -> Result<Self, InvalidConversation> {
-        let (_messages, issues) = fix_messages(self.0.clone());
+        let (_messages, issues) = fix_messages(self.0.as_ref().clone());
         if !issues.is_empty() {
             let reason = issues.join("\n");
             Err(InvalidConversation {
@@ -147,7 +199,7 @@ impl IntoIterator for Conversation {
     type IntoIter = std::vec::IntoIter<Message>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.into_messages().into_iter()
     }
 }
 impl<'a> IntoIterator for &'a Conversation {
@@ -159,58 +211,100 @@ impl<'a> IntoIterator for &'a Conversation {
     }
 }
 
+/// A message's place in the original conversation: either the *n*th agent-visible
+/// message (normalization may rewrite it) or a non-visible message that passes
+/// through untouched. Shared by [`fix_conversation`] and the incremental
+/// normalizer (BR-56), which caches the shadow map of the frozen prefix.
+#[derive(Debug, Clone)]
+pub(crate) enum MessageSlot {
+    /// Index into the *input* agent-visible message list.
+    Visible(usize),
+    /// Non-visible messages pass through unchanged.
+    NonVisible(Message),
+}
+
+/// Split a message list into its shadow map and the agent-visible messages the
+/// fix pipeline actually operates on. Moves rather than clones (BR-56).
+pub(crate) fn split_slots(messages: Vec<Message>) -> (Vec<MessageSlot>, Vec<Message>) {
+    let mut agent_visible = Vec::new();
+    let mut slots = Vec::with_capacity(messages.len());
+    for message in messages {
+        if message.metadata.agent_visible {
+            slots.push(MessageSlot::Visible(agent_visible.len()));
+            agent_visible.push(message);
+        } else {
+            slots.push(MessageSlot::NonVisible(message));
+        }
+    }
+    (slots, agent_visible)
+}
+
+/// Rebuild the full message list from the shadow map and the *fixed* visible
+/// messages. A visible slot whose index no longer exists (the pipeline removed
+/// or merged messages, so the fixed list is shorter) drops out.
+pub(crate) fn reassemble(slots: Vec<MessageSlot>, fixed_visible: Vec<Message>) -> Vec<Message> {
+    let mut fixed: Vec<Option<Message>> = fixed_visible.into_iter().map(Some).collect();
+    slots
+        .into_iter()
+        .filter_map(|slot| match slot {
+            // Slot indices are unique, so taking (rather than cloning) is
+            // equivalent — and never copies a message body.
+            MessageSlot::Visible(idx) => fixed.get_mut(idx).and_then(Option::take),
+            MessageSlot::NonVisible(msg) => Some(msg),
+        })
+        .collect()
+}
+
 /// Fix a conversation that we're about to send to an LLM. So the last and first
 /// messages should always be from the user.
 pub fn fix_conversation(conversation: Conversation) -> (Conversation, Vec<String>) {
-    let all_messages = conversation.messages();
-
-    // Create a shadow map: track each message as either Visible or NonVisible with its index
-    enum MessageSlot {
-        Visible(usize),      // Index into agent_visible_messages
-        NonVisible(Message), // Non-visible messages pass through unchanged
-    }
-
-    let mut agent_visible_messages = Vec::new();
-    let shadow_map: Vec<MessageSlot> = all_messages
-        .iter()
-        .map(|msg| {
-            if msg.metadata.agent_visible {
-                let idx = agent_visible_messages.len();
-                agent_visible_messages.push(msg.clone());
-                MessageSlot::Visible(idx)
-            } else {
-                MessageSlot::NonVisible(msg.clone())
-            }
-        })
-        .collect();
-
-    // Fix only the agent-visible messages
+    let (slots, agent_visible_messages) = split_slots(conversation.into_messages());
     let (fixed_visible, issues) = fix_messages(agent_visible_messages);
-
-    // Reconstruct using shadow map: replace Visible slots with fixed messages
-    let final_messages: Vec<Message> = shadow_map
-        .into_iter()
-        .filter_map(|slot| match slot {
-            MessageSlot::Visible(idx) => fixed_visible.get(idx).cloned(),
-            MessageSlot::NonVisible(msg) => Some(msg),
-        })
-        .collect();
-
-    (Conversation::new_unvalidated(final_messages), issues)
+    (
+        Conversation::new_unvalidated(reassemble(slots, fixed_visible)),
+        issues,
+    )
 }
 
 fn fix_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
-    [
-        merge_text_content_items,
-        trim_assistant_text_whitespace,
-        remove_empty_messages,
-        fix_tool_calling,
-        merge_consecutive_messages,
-        fix_lead_trail,
-        populate_if_empty,
-    ]
-    .into_iter()
-    .fold(
+    let (messages, mut issues) = fix_messages_core(messages);
+    let (messages, edge_issues) = fix_messages_edges(messages);
+    issues.extend(edge_issues);
+    (messages, issues)
+}
+
+/// The body passes. Every one of them is *segment-decomposable* given a clean cut
+/// (no tool request in the prefix answered in the suffix): running them over
+/// `prefix ++ suffix` gives the same result as running them over each half and
+/// re-running [`merge_consecutive_messages`] over the join. That is what lets the
+/// incremental normalizer (BR-56) skip the prefix entirely.
+fn fix_messages_core(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
+    run_passes(
+        messages,
+        [
+            merge_text_content_items,
+            trim_assistant_text_whitespace,
+            remove_empty_messages,
+            fix_tool_calling,
+            merge_consecutive_messages,
+        ],
+    )
+}
+
+/// The end passes: they only look at the head and the tail of the whole list, so
+/// they must run once, over the *complete* message list.
+fn fix_messages_edges(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
+    run_passes(messages, [fix_lead_trail, populate_if_empty])
+}
+
+/// One normalization pass: message list in, fixed list + issues out.
+type FixPass = fn(Vec<Message>) -> (Vec<Message>, Vec<String>);
+
+fn run_passes<const N: usize>(
+    messages: Vec<Message>,
+    passes: [FixPass; N],
+) -> (Vec<Message>, Vec<String>) {
+    passes.into_iter().fold(
         (messages, Vec::new()),
         |(msgs, mut all_issues), processor| {
             let (new_msgs, issues) = processor(msgs);
@@ -505,6 +599,15 @@ mod tests {
     use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
     use rmcp::model::{CallToolRequestParams, Role};
     use rmcp::object;
+
+    #[test]
+    fn conversation_openapi_schema_is_a_message_array() {
+        let (_, schema) = <Conversation as utoipa::ToSchema>::schema();
+        let schema = serde_json::to_value(schema).unwrap();
+
+        assert_eq!(schema["type"], "array");
+        assert_eq!(schema["items"]["$ref"], "#/components/schemas/Message");
+    }
 
     macro_rules! assert_has_issues_unordered {
         ($fixed:expr, $issues:expr, $($expected:expr),+ $(,)?) => {

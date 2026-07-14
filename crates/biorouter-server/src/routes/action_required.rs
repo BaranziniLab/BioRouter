@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use biorouter::agents::ConfirmationOutcome;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use serde::{Deserialize, Serialize};
@@ -21,12 +22,25 @@ fn default_principal_type() -> PrincipalType {
     PrincipalType::Tool
 }
 
+/// Deliver a tool-permission decision to the prompt that is waiting for it.
+///
+/// **Idempotent** (BR-62). The decision is routed by tool request id to that
+/// prompt's own channel, so a decision for an id nobody is waiting on — a
+/// double-clicked Allow, a card the user answered after the prompt expired or the
+/// turn was cancelled, a stale client replaying an old confirmation — is dropped
+/// rather than applied to whatever tool call happens to be pending now. (Before
+/// BR-62 confirmations went to a single per-agent channel, so a late "allow"
+/// really could approve an unrelated later tool call.)
+///
+/// Both outcomes are a 200: a duplicate click is a no-op, not a failure. The
+/// `status` field reports which happened — `delivered` when a live prompt took
+/// the decision, `unknown` when nothing was waiting on that id.
 #[utoipa::path(
     post,
     path = "/action-required/tool-confirmation",
     request_body = ConfirmToolActionRequest,
     responses(
-        (status = 200, description = "Tool confirmation action is confirmed", body = Value),
+        (status = 200, description = "Decision processed; `status` is `delivered` or `unknown`", body = Value),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 500, description = "Internal server error")
     )
@@ -43,7 +57,7 @@ pub async fn confirm_tool_action(
         _ => Permission::DenyOnce,
     };
 
-    agent
+    let outcome = agent
         .handle_confirmation(
             request.id.clone(),
             PermissionConfirmation {
@@ -53,7 +67,12 @@ pub async fn confirm_tool_action(
         )
         .await;
 
-    Ok(Json(Value::Object(serde_json::Map::new())))
+    let status = match outcome {
+        ConfirmationOutcome::Delivered => "delivered",
+        ConfirmationOutcome::Unknown => "unknown",
+    };
+
+    Ok(Json(serde_json::json!({ "status": status })))
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

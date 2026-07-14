@@ -24,7 +24,10 @@ export const kindColor: Record<Exclude<PageKind, 'source'>, string> = {
   flag: '#d48282',
 };
 
-export function nodeFill(node: { kind: PageKind; credibility_tier?: CredibilityTier | null }): string {
+export function nodeFill(node: {
+  kind: PageKind;
+  credibility_tier?: CredibilityTier | null;
+}): string {
   if (node.kind === 'source' && node.credibility_tier) {
     return credColor[node.credibility_tier];
   }

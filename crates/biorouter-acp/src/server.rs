@@ -317,6 +317,7 @@ impl BioRouterAcpAgent {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let provider = create(&provider_name, model_config).await?;
         let biorouter_mode = config
@@ -472,6 +473,7 @@ impl BioRouterAcpAgent {
                     tool_name,
                     arguments,
                     prompt,
+                    ..
                 } = &action_required.data
                 {
                     self.handle_tool_permission_request(
@@ -928,7 +930,10 @@ impl BioRouterAcpAgent {
             id: session_id.clone(),
             schedule_id: None,
             max_turns: None,
+            max_tool_calls: None,
+            budget: None,
             retry_config: None,
+            reasoning_effort: None,
         };
 
         let mut stream = self

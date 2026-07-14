@@ -32,7 +32,13 @@ const claudeMetadata: ProviderMetadata = {
       name: 'claude-opus-4-6',
       context_limit: 1_000_000,
       supports_vision: true,
-      supported_input_mime_types: ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'],
+      supported_input_mime_types: [
+        'image/png',
+        'image/jpeg',
+        'image/jpg',
+        'image/gif',
+        'image/webp',
+      ],
     },
     { name: 'claude-sonnet-4-20250514', context_limit: 200_000, supports_vision: true },
   ],
@@ -75,8 +81,8 @@ describe('model vision resolution', () => {
   });
 
   it('resolves structured input MIME types through provider aliases', () => {
-    expect(
-      modelSupportedInputMimeTypes(claudeMetadata, 'us.anthropic.claude-opus-4-6-v1')
-    ).toEqual(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']);
+    expect(modelSupportedInputMimeTypes(claudeMetadata, 'us.anthropic.claude-opus-4-6-v1')).toEqual(
+      ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp']
+    );
   });
 });

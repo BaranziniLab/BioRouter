@@ -272,10 +272,18 @@ describe('collectArtifactsFromMessages', () => {
   it('keeps a dashboard the user refines in a LATER turn as its own entry', () => {
     const messages: Message[] = [
       dashboardRequest('d1'),
-      dashboardResponse('d1', 'ui://dashboard/orbit-report', '<html><body>version one</body></html>'),
+      dashboardResponse(
+        'd1',
+        'ui://dashboard/orbit-report',
+        '<html><body>version one</body></html>'
+      ),
       userTurn('make the title bigger'),
       dashboardRequest('d2'),
-      dashboardResponse('d2', 'ui://dashboard/orbit-report', '<html><body>version two</body></html>'),
+      dashboardResponse(
+        'd2',
+        'ui://dashboard/orbit-report',
+        '<html><body>version two</body></html>'
+      ),
     ];
 
     expect(collectArtifactsFromMessages(messages)).toHaveLength(2);

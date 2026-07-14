@@ -305,7 +305,8 @@ describe('fileArtifactPathsFromToolCall — shell', () => {
 
 describe('withHostTheme', () => {
   it('injects the host theme right after <head> so it runs before the figure runtime', () => {
-    const html = '<!doctype html><html><head><script>/*common*/</script></head><body></body></html>';
+    const html =
+      '<!doctype html><html><head><script>/*common*/</script></head><body></body></html>';
     const out = withHostTheme(html, 'light');
     expect(out).toContain('<head><script>window.__BR_VIZ_HOST_THEME__="light";</script>');
     // ...and it precedes the figure's own runtime script.

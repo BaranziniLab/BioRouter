@@ -23,6 +23,8 @@ interface UseChatStreamReturn {
   ) => Promise<void>;
   setWorkflowUserParams: (values: Record<string, string>) => Promise<void>;
   stopStreaming: () => void;
+  /** BR-61: inject a message into the running turn without cancelling it. */
+  steer: (text: string) => Promise<boolean>;
   sessionLoadError?: string;
   tokenState: TokenState;
   notifications: Map<string, NotificationEvent[]>;
@@ -74,6 +76,7 @@ export function useChatStream({
     submitSystemMessage: controller.submitSystemMessage,
     submitElicitationResponse: controller.submitElicitationResponse,
     stopStreaming: controller.stopStreaming,
+    steer: controller.steer,
     setWorkflowUserParams: controller.setWorkflowUserParams,
     tokenState: snapshot.tokenState,
     notifications: notificationsMap,

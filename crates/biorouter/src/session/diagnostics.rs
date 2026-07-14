@@ -289,7 +289,7 @@ pub async fn generate_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::session_manager::SessionType;
+    use crate::session::session_manager::{SessionType, UsageLedgerEntry};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -301,33 +301,48 @@ mod tests {
             .await
             .unwrap();
 
-        // Two Claude turns with cache; the second is the "last turn".
-        sm.record_token_event(
-            &session.id,
-            Some(100),
-            Some(40),
-            740,
-            Some("claude-sonnet-4-20250514"),
-            Some("anthropic"),
-            Some(500),
-            Some(100),
-        )
+        sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "diagnostics-provider-call-1".to_string(),
+            session_id: session.id.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(740),
+            current_input_tokens: Some(100),
+            current_output_tokens: Some(40),
+            billed_total_tokens: Some(740),
+            input_tokens: Some(100),
+            output_tokens: Some(40),
+            model_id: Some("claude-sonnet-4-20250514".to_string()),
+            provider: Some("anthropic".to_string()),
+            cache_read_tokens: Some(500),
+            cache_creation_tokens: Some(100),
+        })
         .await
         .unwrap();
-        sm.record_token_event(
-            &session.id,
-            Some(10),
-            Some(5),
-            215,
-            Some("claude-sonnet-4-20250514"),
-            Some("anthropic"),
-            Some(200),
-            Some(0),
-        )
+        sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "diagnostics-provider-call-2".to_string(),
+            session_id: session.id.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(215),
+            current_input_tokens: Some(10),
+            current_output_tokens: Some(5),
+            billed_total_tokens: Some(215),
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            model_id: Some("claude-sonnet-4-20250514".to_string()),
+            provider: Some("anthropic".to_string()),
+            cache_read_tokens: Some(200),
+            cache_creation_tokens: Some(0),
+        })
         .await
         .unwrap();
 
         let diag = UsageDiagnostics::collect(&sm, &session.id).await.unwrap();
+        assert_eq!(diag.last_turn_total_tokens, Some(215));
+        assert_eq!(diag.last_turn_input_tokens, Some(10));
+        assert_eq!(diag.last_turn_output_tokens, Some(5));
+        assert_eq!(diag.accumulated_total_tokens, Some(955));
+        assert_eq!(diag.accumulated_input_tokens, Some(110));
+        assert_eq!(diag.accumulated_output_tokens, Some(45));
         // Session cache totals sum across turns: read 500+200=700, creation 100.
         assert_eq!(diag.session_cache_read_tokens, Some(700));
         assert_eq!(diag.session_cache_creation_tokens, Some(100));
@@ -340,7 +355,7 @@ mod tests {
 
         let text = diag.to_text();
         assert!(text.contains("Last turn"));
-        assert!(text.contains("Accumulated across all turns"));
+        assert!(text.contains("Accumulated session counters"));
         assert!(text.contains("cache_read=700"));
         assert!(text.contains("Month-to-date"));
     }

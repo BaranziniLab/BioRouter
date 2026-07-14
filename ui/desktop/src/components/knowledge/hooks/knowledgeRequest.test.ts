@@ -17,7 +17,7 @@ describe('knowledgeRequest', () => {
   it('prefers the Electron backend host for knowledge requests', async () => {
     await expect(getBackendBaseUrl()).resolves.toBe('http://electron-host.test');
     await expect(buildKnowledgeUrl('/knowledge/bases/demo/ingest')).resolves.toBe(
-      'http://electron-host.test/knowledge/bases/demo/ingest',
+      'http://electron-host.test/knowledge/bases/demo/ingest'
     );
   });
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { CODE_BG, codePalettes, codePalettesAlma, codeThemeDark, codeThemeLight } from './codeTheme';
+import {
+  CODE_BG,
+  codePalettes,
+  codePalettesAlma,
+  codeThemeDark,
+  codeThemeLight,
+} from './codeTheme';
 
 function luminance(hex: string): number {
   const channels = [1, 3, 5]

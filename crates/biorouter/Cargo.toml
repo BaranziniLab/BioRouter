@@ -45,7 +45,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
 jsonschema = "0.30.0"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "v7"] }
 regex = { workspace = true }
 async-trait = "0.1.89"
 async-stream = "0.3"
@@ -62,6 +62,7 @@ url = "2.5"
 axum = "0.8.1"
 webbrowser = {workspace = true}
 lazy_static = "1.5.0"
+shlex = "1.3"
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 keyring ={ version = "3.6.2", features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
@@ -104,6 +105,9 @@ shellexpand = "3.1.1"
 indexmap = "2.12.0"
 ignore = { workspace = true }
 which = { workspace = true}
+# BR-43 shadow-git checkpoints. Same vendored libgit2 the workspace already
+# builds for biorouter-mcp (crates/biorouter-mcp/Cargo.toml).
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 boa_engine = "0.21.0"
 unbinder = "0.1.7"
 
@@ -121,6 +125,11 @@ aws-providers = [
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
+
+# Managed-policy ownership verification (BR-65) reads the effective uid via
+# `geteuid` to trust a root- or current-user-owned policy file.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 agent-client-protocol-schema = "0.10.5"

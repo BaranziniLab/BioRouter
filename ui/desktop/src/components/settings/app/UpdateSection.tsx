@@ -1,6 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
-import { ExternalLink, CheckCircle, Download, AlertCircle, Loader2, Rocket } from '../../icons/app-icons';
+import {
+  ExternalLink,
+  CheckCircle,
+  Download,
+  AlertCircle,
+  Loader2,
+  Rocket,
+} from '../../icons/app-icons';
 import {
   initialUpdaterState,
   reduceUpdaterEvent,

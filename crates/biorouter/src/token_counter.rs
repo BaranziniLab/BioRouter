@@ -198,6 +198,54 @@ pub async fn create_token_counter() -> Result<TokenCounter, String> {
     TokenCounter::new().await
 }
 
+static SHARED_COUNTER: OnceCell<Result<Arc<TokenCounter>, String>> = OnceCell::const_new();
+
+/// The process-wide [`TokenCounter`] (BR-56).
+///
+/// `create_token_counter` hands back a counter with an **empty** cache, so every
+/// caller that builds one per call (the compaction check ran on every turn of
+/// every session) re-encodes text it has already seen — the BPE work is real, and
+/// the per-text memo is exactly what makes a repeated history cheap. One shared
+/// counter means the cache survives across turns and sessions. The tokenizer
+/// itself was already shared; only the memo was being thrown away.
+pub async fn shared_token_counter() -> Result<Arc<TokenCounter>, String> {
+    SHARED_COUNTER
+        .get_or_init(|| async { TokenCounter::new().await.map(Arc::new) })
+        .await
+        .clone()
+}
+
+/// Conservative inflation applied to the o200k-based estimate for providers
+/// whose real tokenizer BioRouter does not bundle. See `provider_token_calibration`.
+const NON_OPENAI_TOKEN_MARGIN: f64 = 1.15;
+
+/// Per-provider calibration factor for the cold-path token *estimate* (BR-15).
+///
+/// tiktoken's `o200k_base` is the only BPE compiled in, so it is used as a
+/// universal approximation for every provider — a real Claude/Gemini/Llama
+/// tokenizer would pull in a heavy dependency (SentencePiece / HuggingFace
+/// vocab files), which the proposal explicitly defers. o200k is exact only for
+/// OpenAI models; it *under-counts* the others (Claude/Gemini/Llama/Qwen
+/// tokenizers are less token-efficient than GPT-4o's on English + code), so an
+/// uncalibrated o200k estimate lets a first-turn / non-reporting-provider
+/// session slip past the real context window without compacting.
+///
+/// This returns a multiplier applied only to the estimate. Erring high just
+/// compacts slightly early (cheap); erring low silently overflows the window
+/// (the costly dead-end this guards against), so non-OpenAI providers get a
+/// small safe margin. The happy path uses the provider-reported token total and
+/// never touches this.
+pub fn provider_token_calibration(provider_name: &str) -> f64 {
+    match provider_name {
+        // Native OpenAI tokenizer (o200k / cl100k) — the estimate is accurate.
+        "openai" | "azure" => 1.0,
+        // Everything else routes to a non-OpenAI tokenizer that o200k
+        // under-counts. Aggregators (openrouter/litellm/databricks/…) can serve
+        // GPT too, but the conservative margin only ever compacts a touch early.
+        _ => NON_OPENAI_TOKEN_MARGIN,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +324,22 @@ mod tests {
 
         counter.count_tokens(recent_text);
         assert_eq!(counter.cache_size(), start_size);
+    }
+
+    #[test]
+    fn test_provider_token_calibration() {
+        // OpenAI-family providers use the native o200k tokenizer: no inflation.
+        assert_eq!(provider_token_calibration("openai"), 1.0);
+        assert_eq!(provider_token_calibration("azure"), 1.0);
+
+        // Non-OpenAI providers get a conservative safety margin (> 1.0) because
+        // o200k under-counts their tokenizers.
+        for name in ["anthropic", "google", "bedrock", "ollama", "openrouter"] {
+            assert!(
+                provider_token_calibration(name) > 1.0,
+                "expected a safety margin for {name}"
+            );
+        }
     }
 
     #[tokio::test]

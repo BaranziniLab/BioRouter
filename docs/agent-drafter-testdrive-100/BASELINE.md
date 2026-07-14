@@ -1,8 +1,8 @@
 # Apps SDK v2 baseline
 
-Worktree: `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`  
-Branch: `feat/apps-sdk-v2`  
-Baseline commit: `a443f2c4`  
+Worktree: `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`
+Branch: `feat/apps-sdk-v2`
+Baseline commit: `a443f2c4`
 Required provider/model: `versa_azure/gpt-5.5-2026-04-24` (UCSF Azure OpenAI)
 
 | Gate | Result | Notes |

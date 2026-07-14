@@ -70,8 +70,7 @@ interface LegacyV1State {
 
 function migrateV1ToV2(v1: LegacyV1State): SerializedDashboardState {
   const windows: SerializedDashboardWindow[] = v1.windows.map((w, i) => {
-    const position =
-      w.position ?? { x: i * (DEFAULT_W + DEFAULT_GAP), y: 0 };
+    const position = w.position ?? { x: i * (DEFAULT_W + DEFAULT_GAP), y: 0 };
     const size = w.size ?? { w: DEFAULT_W, h: DEFAULT_H };
     // Drop isTucked; everything is on-canvas in v2.
     return {

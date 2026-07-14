@@ -1,7 +1,5 @@
 use anyhow::anyhow;
 use base64::Engine;
-use etcetera::AppStrategy;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use include_dir::{include_dir, Dir};
 use indoc::{formatdoc, indoc};
 use rmcp::{
@@ -24,7 +22,7 @@ use std::{
     future::Future,
     io::Cursor,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use xcap::{Monitor, Window};
 
@@ -36,13 +34,16 @@ use tokio_stream::{wrappers::SplitStream, StreamExt as _};
 use tokio_util::sync::CancellationToken;
 
 use crate::developer::{paths::get_shell_path_dirs, shell::ShellConfig};
+use crate::secret_guard::SecretGuard;
 
 use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
 use super::shell::{configure_shell_command, expand_path, is_absolute_path, kill_process_group};
 use super::text_editor::{
-    text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view, text_editor_write,
+    save_file_history, text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view,
+    text_editor_write,
 };
+use super::undo_history::{self, FileHistory};
 
 /// Build a git context + version-control policy block for the extension
 /// instructions. If `cwd` is inside a git work tree, the agent is told the
@@ -302,8 +303,8 @@ fn load_prompt_files() -> HashMap<String, Prompt> {
 #[derive(Clone)]
 pub struct DeveloperServer {
     tool_router: ToolRouter<Self>,
-    file_history: Arc<Mutex<HashMap<PathBuf, Vec<String>>>>,
-    ignore_patterns: Gitignore,
+    file_history: Arc<FileHistory>,
+    secret_guard: SecretGuard,
     editor_model: Option<EditorModel>,
     prompts: HashMap<String, Prompt>,
     code_analyzer: CodeAnalyzer,
@@ -686,17 +687,17 @@ impl Default for DeveloperServer {
 #[tool_router(router = tool_router)]
 impl DeveloperServer {
     pub fn new() -> Self {
-        // Build ignore patterns (simplified version for this tool)
+        // Build the shared secret/ignore guard (BR-23) rooted at the cwd.
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let ignore_patterns = Self::build_ignore_patterns(&cwd);
+        let secret_guard = SecretGuard::for_dir(&cwd);
 
         // Initialize editor model for AI-powered code editing
         let editor_model = create_editor_model();
 
         Self {
             tool_router: Self::tool_router(),
-            file_history: Arc::new(Mutex::new(HashMap::new())),
-            ignore_patterns,
+            file_history: Arc::new(FileHistory::in_memory()),
+            secret_guard,
             editor_model,
             prompts: load_prompt_files(),
             code_analyzer: CodeAnalyzer::new(),
@@ -715,7 +716,12 @@ impl DeveloperServer {
 
     /// Set the session working directory that shell commands run in. When unset,
     /// the shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd.
+    ///
+    /// Once the working directory is known, the `undo_edit` history is persisted
+    /// to disk keyed by that directory (BR-44), so undo survives a developer
+    /// server restart. Any prior history for this directory is reloaded here.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
+        self.file_history = Arc::new(FileHistory::persistent(&dir));
         self.working_dir = Some(dir);
         self
     }
@@ -807,6 +813,47 @@ impl DeveloperServer {
     pub fn bash_env_file(mut self, value: Option<PathBuf>) -> Self {
         self.bash_env_file = value;
         self
+    }
+
+    /// Snapshot the pre-command content of files a shell command redirects to
+    /// (`>`/`>>`), so `undo_edit <path>` restores the state before the write
+    /// (BR-44). Best-effort and side-effect free on the command: an unresolved,
+    /// out-of-tree, ignored, or `..`-containing target is simply skipped.
+    fn snapshot_shell_redirect_targets(&self, command: &str, working_dir: Option<&Path>) {
+        let targets = undo_history::redirect_targets(command);
+        if targets.is_empty() {
+            return;
+        }
+        // Resolve the base directory without the panicking `effective_cwd`: if
+        // the process has no valid cwd there is nothing safe to snapshot.
+        let base = match working_dir {
+            Some(w) => w.to_path_buf(),
+            None => match std::env::current_dir() {
+                Ok(d) => d,
+                Err(_) => return,
+            },
+        };
+        for raw in targets {
+            if raw.contains("..") {
+                continue;
+            }
+            let expanded = expand_path(&raw);
+            let resolved = if is_absolute_path(&expanded) {
+                let p = PathBuf::from(&expanded);
+                // Only snapshot absolute targets inside the working directory.
+                if !p.starts_with(&base) {
+                    continue;
+                }
+                p
+            } else {
+                base.join(&expanded)
+            };
+            // Don't copy ignored files (.env, secrets, ...) into the history.
+            if self.is_ignored(&resolved) {
+                continue;
+            }
+            let _ = self.file_history.snapshot(&resolved);
+        }
     }
 
     /// List all available windows that can be used with screen_capture.
@@ -1072,6 +1119,9 @@ impl DeveloperServer {
                         None,
                     )
                 })?;
+                // Snapshot the pre-write content so a whole-file overwrite is
+                // undoable too, not just str_replace/insert/diff edits (BR-44).
+                save_file_history(&path, &self.file_history)?;
                 let content = text_editor_write(&path, &file_text).await?;
                 Ok(CallToolResult::success(content))
             }
@@ -1181,6 +1231,11 @@ impl DeveloperServer {
         // so the shell keeps working. Applies to both foreground and background.
         let working_dir = self.resolve_shell_cwd_checked(params.working_directory.as_deref())?;
 
+        // Snapshot the pre-command content of any file this command redirects
+        // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
+        // text_editor edits (BR-44).
+        self.snapshot_shell_redirect_targets(command, working_dir.as_deref());
+
         // Background mode: start the command in its own process group, register
         // it, and return a job_id immediately instead of waiting for it.
         if params.background.unwrap_or(false) {
@@ -1190,7 +1245,7 @@ impl DeveloperServer {
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, or shell_kill to stop it."
+                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, shell_kill to stop it, or shell_list to see every background job."
             ))]));
         }
 
@@ -1289,6 +1344,15 @@ impl DeveloperServer {
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
+    #[tool(
+        name = "shell_list",
+        description = "List every background shell job (started by shell with background=true) with its job_id, label, status (running or the exit result), runtime, whether it has unread output, and the command. Use this to rediscover a job_id you've lost or to see everything you have running before you shell_wait/shell_output/shell_kill."
+    )]
+    pub async fn shell_list(&self) -> Result<CallToolResult, ErrorData> {
+        let out = self.background_jobs.list().await;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
     /// Validate a shell command before execution.
     ///
     /// Checks for empty commands and ensures the command doesn't attempt to access
@@ -1358,7 +1422,13 @@ impl DeveloperServer {
             }
         }
 
-        let mut command = configure_shell_command(&shell_config, command, working_dir.as_deref());
+        // BR-69: under `BIOROUTER_SHELL_SANDBOX=strict` on a host that cannot
+        // provide a full sandbox, refuse to run rather than silently degrade.
+        let mut command = configure_shell_command(&shell_config, command, working_dir.as_deref())
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_REQUEST, e, None))?;
+        // The assistant-visible sandbox tier line, prepended to the output so the
+        // model (and a bug reporter) can see which enforcement actually applied.
+        let sandbox_status_line = super::shell::shell_sandbox_status_line(working_dir.as_deref());
 
         if self.extend_path_with_shell {
             if let Err(e) = get_shell_path_dirs()
@@ -1392,7 +1462,11 @@ impl DeveloperServer {
             output_result = output_task => {
                 // Wait for the process to complete
                 let _exit_status = child.wait().await.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
-                output_result
+                // BR-69: prepend the sandbox tier line when the gate is on.
+                output_result.map(|out| match sandbox_status_line {
+                    Some(line) => format!("{line}\n{out}"),
+                    None => out,
+                })
             }
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Cancellation token triggered! Attempting to kill process and all child processes");
@@ -1525,7 +1599,7 @@ impl DeveloperServer {
         let params = params.0;
         let path = self.resolve_path(&params.path)?;
         self.code_analyzer
-            .analyze(params, path, &self.ignore_patterns)
+            .analyze(params, path, self.secret_guard.gitignore())
     }
 
     /// Process an image file from disk.
@@ -1730,40 +1804,11 @@ impl DeveloperServer {
         Ok(resolved)
     }
 
-    fn build_ignore_patterns(cwd: &PathBuf) -> Gitignore {
-        let mut builder = GitignoreBuilder::new(cwd);
-        let local_ignore_path = cwd.join(".biorouterignore");
-
-        let global_ignore_path = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|strategy| strategy.config_dir().join(".biorouterignore"))
-            .ok();
-
-        let has_local_ignore = local_ignore_path.is_file();
-        let has_global_ignore = global_ignore_path
-            .as_ref()
-            .map(|p| p.is_file())
-            .unwrap_or(false);
-
-        if has_global_ignore {
-            let _ = builder.add(global_ignore_path.as_ref().unwrap());
-        }
-
-        if has_local_ignore {
-            let _ = builder.add(&local_ignore_path);
-        }
-
-        if !has_local_ignore && !has_global_ignore {
-            let _ = builder.add_line(None, "**/.env");
-            let _ = builder.add_line(None, "**/.env.*");
-            let _ = builder.add_line(None, "**/secrets.*");
-        }
-
-        builder.build().expect("Failed to build ignore patterns")
-    }
-
-    // Helper method to check if a path should be ignored
+    // Helper method to check if a path should be ignored. Delegates to the
+    // shared `SecretGuard` (BR-23) so the Developer server and the central
+    // extension-manager dispatch boundary enforce the same deny set.
     fn is_ignored(&self, path: &Path) -> bool {
-        self.ignore_patterns.matched(path, false).is_ignore()
+        self.secret_guard.is_denied(path)
     }
 
     // Only returns true when 100% certain (checks /proc/1/cgroup for container markers)
@@ -1961,7 +2006,10 @@ mod tests {
         time::{Duration, Instant},
     };
     use tempfile::TempDir;
+    use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
+
+    use crate::developer::shell::normalize_line_endings;
 
     fn create_test_server() -> DeveloperServer {
         DeveloperServer::new()
@@ -2113,11 +2161,16 @@ mod tests {
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
+            let command = if cfg!(windows) {
+                "(Get-Location).Path"
+            } else {
+                "pwd"
+            };
             let result = server
                 .shell(
                     Parameters(ShellParams {
                         working_directory: None,
-                        command: "pwd".to_string(),
+                        command: command.to_string(),
                         background: None,
                         label: None,
                     }),
@@ -2138,8 +2191,14 @@ mod tests {
                 .expect("shell output has text")
                 .text
                 .clone();
+            let expected_dir = dir
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            let comparable_text = text.replace('\\', "/").to_ascii_lowercase();
             assert!(
-                text.contains(dir.to_str().unwrap()),
+                comparable_text.contains(&expected_dir),
                 "pwd should report the session dir {}, got: {text}",
                 dir.display()
             );
@@ -2236,7 +2295,11 @@ mod tests {
         std::io::Error,
         rmcp::transport::async_rw::TransportAdapterAsyncCombinedRW,
     > {
-        let (_client, server) = tokio::io::duplex(1024);
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut buffer = [0_u8; 8192];
+            while client.read(&mut buffer).await.unwrap_or(0) != 0 {}
+        });
         server
     }
 
@@ -2313,16 +2376,15 @@ mod tests {
     fn test_windows_specific_commands() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
 
-            let server = create_test_server();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
-            // Test PowerShell command
             let shell_params = Parameters(ShellParams {
                 working_directory: None,
-                command: "Get-ChildItem".to_string(),
+                command: "Get-ChildItem | Out-Null; Write-Output biorouter-windows-shell-ok"
+                    .to_string(),
                 background: None,
                 label: None,
             });
@@ -2338,15 +2400,29 @@ mod tests {
                         peer: peer.clone(),
                     },
                 )
-                .await;
+                .await
+                .expect("PowerShell command should run");
+            assert!(result.content.iter().any(|content| {
+                content
+                    .as_text()
+                    .is_some_and(|text| text.text.contains("biorouter-windows-shell-ok"))
+            }));
 
-            assert!(result.is_err());
+            let allowed_dir = temp_dir.path().join("windows-path-test");
+            std::fs::create_dir(&allowed_dir).unwrap();
+            assert_eq!(
+                server
+                    .resolve_path(allowed_dir.to_str().unwrap())
+                    .expect("an absolute Windows path inside the working directory should resolve"),
+                allowed_dir
+            );
 
-            // Test that resolve_path works with Windows paths
-            let windows_path = r"C:\Windows\System32";
-            if Path::new(windows_path).exists() {
-                let resolved = server.resolve_path(windows_path);
-                assert!(resolved.is_ok());
+            let system_dir = r"C:\Windows\System32";
+            if Path::new(system_dir).exists() {
+                let error = server
+                    .resolve_path(system_dir)
+                    .expect_err("a path outside the working directory must remain jailed");
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
             }
 
             // Force cleanup before runtime shutdown
@@ -2466,6 +2542,74 @@ mod tests {
             .as_text()
             .unwrap();
         assert!(user_content.text.contains("Hello, world!"));
+    }
+
+    /// BR-44: a whole-file `write` snapshots the previous content, so an
+    /// overwrite is undoable — not just `str_replace`/`insert`/diff edits.
+    #[tokio::test]
+    #[serial]
+    async fn test_write_then_undo_restores_previous_content() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("doc.txt");
+        let file_path_str = file_path.to_str().unwrap().to_string();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let server = create_test_server();
+
+        let write = |text: &str| {
+            Parameters(TextEditorParams {
+                path: file_path_str.clone(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some(text.to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            })
+        };
+
+        server.text_editor(write("v1\n")).await.unwrap();
+        server.text_editor(write("v2\n")).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            normalize_line_endings("v2\n")
+        );
+
+        let undo = Parameters(TextEditorParams {
+            path: file_path_str.clone(),
+            command: "undo_edit".to_string(),
+            view_range: None,
+            file_text: None,
+            old_str: None,
+            new_str: None,
+            insert_line: None,
+            diff: None,
+        });
+        server.text_editor(undo).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            normalize_line_endings("v1\n")
+        );
+    }
+
+    /// BR-44: a `shell` redirect target is pre-snapshotted, so `undo_edit`
+    /// reverts shell-driven writes back to their pre-command content.
+    #[tokio::test]
+    #[serial]
+    async fn test_shell_redirect_snapshot_enables_undo() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let out = temp_dir.path().join("out.txt");
+        std::fs::write(&out, "before\n").unwrap();
+        let server = create_test_server();
+
+        // The shell tool snapshots redirect targets before running the command.
+        server.snapshot_shell_redirect_targets("echo more >> out.txt", Some(temp_dir.path()));
+        // Simulate the append the shell command would perform.
+        std::fs::write(&out, "before\nmore\n").unwrap();
+
+        text_editor_undo(&out, &server.file_history).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "before\n");
     }
 
     #[tokio::test]
@@ -3000,7 +3144,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3119,7 +3266,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3176,7 +3326,10 @@ mod tests {
 
         // Verify the file content by reading it directly
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2\nLine 3\nLine 4"));
+        assert_eq!(
+            file_content,
+            normalize_line_endings("Line 1\nLine 2\nLine 3\nLine 4\n")
+        );
     }
 
     #[tokio::test]
@@ -3349,7 +3502,7 @@ mod tests {
 
         // Verify the file is back to original content
         let file_content = fs::read_to_string(&file_path).unwrap();
-        assert!(file_content.contains("Line 1\nLine 2"));
+        assert_eq!(file_content, normalize_line_endings("Line 1\nLine 2\n"));
         assert!(!file_content.contains("Inserted Line"));
     }
 
@@ -3763,15 +3916,14 @@ mod tests {
     fn test_shell_output_truncation() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
 
-            let server = create_test_server();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
             let peer = running_service.peer().clone();
 
             // Create a command that generates > 100 lines of output
             let command = if cfg!(windows) {
-                "for /L %i in (1,1,150) do @echo Line %i"
+                "1..150 | ForEach-Object { 'Line ' + $_ }"
             } else {
                 "for i in {1..150}; do echo \"Line $i\"; done"
             };

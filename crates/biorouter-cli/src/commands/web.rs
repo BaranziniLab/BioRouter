@@ -12,6 +12,7 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
+use biorouter::agents::turn_abort::TurnFailed;
 use biorouter::agents::{Agent, AgentEvent};
 use biorouter::conversation::message::Message as BioRouterMessage;
 use biorouter::session::session_manager::SessionType;
@@ -594,7 +595,10 @@ async fn process_message_streaming(
         id: session.id.clone(),
         schedule_id: None,
         max_turns: None,
+        max_tool_calls: None,
+        budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
 
     match agent.reply(user_message, session_config, None).await {
@@ -613,17 +617,22 @@ async fn process_message_streaming(
                     Ok(AgentEvent::ModelChange { model, mode }) => {
                         tracing::info!("Model changed to {} in {} mode", model, mode);
                     }
+                    // BR-52: the web bridge reads token counts from the session
+                    // row when it needs them, so the carried snapshot is a no-op here.
+                    Ok(AgentEvent::TokenUsage(_)) => {}
                     Ok(AgentEvent::TurnAborted { code, message }) => {
                         // The turn ended without doing its work — report it as an
                         // error rather than letting the stream finish normally.
+                        // The preceding Message has already preserved the
+                        // human-readable explanation for the user.
                         error!(abort = code.wire_code(), "Turn aborted: {message}");
                         send_error(&sender, &format!("{}: {message}", code.wire_code())).await;
-                        break;
+                        return Err(TurnFailed::new(code, message).into());
                     }
                     Err(e) => {
                         error!("Error in message stream: {}", e);
                         send_error(&sender, &format!("Error: {}", e)).await;
-                        break;
+                        return Err(e);
                     }
                 }
             }
@@ -631,6 +640,7 @@ async fn process_message_streaming(
         Err(e) => {
             error!("Error calling agent: {}", e);
             send_error(&sender, &format!("Error: {}", e)).await;
+            return Err(e);
         }
     }
 

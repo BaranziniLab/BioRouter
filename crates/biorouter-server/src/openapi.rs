@@ -1,6 +1,7 @@
 use biorouter::agents::extension::Envs;
 use biorouter::agents::extension::ToolInfo;
 use biorouter::agents::ExtensionConfig;
+use biorouter::agents::ReasoningEffort;
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::ExtensionEntry;
 use biorouter::conversation::Conversation;
@@ -26,6 +27,8 @@ use biorouter::conversation::message::{
     MessageMetadata, RedactedThinkingContent, SystemNotificationContent, SystemNotificationType,
     ThinkingContent, TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
+use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
+use biorouter::permission::tool_risk::ToolRisk;
 
 use crate::routes::reply::MessageEvent;
 use crate::routes::workflow_utils::WorkflowManifest;
@@ -333,6 +336,8 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::status::status,
         super::routes::status::system_info,
         super::routes::status::diagnostics,
+        super::routes::active_work::list_active_work,
+        super::routes::active_work::cancel_active_work,
         super::routes::mcp_ui_proxy::mcp_ui_proxy,
         super::routes::config_management::backup_config,
         super::routes::config_management::detect_provider,
@@ -373,6 +378,8 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::agent::update_agent_provider,
         super::routes::action_required::confirm_tool_action,
         super::routes::reply::reply,
+        super::routes::reply::interrupt,
+        super::routes::reply::cancel_turn,
         super::routes::session::list_sessions,
         super::routes::session::get_session,
         super::routes::session::get_session_insights,
@@ -471,6 +478,9 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::config_management::PricingData,
         super::routes::action_required::ConfirmToolActionRequest,
         super::routes::reply::ChatRequest,
+        super::routes::reply::InterruptRequest,
+        super::routes::reply::CancelTurnRequest,
+        super::routes::reply::CancelTurnResponse,
         super::routes::session::ImportSessionRequest,
         super::routes::session::SessionListResponse,
         super::routes::session::UpdateSessionNameRequest,
@@ -501,6 +511,10 @@ derive_utoipa!(Icon as IconSchema);
         ToolConfirmationRequest,
         ActionRequired,
         ActionRequiredData,
+        ToolPreview,
+        ToolPreviewLine,
+        ToolPreviewLineKind,
+        ToolRisk,
         ThinkingContent,
         RedactedThinkingContent,
         FrontendToolRequest,
@@ -527,6 +541,7 @@ derive_utoipa!(Icon as IconSchema);
         PrincipalType,
         ModelInfo,
         ModelConfig,
+        ReasoningEffort,
         Session,
         SessionInsights,
         ActivityWindow,
@@ -549,6 +564,9 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::schedule::KillJobResponse,
         super::routes::schedule::InspectJobResponse,
         biorouter::scheduler::ScheduledJob,
+        super::routes::active_work::ActiveWorkItemDto,
+        super::routes::active_work::ActiveWorkResponse,
+        super::routes::active_work::CancelActiveWorkResponse,
         super::routes::schedule::RunNowResponse,
         super::routes::schedule::ListSchedulesResponse,
         super::routes::schedule::SessionsQuery,

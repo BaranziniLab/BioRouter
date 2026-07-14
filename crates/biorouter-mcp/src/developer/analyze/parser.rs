@@ -1,13 +1,65 @@
 use rmcp::model::{ErrorCode, ErrorData};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tree_sitter::{Language, Parser, Tree};
+use std::sync::{Arc, LazyLock, Mutex};
+use tree_sitter::{Language, Parser, Query, Tree};
 
 use super::lock_or_recover;
 use crate::developer::analyze::types::{
     AnalysisResult, CallInfo, ClassInfo, ElementQueryResult, FunctionInfo, ReferenceInfo,
     ReferenceType,
 };
+
+/// Which of a language's tree-sitter queries this is; part of the cache key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum QueryKind {
+    Element,
+    Call,
+    Reference,
+}
+
+/// Compiling a tree-sitter `Query` is not free, and the three query sources a
+/// language exposes (`element_query` / `call_query` / `reference_query`) are
+/// per-language `&'static str` constants — so the compiled query is identical
+/// for every file of a given language. Previously all three were recompiled on
+/// every parsed file (`Query::new` × 3 per file). Cache one `Arc<Query>` per
+/// `(language, kind)` and reuse it across files. The cache never goes stale
+/// because the query source is a compile-time constant per language, so no
+/// invalidation is required (BR-59, perf lens P-41).
+type QueryCache = HashMap<(String, QueryKind), Arc<Query>>;
+static QUERY_CACHE: LazyLock<Mutex<QueryCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Return the compiled query for `(language, kind)`, compiling and caching it on
+/// first use. Subsequent calls for the same language/kind hand back a clone of
+/// the shared `Arc<Query>` without recompiling.
+fn cached_query(
+    language: &str,
+    kind: QueryKind,
+    ts_language: &Language,
+    query_str: &str,
+) -> Result<Arc<Query>, ErrorData> {
+    let key = (language.to_string(), kind);
+    {
+        let cache = lock_or_recover(&QUERY_CACHE, |c| c.clear());
+        if let Some(query) = cache.get(&key) {
+            return Ok(Arc::clone(query));
+        }
+    }
+
+    let query = Arc::new(Query::new(ts_language, query_str).map_err(|e| {
+        tracing::error!("Failed to create query for {}: {}", language, e);
+        ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("Failed to create query: {}", e),
+            None,
+        )
+    })?);
+
+    // Another thread may have inserted between the read above and this write;
+    // keep whichever landed first so all callers converge on one shared Arc.
+    let mut cache = lock_or_recover(&QUERY_CACHE, |c| c.clear());
+    let entry = cache.entry(key).or_insert_with(|| Arc::clone(&query));
+    Ok(Arc::clone(entry))
+}
 
 #[derive(Clone)]
 pub struct ParserManager {
@@ -178,7 +230,8 @@ impl ElementExtractor {
 
         let query_str = info.element_query;
 
-        let (functions, classes, imports) = Self::process_element_query(tree, source, query_str)?;
+        let (functions, classes, imports) =
+            Self::process_element_query(tree, source, language, query_str)?;
 
         let main_line = functions.iter().find(|f| f.name == "main").map(|f| f.line);
 
@@ -199,23 +252,17 @@ impl ElementExtractor {
     fn process_element_query(
         tree: &Tree,
         source: &str,
+        language: &str,
         query_str: &str,
     ) -> Result<ElementQueryResult, ErrorData> {
         use streaming_iterator::StreamingIterator;
-        use tree_sitter::{Query, QueryCursor};
+        use tree_sitter::QueryCursor;
 
         let mut functions = Vec::new();
         let mut classes = Vec::new();
         let mut imports = Vec::new();
 
-        let query = Query::new(&tree.language(), query_str).map_err(|e| {
-            tracing::error!("Failed to create query: {}", e);
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to create query: {}", e),
-                None,
-            )
-        })?;
+        let query = cached_query(language, QueryKind::Element, &tree.language(), query_str)?;
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
@@ -271,7 +318,7 @@ impl ElementExtractor {
     ) -> Result<Vec<CallInfo>, ErrorData> {
         use crate::developer::analyze::languages;
         use streaming_iterator::StreamingIterator;
-        use tree_sitter::{Query, QueryCursor};
+        use tree_sitter::QueryCursor;
 
         let mut calls = Vec::new();
 
@@ -282,14 +329,7 @@ impl ElementExtractor {
 
         let query_str = info.call_query;
 
-        let query = Query::new(&tree.language(), query_str).map_err(|e| {
-            tracing::error!("Failed to create call query: {}", e);
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to create call query: {}", e),
-                None,
-            )
-        })?;
+        let query = cached_query(language, QueryKind::Call, &tree.language(), query_str)?;
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
@@ -351,7 +391,7 @@ impl ElementExtractor {
     ) -> Result<Vec<ReferenceInfo>, ErrorData> {
         use crate::developer::analyze::languages;
         use streaming_iterator::StreamingIterator;
-        use tree_sitter::{Query, QueryCursor};
+        use tree_sitter::QueryCursor;
 
         let mut references = Vec::new();
 
@@ -362,14 +402,7 @@ impl ElementExtractor {
 
         let query_str = info.reference_query;
 
-        let query = Query::new(&tree.language(), query_str).map_err(|e| {
-            tracing::error!("Failed to create reference query: {}", e);
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to create reference query: {}", e),
-                None,
-            )
-        })?;
+        let query = cached_query(language, QueryKind::Reference, &tree.language(), query_str)?;
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
@@ -529,5 +562,64 @@ impl ElementExtractor {
             import_count: 0,
             main_line: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod query_cache_tests {
+    use super::*;
+    use crate::developer::analyze::languages;
+
+    #[test]
+    fn cached_query_reuses_one_arc_per_language_and_kind() {
+        let manager = ParserManager::new();
+        let tree = manager.parse("fn a() {}\nfn b() {}", "rust").unwrap();
+        let lang = tree.language();
+        let src = languages::get_language_info("rust").unwrap().element_query;
+
+        let q1 = cached_query("rust", QueryKind::Element, &lang, src).unwrap();
+        let q2 = cached_query("rust", QueryKind::Element, &lang, src).unwrap();
+
+        assert!(
+            Arc::ptr_eq(&q1, &q2),
+            "same (language, kind) must hand back the one cached Arc<Query>, not recompile"
+        );
+    }
+
+    #[test]
+    fn cached_query_keys_by_kind() {
+        let manager = ParserManager::new();
+        let tree = manager.parse("fn a() {}", "rust").unwrap();
+        let lang = tree.language();
+        let src = languages::get_language_info("rust").unwrap().element_query;
+
+        let element = cached_query("rust", QueryKind::Element, &lang, src).unwrap();
+        let call = cached_query("rust", QueryKind::Call, &lang, src).unwrap();
+
+        assert!(
+            !Arc::ptr_eq(&element, &call),
+            "distinct query kinds must be cached under distinct keys"
+        );
+    }
+
+    #[test]
+    fn cached_query_keys_by_language() {
+        let manager = ParserManager::new();
+        let rust_tree = manager.parse("fn a() {}", "rust").unwrap();
+        let py_tree = manager.parse("def a():\n    pass\n", "python").unwrap();
+        let rust_lang = rust_tree.language();
+        let py_lang = py_tree.language();
+        let rust_src = languages::get_language_info("rust").unwrap().element_query;
+        let py_src = languages::get_language_info("python")
+            .unwrap()
+            .element_query;
+
+        let rust_q = cached_query("rust", QueryKind::Element, &rust_lang, rust_src).unwrap();
+        let py_q = cached_query("python", QueryKind::Element, &py_lang, py_src).unwrap();
+
+        assert!(
+            !Arc::ptr_eq(&rust_q, &py_q),
+            "distinct languages must be cached under distinct keys"
+        );
     }
 }

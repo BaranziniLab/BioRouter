@@ -825,16 +825,16 @@ export function updateTrayMenu(hasUpdate: boolean) {
   }
 
   menuItems.push(
-    { label: 'Home',       click: () => showAndNavigate('') },
-    { label: 'New Chat',   click: () => showAndNavigate('') },
-    { label: 'Settings',   click: () => showAndNavigate('settings') },
+    { label: 'Home', click: () => showAndNavigate('') },
+    { label: 'New Chat', click: () => showAndNavigate('') },
+    { label: 'Settings', click: () => showAndNavigate('settings') },
     { type: 'separator' },
     { label: 'Extensions', click: () => showAndNavigate('extensions') },
-    { label: 'Skills',     click: () => showAndNavigate('skills') },
+    { label: 'Skills', click: () => showAndNavigate('skills') },
     { type: 'separator' },
     { label: 'Check for Updates', click: openUpdateSettings },
     { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
+    { label: 'Quit', click: () => app.quit() }
   );
 
   const contextMenu = Menu.buildFromTemplate(menuItems);

@@ -1,5 +1,7 @@
 use crate::config::paths::Paths;
-use crate::conversation::message::Message;
+use crate::conversation::message::{
+    new_message_id, Message, MessageContent, MessageMetadata, TokenState,
+};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
@@ -7,7 +9,9 @@ use crate::providers::pricing::{
     cost_with_pricing, provider_model_pricing, resolved_provider_model_pricing,
     ProviderModelPricing, TurnCost,
 };
+use crate::session::chat_fts;
 use crate::session::extension_data::ExtensionData;
+use crate::session::message_blobs;
 use crate::workflow::Workflow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -22,9 +26,38 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 12;
+pub const CURRENT_SCHEMA_VERSION: i32 = 16;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
+
+/// FTS5 mirror of user-visible message text, used for relevance-ranked chat
+/// recall (BR-17). It is a contentful FTS5 table (it stores the flattened
+/// text) maintained from Rust at the message write sites, because the searchable
+/// text is a derived flattening of `content_json`, not a raw column, so SQLite
+/// content-sync triggers can't produce it. `message_id`/`session_id` are stored
+/// UNINDEXED so recall can join back to `messages`/`sessions` and delete a
+/// session's rows on the compaction rewrite.
+const MESSAGES_FTS_DDL: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    text,
+    session_id UNINDEXED,
+    message_id UNINDEXED,
+    tokenize = 'porter unicode61'
+)
+"#;
+
+const MESSAGES_FTS_INSERT: &str =
+    "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
+
+/// Whether a stored message should be indexed for recall. Recall searches what
+/// the *user* saw, so only `user_visible` messages are indexed. A row with no
+/// (or unparseable) metadata predates the flag and defaults to visible.
+fn message_is_user_visible(metadata_json: Option<&str>) -> bool {
+    metadata_json
+        .and_then(|json| serde_json::from_str::<MessageMetadata>(json).ok())
+        .map(|meta| meta.user_visible)
+        .unwrap_or(true)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +138,13 @@ pub struct Session {
     /// a session's lineage ("branched from …").
     #[serde(default)]
     pub diverged_from: Option<String>,
+    /// The durable `msg_uid` of the exact parent message this session was
+    /// branched at — the fork point (BR-45). Paired with `diverged_from`
+    /// (parent session), it is the edge label of the branch forest. `None` for
+    /// normally-created sessions. Anchoring on this stable id instead of a
+    /// whole-second timestamp is what fixes the same-second over-truncation.
+    #[serde(default)]
+    pub branch_point_msg_uid: Option<String>,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -165,6 +205,7 @@ pub struct SessionUpdateBuilder<'a> {
     provider_name: Option<Option<String>>,
     model_config: Option<Option<ModelConfig>>,
     diverged_from: Option<Option<String>>,
+    branch_point_msg_uid: Option<Option<String>>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -786,6 +827,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             provider_name: None,
             model_config: None,
             diverged_from: None,
+            branch_point_msg_uid: None,
         }
     }
 
@@ -912,6 +954,13 @@ impl<'a> SessionUpdateBuilder<'a> {
         self.diverged_from = Some(diverged_from);
         self
     }
+
+    /// Record (or clear) the durable `msg_uid` of the parent message this
+    /// session was branched at (BR-45 fork point).
+    pub fn branch_point_msg_uid(mut self, branch_point_msg_uid: Option<String>) -> Self {
+        self.branch_point_msg_uid = Some(branch_point_msg_uid);
+        self
+    }
 }
 
 /// The six token counters stored on a session row. Fetched cheaply on the
@@ -924,6 +973,66 @@ pub struct SessionTokenCounts {
     pub accumulated_total_tokens: Option<i64>,
     pub accumulated_input_tokens: Option<i64>,
     pub accumulated_output_tokens: Option<i64>,
+}
+
+/// BR-52: the one place a session's stored counters become the `TokenState` the
+/// clients see. The agent reads it once per turn boundary and carries it in the
+/// event stream; the server no longer re-derives it per streamed token.
+impl From<SessionTokenCounts> for TokenState {
+    fn from(counts: SessionTokenCounts) -> Self {
+        TokenState {
+            input_tokens: counts.input_tokens.unwrap_or(0),
+            output_tokens: counts.output_tokens.unwrap_or(0),
+            total_tokens: counts.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
+}
+
+impl From<&Session> for TokenState {
+    fn from(session: &Session) -> Self {
+        TokenState {
+            input_tokens: session.input_tokens.unwrap_or(0),
+            output_tokens: session.output_tokens.unwrap_or(0),
+            total_tokens: session.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
+}
+
+/// SQLite row shape for the BR-43 `checkpoints` table, mapped to the public
+/// `checkpoint::CheckpointRecord`.
+#[derive(sqlx::FromRow)]
+struct CheckpointRow {
+    id: String,
+    session_id: String,
+    turn_index: i64,
+    anchor_ts: i64,
+    kind: String,
+    commit_sha: String,
+    tree_sha: String,
+    changed_paths_json: String,
+    created_at: String,
+}
+
+impl CheckpointRow {
+    fn into_record(self) -> Result<crate::checkpoint::CheckpointRecord> {
+        Ok(crate::checkpoint::CheckpointRecord {
+            id: self.id,
+            session_id: self.session_id,
+            turn_index: self.turn_index,
+            anchor_ts: self.anchor_ts,
+            kind: self.kind.parse()?,
+            commit_sha: self.commit_sha,
+            tree_sha: self.tree_sha,
+            changed_paths: serde_json::from_str(&self.changed_paths_json).unwrap_or_default(),
+            created_at: self.created_at,
+        })
+    }
 }
 
 pub struct SessionManager {
@@ -1000,6 +1109,18 @@ impl SessionManager {
 
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
         self.storage.replace_conversation(id, conversation).await
+    }
+
+    /// Fetch one externalized tool-result payload by its blob handle (BR-7).
+    /// `None` when the handle is unknown to this session — blobs are scoped to
+    /// the session that stored them, so one session can never read another's
+    /// tool output through a guessed (or model-hallucinated) handle.
+    pub async fn get_message_blob(
+        &self,
+        session_id: &str,
+        blob_uid: &str,
+    ) -> Result<Option<String>> {
+        self.storage.get_message_blob(session_id, blob_uid).await
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
@@ -1115,7 +1236,7 @@ impl SessionManager {
     /// route and the CLI/TUI `/diverge` command.
     ///
     /// The branch conversation is trimmed to end at the last *complete*
-    /// assistant answer (see `trim_to_last_complete_answer`), so a diverge
+    /// assistant answer (see `trim_to_last_complete_answer_at`), so a diverge
     /// triggered while the agent is still generating or calling tools never
     /// leaves a dangling, unanswered turn in the new session. `anchor_ms` (the
     /// `created` timestamp of the message a per-message Diverge button was
@@ -1127,8 +1248,24 @@ impl SessionManager {
         custom_name: Option<String>,
         anchor_ms: Option<i64>,
     ) -> Result<Session> {
+        self.diverge_session_at(session_id, custom_name, anchor_ms, None)
+            .await
+    }
+
+    /// Diverge anchored by a durable message id (`anchor_uid`), the BR-45 fork
+    /// point. Preferred over the timestamp anchor: it is unambiguous when two
+    /// messages share a whole second, and it records `branch_point_msg_uid` on
+    /// the child. `anchor_ms` is kept as a back-compatible fallback for clients
+    /// that still pass a timestamp.
+    pub async fn diverge_session_at(
+        &self,
+        session_id: &str,
+        custom_name: Option<String>,
+        anchor_ms: Option<i64>,
+        anchor_uid: Option<String>,
+    ) -> Result<Session> {
         self.storage
-            .diverge_session(self, session_id, custom_name, anchor_ms)
+            .diverge_session(self, session_id, custom_name, anchor_ms, anchor_uid)
             .await
     }
 
@@ -1136,6 +1273,39 @@ impl SessionManager {
         self.storage
             .truncate_conversation(session_id, timestamp)
             .await
+    }
+
+    // BR-43 shadow-git checkpoints: `checkpoints` table access, delegated to
+    // `SessionStorage` (which owns the pool) and called by `CheckpointManager`.
+
+    pub async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        self.storage.insert_checkpoint(rec).await
+    }
+
+    pub async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        self.storage.list_checkpoints(session_id).await
+    }
+
+    pub async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.last_checkpoint(session_id).await
+    }
+
+    pub async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.get_checkpoint(session_id, checkpoint_id).await
+    }
+
+    pub async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        self.storage.delete_checkpoints(session_id).await
     }
 
     pub async fn maybe_update_name(&self, id: &str, provider: Arc<dyn Provider>) -> Result<()> {
@@ -1284,6 +1454,7 @@ impl Default for Session {
             provider_name: None,
             model_config: None,
             diverged_from: None,
+            branch_point_msg_uid: None,
         }
     }
 }
@@ -1364,15 +1535,28 @@ fn is_assistant_terminal_answer(m: &Message) -> bool {
 /// If there is no complete answer at all (e.g. diverged before the very first
 /// reply landed), the branch starts empty rather than carrying an orphaned
 /// question.
-pub(crate) fn trim_to_last_complete_answer(
+/// Trim a branch to end at the last *complete* assistant answer within the
+/// prefix up to (and including) the anchor.
+///
+/// The anchor is resolved by durable message id first (`anchor_uid`), which is
+/// unambiguous even when two messages share a whole-second `created` — the
+/// same-second collision that `anchor_ms` (`m.created <= ts`, inclusive) could
+/// over-truncate (BR-45). A missing/unknown `anchor_uid` falls back to the
+/// timestamp anchor, and `None`/`None` keeps the whole conversation.
+pub(crate) fn trim_to_last_complete_answer_at(
     conversation: &Conversation,
+    anchor_uid: Option<&str>,
     anchor_ms: Option<i64>,
 ) -> Conversation {
-    let kept: Vec<&Message> = conversation
-        .messages()
-        .iter()
-        .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
-        .collect();
+    let msgs = conversation.messages();
+    let kept: Vec<&Message> =
+        match anchor_uid.and_then(|uid| msgs.iter().position(|m| m.id.as_deref() == Some(uid))) {
+            Some(end) => msgs[..=end].iter().collect(),
+            None => msgs
+                .iter()
+                .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
+                .collect(),
+        };
 
     match kept.iter().rposition(|m| is_assistant_terminal_answer(m)) {
         Some(end) => Conversation::new_unvalidated(
@@ -1439,6 +1623,9 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             provider_name: row.try_get("provider_name").ok().flatten(),
             model_config,
             diverged_from: row.try_get("diverged_from").ok().flatten(),
+            // Tolerant read: SELECTs that omit the column (e.g. the session
+            // list) yield None rather than erroring, mirroring `model_config`.
+            branch_point_msg_uid: row.try_get("branch_point_msg_uid").ok().flatten(),
         })
     }
 }
@@ -1550,7 +1737,8 @@ impl SessionStorage {
                 provider_name TEXT,
                 model_config_json TEXT,
                 diverged_from TEXT,
-                external_key TEXT
+                external_key TEXT,
+                branch_point_msg_uid TEXT
             )
         "#,
         )
@@ -1567,7 +1755,8 @@ impl SessionStorage {
                 created_timestamp INTEGER NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 tokens INTEGER,
-                metadata_json TEXT
+                metadata_json TEXT,
+                msg_uid TEXT
             )
         "#,
         )
@@ -1576,12 +1765,28 @@ impl SessionStorage {
 
         Self::create_usage_schema(pool).await?;
 
+        // BR-43 shadow-git checkpoints (migration 13), created inline for fresh DBs.
+        Self::create_checkpoints_table(pool).await?;
+
+        // BR-7 externalized tool-result payloads (migration 16).
+        Self::create_message_blobs_table(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
         sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
             .execute(pool)
             .await?;
+        // BR-45: durable per-message id, unique within a session (ids are
+        // intentionally carried into a diverged child, so uniqueness is
+        // per-session, not global).
+        sqlx::query("CREATE UNIQUE INDEX idx_messages_uid ON messages(session_id, msg_uid)")
+            .execute(pool)
+            .await?;
+
+        // FTS5 index for relevance-ranked chat recall (BR-17). See migration 15
+        // for details; a fresh DB starts already indexed.
+        sqlx::query(MESSAGES_FTS_DDL).execute(pool).await?;
         sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
             .execute(pool)
             .await?;
@@ -1760,12 +1965,21 @@ impl SessionStorage {
             info!("All migrations complete");
         }
 
-        // Some development builds shipped schema version 12 before the usage
-        // ledger columns were finalized. Schema-version immutability means such
-        // databases will never re-run migration 12, so reconcile the additive,
-        // idempotent shape on every open without consuming migration v13.
+        // Development builds shipped overlapping v11-v14 migration numbers for
+        // the usage and loop feature branches. Reconcile both additive schemas
+        // from their actual table shapes so those databases upgrade safely even
+        // when a version number caused one branch's migration arm to be skipped.
         Self::reconcile_usage_schema(pool).await?;
+        Self::reconcile_loop_schema(pool).await?;
 
+        Ok(())
+    }
+
+    async fn reconcile_loop_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        Self::create_checkpoints_table(pool).await?;
+        Self::ensure_message_identity_schema(pool).await?;
+        Self::create_and_backfill_messages_fts(pool, false).await?;
+        Self::create_message_blobs_table(pool).await?;
         Ok(())
     }
 
@@ -2115,11 +2329,159 @@ impl SessionStorage {
                 // version loop for databases created by early v12 builds.
                 Self::reconcile_usage_schema(pool).await?;
             }
+            13 => {
+                // BR-43 shadow-git checkpoints. Additive side table keyed by the
+                // turn's anchor `created_timestamp` (NOT the positional message
+                // id) so checkpoints survive the stable-UUID migration.
+                Self::create_checkpoints_table(pool).await?;
+            }
+            14 => {
+                // BR-45: stable, durable per-message ids plus an exact branch
+                // fork-point. Shape guards make this safe when an experimental
+                // v12 database already applied the same feature.
+                Self::ensure_message_identity_schema(pool).await?;
+            }
+            15 => {
+                // BR-17 relevance-ranked chat recall. Rebuilding the derived
+                // index prevents duplicate rows when an experimental v13/v14
+                // database already contains the FTS table and backfill.
+                Self::create_and_backfill_messages_fts(pool, true).await?;
+            }
+            16 => {
+                // BR-7 externalized tool-result payload storage. Existing
+                // inline messages remain untouched.
+                Self::create_message_blobs_table(pool).await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
         }
 
+        Ok(())
+    }
+
+    async fn table_has_column(pool: &Pool<Sqlite>, table: &str, column: &str) -> Result<bool> {
+        let query = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+        let count: i64 = sqlx::query_scalar(&query)
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
+        Ok(count > 0)
+    }
+
+    async fn ensure_message_identity_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        if !Self::table_has_column(pool, "messages", "msg_uid").await? {
+            sqlx::query("ALTER TABLE messages ADD COLUMN msg_uid TEXT")
+                .execute(pool)
+                .await?;
+        }
+
+        sqlx::query("UPDATE messages SET msg_uid = 'm' || id WHERE msg_uid IS NULL")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_uid ON messages(session_id, msg_uid)",
+        )
+        .execute(pool)
+        .await?;
+
+        if !Self::table_has_column(pool, "sessions", "branch_point_msg_uid").await? {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN branch_point_msg_uid TEXT")
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn create_and_backfill_messages_fts(pool: &Pool<Sqlite>, rebuild: bool) -> Result<()> {
+        let existed = Self::messages_fts_exists(pool).await;
+        sqlx::query(MESSAGES_FTS_DDL).execute(pool).await?;
+        if existed && !rebuild {
+            return Ok(());
+        }
+
+        sqlx::query("DELETE FROM messages_fts")
+            .execute(pool)
+            .await?;
+        let rows = sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+            "SELECT id, session_id, content_json, metadata_json FROM messages",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        for (id, session_id, content_json, metadata_json) in rows {
+            if !message_is_user_visible(metadata_json.as_deref()) {
+                continue;
+            }
+            let Ok(content) = serde_json::from_str::<Vec<MessageContent>>(&content_json) else {
+                continue;
+            };
+            let text = chat_fts::extract_searchable_text(&content);
+            if text.is_empty() {
+                continue;
+            }
+            sqlx::query(MESSAGES_FTS_INSERT)
+                .bind(&text)
+                .bind(&session_id)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The BR-43 `checkpoints` side table (migration 13 + fresh-DB schema).
+    async fn create_checkpoints_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                anchor_ts INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                tree_sha TEXT NOT NULL,
+                changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, turn_index)",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// BR-7: side table holding tool-result payloads too large to keep inline in
+    /// `messages.content_json`. Keyed `(session_id, blob_uid)` rather than by the
+    /// message rowid: `replace_conversation_inner` DELETEs and re-INSERTs every
+    /// message on each compaction/edit, so a rowid reference would dangle on the
+    /// first rewrite. The composite key also lets a diverged/copied session own
+    /// its own row for the same payload, so the parent's orphan sweep can never
+    /// pull a blob out from under a branch.
+    async fn create_message_blobs_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS message_blobs (
+                blob_uid TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY (session_id, blob_uid)
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_blobs_uid ON message_blobs(blob_uid)")
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -2227,7 +2589,7 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json, diverged_from
+               provider_name, model_config_json, diverged_from, branch_point_msg_uid
         FROM sessions
         WHERE id = ?
     "#,
@@ -2331,6 +2693,7 @@ impl SessionStorage {
         add_update!(builder.provider_name, "provider_name");
         add_update!(builder.model_config, "model_config_json");
         add_update!(builder.diverged_from, "diverged_from");
+        add_update!(builder.branch_point_msg_uid, "branch_point_msg_uid");
 
         if updates.is_empty() {
             return Ok(());
@@ -2408,6 +2771,9 @@ impl SessionStorage {
         if let Some(diverged_from) = builder.diverged_from {
             q = q.bind(diverged_from);
         }
+        if let Some(branch_point_msg_uid) = builder.branch_point_msg_uid {
+            q = q.bind(branch_point_msg_uid);
+        }
 
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
@@ -2419,16 +2785,44 @@ impl SessionStorage {
     }
 
     async fn get_conversation(&self, session_id: &str) -> Result<Conversation> {
+        // BR-7: hydrating is the default, so every existing consumer — the UI
+        // transcript, exports, a resumed agent — sees exactly the bytes it saw
+        // before externalization existed. `BIOROUTER_SESSION_BLOB_LAZY_LOAD`
+        // opts into the lazy read, where an oversized tool result stays a stub
+        // and the model pulls it back with `platform__read_session_blob`.
+        self.get_conversation_inner(session_id, !message_blobs::lazy_load_enabled())
+            .await
+    }
+
+    async fn get_conversation_inner(
+        &self,
+        session_id: &str,
+        hydrate_blobs: bool,
+    ) -> Result<Conversation> {
         let pool = self.pool().await?;
-        let rows = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
-            "SELECT role, content_json, created_timestamp, metadata_json FROM messages WHERE session_id = ? ORDER BY timestamp",
+        let rows = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<String>)>(
+            "SELECT role, content_json, created_timestamp, metadata_json, msg_uid FROM messages WHERE session_id = ? ORDER BY timestamp",
         )
             .bind(session_id)
             .fetch_all(pool)
             .await?;
 
+        // The payloads to splice back into any externalized tool result. Fetched
+        // once, and only when a row actually carries a stub — a session that
+        // never externalized anything (every session before this schema, and
+        // every ordinary one after it) pays a substring scan and nothing else.
+        let hydrate = hydrate_blobs
+            && rows
+                .iter()
+                .any(|(_, content_json, ..)| message_blobs::content_json_has_stub(content_json));
+        let blobs = if hydrate {
+            self.load_blobs(session_id).await?
+        } else {
+            HashMap::new()
+        };
+
         let mut messages = Vec::new();
-        for (idx, (role_str, content_json, created_timestamp, metadata_json)) in
+        for (idx, (role_str, content_json, created_timestamp, metadata_json, msg_uid)) in
             rows.into_iter().enumerate()
         {
             let role = match role_str.as_str() {
@@ -2437,18 +2831,50 @@ impl SessionStorage {
                 _ => continue,
             };
 
-            let content = serde_json::from_str(&content_json)?;
+            let mut content: Vec<MessageContent> = serde_json::from_str(&content_json)?;
+            message_blobs::hydrate(&mut content, &blobs);
             let metadata = metadata_json
                 .and_then(|json| serde_json::from_str(&json).ok())
                 .unwrap_or_default();
 
             let mut message = Message::new(role, created_timestamp, content);
             message.metadata = metadata;
-            message = message.with_id(format!("msg_{}_{}", session_id, idx));
+            // Dual-read: prefer the durable `msg_uid`; fall back to the legacy
+            // positional id only for a row an in-flight upgrade hasn't
+            // backfilled yet (migration 14 backfills all existing rows).
+            let id = msg_uid.unwrap_or_else(|| format!("msg_{}_{}", session_id, idx));
+            message = message.with_id(id);
             messages.push(message);
         }
 
         Ok(Conversation::new_unvalidated(messages))
+    }
+
+    /// Every externalized payload of one session, keyed by blob handle (BR-7).
+    async fn load_blobs(&self, session_id: &str) -> Result<HashMap<String, String>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_uid, content FROM message_blobs WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// One externalized payload, by handle. The lazy read path's retrieval seam:
+    /// what `platform__read_session_blob` calls when the model asks for the full
+    /// output behind a stub.
+    async fn get_message_blob(&self, session_id: &str, blob_uid: &str) -> Result<Option<String>> {
+        let pool = self.pool().await?;
+        let content = sqlx::query_scalar::<_, String>(
+            "SELECT content FROM message_blobs WHERE session_id = ? AND blob_uid = ?",
+        )
+        .bind(session_id)
+        .bind(blob_uid)
+        .fetch_optional(pool)
+        .await?;
+        Ok(content)
     }
 
     async fn add_message(&self, session_id: &str, message: &Message) -> Result<()> {
@@ -2456,19 +2882,49 @@ impl SessionStorage {
         let mut tx = pool.begin().await?;
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
+        // Persist the message's stable id, minting a fresh UUIDv7 when the
+        // caller didn't supply one (BR-45).
+        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
-        sqlx::query(
+        // BR-7: lift an oversized tool-result payload into the blob side table
+        // so the `messages` row stays small. `None` (the common case) stores the
+        // content exactly as before, with no extra allocation.
+        let externalized = message_blobs::externalize(&message.content);
+        let (content_json, blobs) = match &externalized {
+            Some((content, blobs)) => (serde_json::to_string(content)?, blobs.as_slice()),
+            None => (serde_json::to_string(&message.content)?, [].as_slice()),
+        };
+
+        let insert = sqlx::query(
             r#"
-            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
         )
         .bind(session_id)
         .bind(role_to_string(&message.role))
-        .bind(serde_json::to_string(&message.content)?)
+        .bind(content_json)
         .bind(message.created)
         .bind(metadata_json)
+        .bind(msg_uid)
         .execute(&mut *tx)
+        .await?;
+
+        // Same transaction as the message row: a stub can never be persisted
+        // without the payload it points at.
+        Self::insert_blobs(&mut tx, session_id, blobs).await?;
+
+        // Keep the FTS recall index in sync with the new row (BR-17). Indexed
+        // from the *original* message: recall renders a tool response as a
+        // placeholder, so externalization cannot change what is searchable.
+        let fts_available = Self::messages_fts_exists(&mut *tx).await;
+        Self::index_message_fts(
+            &mut tx,
+            session_id,
+            insert.last_insert_rowid(),
+            message,
+            fts_available,
+        )
         .await?;
 
         sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
@@ -2477,6 +2933,50 @@ impl SessionStorage {
             .await?;
 
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// True when the FTS5 mirror table exists (created by schema migration 15).
+    /// The read path guards on this too; a DB that reached its version without
+    /// `messages_fts` (e.g. a future migration renumber, or a partial upgrade)
+    /// must degrade gracefully instead of hard-failing every message save.
+    async fn messages_fts_exists<'e, E>(executor: E) -> bool
+    where
+        E: sqlx::Executor<'e, Database = Sqlite>,
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+        )
+        .fetch_one(executor)
+        .await
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
+    /// Insert one message's flattened text into the FTS recall index, within
+    /// the caller's transaction. Only user-visible, non-empty messages are
+    /// indexed (BR-17). `fts_available` is resolved once by the caller so a
+    /// bulk rewrite doesn't re-probe the catalog per message.
+    async fn index_message_fts(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        message_id: i64,
+        message: &Message,
+        fts_available: bool,
+    ) -> Result<()> {
+        if !fts_available || !message.metadata.user_visible {
+            return Ok(());
+        }
+        let text = chat_fts::extract_searchable_text(&message.content);
+        if text.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(MESSAGES_FTS_INSERT)
+            .bind(&text)
+            .bind(session_id)
+            .bind(message_id)
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 
@@ -2492,25 +2992,156 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
+        // Rebuild the FTS recall index for this session in lockstep with the
+        // message rewrite, so a compacted/edited session stays searchable
+        // without double-counting (BR-17). Skip entirely when the mirror table
+        // is absent so message rewrites still succeed on such a DB.
+        let fts_available = Self::messages_fts_exists(&mut *tx).await;
+        if fts_available {
+            sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Every blob still referenced after the rewrite (BR-7): the handles that
+        // survive inside kept stubs, plus the ones minted below. Anything else
+        // belonged to a message this rewrite dropped and is swept at the end.
+        let mut live_blob_uids: Vec<String> = Vec::new();
+
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
+            // PRESERVE each kept message's stable id across the rewrite (this is
+            // the exact op — DELETE + re-INSERT — that used to renumber ids).
+            // Only a newly-minted message (e.g. a compaction summary) with no id
+            // gets a fresh one (BR-45).
+            let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
-            sqlx::query(
+            let externalized = message_blobs::externalize(&message.content);
+            let (content_json, blobs) = match &externalized {
+                Some((content, blobs)) => (serde_json::to_string(content)?, blobs.as_slice()),
+                None => (serde_json::to_string(&message.content)?, [].as_slice()),
+            };
+            live_blob_uids.extend(message_blobs::referenced_uids(
+                externalized
+                    .as_ref()
+                    .map_or(message.content.as_slice(), |(content, _)| {
+                        content.as_slice()
+                    }),
+            ));
+
+            let insert = sqlx::query(
                 r#"
-            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
             )
             .bind(session_id)
             .bind(role_to_string(&message.role))
-            .bind(serde_json::to_string(&message.content)?)
+            .bind(content_json)
             .bind(message.created)
             .bind(metadata_json)
+            .bind(msg_uid)
             .execute(&mut *tx)
+            .await?;
+
+            Self::insert_blobs(&mut tx, session_id, blobs).await?;
+
+            Self::index_message_fts(
+                &mut tx,
+                session_id,
+                insert.last_insert_rowid(),
+                message,
+                fts_available,
+            )
             .await?;
         }
 
+        // A conversation written here can carry stubs minted under *another*
+        // session — a diverge/copy re-inserts the parent's messages verbatim
+        // into the child. Give the child its own row for each such payload
+        // before the sweep, so the two sessions' lifetimes stay independent.
+        Self::adopt_blobs(&mut tx, session_id, &live_blob_uids).await?;
+        Self::sweep_orphan_blobs(&mut tx, session_id, &live_blob_uids).await?;
+
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Write the payloads lifted out of one message, in the caller's transaction.
+    async fn insert_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        blobs: &[message_blobs::PendingBlob],
+    ) -> Result<()> {
+        for blob in blobs {
+            sqlx::query(
+                r#"
+                INSERT OR REPLACE INTO message_blobs (blob_uid, session_id, created_at, bytes, content)
+                VALUES (?, ?, ?, ?, ?)
+            "#,
+            )
+            .bind(&blob.uid)
+            .bind(session_id)
+            .bind(Utc::now().timestamp())
+            .bind(blob.bytes())
+            .bind(&blob.content)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Copy any referenced blob this session does not own yet from whichever
+    /// session does (the parent of a diverge/copy). No-op for the common case
+    /// where every handle was minted here.
+    async fn adopt_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        uids: &[String],
+    ) -> Result<()> {
+        for uid in uids {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO message_blobs (blob_uid, session_id, created_at, bytes, content)
+                SELECT blob_uid, ?, created_at, bytes, content
+                FROM message_blobs WHERE blob_uid = ? LIMIT 1
+            "#,
+            )
+            .bind(session_id)
+            .bind(uid)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Drop this session's blobs that no surviving message points at — the
+    /// payloads of tool responses that compaction (or an edit) just removed.
+    /// Without this the side table would only ever grow, trading one kind of DB
+    /// bloat for another.
+    async fn sweep_orphan_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        live_uids: &[String],
+    ) -> Result<()> {
+        if live_uids.is_empty() {
+            sqlx::query("DELETE FROM message_blobs WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut **tx)
+                .await?;
+            return Ok(());
+        }
+
+        let placeholders = vec!["?"; live_uids.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM message_blobs WHERE session_id = ? AND blob_uid NOT IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(session_id);
+        for uid in live_uids {
+            query = query.bind(uid);
+        }
+        query.execute(&mut **tx).await?;
         Ok(())
     }
 
@@ -2575,6 +3206,12 @@ impl SessionStorage {
         }
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // The session's externalized tool-result payloads go with it (BR-7).
+        sqlx::query("DELETE FROM message_blobs WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
@@ -3153,6 +3790,7 @@ impl SessionStorage {
         session_id: &str,
         custom_name: Option<String>,
         anchor_ms: Option<i64>,
+        anchor_uid: Option<String>,
     ) -> Result<Session> {
         // Load original first (with conversation) so we can derive a name and
         // confirm it exists.
@@ -3165,12 +3803,23 @@ impl SessionStorage {
 
         // Build the branch conversation: the parent's history trimmed to end at
         // the last complete assistant answer (so a mid-generation diverge never
-        // carries over an unanswered question or a dangling tool call).
+        // carries over an unanswered question or a dangling tool call). The
+        // durable message id (`anchor_uid`) is preferred over the timestamp so a
+        // fork at one of two same-second messages does not over-truncate.
         let branch_conversation = original
             .conversation
             .as_ref()
-            .map(|c| trim_to_last_complete_answer(c, anchor_ms))
+            .map(|c| trim_to_last_complete_answer_at(c, anchor_uid.as_deref(), anchor_ms))
             .unwrap_or_default();
+
+        // Record the fork point: the explicit anchor id when supplied, else the
+        // id of the last message actually carried into the branch.
+        let branch_point = anchor_uid.clone().or_else(|| {
+            branch_conversation
+                .messages()
+                .last()
+                .and_then(|m| m.id.clone())
+        });
 
         // Mint the branch session and copy the carry-over metadata (mirrors
         // copy_session, but writes the *trimmed* conversation rather than the
@@ -3190,9 +3839,10 @@ impl SessionStorage {
             .workflow(original.workflow)
             .user_workflow_values(original.user_workflow_values)
             // Lock the computed/custom name (so the auto-namer never clobbers
-            // the branch marker) and record the lineage pointer.
+            // the branch marker) and record the lineage pointer + fork point.
             .user_provided_name(new_name)
             .diverged_from(Some(session_id.to_string()))
+            .branch_point_msg_uid(branch_point)
             .apply()
             .await?;
 
@@ -3252,6 +3902,90 @@ impl SessionStorage {
         Ok(())
     }
 
+    // BR-43 shadow-git checkpoints: the `checkpoints` side-table CRUD. Kept here
+    // (rather than the `checkpoint` module) because `SessionStorage` owns the
+    // SQLite pool; `CheckpointManager` calls these through `SessionManager`.
+
+    async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        let pool = self.pool().await?;
+        let changed = serde_json::to_string(&rec.changed_paths)?;
+        sqlx::query(
+            r#"INSERT INTO checkpoints
+                (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.session_id)
+        .bind(rec.turn_index)
+        .bind(rec.anchor_ts)
+        .bind(rec.kind.as_str())
+        .bind(&rec.commit_sha)
+        .bind(&rec.tree_sha)
+        .bind(changed)
+        .bind(&rec.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(CheckpointRow::into_record).collect()
+    }
+
+    /// The highest-`turn_index` checkpoint, for the next ordinal + `tree_sha`
+    /// dedup baseline.
+    async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? AND id = ?",
+        )
+        .bind(session_id)
+        .bind(checkpoint_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query("DELETE FROM checkpoints WHERE session_id = ?")
+            .bind(session_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     async fn search_chat_history(
         &self,
         query: &str,
@@ -3277,12 +4011,461 @@ impl SessionStorage {
 }
 
 #[cfg(test)]
+mod blob_tests {
+    //! BR-7: externalizing an oversized tool result out of `content_json`.
+    //!
+    //! These drive the storage layer directly (`get_conversation_inner`) rather
+    //! than through the `BIOROUTER_SESSION_BLOB_LAZY_LOAD` env var, so both read
+    //! modes are covered deterministically under a parallel test runner.
+
+    use super::*;
+    use crate::conversation::message::{Message, ToolResponse};
+    use rmcp::model::{CallToolResult, Content};
+    use tempfile::TempDir;
+
+    /// Comfortably over the 64 KiB default threshold.
+    fn huge(marker: &str) -> String {
+        (0..3_000)
+            .map(|i| format!("{marker} row {i} of a very large tool result\n"))
+            .collect()
+    }
+
+    fn tool_response_message(call_id: &str, text: String) -> Message {
+        Message::assistant().with_content(MessageContent::ToolResponse(ToolResponse {
+            id: call_id.to_string(),
+            tool_result: Ok(CallToolResult {
+                content: vec![Content::text(text)],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            metadata: None,
+        }))
+    }
+
+    fn response_text(conv: &Conversation, idx: usize) -> String {
+        let MessageContent::ToolResponse(response) = &conv.messages()[idx].content[0] else {
+            panic!("expected a tool response");
+        };
+        response.tool_result.as_ref().unwrap().content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone()
+    }
+
+    async fn stored_content_json(sm: &SessionManager, session_id: &str) -> String {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn blob_count(sm: &SessionManager, session_id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM message_blobs WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn session(sm: &SessionManager) -> String {
+        sm.create_session(
+            PathBuf::from("/tmp"),
+            "blobs".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// The core of BR-7: the oversized payload leaves `content_json` for the side
+    /// table, and the default (hydrating) read puts it back byte for byte — so
+    /// no existing consumer can tell the difference.
+    #[tokio::test]
+    async fn an_oversized_tool_result_is_externalized_and_hydrated_back_exactly() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("a");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        // The message row is now tiny and carries only a stub.
+        let row = stored_content_json(&sm, &id).await;
+        assert!(
+            row.len() < payload.len() / 10,
+            "the stored row should be a stub, not the payload ({} vs {})",
+            row.len(),
+            payload.len()
+        );
+        assert!(message_blobs::content_json_has_stub(&row));
+        assert_eq!(blob_count(&sm, &id).await, 1);
+
+        // ...and the default read is indistinguishable from before.
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_tool_result_still_stores_inline() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &tool_response_message("call_1", "small result".into()))
+            .await
+            .unwrap();
+
+        assert!(stored_content_json(&sm, &id).await.contains("small result"));
+        assert_eq!(blob_count(&sm, &id).await, 0);
+    }
+
+    /// The lazy read: the model gets the stub (preview + handle) and pulls the
+    /// payload back only when it asks, through `get_message_blob`.
+    #[tokio::test]
+    async fn the_lazy_read_keeps_the_stub_and_the_handle_resolves() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("b");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        let conv = sm
+            .storage()
+            .get_conversation_inner(&id, false)
+            .await
+            .unwrap();
+        let stub = response_text(&conv, 0);
+        assert!(stub.len() < payload.len() / 10);
+        assert!(stub.contains("platform__read_session_blob"));
+        assert!(stub.contains("b row 0 of a very large tool result"));
+
+        let uid = message_blobs::blob_uid_of(&stub).expect("the stub names a blob");
+        assert_eq!(
+            sm.get_message_blob(&id, uid).await.unwrap(),
+            Some(payload.clone())
+        );
+
+        // A handle is scoped to its session: another session cannot read it.
+        let other = session(&sm).await;
+        assert_eq!(sm.get_message_blob(&other, uid).await.unwrap(), None);
+    }
+
+    /// Compaction/edit rewrites the whole conversation. Kept messages must keep
+    /// their payload, and a dropped message's blob must not linger — otherwise
+    /// BR-7 would just move the bloat from one table to another.
+    #[tokio::test]
+    async fn a_conversation_rewrite_keeps_live_blobs_and_sweeps_dropped_ones() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let kept = huge("keep");
+        let dropped = huge("drop");
+        sm.add_message(&id, &tool_response_message("call_1", kept.clone()))
+            .await
+            .unwrap();
+        sm.add_message(&id, &tool_response_message("call_2", dropped))
+            .await
+            .unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 2);
+
+        // Rewrite with only the first message — exactly what compaction does.
+        let full = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let compacted = Conversation::new_unvalidated(vec![full.messages()[0].clone()]);
+        sm.replace_conversation(&id, &compacted).await.unwrap();
+
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages().len(), 1);
+        assert_eq!(response_text(&conv, 0), kept);
+    }
+
+    /// A rewrite of a *lazily* loaded conversation carries stubs, not payloads.
+    /// The stub must keep pointing at a live blob — the sweep must not mistake a
+    /// surviving handle for an orphan and delete the payload out from under it.
+    #[tokio::test]
+    async fn rewriting_a_lazily_loaded_conversation_does_not_lose_the_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("c");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        let lazy = sm
+            .storage()
+            .get_conversation_inner(&id, false)
+            .await
+            .unwrap();
+        sm.replace_conversation(&id, &lazy).await.unwrap();
+
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    /// Diverging copies the parent's messages into the child. When those messages
+    /// are stubs (lazy mode), the child must end up owning its own copy of the
+    /// payload, so the two sessions' lifetimes are independent.
+    #[tokio::test]
+    async fn a_branch_that_inherits_a_stub_adopts_the_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session(&sm).await;
+        let child = session(&sm).await;
+
+        let payload = huge("d");
+        sm.add_message(&parent, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        // The parent's history as a lazy reader sees it: stubs.
+        let lazy = sm
+            .storage()
+            .get_conversation_inner(&parent, false)
+            .await
+            .unwrap();
+        sm.replace_conversation(&child, &lazy).await.unwrap();
+        assert_eq!(blob_count(&sm, &child).await, 1);
+
+        // Deleting the parent leaves the branch intact.
+        sm.delete_session(&parent).await.unwrap();
+        let conv = sm
+            .get_session(&child, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_its_blobs_with_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &tool_response_message("call_1", huge("e")))
+            .await
+            .unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 1);
+
+        sm.delete_session(&id).await.unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 0);
+    }
+
+    /// The production upgrade path: a v15 DB gains `message_blobs` and keeps
+    /// every inline message it already had (they are never rewritten).
+    #[tokio::test]
+    async fn migrates_v15_db_to_v16_message_blobs() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=15 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT,
+                    model_config_json TEXT, diverged_from TEXT, external_key TEXT, branch_point_msg_uid TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT, msg_uid TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            SessionStorage::create_usage_schema(&pool).await.unwrap();
+            sqlx::query(MESSAGES_FTS_DDL).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES ('20240101_1', 'old', '/tmp/old')")
+                .execute(&pool).await.unwrap();
+            // A pre-v16 message keeps its content inline, forever.
+            let legacy = serde_json::to_string(&vec![MessageContent::text("kept inline")]).unwrap();
+            sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp, msg_uid) VALUES ('20240101_1', 'user', ?, 1, 'm1')")
+                .bind(&legacy)
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+        assert_eq!(
+            SessionStorage::get_schema_version(pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        // The new table exists...
+        assert_eq!(blob_count(&sm, "20240101_1").await, 0);
+        // ...and the legacy message is untouched.
+        let conv = sm
+            .get_session("20240101_1", true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages()[0].as_concat_text(), "kept inline");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::conversation::message::{Message, MessageContent};
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    #[tokio::test]
+    async fn fresh_database_contains_full_v16_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+
+        assert_eq!(
+            SessionStorage::get_schema_version(pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        for table in [
+            "token_events",
+            "checkpoints",
+            "messages_fts",
+            "message_blobs",
+        ] {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(table)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(exists, 1, "missing fresh-schema table {table}");
+        }
+        for column in [
+            "model_id",
+            "provider",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "billed_total_tokens",
+            "event_key",
+            "session_type",
+        ] {
+            assert!(
+                SessionStorage::table_has_column(pool, "token_events", column)
+                    .await
+                    .unwrap(),
+                "missing fresh usage column {column}"
+            );
+        }
+        assert!(
+            SessionStorage::table_has_column(pool, "messages", "msg_uid")
+                .await
+                .unwrap()
+        );
+        assert!(
+            SessionStorage::table_has_column(pool, "sessions", "branch_point_msg_uid")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoints_table_crud_roundtrip() {
+        // A fresh DB (create_schema path) must carry the migration-13 `checkpoints`
+        // table, and the CRUD helpers `CheckpointManager` relies on must roundtrip.
+        use crate::checkpoint::{CheckpointKind, CheckpointRecord};
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+        assert!(sm.last_checkpoint("s1").await.unwrap().is_none());
+
+        let rec = CheckpointRecord {
+            id: "cp-1".to_string(),
+            session_id: "s1".to_string(),
+            turn_index: 0,
+            anchor_ts: 1234,
+            kind: CheckpointKind::PreStep,
+            commit_sha: "deadbeef".to_string(),
+            tree_sha: "cafef00d".to_string(),
+            changed_paths: vec!["a.txt".to_string()],
+            created_at: "2026-07-12T00:00:00Z".to_string(),
+        };
+        sm.insert_checkpoint(&rec).await.unwrap();
+
+        let listed = sm.list_checkpoints("s1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, CheckpointKind::PreStep);
+        assert_eq!(listed[0].tree_sha, "cafef00d");
+        assert_eq!(listed[0].changed_paths, vec!["a.txt".to_string()]);
+
+        let got = sm.get_checkpoint("s1", "cp-1").await.unwrap().unwrap();
+        assert_eq!(got.commit_sha, "deadbeef");
+        assert!(sm.get_checkpoint("s1", "missing").await.unwrap().is_none());
+        // Scoped by session.
+        assert!(sm.get_checkpoint("other", "cp-1").await.unwrap().is_none());
+
+        sm.delete_checkpoints("s1").await.unwrap();
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn test_concurrent_session_creation() {
@@ -5025,6 +6208,11 @@ mod tests {
             .connect_with(opts)
             .await
             .unwrap();
+        assert_eq!(
+            SessionStorage::get_schema_version(&pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION,
+            "v10 must run usage v11/v12 before loop v13-v16"
+        );
         SessionStorage::apply_migration(&pool, 11).await.unwrap();
         SessionStorage::apply_migration(&pool, 11).await.unwrap();
         pool.close().await;
@@ -5186,7 +6374,208 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn already_v12_database_reconciles_ambiguous_usage_without_version_bump() {
+    #[allow(clippy::too_many_lines)]
+    async fn experimental_loop_v11_through_v14_shapes_upgrade_without_loss() {
+        for legacy_version in 11..=14 {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir
+                .path()
+                .join(format!("experimental-v{legacy_version}.db"));
+            let options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?1)")
+                .bind(legacy_version)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let branch_column = if legacy_version >= 12 {
+                ", branch_point_msg_uid TEXT"
+            } else {
+                ""
+            };
+            sqlx::query(&format!(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, session_type TEXT NOT NULL DEFAULT 'user'{branch_column})"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+            let message_uid_column = if legacy_version >= 12 {
+                ", msg_uid TEXT"
+            } else {
+                ""
+            };
+            sqlx::query(&format!(
+                "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, content_json TEXT NOT NULL, metadata_json TEXT{message_uid_column})"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "CREATE TABLE token_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER NOT NULL DEFAULT 0)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            if legacy_version >= 12 {
+                sqlx::query(
+                    "INSERT INTO sessions (id, session_type, branch_point_msg_uid) VALUES ('s1', 'user', 'legacy-anchor')",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            } else {
+                sqlx::query("INSERT INTO sessions (id, session_type) VALUES ('s1', 'user')")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let content_json =
+                serde_json::to_string(&vec![MessageContent::text("legacy searchable")]).unwrap();
+            if legacy_version >= 12 {
+                sqlx::query(
+                    "INSERT INTO messages (session_id, content_json, msg_uid) VALUES ('s1', ?1, 'legacy-uid')",
+                )
+                .bind(&content_json)
+                .execute(&pool)
+                .await
+                .unwrap();
+            } else {
+                sqlx::query("INSERT INTO messages (session_id, content_json) VALUES ('s1', ?1)")
+                    .bind(&content_json)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                "INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens) VALUES ('s1', 100, 8, 2, 10)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            SessionStorage::create_checkpoints_table(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO checkpoints (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha) VALUES ('cp1', 's1', 0, 100, 'pre_step', 'commit', 'tree')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            if legacy_version >= 13 {
+                sqlx::query(MESSAGES_FTS_DDL).execute(&pool).await.unwrap();
+                sqlx::query(MESSAGES_FTS_INSERT)
+                    .bind("legacy searchable")
+                    .bind("s1")
+                    .bind(1_i64)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            if legacy_version >= 14 {
+                SessionStorage::create_message_blobs_table(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "INSERT INTO message_blobs (blob_uid, session_id, created_at, bytes, content) VALUES ('blob1', 's1', 100, 7, 'payload')",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            SessionStorage::run_migrations(&pool).await.unwrap();
+
+            assert_eq!(
+                SessionStorage::get_schema_version(&pool).await.unwrap(),
+                CURRENT_SCHEMA_VERSION,
+                "experimental v{legacy_version} did not reach v16"
+            );
+            for column in [
+                "model_id",
+                "provider",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+                "billed_total_tokens",
+                "event_key",
+                "session_type",
+            ] {
+                assert!(
+                    SessionStorage::table_has_column(&pool, "token_events", column)
+                        .await
+                        .unwrap(),
+                    "experimental v{legacy_version} missed usage column {column}"
+                );
+            }
+            let usage: (i64, Option<String>) = sqlx::query_as(
+                "SELECT total_tokens, session_type FROM token_events WHERE session_id = 's1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(usage, (10, Some("user".into())));
+
+            let checkpoint_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM checkpoints WHERE id = 'cp1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(checkpoint_count, 1);
+            let message_uid: String =
+                sqlx::query_scalar("SELECT msg_uid FROM messages WHERE id = 1")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                message_uid,
+                if legacy_version >= 12 {
+                    "legacy-uid"
+                } else {
+                    "m1"
+                }
+            );
+            let branch_point: Option<String> =
+                sqlx::query_scalar("SELECT branch_point_msg_uid FROM sessions WHERE id = 's1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                branch_point.as_deref(),
+                (legacy_version >= 12).then_some("legacy-anchor")
+            );
+            let fts_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM messages_fts WHERE session_id = 's1' AND messages_fts MATCH 'legacy'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(fts_count, 1, "FTS rows were duplicated or lost");
+            let blob_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM message_blobs WHERE session_id = 's1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(blob_count, i64::from(legacy_version >= 14));
+        }
+    }
+
+    #[tokio::test]
+    async fn pr13_v12_database_reconciles_usage_and_adds_loop_schema() {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
         let temp_dir = TempDir::new().unwrap();
@@ -5222,10 +6611,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-            sqlx::query("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL)")
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, content_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
             sqlx::query(
                 r#"CREATE TABLE token_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5268,11 +6659,32 @@ mod tests {
         let pool = sm.storage.pool().await.unwrap();
         SessionStorage::reconcile_usage_schema(pool).await.unwrap();
         SessionStorage::reconcile_usage_schema(pool).await.unwrap();
+        SessionStorage::reconcile_loop_schema(pool).await.unwrap();
+        SessionStorage::reconcile_loop_schema(pool).await.unwrap();
         let version: i32 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
             .fetch_one(pool)
             .await
             .unwrap();
-        assert_eq!(version, 12, "reconciliation must not consume migration v13");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        for table in ["checkpoints", "messages_fts", "message_blobs"] {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(table)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(exists, 1, "missing reconciled table {table}");
+        }
+        assert!(
+            SessionStorage::table_has_column(pool, "messages", "msg_uid")
+                .await
+                .unwrap()
+        );
+        assert!(
+            SessionStorage::table_has_column(pool, "sessions", "branch_point_msg_uid")
+                .await
+                .unwrap()
+        );
         type ReconciledUsageRow = (
             Option<String>,
             Option<String>,
@@ -5337,6 +6749,80 @@ mod tests {
         );
         assert_eq!(counts.total_tokens, Some(4321));
         assert_eq!(counts.accumulated_total_tokens, Some(9999));
+    }
+
+    /// BR-52: both ways of turning stored counters into the `TokenState` clients
+    /// see must agree, since one seeds the SSE stream (from the session row the
+    /// route already read) and the other refreshes it (from the agent's own
+    /// boundary read). If they disagreed, the token readout would jump.
+    #[tokio::test]
+    async fn token_state_from_counts_and_from_session_agree() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 1).await;
+        sm.update(&session.id)
+            .total_tokens(Some(4321))
+            .input_tokens(Some(4000))
+            .output_tokens(Some(321))
+            .accumulated_total_tokens(Some(9999))
+            .accumulated_input_tokens(Some(9000))
+            .accumulated_output_tokens(Some(999))
+            .apply()
+            .await
+            .unwrap();
+
+        let full = sm.get_session(&session.id, false).await.unwrap();
+        let from_session = TokenState::from(&full);
+        let from_counts = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+
+        assert_eq!(from_session.total_tokens, 4321);
+        assert_eq!(from_session.input_tokens, 4000);
+        assert_eq!(from_session.output_tokens, 321);
+        assert_eq!(from_session.accumulated_total_tokens, 9999);
+        assert_eq!(from_session.accumulated_input_tokens, 9000);
+        assert_eq!(from_session.accumulated_output_tokens, 999);
+
+        assert_eq!(from_counts.total_tokens, from_session.total_tokens);
+        assert_eq!(from_counts.input_tokens, from_session.input_tokens);
+        assert_eq!(from_counts.output_tokens, from_session.output_tokens);
+        assert_eq!(
+            from_counts.accumulated_total_tokens,
+            from_session.accumulated_total_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_input_tokens,
+            from_session.accumulated_input_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_output_tokens,
+            from_session.accumulated_output_tokens
+        );
+    }
+
+    /// A brand-new session has NULL counters; both conversions must read as zero
+    /// rather than panicking or surfacing a negative default.
+    #[tokio::test]
+    async fn token_state_of_a_fresh_session_is_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/fresh"),
+                "Fresh".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let state = TokenState::from(&session);
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
+
+        let state = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
     }
 
     #[tokio::test]
@@ -5639,7 +7125,7 @@ mod tests {
             umsg(3, "q2"),
             amsg(4, "a2"),
         ]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 4);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a2");
     }
@@ -5649,7 +7135,7 @@ mod tests {
         // The reported bug: diverge fired while the agent was still generating
         // the answer to q2, so the DB has q2 persisted with no answer yet.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -5665,7 +7151,7 @@ mod tests {
             amsg(4, ""),
             atool(5),
         ]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -5679,7 +7165,7 @@ mod tests {
             amsg(40, "a2"),
         ]);
         // Per-message Diverge button clicked on a1 (created=20).
-        let t = trim_to_last_complete_answer(&conv, Some(20));
+        let t = trim_to_last_complete_answer_at(&conv, None, Some(20));
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
     }
@@ -5688,7 +7174,7 @@ mod tests {
     fn test_trim_empty_when_no_complete_answer() {
         // Diverged before the first reply landed: only an unanswered question.
         let conv = Conversation::new_unvalidated(vec![umsg(1, "q1")]);
-        let t = trim_to_last_complete_answer(&conv, None);
+        let t = trim_to_last_complete_answer_at(&conv, None, None);
         assert!(t.messages().is_empty());
     }
 
@@ -5716,6 +7202,459 @@ mod tests {
             .unwrap()
             .as_concat_text();
         assert_eq!(last, "answer 0");
+    }
+
+    // ── BR-45: stable per-message ids + branch fork point ───────────────────
+
+    /// Ids survive the exact operation that used to renumber them — a full
+    /// history rewrite (compaction/edit). Every kept message keeps its id; only
+    /// a newly-inserted message gets a fresh, non-positional id.
+    #[tokio::test]
+    async fn msg_uid_stable_across_replace_conversation() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 2).await; // 4 messages
+        let before: Vec<String> = session
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(before.len(), 4);
+        // Durable ids are UUIDs, not the old positional `msg_{session}_{idx}`.
+        assert!(before.iter().all(|id| !id.starts_with("msg_")));
+
+        // Simulate a compaction: rewrite the same messages plus one brand-new
+        // summary message that carries no id yet.
+        let mut msgs: Vec<Message> = session.conversation.as_ref().unwrap().messages().to_vec();
+        msgs.push(amsg(chrono::Utc::now().timestamp_millis() + 99, "summary"));
+        sm.replace_conversation(&session.id, &Conversation::new_unvalidated(msgs))
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&session.id, true).await.unwrap();
+        let after_ids: Vec<String> = after
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(after_ids.len(), 5);
+        // The four kept messages preserved their ids across the rewrite.
+        assert_eq!(&after_ids[..4], &before[..]);
+        // The new summary got a fresh, distinct, non-positional id.
+        let new_id = &after_ids[4];
+        assert!(!new_id.starts_with("msg_"));
+        assert!(!before.contains(new_id));
+    }
+
+    /// A row an in-flight upgrade left with a NULL `msg_uid` still loads, using
+    /// the legacy positional id as a fallback (BR-45 dual-read).
+    #[tokio::test]
+    async fn get_conversation_falls_back_to_positional_id_for_null_uid() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/br45null"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // Insert directly with a NULL msg_uid (mimics a not-yet-backfilled row).
+        let pool = sm.storage.pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid) VALUES (?, 'user', ?, 0, '{}', NULL)",
+        )
+        .bind(&session.id)
+        .bind(serde_json::to_string(&vec![MessageContent::text("legacy")]).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let msg = &loaded.conversation.as_ref().unwrap().messages()[0];
+        assert_eq!(
+            msg.id.as_deref(),
+            Some(format!("msg_{}_0", session.id).as_str())
+        );
+    }
+
+    /// Two messages sharing a whole-second `created` used to collapse to one
+    /// anchor, so a diverge at the first silently carried the second over. The
+    /// durable-id anchor keeps only the strict prefix and records the fork point
+    /// (BR-45, item 3).
+    #[tokio::test]
+    async fn diverge_by_uid_beats_same_second_collision() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/br45"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // a1, q2, a2 all share created = 2000 (a single whole second).
+        for m in [
+            umsg(1000, "q1"),
+            amsg(2000, "a1"),
+            umsg(2000, "q2"),
+            amsg(2000, "a2"),
+        ] {
+            sm.add_message(&session.id, &m).await.unwrap();
+        }
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let a1_uid = loaded
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text() == "a1")
+            .and_then(|m| m.id.clone())
+            .unwrap();
+
+        // Anchored by durable id: keep exactly [q1, a1].
+        let by_uid = sm
+            .diverge_session_at(&session.id, None, None, Some(a1_uid.clone()))
+            .await
+            .unwrap();
+        let uid_texts: Vec<String> = by_uid
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.as_concat_text())
+            .collect();
+        assert_eq!(uid_texts, vec!["q1".to_string(), "a1".to_string()]);
+        // The fork point is recorded on the child branch.
+        assert_eq!(
+            by_uid.branch_point_msg_uid.as_deref(),
+            Some(a1_uid.as_str())
+        );
+
+        // The legacy timestamp anchor (2000) cannot disambiguate and carries a2
+        // over — the very over-truncation the uid anchor fixes.
+        let by_ts = sm
+            .diverge_session(&session.id, None, Some(2000))
+            .await
+            .unwrap();
+        assert_eq!(by_ts.message_count, 4);
+    }
+
+    /// Migration 14 backfills `msg_uid` deterministically from the durable
+    /// rowid (`m` || id) and adds the branch fork-point column.
+    #[tokio::test]
+    async fn migration_14_backfills_msg_uid_from_rowid() {
+        let temp_dir = TempDir::new().unwrap();
+        let db = temp_dir.path().join("v13.db");
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        // A minimal pre-migration (v13) shape: no msg_uid, no branch column.
+        sqlx::query("CREATE TABLE sessions (id TEXT PRIMARY KEY, diverged_from TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                created_timestamp INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata_json TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('s', 'user', '[]', 0), ('s', 'assistant', '[]', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        SessionStorage::apply_migration(&pool, 14).await.unwrap();
+
+        let uids: Vec<(i64, Option<String>)> =
+            sqlx::query_as("SELECT id, msg_uid FROM messages ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(uids[0].1.as_deref(), Some("m1"));
+        assert_eq!(uids[1].1.as_deref(), Some("m2"));
+
+        // The branch fork-point column now exists and defaults to NULL.
+        let bp: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT branch_point_msg_uid FROM sessions")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(bp.is_empty());
+    }
+
+    // ---- BR-17: FTS5 relevance-ranked chat recall ----
+
+    #[tokio::test]
+    async fn chat_recall_fts_ranks_by_relevance_not_recency() {
+        // The exact case the old recency `LIKE` scan got wrong: an older
+        // session that matches every query term must outrank a newer session
+        // that matches only one of them.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let relevant = sm
+            .create_session(
+                PathBuf::from("/tmp/a"),
+                "relevant".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(
+            &relevant.id,
+            &umsg(
+                1,
+                "quantum entanglement experiment results were significant",
+            ),
+        )
+        .await
+        .unwrap();
+
+        // Added later, so it is the more *recent* session.
+        let recent = sm
+            .create_session(PathBuf::from("/tmp/b"), "recent".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(
+            &recent.id,
+            &umsg(2, "quantum mechanics is a broad topic in physics"),
+        )
+        .await
+        .unwrap();
+
+        let res = sm
+            .search_chat_history("quantum entanglement experiment", None, None, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.results.len(), 2, "both sessions mention 'quantum'");
+        assert_eq!(
+            res.results[0].session_id, relevant.id,
+            "the fully-matching session must rank first under bm25"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_recall_fts_sanitizes_operator_query() {
+        // A query containing FTS operators must not raise a syntax error; it is
+        // treated as literal terms.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let s = sm
+            .create_session(PathBuf::from("/tmp/a"), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &umsg(1, "the CFTR gene and cystic fibrosis"))
+            .await
+            .unwrap();
+
+        // Would be a malformed MATCH expression if passed through unsanitized.
+        let res = sm
+            .search_chat_history("CFTR AND (fibrosis*", None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(res.results.len(), 1);
+        assert_eq!(res.results[0].session_id, s.id);
+    }
+
+    #[tokio::test]
+    async fn chat_recall_fts_stays_in_sync_on_replace_conversation() {
+        // The compaction/edit rewrite (DELETE + reinsert) must keep the FTS
+        // index consistent — the old text drops out, the new text is findable.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let s = sm
+            .create_session(PathBuf::from("/tmp/a"), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &umsg(1, "photosynthesis in chloroplasts"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.search_chat_history("photosynthesis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+
+        // Rewrite the conversation with entirely different text.
+        let convo = Conversation::new_unvalidated(vec![umsg(2, "glycolysis in the cytoplasm")]);
+        sm.replace_conversation(&s.id, &convo).await.unwrap();
+
+        // Old term is gone, new term is present — index tracked the rewrite.
+        assert!(sm
+            .search_chat_history("photosynthesis", None, None, None, None)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        assert_eq!(
+            sm.search_chat_history("glycolysis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_15_backfills_fts_index() {
+        // Production upgrade: a pre-v15 DB with existing messages gets an FTS
+        // index built by migration 15's backfill, so recall works on history
+        // that predates the feature.
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        let content_json =
+            serde_json::to_string(&vec![MessageContent::text("mitochondria powerhouse cell")])
+                .unwrap();
+
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=7 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT, model_config_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES ('20240101_1', 'old', '/tmp/old')")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('20240101_1', 'user', ?, 1)")
+                .bind(&content_json)
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the real manager migrates 8→16, including the FTS backfill.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let res = sm
+            .search_chat_history("mitochondria", None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(res.results.len(), 1, "backfilled message is searchable");
+        assert_eq!(res.results[0].session_id, "20240101_1");
+    }
+
+    #[tokio::test]
+    async fn chat_recall_falls_back_to_like_without_fts_table() {
+        // A DB lacking messages_fts (older/partial migration) must still return
+        // recall results via the legacy `LIKE` scan rather than erroring.
+        use crate::session::chat_history_search::ChatHistorySearch;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("nofts.db");
+        let content_json =
+            serde_json::to_string(&vec![MessageContent::text("ribosome translation")]).unwrap();
+
+        let opts = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT DEFAULT '', working_dir TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content_json TEXT, created_timestamp INTEGER, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO sessions (id) VALUES ('s1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('s1', 'user', ?, 1)")
+            .bind(&content_json)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let res = ChatHistorySearch::new(&pool, "ribosome", None, None, None, None)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.results.len(),
+            1,
+            "LIKE fallback still finds the message"
+        );
+        assert_eq!(res.results[0].session_id, "s1");
     }
 }
 

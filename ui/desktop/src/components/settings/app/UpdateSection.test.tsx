@@ -73,8 +73,11 @@ describe('Settings → UpdateSection — one-click flow', () => {
   });
 
   it('recovers a ready-to-install update opened from a fresh Settings panel', async () => {
-    (window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }).electron.getUpdateState =
-      vi.fn().mockResolvedValue({ status: 'downloaded', latestVersion: '1.86.0', percent: 100 });
+    (
+      window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }
+    ).electron.getUpdateState = vi
+      .fn()
+      .mockResolvedValue({ status: 'downloaded', latestVersion: '1.86.0', percent: 100 });
     render(<UpdateSection />);
     const installBtn = await screen.findByRole('button', { name: /Restart & Update to 1\.86\.0/i });
     fireEvent.click(installBtn);

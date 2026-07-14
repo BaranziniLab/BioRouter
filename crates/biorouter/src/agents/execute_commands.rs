@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 
+use crate::agents::effort::ReasoningEffort;
 use crate::agents::types::SessionConfig;
 use crate::context_mgmt::compact_messages;
 use crate::conversation::message::{Message, SystemNotificationType};
@@ -35,6 +36,10 @@ static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "schedule",
         description: "Schedule a recurring prompt (/schedule @daily <prompt>, /schedule list)",
+    },
+    CommandDef {
+        name: "effort",
+        description: "Set how hard to think (/effort quick|normal|deep)",
     },
 ];
 
@@ -78,6 +83,7 @@ impl Agent {
             "goal" => self.handle_goal_command(params_str, session_id).await,
             "loop" => self.handle_loop_command(params_str, session_id).await,
             "schedule" => self.handle_schedule_command(params_str, session_id).await,
+            "effort" => self.handle_effort_command(params_str, session_id).await,
             _ => {
                 self.handle_workflow_command(command, params_str, session_id)
                     .await
@@ -133,6 +139,44 @@ impl Agent {
         Ok(Some(Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,
             "Compaction complete",
+        )))
+    }
+
+    /// BR-63: `/effort quick|normal|deep` — the slash-flag half of the
+    /// reasoning-effort control (the GUI composer toggle is the other half, and
+    /// it wins for the turn it rides on). Sticky for the session; `/effort` with
+    /// no argument reports the current level.
+    async fn handle_effort_command(
+        &self,
+        params_str: &str,
+        session_id: &str,
+    ) -> Result<Option<Message>> {
+        let current = self.reasoning_effort(session_id).await;
+
+        if params_str.is_empty() {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                format!(
+                    "Reasoning effort: {}. Change it with /effort quick|normal|deep.",
+                    current.describe()
+                ),
+            )));
+        }
+
+        let Some(effort) = ReasoningEffort::parse(params_str) else {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                format!(
+                    "Unknown effort '{params_str}'. Use /effort quick, /effort normal, or /effort deep."
+                ),
+            )));
+        };
+
+        self.set_reasoning_effort(session_id, effort).await;
+
+        Ok(Some(Message::assistant().with_system_notification(
+            SystemNotificationType::InlineMessage,
+            format!("Reasoning effort set to {}", effort.describe()),
         )))
     }
 

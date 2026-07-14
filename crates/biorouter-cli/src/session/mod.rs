@@ -479,6 +479,12 @@ impl CliSession {
     async fn fire_session_end_hooks(&self, reason: &str) {
         if let Ok(session) = self.get_session().await {
             let hooks = self.agent.hooks_manager();
+            // BR-28: shutdown boundary — join any observe-only hook (Notification,
+            // Pre/PostCompact, Subagent*) still running from the last turn, so it
+            // completes before the process exits instead of being cut off.
+            hooks
+                .join_fired(biorouter::hooks::FIRE_JOIN_BUDGET_SHUTDOWN)
+                .await;
             let mut payload = biorouter::hooks::HookPayload::new(
                 biorouter::hooks::HookEvent::SessionEnd,
                 &session.id,
@@ -994,6 +1000,7 @@ impl CliSession {
         interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
+        self.last_abort = None;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
@@ -1001,7 +1008,10 @@ impl CliSession {
             id: self.session_id.clone(),
             schedule_id: self.scheduled_job_id.clone(),
             max_turns: self.max_turns,
+            max_tool_calls: None,
+            budget: None,
             retry_config: self.retry_config.clone(),
+            reasoning_effort: None,
         };
         let user_message = self
             .messages
@@ -1132,6 +1142,9 @@ impl CliSession {
                                 eprintln!("Model changed to {} in {} mode", model, mode);
                             }
                         }
+                        // BR-52: token accounting is rendered from the session row
+                        // in the CLI; the carried snapshot is informational here.
+                        Some(Ok(AgentEvent::TokenUsage(_))) => {}
                         Some(Ok(AgentEvent::TurnAborted { code, message })) => {
                             // The human-readable Message was already yielded and
                             // rendered. Record the machine-checkable failure so the
@@ -1144,6 +1157,7 @@ impl CliSession {
                                 });
                             }
                             self.last_abort = Some(code);
+                            break;
                         }
                         Some(Err(e)) => {
                             handle_agent_error(&e, is_stream_json_mode);

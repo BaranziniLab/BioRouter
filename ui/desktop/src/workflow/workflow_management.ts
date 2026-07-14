@@ -1,7 +1,10 @@
 import { saveWorkflow as saveWorkflowApi, listWorkflows, WorkflowManifest } from '../api';
 import type { Workflow } from './index';
 
-export const saveWorkflow = async (workflow: Workflow, workflowId?: string | null): Promise<string> => {
+export const saveWorkflow = async (
+  workflow: Workflow,
+  workflowId?: string | null
+): Promise<string> => {
   try {
     let response = await saveWorkflowApi({
       body: {

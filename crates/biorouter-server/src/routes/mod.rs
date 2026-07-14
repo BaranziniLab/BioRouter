@@ -51,6 +51,7 @@ mod origin_tests {
 }
 
 pub mod action_required;
+pub mod active_work;
 pub mod agent;
 pub mod apps;
 pub mod audio;
@@ -79,6 +80,7 @@ use axum::Router;
 pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Router {
     Router::new()
         .merge(status::routes(state.clone()))
+        .merge(active_work::routes(state.clone()))
         .merge(reply::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
         .merge(agent::routes(state.clone()))

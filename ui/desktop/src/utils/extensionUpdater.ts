@@ -112,7 +112,7 @@ async function fetchJson<T>(url: string, timeoutMs = 15000): Promise<T> {
 async function downloadFile(
   url: string,
   dest: string,
-  onProgress: (percent: number) => void,
+  onProgress: (percent: number) => void
 ): Promise<void> {
   const res = await fetch(url, {
     headers: { 'User-Agent': 'BioRouter-ExtensionUpdater/1.0' },
@@ -140,7 +140,9 @@ async function downloadFile(
 
 // ─── Core update flow ─────────────────────────────────────────────────────────
 
-async function scanInstalledExtensions(): Promise<Array<{ manifest: ExtensionManifest; installDir: string }>> {
+async function scanInstalledExtensions(): Promise<
+  Array<{ manifest: ExtensionManifest; installDir: string }>
+> {
   try {
     const entries = await fs.readdir(EXTENSIONS_DIR, { withFileTypes: true });
     const results: Array<{ manifest: ExtensionManifest; installDir: string }> = [];
@@ -165,7 +167,7 @@ async function scanInstalledExtensions(): Promise<Array<{ manifest: ExtensionMan
 
 async function checkExtensionUpdate(
   manifest: ExtensionManifest,
-  installDir: string,
+  installDir: string
 ): Promise<ExtensionUpdateInfo | null> {
   const parsed = parseGitHubRepo(manifest.repository);
   if (!parsed) return null;
@@ -177,7 +179,10 @@ async function checkExtensionUpdate(
   try {
     release = await fetchJson<GitHubRelease>(apiUrl);
   } catch (err) {
-    log.warn(`[ExtensionUpdater] Cannot fetch release for ${manifest.name}:`, (err as Error).message);
+    log.warn(
+      `[ExtensionUpdater] Cannot fetch release for ${manifest.name}:`,
+      (err as Error).message
+    );
     return null;
   }
 
@@ -209,14 +214,23 @@ async function checkExtensionUpdate(
   };
 }
 
-async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateEvent) => void): Promise<void> {
+async function applyUpdate(
+  info: ExtensionUpdateInfo,
+  send: (e: ExtensionUpdateEvent) => void
+): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `biorouter-ext-update-${info.name}-${Date.now()}`);
   const tmpBrxt = path.join(tmpDir, `${info.name}.brxt`);
 
   try {
     mkdirSync(tmpDir, { recursive: true });
 
-    send({ type: 'update-start', ext: info.name, displayName: info.displayName, from: info.currentVersion, to: info.latestVersion });
+    send({
+      type: 'update-start',
+      ext: info.name,
+      displayName: info.displayName,
+      from: info.currentVersion,
+      to: info.latestVersion,
+    });
 
     // Download
     await downloadFile(info.downloadUrl, tmpBrxt, (percent) => {
@@ -245,7 +259,12 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
       throw new Error(`uv sync failed: ${detail}`);
     }
 
-    send({ type: 'update-done', ext: info.name, displayName: info.displayName, to: info.latestVersion });
+    send({
+      type: 'update-done',
+      ext: info.name,
+      displayName: info.displayName,
+      to: info.latestVersion,
+    });
     log.info(`[ExtensionUpdater] Updated ${info.name} → ${info.latestVersion}`);
   } catch (err) {
     const msg = (err as Error).message;
@@ -253,7 +272,11 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
     send({ type: 'update-error', ext: info.name, error: msg });
   } finally {
     // Cleanup temp dir
-    try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch {}
+    try {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup — ignore if the temp dir is already gone */
+    }
   }
 }
 
@@ -288,7 +311,13 @@ export async function runExtensionUpdateCheck(): Promise<void> {
 
     if (!updateInfo) continue;
 
-    send({ type: 'update-found', ext: updateInfo.name, displayName: updateInfo.displayName, from: updateInfo.currentVersion, to: updateInfo.latestVersion });
+    send({
+      type: 'update-found',
+      ext: updateInfo.name,
+      displayName: updateInfo.displayName,
+      from: updateInfo.currentVersion,
+      to: updateInfo.latestVersion,
+    });
     await applyUpdate(updateInfo, send);
     updatedCount++;
   }
@@ -301,8 +330,6 @@ export async function runExtensionUpdateCheck(): Promise<void> {
 export function scheduleExtensionUpdateCheck(): void {
   // Run after 8 seconds — later than dependency check and auto-updater
   setTimeout(() => {
-    runExtensionUpdateCheck().catch((err) =>
-      log.error('[ExtensionUpdater] Unhandled error:', err),
-    );
+    runExtensionUpdateCheck().catch((err) => log.error('[ExtensionUpdater] Unhandled error:', err));
   }, 8000);
 }

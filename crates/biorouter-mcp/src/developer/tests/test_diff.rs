@@ -1,10 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crate::developer::shell::normalize_line_endings;
     use crate::developer::text_editor::*;
+    use crate::developer::undo_history::FileHistory;
     use mpatch::parse_diffs;
-    use std::collections::HashMap;
-
-    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     #[test]
@@ -86,7 +85,7 @@ new file mode 100644
 +modified_line2
  line3"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         assert!(result.is_ok());
@@ -98,7 +97,7 @@ new file mode 100644
         );
 
         // Verify history was saved
-        assert!(history.lock().unwrap().contains_key(&file_path));
+        assert!(history.depth(&file_path) > 0);
     }
 
     #[tokio::test]
@@ -119,7 +118,7 @@ new file mode 100644
 +if __name__ == "__main__":
 +    main()"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         if let Err(e) = &result {
@@ -149,7 +148,7 @@ new file mode 100644
 -remove2
  keep2"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         assert!(result.is_ok());
@@ -173,7 +172,7 @@ new file mode 100644
 -old
 +new"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         // mpatch with fuzzy matching may return OK but with a warning message
@@ -205,7 +204,7 @@ new file mode 100644
 -old
 +new"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         // For non-existent files, apply_diff will try to apply the patch
         // which should fail since the file doesn't exist
         let result = apply_diff(&file_path, diff, &history).await;
@@ -237,7 +236,7 @@ new file mode 100644
      println!("Hello");
  }"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = text_editor_replace(
             &file_path,
             "", // old_str (ignored when diff is provided)
@@ -267,7 +266,7 @@ new file mode 100644
 @@ -0,0 +1 @@
 +new content"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         assert!(result.is_ok());
@@ -289,7 +288,7 @@ new file mode 100644
 -original
 +modified"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
 
         // Apply diff
         let result = apply_diff(&file_path, diff, &history).await;
@@ -332,7 +331,7 @@ diff --git a/file2.txt b/file2.txt
 -content2
 +modified2"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(base_path, diff, &history).await;
 
         assert!(result.is_ok());
@@ -361,7 +360,7 @@ diff --git a/file2.txt b/file2.txt
 +modified_line3
  line4"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         // mpatch should handle this with fuzzy matching
@@ -393,7 +392,7 @@ diff --git a/file2.txt b/file2.txt
 +    print('goodbye')
      return True"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         // Should work with fuzzy matching at 70% threshold
@@ -412,7 +411,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "Hello, World!\n");
+        assert_eq!(content, normalize_line_endings("Hello, World!\n"));
     }
 
     #[tokio::test]
@@ -425,7 +424,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "Hello, World!\n");
+        assert_eq!(content, normalize_line_endings("Hello, World!\n"));
     }
 
     #[tokio::test]
@@ -439,7 +438,7 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert!(content.ends_with('\n'), "File should end with newline");
-        assert_eq!(content, "line1\nline2\nline3\n");
+        assert_eq!(content, normalize_line_endings("line1\nline2\nline3\n"));
     }
 
     #[tokio::test]
@@ -457,7 +456,7 @@ diff --git a/file2.txt b/file2.txt
 +line2_modified
  line3"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         assert!(result.is_ok());
@@ -484,7 +483,7 @@ diff --git a/file2.txt b/file2.txt
 +line2_modified
  line3"#;
 
-        let history = Arc::new(Mutex::new(HashMap::new()));
+        let history = FileHistory::in_memory();
         let result = apply_diff(&file_path, diff, &history).await;
 
         assert!(result.is_ok());

@@ -6,4 +6,9 @@ crates/biorouter-cli/src/commands/extension.rs::handle_install
 crates/biorouter-cli/src/session/input.rs::print_help
 crates/biorouter-cli/src/session/markdown.rs::start_tag
 crates/biorouter-cli/src/session/tui/mod.rs::drive_response
+crates/biorouter-mcp/src/agent_drafter/control.rs::validate_widget
+crates/biorouter-mcp/src/agent_drafter/render.rs::serve_mjs
+crates/biorouter/src/context_mgmt/mod.rs::compact_messages_with_window
+crates/biorouter/src/context_mgmt/mod.rs::do_compact
+crates/biorouter/src/session/session_manager.rs::create_schema
 crates/biorouter/src/system.rs::install_info

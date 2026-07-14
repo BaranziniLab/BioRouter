@@ -146,7 +146,10 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
     variable: { color: p.plain },
 
     // Diff rows tint the whole line, not just the glyphs.
-    deleted: { color: p.deleted, background: `color-mix(in srgb, ${p.deleted} ${tint}, transparent)` },
+    deleted: {
+      color: p.deleted,
+      background: `color-mix(in srgb, ${p.deleted} ${tint}, transparent)`,
+    },
     inserted: {
       color: p.inserted,
       background: `color-mix(in srgb, ${p.inserted} ${tint}, transparent)`,

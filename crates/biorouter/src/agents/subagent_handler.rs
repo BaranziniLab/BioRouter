@@ -1,12 +1,16 @@
 use crate::{
-    agents::{subagent_task_config::TaskConfig, Agent, AgentConfig, AgentEvent, SessionConfig},
+    agents::{
+        subagent_result::{SubagentResult, SubagentTokens},
+        subagent_task_config::TaskConfig,
+        Agent, AgentConfig, AgentEvent, SessionConfig,
+    },
     conversation::{message::Message, Conversation},
     prompt_template::render_global_file,
+    session::SessionManager,
     workflow::Workflow,
 };
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
-use rmcp::model::{ErrorCode, ErrorData};
 use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
@@ -26,7 +30,10 @@ struct SubagentPromptContext {
 type AgentMessagesFuture =
     Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>)>> + Send>>;
 
-/// Standalone function to run a complete subagent task with output options
+/// Standalone function to run a complete subagent task, returning a structured
+/// result envelope. A run that fails, or one that ends on a tool call without a
+/// final text message, still yields a meaningful `SubagentResult` (BR-40) —
+/// never the old lossy "No text content in last message" string.
 pub async fn run_complete_subagent_task(
     config: AgentConfig,
     workflow: Workflow,
@@ -34,86 +41,84 @@ pub async fn run_complete_subagent_task(
     return_last_only: bool,
     session_id: String,
     cancellation_token: Option<CancellationToken>,
-) -> Result<String, anyhow::Error> {
-    let (messages, final_output) = get_agent_messages(
+) -> SubagentResult {
+    let session_manager = config.session_manager.clone();
+
+    // Surface this subagent in the process-wide "active work" view (BR-42) for
+    // the run's whole lifetime. The guard deregisters on drop, so an early
+    // return or panic never leaks a phantom "still running" entry. Cancel routes
+    // to the run's cancellation token when one was supplied.
+    let _active_work = {
+        use biorouter_mcp::active_work::{ActiveWorkGuard, ActiveWorkKind};
+        let title = subagent_work_title(&workflow);
+        let cancel = cancellation_token.clone().map(|token| {
+            let cancel: std::sync::Arc<dyn Fn() + Send + Sync> =
+                std::sync::Arc::new(move || token.cancel());
+            cancel
+        });
+        ActiveWorkGuard::register(
+            ActiveWorkKind::Subagent,
+            title,
+            Some(format!("child session {session_id}")),
+            Some(task_config.parent_session_id.clone()),
+            cancel,
+        )
+    };
+
+    let (messages, final_output) = match get_agent_messages(
         config,
         workflow,
         task_config,
-        session_id,
+        session_id.clone(),
         cancellation_token,
     )
     .await
-    .map_err(|e| {
-        ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!("Failed to execute task: {}", e),
-            None,
-        )
-    })?;
-
-    if let Some(output) = final_output {
-        return Ok(output);
-    }
-
-    let response_text = if return_last_only {
-        messages
-            .messages()
-            .last()
-            .and_then(|message| {
-                message.content.iter().find_map(|content| match content {
-                    crate::conversation::message::MessageContent::Text(text_content) => {
-                        Some(text_content.text.clone())
-                    }
-                    _ => None,
-                })
-            })
-            .unwrap_or_else(|| String::from("No text content in last message"))
-    } else {
-        let all_text_content: Vec<String> = messages
-            .iter()
-            .flat_map(|message| {
-                message.content.iter().filter_map(|content| {
-                    match content {
-                        crate::conversation::message::MessageContent::Text(text_content) => {
-                            Some(text_content.text.clone())
-                        }
-                        crate::conversation::message::MessageContent::ToolResponse(
-                            tool_response,
-                        ) => {
-                            // Extract text from tool response
-                            if let Ok(result) = &tool_response.tool_result {
-                                let texts: Vec<String> = result
-                                    .content
-                                    .iter()
-                                    .filter_map(|content| {
-                                        if let rmcp::model::RawContent::Text(raw_text_content) =
-                                            &content.raw
-                                        {
-                                            Some(raw_text_content.text.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-                                if !texts.is_empty() {
-                                    Some(format!("Tool result: {}", texts.join("\n")))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    }
-                })
-            })
-            .collect();
-
-        all_text_content.join("\n")
+    {
+        Ok(v) => v,
+        Err(e) => return SubagentResult::from_error(format!("Failed to execute task: {e}")),
     };
 
-    Ok(response_text)
+    let mut result = SubagentResult::from_conversation(&messages, final_output, return_last_only);
+    result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
+    result
+}
+
+/// A short, human-readable label for the active-work view: the subagent's task
+/// prompt (or, failing that, its instructions), collapsed to one line and
+/// truncated. Falls back to a generic label when the workflow carries neither.
+fn subagent_work_title(workflow: &Workflow) -> String {
+    let raw = workflow
+        .prompt
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or(workflow.instructions.as_deref())
+        .unwrap_or("subagent task");
+    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title: String = one_line.chars().take(120).collect();
+    if one_line.chars().count() > 120 {
+        title.push('…');
+    }
+    title
+}
+
+/// Read the child session's lifetime token totals for the result envelope.
+/// Best-effort: a missing session or all-zero counts yields `None`.
+async fn fetch_subagent_tokens(
+    session_manager: &SessionManager,
+    session_id: &str,
+) -> Option<SubagentTokens> {
+    let session = session_manager.get_session(session_id, false).await.ok()?;
+    let total = session.accumulated_total_tokens.unwrap_or(0);
+    let input = session.accumulated_input_tokens.unwrap_or(0);
+    let output = session.accumulated_output_tokens.unwrap_or(0);
+    if total == 0 && input == 0 && output == 0 {
+        return None;
+    }
+    Some(SubagentTokens {
+        total,
+        input,
+        output,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -209,7 +214,13 @@ fn get_agent_messages(
             id: session_id.clone(),
             schedule_id: None,
             max_turns: task_config.max_turns.map(|v| v as u32),
+            max_tool_calls: None,
+            budget: None,
             retry_config: workflow.retry,
+            // Subagents run at the model's default depth; a parent turn's effort
+            // is not inherited (its exploration caps are the parent's, not this
+            // task's). BR-63.
+            reasoning_effort: None,
         };
 
         let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
@@ -222,7 +233,9 @@ fn get_agent_messages(
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(AgentEvent::Message(msg)) => conversation.push(msg),
-                Ok(AgentEvent::McpNotification(_)) | Ok(AgentEvent::ModelChange { .. }) => {}
+                Ok(AgentEvent::McpNotification(_))
+                | Ok(AgentEvent::ModelChange { .. })
+                | Ok(AgentEvent::TokenUsage(_)) => {}
                 Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
                     conversation = updated_conversation;
                 }
@@ -238,6 +251,26 @@ fn get_agent_messages(
                     tracing::error!("Error receiving message from subagent: {}", e);
                     break;
                 }
+            }
+        }
+
+        // BR-28: the subagent is done — join its SubagentStart hook rather than
+        // leaving the detached task to outlive the subagent and race shutdown.
+        // The aggregate is keyed by the *parent* session (that is the payload's
+        // session_id), which the child's own turn boundaries never drain, so
+        // this is its only settle point. A subagent's stream is not user-visible,
+        // so a `systemMessage` surfaces in the log; errors are already warned by
+        // `dispatch`.
+        for outcome in agent
+            .hooks_manager()
+            .settle_fired(
+                &task_config.parent_session_id,
+                crate::hooks::FIRE_JOIN_BUDGET_SHUTDOWN,
+            )
+            .await
+        {
+            for message in &outcome.aggregate.system_messages {
+                info!("hooks: {} systemMessage: {}", outcome.event, message);
             }
         }
 

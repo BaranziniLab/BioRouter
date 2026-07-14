@@ -64,6 +64,10 @@ use crate::state::AppState;
 /// Workflow-style apps can raise this via `agent.max_turns` in the manifest.
 const DEFAULT_MAX_TURNS: u32 = 24;
 
+/// How many corrective re-prompts a manifest-level `output_type` contract may
+/// spend before the raw answer and validation errors are surfaced to the app.
+const DEFAULT_OUTPUT_RETRIES: u32 = 2;
+
 fn store() -> ArtifactStore {
     ArtifactStore::new(default_root())
 }
@@ -1635,7 +1639,10 @@ async fn run_bounded_turn(
         id: session_id.to_string(),
         schedule_id: None,
         max_turns: Some(max_turns),
+        max_tool_calls: None,
+        budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
     let mut stream = agent
         .reply(user, session_config, Some(cancel))
@@ -3575,9 +3582,9 @@ async fn handle_agent_socket(
             }
         };
 
-        let mut user = Message::user().with_text(prompt_text);
+        let mut turn_message = Message::user().with_text(prompt_text);
         for img in images {
-            user = user.with_image(img.data, img.mime_type);
+            turn_message = turn_message.with_image(img.data, img.mime_type);
         }
 
         // Apply the selected model route now (design §3.4) — past the PII gate, so
@@ -3609,12 +3616,6 @@ async fn handle_agent_socket(
                 .and_then(|a| a.max_turns)
                 .unwrap_or(DEFAULT_MAX_TURNS),
         };
-        let session_config = SessionConfig {
-            id: turn_session_id.clone(),
-            schedule_id: None,
-            max_turns: Some(max_turns),
-            retry_config: None,
-        };
         // Fresh evidence ledger for this turn. A worker saying "I had no sumstats"
         // must block THIS turn's publishing actions — but must not keep blocking
         // once the user supplies the data on the next one.
@@ -3623,288 +3624,389 @@ async fn handle_agent_socket(
         // them, so a turn where every consulted worker timed out cannot look
         // identical to a turn that did the work.
         let mut timed_out_profiles: Vec<String> = Vec::new();
-
-        let cancel = CancellationToken::new();
-        let mut stream = match turn_agent
-            .reply(user, session_config, Some(cancel.clone()))
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = send_json(
-                    &mut socket_tx,
-                    stamp_agent(json!({"type":"error","message": e.to_string()}), stamp),
-                )
-                .await;
-                // Restore a route-switched provider before bailing on this turn.
-                if let Some(prev) = route_restore.take() {
-                    let _ = agent.update_provider(prev, &session_id).await;
-                }
-                continue;
-            }
-        };
-
+        let output_type = manifest.agent.as_ref().and_then(|a| a.output_type.clone());
+        let max_output_retries = biorouter::config::Config::global()
+            .get_param::<u32>("brsdk_output_retries")
+            .unwrap_or(DEFAULT_OUTPUT_RETRIES);
+        let mut output_attempt = 0;
         let mut errored = false;
-        // call id → tool name, so a ToolResponse can be reported by name.
-        let mut tool_names: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+        let mut structured_value: Option<serde_json::Value> = None;
         // Task 4: emit at most ONE tool `ui://` figure per turn (avoid spam).
         let mut emitted_ui_figure = false;
-        loop {
-            // Three sources, biased so a UI command a tool just issued reaches the
-            // page before the `tool completed` frame that follows it. Every branch
-            // only binds — the bodies below are outside the `select!`, so they may
-            // borrow the socket and the stream freely.
-            let woken = tokio::select! {
-                biased;
-                Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
-                Some(req) = consult_rx.recv() => TurnWake::Consult(req),
-                inbound = socket_rx.next() => TurnWake::Client(inbound),
-                event = stream.next() => TurnWake::Agent(event),
-            };
 
-            let event = match woken {
-                TurnWake::Ui(cmd) => {
-                    if !send_json(&mut socket_tx, cmd).await {
-                        ui_bridge.detach(conn_token);
-                        return;
-                    }
-                    continue;
+        'attempt: loop {
+            let session_config = SessionConfig {
+                id: turn_session_id.clone(),
+                schedule_id: None,
+                max_turns: Some(max_turns),
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            };
+            let cancel = CancellationToken::new();
+            let mut stream = match turn_agent
+                .reply(turn_message.clone(), session_config, Some(cancel.clone()))
+                .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = send_json(
+                        &mut socket_tx,
+                        stamp_agent(json!({"type":"error","message": error.to_string()}), stamp),
+                    )
+                    .await;
+                    errored = true;
+                    break 'attempt;
                 }
-                // The main agent's `consult` tool asked a worker profile to answer.
-                // Serviced INLINE here: the main agent is parked on the tool, so its
-                // stream produces nothing until we resolve it. Depth-1: a worker
-                // turn (agent_stamp set) never gets to consult again — refuse.
-                TurnWake::Consult(req) => {
-                    let payload = if agent_stamp.is_some() {
-                        json!({"error":"consult is limited to depth 1: a worker profile cannot consult another profile"})
-                    } else {
-                        run_consult(ConsultContext {
-                            state: &state,
-                            manifest: &manifest,
-                            valid: &valid_profiles.valid,
-                            worker_agents: &mut worker_agents,
-                            main_bridge: &ui_bridge,
-                            client_id: client_id.as_deref(),
-                            durable,
-                            request: &req,
-                            cancel: cancel.clone(),
-                        })
-                        .await
-                    };
-                    if payload.get("status").and_then(|v| v.as_str()) == Some("timeout") {
-                        let who = payload
-                            .get("agent")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(req.agent.as_str())
-                            .to_string();
-                        if !timed_out_profiles.contains(&who) {
-                            timed_out_profiles.push(who);
+            };
+            // call id → tool name, so a ToolResponse can be reported by name.
+            let mut tool_names: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            // Text after the final tool call is the terminal answer validated by
+            // the manifest-level `output_type` contract.
+            let mut final_text = String::new();
+
+            loop {
+                // Three sources, biased so a UI command a tool just issued reaches the
+                // page before the `tool completed` frame that follows it. Every branch
+                // only binds — the bodies below are outside the `select!`, so they may
+                // borrow the socket and the stream freely.
+                let woken = tokio::select! {
+                    biased;
+                    Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
+                    Some(req) = consult_rx.recv() => TurnWake::Consult(req),
+                    inbound = socket_rx.next() => TurnWake::Client(inbound),
+                    event = stream.next() => TurnWake::Agent(event),
+                };
+
+                let event = match woken {
+                    TurnWake::Ui(cmd) => {
+                        if !send_json(&mut socket_tx, cmd).await {
+                            ui_bridge.detach(conn_token);
+                            return;
                         }
+                        continue;
                     }
-                    ui_bridge.resolve_consult(&req.id, payload);
-                    continue;
-                }
-                TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
-                    // `state_write` and `signal` must ack/notify on the socket, and
-                    // `handle_midturn_frame` is sync with no socket — apply them here,
-                    // on the socket-owning task, before delegating the rest.
-                    match serde_json::from_str::<ClientFrame>(&t) {
-                        Ok(ClientFrame::StateWrite {
-                            set,
-                            patch,
-                            base_version,
-                        }) => {
-                            if !apply_state_write(
-                                &mut socket_tx,
-                                &ui_bridge,
-                                &state,
-                                &session_id,
+                    // The main agent's `consult` tool asked a worker profile to answer.
+                    // Serviced INLINE here: the main agent is parked on the tool, so its
+                    // stream produces nothing until we resolve it. Depth-1: a worker
+                    // turn (agent_stamp set) never gets to consult again — refuse.
+                    TurnWake::Consult(req) => {
+                        let payload = if agent_stamp.is_some() {
+                            json!({"error":"consult is limited to depth 1: a worker profile cannot consult another profile"})
+                        } else {
+                            run_consult(ConsultContext {
+                                state: &state,
+                                manifest: &manifest,
+                                valid: &valid_profiles.valid,
+                                worker_agents: &mut worker_agents,
+                                main_bridge: &ui_bridge,
+                                client_id: client_id.as_deref(),
+                                durable,
+                                request: &req,
+                                cancel: cancel.clone(),
+                            })
+                            .await
+                        };
+                        if payload.get("status").and_then(|v| v.as_str()) == Some("timeout") {
+                            let who = payload
+                                .get("agent")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(req.agent.as_str())
+                                .to_string();
+                            if !timed_out_profiles.contains(&who) {
+                                timed_out_profiles.push(who);
+                            }
+                        }
+                        ui_bridge.resolve_consult(&req.id, payload);
+                        continue;
+                    }
+                    TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
+                        // `state_write` and `signal` must ack/notify on the socket, and
+                        // `handle_midturn_frame` is sync with no socket — apply them here,
+                        // on the socket-owning task, before delegating the rest.
+                        match serde_json::from_str::<ClientFrame>(&t) {
+                            Ok(ClientFrame::StateWrite {
                                 set,
                                 patch,
                                 base_version,
-                            )
-                            .await
-                            {
-                                cancel.cancel();
-                                ui_bridge.detach(conn_token);
-                                return;
+                            }) => {
+                                if !apply_state_write(
+                                    &mut socket_tx,
+                                    &ui_bridge,
+                                    &state,
+                                    &session_id,
+                                    set,
+                                    patch,
+                                    base_version,
+                                )
+                                .await
+                                {
+                                    cancel.cancel();
+                                    ui_bridge.detach(conn_token);
+                                    return;
+                                }
                             }
-                        }
-                        Ok(ClientFrame::Signal { name, payload }) => {
-                            // Mid-turn signals stay queue-only — never autorun, never
-                            // interrupt the running turn.
-                            if !handle_signal(
-                                &mut socket_tx,
-                                &ui_bridge,
-                                &mut pending_signals,
-                                name,
-                                payload,
-                            )
-                            .await
-                            .socket_ok
-                            {
-                                cancel.cancel();
-                                ui_bridge.detach(conn_token);
-                                return;
+                            Ok(ClientFrame::Signal { name, payload }) => {
+                                // Mid-turn signals stay queue-only — never autorun, never
+                                // interrupt the running turn.
+                                if !handle_signal(
+                                    &mut socket_tx,
+                                    &ui_bridge,
+                                    &mut pending_signals,
+                                    name,
+                                    payload,
+                                )
+                                .await
+                                .socket_ok
+                                {
+                                    cancel.cancel();
+                                    ui_bridge.detach(conn_token);
+                                    return;
+                                }
                             }
-                        }
-                        // A UI error mid-turn is buffered only — it never interrupts
-                        // the running turn; it rides the next turn (or a between-turns
-                        // repair) as context.
-                        Ok(ClientFrame::UiError {
-                            location,
-                            instance,
-                            message,
-                            dropped_count,
-                        }) => {
-                            recent_ui_errors.push(ui_error_value(
-                                &location,
-                                &instance,
-                                &message,
+                            // A UI error mid-turn is buffered only — it never interrupts
+                            // the running turn; it rides the next turn (or a between-turns
+                            // repair) as context.
+                            Ok(ClientFrame::UiError {
+                                location,
+                                instance,
+                                message,
                                 dropped_count,
-                            ));
+                            }) => {
+                                recent_ui_errors.push(ui_error_value(
+                                    &location,
+                                    &instance,
+                                    &message,
+                                    dropped_count,
+                                ));
+                            }
+                            // br.kb / br.model.status served mid-turn too (a KB read
+                            // must not wait for the turn to finish). Replies flow
+                            // through the bridge, forwarded by this same loop.
+                            Ok(ClientFrame::Kb { op, params, req_id }) => {
+                                handle_kb_frame(
+                                    &ui_bridge,
+                                    &state.knowledge_service,
+                                    manifest.agent.as_ref(),
+                                    &op,
+                                    &params,
+                                    &req_id,
+                                )
+                                .await;
+                            }
+                            Ok(ClientFrame::ModelStatus) => {
+                                ui_bridge.emit_frame(model_status_frame(&agent).await);
+                            }
+                            _ => handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued),
                         }
-                        // br.kb / br.model.status served mid-turn too (a KB read
-                        // must not wait for the turn to finish). Replies flow
-                        // through the bridge, forwarded by this same loop.
-                        Ok(ClientFrame::Kb { op, params, req_id }) => {
-                            handle_kb_frame(
-                                &ui_bridge,
-                                &state.knowledge_service,
-                                manifest.agent.as_ref(),
-                                &op,
-                                &params,
-                                &req_id,
-                            )
-                            .await;
-                        }
-                        Ok(ClientFrame::ModelStatus) => {
-                            ui_bridge.emit_frame(model_status_frame(&agent).await);
-                        }
-                        _ => handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued),
+                        continue;
                     }
-                    continue;
+                    TurnWake::Client(Some(Ok(WsMessage::Close(_))))
+                    | TurnWake::Client(Some(Err(_)))
+                    | TurnWake::Client(None) => {
+                        // The page went away mid-turn: stop the agent and unblock any
+                        // `ui_ask` it left parked, rather than leaking a live turn.
+                        cancel.cancel();
+                        save_ui_state(&state, &session_id, &ui_bridge).await;
+                        ui_bridge.detach(conn_token);
+                        return;
+                    }
+                    TurnWake::Client(Some(Ok(_))) => continue,
+                    TurnWake::Agent(Some(e)) => e,
+                    TurnWake::Agent(None) => break,
+                };
+
+                match event {
+                    Ok(AgentEvent::Message(message)) => {
+                        for content in &message.content {
+                            let frame = match content {
+                                MessageContent::Text(t) => {
+                                    final_text.push_str(&t.text);
+                                    Some(json!({"type":"message","delta": t.text}))
+                                }
+                                MessageContent::Thinking(t) => {
+                                    Some(json!({"type":"thought","delta": t.thinking}))
+                                }
+                                MessageContent::ToolRequest(tr) => {
+                                    // Text before a tool call is commentary rather than
+                                    // the terminal answer the schema constrains.
+                                    final_text.clear();
+                                    let name = tr
+                                        .tool_call
+                                        .as_ref()
+                                        .map(|c| c.name.to_string())
+                                        .unwrap_or_else(|_| "tool".to_string());
+                                    // Remember the name against the call id so the
+                                    // response frame can report it too. A timeline of
+                                    // "tool completed" rows says nothing about what ran
+                                    // — which matters now that tools redraw the page.
+                                    tool_names.insert(tr.id.clone(), name.clone());
+                                    Some(
+                                        json!({"type":"tool","name": name, "id": tr.id, "status":"pending"}),
+                                    )
+                                }
+                                MessageContent::ToolResponse(resp) => {
+                                    let status = match &resp.tool_result {
+                                        Ok(r) if r.is_error == Some(true) => "failed",
+                                        Ok(_) => "completed",
+                                        Err(_) => "failed",
+                                    };
+                                    let name = tool_names
+                                        .remove(&resp.id)
+                                        .unwrap_or_else(|| "tool".to_string());
+                                    // Task 4 (design §3.4): a successful tool result
+                                    // carrying a `ui://` figure (Auto Visualiser, app
+                                    // preview) is bridged into the app's results region
+                                    // — once per turn, decode-failures skipped silently.
+                                    if status == "completed" && !emitted_ui_figure {
+                                        if let Ok(r) = &resp.tool_result {
+                                            if let Some(html) = ui_resource_html(r) {
+                                                if ui_bridge
+                                                    .emit_frame(tool_figure_frame(html, &name))
+                                                {
+                                                    emitted_ui_figure = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(
+                                        json!({"type":"tool","name": name, "id": resp.id, "status": status}),
+                                    )
+                                }
+                                MessageContent::ActionRequired(ar) => {
+                                    // HITL: pause for human approval over this socket,
+                                    // then resume. Returns no frame (it sends its own).
+                                    // Uses THIS turn's agent/session (main or worker).
+                                    handle_action_required(
+                                        &mut socket_tx,
+                                        &mut socket_rx,
+                                        &state,
+                                        &turn_agent,
+                                        &turn_session_id,
+                                        &manifest.id,
+                                        &ui_bridge,
+                                        conn_token,
+                                        ar,
+                                    )
+                                    .await;
+                                    None
+                                }
+                                _ => None,
+                            };
+                            if let Some(f) = frame {
+                                // Stamp worker-turn frames with the profile name (design
+                                // §3.8 wire contract); main frames pass through unchanged.
+                                if !send_json(&mut socket_tx, stamp_agent(f, stamp)).await {
+                                    ui_bridge.detach(conn_token);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Ok(AgentEvent::TurnAborted { code, message }) => {
+                        // Preserve the assistant's preceding explanation, then end
+                        // the socket turn as a typed failure. In particular, do not
+                        // run an output-schema repair attempt or emit `done`.
+                        let _ = send_json(
+                            &mut socket_tx,
+                            stamp_agent(
+                                json!({
+                                    "type":"error",
+                                    "code":code.wire_code(),
+                                    "message":format!("{}: {message}", code.wire_code()),
+                                }),
+                                stamp,
+                            ),
+                        )
+                        .await;
+                        errored = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = send_json(
+                            &mut socket_tx,
+                            stamp_agent(json!({"type":"error","message": e.to_string()}), stamp),
+                        )
+                        .await;
+                        errored = true;
+                        break;
+                    }
                 }
-                TurnWake::Client(Some(Ok(WsMessage::Close(_))))
-                | TurnWake::Client(Some(Err(_)))
-                | TurnWake::Client(None) => {
-                    // The page went away mid-turn: stop the agent and unblock any
-                    // `ui_ask` it left parked, rather than leaking a live turn.
-                    cancel.cancel();
+            }
+
+            // A tool's last UI command may still be in flight. Flush before either
+            // validating or re-prompting so app state is settled deterministically.
+            while let Ok(cmd) = ui_rx.try_recv() {
+                if !send_json(&mut socket_tx, cmd).await {
                     save_ui_state(&state, &session_id, &ui_bridge).await;
                     ui_bridge.detach(conn_token);
                     return;
                 }
-                TurnWake::Client(Some(Ok(_))) => continue,
-                TurnWake::Agent(Some(e)) => e,
-                TurnWake::Agent(None) => break,
-            };
+            }
 
-            match event {
-                Ok(AgentEvent::Message(message)) => {
-                    for content in &message.content {
-                        let frame = match content {
-                            MessageContent::Text(t) => {
-                                Some(json!({"type":"message","delta": t.text}))
-                            }
-                            MessageContent::Thinking(t) => {
-                                Some(json!({"type":"thought","delta": t.thinking}))
-                            }
-                            MessageContent::ToolRequest(tr) => {
-                                let name = tr
-                                    .tool_call
-                                    .as_ref()
-                                    .map(|c| c.name.to_string())
-                                    .unwrap_or_else(|_| "tool".to_string());
-                                // Remember the name against the call id so the
-                                // response frame can report it too. A timeline of
-                                // "tool completed" rows says nothing about what ran
-                                // — which matters now that tools redraw the page.
-                                tool_names.insert(tr.id.clone(), name.clone());
-                                Some(
-                                    json!({"type":"tool","name": name, "id": tr.id, "status":"pending"}),
-                                )
-                            }
-                            MessageContent::ToolResponse(resp) => {
-                                let status = match &resp.tool_result {
-                                    Ok(r) if r.is_error == Some(true) => "failed",
-                                    Ok(_) => "completed",
-                                    Err(_) => "failed",
-                                };
-                                let name = tool_names
-                                    .remove(&resp.id)
-                                    .unwrap_or_else(|| "tool".to_string());
-                                // Task 4 (design §3.4): a successful tool result
-                                // carrying a `ui://` figure (Auto Visualiser, app
-                                // preview) is bridged into the app's results region
-                                // — once per turn, decode-failures skipped silently.
-                                if status == "completed" && !emitted_ui_figure {
-                                    if let Ok(r) = &resp.tool_result {
-                                        if let Some(html) = ui_resource_html(r) {
-                                            if ui_bridge.emit_frame(tool_figure_frame(html, &name))
-                                            {
-                                                emitted_ui_figure = true;
-                                            }
-                                        }
-                                    }
-                                }
-                                Some(
-                                    json!({"type":"tool","name": name, "id": resp.id, "status": status}),
-                                )
-                            }
-                            MessageContent::ActionRequired(ar) => {
-                                // HITL: pause for human approval over this socket,
-                                // then resume. Returns no frame (it sends its own).
-                                // Uses THIS turn's agent/session (main or worker).
-                                handle_action_required(
-                                    &mut socket_tx,
-                                    &mut socket_rx,
-                                    &state,
-                                    &turn_agent,
-                                    &turn_session_id,
-                                    &manifest.id,
-                                    &ui_bridge,
-                                    conn_token,
-                                    ar,
-                                )
-                                .await;
-                                None
-                            }
-                            _ => None,
-                        };
-                        if let Some(f) = frame {
-                            // Stamp worker-turn frames with the profile name (design
-                            // §3.8 wire contract); main frames pass through unchanged.
-                            if !send_json(&mut socket_tx, stamp_agent(f, stamp)).await {
-                                ui_bridge.detach(conn_token);
-                                return;
-                            }
-                        }
-                    }
+            // Provider errors and user cancellation must never trigger an
+            // automated schema-repair turn over a partial answer.
+            if errored || cancel.is_cancelled() {
+                break 'attempt;
+            }
+
+            match decide_output(
+                output_type.as_ref(),
+                &final_text,
+                output_attempt,
+                max_output_retries,
+            ) {
+                OutputDecision::None => break 'attempt,
+                OutputDecision::Valid(value) => {
+                    structured_value = Some(value);
+                    break 'attempt;
                 }
-                Ok(_) => {}
-                Err(e) => {
+                OutputDecision::GiveUp { errors } => {
                     let _ = send_json(
                         &mut socket_tx,
-                        stamp_agent(json!({"type":"error","message": e.to_string()}), stamp),
+                        stamp_agent(
+                            json!({
+                                "type":"output",
+                                "valid":false,
+                                "value":final_text,
+                                "errors":errors,
+                            }),
+                            stamp,
+                        ),
                     )
                     .await;
-                    errored = true;
-                    break;
+                    break 'attempt;
+                }
+                OutputDecision::Reprompt { message, errors } => {
+                    output_attempt += 1;
+                    let _ = send_json(
+                        &mut socket_tx,
+                        stamp_agent(
+                            json!({
+                                "type":"output_retry",
+                                "attempt":output_attempt,
+                                "errors":errors,
+                            }),
+                            stamp,
+                        ),
+                    )
+                    .await;
+                    turn_message = Message::user()
+                        .with_text(message)
+                        .with_visibility(false, true);
                 }
             }
         }
 
-        // The reply stream is done, but a tool's last UI command may still be in
-        // flight. Flush before `done` so the page is settled when the app's
-        // `prompt()` promise resolves (tests and app code both rely on that).
-        while let Ok(cmd) = ui_rx.try_recv() {
-            if !send_json(&mut socket_tx, cmd).await {
-                save_ui_state(&state, &session_id, &ui_bridge).await;
-                ui_bridge.detach(conn_token);
-                return;
-            }
+        if let Some(value) = structured_value {
+            let _ = send_json(
+                &mut socket_tx,
+                stamp_agent(json!({"type":"output","valid":true,"value":value}), stamp),
+            )
+            .await;
         }
 
         // Restore the pre-route provider (design §3.4): a per-turn model route is
@@ -4005,6 +4107,44 @@ fn apply_pii_policy(text: String, mode: PiiMode) -> PiiOutcome {
             }
         }
         PiiMode::Off => PiiOutcome::Pass(text),
+    }
+}
+
+#[derive(Debug)]
+enum OutputDecision {
+    None,
+    Valid(serde_json::Value),
+    Reprompt {
+        message: String,
+        errors: Vec<String>,
+    },
+    GiveUp {
+        errors: Vec<String>,
+    },
+}
+
+/// Decide how to enforce a manifest-level `output_type` contract after one
+/// completed reply attempt. Empty answers are left untouched because they can
+/// legitimately end on a tool result or cancellation.
+fn decide_output(
+    output_type: Option<&serde_json::Value>,
+    terminal_text: &str,
+    attempt: u32,
+    max_retries: u32,
+) -> OutputDecision {
+    let Some(schema) = output_type else {
+        return OutputDecision::None;
+    };
+    if terminal_text.trim().is_empty() {
+        return OutputDecision::None;
+    }
+    match biorouter::agents::structured_output::parse_and_validate(terminal_text, schema) {
+        Ok(value) => OutputDecision::Valid(value),
+        Err(errors) if attempt < max_retries => OutputDecision::Reprompt {
+            message: biorouter::agents::structured_output::reprompt_message(&errors, schema),
+            errors,
+        },
+        Err(errors) => OutputDecision::GiveUp { errors },
     }
 }
 
@@ -4192,6 +4332,7 @@ async fn handle_action_required(
         tool_name,
         arguments,
         prompt,
+        ..
     } = &ar.data
     else {
         return; // only tool-confirmation approvals are handled here
@@ -4420,7 +4561,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_pii_policy, ClientFrame, PiiMode, PiiOutcome};
+    use super::{
+        apply_pii_policy, decide_output, ClientFrame, OutputDecision, PiiMode, PiiOutcome,
+    };
+    use serde_json::json;
 
     #[test]
     fn pii_policy_off_passes_through_even_with_phi() {
@@ -4460,6 +4604,71 @@ mod tests {
             PiiMode::Block,
         );
         assert!(matches!(out, PiiOutcome::Pass(_)));
+    }
+
+    fn output_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "gene": { "type": "string" },
+                "pathways": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["gene", "pathways"]
+        })
+    }
+
+    #[test]
+    fn output_contract_is_a_noop_when_absent_or_answer_is_empty() {
+        assert!(matches!(
+            decide_output(None, "plain answer", 0, 2),
+            OutputDecision::None
+        ));
+        assert!(matches!(
+            decide_output(Some(&output_schema()), "   ", 0, 2),
+            OutputDecision::None
+        ));
+    }
+
+    #[test]
+    fn output_contract_accepts_valid_fenced_json() {
+        let text = "```json\n{\"gene\":\"CFTR\",\"pathways\":[\"transport\"]}\n```";
+        match decide_output(Some(&output_schema()), text, 0, 2) {
+            OutputDecision::Valid(value) => assert_eq!(value["gene"], "CFTR"),
+            other => panic!("expected valid output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_contract_reprompts_only_while_budget_remains() {
+        match decide_output(Some(&output_schema()), r#"{"gene":"CFTR"}"#, 0, 2) {
+            OutputDecision::Reprompt { message, errors } => {
+                assert!(!errors.is_empty());
+                assert!(message.contains("pathways"));
+                assert!(message.contains("ONLY"));
+            }
+            other => panic!("expected corrective re-prompt, got {other:?}"),
+        }
+        assert!(matches!(
+            decide_output(Some(&output_schema()), "not json", 2, 2),
+            OutputDecision::GiveUp { errors } if !errors.is_empty()
+        ));
+    }
+
+    #[test]
+    fn output_contract_zero_retry_budget_still_validates() {
+        assert!(matches!(
+            decide_output(
+                Some(&output_schema()),
+                r#"{"gene":"TP53","pathways":["apoptosis"]}"#,
+                0,
+                0,
+            ),
+            OutputDecision::Valid(_)
+        ));
+        assert!(matches!(
+            decide_output(Some(&output_schema()), r#"{"gene":"TP53"}"#, 0, 0),
+            OutputDecision::GiveUp { .. }
+        ));
     }
 
     // --- strict CSP on served apps (SDK v2 Phase 6.1) ---

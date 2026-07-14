@@ -39,6 +39,7 @@ import {
   getBiorouterCliBinaryPath,
   findAvailablePort,
 } from './biorouterd';
+import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -877,15 +878,35 @@ const createChat = async (
   const settings = loadSettings();
   const serverSecret = getServerSecret(settings);
 
-  const biorouterdResult = await startBiorouterd({
-    app,
-    serverSecret,
-    dir: dir || os.homedir(),
-    env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
-    externalBiorouterd: settings.externalBiorouterd,
-  });
+  // BR-54 Slice A: share ONE daemon across all windows (default). The daemon is
+  // already a session-keyed singleton, so its spawn cwd is just a fallback —
+  // start it at the home dir and let each window carry its own working directory
+  // to its session via REQUEST_DIR / BIOROUTER_WORKING_DIR (`windowWorkingDir`
+  // below), which is unchanged. Set BIOROUTER_SHARED_DAEMON=0 to revert to the
+  // previous per-window daemon.
+  const useSharedDaemon = isSharedDaemonEnabled();
+  const windowWorkingDir = path.resolve(path.normalize(dir || os.homedir()));
 
-  const { baseUrl, workingDir, process: biorouterdProcess, errorLog } = biorouterdResult;
+  const biorouterdResult = useSharedDaemon
+    ? await getSharedBackend(startBiorouterd, {
+        app,
+        serverSecret,
+        dir: os.homedir(),
+        env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
+        externalBiorouterd: settings.externalBiorouterd,
+      })
+    : await startBiorouterd({
+        app,
+        serverSecret,
+        dir: dir || os.homedir(),
+        env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
+        externalBiorouterd: settings.externalBiorouterd,
+      });
+
+  const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // Per-window working dir — NOT the shared daemon's spawn cwd. In the
+  // per-window (non-shared) path this equals biorouterdResult.workingDir.
+  const workingDir = windowWorkingDir;
 
   const mainWindowState = windowStateKeeper({
     defaultWidth: 940,
@@ -956,7 +977,13 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
-  retainBackend(mainWindow.id, biorouterdProcess);
+  // With a shared daemon the backend is app-lifetime (killed only in
+  // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
+  // closing one window must not tear the daemon out from under the others. The
+  // per-window ref-count is only for the (opt-out) per-window daemon path.
+  if (!useSharedDaemon) {
+    retainBackend(mainWindow.id, biorouterdProcess);
+  }
 
   const serverReady = await checkServerStatus(biorouterdClient, errorLog);
   if (!serverReady) {
@@ -983,6 +1010,9 @@ const createChat = async (
           },
         };
         saveSettings(updatedSettings);
+        // The shared daemon was started against the now-disabled external
+        // config; forget it so the retry starts a fresh local daemon.
+        resetSharedBackend();
         mainWindow.destroy();
         return createChat(app, initialMessage, dir);
       }

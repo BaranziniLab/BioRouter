@@ -67,7 +67,11 @@ export function GroupedExtensionLoadingToast({
   // The toast's own status chip + summary now come from the shared primitive
   // (icon: false disables react-toastify's floating glyph). The expandable
   // failure list lives in the primitive's children region.
-  const status: NotificationStatus = !isComplete ? 'loading' : errorCount === 0 ? 'success' : 'error';
+  const status: NotificationStatus = !isComplete
+    ? 'loading'
+    : errorCount === 0
+      ? 'success'
+      : 'error';
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen} className="w-full">

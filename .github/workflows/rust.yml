@@ -1,0 +1,145 @@
+name: Rust
+
+# BR-70 — the repo's first `cargo` CI. Two orthogonal axes:
+#   * cross-check  — does the code we SHIP (windows-gnu / linux-gnu) COMPILE,
+#                    including #[cfg(test)] code, using the release's own docker
+#                    recipe (scripts/cross-env.sh)? This is the PR gate.
+#   * test         — does the platform BEHAVIOUR work on real kernels (macOS
+#                    Seatbelt, Linux Landlock, Windows PowerShell + taskkill)?
+# A nightly job runs the full cross BUILD (link errors + glibc floor), which a
+# `cargo check` cannot see.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * *"   # nightly: the expensive full cross-BUILD + glibc floor
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 1. Cheap guards ────────────────────────────────────────────────────────
+  guards:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross recipes have not drifted / glibc floor pin intact
+        run: ./scripts/check-no-cross-drift.sh
+      - name: Version consistency (CLI = daemon = GUI)
+        run: ./scripts/check-version-consistency.sh
+
+  # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
+  #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
+  #      just the docker HOST; the TARGET triple is what is being proven.
+  cross-check:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Registry + per-triple target dir, persisted across runs. The per-triple
+      # target dir is why this is minutes, not a quarter-hour — and it makes the
+      # mac/linux build-script clobber (release.sh) structurally impossible here.
+      - name: Restore cross cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cross-cache/registry
+            .cross-cache/target/${{ matrix.target }}
+          key: cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
+          restore-keys: cross-${{ matrix.target }}-
+
+      - name: cargo check --workspace --all-targets (${{ matrix.target }})
+        run: |
+          set -euo pipefail
+          mkdir -p .cross-cache/registry ".cross-cache/target/${{ matrix.target }}"
+          export CROSS_REGISTRY_MOUNT="$PWD/.cross-cache/registry"
+          export CROSS_TARGET_MOUNT="$PWD/.cross-cache/target/${{ matrix.target }}"
+          . scripts/cross-env.sh
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)
+              cross_linux  "cargo check --workspace --all-targets --locked" /cross-target ;;
+            x86_64-pc-windows-gnu)
+              cross_windows "cargo check --workspace --all-targets --locked" /cross-target ;;
+          esac
+
+  # ── 3. Native unit tests on REAL kernels. This is where platform BEHAVIOUR is
+  #      proven: PowerShell selection + taskkill (windows), Seatbelt (macos),
+  #      Landlock (ubuntu, once BR-69 slice 2 lands — this runner is its venue).
+  #      NOTE: windows-latest is MSVC; we SHIP mingw/gnu. Job 2 covers the gnu
+  #      ABI, this job covers the Windows behaviour. Both are load-bearing.
+  test:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Linux native build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
+
+      # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
+      # widen as it proves stable. Excludes the network/cassette-dependent
+      # integration suites, which need BIOROUTER_RECORD_MCP fixtures + provider
+      # keys the runners do not have.
+      - name: cargo test (workspace, lib + bins)
+        run: cargo test --workspace --lib --bins --locked
+
+      # The cross-platform-sensitive suites BR-70 exists to prove, run on every
+      # OS they apply to.
+      - name: cargo test (sandbox + developer shell/background + security)
+        run: |
+          cargo test -p biorouter-sandbox --locked
+          cargo test -p biorouter-mcp --lib developer:: --locked
+          cargo test -p biorouter --lib security:: --locked
+
+      - name: clippy (host, informational until warnings are burned down)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets --locked
+
+  # ── 4. Nightly: the FULL cross BUILD. `check` cannot catch link errors
+  #      (aws-lc-sys / winpthread) or glibc symbol-version regressions.
+  cross-build-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shipped binaries for both cross targets (release command)
+        run: |
+          set -euo pipefail
+          . scripts/cross-env.sh
+          cross_linux   "cargo build --release --bin biorouterd --bin biorouter"
+          cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
+      - name: Assert the glibc floor (2.31 / bullseye) is not raised
+        run: ./scripts/check-glibc-floor.sh
+      - name: Boot the Linux binary on the oldest supported distro
+        run: |
+          docker run --rm -v "$PWD":/w debian:bullseye \
+            /w/target/x86_64-unknown-linux-gnu/release/biorouter --version

@@ -42,6 +42,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // BR-69: if this process was re-exec'd as the shell-sandbox helper (hidden
+    // `__br-sandbox` marker, Linux only), apply the in-process Landlock/seccomp
+    // restrictions and `execve` the target program. Never returns in that case;
+    // a normal invocation falls straight through. Must run before `Cli::parse`,
+    // which would otherwise reject the hidden marker as an unknown subcommand.
+    biorouter_mcp::run_shell_sandbox_helper_if_invoked();
     tune_allocator();
     let cli = Cli::parse();
 

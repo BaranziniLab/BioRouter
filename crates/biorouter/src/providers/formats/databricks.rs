@@ -1027,6 +1027,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(&model_config, "system", &[], &[], &ImageFormat::OpenAi)?;
         let obj = request.as_object().unwrap();
@@ -1059,6 +1060,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let request = create_request(&model_config, "system", &[], &[], &ImageFormat::OpenAi)?;
         assert_eq!(request["reasoning_effort"], "high");
@@ -1378,6 +1380,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
 
         let messages = vec![
@@ -1430,6 +1433,7 @@ mod tests {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
 
         let messages = vec![Message::user().with_text("Hello")];

@@ -4,8 +4,10 @@
 //! keychain) and a per-test working directory holding a project
 //! `.biorouter/hooks.yaml`, asserting that the integration points added to
 //! agent.rs actually fire: UserPromptSubmit block + context injection,
-//! PreToolUse deny feeding back into the tool result, and the Stop-hook
-//! block loop. Mirrors the MockToolProvider pattern in tests/agent.rs.
+//! PreToolUse deny feeding back into the tool result, the Stop-hook block loop,
+//! and (BR-28) the turn-boundary settle that surfaces the aggregate of an
+//! observe-only, `fire`d hook. Mirrors the MockToolProvider pattern in
+//! tests/agent.rs.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -112,6 +114,16 @@ async fn agent_with_project_hooks(
     hooks_yaml: &str,
     provider: Arc<dyn Provider>,
 ) -> (Agent, String, TempDir) {
+    agent_with_project_hooks_in_mode(hooks_yaml, provider, BioRouterMode::Auto).await
+}
+
+/// As above, but in an explicit mode. `Approve` is what raises a real permission
+/// prompt, which is the only thing that fires a `Notification` hook.
+async fn agent_with_project_hooks_in_mode(
+    hooks_yaml: &str,
+    provider: Arc<dyn Provider>,
+    mode: BioRouterMode,
+) -> (Agent, String, TempDir) {
     // SAFETY: tests run single-threaded per process for this env var; it only
     // flips on the project-hook opt-in the HooksManager reads at construction.
     std::env::set_var("BIOROUTER_ALLOW_PROJECT_HOOKS", "1");
@@ -126,7 +138,7 @@ async fn agent_with_project_hooks(
         session_manager.clone(),
         PermissionManager::instance(),
         None,
-        BioRouterMode::Auto,
+        mode,
     );
     let agent = Agent::with_config(config);
 
@@ -166,7 +178,10 @@ async fn drain(agent: &Agent, user: &str, session_id: &str) -> Result<Vec<Messag
         id: session_id.to_string(),
         schedule_id: None,
         max_turns: Some(8),
+        max_tool_calls: None,
+        budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
     let stream = agent
         .reply(Message::user().with_text(user), session_config, None)
@@ -332,4 +347,310 @@ async fn stop_hook_blocks_then_releases() {
         provider.calls.load(Ordering::SeqCst) >= 2,
         "stop block should have forced another turn"
     );
+}
+
+// ---- BR-28: observe-only (`fire`d) hook aggregates reach the caller ----
+
+/// A `Notification` hook fires when a permission prompt is raised. It is
+/// dispatched detached (`fire`), and its whole `HookAggregate` used to be
+/// dropped on the floor — so a `systemMessage` was invisible and there was no
+/// way to know the hook had run. The turn boundary now joins the task and
+/// surfaces the message to the user.
+#[tokio::test]
+async fn fired_notification_hook_system_message_reaches_the_user() {
+    let provider = Arc::new(ScriptedProvider::new(true, "done"));
+    let (agent, session_id, _work) = agent_with_project_hooks_in_mode(
+        r#"hooks:
+  Notification:
+    - hooks:
+        - type: command
+          command: "echo '{\"systemMessage\":\"audit: permission prompt shown\"}'"
+"#,
+        provider.clone(),
+        BioRouterMode::Approve,
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("audit: permission prompt shown"),
+        "expected the fired Notification hook's systemMessage to surface, got: {text}"
+    );
+}
+
+/// The settle is bounded: a fired hook slower than the turn-boundary budget must
+/// not stall the loop. The turn completes normally without the hook's message,
+/// and the hook is still in flight afterwards — proof the loop moved on rather
+/// than waiting for it. (The budget's timing semantics are pinned directly in
+/// `hooks::tests::slow_fired_hook_misses_its_budget_and_settles_later`; asserting
+/// on wall-clock here would be flaky under parallel-test contention.)
+#[tokio::test]
+async fn slow_fired_hook_does_not_stall_the_turn() {
+    let provider = Arc::new(ScriptedProvider::new(true, "finished anyway"));
+    let (agent, session_id, _work) = agent_with_project_hooks_in_mode(
+        r#"hooks:
+  Notification:
+    - hooks:
+        - type: command
+          command: "sleep 20; echo '{\"systemMessage\":\"too late\"}'"
+"#,
+        provider.clone(),
+        BioRouterMode::Approve,
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("finished anyway"),
+        "the turn must complete, got: {text}"
+    );
+    assert!(
+        !text.contains("too late"),
+        "a hook that misses its budget must not be waited on, got: {text}"
+    );
+    assert_eq!(
+        agent.hooks_manager().pending_fire_count(),
+        1,
+        "the slow hook should still be in flight — the turn did not wait for it"
+    );
+}
+
+// ---- BR-19: input rewrite, PostToolUse block, and hook context on the tool path ----
+
+/// Collect every tool call recorded in the persisted conversation.
+async fn tool_calls(agent: &Agent, session_id: &str) -> Vec<(String, serde_json::Value)> {
+    let session = agent
+        .config
+        .session_manager
+        .get_session(session_id, true)
+        .await
+        .unwrap();
+    session
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .flat_map(|m| m.content.clone())
+        .filter_map(|c| match c {
+            MessageContent::ToolRequest(req) => req.tool_call.ok().map(|call| {
+                (
+                    call.name.to_string(),
+                    call.arguments
+                        .map(serde_json::Value::Object)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collect the text of every tool response in the persisted conversation.
+async fn tool_response_texts(agent: &Agent, session_id: &str) -> String {
+    let session = agent
+        .config
+        .session_manager
+        .get_session(session_id, true)
+        .await
+        .unwrap();
+    session
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .flat_map(|m| m.content.clone())
+        .filter_map(|c| match c {
+            MessageContent::ToolResponse(tr) => Some(tr),
+            _ => None,
+        })
+        .flat_map(|tr| match tr.tool_result {
+            Ok(result) => result
+                .content
+                .iter()
+                .filter_map(|c| match &c.raw {
+                    rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => vec![e.to_string()],
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The headline of BR-19: a PreToolUse hook rewrites the tool input (here it
+/// sandboxes a destructive `rm -rf /` into the build dir) and the *rewritten*
+/// call is what runs and what the transcript records. The model is told, via
+/// injected hook context, that its arguments were changed.
+#[tokio::test]
+async fn pre_tool_use_hook_rewrites_the_tool_input() {
+    let provider = Arc::new(ScriptedProvider::new(true, "understood"));
+    let (agent, session_id, _work) = agent_with_project_hooks(
+        r#"hooks:
+  PreToolUse:
+    - matcher: "developer__shell"
+      hooks:
+        - type: command
+          command: "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"echo sandboxed\"}}}'"
+"#,
+        provider.clone(),
+    )
+    .await;
+
+    let _ = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    let calls = tool_calls(&agent, &session_id).await;
+    let shell = calls
+        .iter()
+        .find(|(name, _)| name == "developer__shell")
+        .expect("the shell call is recorded");
+    assert_eq!(
+        shell.1["command"], "echo sandboxed",
+        "the hook's rewritten arguments must be what is dispatched and persisted, got: {:?}",
+        shell.1
+    );
+
+    // And the model must be told its call was rewritten, or it would silently
+    // work from a call it never made.
+    let session = agent
+        .config
+        .session_manager
+        .get_session(&session_id, true)
+        .await
+        .unwrap();
+    let all = collect_texts(session.conversation.unwrap().messages());
+    assert!(
+        all.contains("rewrote the arguments of `developer__shell`") && all.contains("hook-context"),
+        "expected the framed rewrite notice, got: {all}"
+    );
+}
+
+/// A rewrite must not be a hole around the security/permission gates: a denied
+/// call is never dispatched, so the hook's rewrite for it is dropped and the
+/// deny reason still reaches the model.
+#[tokio::test]
+async fn a_denied_call_is_not_rewritten() {
+    let provider = Arc::new(ScriptedProvider::new(true, "acknowledged"));
+    let (agent, session_id, _work) = agent_with_project_hooks(
+        r#"hooks:
+  PreToolUse:
+    - matcher: "developer__shell"
+      hooks:
+        - type: command
+          command: "echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"no shell here\",\"updatedInput\":{\"command\":\"echo rewritten\"}}}'"
+"#,
+        provider.clone(),
+    )
+    .await;
+
+    let _ = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    let calls = tool_calls(&agent, &session_id).await;
+    let shell = calls
+        .iter()
+        .find(|(name, _)| name == "developer__shell")
+        .expect("the shell call is recorded");
+    assert_eq!(
+        shell.1["command"], "echo hi",
+        "a denied call keeps the model's original arguments"
+    );
+    let responses = tool_response_texts(&agent, &session_id).await;
+    assert!(
+        responses.contains("Hook feedback: no shell here"),
+        "the deny reason still wins, got: {responses}"
+    );
+}
+
+/// A PreToolUse hook's `additionalContext` used to be computed and dropped —
+/// `HookInspector` read only the decision. It must now reach the model.
+#[tokio::test]
+async fn pre_tool_use_additional_context_reaches_the_model() {
+    let provider = Arc::new(ScriptedProvider::new(true, "noted"));
+    let (agent, session_id, _work) = agent_with_project_hooks(
+        r#"hooks:
+  PreToolUse:
+    - matcher: "developer__shell"
+      hooks:
+        - type: command
+          command: "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"policy: prefer ripgrep over grep\"},\"systemMessage\":\"policy hook ran\"}'"
+"#,
+        provider.clone(),
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    // systemMessage surfaces to the user...
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("policy hook ran"),
+        "expected the PreToolUse systemMessage, got: {text}"
+    );
+
+    // ...and additionalContext lands in the conversation, untrusted-framed.
+    let session = agent
+        .config
+        .session_manager
+        .get_session(&session_id, true)
+        .await
+        .unwrap();
+    let all = collect_texts(session.conversation.unwrap().messages());
+    assert!(
+        all.contains("prefer ripgrep over grep") && all.contains("hook-context"),
+        "expected the injected PreToolUse context, got: {all}"
+    );
+}
+
+/// PostToolUse was observe-only: the block decision was computed and thrown
+/// away. It must now turn the result into corrective feedback for the model.
+#[tokio::test]
+async fn post_tool_use_hook_can_block_the_result() {
+    let provider = Arc::new(ScriptedProvider::new(true, "will fix"));
+    let (agent, session_id, _work) = agent_with_project_hooks(
+        r#"hooks:
+  PostToolUse:
+    - matcher: "developer__shell"
+      hooks:
+        - type: command
+          command: "echo 'lint failed on the file you wrote' >&2; exit 2"
+  PostToolUseFailure:
+    - matcher: "developer__shell"
+      hooks:
+        - type: command
+          command: "echo 'lint failed on the file you wrote' >&2; exit 2"
+"#,
+        provider.clone(),
+    )
+    .await;
+
+    let messages = drain(&agent, "run a shell command", &session_id)
+        .await
+        .unwrap();
+
+    let responses = tool_response_texts(&agent, &session_id).await;
+    assert!(
+        responses.contains("A PostToolUse hook blocked this result")
+            && responses.contains("Hook feedback: lint failed on the file you wrote"),
+        "expected the block fed back as a corrective tool result, got: {responses}"
+    );
+    let text = collect_texts(&messages);
+    assert!(
+        text.contains("Hook blocked the result of developer__shell"),
+        "expected the user-facing block notice, got: {text}"
+    );
+    // The turn keeps working after the block rather than dying.
+    assert!(provider.calls.load(Ordering::SeqCst) >= 2);
 }
