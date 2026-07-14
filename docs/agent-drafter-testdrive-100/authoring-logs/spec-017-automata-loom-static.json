@@ -1,0 +1,60 @@
+{
+  "id": "spec-017-automata-loom",
+  "title": "Automata Loom",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-017-automata-loom/manifest.json",
+  "actions_expected": [
+    "classify_rule",
+    "highlight_structure",
+    "mutate_rule",
+    "run_generations",
+    "set_rule",
+    "stamp_pattern"
+  ],
+  "actions_actual": [
+    "classify_rule",
+    "highlight_structure",
+    "mutate_rule",
+    "run_generations",
+    "set_rule",
+    "stamp_pattern"
+  ],
+  "signals_expected": [
+    "cell_painted",
+    "region_boxed",
+    "rule_bit_toggled",
+    "seed_stamped"
+  ],
+  "signals_actual": [
+    "cell_painted",
+    "region_boxed",
+    "rule_bit_toggled",
+    "seed_stamped"
+  ],
+  "agents_expected": [
+    "Explorer",
+    "Taxonomist",
+    "Archivist"
+  ],
+  "agents_actual": [
+    "archivist",
+    "explorer",
+    "taxonomist"
+  ],
+  "regions": [
+    "agent-notes",
+    "discovery-log",
+    "inspector",
+    "lambda-entropy-plot",
+    "loom-canvas",
+    "period-velocity-table",
+    "presence",
+    "progress",
+    "rule-rail",
+    "topline",
+    "transport"
+  ],
+  "theme_expected": "terminal",
+  "theme_actual": "terminal",
+  "issues": []
+}

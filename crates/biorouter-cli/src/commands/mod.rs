@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod bench;
 pub mod configure;
 pub mod doctor;

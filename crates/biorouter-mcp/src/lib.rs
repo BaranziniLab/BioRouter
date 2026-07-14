@@ -19,6 +19,7 @@ pub mod files_server;
 pub mod knowledge;
 pub mod mcp_server_runner;
 mod memory;
+pub mod paths;
 pub mod tutorial;
 
 pub use agent_drafter::AgentDrafterServer;

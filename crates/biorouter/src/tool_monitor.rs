@@ -19,6 +19,14 @@ impl InternalToolCall {
         self.name == other.name && self.parameters == other.parameters
     }
 
+    /// A stable key for "this exact call". Two calls with the same name and the
+    /// same arguments have the same signature — regardless of what the model did
+    /// in between.
+    fn signature(&self) -> String {
+        // A tool name can never contain a newline, so this cannot collide.
+        format!("{}\n{}", self.name, self.parameters)
+    }
+
     fn from_tool_call(tool_call: &CallToolRequestParams) -> Self {
         let name = tool_call.name.to_string();
         let parameters = tool_call
@@ -116,8 +124,15 @@ impl ToolInspector for RepetitionInspector {
             return Ok(results);
         };
 
-        let mut last_call: Option<InternalToolCall> = None;
-        let mut repeat_count = 0u32;
+        // Count each (name, args) SIGNATURE across the whole conversation, not just
+        // consecutive repeats.
+        //
+        // This used to track only the immediately preceding call, so `A, B, A, B,
+        // A, B` reset the counter every time and never tripped at all — which is
+        // how a runaway `ui_describe` / `ui_render` alternation ran to the turn cap
+        // while the guard sat there believing nothing was wrong. A loop is a loop
+        // whether or not the model interleaves something else between iterations.
+        let mut seen: HashMap<String, u32> = HashMap::new();
 
         for call in messages
             .iter()
@@ -125,22 +140,14 @@ impl ToolInspector for RepetitionInspector {
             .filter_map(|content| content.as_tool_request())
             .filter_map(InternalToolCall::from_request)
         {
-            if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
-                repeat_count += 1;
-            } else {
-                repeat_count = 1;
-                last_call = Some(call);
-            }
+            *seen.entry(call.signature()).or_insert(0) += 1;
         }
 
         for tool_request in tool_requests {
             if let Some(call) = InternalToolCall::from_request(tool_request) {
-                if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
-                    repeat_count += 1;
-                } else {
-                    repeat_count = 1;
-                    last_call = Some(call);
-                }
+                let count = seen.entry(call.signature()).or_insert(0);
+                *count += 1;
+                let repeat_count = *count;
 
                 if repeat_count > max_repetitions {
                     let tool_name = tool_request

@@ -25,6 +25,15 @@ url = "2.5"
 base64 = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
+# RFC-6902 JSON Patch for the Apps SDK v2 shared-state document (agent_drafter).
+json-patch = "4.2"
+# JSON Schema validation for Apps SDK v2 custom `component` widget props
+# (agent_drafter/control.rs). Pinned to the version already used by the
+# `biorouter` crate so the workspace resolves a single copy.
+jsonschema = "0.30.0"
+# Server-side HTML sanitization for the capability-gated `ui_html` tool
+# (agent_drafter/control.rs). Fail-closed XSS barrier — see design §3.7.
+ammonia = "4.1"
 schemars = "1.0"
 shellexpand = "3.1.0"
 indoc = "2.0.5"

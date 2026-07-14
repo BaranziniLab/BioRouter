@@ -635,7 +635,11 @@ mod bedrock_error_tests {
     /// A proxy error the SDK could not type: `ConverseError::Unhandled` with empty
     /// metadata — exactly what UCSF's Versa MuleSoft proxy produced in the incident.
     fn proxy_unhandled(status: u16, body: &str) -> SdkError<ConverseError> {
-        service_err(status, body, ConverseError::generic(ErrorMetadata::builder().build()))
+        service_err(
+            status,
+            body,
+            ConverseError::generic(ErrorMetadata::builder().build()),
+        )
     }
 
     // ---- looks_like_context_overflow --------------------------------------
@@ -678,7 +682,8 @@ mod bedrock_error_tests {
     #[test]
     fn proxy_5xx_is_retryable_server_error_with_readable_message() {
         for status in [500u16, 502, 503, 504] {
-            let err = classify_bedrock_converse_error(proxy_unhandled(status, "<html>gateway</html>"));
+            let err =
+                classify_bedrock_converse_error(proxy_unhandled(status, "<html>gateway</html>"));
             assert!(
                 matches!(err, ProviderError::ServerError(_)),
                 "status {status}: expected ServerError, got {err:?}"
@@ -709,7 +714,10 @@ mod bedrock_error_tests {
     #[test]
     fn proxy_413_payload_too_large_is_context_length_exceeded() {
         let err = classify_bedrock_converse_error(proxy_unhandled(413, ""));
-        assert!(matches!(err, ProviderError::ContextLengthExceeded(_)), "got {err:?}");
+        assert!(
+            matches!(err, ProviderError::ContextLengthExceeded(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -749,7 +757,10 @@ mod bedrock_error_tests {
             ThrottlingException::builder().message("slow down").build(),
         );
         let err = classify_bedrock_converse_error(service_err(429, "", inner));
-        assert!(matches!(err, ProviderError::RateLimitExceeded { .. }), "got {err:?}");
+        assert!(
+            matches!(err, ProviderError::RateLimitExceeded { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -760,7 +771,10 @@ mod bedrock_error_tests {
                 .build(),
         );
         let err = classify_bedrock_converse_error(service_err(400, "", inner));
-        assert!(matches!(err, ProviderError::ContextLengthExceeded(_)), "got {err:?}");
+        assert!(
+            matches!(err, ProviderError::ContextLengthExceeded(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -771,7 +785,10 @@ mod bedrock_error_tests {
                 .build(),
         );
         let err = classify_bedrock_converse_error(service_err(400, "", inner));
-        assert!(matches!(err, ProviderError::ExecutionError(_)), "got {err:?}");
+        assert!(
+            matches!(err, ProviderError::ExecutionError(_)),
+            "got {err:?}"
+        );
         // A malformed request cannot be fixed by retrying it verbatim.
         assert!(!should_retry(&err));
     }

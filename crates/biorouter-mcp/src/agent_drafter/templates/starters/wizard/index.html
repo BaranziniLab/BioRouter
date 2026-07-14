@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">Wizard</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+
+    <!-- Presence: the agent's step progress renders here (see main.ts). -->
+    <div data-br-progress class="br-run-status" style="margin-top: 12px;"></div>
+
+    <section class="br-card" id="stage-1" style="margin-top: 16px;">
+      <p class="br-text--muted" style="margin: 0 0 8px;">Step 1 of 2</p>
+      <label class="br-label" for="name">Your name</label>
+      <input id="name" class="br-input" />
+      <div class="br-row" style="margin-top: 12px;">
+        <button id="next" class="br-btn">Next</button>
+      </div>
+    </section>
+
+    <section class="br-card" id="stage-2" style="margin-top: 16px;" hidden>
+      <p class="br-text--muted" style="margin: 0 0 8px;">Step 2 of 2</p>
+      <label class="br-label" for="goal">Research goal</label>
+      <input id="goal" class="br-input" />
+      <div class="br-row" style="margin-top: 12px; display: flex; gap: 12px;">
+        <button id="back" class="br-btn br-btn--ghost">Back</button>
+        <button id="submit" class="br-btn">Submit</button>
+      </div>
+    </section>
+
+    <!-- Review reflects the shared form doc as the user (or agent) fills it. -->
+    <section class="br-card" style="margin-top: 16px;">
+      <p class="br-text--muted" style="margin: 0 0 4px;">Review</p>
+      <p style="color: var(--br-text); font-weight: 600;" data-br-bind="/form/name">—</p>
+      <p class="br-text--muted" data-br-bind="/form/goal"></p>
+    </section>
+
+    <section class="br-output" id="out" data-br-region="result" style="margin-top: 16px;"></section>
+    <p class="br-footer">Powered by BioRouter · Wizard archetype</p>
+  </main>
+</body>
+</html>

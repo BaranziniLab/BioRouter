@@ -10,6 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Generate and execute test workflows
   - Test error boundaries and security controls
@@ -21,7 +22,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, subagents, workflows, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, subagents, workflows, advanced"
   
   - key: test_depth
     input_type: string
@@ -79,6 +80,14 @@ instructions: |
   - Enable/disable extensions
   - Test extension interactions
   - Verify isolation between extensions
+
+  ### Phase 2B: Apps SDK v2 Testing
+  Exercise Agent Drafter's typed app contract end to end:
+  - Create one isolated dashboard app with a fixed self-test id
+  - Read its resolved manifest and verify the declared surface
+  - Build and lint the app
+  - Execute its controls through the browser smoke harness
+  - Delete only the self-test app during cleanup
   
   ### Phase 3: Subagent Testing (Meta-Recursion)
   Create subagents to test yourself recursively:
@@ -115,6 +124,13 @@ extensions:
     timeout: 600
     bundled: true
     description: Core tool for file operations, shell commands, and code analysis
+
+  - type: builtin
+    name: agent_drafter
+    display_name: Agent Drafter
+    timeout: 600
+    bundled: true
+    description: Typed authoring, build, lint, and browser smoke tools for BioRouter apps
   
 prompt: |
   Execute the BioRouter Self-Testing Integration Suite in {{ workspace_dir }}.
@@ -169,6 +185,21 @@ prompt: |
   4. Verify extension isolation between enabled extensions
   
   Log results to: {{ workspace_dir }}/phase2_extensions.md
+  {% endif %}
+
+  {% if test_phases == "all" or "apps" in test_phases %}
+  ## 🧩 PHASE 2B: Apps SDK v2 Validation
+
+  Use only the exact app id `biorouter-self-test-sdk-v2`; never modify or delete any other app.
+
+  1. Call `list_apps`. If that exact self-test id remains from an interrupted run, delete only it.
+  2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
+  3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, and `refresh_requested` signal.
+  4. Call `build_app`; require a successful bundle.
+  5. Call `lint_app`; require zero ERROR findings.
+  6. Call `smoke_app`; require the real-browser harness to execute successfully. A missing browser or skipped execution is a failure, not a pass.
+  7. Record setup, manifest assertions, build output, lint output, and smoke output in {{ workspace_dir }}/phase2b_apps.md.
+  8. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-sdk-v2` after recording the result.
   {% endif %}
   
   {% if test_phases == "all" or "subagents" in test_phases %}
@@ -265,6 +296,7 @@ prompt: |
   • Shell commands: [✓/✗]
   • Code analysis: [✓/✗]
   • Extensions: [✓/✗]
+  • Apps SDK v2: [✓/✗]
   • Subagents: [✓/✗]
   
   ⚠️ Issues Found:

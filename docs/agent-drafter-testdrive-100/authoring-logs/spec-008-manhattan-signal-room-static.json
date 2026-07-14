@@ -1,0 +1,59 @@
+{
+  "id": "spec-008-manhattan-signal-room",
+  "title": "Manhattan Signal Room",
+  "built": true,
+  "manifest": ".br-testdrive/runtime/config/biorouter/agent_drafter/spec-008-manhattan-signal-room/manifest.json",
+  "actions_expected": [
+    "focus_snp",
+    "link_to_gene",
+    "open_locuszoom",
+    "pin_peak",
+    "place_inflation",
+    "shade_credible_set"
+  ],
+  "actions_actual": [
+    "focus_snp",
+    "link_to_gene",
+    "open_locuszoom",
+    "pin_peak",
+    "place_inflation",
+    "shade_credible_set"
+  ],
+  "signals_expected": [
+    "peak_clicked",
+    "region_zoomed",
+    "snp_selected",
+    "tissue_toggled"
+  ],
+  "signals_actual": [
+    "peak_clicked",
+    "region_zoomed",
+    "snp_selected",
+    "tissue_toggled"
+  ],
+  "agents_expected": [
+    "Prospector",
+    "Fine-Mapper",
+    "Colocalizer",
+    "Interpreter"
+  ],
+  "agents_actual": [
+    "colocalizer",
+    "fine_mapper",
+    "interpreter",
+    "prospector"
+  ],
+  "regions": [
+    "inflation",
+    "inspector",
+    "locusbrief",
+    "locuszoom",
+    "manhattan",
+    "peakrail",
+    "progress",
+    "transport"
+  ],
+  "theme_expected": "midnight",
+  "theme_actual": "midnight",
+  "issues": []
+}

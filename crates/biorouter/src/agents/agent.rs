@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -10,7 +11,10 @@ use uuid::Uuid;
 
 use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
-use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::tool_execution::{
+    ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE, LOOP_BLOCKED_RESPONSE,
+};
+use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
@@ -145,6 +149,18 @@ pub struct Agent {
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) sub_workflows: Mutex<HashMap<String, SubWorkflow>>,
+    /// Whether the generic `subagent` tool is offered at all.
+    ///
+    /// Default `true` (every existing caller). An Agent-Drafter app that declares
+    /// worker profiles sets this `false`, because otherwise TWO delegation
+    /// mechanisms are armed at once and the generic one is easier to reach: the
+    /// `subagent` tool's description auto-lists the very worker names the author
+    /// registered, and it takes a free-form `instructions` string. The model
+    /// picked it every time — spec-006 declared the same four workers *twice*
+    /// (`sub_agents` AND `agents`), and the declared profiles were dead config.
+    /// A tool that is absent from the tool list cannot be called; prose competing
+    /// with an available tool loses.
+    pub(super) subagent_tool_enabled: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -176,8 +192,26 @@ pub struct Agent {
 pub enum AgentEvent {
     Message(Message),
     McpNotification((String, ServerNotification)),
-    ModelChange { model: String, mode: String },
+    ModelChange {
+        model: String,
+        mode: String,
+    },
     HistoryReplaced(Conversation),
+    /// The turn ended **without doing its work**.
+    ///
+    /// A provider failure used to be yielded only as an assistant `Message`
+    /// ("Ran into this error: …") after which the stream ended normally — so a
+    /// caller could not distinguish a 403 from a completed turn without
+    /// regex-matching English prose. `biorouter run` exited 0 on an auth failure
+    /// and telemetry recorded it as a success.
+    ///
+    /// The human-readable `Message` is still emitted first (the desktop UX shows
+    /// it); this event is the machine-checkable companion, and it is always
+    /// terminal. See [`crate::agents::turn_abort`].
+    TurnAborted {
+        code: TurnAbortCode,
+        message: String,
+    },
 }
 
 impl Default for Agent {
@@ -247,6 +281,7 @@ impl Agent {
             config,
             extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
             sub_workflows: Mutex::new(HashMap::new()),
+            subagent_tool_enabled: AtomicBool::new(true),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -759,11 +794,27 @@ impl Agent {
                         && result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME
                         && result.action == InspectionAction::Deny
                 });
-                let response_text = match hook_reason {
-                    Some(result) if !result.reason.trim().is_empty() => {
-                        format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
+                // Was this OUR loop guard, or an actual refusal?
+                //
+                // Both used to produce "The user has declined to run this tool" — a
+                // lie in the loop-guard case, and one the model could not see
+                // through: it had no way to tell a human "no" from a repetition
+                // block, so it could not learn to do something *different*. It just
+                // retried.
+                let looped = inspection_results.iter().any(|result| {
+                    result.tool_request_id == request.id
+                        && result.inspector_name == "repetition"
+                        && result.action == InspectionAction::Deny
+                });
+                let response_text = if looped {
+                    LOOP_BLOCKED_RESPONSE.to_string()
+                } else {
+                    match hook_reason {
+                        Some(result) if !result.reason.trim().is_empty() => {
+                            format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
+                        }
+                        _ => DECLINED_RESPONSE.to_string(),
                     }
-                    _ => DECLINED_RESPONSE.to_string(),
                 };
                 let mut response = response_msg.lock().await;
                 *response = response.clone().with_tool_response_with_metadata(
@@ -1140,7 +1191,21 @@ impl Agent {
         Ok(())
     }
 
+    /// Offer (or withhold) the generic `subagent` tool.
+    ///
+    /// Agent-Drafter apps with declared worker profiles call this with `false`, so
+    /// `consult` is the ONE delegation mechanism. Two armed mechanisms is what let
+    /// the main agent bypass the profiles the author declared.
+    pub fn set_subagent_tool_enabled(&self, enabled: bool) {
+        self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
+    }
+
     pub async fn subagents_enabled(&self, session_id: &str) -> bool {
+        // An app that delegates through `consult(agent: …)` must not ALSO be
+        // offered the generic `subagent` tool — see `subagent_tool_enabled`.
+        if !self.subagent_tool_enabled.load(Ordering::Relaxed) {
+            return false;
+        }
         if self.config.biorouter_mode != BioRouterMode::Auto {
             return false;
         }
@@ -1543,6 +1608,11 @@ impl Agent {
         let working_dir = session.working_dir.clone();
         Ok(Box::pin(async_stream::try_stream! {
             let _ = reply_span.enter();
+            // Per-turn loop guard. A tool the repetition inspector blocks is removed
+            // from every subsequent provider request, so the model *cannot* re-emit
+            // the call — the old guard merely told it not to, in a tool result it
+            // was free to ignore (and did, all the way to the turn cap).
+            let mut turn_guard = super::turn_guard::TurnToolGuard::new();
             let mut turns_taken = 0u32;
             let max_turns = session_config
                 .max_turns
@@ -1600,11 +1670,17 @@ impl Agent {
                     &working_dir,
                 ).await;
 
+                // Withhold any tool the loop guard blocked this turn. THIS is the
+                // enforcement: the schema is absent from the request, so no amount of
+                // model drift can re-issue the call.
+                let mut turn_tools = tools.clone();
+                turn_guard.filter_tools(&mut turn_tools);
+
                 let mut stream = Self::stream_response_from_provider(
                     self.provider().await?,
                     &system_prompt,
                     conversation_with_moim.messages(),
-                    &tools,
+                    &turn_tools,
                     &toolshim_tools,
                 ).await?;
 
@@ -1754,6 +1830,45 @@ impl Agent {
                                         }
                                     }
 
+                                    // The loop guard fired: BLOCK the tool for the rest of
+                                    // this turn (it disappears from the next provider request),
+                                    // and terminate if the model attempts it anyway.
+                                    //
+                                    // Denying a call and letting the loop continue — which is
+                                    // what used to happen — costs a billed provider call per
+                                    // iteration, bounded only by max_turns.
+                                    let mut loop_abort: Option<super::turn_abort::TurnAbortCode> = None;
+                                    for result in inspection_results.iter() {
+                                        if result.inspector_name != "repetition"
+                                            || result.action != InspectionAction::Deny
+                                        {
+                                            continue;
+                                        }
+                                        let Some(name) = permission_check_result
+                                            .denied
+                                            .iter()
+                                            .find(|r| r.id == result.tool_request_id)
+                                            .and_then(|r| r.tool_call.as_ref().ok())
+                                            .map(|c| c.name.to_string())
+                                        else {
+                                            continue;
+                                        };
+
+                                        if turn_guard.is_blocked(&name) {
+                                            if let super::turn_guard::GuardVerdict::Abort(code) =
+                                                turn_guard.note_blocked_call(&name)
+                                            {
+                                                loop_abort = Some(code);
+                                            }
+                                        } else {
+                                            warn!(
+                                                tool = %name,
+                                                "tool-loop guard: withholding this tool for the rest of the turn"
+                                            );
+                                            turn_guard.block(&name);
+                                        }
+                                    }
+
                                     let mut tool_futures = self.handle_approved_and_denied_tools(
                                         &permission_check_result,
                                         &request_to_response_map,
@@ -1761,6 +1876,17 @@ impl Agent {
                                         &session,
                                         &inspection_results,
                                     ).await?;
+
+                                    if let Some(code) = loop_abort {
+                                        yield AgentEvent::TurnAborted {
+                                            message: format!(
+                                                "stopped: the model kept re-issuing a call that was already blocked ({})",
+                                                code.wire_code()
+                                            ),
+                                            code,
+                                        };
+                                        break;
+                                    }
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
 
@@ -2019,11 +2145,20 @@ impl Agent {
                         }
                         Err(ref provider_err) => {
                             error!("Error: {}", provider_err);
+                            // Keep the human-readable message — the desktop chat
+                            // renders it — but also yield the typed terminal event,
+                            // so the CLI can exit nonzero, the server can send an
+                            // error frame, and telemetry stops recording a failed
+                            // turn as a success.
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
                                     format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                                 )
                             );
+                            yield AgentEvent::TurnAborted {
+                                code: TurnAbortCode::ProviderFailure { kind: provider_err.kind() },
+                                message: provider_err.to_string(),
+                            };
                             break;
                         }
                     }
