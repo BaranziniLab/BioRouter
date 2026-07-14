@@ -152,84 +152,60 @@ fn model_label(row: &UsageReportRow) -> String {
     }
 }
 
-/// Human-readable report + summary. Pure so the formatting is unit-tested
-/// without a database.
-fn format_usage_text(
-    rows: &[UsageReportRow],
-    group: UsageGroup,
-    summary: &UsageSummary,
-    limits: &UsageLimits,
-    from_ts: i64,
-    to_ts: i64,
-) -> String {
+fn format_report_rows(rows: &[UsageReportRow], group: UsageGroup) -> String {
     let mut out = String::new();
-    let from_day = Local
-        .timestamp_opt(from_ts, 0)
-        .single()
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
-    let to_day = Local
-        .timestamp_opt(to_ts, 0)
-        .single()
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
-
-    let heading = match group {
-        UsageGroup::Model => "Usage by model",
-        _ => "Usage by day",
-    };
-    out.push_str(&format!("{heading}  ({from_day} → {to_day})\n"));
-
     if rows.is_empty() {
         out.push_str("  (no usage in this range)\n");
-    } else {
-        let label_header = if matches!(group, UsageGroup::Model) {
-            "MODEL"
-        } else {
-            "DAY"
-        };
-        out.push_str(&format!(
-            "  {label_header:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
-            "INPUT", "OUTPUT", "CACHE", "TOTAL", "TURNS", "COST"
-        ));
-        let mut any_unpriced = false;
-        let mut any_cost_excludes_cache = false;
-        for row in rows {
-            let label = match group {
-                UsageGroup::Model => model_label(row),
-                _ => row.date.clone().unwrap_or_else(|| "unknown".to_string()),
-            };
-            any_unpriced |= row.has_unpriced;
-            any_cost_excludes_cache |= row.cost_excludes_cache;
-            out.push_str(&format!(
-                "  {label:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
-                fmt_tokens(row.input_tokens),
-                fmt_tokens(row.output_tokens),
-                fmt_optional_tokens(
-                    row.cache_read_tokens
-                        .zip(row.cache_creation_tokens)
-                        .map(|(read, creation)| read + creation),
-                ),
-                fmt_optional_tokens(row.total_tokens),
-                row.turns,
-                fmt_cost_with_completeness(row.cost, row.has_unpriced || row.cost_excludes_cache),
-            ));
-        }
-        if any_unpriced {
-            out.push_str(
-                "  Note: some rows include unpriced or incomplete usage; shown costs are known subtotals.\n",
-            );
-        }
-        if any_cost_excludes_cache {
-            out.push_str(
-                "  Note: some priced models have no cache pricing; their cache tokens are excluded from cost.\n",
-            );
-        }
+        return out;
     }
 
-    // Month-to-date summary vs the configured budget.
-    out.push('\n');
-    out.push_str(&format!("Month to date ({})\n", summary.month));
+    let label_header = if matches!(group, UsageGroup::Model) {
+        "MODEL"
+    } else {
+        "DAY"
+    };
+    out.push_str(&format!(
+        "  {label_header:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
+        "INPUT", "OUTPUT", "CACHE", "TOTAL", "TURNS", "COST"
+    ));
+    let mut any_unpriced = false;
+    let mut any_cost_excludes_cache = false;
+    for row in rows {
+        let label = match group {
+            UsageGroup::Model => model_label(row),
+            _ => row.date.clone().unwrap_or_else(|| "unknown".to_string()),
+        };
+        any_unpriced |= row.has_unpriced;
+        any_cost_excludes_cache |= row.cost_excludes_cache;
+        let cache_tokens = row
+            .cache_read_tokens
+            .zip(row.cache_creation_tokens)
+            .map(|(read, creation)| read + creation);
+        out.push_str(&format!(
+            "  {label:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
+            fmt_tokens(row.input_tokens),
+            fmt_tokens(row.output_tokens),
+            fmt_optional_tokens(cache_tokens),
+            fmt_optional_tokens(row.total_tokens),
+            row.turns,
+            fmt_cost_with_completeness(row.cost, row.has_unpriced || row.cost_excludes_cache),
+        ));
+    }
+    if any_unpriced {
+        out.push_str(
+            "  Note: some rows include unpriced or incomplete usage; shown costs are known subtotals.\n",
+        );
+    }
+    if any_cost_excludes_cache {
+        out.push_str(
+            "  Note: some priced models have no cache pricing; their cache tokens are excluded from cost.\n",
+        );
+    }
+    out
+}
+
+fn format_usage_summary(summary: &UsageSummary, limits: &UsageLimits) -> String {
+    let mut out = format!("Month to date ({})\n", summary.month);
     let mtd = &summary.month_to_date;
     out.push_str(&format!(
         "  Tokens: {}   Cost: {}   Turns: {}\n",
@@ -282,6 +258,38 @@ fn format_usage_text(
         }
     }
 
+    out
+}
+
+/// Human-readable report + summary. Pure so the formatting is unit-tested
+/// without a database.
+fn format_usage_text(
+    rows: &[UsageReportRow],
+    group: UsageGroup,
+    summary: &UsageSummary,
+    limits: &UsageLimits,
+    from_ts: i64,
+    to_ts: i64,
+) -> String {
+    let format_day = |timestamp| {
+        Local
+            .timestamp_opt(timestamp, 0)
+            .single()
+            .map(|date| date.format("%Y-%m-%d").to_string())
+            .unwrap_or_default()
+    };
+    let heading = match group {
+        UsageGroup::Model => "Usage by model",
+        _ => "Usage by day",
+    };
+    let mut out = format!(
+        "{heading}  ({} → {})\n",
+        format_day(from_ts),
+        format_day(to_ts)
+    );
+    out.push_str(&format_report_rows(rows, group));
+    out.push('\n');
+    out.push_str(&format_usage_summary(summary, limits));
     out
 }
 
