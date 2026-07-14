@@ -9,6 +9,7 @@ function windowOf(overrides: Partial<ActivityWindow> = {}): ActivityWindow {
     end: '2026-03-14', // a Saturday
     maxSessions: 3,
     maxTokens: 128402,
+    tokensComplete: true,
     currentStreak: 0,
     longestStreak: 0,
     days: [],
@@ -69,6 +70,25 @@ describe('UsageHeatmap', () => {
 
     fireEvent.mouseLeave(screen.getByLabelText(/2026-03-02/));
     expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('marks activity token counts as lower bounds when the server reports incomplete history', () => {
+    render(
+      <UsageHeatmap
+        window={windowOf({
+          tokensComplete: false,
+          days: [day('2026-03-02', 3, 3, 128402)],
+        })}
+      />
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('Token values marked ≥');
+    expect(screen.getByText(/tokens on the highest measured day/)).toHaveTextContent(
+      '≥128.4K tokens on the highest measured day'
+    );
+    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, at least 128402 tokens/);
+    fireEvent.mouseEnter(cell);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('≥128,402');
   });
 
   it('opens the tooltip on keyboard focus, not hover alone', () => {

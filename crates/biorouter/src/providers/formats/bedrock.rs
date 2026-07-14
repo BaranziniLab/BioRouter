@@ -359,11 +359,25 @@ pub fn from_bedrock_role(role: &bedrock::ConversationRole) -> Result<Role> {
     })
 }
 
+/// Convert a Bedrock Converse `TokenUsage` into our [`Usage`].
+///
+/// Per-provider semantics: for Anthropic models on Bedrock, `inputTokens`
+/// **excludes** the cache buckets — `cacheReadInputTokens` and
+/// `cacheWriteInputTokens` are reported separately and billed in addition (the
+/// same shape as Anthropic-native). We map cache-write to `cache_creation` and
+/// keep all four buckets disjoint, so [`Usage::billed_total`] is a plain sum
+/// that reconciles with the vendor total. `total_tokens` is left as the SDK's
+/// value (input + output; it does not include the cache buckets) — it is the
+/// context-occupancy gauge, not the billed number.
 pub fn from_bedrock_usage(usage: &bedrock::TokenUsage) -> Usage {
     Usage::new(
         Some(usage.input_tokens),
         Some(usage.output_tokens),
         Some(usage.total_tokens),
+    )
+    .with_cache(
+        usage.cache_read_input_tokens,
+        usage.cache_write_input_tokens,
     )
 }
 
@@ -817,6 +831,40 @@ mod tests {
 
     // Base64 encoded 1x1 PNG image for testing
     const TEST_IMAGE_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn from_bedrock_usage_maps_cache_write_to_creation_and_keeps_disjoint() {
+        let usage = bedrock::TokenUsage::builder()
+            .input_tokens(100)
+            .output_tokens(40)
+            .total_tokens(140)
+            .cache_read_input_tokens(900)
+            .cache_write_input_tokens(200)
+            .build()
+            .unwrap();
+        let converted = from_bedrock_usage(&usage);
+        assert_eq!(converted.input_tokens, Some(100)); // fresh input, cache excluded
+        assert_eq!(converted.output_tokens, Some(40));
+        assert_eq!(converted.cache_read_input_tokens, Some(900));
+        assert_eq!(converted.cache_creation_input_tokens, Some(200)); // from cache_write
+        assert_eq!(converted.total_tokens, Some(140)); // SDK context total
+                                                       // Billed reconciles: 100 + 40 + 900 + 200 = 1240.
+        assert_eq!(converted.billed_total(), Some(1240));
+    }
+
+    #[test]
+    fn from_bedrock_usage_without_cache_leaves_cache_none() {
+        let usage = bedrock::TokenUsage::builder()
+            .input_tokens(10)
+            .output_tokens(5)
+            .total_tokens(15)
+            .build()
+            .unwrap();
+        let converted = from_bedrock_usage(&usage);
+        assert_eq!(converted.cache_read_input_tokens, None);
+        assert_eq!(converted.cache_creation_input_tokens, None);
+        assert_eq!(converted.billed_total(), Some(15));
+    }
 
     #[test]
     fn test_to_bedrock_image_supported_formats() -> Result<()> {

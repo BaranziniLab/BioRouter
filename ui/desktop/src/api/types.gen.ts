@@ -44,6 +44,11 @@ export type ActivityWindow = {
     maxSessions: number;
     maxTokens: number;
     start: string;
+    /**
+     * False when at least one event in the window predates billed-token
+     * accounting; numeric token fields are then known subtotals, not zero/exact.
+     */
+    tokensComplete: boolean;
 };
 
 export type AddExtensionRequest = {
@@ -937,6 +942,38 @@ export type ModelRef = {
     provider: string;
 };
 
+/**
+ * One `(model, provider)` group of the per-model usage breakdown.
+ *
+ * `model_id` / `provider` are `None` for turns recorded before model
+ * attribution landed, or when the provider reported no model — those rows
+ * aggregate together as the "unknown" group.
+ */
+export type ModelUsageRow = {
+    /**
+     * Input tokens written to the prompt cache.
+     */
+    cacheCreationTokens?: number | null;
+    /**
+     * Input tokens served from the prompt cache. `None` means at least one
+     * contributing event predates cache accounting or did not report it.
+     */
+    cacheReadTokens?: number | null;
+    inputTokens: number;
+    modelId?: string | null;
+    outputTokens: number;
+    provider?: string | null;
+    /**
+     * Billed tokens across all four disjoint buckets. `None` means at least
+     * one contributing event has no reconstructable billed total.
+     */
+    totalTokens?: number | null;
+    /**
+     * Number of billed turns attributed to this group.
+     */
+    turns: number;
+};
+
 export type PageContent = {
     content: string;
     /**
@@ -979,6 +1016,8 @@ export type PreviewResponse = {
 };
 
 export type PricingData = {
+    cache_read_cost?: number | null;
+    cache_write_cost?: number | null;
     context_length?: number | null;
     currency: string;
     input_token_cost: number;
@@ -1267,10 +1306,10 @@ export type Session = {
     accumulated_input_tokens?: number | null;
     accumulated_output_tokens?: number | null;
     /**
-     * Lifetime totals: the sum of every turn's usage, i.e. tokens actually
-     * processed and billed. They grow without bound and overflowed `i32` at
-     * ~2.1e9 — in release that wraps *negative* and then subtracts from the
-     * insights `SUM`. SQLite's INTEGER is already 64-bit.
+     * Lifetime totals. New usage writes use the four-bucket billed total;
+     * databases created before billed-bucket accounting may contain legacy
+     * context totals here, so reporting and budgets use `token_events` instead.
+     * These counters grow without bound, so SQLite and Rust both use 64-bit.
      */
     accumulated_total_tokens?: number | null;
     conversation?: Conversation | null;
@@ -1327,10 +1366,10 @@ export type SessionExtensionsResponse = {
 export type SessionInsights = {
     sessionsLast30Days: number;
     sessionsLast7Days: number;
-    tokensLast30Days: number;
-    tokensLast7Days: number;
+    tokensLast30Days?: number | null;
+    tokensLast7Days?: number | null;
     totalSessions: number;
-    totalTokens: number;
+    totalTokens?: number | null;
 };
 
 export type SessionListResponse = {
@@ -1338,6 +1377,18 @@ export type SessionListResponse = {
      * List of available session information objects
      */
     sessions: Array<Session>;
+};
+
+/**
+ * Per-model token breakdown for one session.
+ */
+export type SessionModelUsageResponse = {
+    /**
+     * One row per `(model, provider)` group; a `null` `modelId` is the
+     * "unknown" bucket (turns recorded before model attribution, or providers
+     * that reported no model).
+     */
+    models: Array<ModelUsageRow>;
 };
 
 export type SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'terminal';
@@ -1693,6 +1744,122 @@ export type UpsertConfigQuery = {
 
 export type UpsertPermissionsQuery = {
     tool_permissions: Array<ToolPermission>;
+};
+
+/**
+ * How `get_usage_report` buckets the per-turn ledger.
+ */
+export type UsageGroup = 'day' | 'model' | 'day_model';
+
+export type UsageReportResponse = {
+    /**
+     * Echoed resolved window bounds (unix seconds), so the client can render
+     * the exact range it got even when it sent no `from`/`to`.
+     */
+    from: number;
+    group: UsageGroup;
+    rows: Array<UsageReportRow>;
+    to: number;
+};
+
+/**
+ * One bucket of the usage report.
+ *
+ * `date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is
+ * present unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of
+ * the priced turns in the bucket, or `None` when *every* contributing turn was
+ * unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
+ * flags a bucket that mixes priced, unpriced, or incomplete turns, so a day
+ * cost can be read as "at least this much" rather than exact.
+ */
+export type UsageReportRow = {
+    cacheCreationTokens?: number | null;
+    /**
+     * Prompt-cache read/creation tokens in the bucket. `None` preserves
+     * historical incompleteness; it must not be presented as a measured zero.
+     */
+    cacheReadTokens?: number | null;
+    cost?: number | null;
+    /**
+     * `true` when cache cost is omitted because a contributing model has no
+     * cache rate or an event did not report a required cache bucket.
+     */
+    costExcludesCache: boolean;
+    date?: string | null;
+    hasUnpriced: boolean;
+    inputTokens: number;
+    modelId?: string | null;
+    outputTokens: number;
+    provider?: string | null;
+    /**
+     * Billed tokens, or `None` when the bucket includes incomplete history.
+     */
+    totalTokens?: number | null;
+    turns: number;
+};
+
+/**
+ * Month-to-date and all-time usage totals, for the summary gauge.
+ */
+export type UsageSummary = {
+    allTime: UsageTotals;
+    /**
+     * Current local month, `YYYY-MM`.
+     */
+    month: string;
+    monthToDate: UsageTotals;
+};
+
+export type UsageSummaryResponse = UsageSummary & {
+    /**
+     * MTD cost as a percent of the dollar limit; `null` when no limit is set or
+     * the MTD cost is unknown or only a lower bound.
+     */
+    dollarPercent?: number | null;
+    /**
+     * Configured monthly dollar budget, or `null` when unset.
+     */
+    monthlyDollarLimit?: number | null;
+    /**
+     * Configured monthly token allowance, or `null` when unset.
+     */
+    monthlyTokenLimit?: number | null;
+    /**
+     * MTD billed tokens as a percent of the token limit; `null` when no limit
+     * is set or the historical billed total is incomplete.
+     */
+    tokenPercent?: number | null;
+};
+
+/**
+ * Token + cost totals for a time span, priced through [`model_cost_with_cache`].
+ */
+export type UsageTotals = {
+    cacheCreationTokens?: number | null;
+    /**
+     * Prompt-cache read/creation tokens in the span. `None` means the span
+     * includes at least one event without cache-bucket accounting.
+     */
+    cacheReadTokens?: number | null;
+    /**
+     * Dollar cost of the priced turns, or `None` when nothing in the span is
+     * priced. Priced-but-partial spans return the priced sum with
+     * `has_unpriced = true`.
+     */
+    cost?: number | null;
+    /**
+     * `true` when cache cost is omitted because pricing or cache accounting is
+     * incomplete — the figure is then a lower bound.
+     */
+    costExcludesCache: boolean;
+    hasUnpriced: boolean;
+    inputTokens: number;
+    outputTokens: number;
+    /**
+     * Billed tokens, or `None` when the span includes incomplete history.
+     */
+    totalTokens?: number | null;
+    turns: number;
 };
 
 export type WindowProps = {
@@ -4336,6 +4503,46 @@ export type UpdateSessionNameResponses = {
     200: unknown;
 };
 
+export type GetSessionUsageData = {
+    body?: never;
+    path: {
+        /**
+         * Unique identifier for the session
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/usage';
+};
+
+export type GetSessionUsageErrors = {
+    /**
+     * Invalid session id
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionUsageResponses = {
+    /**
+     * Per-model usage for the session
+     */
+    200: SessionModelUsageResponse;
+};
+
+export type GetSessionUsageResponse = GetSessionUsageResponses[keyof GetSessionUsageResponses];
+
 export type UpdateSessionUserWorkflowValuesData = {
     body: UpdateSessionUserWorkflowValuesRequest;
     path: {
@@ -4473,6 +4680,73 @@ export type StopTunnelResponses = {
      */
     200: unknown;
 };
+
+export type GetUsageReportData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Inclusive window start, unix seconds (default: 30 days ago)
+         */
+        from?: number | null;
+        /**
+         * Inclusive window end, unix seconds (default: now)
+         */
+        to?: number | null;
+        /**
+         * Bucketing: day (default), model, or day_model
+         */
+        group?: UsageGroup | null;
+    };
+    url: '/usage/report';
+};
+
+export type GetUsageReportErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetUsageReportResponses = {
+    /**
+     * Usage report
+     */
+    200: UsageReportResponse;
+};
+
+export type GetUsageReportResponse = GetUsageReportResponses[keyof GetUsageReportResponses];
+
+export type GetUsageSummaryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/usage/summary';
+};
+
+export type GetUsageSummaryErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetUsageSummaryResponses = {
+    /**
+     * Month-to-date usage vs the configured budget
+     */
+    200: UsageSummaryResponse;
+};
+
+export type GetUsageSummaryResponse = GetUsageSummaryResponses[keyof GetUsageSummaryResponses];
 
 export type CreateWorkflowData = {
     body: CreateWorkflowRequest;

@@ -284,93 +284,55 @@ pub fn response_to_message(response: &Value) -> Result<Message> {
     Ok(message)
 }
 
-/// Extract usage information from Anthropic's API response
+/// Build a [`Usage`] from an Anthropic usage object, keeping fresh input and the
+/// two cache buckets disjoint. `total_tokens` (context occupancy) is the sum of
+/// all four buckets so the live gauge is unchanged from the folded era.
+fn usage_from_fields(usage: &Value) -> Usage {
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let clamp = |v: u64| v.min(i32::MAX as u64) as i32;
+
+    let input_tokens = field("input_tokens");
+    let cache_creation_tokens = field("cache_creation_input_tokens");
+    let cache_read_tokens = field("cache_read_input_tokens");
+    let output_tokens = field("output_tokens");
+
+    let input_i32 = clamp(input_tokens);
+    let cache_creation_i32 = clamp(cache_creation_tokens);
+    let cache_read_i32 = clamp(cache_read_tokens);
+    let output_i32 = clamp(output_tokens);
+
+    // Context occupancy = fresh input + both cache buckets + output.
+    let total_i32 = (i64::from(input_i32)
+        + i64::from(cache_creation_i32)
+        + i64::from(cache_read_i32)
+        + i64::from(output_i32))
+    .min(i64::from(i32::MAX)) as i32;
+
+    Usage::new(Some(input_i32), Some(output_i32), Some(total_i32))
+        .with_cache(Some(cache_read_i32), Some(cache_creation_i32))
+}
+
+/// Extract usage information from Anthropic's API response.
+///
+/// Per-provider semantics: Anthropic's `input_tokens` **excludes** the two
+/// cache buckets — `cache_read_input_tokens` and `cache_creation_input_tokens`
+/// are reported *in addition* to `input_tokens`. We keep them disjoint in
+/// [`Usage`] (fresh input in `input_tokens`, cache in the two cache fields) so
+/// [`Usage::billed_total`] is a plain sum. `total_tokens` is the full context
+/// occupancy (fresh input + both cache buckets + output) for the live gauge.
 pub fn get_usage(data: &Value) -> Result<Usage> {
     // Extract usage data if available
     if let Some(usage) = data.get("usage") {
-        // Get all token fields for analysis
-        let input_tokens = usage
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_creation_tokens = usage
-            .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_read_tokens = usage
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let output_tokens = usage
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        // IMPORTANT: For display purposes, we want to show the ACTUAL total tokens consumed
-        // The cache pricing should only affect cost calculation, not token count display
-        let total_input_tokens = input_tokens + cache_creation_tokens + cache_read_tokens;
-
-        // Convert to i32 with bounds checking
-        let total_input_i32 = total_input_tokens.min(i32::MAX as u64) as i32;
-        let output_tokens_i32 = output_tokens.min(i32::MAX as u64) as i32;
-        let total_tokens_i32 =
-            (total_input_i32 as i64 + output_tokens_i32 as i64).min(i32::MAX as i64) as i32;
-
-        Ok(Usage::new(
-            Some(total_input_i32),
-            Some(output_tokens_i32),
-            Some(total_tokens_i32),
-        ))
+        Ok(usage_from_fields(usage))
     } else if data.as_object().is_some() {
-        // Check if the data itself is the usage object (for message_delta events that might have usage at top level)
-        let input_tokens = data
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_creation_tokens = data
-            .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_read_tokens = data
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let output_tokens = data
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        // If we found any token data, process it
-        if input_tokens > 0
-            || cache_creation_tokens > 0
-            || cache_read_tokens > 0
-            || output_tokens > 0
-        {
-            let total_input_tokens = input_tokens + cache_creation_tokens + cache_read_tokens;
-
-            let total_input_i32 = total_input_tokens.min(i32::MAX as u64) as i32;
-            let output_tokens_i32 = output_tokens.min(i32::MAX as u64) as i32;
-            let total_tokens_i32 =
-                (total_input_i32 as i64 + output_tokens_i32 as i64).min(i32::MAX as i64) as i32;
-
-            tracing::debug!("🔍 Anthropic ACTUAL token counts from direct object: input={}, output={}, total={}", 
-                    total_input_i32, output_tokens_i32, total_tokens_i32);
-
-            Ok(Usage::new(
-                Some(total_input_i32),
-                Some(output_tokens_i32),
-                Some(total_tokens_i32),
-            ))
-        } else {
+        // The data itself may be the usage object (message_delta events that
+        // carry usage at the top level).
+        let usage = usage_from_fields(data);
+        if usage.billed_total().unwrap_or(0) == 0 {
             tracing::debug!("🔍 Anthropic no token data found in object");
-            Ok(Usage::new(None, None, None))
+            return Ok(Usage::new(None, None, None));
         }
+        Ok(usage)
     } else {
         tracing::debug!(
             "Failed to get usage data: {}",
@@ -379,6 +341,39 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
         // If no usage data, return None for all values
         Ok(Usage::new(None, None, None))
     }
+}
+
+fn merge_streaming_usage(initial: Usage, update: Usage) -> Usage {
+    let max_bucket = |left: Option<i32>, right: Option<i32>| match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+
+    let input_tokens = max_bucket(initial.input_tokens, update.input_tokens);
+    let output_tokens = max_bucket(initial.output_tokens, update.output_tokens);
+    let cache_read_input_tokens = max_bucket(
+        initial.cache_read_input_tokens,
+        update.cache_read_input_tokens,
+    );
+    let cache_creation_input_tokens = max_bucket(
+        initial.cache_creation_input_tokens,
+        update.cache_creation_input_tokens,
+    );
+    let total_tokens = [
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens,
+        cache_creation_input_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    .map(i64::from)
+    .sum::<i64>()
+    .min(i64::from(i32::MAX)) as i32;
+
+    Usage::new(input_tokens, output_tokens, Some(total_tokens))
+        .with_cache(cache_read_input_tokens, cache_creation_input_tokens)
 }
 
 /// Create a complete request payload for Anthropic's API
@@ -643,22 +638,12 @@ where
                         tracing::debug!("🔍 Anthropic message_delta parsed usage: input_tokens={:?}, output_tokens={:?}, total_tokens={:?}",
                                 delta_usage.input_tokens, delta_usage.output_tokens, delta_usage.total_tokens);
 
-                        // IMPORTANT: message_delta usage should be MERGED with existing usage, not replace it
-                        // message_start has input tokens, message_delta has output tokens
                         if let Some(existing_usage) = &final_usage {
-                            let merged_input = existing_usage.usage.input_tokens.or(delta_usage.input_tokens);
-                            let merged_output = delta_usage.output_tokens.or(existing_usage.usage.output_tokens);
-                            let merged_total = match (merged_input, merged_output) {
-                                (Some(input), Some(output)) => Some(input + output),
-                                (Some(input), None) => Some(input),
-                                (None, Some(output)) => Some(output),
-                                (None, None) => None,
-                            };
-
-                            let merged_usage = crate::providers::base::Usage::new(merged_input, merged_output, merged_total);
-                            final_usage = Some(crate::providers::base::ProviderUsage::new(existing_usage.model.clone(), merged_usage));
+                            let model = existing_usage.model.clone();
+                            let merged_usage = merge_streaming_usage(existing_usage.usage, delta_usage);
                             tracing::debug!("🔍 Anthropic MERGED usage: input_tokens={:?}, output_tokens={:?}, total_tokens={:?}",
-                                    merged_input, merged_output, merged_total);
+                                    merged_usage.input_tokens, merged_usage.output_tokens, merged_usage.total_tokens);
+                            final_usage = Some(crate::providers::base::ProviderUsage::new(model, merged_usage));
                         } else {
                             // No existing usage, just use delta usage
                             let model = event.data.get("model")
@@ -754,9 +739,13 @@ mod tests {
             panic!("Expected Text content");
         }
 
-        assert_eq!(usage.input_tokens, Some(24)); // 12 + 12 = 24 actual tokens
+        // Fresh input and cache are disjoint now: input=12, cache_creation=12.
+        assert_eq!(usage.input_tokens, Some(12));
         assert_eq!(usage.output_tokens, Some(15));
-        assert_eq!(usage.total_tokens, Some(39)); // 24 + 15
+        assert_eq!(usage.cache_creation_input_tokens, Some(12));
+        assert_eq!(usage.cache_read_input_tokens, Some(0));
+        assert_eq!(usage.total_tokens, Some(39)); // 12 + 12 + 0 + 15 context occupancy
+        assert_eq!(usage.billed_total(), Some(39)); // reconciles with the vendor total
 
         Ok(())
     }
@@ -797,9 +786,11 @@ mod tests {
             panic!("Expected ToolRequest content");
         }
 
-        assert_eq!(usage.input_tokens, Some(30)); // 15 + 15 = 30 actual tokens
+        assert_eq!(usage.input_tokens, Some(15)); // fresh input only
         assert_eq!(usage.output_tokens, Some(20));
-        assert_eq!(usage.total_tokens, Some(50)); // 30 + 20
+        assert_eq!(usage.cache_creation_input_tokens, Some(15));
+        assert_eq!(usage.total_tokens, Some(50)); // 15 + 15 + 0 + 20
+        assert_eq!(usage.billed_total(), Some(50));
 
         Ok(())
     }
@@ -978,12 +969,85 @@ mod tests {
 
         let usage = get_usage(&response)?;
 
-        // ACTUAL input tokens should be:
-        // 7 + 10000 + 5000 = 15007 total actual tokens
-        assert_eq!(usage.input_tokens, Some(15007));
+        // Cache is kept disjoint from fresh input so each can be priced at its
+        // own rate (cache read 0.1x, cache write 1.25x). The four buckets:
+        //   fresh input 7, output 50, cache_read 5000, cache_creation 10000.
+        assert_eq!(usage.input_tokens, Some(7));
         assert_eq!(usage.output_tokens, Some(50));
-        assert_eq!(usage.total_tokens, Some(15057)); // 15007 + 50
+        assert_eq!(usage.cache_read_input_tokens, Some(5000));
+        assert_eq!(usage.cache_creation_input_tokens, Some(10000));
+        // Context occupancy = 7 + 10000 + 5000 + 50 = 15057 (unchanged gauge).
+        assert_eq!(usage.total_tokens, Some(15057));
+        // Billed total reconciles with the vendor dashboard: same 15057 here.
+        assert_eq!(usage.billed_total(), Some(15057));
 
+        Ok(())
+    }
+
+    #[test]
+    fn get_usage_without_cache_keys_leaves_cache_zero() -> Result<()> {
+        // A response that omits the cache_* keys entirely (no prompt caching).
+        let response = json!({
+            "usage": { "input_tokens": 100, "output_tokens": 40 }
+        });
+        let usage = get_usage(&response)?;
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(40));
+        assert_eq!(usage.cache_read_input_tokens, Some(0));
+        assert_eq!(usage.cache_creation_input_tokens, Some(0));
+        assert_eq!(usage.total_tokens, Some(140));
+        assert_eq!(usage.billed_total(), Some(140));
+        Ok(())
+    }
+
+    #[test]
+    fn get_usage_reads_top_level_usage_object() -> Result<()> {
+        // Streaming message_delta can carry usage fields at the top level.
+        let delta = json!({
+            "input_tokens": 0,
+            "output_tokens": 25,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 0
+        });
+        let usage = get_usage(&delta)?;
+        assert_eq!(usage.input_tokens, Some(0));
+        assert_eq!(usage.output_tokens, Some(25));
+        assert_eq!(usage.cache_read_input_tokens, Some(800));
+        assert_eq!(usage.total_tokens, Some(825));
+        assert_eq!(usage.billed_total(), Some(825));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_usage_preserves_message_start_cache_buckets() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let lines = r#"
+data: {"type":"message_start","message":{"id":"msg_cache","model":"claude-sonnet-4-20250514","usage":{"input_tokens":7,"output_tokens":0,"cache_creation_input_tokens":10000,"cache_read_input_tokens":5000}}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|line| Ok(line.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut final_usage = None;
+        while let Some(result) = messages.next().await {
+            let (_, usage) = result?;
+            if usage.is_some() {
+                final_usage = usage;
+            }
+        }
+
+        let usage = final_usage.expect("expected terminal usage");
+        assert_eq!(usage.model, "claude-sonnet-4-20250514");
+        assert_eq!(usage.usage.input_tokens, Some(7));
+        assert_eq!(usage.usage.output_tokens, Some(50));
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(5000));
+        assert_eq!(usage.usage.cache_creation_input_tokens, Some(10000));
+        assert_eq!(usage.usage.total_tokens, Some(15057));
+        assert_eq!(usage.usage.billed_total(), Some(15057));
         Ok(())
     }
 

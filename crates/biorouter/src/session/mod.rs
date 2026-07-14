@@ -7,6 +7,6 @@ pub mod session_manager;
 pub use diagnostics::{generate_diagnostics, get_system_info, SystemInfo};
 pub use extension_data::{EnabledExtensionsState, ExtensionData, ExtensionState, TodoState};
 pub use session_manager::{
-    ActivityWindow, DailyActivity, Session, SessionInsights, SessionManager, SessionType,
-    SessionUpdateBuilder,
+    ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionManager,
+    SessionType, SessionUpdateBuilder, UsageGroup, UsageReportRow, UsageSummary, UsageTotals,
 };
