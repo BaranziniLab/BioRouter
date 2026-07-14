@@ -17,6 +17,7 @@ import ChatInput from './ChatInput';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
+import { mostCompleteBilledTokens } from '../utils/usageAccounting';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
 import {
@@ -1106,9 +1107,12 @@ function BaseChatContent({
   );
   const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
-  // Billed (accumulated) tokens, NOT the last turn's context occupancy — see
-  // selectBilledTokens. This is the number the user is charged for.
-  const totalSessionTokens = selectBilledTokens(tokenState, session);
+  // Prefer accumulated counters, then let the per-model ledger restore any
+  // cache buckets an older counter payload omitted.
+  const totalSessionTokens = mostCompleteBilledTokens(
+    selectBilledTokens(tokenState, session),
+    modelRows
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -1383,7 +1387,7 @@ function BaseChatContent({
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
               <SummaryMetric
                 label="Billed tokens"
-                value={formatCompactNumber(totalSessionTokens ?? 0)}
+                value={totalSessionTokens === null ? '—' : formatCompactNumber(totalSessionTokens)}
               />
               <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
               <div className="rounded-md bg-background-medium/60 px-2.5 py-2">

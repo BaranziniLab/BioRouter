@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { selectBilledTokens, billedSessionTokens } from './billedTokens';
+import {
+  billedSessionTokenEstimate,
+  billedSessionTokens,
+  formatBilledTokenEstimate,
+  selectBilledTokens,
+} from './billedTokens';
 
 describe('selectBilledTokens', () => {
   it('prefers the live TokenState accumulated counters', () => {
@@ -95,6 +100,19 @@ describe('selectBilledTokens', () => {
     expect(result).toBe(0);
   });
 
+  it('does not treat store-coalesced zeroes as exact when persisted counters are unknown', () => {
+    const result = selectBilledTokens(
+      { accumulatedInputTokens: 0, accumulatedOutputTokens: 0, accumulatedTotalTokens: 0 },
+      {
+        accumulated_input_tokens: null,
+        accumulated_output_tokens: null,
+        accumulated_total_tokens: null,
+      }
+    );
+
+    expect(result).toBeNull();
+  });
+
   it('falls back to the persisted session accumulated_total_tokens when no TokenState', () => {
     // Resumed session: no live stream yet.
     const result = selectBilledTokens(null, {
@@ -179,6 +197,14 @@ describe('billedSessionTokens', () => {
       accumulated_output_tokens: null,
     });
     expect(result).toBe(218_000);
+    expect(
+      billedSessionTokenEstimate({
+        total_tokens: 218_000,
+        accumulated_total_tokens: null,
+        accumulated_input_tokens: null,
+        accumulated_output_tokens: null,
+      })
+    ).toEqual({ value: 218_000, lowerBound: true });
   });
 
   it('returns null when a session has no token data at all', () => {
@@ -193,5 +219,11 @@ describe('billedSessionTokens', () => {
       accumulated_total_tokens: 0,
     });
     expect(result).toBe(0);
+  });
+
+  it('formats a legacy fallback as a lower bound rather than an exact billed total', () => {
+    const estimate = billedSessionTokenEstimate({ total_tokens: 218_000 })!;
+    expect(formatBilledTokenEstimate(estimate)).toBe('≥218,000');
+    expect(formatBilledTokenEstimate({ value: 13_300_000, lowerBound: false })).toBe('13,300,000');
   });
 });

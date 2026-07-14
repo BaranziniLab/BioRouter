@@ -67,7 +67,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
                       title="Billed tokens — accumulated across every turn, not the last message"
                     >
                       <Target className="w-4 h-4 mr-1" />
-                      {session.total_tokens.toLocaleString()}
+                      Billed tokens: {session.total_tokens.toLocaleString()}
                     </span>
                   )}
                 </div>

@@ -10,6 +10,8 @@ vi.mock('../../../api', () => ({
 }));
 
 beforeEach(() => {
+  vi.mocked(getUsageSummary).mockReset();
+  vi.mocked(getUsageReport).mockReset();
   vi.mocked(getUsageSummary).mockResolvedValue({
     data: {
       month: '2026-07',
@@ -71,5 +73,24 @@ describe('UsageSection', () => {
       expect(getUsageSummary).toHaveBeenCalledTimes(2);
       expect(getUsageReport).toHaveBeenCalledTimes(4);
     });
+  });
+
+  it('keeps a failed fetch visible and offers a working retry', async () => {
+    const user = userEvent.setup();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getUsageSummary).mockRejectedValueOnce(new Error('offline'));
+
+    render(<UsageSection />);
+
+    const alert = await screen.findByTestId('usage-load-error');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).toHaveTextContent('Usage data could not be loaded');
+    expect(screen.getByRole('heading', { name: 'Usage' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByTestId('usage-panel');
+    expect(screen.queryByTestId('usage-load-error')).toBeNull();
+
+    consoleError.mockRestore();
   });
 });

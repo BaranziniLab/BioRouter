@@ -26,7 +26,7 @@ import {
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
-import { billedSessionTokens } from '../../utils/billedTokens';
+import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import { SearchView } from '../conversation/SearchView';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
@@ -610,6 +610,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         () => getSessionExtensionNames(session.extension_data),
         [session.extension_data]
       );
+      const billedTokenEstimate = billedSessionTokenEstimate(session);
 
       return (
         <div
@@ -652,13 +653,18 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 <MessageSquareText className="w-3 h-3" />
                 <span>{session.message_count}</span>
               </div>
-              {billedSessionTokens(session) !== null && (
+              {billedTokenEstimate && (
                 <div
                   className="flex items-center gap-1"
-                  title="Billed tokens — accumulated across every turn (each turn resends the full conversation), not the last message"
+                  title={
+                    billedTokenEstimate.lowerBound
+                      ? 'At least this many tokens; only last-turn usage is available for this legacy session'
+                      : 'Billed tokens — accumulated across every turn, including recorded cache buckets'
+                  }
                 >
                   <Target className="w-3 h-3" />
-                  <span>{(billedSessionTokens(session) || 0).toLocaleString()}</span>
+                  <span className="sr-only">Billed tokens: </span>
+                  <span>{formatBilledTokenEstimate(billedTokenEstimate)}</span>
                 </div>
               )}
               {extensionNames.length > 0 && (

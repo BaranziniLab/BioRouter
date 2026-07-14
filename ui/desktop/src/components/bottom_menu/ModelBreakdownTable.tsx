@@ -16,8 +16,13 @@ export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): strin
 }
 
 /** Per-token cost cell — an em dash when this model has no pricing entry. */
-function costCell(cost: number | null, currency: string): string {
-  return cost === null ? '—' : formatTooltipMoney(cost, currency);
+function costCell(
+  row: Pick<ModelCostRow, 'totalCost' | 'costIsPartial'>,
+  currency: string
+): string {
+  if (row.totalCost === null) return '—';
+  const formatted = formatTooltipMoney(row.totalCost, currency);
+  return row.costIsPartial ? `≥${formatted}` : formatted;
 }
 
 /**
@@ -36,8 +41,11 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
         <tr className="text-text-muted">
           <th className="pr-3 font-medium">Model</th>
           <th className="px-2 text-right font-medium">Turns</th>
-          <th className="px-2 text-right font-medium">In</th>
+          <th className="px-2 text-right font-medium">Fresh in</th>
+          <th className="px-2 text-right font-medium">Cache read</th>
+          <th className="px-2 text-right font-medium">Cache write</th>
           <th className="px-2 text-right font-medium">Out</th>
+          <th className="px-2 text-right font-medium">Billed</th>
           <th className="pl-2 text-right font-medium">Cost</th>
         </tr>
       </thead>
@@ -47,8 +55,13 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
             <td className="pr-3 font-mono">{modelLabel(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.turns.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
+            <td className="px-2 text-right tabular-nums">{row.cacheReadTokens.toLocaleString()}</td>
+            <td className="px-2 text-right tabular-nums">
+              {row.cacheCreationTokens.toLocaleString()}
+            </td>
             <td className="px-2 text-right tabular-nums">{row.outputTokens.toLocaleString()}</td>
-            <td className="pl-2 text-right tabular-nums">{costCell(row.totalCost, currency)}</td>
+            <td className="px-2 text-right tabular-nums">{row.totalTokens.toLocaleString()}</td>
+            <td className="pl-2 text-right tabular-nums">{costCell(row, currency)}</td>
           </tr>
         ))}
       </tbody>
