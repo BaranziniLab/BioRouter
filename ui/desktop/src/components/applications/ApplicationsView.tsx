@@ -33,12 +33,12 @@ import ExportAppDialog from './ExportAppDialog';
  * `[data-br-pack]` layer in `agent_drafter/templates/theme.css`. The base
  * `biorouter` pack gets no badge (it is the default look).
  */
-const PACK_SWATCHES: Record<string, string> = {
-  clinical: '#2563eb',
-  'lab-notebook': '#34557a',
-  terminal: '#3ddc84',
-  journal: '#7a2e2e',
-  midnight: '#8b5cf6',
+const PACK_SWATCH_CLASSES: Record<string, string> = {
+  clinical: 'app-theme-swatch--clinical',
+  'lab-notebook': 'app-theme-swatch--lab-notebook',
+  terminal: 'app-theme-swatch--terminal',
+  journal: 'app-theme-swatch--journal',
+  midnight: 'app-theme-swatch--midnight',
 };
 const DEFAULT_THEME_PACK = 'biorouter';
 
@@ -330,8 +330,12 @@ export function ApplicationItem({
             >
               <span
                 aria-hidden="true"
-                className="inline-block w-2 h-2 rounded-full"
-                style={{ backgroundColor: PACK_SWATCHES[themePack] ?? 'var(--border-strong)' }}
+                className={[
+                  'app-theme-swatch inline-block w-2 h-2 rounded-full',
+                  PACK_SWATCH_CLASSES[themePack],
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
               />
               {themePack}
             </span>

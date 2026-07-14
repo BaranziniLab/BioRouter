@@ -219,8 +219,7 @@ fn discover_skills() -> Vec<SkillEntry> {
 fn read_skill(skill_md: &std::path::Path) -> Option<SkillEntry> {
     let text = std::fs::read_to_string(skill_md).ok()?;
     let body = text.strip_prefix("---")?;
-    let end = body.find("\n---")?;
-    let frontmatter = &body[..end];
+    let (frontmatter, _) = body.split_once("\n---")?;
 
     let mut id = None;
     let mut description = String::new();

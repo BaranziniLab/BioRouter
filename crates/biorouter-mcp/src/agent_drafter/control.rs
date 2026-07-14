@@ -1306,49 +1306,61 @@ pub struct WidgetCtx<'a> {
     pub surface: &'a SurfaceDecl,
 }
 
-/// Validate an agent-authored widget tree against what the SDK can render.
-/// Returns a message aimed at the model (it will see it as a tool error and
-/// retry), not at the user.
-pub fn validate_widget(
-    node: &Value,
-    depth: usize,
-    budget: &mut usize,
-    ctx: &WidgetCtx,
-) -> Result<(), String> {
-    if depth > MAX_WIDGET_DEPTH {
-        return Err(format!("widget tree nested deeper than {MAX_WIDGET_DEPTH}"));
+fn validate_widget_kind(t: &str, ctx: &WidgetCtx) -> Result<(), String> {
+    if WIDGET_KINDS.contains(&t) {
+        return Ok(());
     }
-    *budget = budget
-        .checked_sub(1)
-        .ok_or_else(|| format!("widget tree exceeds {MAX_WIDGET_NODES} nodes"))?;
+    if PRIVILEGED_WIDGET_KINDS.contains(&t) {
+        if ctx.allow_privileged {
+            return Ok(());
+        }
+        return Err(format!(
+            "\"{t}\" nodes cannot be placed in a widget tree directly — they are only \
+             produced by the ui_{t} tool, which sanitizes/renders their contents \
+             server-side. Call ui_{t} instead."
+        ));
+    }
+    Err(format!(
+        "unknown widget type \"{t}\"; use one of: {}",
+        WIDGET_KINDS.join(", ")
+    ))
+}
 
-    let obj = node
-        .as_object()
-        .ok_or_else(|| "each widget node must be a JSON object".to_string())?;
-    let t = obj
-        .get("t")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "each widget node needs a \"t\" (type) string".to_string())?;
-    if !WIDGET_KINDS.contains(&t) {
-        // Distinguish "this is a privileged kind you can't hand-write" from an
-        // outright typo, so the model is steered to the right tool.
-        if PRIVILEGED_WIDGET_KINDS.contains(&t) {
-            if !ctx.allow_privileged {
-                return Err(format!(
-                    "\"{t}\" nodes cannot be placed in a widget tree directly — they are only \
-                     produced by the ui_{t} tool, which sanitizes/renders their contents \
-                     server-side. Call ui_{t} instead."
-                ));
-            }
-            // allow_privileged: the dedicated tool built this node; fall through.
-        } else {
+fn validate_table(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let cols = obj
+        .get("columns")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "\"table\" needs a \"columns\" array of strings".to_string())?;
+    let rows = obj
+        .get("rows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "\"table\" needs a \"rows\" array of arrays".to_string())?;
+    if rows.len() > MAX_TABLE_ROWS {
+        return Err(format!(
+            "\"table\" has {} rows; cap is {MAX_TABLE_ROWS} (aggregate or paginate)",
+            rows.len()
+        ));
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let cells = row
+            .as_array()
+            .ok_or_else(|| format!("\"table\" row {i} is not an array"))?;
+        if cells.len() != cols.len() {
             return Err(format!(
-                "unknown widget type \"{t}\"; use one of: {}",
-                WIDGET_KINDS.join(", ")
+                "\"table\" row {i} has {} cells but there are {} columns",
+                cells.len(),
+                cols.len()
             ));
         }
     }
+    Ok(())
+}
 
+fn validate_widget_fields(
+    obj: &serde_json::Map<String, Value>,
+    t: &str,
+    surface: &SurfaceDecl,
+) -> Result<(), String> {
     match t {
         "markdown" => {
             let md = obj
@@ -1383,7 +1395,7 @@ pub fn validate_widget(
         "log" => validate_log(obj)?,
         "plot" => validate_plot(obj.get("spec").unwrap_or(&Value::Null))?,
         "network" => validate_network(obj.get("spec").unwrap_or(&Value::Null))?,
-        "component" => validate_component(obj, ctx.surface)?,
+        "component" => validate_component(obj, surface)?,
         "text" | "badge" => {
             if !obj.get("value").is_some_and(Value::is_string) {
                 return Err(format!("\"{t}\" needs a string \"value\""));
@@ -1397,50 +1409,10 @@ pub fn validate_widget(
                 return Err("\"stat\" needs a string or number \"value\"".to_string());
             }
         }
-        "table" => {
-            let cols = obj
-                .get("columns")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "\"table\" needs a \"columns\" array of strings".to_string())?;
-            let rows = obj
-                .get("rows")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "\"table\" needs a \"rows\" array of arrays".to_string())?;
-            if rows.len() > MAX_TABLE_ROWS {
-                return Err(format!(
-                    "\"table\" has {} rows; cap is {MAX_TABLE_ROWS} (aggregate or paginate)",
-                    rows.len()
-                ));
-            }
-            for (i, row) in rows.iter().enumerate() {
-                let cells = row
-                    .as_array()
-                    .ok_or_else(|| format!("\"table\" row {i} is not an array"))?;
-                if cells.len() != cols.len() {
-                    return Err(format!(
-                        "\"table\" row {i} has {} cells but there are {} columns",
-                        cells.len(),
-                        cols.len()
-                    ));
-                }
-            }
-        }
+        "table" => validate_table(obj)?,
         "chart" => validate_chart(obj.get("spec").unwrap_or(&Value::Null))?,
         "graph" => validate_graph(obj.get("spec").unwrap_or(&Value::Null))?,
-        "input" | "select" | "checkbox" => {
-            if !obj.get("name").is_some_and(Value::is_string) {
-                return Err(format!("\"{t}\" needs a string \"name\" (the field key)"));
-            }
-            if t == "select" {
-                let opts = obj
-                    .get("options")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| "\"select\" needs an \"options\" array".to_string())?;
-                if opts.is_empty() {
-                    return Err("\"select\" needs at least one option".to_string());
-                }
-            }
-        }
+        "input" | "select" | "checkbox" => validate_form_control(obj, t)?,
         "button" => {
             if !obj.get("label").is_some_and(Value::is_string)
                 || !obj.get("action").is_some_and(Value::is_string)
@@ -1455,7 +1427,32 @@ pub fn validate_widget(
         }
         _ => {}
     }
+    Ok(())
+}
 
+fn validate_form_control(obj: &serde_json::Map<String, Value>, t: &str) -> Result<(), String> {
+    if !obj.get("name").is_some_and(Value::is_string) {
+        return Err(format!("\"{t}\" needs a string \"name\" (the field key)"));
+    }
+    if t == "select" {
+        let opts = obj
+            .get("options")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "\"select\" needs an \"options\" array".to_string())?;
+        if opts.is_empty() {
+            return Err("\"select\" needs at least one option".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_widget_children(
+    obj: &serde_json::Map<String, Value>,
+    t: &str,
+    depth: usize,
+    budget: &mut usize,
+    ctx: &WidgetCtx,
+) -> Result<(), String> {
     if let Some(children) = obj.get("children") {
         let arr = children
             .as_array()
@@ -1467,6 +1464,35 @@ pub fn validate_widget(
         return Err(format!("\"{t}\" needs a \"children\" array"));
     }
     Ok(())
+}
+
+/// Validate an agent-authored widget tree against what the SDK can render.
+/// Returns a message aimed at the model (it will see it as a tool error and
+/// retry), not at the user.
+pub fn validate_widget(
+    node: &Value,
+    depth: usize,
+    budget: &mut usize,
+    ctx: &WidgetCtx,
+) -> Result<(), String> {
+    if depth > MAX_WIDGET_DEPTH {
+        return Err(format!("widget tree nested deeper than {MAX_WIDGET_DEPTH}"));
+    }
+    *budget = budget
+        .checked_sub(1)
+        .ok_or_else(|| format!("widget tree exceeds {MAX_WIDGET_NODES} nodes"))?;
+
+    let obj = node
+        .as_object()
+        .ok_or_else(|| "each widget node must be a JSON object".to_string())?;
+    let t = obj
+        .get("t")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "each widget node needs a \"t\" (type) string".to_string())?;
+    validate_widget_kind(t, ctx)?;
+
+    validate_widget_fields(obj, t, ctx.surface)?;
+    validate_widget_children(obj, t, depth, budget, ctx)
 }
 
 /// Coerce, validate, and return the widget array a tool was handed. `ctx` is
@@ -3810,7 +3836,7 @@ impl AppControlServer {
                 }
                 let result = payload.get("result").cloned().unwrap_or(Value::Null);
                 let mut text = capped_json_text(&result);
-                if let Some(readback) = self.readback(&decl, &before) {
+                if let Some(readback) = self.readback(decl, &before) {
                     text.push_str("\n\n");
                     text.push_str(&readback);
                 }

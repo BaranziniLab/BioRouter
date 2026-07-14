@@ -266,6 +266,10 @@ fn package_json(manifest: &Manifest) -> String {
 /// launch paths can't drift.
 ///
 /// Defines `BIOROUTERD`, `PORT`, and `BASE` (e.g. `http://127.0.0.1:3000`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated launcher is one contiguous shell program; splitting its literal would obscure control flow"
+)]
 fn launcher_lib(id: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
@@ -629,6 +633,10 @@ fn run_bat() -> String {
 /// `index.html` hard-coded `ws://127.0.0.1:3000`, so the app broke whenever the
 /// daemon wasn't on 3000 (the desktop app starts it on an ephemeral port). Now
 /// everything is same-origin and the port is discovered at runtime.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generated dev server is one contiguous JavaScript module; splitting its literal would obscure control flow"
+)]
 fn serve_mjs(id: &str, default_port: u16) -> String {
     format!(
         r#"// Dev server for the exported BioRouter app "{id}".
