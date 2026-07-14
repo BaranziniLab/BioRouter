@@ -33,6 +33,11 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: apps-smoke
+      - name: Install Rust native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
       - name: Install desktop test runtime
         working-directory: ui/desktop
         run: |
