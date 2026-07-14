@@ -1574,8 +1574,33 @@ impl SessionStorage {
         .execute(pool)
         .await?;
 
-        // Append-only per-turn token accounting. See migration 10 for why this is
-        // a side table rather than `messages.tokens`.
+        Self::create_usage_schema(pool).await?;
+
+        sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
+            .execute(pool)
+            .await?;
+        // BRSDK: stable external handle for durable, resumable app sessions
+        // (e.g. "app:<app-id>:<client-id>"). Unique so a reconnecting client
+        // resolves back to its existing session.
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_sessions_external_key ON sessions(external_key) WHERE external_key IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn create_usage_schema(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query(
             r#"
             CREATE TABLE token_events (
@@ -1609,28 +1634,6 @@ impl SessionStorage {
         )
         .execute(pool)
         .await?;
-
-        sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
-            .execute(pool)
-            .await?;
-        // BRSDK: stable external handle for durable, resumable app sessions
-        // (e.g. "app:<app-id>:<client-id>"). Unique so a reconnecting client
-        // resolves back to its existing session.
-        sqlx::query(
-            "CREATE UNIQUE INDEX idx_sessions_external_key ON sessions(external_key) WHERE external_key IS NOT NULL",
-        )
-        .execute(pool)
-        .await?;
-
         Ok(())
     }
 
