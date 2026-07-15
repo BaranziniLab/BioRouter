@@ -16,31 +16,26 @@ export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): strin
   return row.provider ? `${row.provider}/${row.model}` : row.model;
 }
 
-/** Per-token cost cell — an em dash when this model has no pricing entry. */
-function costCell(
-  row: Pick<ModelCostRow, 'totalCost' | 'costIsPartial'>,
-  currency: string
-): string {
-  if (row.totalCost === null) return '—';
-  const formatted = formatTooltipMoney(row.totalCost, currency);
-  return row.costIsPartial ? `≥${formatted}` : formatted;
+/** Per-token cost cell for models without a pricing entry. */
+function costCell(row: Pick<ModelCostRow, 'totalCost'>, currency: string): string {
+  return formatTooltipMoney(row.totalCost, currency);
 }
 
 function tokenCell(tokens: number | null): string {
-  return tokens === null ? '—' : tokens.toLocaleString();
+  return tokens === null ? 'Not recorded' : tokens.toLocaleString();
 }
 
 function billedTokenCell(row: ModelCostRow): string {
   const exact = billedTokens(row);
   if (exact !== null) return tokenCell(exact);
   const subtotal = knownBilledTokens(row);
-  return subtotal > 0 ? `≥${tokenCell(subtotal)}` : '—';
+  return subtotal > 0 ? tokenCell(subtotal) : 'Unavailable';
 }
 
 /**
  * Per-model usage breakdown for the cost popover, rendered from the real
  * `token_events` rollup (Issue #1). Rows arrive already priced; a `null` cost
- * is shown as an em dash so an unknown price never masquerades as free.
+ * is explicitly unavailable so an unknown price never masquerades as free.
  */
 export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTableProps) {
   if (rows.length === 0) {

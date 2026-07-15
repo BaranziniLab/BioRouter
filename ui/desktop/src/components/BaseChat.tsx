@@ -1402,7 +1402,9 @@ function BaseChatContent({
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
               <SummaryMetric
                 label="Billed tokens"
-                value={totalSessionTokens === null ? '—' : formatCompactNumber(totalSessionTokens)}
+                value={
+                  totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
+                }
               />
               <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
               <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
