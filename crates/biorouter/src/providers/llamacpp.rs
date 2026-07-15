@@ -91,7 +91,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         ollama_name: Some("gemma4:e2b"),
         official_url: "https://ollama.com/library/gemma4:e2b",
         hf_spec: "google/gemma-4-E2B-it-qat-q4_0-gguf:Q4_0",
-        download_size: "7.2 GB",
+        download_size: "3.1 GB",
         description: "Smaller Gemma 4 variant for laptop-class local use; best first install on 16 GB machines",
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,

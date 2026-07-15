@@ -760,6 +760,13 @@ fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) ->
     // `--chat-template-kwargs {"enable_thinking":...}` form.
     let thinking = config
         .get_param::<bool>("LLAMACPP_ENABLE_THINKING")
+        .ok()
+        .or_else(|| {
+            config
+                .get_param::<String>("LLAMACPP_ENABLE_THINKING")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
         .unwrap_or(false);
     args.push("--reasoning".to_string());
     args.push(if thinking { "on" } else { "off" }.to_string());
@@ -1747,7 +1754,7 @@ mod tests {
 
     #[test]
     fn build_args_includes_model_port_and_jinja() {
-        let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", None::<&str>)]);
+        let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", Some("false"))]);
         let source =
             LaunchSource::HuggingFace("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0".to_string());
         let args = build_args(&source, "gemma-4-e4b", 12345, 32_768);

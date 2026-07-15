@@ -22,6 +22,8 @@ use utoipa::ToSchema;
 
 use crate::state::AppState;
 
+const LLAMACPP_WARMUP_MAX_TOKENS: i32 = 256;
+
 /// One curated local model, as shown in the GUI/TUI pickers.
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct LlamaCppModel {
@@ -283,7 +285,9 @@ async fn llamacpp_warmup(
     let model = ModelConfig::new(&req.model)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
         .with_temperature(Some(0.0))
-        .with_max_tokens(Some(8));
+        // Thinking-capable models can spend well over eight tokens reasoning
+        // before emitting the visible `OK` used by this readiness check.
+        .with_max_tokens(Some(LLAMACPP_WARMUP_MAX_TOKENS));
     let provider = LlamaCppProvider::from_env(model)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
