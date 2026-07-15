@@ -909,8 +909,8 @@ const createChat = async (
   const workingDir = windowWorkingDir;
 
   const mainWindowState = windowStateKeeper({
-    defaultWidth: 940,
-    defaultHeight: 800,
+    defaultWidth: 1280,
+    defaultHeight: 900,
   });
   const initialBounds = windowOptions?.initialBounds;
 
