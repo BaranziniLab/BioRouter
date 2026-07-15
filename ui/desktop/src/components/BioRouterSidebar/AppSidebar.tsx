@@ -29,6 +29,7 @@ import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
 import { listApps } from '../../api';
 import { useRunningChats, RunningChatEntry } from '../../hooks/chatStreamStore';
+import { preloadSessionList } from '../../utils/sessionListCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
 
 interface SidebarProps {
@@ -257,6 +258,8 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               <SidebarMenuButton
                 data-testid={`sidebar-${entry.label.toLowerCase()}-button`}
                 onClick={() => handleNavigation(entry.path)}
+                onFocus={entry.path === '/sessions' ? preloadSessionList : undefined}
+                onPointerEnter={entry.path === '/sessions' ? preloadSessionList : undefined}
                 isActive={isActivePath(entry.path)}
                 tooltip={entry.tooltip}
                 className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-sidebar-hover transition-colors duration-150 data-[active=true]:bg-sidebar-active data-[active=true]:font-medium"
