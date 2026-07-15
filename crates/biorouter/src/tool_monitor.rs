@@ -515,7 +515,7 @@ struct InternalToolCall {
 }
 
 impl InternalToolCall {
-    /// Byte-exact match: same tool, byte-identical arguments (BR-29).
+    /// Exact match: same tool and JSON-equivalent arguments (BR-29).
     fn matches(&self, other: &InternalToolCall) -> bool {
         self.name == other.name && self.parameters == other.parameters
     }
@@ -540,11 +540,12 @@ impl InternalToolCall {
 
     fn from_tool_call(tool_call: &CallToolRequestParams) -> Self {
         let name = tool_call.name.to_string();
-        let parameters = tool_call
+        let raw_parameters = tool_call
             .arguments
             .as_ref()
             .map(|obj| Value::Object(obj.clone()))
             .unwrap_or(Value::Null);
+        let parameters = canonicalize_json(&raw_parameters);
         let normalized = normalize_args(&parameters);
         Self {
             name,
@@ -559,6 +560,23 @@ impl InternalToolCall {
             .as_ref()
             .ok()
             .map(Self::from_tool_call)
+    }
+}
+
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+
+            let mut sorted = Map::new();
+            for (key, value) in entries {
+                sorted.insert(key.clone(), canonicalize_json(value));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
+        other => other.clone(),
     }
 }
 
