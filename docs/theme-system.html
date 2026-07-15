@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en" data-family="parchment" data-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="The BioRouter theme system: Parchment and Alma Mater in light and dark modes.">
+  <title>BioRouter Theme System</title>
+  <style>
+    :root {
+      --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-full: 9999px;
+      --motion-fast: 120ms;
+      --motion-base: 180ms;
+      --ease-out: cubic-bezier(.2, 0, 0, 1);
+      --measure: 1180px;
+    }
+
+    :root,
+    :root[data-family="parchment"][data-mode="light"] {
+      color-scheme: light;
+      --bg-app:#ffffff; --bg-default:#ffffff; --bg-card:#ffffff; --bg-muted:#faf8f3; --bg-medium:#f4f0e6; --bg-strong:#d4cab6; --bg-inverse:#16120c; --bg-focus:#e4dcc9;
+      --ink:#2a2520; --muted:#635c54; --subtle:#6e6760; --inverse:#ffffff;
+      --line:#e8e1d2; --line-strong:#d4cab6; --line-input:#e8e1d2; --line-focus:#6e6760; --ring:#615a46;
+      --accent:#b85a32; --accent-hover:#a94f2a; --accent-text:#b85a32; --accent-ink:#ffffff; --accent-bar:#cf6d47;
+      --sidebar:#f3ede1; --sidebar-hover:#ece4d4; --sidebar-active:#e4d9c3; --sidebar-line:#e9e1d0;
+      --danger:#b3261e; --success:#1f7a3d; --warning:#8a5a00; --info:#1e5fbf; --status-ink:#ffffff;
+      --shadow:0 8px 24px rgba(32,25,15,.10),0 0 1px rgba(0,0,0,.15);
+      --scrim:rgba(32,25,15,.18);
+      --code-plain:#2a2520; --code-comment:#6f6659; --code-keyword:#a94f2a; --code-string:#22784f; --code-number:#8a5a00; --code-fn:#255fb5; --code-type:#7847b8; --code-op:#6e6760;
+      --heat-0:#ece5d6; --heat-1:#e9c9ab; --heat-2:#dda27a; --heat-3:#c6774c; --heat-4:#a04a27;
+    }
+
+    :root[data-family="parchment"][data-mode="dark"] {
+      color-scheme: dark;
+      --bg-app:#0d0a06; --bg-default:#16120c; --bg-card:#16120c; --bg-muted:#282217; --bg-medium:#403928; --bg-strong:#615a46; --bg-inverse:#f4f0e6; --bg-focus:#4d4430;
+      --ink:#f4f0e6; --muted:#b0a892; --subtle:#9c937b; --inverse:#16120c;
+      --line:#282217; --line-strong:#403928; --line-input:#403928; --line-focus:#9c937b; --ring:#d4cab6;
+      --accent:#e8895f; --accent-hover:#f0a07c; --accent-text:#e8895f; --accent-ink:#16120c; --accent-bar:#e8895f;
+      --sidebar:#282217; --sidebar-hover:#322b1d; --sidebar-active:#3d3524; --sidebar-line:#403928;
+      --danger:#f07575; --success:#7ac87c; --warning:#f0c84a; --info:#7aabf5; --status-ink:#16120c;
+      --shadow:0 8px 24px rgba(0,0,0,.40),0 0 1px rgba(0,0,0,.50);
+      --scrim:rgba(0,0,0,.48);
+      --code-plain:#e8e1d2; --code-comment:#8d8266; --code-keyword:#e8895f; --code-string:#7fbf6a; --code-number:#d9a441; --code-fn:#8fb8e8; --code-type:#b98ad6; --code-op:#b0a892;
+      --heat-0:#241f16; --heat-1:#4a3524; --heat-2:#7a4d2e; --heat-3:#b0653a; --heat-4:#e8895f;
+    }
+
+    :root[data-family="alma-mater"][data-mode="light"] {
+      color-scheme: light;
+      --bg-app:#ffffff; --bg-default:#ffffff; --bg-card:#ffffff; --bg-muted:#f2f3f4; --bg-medium:#e1e3e5; --bg-strong:#d1d3d3; --bg-inverse:#052049; --bg-focus:#d0d6de;
+      --ink:#052049; --muted:#506380; --subtle:#586780; --inverse:#ffffff;
+      --line:#e1e3e5; --line-strong:#cfd3d8; --line-input:#d1d3d3; --line-focus:#586780; --ring:#506380;
+      --accent:#6c247c; --accent-hover:#571c66; --accent-text:#6c247c; --accent-ink:#ffffff; --accent-bar:#a238ba;
+      --sidebar:#eceef1; --sidebar-hover:#e3e6ea; --sidebar-active:#d7dbe0; --sidebar-line:#e1e3e5;
+      --danger:#c40d3e; --success:#007242; --warning:#8a5a00; --info:#0f388a; --status-ink:#ffffff;
+      --shadow:0 8px 24px rgba(5,32,73,.12),0 0 1px rgba(5,32,73,.18);
+      --scrim:rgba(5,32,73,.22);
+      --code-plain:#052049; --code-comment:#586780; --code-keyword:#0f388a; --code-string:#007242; --code-number:#8a5a00; --code-fn:#0e5258; --code-type:#6c247c; --code-op:#506380;
+      --heat-0:#ece6f1; --heat-1:#d9c2e8; --heat-2:#c48ed6; --heat-3:#9e44b4; --heat-4:#6c247c;
+    }
+
+    :root[data-family="alma-mater"][data-mode="dark"] {
+      color-scheme: dark;
+      --bg-app:#04142e; --bg-default:#08213f; --bg-card:#08213f; --bg-muted:#0d2a50; --bg-medium:#143563; --bg-strong:#1e477f; --bg-inverse:#f2f3f4; --bg-focus:#163c74;
+      --ink:#f2f3f4; --muted:#b4b9bf; --subtle:#909aa6; --inverse:#052049;
+      --line:#17386a; --line-strong:#24487f; --line-input:#24487f; --line-focus:#909aa6; --ring:#b4b9bf;
+      --accent:#c45ed8; --accent-hover:#d07ee0; --accent-text:#d7a5e8; --accent-ink:#1a0a24; --accent-bar:#c45ed8;
+      --sidebar:#071b3a; --sidebar-hover:#0e2a50; --sidebar-active:#163864; --sidebar-line:#1a3a66;
+      --danger:#f5768a; --success:#5fbf74; --warning:#feb80a; --info:#7fb3e6; --status-ink:#052049;
+      --shadow:0 8px 24px rgba(0,0,0,.40),0 0 1px rgba(0,0,0,.50);
+      --scrim:rgba(0,0,0,.52);
+      --code-plain:#e1e3e5; --code-comment:#8a93a6; --code-keyword:#7fb3e6; --code-string:#6fc084; --code-number:#e0a44a; --code-fn:#5cc6d0; --code-type:#c58ad6; --code-op:#b4b9bf;
+      --heat-0:#10223f; --heat-1:#3a1e52; --heat-2:#6c247c; --heat-3:#a238ba; --heat-4:#c45ed8;
+    }
+
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body {
+      margin:0; color:var(--ink); background:var(--bg-app);
+      font:400 14px/1.55 var(--font-sans); -webkit-font-smoothing:antialiased;
+      transition:color var(--motion-base) var(--ease-out),background-color var(--motion-base) var(--ease-out);
+    }
+    button,select,input { font:inherit; }
+    button { color:inherit; }
+    a { color:var(--accent-text); text-underline-offset:3px; }
+    code,pre { font-family:var(--font-mono); }
+    code { font-size:.92em; }
+    svg { display:block; }
+    h1,h2,h3,p { margin:0; }
+
+    .skip { position:fixed; left:12px; top:12px; z-index:1000; transform:translateY(-160%); padding:8px 12px; border-radius:8px; color:var(--accent-ink); background:var(--accent); text-decoration:none; }
+    .skip:focus { transform:none; }
+    .topbar {
+      position:sticky; top:0; z-index:100; border-bottom:1px solid var(--line);
+      background:var(--bg-default);
+    }
+    .topbar-inner { width:min(calc(100% - 40px),var(--measure)); min-height:66px; margin:auto; display:flex; align-items:center; justify-content:space-between; gap:24px; }
+    .brand { display:flex; align-items:center; gap:10px; color:var(--ink); text-decoration:none; }
+    .brand svg { width:34px; }
+    .brand strong { display:block; line-height:17px; }
+    .brand span { display:block; color:var(--muted); font:500 10px/14px var(--font-mono); letter-spacing:.07em; text-transform:uppercase; }
+    .preview-controls { display:flex; align-items:center; gap:12px; }
+    .control { display:flex; gap:3px; padding:3px; border:1px solid var(--line); border-radius:10px; background:var(--bg-muted); }
+    .control button { border:0; border-radius:6px; padding:6px 10px; cursor:pointer; color:var(--muted); background:transparent; font-size:11px; transition:color var(--motion-fast),background-color var(--motion-fast); }
+    .control button:hover { color:var(--ink); background:var(--bg-medium); }
+    .control button[aria-pressed="true"] { color:var(--accent-ink); background:var(--accent); }
+
+    .hero { min-height:620px; display:grid; align-items:end; padding:90px 0 70px; border-bottom:1px solid var(--line); overflow:hidden; background:radial-gradient(circle at 82% 32%,color-mix(in srgb,var(--accent) 14%,transparent),transparent 30%),linear-gradient(180deg,var(--bg-muted),var(--bg-app)); }
+    .wrap { width:min(calc(100% - 64px),var(--measure)); margin:auto; }
+    .hero-grid { display:grid; grid-template-columns:minmax(0,1fr) 420px; gap:58px; align-items:end; }
+    .eyebrow { color:var(--accent-text); font:600 11px/16px var(--font-mono); letter-spacing:.12em; text-transform:uppercase; }
+    h1 { margin-top:16px; max-width:800px; font-size:clamp(42px,6vw,78px); line-height:.98; letter-spacing:-.05em; font-weight:620; text-wrap:balance; }
+    .lede { max-width:690px; margin-top:24px; color:var(--muted); font-size:17px; line-height:1.6; }
+    .axis-map { display:grid; grid-template-columns:88px 1fr 1fr; border:1px solid var(--line); border-radius:16px; overflow:hidden; background:var(--bg-default); box-shadow:var(--shadow); }
+    .axis-map > div { min-height:88px; display:grid; place-items:center; padding:12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); text-align:center; }
+    .axis-map > div:nth-child(3n) { border-right:0; }
+    .axis-map > div:nth-last-child(-n+3) { border-bottom:0; }
+    .axis-head { color:var(--subtle); font:600 10px/14px var(--font-mono); letter-spacing:.07em; text-transform:uppercase; background:var(--bg-muted); }
+    .axis-family { justify-items:start !important; color:var(--muted); font-weight:600; background:var(--sidebar); }
+    .axis-cell { position:relative; color:var(--cell-ink); background:var(--cell-bg); }
+    .axis-cell::before { content:""; width:22px; height:22px; border-radius:7px; background:var(--cell-accent); }
+    .axis-cell span { margin-top:8px; font-size:11px; }
+
+    .section { padding:74px 0; border-bottom:1px solid var(--line); scroll-margin-top:80px; }
+    .section-head { display:grid; grid-template-columns:160px minmax(0,1fr); gap:28px; margin-bottom:34px; }
+    .section-num { color:var(--subtle); font:500 11px/18px var(--font-mono); letter-spacing:.08em; text-transform:uppercase; }
+    h2 { font-size:clamp(28px,3vw,38px); line-height:1.08; letter-spacing:-.03em; font-weight:620; }
+    .section-intro { max-width:760px; margin-top:12px; color:var(--muted); font-size:15px; }
+    h3 { margin-bottom:10px; font-size:17px; line-height:1.3; font-weight:620; letter-spacing:-.01em; }
+    .grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .grid-3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .card { padding:22px; border:1px solid var(--line); border-radius:12px; background:var(--bg-card); }
+    .card p,.card li { color:var(--muted); }
+    .rule-list { margin:0; padding:0; list-style:none; display:grid; gap:9px; }
+    .rule-list li { position:relative; padding-left:18px; }
+    .rule-list li::before { content:""; position:absolute; left:0; top:.65em; width:6px; height:6px; border-radius:50%; background:var(--accent-bar); }
+
+    .family-card { overflow:hidden; border:1px solid var(--f-line); border-radius:16px; color:var(--f-ink); background:var(--f-canvas); }
+    .family-card.parchment { --f-canvas:#faf8f3; --f-surface:#fff; --f-sidebar:#f3ede1; --f-ink:#2a2520; --f-muted:#635c54; --f-line:#e8e1d2; --f-accent:#b85a32; --f-on:#fff; --f-dark:#16120c; }
+    .family-card.alma { --f-canvas:#f2f3f4; --f-surface:#fff; --f-sidebar:#eceef1; --f-ink:#052049; --f-muted:#506380; --f-line:#e1e3e5; --f-accent:#6c247c; --f-on:#fff; --f-dark:#04142e; }
+    .family-head { padding:24px; border-bottom:1px solid var(--f-line); background:var(--f-surface); }
+    .family-head strong { display:block; font-size:24px; letter-spacing:-.02em; }
+    .family-head span { color:var(--f-muted); }
+    .family-stage { display:grid; grid-template-columns:136px 1fr; min-height:300px; }
+    .family-side { padding:22px 14px; background:var(--f-sidebar); border-right:1px solid var(--f-line); }
+    .family-side svg { width:34px; color:var(--f-ink); }
+    .family-nav { display:grid; gap:7px; margin-top:30px; }
+    .family-nav span { height:8px; border-radius:5px; background:var(--f-line); }
+    .family-nav span:first-child { width:84%; background:color-mix(in srgb,var(--f-accent) 18%,var(--f-sidebar)); box-shadow:inset 3px 0 var(--f-accent); }
+    .family-main { padding:28px; }
+    .family-title { font-size:22px; font-weight:620; letter-spacing:-.02em; }
+    .family-copy { margin-top:8px; color:var(--f-muted); }
+    .family-panels { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:24px; }
+    .family-panel { height:90px; padding:14px; border:1px solid var(--f-line); border-radius:12px; background:var(--f-surface); }
+    .family-panel strong { display:block; }
+    .family-panel span { color:var(--f-muted); font:500 11px/18px var(--font-mono); }
+    .family-btn { display:inline-flex; margin-top:18px; padding:8px 14px; border-radius:8px; color:var(--f-on); background:var(--f-accent); font-weight:600; }
+    .family-palette { display:grid; grid-template-columns:repeat(6,1fr); gap:1px; background:var(--f-line); border-top:1px solid var(--f-line); }
+    .family-palette span { height:54px; background:var(--c); }
+
+    .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--bg-default); }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th { color:var(--subtle); font:600 10px/14px var(--font-sans); letter-spacing:.07em; text-transform:uppercase; text-align:left; }
+    th,td { padding:11px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
+    tr:last-child td { border-bottom:0; }
+    td { color:var(--muted); }
+    td:first-child { color:var(--ink); }
+    td code { color:var(--ink); white-space:nowrap; }
+
+    .token-strip { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
+    .token { min-width:0; }
+    .token-color { height:76px; border:1px solid var(--line); border-radius:10px; background:var(--c); }
+    .token strong { display:block; margin-top:8px; font-size:12px; }
+    .token code { display:block; margin-top:2px; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+
+    .preview { overflow:hidden; border:1px solid var(--line); border-radius:16px; background:var(--bg-app); }
+    .preview-head { display:flex; justify-content:space-between; padding:9px 13px; border-bottom:1px solid var(--line); color:var(--subtle); background:var(--bg-default); font:500 10px/14px var(--font-mono); letter-spacing:.07em; text-transform:uppercase; }
+    .preview-body { padding:24px; }
+    .surfaces { display:grid; grid-template-columns:repeat(5,1fr); min-height:120px; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+    .surface { display:flex; align-items:end; padding:10px; color:var(--label); background:var(--c); font:600 10px/14px var(--font-mono); border-right:1px solid var(--line); }
+    .surface:last-child { border-right:0; }
+    .state-row { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+    .state { padding:14px; border:1px solid color-mix(in srgb,var(--c) 32%,var(--line)); border-radius:10px; background:color-mix(in srgb,var(--c) 9%,var(--bg-default)); }
+    .state i { display:block; width:22px; height:22px; border-radius:5px; background:var(--c); }
+    .state strong { display:block; margin-top:9px; color:var(--ink); }
+    .state code { color:var(--muted); }
+
+    .code { overflow:auto; margin:0; padding:18px; border:1px solid var(--line); border-radius:12px; color:var(--code-plain); background:var(--bg-muted); font:400 13px/20px var(--font-mono); }
+    .cc { color:var(--code-comment); font-style:italic; } .ck { color:var(--code-keyword); font-weight:600; } .cs { color:var(--code-string); } .cn { color:var(--code-number); } .cf { color:var(--code-fn); } .ct { color:var(--code-type); font-weight:600; } .co { color:var(--code-op); }
+    .heat { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+    .heat span { aspect-ratio:1; border:1px solid var(--line); border-radius:6px; background:var(--c); }
+    .contrast-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .contrast-card { padding:22px; border-radius:12px; color:var(--x-ink); background:var(--x-bg); }
+    .contrast-card strong { display:block; font-size:17px; }
+    .contrast-card span { display:block; margin-top:4px; opacity:.78; }
+    .contrast-card code { display:inline-block; margin-top:16px; padding:4px 7px; border-radius:5px; color:inherit; background:color-mix(in srgb,currentColor 10%,transparent); }
+
+    .invariant { display:grid; grid-template-columns:42px minmax(0,1fr); gap:12px; align-items:start; }
+    .invariant b { display:grid; place-items:center; width:34px; height:34px; border-radius:8px; color:var(--accent-ink); background:var(--accent); font:600 12px/1 var(--font-mono); }
+    .invariant p { color:var(--muted); }
+
+    .footer { padding:36px 0 56px; color:var(--muted); }
+    .footer-inner { display:flex; justify-content:space-between; align-items:center; gap:24px; }
+    .footer a { color:var(--ink); }
+
+    :where(a,button):focus-visible { outline:2px solid var(--ring); outline-offset:2px; border-radius:8px; }
+    @media (prefers-reduced-motion:reduce) {
+      *,*::before,*::after { scroll-behavior:auto!important; transition-duration:.01ms!important; animation-duration:.01ms!important; }
+    }
+    @media (max-width:900px) {
+      .hero-grid { grid-template-columns:1fr; }
+      .axis-map { max-width:520px; }
+      .grid-3 { grid-template-columns:1fr; }
+      .token-strip { grid-template-columns:repeat(3,1fr); }
+    }
+    @media (max-width:700px) {
+      .topbar-inner { min-height:0; padding:12px 0; align-items:flex-start; flex-direction:column; }
+      .preview-controls { width:100%; flex-wrap:wrap; }
+      .control { flex:1; }
+      .control button { flex:1; }
+      .wrap { width:min(calc(100% - 32px),var(--measure)); }
+      .hero { min-height:0; padding:70px 0 50px; }
+      .section { padding:54px 0; }
+      .section-head { grid-template-columns:1fr; gap:8px; }
+      .grid-2,.contrast-grid { grid-template-columns:1fr; }
+      .family-stage { grid-template-columns:98px 1fr; }
+      .family-panels { grid-template-columns:1fr; }
+      .family-panel:last-child { display:none; }
+      .surfaces { grid-template-columns:1fr; }
+      .surface { min-height:58px; border-right:0; border-bottom:1px solid var(--line); }
+      .surface:last-child { border-bottom:0; }
+      .state-row { grid-template-columns:repeat(2,1fr); }
+      .footer-inner { align-items:flex-start; flex-direction:column; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+
+  <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+    <symbol id="biorouter-mark" viewBox="-2 -2 343 304">
+      <path d="M -1 150 C -1 67.16 66.16 0 149 0 C 188.78 0 226.94 15.8 255.07 43.93 C 283.2 72.06 299 110.22 299 150 C 299 189.78 283.2 227.94 255.07 256.07 C 226.94 284.2 188.78 300 149 300 C 109.22 300 71.06 284.2 42.93 256.07 C 14.8 227.94 -1 189.78 -1 150 Z M 149 27.87 C 81.55 27.87 26.87 82.55 26.87 150 C 26.87 217.45 81.55 272.13 149 272.13 C 216.45 272.13 271.13 217.45 271.13 150 C 271.13 82.55 216.45 27.87 149 27.87 Z"/>
+      <path d="M 64 190 C 64 156.86 90.86 130 124 130 C 139.91 130 155.17 136.32 166.43 147.57 C 177.68 158.83 184 174.09 184 190 C 184 205.91 177.68 221.17 166.43 232.43 C 155.17 243.68 139.91 250 124 250 C 90.86 250 64 223.14 64 190 Z M 124 162.43 C 108.77 162.43 96.43 174.77 96.43 190 C 96.43 205.23 108.77 217.57 124 217.57 C 131.31 217.57 138.32 214.67 143.49 209.49 C 148.67 204.32 151.57 197.31 151.57 190 C 151.57 174.77 139.23 162.43 124 162.43 Z"/>
+      <path d="M 289 140 L 324 140 Q 339 140 339 155 Q 339 170 324 170 L 289 170 Z"/>
+      <path d="M 249 70 L 389 70 Q 399 70 399 80 Q 399 90 389 90 L 249 90 Z" transform="rotate(-90,324,80)"/>
+      <ellipse cx="184" cy="91" rx="25" ry="25" transform="rotate(45,184,91)"/>
+      <ellipse cx="233" cy="140" rx="25" ry="25" transform="rotate(45,233,140)"/>
+      <path d="M 171 87 Q 206 112 241 87 Q 206 112 241 137 Q 206 112 171 137 Q 206 112 171 87" transform="rotate(45,206,112)"/>
+      <path d="M 114 69.99 Q 149 83.24 184 69.99 Q 149 83.24 184 96.49 Q 149 83.24 114 96.49 Q 149 83.24 114 69.99"/>
+      <ellipse cx="119" cy="86" rx="20" ry="20"/>
+      <path d="M 304 120 L 329 120 Q 344 120 344 135 Q 344 150 329 150 L 304 150 Z" transform="rotate(-90,324,135)"/>
+    </symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top">
+        <svg viewBox="-2 -2 343 304" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg>
+        <span><strong>BioRouter</strong><span>Theme system</span></span>
+      </a>
+      <div class="preview-controls">
+        <div class="control" aria-label="Preview palette family">
+          <button type="button" data-family-set="parchment" aria-pressed="true">Parchment</button>
+          <button type="button" data-family-set="alma-mater" aria-pressed="false">Alma Mater</button>
+        </div>
+        <div class="control" aria-label="Preview colour mode">
+          <button type="button" data-mode-set="light" aria-pressed="true">Light</button>
+          <button type="button" data-mode-set="dark" aria-pressed="false">Dark</button>
+          <button type="button" data-mode-set="system" aria-pressed="false">System</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="hero" id="top">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">BioRouter theme system</div>
+          <h1>One interface. Four colour environments.</h1>
+          <p class="lede">Parchment and Alma Mater are palette families. Light, dark, and system are colour modes. These axes combine without changing the components, typography, geometry, density, or behavior defined by the <a href="design-system.html">design system</a>.</p>
+        </div>
+        <div class="axis-map" aria-label="Palette family and mode matrix">
+          <div class="axis-head"></div><div class="axis-head">Light</div><div class="axis-head">Dark</div>
+          <div class="axis-family">Parchment</div>
+          <div class="axis-cell" style="--cell-bg:#faf8f3;--cell-ink:#2a2520;--cell-accent:#b85a32"><span>Warm paper</span></div>
+          <div class="axis-cell" style="--cell-bg:#0d0a06;--cell-ink:#f4f0e6;--cell-accent:#e8895f"><span>Warm umber</span></div>
+          <div class="axis-family">Alma Mater</div>
+          <div class="axis-cell" style="--cell-bg:#f2f3f4;--cell-ink:#052049;--cell-accent:#6c247c"><span>Cool institutional</span></div>
+          <div class="axis-cell" style="--cell-bg:#04142e;--cell-ink:#f2f3f4;--cell-accent:#c45ed8"><span>Deep UCSF navy</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="wrap">
+      <section class="section" id="architecture">
+        <div class="section-head">
+          <div class="section-num">01 / Architecture</div>
+          <div><h2>Theme changes colour, not design.</h2><p class="section-intro">Every component asks for a semantic role. The active family and mode supply that role’s value. Raw palette names remain below the component layer.</p></div>
+        </div>
+        <div class="grid-3">
+          <article class="card invariant"><b>1</b><div><h3>Family</h3><p>Parchment or Alma Mater determines hue, temperature, and brand accent.</p></div></article>
+          <article class="card invariant"><b>2</b><div><h3>Mode</h3><p>Light, dark, or system determines luminance and contrast behavior.</p></div></article>
+          <article class="card invariant"><b>3</b><div><h3>Semantic role</h3><p>Background, text, border, accent, status, code, and data tokens feed components.</p></div></article>
+        </div>
+        <div class="table-wrap" style="margin-top:14px">
+          <table>
+            <thead><tr><th scope="col">Themeable</th><th scope="col">Invariant</th></tr></thead>
+            <tbody>
+              <tr><td>Canvas, surfaces, text, borders, accent, status hues</td><td>Font families, type scale, weights, and readable measure</td></tr>
+              <tr><td>Sidebar neutrals and active-state colour</td><td>Spacing, radii, control heights, row rhythm, and layout</td></tr>
+              <tr><td>Code syntax, terminal ANSI, heatmaps, shadow tint</td><td>Component anatomy, keyboard behavior, motion timing, and z-index</td></tr>
+              <tr><td>Focus surface and high-contrast ring colour</td><td>Focus strategy, reduced motion, and accessibility requirements</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="families">
+        <div class="section-head">
+          <div class="section-num">02 / Families</div>
+          <div><h2>Distinct character, equal restraint.</h2><p class="section-intro">Both families use one accent, a two-tone sidebar, flat default surfaces, quiet borders, and authored light and dark palettes.</p></div>
+        </div>
+        <div class="grid-2">
+          <article class="family-card parchment">
+            <div class="family-head"><strong>Parchment</strong><span>Warm · editorial · grounded</span></div>
+            <div class="family-stage">
+              <div class="family-side"><svg viewBox="-2 -2 343 304" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg><div class="family-nav"><span></span><span></span><span></span><span></span></div></div>
+              <div class="family-main"><div class="family-title">A warm instrument</div><p class="family-copy">Paper, bone, umber, and terracotta coral.</p><div class="family-panels"><div class="family-panel"><strong>128,402</strong><span>tokens today</span></div><div class="family-panel"><strong>14</strong><span>active extensions</span></div></div><span class="family-btn">Run workflow</span></div>
+            </div>
+            <div class="family-palette"><span style="--c:#faf8f3"></span><span style="--c:#f4f0e6"></span><span style="--c:#2a2520"></span><span style="--c:#b85a32"></span><span style="--c:#16120c"></span><span style="--c:#e8895f"></span></div>
+          </article>
+          <article class="family-card alma">
+            <div class="family-head"><strong>Alma Mater</strong><span>Cool · institutional · UCSF-rooted</span></div>
+            <div class="family-stage">
+              <div class="family-side"><svg viewBox="-2 -2 343 304" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg><div class="family-nav"><span></span><span></span><span></span><span></span></div></div>
+              <div class="family-main"><div class="family-title">A UCSF instrument</div><p class="family-copy">Navy, cool gray, eggplant, and orchid.</p><div class="family-panels"><div class="family-panel"><strong>128,402</strong><span>tokens today</span></div><div class="family-panel"><strong>14</strong><span>active extensions</span></div></div><span class="family-btn">Run workflow</span></div>
+            </div>
+            <div class="family-palette"><span style="--c:#f2f3f4"></span><span style="--c:#e1e3e5"></span><span style="--c:#052049"></span><span style="--c:#6c247c"></span><span style="--c:#04142e"></span><span style="--c:#c45ed8"></span></div>
+          </article>
+        </div>
+        <div class="grid-2" style="margin-top:14px">
+          <article class="card"><h3>Parchment character</h3><ul class="rule-list"><li>Warm neutral ramp with very low chroma.</li><li>Terracotta coral signals action and active state.</li><li>Dark mode descends toward warm near-black umber.</li><li>Best for a quiet, editorial, independent product voice.</li></ul></article>
+          <article class="card"><h3>Alma Mater character</h3><ul class="rule-list"><li>UCSF navy anchors ink and every dark surface.</li><li>Cool gray replaces bone without changing hierarchy.</li><li>Eggplant lifts to orchid in dark mode.</li><li>Extended UCSF hues stay inside status, code, and data visualization.</li></ul></article>
+        </div>
+      </section>
+
+      <section class="section" id="semantics">
+        <div class="section-head">
+          <div class="section-num">03 / Semantic map</div>
+          <div><h2>Components consume stable names.</h2><p class="section-intro">A semantic token describes why a colour is used. Each family supplies a light and dark value that preserves the same hierarchy.</p></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Role</th><th scope="col">Parchment light</th><th scope="col">Parchment dark</th><th scope="col">Alma Mater light</th><th scope="col">Alma Mater dark</th></tr></thead>
+            <tbody>
+              <tr><td><code>--background-app</code></td><td><code>#ffffff</code></td><td><code>#0d0a06</code></td><td><code>#ffffff</code></td><td><code>#04142e</code></td></tr>
+              <tr><td><code>--background-default</code></td><td><code>#ffffff</code></td><td><code>#16120c</code></td><td><code>#ffffff</code></td><td><code>#08213f</code></td></tr>
+              <tr><td><code>--background-muted</code></td><td><code>#faf8f3</code></td><td><code>#282217</code></td><td><code>#f2f3f4</code></td><td><code>#0d2a50</code></td></tr>
+              <tr><td><code>--background-medium</code></td><td><code>#f4f0e6</code></td><td><code>#403928</code></td><td><code>#e1e3e5</code></td><td><code>#143563</code></td></tr>
+              <tr><td><code>--text-default</code></td><td><code>#2a2520</code></td><td><code>#f4f0e6</code></td><td><code>#052049</code></td><td><code>#f2f3f4</code></td></tr>
+              <tr><td><code>--text-muted</code></td><td><code>#635c54</code></td><td><code>#b0a892</code></td><td><code>#506380</code></td><td><code>#b4b9bf</code></td></tr>
+              <tr><td><code>--text-subtle</code></td><td><code>#6e6760</code></td><td><code>#9c937b</code></td><td><code>#586780</code></td><td><code>#909aa6</code></td></tr>
+              <tr><td><code>--border-subtle</code></td><td><code>#e8e1d2</code></td><td><code>#282217</code></td><td><code>#e1e3e5</code></td><td><code>#17386a</code></td></tr>
+              <tr><td><code>--border-strong</code></td><td><code>#d4cab6</code></td><td><code>#403928</code></td><td><code>#cfd3d8</code></td><td><code>#24487f</code></td></tr>
+              <tr><td><code>--background-accent</code></td><td><code>#b85a32</code></td><td><code>#e8895f</code></td><td><code>#6c247c</code></td><td><code>#c45ed8</code></td></tr>
+              <tr><td><code>--text-on-accent</code></td><td><code>#ffffff</code></td><td><code>#16120c</code></td><td><code>#ffffff</code></td><td><code>#1a0a24</code></td></tr>
+              <tr><td><code>--background-focus</code></td><td><code>#e4dcc9</code></td><td><code>#4d4430</code></td><td><code>#d0d6de</code></td><td><code>#163c74</code></td></tr>
+              <tr><td><code>--sidebar</code></td><td><code>#f3ede1</code></td><td><code>#282217</code></td><td><code>#eceef1</code></td><td><code>#071b3a</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="surfaces">
+        <div class="section-head">
+          <div class="section-num">04 / Surfaces</div>
+          <div><h2>The hierarchy survives every palette.</h2><p class="section-intro">Canvas, surface, hover, pressed, and inverse steps must remain perceptually ordered. The sidebar stays one calm step apart from the main canvas.</p></div>
+        </div>
+        <div class="preview">
+          <div class="preview-head"><span>Active theme preview</span><span>canvas → inverse</span></div>
+          <div class="preview-body">
+            <div class="surfaces">
+              <div class="surface" style="--c:var(--bg-app);--label:var(--ink)">app</div>
+              <div class="surface" style="--c:var(--bg-default);--label:var(--ink)">default</div>
+              <div class="surface" style="--c:var(--bg-muted);--label:var(--ink)">muted</div>
+              <div class="surface" style="--c:var(--bg-medium);--label:var(--ink)">medium</div>
+              <div class="surface" style="--c:var(--bg-inverse);--label:var(--inverse)">inverse</div>
+            </div>
+          </div>
+        </div>
+        <div class="grid-2" style="margin-top:14px">
+          <article class="card"><h3>Two-tone sidebar</h3><p>The sidebar is neither a dark slab nor a duplicate of the canvas. It is a neighboring plane, separated by a hairline and distinguished by hover and active steps.</p></article>
+          <article class="card"><h3>Flat by default</h3><p>Cards and rows use surface plus hairline. Only the composer, popover, and modal families receive their named elevation; light shadow tint follows the palette family.</p></article>
+        </div>
+      </section>
+
+      <section class="section" id="accent">
+        <div class="section-head">
+          <div class="section-num">05 / Accent &amp; status</div>
+          <div><h2>One brand accent; four semantic states.</h2><p class="section-intro">Accent expresses identity and primary action. Danger, success, warning, and info express system state. The two categories never substitute for one another.</p></div>
+        </div>
+        <div class="token-strip">
+          <div class="token"><div class="token-color" style="--c:var(--accent)"></div><strong>Accent</strong><code>--background-accent</code></div>
+          <div class="token"><div class="token-color" style="--c:var(--danger)"></div><strong>Danger</strong><code>--text-danger</code></div>
+          <div class="token"><div class="token-color" style="--c:var(--success)"></div><strong>Success</strong><code>--text-success</code></div>
+          <div class="token"><div class="token-color" style="--c:var(--warning)"></div><strong>Warning</strong><code>--text-warning</code></div>
+          <div class="token"><div class="token-color" style="--c:var(--info)"></div><strong>Info</strong><code>--text-info</code></div>
+        </div>
+        <div class="preview" style="margin-top:14px">
+          <div class="preview-head"><span>Status in context</span><span>colour + label</span></div>
+          <div class="preview-body">
+            <div class="state-row">
+              <div class="state" style="--c:var(--danger)"><i></i><strong>Danger</strong><code>Connection failed</code></div>
+              <div class="state" style="--c:var(--success)"><i></i><strong>Success</strong><code>Workflow saved</code></div>
+              <div class="state" style="--c:var(--warning)"><i></i><strong>Warning</strong><code>Expires soon</code></div>
+              <div class="state" style="--c:var(--info)"><i></i><strong>Info</strong><code>Model warming</code></div>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:14px">
+          <table>
+            <thead><tr><th scope="col">Role</th><th scope="col">Parchment light</th><th scope="col">Parchment dark</th><th scope="col">Alma light</th><th scope="col">Alma dark</th></tr></thead>
+            <tbody>
+              <tr><td>Danger fill / text</td><td><code>#b3261e</code></td><td><code>#f07575</code></td><td><code>#e61048</code> / <code>#c40d3e</code></td><td><code>#f5768a</code></td></tr>
+              <tr><td>Success fill / text</td><td><code>#1f7a3d</code></td><td><code>#7ac87c</code></td><td><code>#007242</code></td><td><code>#5fbf74</code></td></tr>
+              <tr><td>Warning fill / text</td><td><code>#8a5a00</code></td><td><code>#f0c84a</code></td><td><code>#8a5a00</code></td><td><code>#feb80a</code></td></tr>
+              <tr><td>Info fill / text</td><td><code>#1e5fbf</code></td><td><code>#7aabf5</code></td><td><code>#0f388a</code></td><td><code>#7fb3e6</code></td></tr>
+              <tr><td>Ink on solid status</td><td><code>#ffffff</code></td><td><code>#16120c</code></td><td><code>#ffffff</code></td><td><code>#052049</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="technical">
+        <div class="section-head">
+          <div class="section-num">06 / Technical colour</div>
+          <div><h2>Code, terminal, and data belong to the family.</h2><p class="section-intro">Technical surfaces retain their semantic richness while matching the active palette’s ground, temperature, and contrast behavior.</p></div>
+        </div>
+        <div class="grid-2">
+          <div class="preview">
+            <div class="preview-head"><span>Syntax</span><span>13/20 mono</span></div>
+            <div class="preview-body"><pre class="code"><span class="cc">// Resolve the active palette.</span>
+<span class="ck">fn</span> <span class="cf">theme</span>(family: <span class="ct">Family</span>) <span class="co">-&gt;</span> Tokens {
+  <span class="ck">match</span> family {
+    Family::Parchment <span class="co">=&gt;</span> <span class="cs">"warm"</span>,
+    Family::AlmaMater <span class="co">=&gt;</span> <span class="cs">"ucsf"</span>,
+  }
+}</pre></div>
+          </div>
+          <div class="preview">
+            <div class="preview-head"><span>Usage heatmap</span><span>sequential · monotonic</span></div>
+            <div class="preview-body">
+              <div class="heat"><span style="--c:var(--heat-0)"></span><span style="--c:var(--heat-1)"></span><span style="--c:var(--heat-2)"></span><span style="--c:var(--heat-3)"></span><span style="--c:var(--heat-4)"></span></div>
+              <p style="margin-top:16px;color:var(--muted)">Level zero remains visible against the canvas. Higher levels increase monotonically so order survives grayscale.</p>
+            </div>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:14px">
+          <article class="card"><h3>Syntax</h3><p>Plain, comment, keyword, string, number, function, type, operator, inserted, and deleted are authored for every combination.</p></article>
+          <article class="card"><h3>Terminal</h3><p>Ground, foreground, cursor, selection, and ANSI 16 follow the same family and mode as the surrounding app.</p></article>
+          <article class="card"><h3>Data visualization</h3><p>Sequential, categorical, and diverging scales may use the extended family spectrum, with labels and non-colour encodings where meaning matters.</p></article>
+        </div>
+      </section>
+
+      <section class="section" id="contrast">
+        <div class="section-head">
+          <div class="section-num">07 / Contrast</div>
+          <div><h2>Each combination stands on its own.</h2><p class="section-intro">Dark mode is not an inverted light palette, and Alma Mater is not a filter over Parchment. Text, borders, status, syntax, terminal, focus, and data ramps are evaluated in each environment.</p></div>
+        </div>
+        <div class="contrast-grid">
+          <div class="contrast-card" style="--x-bg:#faf8f3;--x-ink:#2a2520"><strong>Parchment light</strong><span>Primary text on working ground</span><code>14.39:1</code></div>
+          <div class="contrast-card" style="--x-bg:#0d0a06;--x-ink:#f4f0e6"><strong>Parchment dark</strong><span>Primary text on canvas</span><code>17+:1</code></div>
+          <div class="contrast-card" style="--x-bg:#f2f3f4;--x-ink:#052049"><strong>Alma Mater light</strong><span>Primary text on working ground</span><code>14.47:1</code></div>
+          <div class="contrast-card" style="--x-bg:#04142e;--x-ink:#f2f3f4"><strong>Alma Mater dark</strong><span>Primary text on canvas</span><code>16.5:1</code></div>
+        </div>
+        <div class="table-wrap" style="margin-top:14px">
+          <table>
+            <thead><tr><th scope="col">Pair</th><th scope="col">Parchment light</th><th scope="col">Parchment dark</th><th scope="col">Alma light</th><th scope="col">Alma dark</th></tr></thead>
+            <tbody>
+              <tr><td>Muted text on working ground</td><td><code>5.65:1</code></td><td><code>6.66:1</code></td><td><code>5.50:1</code></td><td><code>8.18:1</code></td></tr>
+              <tr><td>Ink on accent fill</td><td><code>4.62:1</code></td><td><code>7.26:1</code></td><td><code>9.63:1</code></td><td><code>5.34:1</code></td></tr>
+              <tr><td>Subtle text on working ground</td><td><code>4.78:1</code></td><td><code>5.16:1</code></td><td><code>5.15:1</code></td><td><code>5.66:1</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="behavior">
+        <div class="section-head">
+          <div class="section-num">08 / Behavior</div>
+          <div><h2>Preference is predictable and complete.</h2><p class="section-intro">Family and mode persist independently. System mode follows the operating-system preference without changing the chosen family.</p></div>
+        </div>
+        <div class="grid-2">
+          <article class="card"><h3>Selection</h3><ul class="rule-list"><li>Parchment is the default family.</li><li>Alma Mater is a full alternative, not a partial recolour.</li><li>Light and dark may be chosen directly.</li><li>System mode resolves to the operating-system preference.</li></ul></article>
+          <article class="card"><h3>Switching</h3><ul class="rule-list"><li>Apply the new family and mode atomically.</li><li>Update code, terminal, overlays, and embedded artifacts together.</li><li>Preserve state, focus, scroll position, and open surfaces.</li><li>Use a brief colour transition unless reduced motion is requested.</li></ul></article>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>BioRouter Theme System · Parchment + Alma Mater</span>
+      <a href="design-system.html">Return to the design system</a>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const familyButtons = [...document.querySelectorAll("[data-family-set]")];
+      const modeButtons = [...document.querySelectorAll("[data-mode-set]")];
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const params = new URLSearchParams(location.search);
+      let family = params.get("family") === "alma-mater"
+        ? "alma-mater"
+        : (localStorage.getItem("br-theme-doc-family") === "alma-mater" ? "alma-mater" : "parchment");
+      let mode = ["light","dark","system"].includes(params.get("mode"))
+        ? params.get("mode")
+        : (["light","dark","system"].includes(localStorage.getItem("br-theme-doc-mode")) ? localStorage.getItem("br-theme-doc-mode") : "light");
+
+      const resolvedMode = () => mode === "system" ? (media.matches ? "dark" : "light") : mode;
+      function render() {
+        root.dataset.family = family;
+        root.dataset.mode = resolvedMode();
+        familyButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.familySet === family)));
+        modeButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.modeSet === mode)));
+      }
+      familyButtons.forEach((button) => button.addEventListener("click", () => {
+        family = button.dataset.familySet;
+        localStorage.setItem("br-theme-doc-family", family);
+        render();
+      }));
+      modeButtons.forEach((button) => button.addEventListener("click", () => {
+        mode = button.dataset.modeSet;
+        localStorage.setItem("br-theme-doc-mode", mode);
+        render();
+      }));
+      media.addEventListener?.("change", () => { if (mode === "system") render(); });
+      render();
+    })();
+  </script>
+</body>
+</html>
