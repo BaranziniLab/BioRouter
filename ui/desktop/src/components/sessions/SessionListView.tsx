@@ -40,7 +40,6 @@ import {
   deleteSession,
   exportSession,
   importSession,
-  listSessions,
   Session,
   updateSessionName,
   ExtensionConfig,
@@ -51,6 +50,11 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { EmptyState } from '../ui/empty-state';
+import {
+  getCachedSessionList,
+  refreshSessionList,
+  updateCachedSessionList,
+} from '../../utils/sessionListCache';
 
 function getSessionExtensionNames(extensionData: ExtensionData): string[] {
   try {
@@ -213,24 +217,85 @@ interface SessionListViewProps {
   selectedSessionId?: string | null;
 }
 
+const HISTORY_LOADING_GROUPS = [5, 4];
+const HISTORY_LOADING_TITLE_WIDTHS = ['w-3/4', 'w-2/3', 'w-4/5', 'w-1/2'];
+const INITIAL_VISIBLE_SESSIONS = 16;
+const VISIBLE_SESSION_BATCH = 20;
+
+function HistoryLoading() {
+  let rowIndex = 0;
+
+  return (
+    <div role="status" aria-label="Loading chat history" className="space-y-8">
+      <span className="sr-only">Loading chat history</span>
+      {HISTORY_LOADING_GROUPS.map((rowCount, groupIndex) => (
+        <div key={groupIndex} className="space-y-4" aria-hidden="true">
+          <Skeleton
+            className="biorouter-history-loading-cell h-3 w-16 rounded-sm bg-background-medium"
+            style={{ animationDelay: `${-groupIndex * 180}ms` }}
+          />
+          <div className="session-grid biorouter-list-shell overflow-hidden">
+            {Array.from({ length: rowCount }, (_, index) => {
+              const currentRow = rowIndex++;
+              const delay = -((currentRow * 95) % 1100);
+
+              return (
+                <div
+                  key={index}
+                  data-testid="history-loading-row"
+                  className="flex min-h-10 items-center gap-3 border-b border-border-subtle px-4 py-2 last:border-b-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <Skeleton
+                      className={`biorouter-history-loading-cell mb-1.5 h-4 ${HISTORY_LOADING_TITLE_WIDTHS[currentRow % HISTORY_LOADING_TITLE_WIDTHS.length]} rounded-sm bg-background-medium`}
+                      style={{ animationDelay: `${delay}ms` }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <Skeleton
+                        className="biorouter-history-loading-cell h-3 w-20 rounded-sm bg-background-medium"
+                        style={{ animationDelay: `${delay - 70}ms` }}
+                      />
+                      <Skeleton
+                        className="biorouter-history-loading-cell h-3 w-32 rounded-sm bg-background-medium"
+                        style={{ animationDelay: `${delay - 140}ms` }}
+                      />
+                    </div>
+                  </div>
+                  <Skeleton
+                    className="biorouter-history-loading-cell h-3 w-14 rounded-sm bg-background-medium"
+                    style={{ animationDelay: `${delay - 210}ms` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const SessionListView: React.FC<SessionListViewProps> = React.memo(
   ({ onSelectSession, selectedSessionId }) => {
+    const initialSessions = useRef(getCachedSessionList()).current;
     const navigate = useNavigate();
     const dashboard = useDashboard();
-    const [sessions, setSessions] = useState<Session[]>([]);
-    const [filteredSessions, setFilteredSessions] = useState<Session[]>([]);
-    const [dateGroups, setDateGroups] = useState<DateGroup[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [showSkeleton, setShowSkeleton] = useState(true);
-    const [showContent, setShowContent] = useState(false);
-    const [isInitialLoad, setIsInitialLoad] = useState(true);
+    const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
+    const [filteredSessions, setFilteredSessions] = useState<Session[]>(initialSessions ?? []);
+    const [dateGroups, setDateGroups] = useState<DateGroup[]>(() =>
+      groupSessionsByDate(initialSessions ?? [])
+    );
+    const [isLoading, setIsLoading] = useState(initialSessions === null);
+    const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
+    const [showContent, setShowContent] = useState(initialSessions !== null);
+    const [isInitialLoad, setIsInitialLoad] = useState(initialSessions === null);
     const [error, setError] = useState<string | null>(null);
     const [searchResults, setSearchResults] = useState<{
       count: number;
       currentIndex: number;
     } | null>(null);
 
-    const [visibleGroupsCount, setVisibleGroupsCount] = useState(15);
+    const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
 
     // Edit modal state
     const [showEditModal, setShowEditModal] = useState(false);
@@ -261,8 +326,15 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     };
 
     const visibleDateGroups = useMemo(() => {
-      return dateGroups.slice(0, visibleGroupsCount);
-    }, [dateGroups, visibleGroupsCount]);
+      let remainingSessions = visibleSessionCount;
+
+      return dateGroups.flatMap((group) => {
+        if (remainingSessions <= 0) return [];
+        const sessions = group.sessions.slice(0, remainingSessions);
+        remainingSessions -= sessions.length;
+        return [{ ...group, sessions }];
+      });
+    }, [dateGroups, visibleSessionCount]);
 
     // id → name lookup so a diverged session can show its lineage parent's name.
     const sessionNameById = useMemo(() => {
@@ -278,42 +350,49 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
         if (
           scrollHeight - scrollTop - clientHeight < threshold &&
-          visibleGroupsCount < dateGroups.length
+          visibleSessionCount < filteredSessions.length
         ) {
-          setVisibleGroupsCount((prev) => Math.min(prev + 5, dateGroups.length));
+          setVisibleSessionCount((previousCount) =>
+            Math.min(previousCount + VISIBLE_SESSION_BATCH, filteredSessions.length)
+          );
         }
       },
-      [visibleGroupsCount, dateGroups.length]
+      [visibleSessionCount, filteredSessions.length]
     );
 
     useEffect(() => {
       if (debouncedSearchTerm) {
-        setVisibleGroupsCount(dateGroups.length);
+        setVisibleSessionCount(filteredSessions.length);
       } else {
-        setVisibleGroupsCount(15);
+        setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
       }
-    }, [debouncedSearchTerm, dateGroups.length]);
+    }, [debouncedSearchTerm, filteredSessions.length]);
 
     const loadSessions = useCallback(async () => {
-      setIsLoading(true);
-      setShowSkeleton(true);
-      setShowContent(false);
-      setError(null);
+      const hasCachedSessions = getCachedSessionList() !== null;
+      if (!hasCachedSessions) {
+        setIsLoading(true);
+        setShowSkeleton(true);
+        setShowContent(false);
+        setError(null);
+      }
       try {
-        const resp = await listSessions<true>({ throwOnError: true });
-        const sessions = resp.data.sessions;
+        const refreshedSessions = await refreshSessionList();
         // Use startTransition to make state updates non-blocking
         startTransition(() => {
-          setSessions(sessions);
-          setFilteredSessions(sessions);
+          setSessions(refreshedSessions);
+          setFilteredSessions(refreshedSessions);
+          setError(null);
         });
       } catch (err) {
         console.error('Failed to load sessions:', err);
-        setError('Failed to load sessions. Please try again later.');
-        setSessions([]);
-        setFilteredSessions([]);
+        if (!hasCachedSessions) {
+          setError('Failed to load sessions. Please try again later.');
+          setSessions([]);
+          setFilteredSessions([]);
+        }
       } finally {
-        setIsLoading(false);
+        if (!hasCachedSessions) setIsLoading(false);
       }
     }, []);
 
@@ -356,6 +435,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     // Scroll to the selected session when returning from session history view
     useEffect(() => {
       if (selectedSessionId) {
+        const selectedIndex = filteredSessions.findIndex(
+          (session) => session.id === selectedSessionId
+        );
+        if (selectedIndex >= visibleSessionCount) {
+          setVisibleSessionCount(selectedIndex + 1);
+          return;
+        }
         const element = sessionRefs.current[selectedSessionId];
         if (element) {
           element.scrollIntoView({
@@ -363,7 +449,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           });
         }
       }
-    }, [selectedSessionId, sessions]);
+    }, [filteredSessions, selectedSessionId, sessions, visibleSessionCount]);
 
     // Debounced search effect - performs actual filtering
     useEffect(() => {
@@ -442,9 +528,12 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     const handleModalSave = useCallback(async (sessionId: string, newDescription: string) => {
       // Update state immediately for optimistic UI
-      setSessions((prevSessions) =>
-        prevSessions.map((s) => (s.id === sessionId ? { ...s, name: newDescription } : s))
-      );
+      const updateName = (currentSessions: Session[]) =>
+        currentSessions.map((session) =>
+          session.id === sessionId ? { ...session, name: newDescription } : session
+        );
+      updateCachedSessionList(updateName);
+      setSessions(updateName);
     }, []);
 
     const handleEditSession = useCallback((session: Session) => {
@@ -470,6 +559,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           path: { session_id: sessionToDeleteId },
           throwOnError: true,
         });
+        const removeDeletedSession = (currentSessions: Session[]) =>
+          currentSessions.filter((session) => session.id !== sessionToDeleteId);
+        updateCachedSessionList(removeDeletedSession);
+        setSessions(removeDeletedSession);
         toast.success('Session deleted successfully');
       } catch (error) {
         console.error('Error deleting session:', error);
@@ -659,7 +752,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   title={
                     billedTokenEstimate.lowerBound
                       ? 'At least this many tokens; only last-turn usage is available for this legacy session'
-                      : 'Billed tokens — accumulated across every turn, including recorded cache buckets'
+                      : 'Billed tokens across every turn, including recorded cache usage'
                   }
                 >
                   <Target className="w-3 h-3" />
@@ -695,16 +788,22 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             </div>
             <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
               <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    onClick={(e) => e.stopPropagation()}
-                    className="p-1.5 rounded hover:bg-background-medium transition-colors"
-                    title="Launch session"
-                    aria-label={`Launch options for ${session.name}`}
-                  >
-                    <ExternalLink className="w-3 h-3 text-text-muted" />
-                  </button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        onClick={(e) => e.stopPropagation()}
+                        variant="outline"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        aria-label={`Launch options for ${session.name}`}
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Launch session</TooltipContent>
+                </Tooltip>
                 <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                   <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
                     <ExternalLink className="w-4 h-4" />
@@ -716,59 +815,53 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <button
-                onClick={handleEditClick}
-                className="p-1.5 rounded hover:bg-background-medium transition-colors"
-                title="Edit session name"
-                aria-label={`Edit ${session.name}`}
-              >
-                <Edit2 className="w-3 h-3 text-text-muted" />
-              </button>
-              <button
-                onClick={handleDeleteClick}
-                className="p-1.5 rounded text-text-danger hover:bg-background-danger/10 transition-colors"
-                title="Delete session"
-                aria-label={`Delete ${session.name}`}
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
-              <button
-                onClick={handleExportClick}
-                className="p-1.5 rounded hover:bg-background-medium transition-colors"
-                title="Export session"
-                aria-label={`Export ${session.name}`}
-              >
-                <Download className="w-3 h-3 text-text-muted" />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={handleEditClick}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 w-7 p-0"
+                    aria-label={`Edit ${session.name}`}
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Edit session name</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={handleExportClick}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 w-7 p-0"
+                    aria-label={`Export ${session.name}`}
+                  >
+                    <Download className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Export session</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={handleDeleteClick}
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 text-text-danger hover:bg-background-danger/10"
+                    aria-label={`Delete ${session.name}`}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Delete session</TooltipContent>
+              </Tooltip>
             </div>
           </div>
         </div>
       );
     });
-
-    const SessionSkeleton = React.memo(({ variant = 0 }: { variant?: number }) => {
-      const titleWidths = ['w-3/4', 'w-2/3', 'w-4/5', 'w-1/2'];
-      const pathWidths = ['w-32', 'w-28', 'w-36', 'w-24'];
-      const tokenWidths = ['w-12', 'w-10', 'w-14', 'w-8'];
-
-      return (
-        <div className="session-skeleton flex items-center gap-3 py-2 px-4">
-          <div className="flex-1 min-w-0">
-            <Skeleton className={`h-4 ${titleWidths[variant % titleWidths.length]} mb-1.5`} />
-            <div className="flex items-center gap-3">
-              <Skeleton className="h-3 w-20" />
-              <Skeleton className={`h-3 ${pathWidths[variant % pathWidths.length]}`} />
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Skeleton className="h-3 w-8" />
-            <Skeleton className={`h-3 ${tokenWidths[variant % tokenWidths.length]}`} />
-          </div>
-        </div>
-      );
-    });
-
-    SessionSkeleton.displayName = 'SessionSkeleton';
 
     const renderActualContent = () => {
       if (error) {
@@ -839,7 +932,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             </div>
           ))}
 
-          {visibleGroupsCount < dateGroups.length && (
+          {visibleSessionCount < filteredSessions.length && (
             <div className="flex justify-center py-8">
               <div className="flex items-center space-x-2 text-text-muted">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-text-muted"></div>
@@ -891,51 +984,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     className="relative"
                     placeholder="Search history..."
                   >
-                    {/* Skeleton layer - always rendered but conditionally visible */}
+                    {/* Loading layer - shaped like the rows that will replace it. */}
                     <div
-                      className={`absolute inset-0 transition-opacity duration-300 ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
+                      className={`absolute inset-0 transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-in)] ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
                     >
-                      <div className="space-y-8">
-                        {/* Today section */}
-                        <div className="space-y-4">
-                          <Skeleton className="h-6 w-16" />
-                          <div className="session-grid">
-                            <SessionSkeleton variant={0} />
-                            <SessionSkeleton variant={1} />
-                            <SessionSkeleton variant={2} />
-                            <SessionSkeleton variant={3} />
-                            <SessionSkeleton variant={0} />
-                          </div>
-                        </div>
-
-                        {/* Yesterday section */}
-                        <div className="space-y-4">
-                          <Skeleton className="h-6 w-20" />
-                          <div className="session-grid">
-                            <SessionSkeleton variant={1} />
-                            <SessionSkeleton variant={2} />
-                            <SessionSkeleton variant={3} />
-                            <SessionSkeleton variant={0} />
-                            <SessionSkeleton variant={1} />
-                            <SessionSkeleton variant={2} />
-                          </div>
-                        </div>
-
-                        {/* Additional section */}
-                        <div className="space-y-4">
-                          <Skeleton className="h-6 w-24" />
-                          <div className="session-grid">
-                            <SessionSkeleton variant={3} />
-                            <SessionSkeleton variant={0} />
-                            <SessionSkeleton variant={1} />
-                          </div>
-                        </div>
-                      </div>
+                      {(isLoading || showSkeleton) && <HistoryLoading />}
                     </div>
 
                     {/* Content layer - always rendered but conditionally visible */}
                     <div
-                      className={`relative transition-opacity duration-300 ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+                      className={`relative transition-opacity duration-[var(--motion-base)] ease-[var(--ease-out)] ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
                     >
                       {renderActualContent()}
                     </div>
