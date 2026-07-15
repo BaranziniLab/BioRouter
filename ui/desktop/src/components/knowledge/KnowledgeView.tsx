@@ -16,6 +16,7 @@ function KnowledgeViewInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [changeLogOpen, setChangeLogOpen] = useState(false);
   const [previewSha, setPreviewSha] = useState<string | null>(null);
+  const [compactView, setCompactView] = useState<'digest' | 'graph'>('graph');
   const { refresh } = useKnowledge();
 
   // The KnowledgeProvider only fetches the base list once at app start, so a
@@ -58,17 +59,55 @@ function KnowledgeViewInner() {
           size="text"
           className="mb-4 mt-2 grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] items-stretch gap-3 overflow-hidden px-4 sm:px-6 lg:mb-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:grid-rows-1 lg:gap-4 lg:px-8"
         >
-          {/* Left column — one flat panel; internal hairlines separate the blocks. */}
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:h-full">
-            <div className="p-4">
+          <div className="flex min-w-0 items-center gap-3 rounded-xl border border-border-subtle bg-background-default p-3 lg:hidden">
+            <div className="min-w-0 flex-1">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
-            <div className="hidden min-h-0 flex-1 overflow-y-auto border-t border-border-subtle lg:block">
+            <div
+              role="tablist"
+              aria-label="Knowledge workspace"
+              className="grid shrink-0 grid-cols-2 rounded-md bg-background-medium p-0.5"
+            >
+              {(['digest', 'graph'] as const).map((view) => (
+                <button
+                  key={view}
+                  type="button"
+                  role="tab"
+                  aria-selected={compactView === view}
+                  aria-controls={`knowledge-${view}-panel`}
+                  onClick={() => setCompactView(view)}
+                  className={`h-7 rounded px-3 text-xs transition-colors duration-150 ${
+                    compactView === view
+                      ? 'bg-background-default text-text-default'
+                      : 'text-text-muted hover:text-text-default'
+                  }`}
+                >
+                  {view === 'digest' ? 'Digest' : 'Graph'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div
+            id="knowledge-digest-panel"
+            data-testid="knowledge-digest-panel"
+            role="tabpanel"
+            className={`${compactView === 'digest' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:flex lg:h-full`}
+          >
+            <div className="hidden p-4 lg:block">
+              <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto lg:border-t lg:border-border-subtle">
               <IngestPanel />
             </div>
           </div>
-          {/* Right column — the same flat panel, holding the graph. */}
-          <div className="flex min-h-0 min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:h-full">
+
+          <div
+            id="knowledge-graph-panel"
+            data-testid="knowledge-graph-panel"
+            role="tabpanel"
+            className={`${compactView === 'graph' ? 'flex' : 'hidden'} min-h-0 min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:flex lg:h-full`}
+          >
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}
