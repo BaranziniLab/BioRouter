@@ -88,6 +88,16 @@ function shouldSetupUpdater(): boolean {
 // Define temp directory for pasted images
 const biorouterTempDir = path.join(app.getPath('temp'), 'biorouter-pasted-images');
 
+function resolveImagePath(filename: string): string | undefined {
+  return [
+    path.join(process.resourcesPath, 'images', filename),
+    path.join(process.cwd(), 'src', 'images', filename),
+    path.join(__dirname, '..', 'images', filename),
+    path.join(__dirname, 'images', filename),
+    path.join(process.cwd(), 'images', filename),
+  ].find((candidate) => fsSync.existsSync(candidate));
+}
+
 function expandBiorouterPath(filePath: string): string {
   const expandedPath = expandTilde(filePath);
   const pathRoot = process.env.BIOROUTER_PATH_ROOT;
@@ -928,7 +938,7 @@ const createChat = async (
     resizable: true,
     useContentSize: true,
     show: windowOptions?.show ?? true,
-    icon: path.join(__dirname, '../images/icon.icns'),
+    icon: resolveImagePath(process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     webPreferences: {
       spellcheck: settings.spellcheckEnabled ?? true,
       preload: path.join(__dirname, 'preload.js'),
@@ -1402,15 +1412,7 @@ const disableTray = () => {
 const createTray = () => {
   destroyTray();
 
-  const possiblePaths = [
-    path.join(process.resourcesPath, 'images', 'iconTemplate.png'),
-    path.join(process.cwd(), 'src', 'images', 'iconTemplate.png'),
-    path.join(__dirname, '..', 'images', 'iconTemplate.png'),
-    path.join(__dirname, 'images', 'iconTemplate.png'),
-    path.join(process.cwd(), 'images', 'iconTemplate.png'),
-  ];
-
-  const iconPath = possiblePaths.find((p) => fsSync.existsSync(p));
+  const iconPath = resolveImagePath('iconTemplate.png');
 
   if (!iconPath) {
     console.warn('[Main] Tray icon not found. App will continue without system tray.');
@@ -4634,6 +4636,10 @@ async function appMain() {
 
 app.whenReady().then(async () => {
   try {
+    if (process.platform === 'darwin') {
+      const dockIconPath = resolveImagePath('icon.png');
+      if (dockIconPath) app.dock.setIcon(dockIconPath);
+    }
     await appMain();
   } catch (error) {
     dialog.showErrorBox('BioRouter Error', `Failed to create main window: ${error}`);
