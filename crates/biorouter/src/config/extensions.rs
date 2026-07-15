@@ -83,6 +83,21 @@ fn save_extensions_map(extensions: IndexMap<String, ExtensionEntry>) {
     }
 }
 
+fn retain_bundled_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) -> usize {
+    let before = extensions.len();
+    extensions.retain(|_, entry| entry.config.is_bundled());
+    before - extensions.len()
+}
+
+pub fn reset_to_bundled_extensions() -> anyhow::Result<usize> {
+    let mut extensions = get_extensions_map();
+    let removed = retain_bundled_extensions(&mut extensions);
+    Config::global()
+        .set_param(EXTENSIONS_CONFIG_KEY, &extensions)
+        .map_err(anyhow::Error::from)?;
+    Ok(removed)
+}
+
 pub fn get_extension_by_name(name: &str) -> Option<ExtensionConfig> {
     let extensions = get_extensions_map();
     extensions
@@ -169,4 +184,32 @@ pub fn resolve_extensions_for_new_session(
     }
 
     get_enabled_extensions()
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    #[test]
+    fn reset_filter_keeps_only_bundled_extensions() {
+        let mut extensions = IndexMap::new();
+        extensions.insert(
+            "developer".into(),
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::default(),
+            },
+        );
+        extensions.insert(
+            "custom".into(),
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("custom", "custom", "Custom", 30_u64),
+            },
+        );
+
+        assert_eq!(retain_bundled_extensions(&mut extensions), 1);
+        assert_eq!(extensions.len(), 1);
+        assert!(extensions["developer"].config.is_bundled());
+    }
 }

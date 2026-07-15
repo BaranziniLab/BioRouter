@@ -152,6 +152,13 @@ impl AgentManager {
         Ok(())
     }
 
+    pub async fn clear_sessions(&self) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let count = sessions.len();
+        sessions.clear();
+        count
+    }
+
     pub async fn has_session(&self, session_id: &str) -> bool {
         self.sessions.read().await.contains(session_id)
     }

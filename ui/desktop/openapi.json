@@ -2667,6 +2667,96 @@
         }
       }
     },
+    "/reset": {
+      "post": {
+        "tags": [
+          "App Reset"
+        ],
+        "operationId": "reset_app_data",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Selected app data was reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No reset category was selected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Reset is blocked by active work",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Reset failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reset/preview": {
+      "get": {
+        "tags": [
+          "App Reset"
+        ],
+        "operationId": "preview_reset",
+        "responses": {
+          "200": {
+            "description": "Counts of data affected by each reset category",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPreviewResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Could not inspect reset data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/schedule/create": {
       "post": {
         "tags": [
@@ -7669,6 +7759,121 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "ResetCategory": {
+        "type": "string",
+        "enum": [
+          "applications",
+          "knowledge",
+          "skills",
+          "extensions",
+          "schedules",
+          "workflows",
+          "history"
+        ]
+      },
+      "ResetCounts": {
+        "type": "object",
+        "required": [
+          "applications",
+          "knowledgeBases",
+          "skills",
+          "extensions",
+          "schedules",
+          "workflows",
+          "conversations"
+        ],
+        "properties": {
+          "applications": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "conversations": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "extensions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "knowledgeBases": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "schedules": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "skills": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "workflows": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ResetErrorResponse": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ResetPreviewResponse": {
+        "type": "object",
+        "required": [
+          "counts"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ResetCounts"
+          }
+        }
+      },
+      "ResetRequest": {
+        "type": "object",
+        "required": [
+          "categories"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResetCategory"
+            }
+          }
+        }
+      },
+      "ResetResponse": {
+        "type": "object",
+        "required": [
+          "reset",
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "$ref": "#/components/schemas/ResetCounts"
+          },
+          "reset": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResetCategory"
+            }
           }
         }
       },

@@ -198,6 +198,28 @@ impl AppState {
             .contains_key(session_id)
     }
 
+    pub fn has_active_turns(&self) -> bool {
+        !self
+            .active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+
+    pub async fn clear_cached_agents(&self) -> usize {
+        let tasks = {
+            let mut tasks = self.extension_loading_tasks.lock().await;
+            tasks.drain().map(|(_, task)| task).collect::<Vec<_>>()
+        };
+        for task in tasks {
+            if let Some(handle) = task.lock().await.take() {
+                handle.abort();
+            }
+        }
+        self.workflow_session_tracker.lock().await.clear();
+        self.agent_manager.clear_sessions().await
+    }
+
     pub async fn set_extension_loading_task(
         &self,
         session_id: String,

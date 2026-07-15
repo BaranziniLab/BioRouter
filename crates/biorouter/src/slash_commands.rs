@@ -42,6 +42,15 @@ fn save_slash_commands(commands: Vec<SlashCommandMapping>) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to save slash commands: {}", e))
 }
 
+pub fn remove_commands_for_directory(directory: &std::path::Path) -> Result<usize> {
+    let mut commands = list_commands();
+    let before = commands.len();
+    commands.retain(|mapping| !PathBuf::from(&mapping.workflow_path).starts_with(directory));
+    let removed = before - commands.len();
+    save_slash_commands(commands)?;
+    Ok(removed)
+}
+
 pub fn set_workflow_slash_command(workflow_path: PathBuf, command: Option<String>) -> Result<()> {
     let workflow_path_str = workflow_path.to_string_lossy().to_string();
 

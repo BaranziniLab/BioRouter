@@ -1281,6 +1281,35 @@ export type RemoveExtensionRequest = {
     session_id: string;
 };
 
+export type ResetCategory = 'applications' | 'knowledge' | 'skills' | 'extensions' | 'schedules' | 'workflows' | 'history';
+
+export type ResetCounts = {
+    applications: number;
+    conversations: number;
+    extensions: number;
+    knowledgeBases: number;
+    schedules: number;
+    skills: number;
+    workflows: number;
+};
+
+export type ResetErrorResponse = {
+    message: string;
+};
+
+export type ResetPreviewResponse = {
+    counts: ResetCounts;
+};
+
+export type ResetRequest = {
+    categories: Array<ResetCategory>;
+};
+
+export type ResetResponse = {
+    removed: ResetCounts;
+    reset: Array<ResetCategory>;
+};
+
 export type ResourceContents = {
     _meta?: {
         [key: string]: unknown;
@@ -4138,6 +4167,64 @@ export type ReplyResponses = {
 };
 
 export type ReplyResponse = ReplyResponses[keyof ReplyResponses];
+
+export type ResetAppDataData = {
+    body: ResetRequest;
+    path?: never;
+    query?: never;
+    url: '/reset';
+};
+
+export type ResetAppDataErrors = {
+    /**
+     * No reset category was selected
+     */
+    400: ResetErrorResponse;
+    /**
+     * Reset is blocked by active work
+     */
+    409: ResetErrorResponse;
+    /**
+     * Reset failed
+     */
+    500: ResetErrorResponse;
+};
+
+export type ResetAppDataError = ResetAppDataErrors[keyof ResetAppDataErrors];
+
+export type ResetAppDataResponses = {
+    /**
+     * Selected app data was reset
+     */
+    200: ResetResponse;
+};
+
+export type ResetAppDataResponse = ResetAppDataResponses[keyof ResetAppDataResponses];
+
+export type PreviewResetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/reset/preview';
+};
+
+export type PreviewResetErrors = {
+    /**
+     * Could not inspect reset data
+     */
+    500: ResetErrorResponse;
+};
+
+export type PreviewResetError = PreviewResetErrors[keyof PreviewResetErrors];
+
+export type PreviewResetResponses = {
+    /**
+     * Counts of data affected by each reset category
+     */
+    200: ResetPreviewResponse;
+};
+
+export type PreviewResetResponse = PreviewResetResponses[keyof PreviewResetResponses];
 
 export type CreateScheduleData = {
     body: CreateScheduleRequest;

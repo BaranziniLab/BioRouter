@@ -371,6 +371,17 @@ impl Default for ExtensionConfig {
 }
 
 impl ExtensionConfig {
+    pub fn is_bundled(&self) -> bool {
+        match self {
+            Self::Stdio { bundled, .. }
+            | Self::Builtin { bundled, .. }
+            | Self::Platform { bundled, .. }
+            | Self::StreamableHttp { bundled, .. }
+            | Self::Frontend { bundled, .. } => bundled.unwrap_or(false),
+            Self::Sse { .. } | Self::InlinePython { .. } => false,
+        }
+    }
+
     pub fn streamable_http<S: Into<String>, T: Into<u64>>(
         name: S,
         uri: S,

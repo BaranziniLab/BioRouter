@@ -1141,6 +1141,14 @@ impl SessionManager {
         self.storage.delete_session(id).await
     }
 
+    pub async fn clear_all_sessions(&self) -> Result<u64> {
+        self.storage.clear_all_sessions().await
+    }
+
+    pub async fn count_all_sessions(&self) -> Result<u64> {
+        self.storage.count_all_sessions().await
+    }
+
     pub async fn get_insights(&self) -> Result<SessionInsights> {
         self.storage.get_insights().await
     }
@@ -3244,6 +3252,45 @@ impl SessionStorage {
         Ok(())
     }
 
+    async fn count_all_sessions(&self) -> Result<u64> {
+        let pool = self.pool().await?;
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions")
+            .fetch_one(pool)
+            .await?;
+        Ok(count as u64)
+    }
+
+    async fn clear_all_sessions(&self) -> Result<u64> {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&mut *tx)
+            .await?;
+
+        if Self::messages_fts_exists(&mut *tx).await {
+            sqlx::query("DELETE FROM messages_fts")
+                .execute(&mut *tx)
+                .await?;
+        }
+        for table in [
+            "message_blobs",
+            "checkpoints",
+            "messages",
+            "token_events",
+            "sessions",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table}"))
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM sqlite_sequence WHERE name IN ('messages', 'token_events')")
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(count as u64)
+    }
+
     async fn get_insights(&self) -> Result<SessionInsights> {
         let pool = self.pool().await?;
 
@@ -4415,6 +4462,66 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    #[tokio::test]
+    async fn clear_all_sessions_removes_history_usage_and_side_tables() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let first = sm
+            .create_session(temp_dir.path().into(), "First".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.create_session(temp_dir.path().into(), "Hidden".into(), SessionType::Hidden)
+            .await
+            .unwrap();
+        sm.record_token_event(
+            &first.id,
+            Some(100),
+            Some(20),
+            120,
+            Some("model"),
+            Some("provider"),
+            Some(0),
+            Some(0),
+        )
+        .await
+        .unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO checkpoints (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha) VALUES ('cp', ?, 0, 1, 'pre_step', 'commit', 'tree')",
+        )
+        .bind(&first.id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO message_blobs (blob_uid, session_id, created_at, bytes, content) VALUES ('blob', ?, 1, 4, 'data')",
+        )
+        .bind(&first.id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        assert_eq!(sm.count_all_sessions().await.unwrap(), 2);
+        assert_eq!(sm.clear_all_sessions().await.unwrap(), 2);
+        assert_eq!(sm.count_all_sessions().await.unwrap(), 0);
+        for table in [
+            "sessions",
+            "messages",
+            "messages_fts",
+            "token_events",
+            "checkpoints",
+            "message_blobs",
+        ] {
+            let count = sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty");
+        }
+        assert_eq!(sm.get_usage_summary().await.unwrap().all_time.turns, 0);
+    }
 
     #[tokio::test]
     async fn fresh_database_contains_full_v16_schema() {

@@ -73,6 +73,7 @@ pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};
 pub use prompt_manager::PromptManager;
+pub use skills_extension::{count_user_skills, reset_to_builtin_skills};
 pub use subagent_handle::{BackgroundSubagent, HandleSnapshot, HandleState};
 pub use subagent_result::{SubagentResult, SubagentStatus, SubagentTokens};
 pub use subagent_task_config::TaskConfig;

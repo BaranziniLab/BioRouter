@@ -38,7 +38,7 @@ pub const SOUL_SKILL_DIR_LEGACY: &str = "soul-writer";
 pub const MEDITATION_CRON: &str = "0 0 3 * * *";
 
 /// Warm parchment tone distinct from the default KB colour.
-const SOUL_COLOR: &str = "#9c6b3f";
+pub const SOUL_COLOR: &str = "#9c6b3f";
 
 /// Install every Soul component that is missing. Best-effort: a failure in one
 /// component is logged and does not abort the others or block startup.

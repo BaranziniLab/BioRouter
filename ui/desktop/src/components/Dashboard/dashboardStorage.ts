@@ -142,6 +142,12 @@ export function saveDashboardState(state: SerializedDashboardState): void {
   }
 }
 
+export function clearDashboardState(): void {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(STORAGE_KEY_V1);
+  localStorage.removeItem(LEGACY_STORAGE_KEY);
+}
+
 export function debounceSave(delayMs = 250): (state: SerializedDashboardState) => void {
   let t: ReturnType<typeof setTimeout> | null = null;
   return (state) => {

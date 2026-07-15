@@ -14,6 +14,7 @@ activities:
   - Create and orchestrate subagents for meta-testing
   - Generate and execute test workflows
   - Test error boundaries and security controls
+  - Validate the Settings reset contract and its active-work safety gate
   - Measure performance and resource usage
   - Generate comprehensive test report
 
@@ -22,7 +23,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, subagents, workflows, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, subagents, workflows, reset, advanced"
   
   - key: test_depth
     input_type: string
@@ -104,6 +105,13 @@ instructions: |
   - Validate security controls
   - Measure performance metrics
   - Test resource constraints
+
+  ### Phase 4B: Settings Reset Safety
+  Validate the destructive reset feature without deleting the active self-test session:
+  - Inspect the reset API and Settings panel definitions and verify all seven reset categories match
+  - Verify the API rejects resets while a conversation or scheduled run is active
+  - Run the targeted reset storage and factory-default tests from the repository
+  - Never submit a destructive reset against the live self-test profile
   
   ### Phase 5: Report Generation
   Compile comprehensive test results:
@@ -239,9 +247,25 @@ prompt: |
   
   Log results to: {{ workspace_dir }}/phase3_subagents.md
   {% endif %}
+
+  {% if test_phases == "all" or "reset" in test_phases %}
+  ## ♻️ PHASE 4: Settings Reset Safety
+
+  This phase verifies the destructive reset contract without invoking it against this live profile.
+
+  1. Inspect `crates/biorouter-server/src/routes/reset.rs` and
+     `ui/desktop/src/components/settings/app/ResetPanel.tsx`.
+  2. Verify both define applications, knowledge, skills, extensions, schedules, workflows, and
+     history, and that the server blocks reset while active work is running.
+  3. Run `cargo test -p biorouter clear_all_sessions_removes_history_usage_and_side_tables`.
+  4. Run `cargo test -p biorouter-server routes::reset::tests`.
+  5. Do not call the live reset endpoint; doing so would erase the session running this test.
+
+  Log results to: {{ workspace_dir }}/phase4_reset.md
+  {% endif %}
   
   {% if test_phases == "all" or "advanced" in test_phases %}
-  ## 🔬 PHASE 4: Advanced Testing
+  ## 🔬 PHASE 4B: Advanced Testing
   
   ### Error Boundary Testing
   1. Create a file with an invalid path (should fail gracefully)
@@ -298,6 +322,7 @@ prompt: |
   • Extensions: [✓/✗]
   • Apps SDK v2: [✓/✗]
   • Subagents: [✓/✗]
+  • Settings reset safety: [✓/✗]
   
   ⚠️ Issues Found:
   • [Issue 1 - brief description]
