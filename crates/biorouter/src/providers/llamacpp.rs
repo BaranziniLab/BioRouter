@@ -73,7 +73,7 @@ pub struct CatalogEntry {
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gemma4",
-        display_name: "Gemma 4 (Ollama library)",
+        display_name: "Gemma 4 E4B",
         family: "Gemma 4",
         ollama_name: Some("gemma4:latest"),
         official_url: "https://ollama.com/library/gemma4",
@@ -86,7 +86,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "gemma4-e2b",
-        display_name: "Gemma 4 E2B (Ollama library)",
+        display_name: "Gemma 4 E2B",
         family: "Gemma 4",
         ollama_name: Some("gemma4:e2b"),
         official_url: "https://ollama.com/library/gemma4:e2b",
@@ -99,7 +99,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "gemma4-12b",
-        display_name: "Gemma 4 12B (Ollama library)",
+        display_name: "Gemma 4 12B",
         family: "Gemma 4",
         ollama_name: Some("gemma4:12b"),
         official_url: "https://ollama.com/library/gemma4:12b",
@@ -112,7 +112,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "gemma4-26b",
-        display_name: "Gemma 4 26B (Ollama library)",
+        display_name: "Gemma 4 26B",
         family: "Gemma 4",
         ollama_name: Some("gemma4:26b"),
         official_url: "https://ollama.com/library/gemma4:26b",
@@ -125,7 +125,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "gemma4-31b",
-        display_name: "Gemma 4 31B (Ollama library)",
+        display_name: "Gemma 4 31B",
         family: "Gemma 4",
         ollama_name: Some("gemma4:31b"),
         official_url: "https://ollama.com/library/gemma4:31b",
@@ -138,20 +138,20 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "qwen3.6",
-        display_name: "Qwen3.6 (Ollama library)",
+        display_name: "Qwen3.6 35B",
         family: "Qwen3.6",
         ollama_name: Some("qwen3.6:latest"),
         official_url: "https://ollama.com/library/qwen3.6",
         hf_spec: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M",
         download_size: "24 GB",
-        description: "Large Qwen3.6 MoE model from Ollama's library; best for high-memory machines",
+        description: "Qwen3.6 mixture-of-experts model with 35B total and 3B active parameters; best for high-memory machines",
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
     },
     CatalogEntry {
         name: "qwen3.6-27b",
-        display_name: "Qwen3.6 27B Q4_K_M (Ollama library)",
+        display_name: "Qwen3.6 27B",
         family: "Qwen3.6",
         ollama_name: Some("qwen3.6:27b-q4_K_M"),
         official_url: "https://ollama.com/library/qwen3.6:27b-q4_K_M",
@@ -160,19 +160,6 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         description: "Lower-memory Qwen3.6 option with the same 256K Ollama context family",
         min_gpu_memory_gib: 32,
         recommended_gpu_memory_gib: 48,
-        context_limit: 262_144,
-    },
-    CatalogEntry {
-        name: "qwen3.6-35b-a3b",
-        display_name: "Qwen3.6 35B-A3B Q4_K_M (Ollama library)",
-        family: "Qwen3.6",
-        ollama_name: Some("qwen3.6:35b-a3b-q4_K_M"),
-        official_url: "https://ollama.com/library/qwen3.6:35b-a3b-q4_K_M",
-        hf_spec: "unsloth/Qwen3.6-35B-A3B-GGUF:Q4_K_M",
-        download_size: "24 GB",
-        description: "Explicit Qwen3.6 35B-A3B Q4_K_M tag for high-memory machines",
-        min_gpu_memory_gib: 48,
-        recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
     },
 ];
@@ -677,6 +664,26 @@ mod tests {
         assert!(MODEL_CATALOG.iter().any(|e| e.name == "qwen3.6"));
         assert!(MODEL_CATALOG.iter().any(|e| e.name == "gemma4"));
         assert!(!MODEL_CATALOG.iter().any(|e| e.name.starts_with("qwen3.5")));
+    }
+
+    #[test]
+    fn catalog_display_names_are_concise_and_parameterized() {
+        let display_names: Vec<_> = MODEL_CATALOG
+            .iter()
+            .map(|entry| entry.display_name)
+            .collect();
+        assert_eq!(
+            display_names,
+            vec![
+                "Gemma 4 E4B",
+                "Gemma 4 E2B",
+                "Gemma 4 12B",
+                "Gemma 4 26B",
+                "Gemma 4 31B",
+                "Qwen3.6 35B",
+                "Qwen3.6 27B",
+            ]
+        );
     }
 
     #[test]
