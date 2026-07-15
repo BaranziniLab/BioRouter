@@ -287,7 +287,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                         title={
                           billedTokenEstimate.lowerBound
                             ? 'At least this many tokens; only last-turn usage is available for this legacy session'
-                            : 'Billed tokens — accumulated across every turn, including recorded cache buckets'
+                            : 'Billed tokens across every turn, including recorded cache usage'
                         }
                       >
                         <Target className="w-4 h-4 mr-1" />

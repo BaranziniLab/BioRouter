@@ -8,13 +8,12 @@ import { getSessionActivity, listSessions, ActivityWindow, Session } from '../..
 import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { UsageHeatmap } from './UsageHeatmap';
+import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
 
 /** ~5 months of weeks; 22 columns fit the 760px chat column at 24px cells. */
 const ACTIVITY_DAYS = 155;
 
-/** With the flat token tiles gone, the freed space shows more recent chats. */
-const RECENT_LIMIT = 6;
+const RECENT_LIMIT = 3;
 
 export function SessionInsights() {
   const [activity, setActivity] = useState<ActivityWindow | null>(null);
@@ -81,28 +80,29 @@ export function SessionInsights() {
   };
 
   return (
-    <div className="bg-background-muted flex flex-col min-h-full">
+    <div className="flex min-h-full flex-col bg-background-muted">
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
-      <ReadableContent size="chat" className="px-4 sm:px-6 pt-16 pb-6">
+      <ReadableContent size="chat" className="biorouter-home-hero px-4 pb-6 pt-16 sm:px-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
       </ReadableContent>
 
       {/* Usage heatmap — the single source of the usage story. */}
-      <ReadableContent size="chat" className="px-4 sm:px-6 pb-8">
+      <ReadableContent size="chat" className="biorouter-home-activity px-4 pb-8 sm:px-6">
         {activity ? (
           <div className="page-transition">
             <UsageHeatmap window={activity} />
           </div>
         ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
-          // A plain Skeleton is `bg-background-muted` — the same colour as this
-          // canvas, so it reads as blank. Give it a real surface while loading.
-          <Skeleton className="h-[204px] w-full rounded-xl border border-border-subtle !bg-background-default" />
+          <UsageHeatmapLoading />
         )}
       </ReadableContent>
 
       {/* Recent chats */}
-      <ReadableContent size="chat" className="px-4 sm:px-6 pb-8 page-transition">
+      <ReadableContent
+        size="chat"
+        className="biorouter-home-recents page-transition px-4 pb-8 sm:px-6"
+      >
         <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -120,7 +120,7 @@ export function SessionInsights() {
 
           <div className="biorouter-list-shell min-h-[96px] transition-all duration-300 ease-in-out">
             {isLoadingSessions ? (
-              [200, 160, 220, 180, 210, 150].map((w, i) => (
+              [200, 160, 220].map((w, i) => (
                 <div
                   key={i}
                   className="biorouter-list-row flex items-center justify-between px-3 py-2"

@@ -514,7 +514,7 @@ type SendFn = (event: DependencyEvent) => void;
 
 function runInstallCommand(dep: string, cmd: string, send: SendFn): void {
   if (!cmd || !cmd.trim()) {
-    send({ type: 'install-error', dep, error: 'No automated installer — use the Download link.' });
+    send({ type: 'install-error', dep, error: 'No automated installer. Use the Download link.' });
     return;
   }
   send({ type: 'install-start', dep });

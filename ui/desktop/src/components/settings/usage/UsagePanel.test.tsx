@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import {
   UsagePanel,
+  fillCalendarDays,
   formatBilledTokens,
   formatCost,
   formatCostEstimate,
   formatTokens,
+  formatUsageDate,
   modelLabel,
 } from './UsagePanel';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
@@ -109,7 +112,7 @@ describe('formatters', () => {
   it('formats tokens with thousands separators', () => {
     expect(formatTokens(13_300_000)).toBe('13,300,000');
     expect(formatTokens(0)).toBe('0');
-    expect(formatTokens(null)).toBe('—');
+    expect(formatTokens(null)).toBe('Not recorded');
   });
 
   it('distinguishes exact totals, known subtotals, and wholly unknown totals', () => {
@@ -123,7 +126,7 @@ describe('formatters', () => {
         cacheCreationTokens: 5,
         totalTokens: null,
       })
-    ).toBe('≥125');
+    ).toBe('125');
     expect(
       formatBilledTokens({
         ...summary().monthToDate,
@@ -133,16 +136,22 @@ describe('formatters', () => {
         cacheCreationTokens: null,
         totalTokens: null,
       })
-    ).toBe('—');
+    ).toBe('Unavailable');
   });
 
   it('formats cost, folding sub-cent and null', () => {
     expect(formatCost(5)).toBe('$5.00');
     expect(formatCost(0.004)).toBe('<$0.01');
-    expect(formatCost(null)).toBe('—');
-    expect(formatCost(undefined)).toBe('—');
-    expect(formatCostEstimate(5, true)).toBe('≥$5.00');
-    expect(formatCostEstimate(null, true)).toBe('—');
+    expect(formatCost(null)).toBe('Unavailable');
+    expect(formatCost(undefined)).toBe('Unavailable');
+    expect(formatCostEstimate(5)).toBe('$5.00');
+    expect(formatCostEstimate(null)).toBe('Unavailable');
+  });
+
+  it('formats ledger dates for quick scanning while preserving invalid input', () => {
+    expect(formatUsageDate('2026-07-14')).toBe('Tue, Jul 14');
+    expect(formatUsageDate('legacy')).toBe('legacy');
+    expect(formatUsageDate(null)).toBe('Unknown date');
   });
 
   it('labels models and folds the unknown bucket', () => {
@@ -153,16 +162,22 @@ describe('formatters', () => {
 });
 
 describe('UsagePanel', () => {
-  it('renders day bars, the model table and MTD figures', () => {
+  it('renders a reverse-chronological day table, the model table and MTD figures', () => {
     render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
 
-    // Day bars: one per day.
-    const bars = screen.getByTestId('usage-day-bars');
-    expect(within(bars).getAllByTestId('usage-day-bar-fill')).toHaveLength(2);
-    expect(within(bars).getByText('2026-07-10')).toBeTruthy();
-    expect(within(bars).getByText('1,000,100 billed')).toBeTruthy();
-    expect(within(bars).getByText('≥$1.40')).toBeTruthy();
-    expect(within(bars).getByText('$7.20')).toBeTruthy();
+    const dayTable = screen.getByTestId('usage-day-table');
+    const dayTableRows = within(dayTable).getAllByRole('row');
+    expect(dayTableRows).toHaveLength(3);
+    expect(
+      within(dayTableRows[1])
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent)
+    ).toEqual(['Sat, Jul 11', '3', '3,000,000', '$7.20']);
+    expect(
+      within(dayTableRows[2])
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent)
+    ).toEqual(['Fri, Jul 10', '7', '1,000,100', '$1.40']);
 
     // Model table: glm row with hand-checked cells + unknown null-cost row.
     const table = screen.getByTestId('usage-model-table');
@@ -184,8 +199,8 @@ describe('UsagePanel', () => {
         .map((c) => c.textContent)
     ).toEqual(['zai/glm-5.2', '8', '3,000,000', '1,000,000', '4,000,000', '$8.60']);
     const unknownRow = within(table).getByText('unknown').closest('tr')!;
-    // Unknown model shows an em-dash cost, never $0.
-    expect(within(unknownRow).getAllByRole('cell')[5].textContent).toBe('—');
+    // Unknown pricing is explicit and is never presented as $0.
+    expect(within(unknownRow).getAllByRole('cell')[5].textContent).toBe('Unavailable');
   });
 
   it('shows the unpriced note when any row lacks pricing', () => {
@@ -268,13 +283,33 @@ describe('UsagePanel', () => {
     expect(fill.style.width).toBe('100%');
   });
 
-  it('uses the usage heat ramp for day bars', () => {
+  it('uses the same quiet table grammar for daily and model usage', () => {
     render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
 
-    for (const fill of screen.getAllByTestId('usage-day-bar-fill')) {
-      expect(fill).toHaveClass('bg-heat-3');
-      expect(fill.parentElement).toHaveClass('bg-heat-0');
-    }
+    expect(screen.queryByTestId('usage-day-bar-fill')).toBeNull();
+    const dayTable = screen.getByTestId('usage-day-table');
+    const modelTable = screen.getByTestId('usage-model-table');
+    expect(screen.getByText('By day').parentElement).toHaveClass('max-w-[680px]', 'w-full');
+    expect(screen.getByTestId('usage-day-table-wrap')).toHaveClass('max-w-[680px]', 'w-full');
+    expect(screen.getByTestId('usage-model-table-wrap')).toHaveClass('max-w-[680px]', 'w-full');
+    expect(dayTable).toHaveClass('table-fixed', 'min-w-[640px]', 'border-collapse');
+    expect(modelTable).toHaveClass('table-fixed', 'min-w-[640px]', 'border-collapse');
+    const columnGeometry = (table: HTMLElement) =>
+      Array.from(table.querySelectorAll('col')).map((column) => ({
+        className: column.getAttribute('class'),
+        span: column.getAttribute('span'),
+      }));
+    expect(columnGeometry(dayTable)).toEqual(columnGeometry(modelTable));
+    expect(within(dayTable).getAllByRole('row')[0]).toHaveClass(
+      'h-8',
+      'border-b',
+      'border-border-subtle'
+    );
+    expect(within(dayTable).getAllByRole('row')[1]).toHaveClass(
+      'h-10',
+      'border-b',
+      'border-border-subtle'
+    );
   });
 
   it('marks the dollar gauge unavailable when MTD cost is unknown', () => {
@@ -306,9 +341,9 @@ describe('UsagePanel', () => {
     expect(screen.queryByTestId('usage-gauge-dollars-fill')).toBeNull();
   });
 
-  it('renders empty-state copy when a range has no usage', () => {
+  it('renders empty-state copy when the current month has no usage', () => {
     render(<UsagePanel summary={summary()} dayRows={[]} modelRows={[]} />);
-    expect(screen.getAllByText('No usage in this range.').length).toBe(2);
+    expect(screen.getAllByText('No usage this month.').length).toBe(2);
   });
 
   it('shows a Cache column, MTD cached figure, and the excluded-cost note when cache is present', () => {
@@ -363,7 +398,7 @@ describe('UsagePanel', () => {
       '100',
       '200',
       '1,800',
-      '≥$0.01',
+      '$0.01',
     ]);
     // The cost-excludes-cache note appears.
     expect(screen.getByTestId('usage-cache-excluded-note')).toBeTruthy();
@@ -396,7 +431,7 @@ describe('UsagePanel', () => {
     );
 
     const gauge = screen.getByTestId('usage-gauge-dollars');
-    expect(within(gauge).getByText(/≥\$12.00 \/ \$100.00/)).toBeTruthy();
+    expect(within(gauge).getByText(/\$12.00 \/ \$100.00/)).toBeTruthy();
     expect(
       within(gauge).getByText(
         'Budget percentage unavailable because the known cost is only a partial subtotal.'
@@ -405,7 +440,7 @@ describe('UsagePanel', () => {
     expect(screen.queryByTestId('usage-gauge-dollars-fill')).toBeNull();
   });
 
-  it('shows incomplete billed history as a lower bound and leaves the gauge unavailable', () => {
+  it('shows incomplete billed history as a conservative estimate and leaves the gauge unavailable', () => {
     render(
       <UsagePanel
         summary={summary({
@@ -426,7 +461,7 @@ describe('UsagePanel', () => {
     );
 
     const gauge = screen.getByTestId('usage-gauge-tokens');
-    expect(within(gauge).getByText(/≥1,800 \/ 1,800/)).toBeTruthy();
+    expect(within(gauge).getByText(/1,800 \/ 1,800/)).toBeTruthy();
     expect(
       within(gauge).getByText(
         'Budget percentage unavailable because billed token history is incomplete.'
@@ -436,7 +471,7 @@ describe('UsagePanel', () => {
     expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
   });
 
-  it('renders nullable model cache buckets as em dashes and billed tokens as a lower bound', () => {
+  it('labels an unrecorded cache bucket and shows conservative token and cost estimates', () => {
     const incompleteModel: UsageReportRow = {
       date: null,
       modelId: 'legacy-model',
@@ -459,7 +494,101 @@ describe('UsagePanel', () => {
       within(row)
         .getAllByRole('cell')
         .map((cell) => cell.textContent)
-    ).toEqual(['anthropic/legacy-model', '2', '100', '—', '5', '20', '≥125', '≥$1.25']);
+    ).toEqual(['anthropic/legacy-model', '2', '100', 'Not recorded', '5', '20', '125', '$1.25']);
     expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
+  });
+
+  it('shows three adjacent calendar days newest-first until the user expands the month', async () => {
+    const user = userEvent.setup();
+    const sparseRows = [7, 11, 14].map((day, index): UsageReportRow => {
+      const tokens = (index + 1) * 100;
+      return {
+        ...dayRows[1],
+        date: `2026-07-${String(day).padStart(2, '0')}`,
+        inputTokens: tokens,
+        outputTokens: 0,
+        totalTokens: tokens,
+      };
+    });
+    const calendarRows = fillCalendarDays(sparseRows, new Date(2026, 6, 14, 12));
+
+    render(<UsagePanel summary={summary()} dayRows={calendarRows} modelRows={modelRows} />);
+
+    const table = screen.getByTestId('usage-day-table');
+    const visibleDates = Array.from(table.querySelectorAll('time')).map((time) =>
+      time.getAttribute('datetime')
+    );
+    expect(visibleDates).toEqual(['2026-07-14', '2026-07-13', '2026-07-12']);
+    const emptyDay = within(table).getByText('Mon, Jul 13').closest('tr')!;
+    expect(
+      within(emptyDay)
+        .getAllByRole('cell')
+        .slice(1)
+        .map((cell) => cell.textContent)
+    ).toEqual(['0', '0', '$0.00']);
+
+    const expand = screen.getByRole('button', {
+      name: 'Show all 14 calendar days this month',
+    });
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    await user.click(expand);
+
+    expect(within(table).getAllByRole('row')).toHaveLength(15);
+    expect(table.querySelector('time[datetime="2026-07-07"]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show recent 3 calendar days' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+  });
+
+  it('hides empty cache and cost columns instead of repeating unavailable values', () => {
+    const unrecordedDay: UsageReportRow = {
+      ...dayRows[0],
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      cost: null,
+    };
+    const unrecordedModel: UsageReportRow = {
+      ...modelRows[1],
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      cost: null,
+    };
+
+    render(
+      <UsagePanel
+        summary={summary({
+          monthToDate: {
+            ...summary().monthToDate,
+            cacheReadTokens: null,
+            cacheCreationTokens: null,
+            cost: null,
+            hasUnpriced: true,
+          },
+        })}
+        dayRows={[unrecordedDay]}
+        modelRows={[unrecordedModel]}
+      />
+    );
+
+    for (const table of [
+      screen.getByTestId('usage-day-table'),
+      screen.getByTestId('usage-model-table'),
+    ]) {
+      expect(within(table).queryByRole('columnheader', { name: 'Cache read' })).toBeNull();
+      expect(within(table).queryByRole('columnheader', { name: 'Cache write' })).toBeNull();
+      expect(within(table).queryByRole('columnheader', { name: 'Cost' })).toBeNull();
+    }
+    expect(screen.queryByTestId('usage-mtd-cache')).toBeNull();
+    expect(screen.getByTestId('usage-panel').textContent).not.toContain('N/A');
+  });
+
+  it('keeps internal labels subordinate to the settings section title', () => {
+    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+
+    for (const label of ['Month to date', 'By day', 'By model']) {
+      expect(screen.getByText(label)).toHaveClass('text-[11px]', 'font-normal', 'text-text-subtle');
+      expect(screen.getByText(label)).not.toHaveClass('text-sm', 'font-medium');
+    }
   });
 });

@@ -1,6 +1,6 @@
 // Pure, framework-free state machine for the in-app auto-updater UI.
 //
-// Both the startup update modal (`UpdateAvailableModal`) and the Settings
+// Both the in-app update modal (`UpdateAvailableModal`) and the Settings
 // "Check for Updates" panel (`UpdateSection`) drive their UI from this reducer.
 // Keeping it pure (no React, no Electron) makes the one-click update flow unit
 // testable: feed it the `updater-event` payloads the main process emits via
@@ -168,6 +168,11 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
 /** Should the startup modal be visible for this state? */
 export function shouldShowUpdateModal(state: UpdaterState): boolean {
   return state.phase === 'available' || state.phase === 'downloaded' || state.phase === 'error';
+}
+
+export function hasKnownUpdate(state: UpdaterState): boolean {
+  if (state.phase === 'available' || state.phase === 'downloaded') return true;
+  return !!state.latestVersion && (state.phase === 'checking' || state.phase === 'error');
 }
 
 /**

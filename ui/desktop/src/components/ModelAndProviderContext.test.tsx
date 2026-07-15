@@ -65,7 +65,7 @@ const statusResponse = {
     catalog: [
       {
         name: 'qwen3.6',
-        display_name: 'Qwen3.6 (Ollama library)',
+        display_name: 'Qwen3.6 35B',
         ollama_name: 'qwen3.6:latest',
         hf_spec: 'unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M',
         download_size: '23 GB',

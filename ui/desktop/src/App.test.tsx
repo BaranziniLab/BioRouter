@@ -6,7 +6,11 @@
 import React from 'react';
 import { screen, render, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { AppInner } from './App';
+import { AppInner, ImmediateHashRouter } from './App';
+
+const routerMocks = vi.hoisted(() => ({
+  hashRouterProps: vi.fn(),
+}));
 
 // Set up globals for jsdom
 Object.defineProperty(window, 'location', {
@@ -158,7 +162,16 @@ const mockSetSearchParams = vi.fn();
 
 // Mock react-router-dom to avoid HashRouter issues in tests
 vi.mock('react-router-dom', () => ({
-  HashRouter: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  HashRouter: ({
+    children,
+    ...props
+  }: {
+    children: React.ReactNode;
+    unstable_useTransitions?: boolean;
+  }) => {
+    routerMocks.hashRouterProps(props);
+    return <>{children}</>;
+  },
   Routes: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   Route: ({ element }: { element: React.ReactNode }) => element,
   useNavigate: () => mockNavigate,
@@ -166,6 +179,19 @@ vi.mock('react-router-dom', () => ({
   useSearchParams: () => [mockSearchParams, mockSetSearchParams],
   Outlet: () => null,
 }));
+
+describe('ImmediateHashRouter', () => {
+  it('opts out of deferred route transitions', () => {
+    render(
+      <ImmediateHashRouter>
+        <div>Ready</div>
+      </ImmediateHashRouter>
+    );
+
+    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(routerMocks.hashRouterProps).toHaveBeenCalledWith({ unstable_useTransitions: false });
+  });
+});
 
 // Mock electron API
 const mockElectron = {

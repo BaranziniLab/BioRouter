@@ -152,7 +152,7 @@ Core invariants (everything below is a consequence of these):
 96. **[UI]** Knowledge / workflow / scheduler views are unaffected by diverge.
 97. **[UI]** Diverge works regardless of the active provider/model.
 98. **[UI]** Diverge from a renamed session keeps the original's user-set name.
-99. **[UI]** The original conversation can still be exported/forked/edited after a diverge.
+99. **[UI]** The original conversation can still be exported/diverged/edited after a diverge.
 100. **[UI]** No extra biorouterd backends leak per diverge beyond the new window's own.
 
 ---

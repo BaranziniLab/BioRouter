@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useTextAnimator } from '../../hooks/use-text-animator';
 
 interface GreetingProps {
   className?: string;
@@ -8,10 +7,9 @@ interface GreetingProps {
 
 // Matches the section-title styling used by Workflows / Skills / History /
 // Scheduler tabs: `text-2xl font-semibold tracking-tight`, with no
-// custom font-family override. The animation classes are preserved so the
-// fade-in still plays when a new greeting mounts.
+// custom font-family override.
 export function Greeting({
-  className = 'mt-1 text-2xl font-semibold tracking-tight animate-in fade-in duration-300',
+  className = 'mt-1 text-2xl font-semibold tracking-tight',
   forceRefresh = false,
 }: GreetingProps) {
   const prefixes = ['Hello!'];
@@ -44,12 +42,10 @@ export function Greeting({
     };
   })[0];
 
-  const messageRef = useTextAnimator({ text: greeting.message });
-
   return (
     <h1 className={className} key={forceRefresh ? Date.now() : undefined}>
       {/* <span>{greeting.prefix}</span> */}
-      <span ref={messageRef}>{greeting.message}</span>
+      <span>{greeting.message}</span>
     </h1>
   );
 }

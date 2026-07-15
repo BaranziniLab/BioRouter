@@ -746,8 +746,8 @@
 
 /* Toast body + close button.
    The toast body is the SINGLE owner of the close-button gutter: it reserves
-   28px on the inline-end which, added to the toast wrapper's own 12px right
-   padding (p-3), clears the 20px close button positioned at right:10px. Callers
+   36px on the inline-end which, added to the toast wrapper's own 12px right
+   padding (px-3), clears the 20px close button positioned at right:10px. Callers
    (toastSuccess/toastError/GroupedExtensionLoadingToast) add NO per-message
    `pr-*` — that double-reservation was what let long names / action buttons run
    under the ×. The NotificationContent primitive lays out the icon + text. */
@@ -758,7 +758,7 @@
   margin: 0;
   min-width: 0;
   padding: 0;
-  padding-inline-end: 28px;
+  padding-inline-end: 36px;
 }
 
 /* react-toastify's own status icon is disabled (icon: false) — the tinted chip
@@ -783,7 +783,7 @@
   right: 10px !important;
   /* Top-aligned to pair with the title/icon line, not centred against the
      toast's total height (a centred × floated on tall / expanded toasts). */
-  top: 12px !important;
+  top: 10px !important;
   bottom: auto !important;
   transform: none !important;
   width: 20px;
@@ -962,6 +962,41 @@
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 42%, transparent);
+}
+
+.biorouter-home-content {
+  container-name: biorouter-home-content;
+  container-type: size;
+}
+
+@container biorouter-home-content (max-height: 720px) {
+  .biorouter-home-hero {
+    padding-top: 56px;
+    padding-bottom: 16px;
+  }
+
+  .biorouter-home-activity,
+  .biorouter-home-recents {
+    padding-bottom: 16px;
+  }
+}
+
+@container biorouter-home-content (max-height: 650px) {
+  .biorouter-home-activity {
+    display: none;
+  }
+}
+
+@container biorouter-home-content (max-height: 280px) {
+  .biorouter-home-recents {
+    display: none;
+  }
+}
+
+@container biorouter-home-content (max-height: 100px) {
+  .biorouter-home-hero {
+    display: none;
+  }
 }
 
 .app-theme-swatch {
@@ -1415,29 +1450,7 @@ em > code.bg-inline-code {
   will-change: transform, opacity;
 }
 
-/* Non-blocking page transitions */
-@keyframes page-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.page-transition {
-  /* Start with proper initial state to prevent flicker */
-  opacity: 0;
-  animation: page-fade-in var(--motion-base) var(--ease-out) forwards;
-  /* Don't block interactions during animation */
-  pointer-events: auto;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .page-transition {
-    animation: none;
-  }
-
   .biorouter-composer-motion {
     will-change: auto;
   }
@@ -1549,6 +1562,50 @@ em > code.bg-inline-code {
  */
 code [class~='token'] {
   display: inline;
+}
+
+@keyframes biorouter-heatmap-loading {
+  0%,
+  100% {
+    background-color: var(--heat-0);
+    opacity: 0.72;
+  }
+  50% {
+    background-color: var(--heat-1);
+    opacity: 1;
+  }
+}
+
+.biorouter-heatmap-loading-cell {
+  animation: biorouter-heatmap-loading 1.8s ease-in-out infinite;
+}
+
+.biorouter-heatmap-loading-line {
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes biorouter-history-loading {
+  0%,
+  100% {
+    background-color: var(--background-medium);
+    opacity: 0.72;
+  }
+  50% {
+    background-color: var(--background-strong);
+    opacity: 1;
+  }
+}
+
+.biorouter-history-loading-cell {
+  animation: biorouter-history-loading 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-heatmap-loading-cell,
+  .biorouter-heatmap-loading-line,
+  .biorouter-history-loading-cell {
+    animation: none;
+  }
 }
 
 /* The heatmap must never make the page scroll sideways; shrink the cells. */

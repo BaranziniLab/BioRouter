@@ -63,9 +63,7 @@ export default function ExtensionsSection({
 
     return (
       [...extensionsList]
-        // Foundational capabilities (Developer, Extension Manager, Skills, Todo,
-        // Memory, Knowledge) are managed in Settings → Chat → Capabilities, not
-        // in the Extensions sub-panel.
+        // Shipped capabilities are managed in Settings → Chat → Capabilities.
         .filter((ext) => !isCapabilityExtension(ext))
         .sort((a, b) => {
           // First sort by builtin

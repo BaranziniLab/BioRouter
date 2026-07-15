@@ -31,7 +31,7 @@ interface UseChatStreamReturn {
   onMessageUpdate: (
     messageId: string,
     newContent: string,
-    editType?: 'fork' | 'edit'
+    editType?: 'diverge' | 'edit'
   ) => Promise<void>;
 }
 

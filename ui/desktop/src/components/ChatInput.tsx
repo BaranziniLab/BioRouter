@@ -1741,23 +1741,21 @@ export default function ChatInput({
             <BottomMenuExtensionSelection sessionId={sessionId} />
             <BottomMenuSkillSelection sessionId={sessionId} />
             <BottomMenuKnowledgeSelection />
-            <BottomMenuReasoningEffort />
           </div>
 
           <div className={TOOLBAR_DIVIDER_CLASS} />
 
-          <div className="flex min-w-0 flex-row items-center gap-1">
-            <Tooltip>
-              <div className="min-w-0">
-                <ModelsBottomBar
-                  sessionId={sessionId}
-                  dropdownRef={dropdownRef}
-                  setView={setView}
-                  alerts={alerts}
-                  hideAlertPopover
-                />
-              </div>
-            </Tooltip>
+          <div className="flex min-w-0 flex-row items-center gap-0.5">
+            <BottomMenuReasoningEffort />
+            <div className="min-w-0">
+              <ModelsBottomBar
+                sessionId={sessionId}
+                dropdownRef={dropdownRef}
+                setView={setView}
+                alerts={alerts}
+                hideAlertPopover
+              />
+            </div>
             <ContextWindowIndicator
               totalTokens={totalTokens}
               tokenLimit={tokenLimit}

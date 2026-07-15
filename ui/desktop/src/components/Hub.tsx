@@ -14,7 +14,7 @@
  * Hub (input submission) → Create Session → Pair (with session ID and initial message)
  */
 
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { SessionInsights } from './sessions/SessionsInsights';
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
@@ -38,23 +38,6 @@ export default function Hub({
   const { extensionsList } = useConfig();
   const [workingDir, setWorkingDir] = useState(getInitialWorkingDir());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
-
-  // The composer floats over the bottom of the scrollable content (absolute,
-  // so clicks in its gutter fall through). Its height is dynamic — the greeting
-  // above it can wrap to two lines and it grows as the user types — so reserve
-  // exactly that much space at the foot of the scroll area. Without this the
-  // last recent-chat row slides under the composer and is clipped.
-  const composerRef = useRef<HTMLDivElement>(null);
-  const [composerInset, setComposerInset] = useState(200);
-  useLayoutEffect(() => {
-    const el = composerRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => setComposerInset(el.offsetHeight + 48); // + bottom-6 gap + buffer
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [isCreatingSession]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     const customEvent = e as unknown as CustomEvent;
@@ -88,21 +71,15 @@ export default function Hub({
   };
 
   return (
-    <div className="relative flex flex-col h-full bg-background-muted">
-      <div
-        className="flex-1 min-h-0 overflow-y-auto"
-        style={{ paddingBottom: `${composerInset}px` }}
-      >
+    <div className="biorouter-home flex h-full min-h-0 flex-col bg-background-muted">
+      <div className="biorouter-home-content min-h-0 flex-1 overflow-hidden">
         <SessionInsights />
       </div>
 
-      <div
-        ref={composerRef}
-        className="absolute inset-x-4 sm:inset-x-6 bottom-6 z-10 pointer-events-none"
-      >
-        <div className="biorouter-composer-view-transition w-full max-w-[760px] mx-auto pointer-events-auto">
+      <div className="biorouter-home-composer shrink-0 px-4 pb-6 sm:px-6">
+        <div className="biorouter-composer-view-transition mx-auto w-full max-w-[760px]">
           {isCreatingSession && (
-            <div className="mb-2.5 pl-2 pointer-events-none">
+            <div className="pointer-events-none mb-2.5 pl-2">
               <LoadingBioRouter chatState={ChatState.LoadingConversation} />
             </div>
           )}

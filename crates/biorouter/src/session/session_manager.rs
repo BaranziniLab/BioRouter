@@ -139,7 +139,7 @@ pub struct Session {
     #[serde(default)]
     pub diverged_from: Option<String>,
     /// The durable `msg_uid` of the exact parent message this session was
-    /// branched at — the fork point (BR-45). Paired with `diverged_from`
+    /// branched at — the divergence point (BR-45). Paired with `diverged_from`
     /// (parent session), it is the edge label of the branch forest. `None` for
     /// normally-created sessions. Anchoring on this stable id instead of a
     /// whole-second timestamp is what fixes the same-second over-truncation.
@@ -235,6 +235,10 @@ pub struct DailyActivity {
     pub sessions: i64,
     /// Tokens processed that day, summed from per-turn `token_events`.
     pub tokens: i64,
+    /// False when at least one token event that day lacks billed-token
+    /// accounting. `tokens` is then a known subtotal; zero is unavailable, not
+    /// a measured zero.
+    pub tokens_complete: bool,
     pub input_tokens: i64,
     pub output_tokens: i64,
     /// Assistant + user messages exchanged that day.
@@ -251,8 +255,8 @@ pub struct ActivityWindow {
     pub end: String,
     pub max_sessions: i64,
     pub max_tokens: i64,
-    /// False when at least one event in the window predates billed-token
-    /// accounting; numeric token fields are then known subtotals, not zero/exact.
+    /// False when at least one event in the window lacks billed-token accounting.
+    /// Consult each day's `tokens_complete` for display semantics.
     pub tokens_complete: bool,
     pub current_streak: i64,
     pub longest_streak: i64,
@@ -674,9 +678,8 @@ fn build_activity_window(
     start: String,
     end: String,
     session_rows: &[(String, i64)],
-    token_rows: &[(String, i64, i64, i64)],
+    token_rows: &[(String, i64, i64, i64, bool)],
     message_rows: &[(String, i64)],
-    tokens_complete: bool,
 ) -> ActivityWindow {
     use std::collections::BTreeMap;
 
@@ -687,6 +690,7 @@ fn build_activity_window(
         input: i64,
         output: i64,
         messages: i64,
+        has_incomplete_tokens: bool,
     }
 
     let mut by_day: BTreeMap<String, Day> = BTreeMap::new();
@@ -694,11 +698,12 @@ fn build_activity_window(
     for (day, n) in session_rows {
         by_day.entry(day.clone()).or_default().sessions += n;
     }
-    for (day, tokens, input, output) in token_rows {
+    for (day, tokens, input, output, tokens_complete) in token_rows {
         let d = by_day.entry(day.clone()).or_default();
         d.tokens += tokens;
         d.input += input;
         d.output += output;
+        d.has_incomplete_tokens |= !tokens_complete;
     }
     for (day, n) in message_rows {
         by_day.entry(day.clone()).or_default().messages += n;
@@ -741,6 +746,7 @@ fn build_activity_window(
                 date: date.clone(),
                 sessions: d.sessions,
                 tokens: d.tokens,
+                tokens_complete: !d.has_incomplete_tokens,
                 input_tokens: d.input,
                 output_tokens: d.output,
                 messages: d.messages,
@@ -756,7 +762,7 @@ fn build_activity_window(
         end,
         max_sessions,
         max_tokens,
-        tokens_complete,
+        tokens_complete: token_rows.iter().all(|row| row.4),
         current_streak,
         longest_streak,
         days,
@@ -956,7 +962,7 @@ impl<'a> SessionUpdateBuilder<'a> {
     }
 
     /// Record (or clear) the durable `msg_uid` of the parent message this
-    /// session was branched at (BR-45 fork point).
+    /// session was branched at (BR-45 divergence point).
     pub fn branch_point_msg_uid(mut self, branch_point_msg_uid: Option<String>) -> Self {
         self.branch_point_msg_uid = Some(branch_point_msg_uid);
         self
@@ -1220,6 +1226,19 @@ impl SessionManager {
         self.storage.copy_session(self, session_id, new_name).await
     }
 
+    /// Diverge before an edited user message, using the standard divergence
+    /// naming and lineage rules while preserving the edit flow's truncation
+    /// semantics.
+    pub async fn diverge_session_for_edit(
+        &self,
+        session_id: &str,
+        timestamp: i64,
+    ) -> Result<Session> {
+        self.storage
+            .diverge_session_for_edit(self, session_id, timestamp)
+            .await
+    }
+
     /// Diverge (branch) a session: copy the full conversation into a fresh
     /// session that records its lineage (`diverged_from`) and gets a
     /// human-friendly, collision-free branch name.
@@ -1252,7 +1271,7 @@ impl SessionManager {
             .await
     }
 
-    /// Diverge anchored by a durable message id (`anchor_uid`), the BR-45 fork
+    /// Diverge anchored by a durable message id (`anchor_uid`), the BR-45 divergence
     /// point. Preferred over the timestamp anchor: it is unambiguous when two
     /// messages share a whole second, and it records `branch_point_msg_uid` on
     /// the child. `anchor_ms` is kept as a back-compatible fallback for clients
@@ -2337,7 +2356,7 @@ impl SessionStorage {
             }
             14 => {
                 // BR-45: stable, durable per-message ids plus an exact branch
-                // fork-point. Shape guards make this safe when an experimental
+                // divergence point. Shape guards make this safe when an experimental
                 // v12 database already applied the same feature.
                 Self::ensure_message_identity_schema(pool).await?;
             }
@@ -3644,12 +3663,13 @@ impl SessionStorage {
         .fetch_all(pool)
         .await?;
 
-        let token_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        let token_rows = sqlx::query_as::<_, (String, i64, i64, i64, bool)>(
             r#"
             SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
                    COALESCE(SUM(te.billed_total_tokens), 0) AS tokens,
                    COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
-                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                   COUNT(te.billed_total_tokens) = COUNT(*) AS tokens_complete
             FROM token_events te
             WHERE te.session_type IN ('user', 'scheduled')
               AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
@@ -3658,17 +3678,6 @@ impl SessionStorage {
         )
         .bind(&window)
         .fetch_all(pool)
-        .await?;
-        let tokens_complete = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT COUNT(te.billed_total_tokens) = COUNT(*)
-            FROM token_events te
-            WHERE te.session_type IN ('user', 'scheduled')
-              AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
-            "#,
-        )
-        .bind(&window)
-        .fetch_one(pool)
         .await?;
 
         // `messages.created_timestamp` is unix SECONDS (Message::new uses
@@ -3700,7 +3709,6 @@ impl SessionStorage {
             &session_rows,
             &token_rows,
             &message_rows,
-            tokens_complete,
         ))
     }
 
@@ -3784,6 +3792,39 @@ impl SessionStorage {
         self.get_session(&new_session.id, true).await
     }
 
+    async fn diverge_session_for_edit(
+        &self,
+        session_manager: &SessionManager,
+        session_id: &str,
+        timestamp: i64,
+    ) -> Result<Session> {
+        let original = self.get_session(session_id, true).await?;
+        let new_name = self.compute_branch_name(&original).await?;
+        let branch_point = original.conversation.as_ref().and_then(|conversation| {
+            conversation
+                .messages()
+                .iter()
+                .rfind(|message| message.created < timestamp)
+                .and_then(|message| message.id.clone())
+        });
+
+        let new_session = self
+            .copy_session(session_manager, session_id, new_name.clone())
+            .await?;
+
+        session_manager
+            .update(&new_session.id)
+            .user_provided_name(new_name)
+            .diverged_from(Some(session_id.to_string()))
+            .branch_point_msg_uid(branch_point)
+            .apply()
+            .await?;
+
+        self.truncate_conversation(&new_session.id, timestamp)
+            .await?;
+        self.get_session(&new_session.id, true).await
+    }
+
     async fn diverge_session(
         &self,
         session_manager: &SessionManager,
@@ -3805,14 +3846,14 @@ impl SessionStorage {
         // the last complete assistant answer (so a mid-generation diverge never
         // carries over an unanswered question or a dangling tool call). The
         // durable message id (`anchor_uid`) is preferred over the timestamp so a
-        // fork at one of two same-second messages does not over-truncate.
+        // divergence at one of two same-second messages does not over-truncate.
         let branch_conversation = original
             .conversation
             .as_ref()
             .map(|c| trim_to_last_complete_answer_at(c, anchor_uid.as_deref(), anchor_ms))
             .unwrap_or_default();
 
-        // Record the fork point: the explicit anchor id when supplied, else the
+        // Record the divergence point: the explicit anchor id when supplied, else the
         // id of the last message actually carried into the branch.
         let branch_point = anchor_uid.clone().or_else(|| {
             branch_conversation
@@ -3839,7 +3880,7 @@ impl SessionStorage {
             .workflow(original.workflow)
             .user_workflow_values(original.user_workflow_values)
             // Lock the computed/custom name (so the auto-namer never clobbers
-            // the branch marker) and record the lineage pointer + fork point.
+            // the branch marker) and record the lineage pointer + divergence point.
             .user_provided_name(new_name)
             .diverged_from(Some(session_id.to_string()))
             .branch_point_msg_uid(branch_point)
@@ -4935,7 +4976,7 @@ mod tests {
 
     // ── Diverge (copy_session) tests ────────────────────────────────────────
     //
-    // `copy_session` is the engine behind both the edit-fork path and the
+    // `copy_session` is the engine behind both the edit-diverge path and the
     // `/diverge` feature (Diverge button + `/diverge` slash command). Diverge
     // copies the *entire* conversation with no truncation, so the new session
     // resumes from exactly where the original left off while the original stays
@@ -5200,6 +5241,8 @@ mod tests {
         assert_eq!(insights.tokens_last_7_days, None);
         let activity = sm.get_activity(7).await.unwrap();
         assert!(!activity.tokens_complete);
+        assert_eq!(activity.days[0].tokens, 0);
+        assert!(!activity.days[0].tokens_complete);
     }
 
     #[tokio::test]
@@ -5344,6 +5387,7 @@ mod tests {
         let activity = sm.get_activity(30).await.unwrap();
         assert_eq!(activity.days.len(), 1);
         assert_eq!(activity.days[0].tokens, 100);
+        assert!(activity.days[0].tokens_complete);
         assert_eq!(activity.days[0].sessions, 1);
         assert!(activity.days[0].level >= 1);
         assert_eq!(activity.current_streak, 1);
@@ -6989,6 +7033,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_edit_diverge_uses_branch_naming_lineage_and_prefix() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let original = sm
+            .create_session(
+                PathBuf::from("/tmp/edit_diverge"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        sm.update(&original.id)
+            .user_provided_name("Weather analysis")
+            .apply()
+            .await
+            .unwrap();
+        for message in [
+            umsg(10, "first question"),
+            amsg(11, "first answer"),
+            umsg(20, "message to edit"),
+            amsg(21, "answer to replace"),
+        ] {
+            sm.add_message(&original.id, &message).await.unwrap();
+        }
+
+        let loaded = sm.get_session(&original.id, true).await.unwrap();
+        let expected_branch_point = loaded.conversation.as_ref().unwrap().messages()[1]
+            .id
+            .clone();
+
+        let first = sm.diverge_session_for_edit(&original.id, 20).await.unwrap();
+        let second = sm.diverge_session_for_edit(&original.id, 20).await.unwrap();
+
+        assert_eq!(first.name, "Weather analysis (branch 1)");
+        assert_eq!(second.name, "Weather analysis (branch 2)");
+        assert!(first.user_set_name);
+        assert_eq!(first.diverged_from.as_deref(), Some(original.id.as_str()));
+        assert_eq!(first.branch_point_msg_uid, expected_branch_point);
+        assert_eq!(first.message_count, 2);
+        assert_eq!(
+            first
+                .conversation
+                .as_ref()
+                .unwrap()
+                .messages()
+                .iter()
+                .map(Message::as_concat_text)
+                .collect::<Vec<_>>(),
+            vec!["first question", "first answer"]
+        );
+        assert_eq!(
+            sm.get_session(&original.id, true)
+                .await
+                .unwrap()
+                .message_count,
+            4
+        );
+    }
+
+    #[tokio::test]
     async fn test_diverge_of_a_branch_flattens_numbering() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
@@ -7204,7 +7309,7 @@ mod tests {
         assert_eq!(last, "answer 0");
     }
 
-    // ── BR-45: stable per-message ids + branch fork point ───────────────────
+    // ── BR-45: stable per-message ids + branch divergence point ──────────────
 
     /// Ids survive the exact operation that used to renumber them — a full
     /// history rewrite (compaction/edit). Every kept message keeps its id; only
@@ -7289,7 +7394,7 @@ mod tests {
 
     /// Two messages sharing a whole-second `created` used to collapse to one
     /// anchor, so a diverge at the first silently carried the second over. The
-    /// durable-id anchor keeps only the strict prefix and records the fork point
+    /// durable-id anchor keeps only the strict prefix and records the divergence point
     /// (BR-45, item 3).
     #[tokio::test]
     async fn diverge_by_uid_beats_same_second_collision() {
@@ -7340,7 +7445,7 @@ mod tests {
             .map(|m| m.as_concat_text())
             .collect();
         assert_eq!(uid_texts, vec!["q1".to_string(), "a1".to_string()]);
-        // The fork point is recorded on the child branch.
+        // The divergence point is recorded on the child branch.
         assert_eq!(
             by_uid.branch_point_msg_uid.as_deref(),
             Some(a1_uid.as_str())
@@ -7356,7 +7461,7 @@ mod tests {
     }
 
     /// Migration 14 backfills `msg_uid` deterministically from the durable
-    /// rowid (`m` || id) and adds the branch fork-point column.
+    /// rowid (`m` || id) and adds the branch divergence-point column.
     #[tokio::test]
     async fn migration_14_backfills_msg_uid_from_rowid() {
         let temp_dir = TempDir::new().unwrap();
@@ -7406,7 +7511,7 @@ mod tests {
         assert_eq!(uids[0].1.as_deref(), Some("m1"));
         assert_eq!(uids[1].1.as_deref(), Some("m2"));
 
-        // The branch fork-point column now exists and defaults to NULL.
+        // The branch divergence-point column now exists and defaults to NULL.
         let bp: Vec<(Option<String>,)> =
             sqlx::query_as("SELECT branch_point_msg_uid FROM sessions")
                 .fetch_all(&pool)
@@ -7676,13 +7781,13 @@ mod activity_tests {
         // 12 ordinary days spanning 20k..150k tokens ...
         for i in 1..=12u32 {
             sessions.push((day(i), 1 + i64::from(i % 3)));
-            tokens.push((day(i), 20_000 + i64::from(i) * 11_000, 0, 0));
+            tokens.push((day(i), 20_000 + i64::from(i) * 11_000, 0, 0, true));
         }
         // ... and one 1.8M-token outlier.
         sessions.push((day(13), 6));
-        tokens.push((day(13), 1_800_000, 0, 0));
+        tokens.push((day(13), 1_800_000, 0, 0, true));
 
-        let w = build_activity_window(day(1), day(13), &sessions, &tokens, &[], true);
+        let w = build_activity_window(day(1), day(13), &sessions, &tokens, &[]);
 
         assert_eq!(w.days.len(), 13);
         let outlier = w.days.iter().find(|d| d.date == day(13)).unwrap();
@@ -7704,7 +7809,7 @@ mod activity_tests {
     #[test]
     fn idle_days_are_omitted_entirely() {
         let sessions = vec![(day(1), 1)];
-        let w = build_activity_window(day(1), day(5), &sessions, &[], &[], true);
+        let w = build_activity_window(day(1), day(5), &sessions, &[], &[]);
         assert_eq!(w.days.len(), 1);
         assert_eq!(w.days[0].date, day(1));
     }
@@ -7714,7 +7819,7 @@ mod activity_tests {
     #[test]
     fn messages_alone_do_not_create_an_active_day() {
         let messages = vec![(day(2), 40)];
-        let w = build_activity_window(day(1), day(3), &[], &[], &messages, true);
+        let w = build_activity_window(day(1), day(3), &[], &[], &messages);
         assert!(w.days.is_empty());
     }
 
@@ -7734,7 +7839,7 @@ mod activity_tests {
         // active: 1,2,3   idle: 4   active: 6,7  (5 idle)
         let sessions: Vec<(String, i64)> =
             [1u32, 2, 3, 6, 7].iter().map(|i| (day(*i), 1)).collect();
-        let w = build_activity_window(day(1), day(7), &sessions, &[], &[], true);
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
         assert_eq!(w.longest_streak, 3);
         assert_eq!(w.current_streak, 2, "6th and 7th");
     }
@@ -7743,18 +7848,29 @@ mod activity_tests {
     #[test]
     fn current_streak_tolerates_an_inactive_today() {
         let sessions: Vec<(String, i64)> = [4u32, 5, 6].iter().map(|i| (day(*i), 1)).collect();
-        let w = build_activity_window(day(1), day(7), &sessions, &[], &[], true);
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
         assert_eq!(w.current_streak, 3);
     }
 
     #[test]
     fn max_sessions_and_tokens_reported() {
         let sessions = vec![(day(1), 2), (day(2), 5)];
-        let tokens = vec![(day(1), 900, 400, 500), (day(2), 100, 60, 40)];
-        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[], true);
+        let tokens = vec![(day(1), 900, 400, 500, true), (day(2), 100, 60, 40, true)];
+        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[]);
         assert_eq!(w.max_sessions, 5);
         assert_eq!(w.max_tokens, 900);
         let d1 = &w.days[0];
         assert_eq!((d1.input_tokens, d1.output_tokens), (400, 500));
+    }
+
+    #[test]
+    fn token_completeness_is_preserved_per_day() {
+        let sessions = vec![(day(1), 1), (day(2), 1)];
+        let tokens = vec![(day(1), 0, 0, 0, false), (day(2), 500, 400, 100, true)];
+        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[]);
+
+        assert!(!w.tokens_complete);
+        assert!(!w.days[0].tokens_complete);
+        assert!(w.days[1].tokens_complete);
     }
 }

@@ -44,6 +44,7 @@ interface ProgressiveMessageListProps {
     userData: Record<string, unknown>
   ) => Promise<void>;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 export default function ProgressiveMessageList({
@@ -61,6 +62,7 @@ export default function ProgressiveMessageList({
   onRenderingComplete,
   submitElicitationResponse,
   onOpenArtifact,
+  workingDir,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -234,6 +236,7 @@ export default function ProgressiveMessageList({
                 }
                 submitElicitationResponse={submitElicitationResponse}
                 onOpenArtifact={onOpenArtifact}
+                workingDir={workingDir}
               />
             )}
           </div>
@@ -253,6 +256,7 @@ export default function ProgressiveMessageList({
     toolCallChains,
     submitElicitationResponse,
     onOpenArtifact,
+    workingDir,
   ]);
 
   return (

@@ -47,7 +47,9 @@ describe('BottomMenuSkillSelection', () => {
 
   it('applies rapid hub choices immediately and leaves the final choice enabled', async () => {
     render(<BottomMenuSkillSelection sessionId={null} />);
-    fireEvent.pointerDown(screen.getByTitle('manage skills'), { button: 0, ctrlKey: false });
+    const trigger = screen.getByLabelText(/Manage skills/);
+    expect(trigger).not.toHaveAttribute('title');
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
     const toggle = await screen.findByRole('menuitemcheckbox');
     expect(toggle).toHaveAttribute('aria-checked', 'true');
@@ -69,7 +71,10 @@ describe('BottomMenuSkillSelection', () => {
       return true;
     });
     render(<BottomMenuSkillSelection sessionId={null} />);
-    fireEvent.pointerDown(screen.getByTitle('manage skills'), { button: 0, ctrlKey: false });
+    fireEvent.pointerDown(screen.getByLabelText(/Manage skills/), {
+      button: 0,
+      ctrlKey: false,
+    });
 
     const toggle = await screen.findByRole('menuitemcheckbox');
     restoreFromDisk = true;

@@ -157,7 +157,7 @@ export default function SessionSharingSection() {
           <CardTitle>Session Sharing</CardTitle>
           <CardDescription>
             {(envBaseUrlShare as string)
-              ? 'Session sharing is configured but fully opt-in — your sessions are only shared when you explicitly click the share button.'
+              ? 'Session sharing is configured but fully opt-in. Sessions are shared only when you click the share button.'
               : 'You can enable session sharing to share your sessions with others.'}
           </CardDescription>
         </CardHeader>
