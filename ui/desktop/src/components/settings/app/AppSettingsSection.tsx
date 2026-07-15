@@ -5,6 +5,7 @@ import { Settings } from '../../icons/app-icons';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../ui/dialog';
 import UpdateSection from './UpdateSection';
 import UsageSection from '../usage/UsageSection';
+import ResetPanel from './ResetPanel';
 
 import { COST_TRACKING_ENABLED, UPDATES_ENABLED } from '../../../updates';
 import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
@@ -25,6 +26,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [showPricing, setShowPricing] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [usageVersion, setUsageVersion] = useState(0);
   const updateSectionRef = useRef<HTMLDivElement>(null);
 
   const shouldShowUpdates = !window.appConfig.get('BIOROUTER_VERSION');
@@ -241,7 +243,13 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       </div>
 
       {/* Usage — accumulated (billed) tokens + cost, month-to-date vs budget */}
-      {COST_TRACKING_ENABLED && showPricing && <UsageSection />}
+      {COST_TRACKING_ENABLED && showPricing && <UsageSection key={usageVersion} />}
+
+      <ResetPanel
+        onReset={(categories) => {
+          if (categories.includes('history')) setUsageVersion((version) => version + 1);
+        }}
+      />
 
       {/* Help & Feedback */}
       <div className="biorouter-settings-section">

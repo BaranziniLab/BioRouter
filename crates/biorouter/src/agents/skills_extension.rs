@@ -38,6 +38,52 @@ pub(crate) fn install_builtin_skills() {
     SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
 }
 
+fn is_builtin_skill_name(name: &str) -> bool {
+    BUILTIN_SKILLS
+        .iter()
+        .any(|(builtin_name, _)| *builtin_name == name)
+        || name == crate::knowledge::soul::SOUL_SKILL_DIR
+}
+
+pub fn count_user_skills() -> usize {
+    let skills_dir = Paths::config_dir().join("skills");
+    std::fs::read_dir(skills_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !is_builtin_skill_name(&entry.file_name().to_string_lossy()))
+        .count()
+}
+
+pub fn reset_to_builtin_skills() -> Result<usize> {
+    let config_dir = Paths::config_dir();
+    let skills_dir = config_dir.join("skills");
+    let removed = count_user_skills();
+
+    if skills_dir.exists() {
+        std::fs::remove_dir_all(&skills_dir)?;
+    }
+    let skills_config = config_dir.join("skills-config.json");
+    if skills_config.exists() {
+        std::fs::remove_file(skills_config)?;
+    }
+
+    SkillsClient::ensure_builtin_skills(&skills_dir);
+    let soul_skill_dir = skills_dir.join(crate::knowledge::soul::SOUL_SKILL_DIR);
+    std::fs::create_dir_all(&soul_skill_dir)?;
+    std::fs::write(
+        soul_skill_dir.join("SKILL.md"),
+        crate::knowledge::soul::SOUL_SKILL_MD,
+    )?;
+
+    for (name, _) in BUILTIN_SKILLS {
+        if !skills_dir.join(name).join("SKILL.md").is_file() {
+            anyhow::bail!("failed to restore built-in skill '{name}'");
+        }
+    }
+    Ok(removed)
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct LoadSkillParams {
     name: String,
