@@ -1,0 +1,56 @@
+name: Release artifact smoke
+run-name: Release artifact smoke v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runtime:
+    runs-on: windows-latest
+    steps:
+      - name: Download Windows artifact from draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY `
+            --pattern "BioRouter-win32-x64-$env:VERSION.zip" --dir artifact
+          Expand-Archive "artifact/BioRouter-win32-x64-$env:VERSION.zip" artifact/unpacked
+
+      - name: Run packaged CLI, daemon, and desktop
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: |
+          $app = Resolve-Path "artifact/unpacked/BioRouter-win32-x64"
+          $cli = Join-Path $app "resources/bin/biorouter.exe"
+          $daemon = Join-Path $app "resources/bin/biorouterd.exe"
+          $desktop = Join-Path $app "BioRouter.exe"
+
+          $cliVersion = & $cli --version
+          if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {
+            throw "Packaged CLI did not report $env:VERSION"
+          }
+          $daemonVersion = & $daemon --version
+          if ($LASTEXITCODE -ne 0 -or $daemonVersion -notmatch [regex]::Escape($env:VERSION)) {
+            throw "Packaged daemon did not report $env:VERSION"
+          }
+          & $cli term --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged terminal help failed" }
+
+          $process = Start-Process $desktop -PassThru
+          Start-Sleep -Seconds 15
+          if ($process.HasExited) { throw "Packaged desktop exited during startup" }
+          Stop-Process -Id $process.Id -Force
+          Write-Host "Windows packaged runtime smoke passed for v$env:VERSION"

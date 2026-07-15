@@ -360,7 +360,7 @@
       <!-- PROVIDERS -->
       <div class="doc-page" id="doc-providers">
         <h1>Providers and models</h1>
-        <p class="doc-intro">BioRouter connects to a range of LLM providers. Switch providers any time from Settings → Models without changing your workflows. Defaults below reflect <code>biorouter v1.87.0</code>.</p>
+        <p class="doc-intro">BioRouter connects to a range of LLM providers. Switch providers any time from Settings → Models without changing your workflows. Defaults below reflect <code>biorouter v1.88.0</code>.</p>
 
         <h2>UCSF institutional providers</h2>
         <table class="doc-table">
@@ -377,7 +377,7 @@
           <thead><tr><th>Provider</th><th>Env variable</th><th>Default model</th><th>Get API key</th></tr></thead>
           <tbody>
             <tr><td><strong>Anthropic</strong></td><td><code>ANTHROPIC_API_KEY</code></td><td><code>claude-opus-4-8</code></td><td><a href="https://platform.claude.com/" target="_blank">platform.claude.com</a></td></tr>
-            <tr><td><strong>OpenAI</strong></td><td><code>OPENAI_API_KEY</code></td><td><code>gpt-5.5</code></td><td><a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a></td></tr>
+            <tr><td><strong>OpenAI</strong></td><td><code>OPENAI_API_KEY</code></td><td><code>gpt-5.6</code></td><td><a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a></td></tr>
             <tr><td><strong>Azure OpenAI</strong> (own tenant)</td><td><code>AZURE_OPENAI_API_KEY</code></td><td><code>gpt-5.4-2026-03-05</code></td><td>Your Azure portal</td></tr>
             <tr><td><strong>Google Gemini</strong></td><td><code>GOOGLE_API_KEY</code></td><td><code>gemini-3.1-pro-preview</code></td><td><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></td></tr>
             <tr><td><strong>X.AI (Grok)</strong></td><td><code>XAI_API_KEY</code></td><td><code>grok-4.3</code></td><td><a href="https://console.x.ai" target="_blank">console.x.ai</a></td></tr>
@@ -407,7 +407,7 @@
         <h3>Llama Server (bundled, recommended)</h3>
         <p>The desktop app ships a pinned <strong><a href="https://github.com/ggml-org/llama.cpp" target="_blank">llama.cpp</a> <code>llama-server</code></strong> binary and manages it as a sidecar process — so you can run capable local models <strong>without installing Ollama or anything else</strong>. Pick <strong>Llama Server</strong> in onboarding or Settings → Models, choose a model, and BioRouter downloads the weights from Hugging Face on first use and starts the server for you.</p>
         <ul>
-          <li><strong>Curated catalog</strong> of Qwen 3.5 and Gemma 4 models (Q4_K_M from verified <code>unsloth/*-GGUF</code> repos); default <code>qwen3.5-4b</code>. Any other model works too as a raw <code>owner/repo:QUANT</code> Hugging Face spec.</li>
+          <li><strong>Curated catalog</strong> of <strong>Gemma 4 E2B</strong>, <strong>Gemma 4 E4B</strong>, <strong>Gemma 4 12B</strong>, <strong>Gemma 4 26B</strong>, and <strong>Gemma 4 31B</strong>, plus <strong>Qwen3.6 27B</strong> and <strong>Qwen3.6 35B</strong>. BioRouter recommends Gemma 4 E4B on laptop-class machines and Qwen3.6 35B when at least 64 GiB of GPU-addressable memory is available. Any other model works as a raw <code>owner/repo:QUANT</code> Hugging Face spec.</li>
           <li><strong>Reasoning on by default</strong>, a model-native context window, and a q8_0 KV cache. Per-platform builds use Metal (macOS), Vulkan with CPU fallback (Windows), and CPU (Linux); CUDA is opt-in.</li>
           <li>Override anything with env vars — <code>LLAMACPP_CONTEXT_SIZE</code>, <code>LLAMACPP_ENABLE_THINKING</code>, <code>LLAMACPP_EXTRA_ARGS</code>, or point at your own server with <code>LLAMACPP_EXTERNAL_HOST</code>.</li>
         </ul>
@@ -426,7 +426,7 @@ ollama pull deepseek-r1     # Strong reasoning model</pre>
       <!-- EXTENSIONS -->
       <div class="doc-page" id="doc-extensions">
         <h1>Extensions, skills, and MCP</h1>
-        <p class="doc-intro">Extend BioRouter with built-in capabilities, third-party MCP servers, and reusable skill bundles. Defaults reflect <code>biorouter v1.87.0</code> (<code>ui/desktop/src/components/settings/extensions/bundled-extensions.json</code>).</p>
+        <p class="doc-intro">Extend BioRouter with built-in capabilities, third-party MCP servers, and reusable skill bundles. Defaults reflect <code>biorouter v1.88.0</code> (<code>ui/desktop/src/components/settings/extensions/bundled-extensions.json</code>).</p>
 
         <h2>Built-in extensions</h2>
         <p>Ship with BioRouter, no install needed. Enable or disable any of them from <strong>Settings → Extensions</strong>.</p>
@@ -435,10 +435,10 @@ ollama pull deepseek-r1     # Strong reasoning model</pre>
           <tbody>
             <tr><td><strong>Developer</strong></td><td>File operations, shell commands, code search, and text editing — the core agent toolkit</td><td><strong>On</strong></td></tr>
             <tr><td><strong>Knowledge</strong></td><td>Ingest / query / lint your personal knowledge bases (incl. the built-in <a href="#" onclick="showDoc('knowledge')">Soul</a> base) from within any chat</td><td><strong>On</strong></td></tr>
-            <tr><td>Auto Visualiser</td><td>Turns structured data into self-contained interactive HTML figures (33 chart, scientific, network, diagram, and geo tools) rendered inline in chat</td><td>Off</td></tr>
+            <tr><td>Auto Visualiser</td><td>Turns structured data into self-contained interactive HTML figures (33 chart, scientific, network, diagram, and geo tools) rendered inline in chat</td><td><strong>On</strong></td></tr>
             <tr><td><strong>Computer Controller</strong></td><td>General computer-control tools for non-developer workflows (web, automation, files)</td><td><strong>On</strong></td></tr>
             <tr><td><strong>Memory</strong></td><td>Persist preferences and context across sessions</td><td><strong>On</strong></td></tr>
-            <tr><td>Agent Drafter</td><td>Author BioRouter apps with the <a href="#" onclick="showDoc('agent-sdk')">Agent SDK</a>: TypeScript UIs, live per-app agents, widgets, resumable sessions, capability manifests, and standalone exports</td><td>Off</td></tr>
+            <tr><td>Agent Drafter</td><td>Author BioRouter apps with the <a href="#" onclick="showDoc('agent-sdk')">Agent SDK</a>: TypeScript UIs, live per-app agents, widgets, resumable sessions, capability manifests, and standalone exports</td><td><strong>On</strong></td></tr>
             <tr><td>Tutorial</td><td>Interactive in-app tutorials and guides</td><td>Off</td></tr>
           </tbody>
         </table>

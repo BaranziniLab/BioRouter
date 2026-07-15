@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const BIOROUTER = resolve(process.env.BIOROUTER_REPO || join(ROOT, '..', 'BioRouter'));
+const BIOROUTER = resolve(process.env.BIOROUTER_REPO || join(ROOT, '..'));
 
 const read = (path) => readFileSync(path, 'utf8');
 const landing = (path) => read(join(ROOT, path));
@@ -47,16 +47,25 @@ const providerChecks = [
   ['crates/biorouter/src/providers/google.rs', /GOOGLE_DEFAULT_MODEL: &str = "([^"]+)"/, 'Google Gemini'],
   ['crates/biorouter/src/providers/xai.rs', /XAI_DEFAULT_MODEL: &str = "([^"]+)"/, 'X.AI'],
   ['crates/biorouter/src/providers/openrouter.rs', /OPENROUTER_DEFAULT_MODEL: &str = "([^"]+)"/, 'OpenRouter'],
-  ['crates/biorouter/src/providers/llamacpp.rs', /LLAMACPP_DEFAULT_MODEL: &str = "([^"]+)"/, 'Llama Server'],
   ['crates/biorouter/src/providers/ollama.rs', /OLLAMA_DEFAULT_MODEL: &str = "([^"]+)"/, 'Ollama'],
 ];
 
 for (const [path, re, name] of providerChecks) {
   const value = capture(source(path), re, name);
   includes(docs, value, `docs should include ${name} default ${value}`);
-  if (['OpenAI', 'Llama Server', 'Ollama', 'Versa Bedrock'].includes(name)) {
+  if (['OpenAI', 'Ollama', 'Versa Bedrock'].includes(name)) {
     includes(mockups, value, `mockups should include ${name} default ${value}`);
   }
+}
+
+const llamaSource = source('crates/biorouter/src/providers/llamacpp.rs');
+const llamaModels = [...llamaSource.matchAll(/display_name: "([^"]+)"/g)].map((match) => match[1]);
+check(llamaModels.length > 0, 'Llama Server catalog should contain display names');
+for (const model of llamaModels) {
+  includes(docs, model, `docs should include Llama Server model ${model}`);
+}
+for (const recommended of ['Gemma 4 E4B', 'Qwen3.6 35B']) {
+  includes(mockups, recommended, `mockups should include memory-tiered Llama Server recommendation ${recommended}`);
 }
 
 const appSidebar = source('ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx');

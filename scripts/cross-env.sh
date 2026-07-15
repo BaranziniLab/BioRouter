@@ -29,8 +29,9 @@
 #   CROSS_REGISTRY_MOUNT            host path bound to the cargo registry cache
 #                                   instead of the docker named volume (CI:
 #                                   actions/cache persists it across runs)
-#   CROSS_TARGET_MOUNT              host path bound to /cross-target (pass
-#                                   /cross-target as the target-dir arg to use it)
+#   CROSS_TARGET_MOUNT              host path or Docker volume bound to
+#                                   /cross-target (pass /cross-target as the
+#                                   target-dir arg to use it)
 
 # ── The pins. THE GLIBC FLOOR LIVES HERE AND NOWHERE ELSE. ────────────────────
 # Pin the Linux cross-compile to an OLD-glibc base (Debian 11 "bullseye",
