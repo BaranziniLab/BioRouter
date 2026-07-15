@@ -39,22 +39,19 @@ directly. Sessions are persisted under `~/.config/biorouter/sessions/`.
 
 ## The major pillars
 
-### Extensions
+### Capabilities and extensions
 
-Extensions are MCP servers that give the agent tools. Types: `builtin`
-(compiled in), `stdio` (external process), `streamable_http` (remote),
-`inline_python`, and platform extensions (in-process).
+Capabilities are the tools compiled into Biorouter. **Developer**, **Computer
+Controller**, **Auto Visualiser**, **Code Execution**, **Extension Manager**,
+**Skills**, **Todo**, **Memory**, **Knowledge**, and **Agent Drafter** are enabled
+by default. **Chat Recall** and **Tutorial** are disabled by default.
+Manage them in **Settings → Chat → Capabilities**.
 
-- Built-in extensions: **Developer** (shell + file editing; enabled by
-  default), **Computer Controller** (OS automation), **Memory** (persistent
-  user memories), **Auto Visualiser** (charts/diagrams), **Tutorial**
-  (interactive learning), **Knowledge** (personal knowledge bases).
-- Platform extensions: Todo, Skills, Extension Manager, Chat Recall, Code
-  Execution.
-- Manage from the **Extensions** page in the desktop sidebar, via
-  `biorouter configure` in the CLI, ad-hoc with
-  `biorouter session --with-extension <cmd>`, or in
-  `~/.config/biorouter/config.yaml` under the `extensions:` key.
+User-installed extensions are MCP servers added through `stdio` (external
+process), `streamable_http` (remote), or `inline_python`. Manage them from the
+**Extensions** page in the desktop sidebar, via `biorouter configure`, ad-hoc with
+`biorouter session --with-extension <cmd>`, or in
+`~/.config/biorouter/config.yaml` under the `extensions:` key.
 - Third-party extensions are browsable at <http://biorouter.ucsf.edu/baam>.
 
 ### Skills

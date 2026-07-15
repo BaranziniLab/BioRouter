@@ -1,42 +1,51 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
-import { ChevronRight } from '../../icons/app-icons';
+import { ChevronRight, SlidersHorizontal } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
+import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
+import { nameToKey } from '../extensions/utils';
 
-function RuleItem({ title, description }: { title: string; description: string }) {
+export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
+  return extensions
+    .filter((extension) => extension.enabled && nameToKey(extension.name) !== 'platform')
+    .sort((a, b) => getFriendlyTitle(a).localeCompare(getFriendlyTitle(b)));
+}
+
+function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-
-  const handleModalClose = () => {
-    setIsModalOpen(false);
-  };
+  const title = getFriendlyTitle(extension);
+  const description = 'description' in extension ? extension.description || '' : '';
 
   return (
     <>
       <Button
-        className="biorouter-modal-row flex items-center text-left gap-2 w-full justify-between rounded-xl bg-background-muted/60 hover:!border-border-default hover:bg-background-default"
+        className="biorouter-settings-row h-auto min-h-14 w-full justify-between gap-4 px-3 py-3 text-left whitespace-normal"
         onClick={() => setIsModalOpen(true)}
-        variant="secondary"
+        variant="ghost"
         size="lg"
       >
-        <div>
-          <h3 className="font-semibold text-text-default">{title}</h3>
-          <p className="text-xs text-text-muted mt-1">{description}</p>
-        </div>
-        <ChevronRight className="w-4 h-4 text-iconStandard" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-text-default break-words [overflow-wrap:anywhere]">
+            {title}
+          </span>
+          {description && (
+            <span className="mt-0.5 block text-xs font-normal leading-5 text-text-muted break-words [overflow-wrap:anywhere]">
+              {description}
+            </span>
+          )}
+        </span>
+        <ChevronRight className="h-4 w-4 flex-shrink-0 text-iconStandard" />
       </Button>
-      {isModalOpen && <PermissionModal onClose={handleModalClose} extensionName={title} />}
+      {isModalOpen && (
+        <PermissionModal
+          onClose={() => setIsModalOpen(false)}
+          extensionName={extension.name}
+          extensionLabel={title}
+        />
+      )}
     </>
-  );
-}
-
-function RulesSection({ title, rules }: { title: string; rules: React.ReactNode }) {
-  return (
-    <div className="space-y-4">
-      <h2 className="text-base font-semibold text-text-default">{title}</h2>
-      {rules}
-    </div>
   );
 }
 
@@ -47,94 +56,78 @@ interface PermissionRulesModalProps {
 
 export default function PermissionRulesModal({ isOpen, onClose }: PermissionRulesModalProps) {
   const { getExtensions } = useConfig();
+  const getExtensionsRef = useRef(getExtensions);
   const [extensions, setExtensions] = useState<FixedExtensionEntry[]>([]);
-
-  const fetchExtensions = useCallback(async () => {
-    const extensionsList = await getExtensions(true); // Force refresh
-    // Filter out disabled extensions
-    const enabledExtensions = extensionsList.filter((extension) => extension.enabled);
-    enabledExtensions.push({
-      name: 'platform',
-      type: 'builtin',
-      description: 'platform',
-      enabled: true,
-    });
-    // Sort extensions by name to maintain consistent order
-    const sortedExtensions = [...enabledExtensions].sort((a, b) => {
-      // First sort by builtin
-      if (a.type === 'builtin' && b.type !== 'builtin') return -1;
-      if (a.type !== 'builtin' && b.type === 'builtin') return 1;
-
-      // Then sort by bundled (handle null/undefined cases)
-      const aBundled = 'bundled' in a && a.bundled === true;
-      const bBundled = 'bundled' in b && b.bundled === true;
-      if (aBundled && !bBundled) return -1;
-      if (!aBundled && bBundled) return 1;
-
-      // Finally sort alphabetically within each group
-      return a.name.localeCompare(b.name);
-    });
-    setExtensions(sortedExtensions);
-  }, [getExtensions]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
-    if (isOpen) {
-      fetchExtensions();
+    getExtensionsRef.current = getExtensions;
+  }, [getExtensions]);
+
+  const fetchExtensions = useCallback(async () => {
+    setStatus('loading');
+    try {
+      const extensionsList = await getExtensionsRef.current(true);
+      setExtensions(getConfigurableExtensions(extensionsList));
+      setStatus('ready');
+    } catch (error) {
+      console.error('Failed to load extensions for permission settings:', error);
+      setStatus('error');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) void fetchExtensions();
+  }, [fetchExtensions, isOpen]);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[800px] max-h-[80vh] p-0 flex flex-col overflow-hidden">
-        <DialogHeader className="px-8 pt-6 pb-4 flex-shrink-0">
-          <div className="flex items-center gap-4">
-            <div className="rounded-lg bg-background-inverse w-16 h-16 flex items-center justify-center">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                className="stroke-text-inverse fill-background-inverse"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4" />
-                <path d="m21 2-9.6 9.6" />
-                <circle cx="7.5" cy="15.5" r="5.5" />
-              </svg>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] p-0 flex flex-col overflow-hidden sm:max-w-[720px]">
+        <DialogHeader className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-5 sm:px-6">
+          <div className="flex min-w-0 items-start gap-3 pr-6">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-background-medium text-text-default">
+              <SlidersHorizontal className="h-5 w-5" />
             </div>
-            <div>
+            <div className="min-w-0 pt-0.5">
               <DialogTitle className="text-base font-semibold text-text-default">
-                Permission Rules
+                Tool permissions
               </DialogTitle>
-              <p className="text-text-muted">
-                Configure tool permissions for extensions to control how they interact with your
-                system.
+              <p className="mt-1 text-sm leading-5 text-text-muted break-words">
+                Choose how Manual and Smart modes handle tools from each enabled extension.
               </p>
             </div>
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto px-8 pb-8 min-h-0">
-          <div className="space-y-4">
-            {/* Extension Rules Section */}
-            <RulesSection
-              title="Extension rules"
-              rules={
-                <div className="space-y-2">
-                  {extensions.map((extension) => (
-                    <RuleItem
-                      key={extension.name}
-                      title={extension.name}
-                      description={'description' in extension ? extension.description || '' : ''}
-                    />
-                  ))}
-                </div>
-              }
-            />
-          </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+          {status === 'loading' && (
+            <div className="flex min-h-36 items-center justify-center text-sm text-text-muted">
+              Loading enabled extensions…
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="flex min-h-36 flex-col items-center justify-center gap-3 text-center">
+              <p className="text-sm text-text-muted">Enabled extensions could not be loaded.</p>
+              <Button variant="outline" size="sm" onClick={fetchExtensions}>
+                Try again
+              </Button>
+            </div>
+          )}
+
+          {status === 'ready' && extensions.length === 0 && (
+            <div className="flex min-h-36 items-center justify-center text-center text-sm text-text-muted">
+              No enabled extensions have configurable tool permissions.
+            </div>
+          )}
+
+          {status === 'ready' && extensions.length > 0 && (
+            <div className="biorouter-settings-list" aria-label="Enabled extension permissions">
+              {extensions.map((extension) => (
+                <RuleItem key={nameToKey(extension.name)} extension={extension} />
+              ))}
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

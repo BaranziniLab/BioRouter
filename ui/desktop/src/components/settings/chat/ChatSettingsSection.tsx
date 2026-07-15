@@ -42,9 +42,7 @@ export default function ChatSettingsSection() {
             Capabilities
           </h2>
           <p className="text-xs text-text-muted">
-            Foundational, built-in abilities that make Biorouter more powerful. These are on by
-            default — leave them enabled to get the most out of Biorouter, or turn one off here if
-            you really need to.
+            Built-in abilities are managed here. Most are enabled by default.
           </p>
         </div>
         <div className="biorouter-settings-list">

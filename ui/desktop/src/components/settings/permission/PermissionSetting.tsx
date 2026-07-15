@@ -5,30 +5,39 @@ import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
 import { ChevronRight } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
+import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
+import { getConfigurableExtensions } from './PermissionRulesModal';
 
-function RuleItem({ title, description }: { title: string; description: string }) {
+function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-
-  const handleModalClose = () => {
-    setIsModalOpen(false);
-  };
+  const title = getFriendlyTitle(extension);
+  const description = 'description' in extension ? extension.description || '' : '';
 
   return (
     <>
       <Button
-        className="flex items-center gap-2 w-full justify-between"
+        className="h-auto min-h-14 w-full justify-between gap-4 px-3 py-3 text-left whitespace-normal"
         onClick={() => setIsModalOpen(true)}
         variant="secondary"
         size="lg"
       >
-        <div>
-          <h3 className="font-semibold text-text-default">{title}</h3>
-          <p className="text-xs text-text-muted mt-1">{description}</p>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-semibold text-text-default break-words [overflow-wrap:anywhere]">
+            {title}
+          </h3>
+          <p className="mt-1 text-xs text-text-muted break-words [overflow-wrap:anywhere]">
+            {description}
+          </p>
         </div>
-        <ChevronRight className="w-4 h-4 text-iconStandard" />
-        {/* Modal for updating tool permission */}
+        <ChevronRight className="h-4 w-4 flex-shrink-0 text-iconStandard" />
       </Button>
-      {isModalOpen && <PermissionModal onClose={handleModalClose} extensionName={title} />}
+      {isModalOpen && (
+        <PermissionModal
+          onClose={() => setIsModalOpen(false)}
+          extensionName={extension.name}
+          extensionLabel={title}
+        />
+      )}
     </>
   );
 }
@@ -47,32 +56,8 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
   const [extensions, setExtensions] = useState<FixedExtensionEntry[]>([]);
 
   const fetchExtensions = useCallback(async () => {
-    const extensionsList = await getExtensions(true); // Force refresh
-    // Filter out disabled extensions
-    const enabledExtensions = extensionsList.filter((extension) => extension.enabled);
-    // TODO(Douwe): this should really be a real extension:
-    enabledExtensions.push({
-      name: 'platform',
-      type: 'builtin',
-      description: 'platform',
-      enabled: true,
-    });
-    // Sort extensions by name to maintain consistent order
-    const sortedExtensions = [...enabledExtensions].sort((a, b) => {
-      // First sort by builtin
-      if (a.type === 'builtin' && b.type !== 'builtin') return -1;
-      if (a.type !== 'builtin' && b.type === 'builtin') return 1;
-
-      // Then sort by bundled (handle null/undefined cases)
-      const aBundled = 'bundled' in a && a.bundled === true;
-      const bBundled = 'bundled' in b && b.bundled === true;
-      if (aBundled && !bBundled) return -1;
-      if (!aBundled && bBundled) return 1;
-
-      // Finally sort alphabetically within each group
-      return a.name.localeCompare(b.name);
-    });
-    setExtensions(sortedExtensions);
+    const extensionsList = await getExtensions(true);
+    setExtensions(getConfigurableExtensions(extensionsList));
   }, [getExtensions]);
 
   useEffect(() => {
@@ -120,11 +105,7 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
                 rules={
                   <>
                     {extensions.map((extension) => (
-                      <RuleItem
-                        key={extension.name}
-                        title={extension.name}
-                        description={'description' in extension ? extension.description || '' : ''}
-                      />
+                      <RuleItem key={extension.name} extension={extension} />
                     ))}
                   </>
                 }

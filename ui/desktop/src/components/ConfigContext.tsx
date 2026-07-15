@@ -11,7 +11,11 @@ import {
   getProviderModels as apiGetProviderModels,
 } from '../api';
 import { syncBundledExtensions } from './settings/extensions';
-import { isCapabilityExtension } from './settings/capabilities/capabilities';
+import {
+  isCapabilityDefaultEnabled,
+  shouldDefaultEnableAgentDrafter,
+  shouldDefaultEnablePromotedCapability,
+} from './settings/capabilities/capabilities';
 import type {
   ConfigResponse,
   UpsertConfigQuery,
@@ -235,29 +239,37 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         };
         await syncBundledExtensions(extensions, addExtensionForSync);
 
-        // One-time upgrade migration: the foundational capabilities (Developer,
-        // Extension Manager, Skills, Todo, Memory, Knowledge) are enabled by
-        // default and managed in Settings → Capabilities. A user upgrading from a
-        // build where they had left some of these off would otherwise keep them
-        // disabled, so the FIRST time this build runs we turn any still-disabled
-        // capability back on. Guarded by a localStorage flag so it runs exactly
-        // once — a user can disable a capability afterwards and it stays disabled.
-        const CAP_MIGRATION_FLAG = 'biorouter.capabilities.defaultEnabled.v1';
-        if (!localStorage.getItem(CAP_MIGRATION_FLAG)) {
+        const capabilityMigrations = [
+          {
+            flag: 'biorouter.capabilities.defaultEnabled.v1',
+            shouldEnable: (ext: FixedExtensionEntry) =>
+              !ext.enabled && isCapabilityDefaultEnabled(ext),
+          },
+          {
+            flag: 'biorouter.capabilities.promotedDefaults.v2',
+            shouldEnable: shouldDefaultEnablePromotedCapability,
+          },
+          {
+            flag: 'biorouter.capabilities.agentDrafterDefault.v3',
+            shouldEnable: shouldDefaultEnableAgentDrafter,
+          },
+        ];
+
+        for (const migration of capabilityMigrations) {
+          if (localStorage.getItem(migration.flag)) continue;
+
           try {
             const current = (await apiGetExtensions()).data?.extensions || [];
             for (const ext of current) {
-              if (isCapabilityExtension(ext) && !ext.enabled) {
-                // Pass a clean ExtensionConfig (without the entry's `enabled`
-                // field) so we don't persist a stray `enabled` key inside config.
-                const { enabled: _omit, ...cfg } = ext;
-                await addExtensionForSync(ext.name, cfg as ExtensionConfig, true);
-              }
+              if (!migration.shouldEnable(ext)) continue;
+
+              const { enabled: _omit, ...cfg } = ext;
+              await addExtensionForSync(ext.name, cfg as ExtensionConfig, true);
             }
           } catch (e) {
             console.error('Capability default-enable migration failed:', e);
           }
-          localStorage.setItem(CAP_MIGRATION_FLAG, '1');
+          localStorage.setItem(migration.flag, '1');
         }
 
         const refreshedResponse = await apiGetExtensions();

@@ -12,7 +12,7 @@
     "id": "computercontroller",
     "name": "Computer Controller",
     "description": "General computer control tools that don't require you to be a developer or engineer.",
-    "enabled": false,
+    "enabled": true,
     "type": "builtin",
     "env_keys": [],
     "timeout": 300
@@ -21,7 +21,7 @@
     "id": "autovisualiser",
     "name": "Auto Visualiser",
     "description": "Automatically see your data with this UI generation extension.",
-    "enabled": false,
+    "enabled": true,
     "type": "builtin",
     "env_keys": [],
     "timeout": 300
@@ -30,7 +30,7 @@
     "id": "memory",
     "name": "Memory",
     "description": "Teach BioRouter your preferences as you go.",
-    "enabled": false,
+    "enabled": true,
     "type": "builtin",
     "env_keys": [],
     "timeout": 300
@@ -47,7 +47,7 @@
     "id": "agent_drafter",
     "name": "Agent Drafter",
     "description": "Build interactive artifacts (static pages, or apps with an embedded BioRouter agent) and export them as standalone projects.",
-    "enabled": false,
+    "enabled": true,
     "type": "builtin",
     "env_keys": [],
     "timeout": 300

@@ -8,6 +8,7 @@ import {
 } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { isCapabilityExtension } from '../settings/capabilities/capabilities';
@@ -170,11 +171,9 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   const extensionsList = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
 
-    // Foundational capabilities (Developer, Extension Manager, Skills, Todo,
-    // Memory, Knowledge) are managed in Settings → Capabilities, not toggled
-    // per-conversation. Excluding them here keeps the chat extension list focused
-    // on the optional built-ins and the user's own installed extensions, instead
-    // of a long, confusing list that mixes in the always-on capabilities.
+    // Shipped capabilities are managed in Settings → Chat → Capabilities, not
+    // overridden per conversation. The chat menu contains only user-installed
+    // extensions.
     const togglable = allExtensions.filter((ext) => !isCapabilityExtension(ext));
 
     if (isHubView) {
@@ -310,17 +309,21 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
         }
       }}
     >
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
-          title="manage extensions"
-          aria-label={`Manage extensions (${activeCount} enabled)`}
-        >
-          <Puzzle className="mr-0.5 h-4 w-4" />
-          <span>{activeCount}</span>
-        </button>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
+              aria-label={`Manage extensions (${activeCount} enabled)`}
+            >
+              <Puzzle className="mr-0.5 h-4 w-4" />
+              <span>{activeCount}</span>
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">Manage extensions</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side="top"
         align="center"
