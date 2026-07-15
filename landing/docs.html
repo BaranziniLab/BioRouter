@@ -228,6 +228,17 @@
         <pre>~/.config/biorouter/config.yaml    # macOS / Linux</pre>
         <p>API keys are stored encrypted.</p>
 
+        <h2>Resetting selected app data</h2>
+        <p>Open <strong>Settings → App → Reset</strong> to inspect and reset specific categories without removing the rest of your BioRouter setup. The panel previews the number of affected applications, knowledge bases, skills, extensions, schedules, workflows, and conversations before showing a confirmation dialog.</p>
+        <ul>
+          <li><strong>Applications:</strong> remove applications created with Agent Drafter.</li>
+          <li><strong>Knowledge &amp; memory:</strong> clear saved knowledge and recreate an empty Soul base.</li>
+          <li><strong>Skills and extensions:</strong> remove user additions while restoring bundled content.</li>
+          <li><strong>Schedules and workflows:</strong> remove custom entries and restore the Meditation defaults.</li>
+          <li><strong>Conversation &amp; usage history:</strong> clear chats, token and cost totals, dashboard state, and checkpoints.</li>
+        </ul>
+        <div class="alert alert-warning"><strong>Reset is permanent.</strong> Select only the categories you intend to remove. BioRouter refuses to reset data while an agent turn is active.</div>
+
         <h2>Troubleshooting</h2>
         <table class="doc-table">
           <thead><tr><th>Issue</th><th>Solution</th></tr></thead>
@@ -360,7 +371,7 @@
       <!-- PROVIDERS -->
       <div class="doc-page" id="doc-providers">
         <h1>Providers and models</h1>
-        <p class="doc-intro">BioRouter connects to a range of LLM providers. Switch providers any time from Settings → Models without changing your workflows. Defaults below reflect <code>biorouter v1.88.0</code>.</p>
+        <p class="doc-intro">BioRouter connects to a range of LLM providers. Switch providers any time from Settings → Models without changing your workflows. Defaults below reflect <code>biorouter v1.88.1</code>.</p>
 
         <h2>UCSF institutional providers</h2>
         <table class="doc-table">
@@ -409,6 +420,7 @@
         <ul>
           <li><strong>Curated catalog</strong> of <strong>Gemma 4 E2B</strong>, <strong>Gemma 4 E4B</strong>, <strong>Gemma 4 12B</strong>, <strong>Gemma 4 26B</strong>, and <strong>Gemma 4 31B</strong>, plus <strong>Qwen3.6 27B</strong> and <strong>Qwen3.6 35B</strong>. BioRouter recommends Gemma 4 E4B on laptop-class machines and Qwen3.6 35B when at least 64 GiB of GPU-addressable memory is available. Any other model works as a raw <code>owner/repo:QUANT</code> Hugging Face spec.</li>
           <li><strong>Reasoning on by default</strong>, a model-native context window, and a q8_0 KV cache. Per-platform builds use Metal (macOS), Vulkan with CPU fallback (Windows), and CPU (Linux); CUDA is opt-in.</li>
+          <li><strong>Resilient startup and warm-up:</strong> BioRouter clears stale sidecar listeners before retrying and gives thinking-capable models enough output budget to complete their readiness response.</li>
           <li>Override anything with env vars — <code>LLAMACPP_CONTEXT_SIZE</code>, <code>LLAMACPP_ENABLE_THINKING</code>, <code>LLAMACPP_EXTRA_ARGS</code>, or point at your own server with <code>LLAMACPP_EXTERNAL_HOST</code>.</li>
         </ul>
         <p style="font-size:13px;color:var(--text-2);">Linux note: local models need glibc ≥ 2.35 plus <code>libssl3</code>/<code>libgomp1</code> (Debian 12+/Ubuntu 22.04+). The app itself still runs on older systems; only the bundled local models require this floor.</p>
@@ -426,7 +438,7 @@ ollama pull deepseek-r1     # Strong reasoning model</pre>
       <!-- EXTENSIONS -->
       <div class="doc-page" id="doc-extensions">
         <h1>Extensions, skills, and MCP</h1>
-        <p class="doc-intro">Extend BioRouter with built-in capabilities, third-party MCP servers, and reusable skill bundles. Defaults reflect <code>biorouter v1.88.0</code> (<code>ui/desktop/src/components/settings/extensions/bundled-extensions.json</code>).</p>
+        <p class="doc-intro">Extend BioRouter with built-in capabilities, third-party MCP servers, and reusable skill bundles. Defaults reflect <code>biorouter v1.88.1</code> (<code>ui/desktop/src/components/settings/extensions/bundled-extensions.json</code>).</p>
 
         <h2>Built-in extensions</h2>
         <p>Ship with BioRouter, no install needed. Enable or disable any of them from <strong>Settings → Extensions</strong>.</p>
