@@ -3804,8 +3804,7 @@ impl SessionStorage {
             conversation
                 .messages()
                 .iter()
-                .filter(|message| message.created < timestamp)
-                .next_back()
+                .rfind(|message| message.created < timestamp)
                 .and_then(|message| message.id.clone())
         });
 
