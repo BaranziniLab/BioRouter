@@ -30,7 +30,13 @@ import EnvironmentBadge from './EnvironmentBadge';
 import { listApps } from '../../api';
 import { useRunningChats, RunningChatEntry } from '../../hooks/chatStreamStore';
 import { preloadSessionList } from '../../utils/sessionListCache';
+import { preloadHomeActivity } from '../../utils/homeInsightsCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
+
+function preloadHome(): void {
+  preloadHomeActivity();
+  preloadSessionList();
+}
 
 interface SidebarProps {
   onSelectSession: (sessionId: string) => void;
@@ -258,8 +264,20 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               <SidebarMenuButton
                 data-testid={`sidebar-${entry.label.toLowerCase()}-button`}
                 onClick={() => handleNavigation(entry.path)}
-                onFocus={entry.path === '/sessions' ? preloadSessionList : undefined}
-                onPointerEnter={entry.path === '/sessions' ? preloadSessionList : undefined}
+                onFocus={
+                  entry.path === '/sessions'
+                    ? preloadSessionList
+                    : entry.path === '/'
+                      ? preloadHome
+                      : undefined
+                }
+                onPointerEnter={
+                  entry.path === '/sessions'
+                    ? preloadSessionList
+                    : entry.path === '/'
+                      ? preloadHome
+                      : undefined
+                }
                 isActive={isActivePath(entry.path)}
                 tooltip={entry.tooltip}
                 className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-sidebar-hover transition-colors duration-150 data-[active=true]:bg-sidebar-active data-[active=true]:font-medium"

@@ -161,8 +161,15 @@ describe('UsageHeatmap', () => {
       .getAllByRole('button')
       .filter((b) => b.className.includes('shadow-[inset_0_0_0_2px_var(--text-default)]'));
     expect(outlined).toHaveLength(3);
+    for (const cell of outlined) {
+      expect(cell).toHaveAccessibleName(/part of current streak/);
+    }
+    expect(screen.getByText('Current streak')).toBeInTheDocument();
     expect(screen.getByText('3 day streak')).toBeInTheDocument();
     expect(screen.getByText(/Longest streak · 5 days/)).toBeInTheDocument();
+
+    fireEvent.mouseEnter(outlined[0]);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Part of your current streak');
   });
 
   it('a streak that ended yesterday still highlights the right cells', () => {
