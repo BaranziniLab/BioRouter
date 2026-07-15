@@ -56,7 +56,8 @@ pub struct ImportSessionRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EditType {
-    Fork,
+    #[serde(alias = "fork")]
+    Diverge,
     Edit,
 }
 
@@ -69,7 +70,7 @@ pub struct EditMessageRequest {
 }
 
 fn default_edit_type() -> EditType {
-    EditType::Fork
+    EditType::Diverge
 }
 
 #[derive(Serialize, ToSchema)]
@@ -93,9 +94,9 @@ pub struct DivergeSessionRequest {
     /// never carried over.
     #[serde(default)]
     truncate_after: Option<i64>,
-    /// Optional anchor by durable message id (`Message.id`), the BR-45 fork
+    /// Optional anchor by durable message id (`Message.id`), the BR-45 divergence
     /// point. Preferred over `truncate_after`: it is unambiguous when two
-    /// messages share a whole second and it records the branch's fork point. It
+    /// messages share a whole second and it records the branch's divergence point. It
     /// takes precedence when both are supplied; `truncate_after` stays for
     /// back-compatibility with older clients.
     #[serde(default)]
@@ -553,20 +554,12 @@ async fn edit_message(
     }
     let manager = state.session_manager();
     match request.edit_type {
-        EditType::Fork => {
+        EditType::Diverge => {
             let new_session = manager
-                .copy_session(&session_id, "(edited)".to_string())
+                .diverge_session_for_edit(&session_id, request.timestamp)
                 .await
                 .map_err(|e| {
-                    tracing::error!("Failed to copy session: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-
-            manager
-                .truncate_conversation(&new_session.id, request.timestamp)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to truncate conversation: {}", e);
+                    tracing::error!("Failed to diverge session for message edit: {}", e);
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
 
@@ -592,7 +585,7 @@ async fn edit_message(
 
 /// Diverge (branch) a session into a brand-new session that inherits the full
 /// conversation history and metadata of the original, while leaving the
-/// original completely untouched. Unlike `edit_message` with `Fork`, no
+/// original completely untouched. Unlike `edit_message` with `Diverge`, no
 /// truncation is performed — the entire history is carried over so the user can
 /// continue a fresh conversation from exactly where they left off.
 #[utoipa::path(
@@ -639,7 +632,7 @@ async fn diverge_session(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     // diverge_session does the placeholder-aware, sibling-numbered naming,
-    // records the lineage pointer + fork point, and trims the branch to end at
+    // records the lineage pointer + divergence point, and trims the branch to end at
     // the last complete assistant answer. Anchored by the durable message id
     // (`truncate_after_id`) when supplied — unambiguous even for two same-second
     // messages — else by the legacy `truncate_after` timestamp.
@@ -766,6 +759,20 @@ mod diverge_tests {
 
     fn user_msg(text: &str) -> Message {
         Message::user().with_text(text)
+    }
+
+    #[test]
+    fn edit_message_uses_diverge_as_the_canonical_action() {
+        let request: EditMessageRequest =
+            serde_json::from_value(serde_json::json!({ "timestamp": 1, "editType": "diverge" }))
+                .unwrap();
+        assert!(matches!(request.edit_type, EditType::Diverge));
+
+        let legacy: EditMessageRequest =
+            serde_json::from_value(serde_json::json!({ "timestamp": 1, "editType": "fork" }))
+                .unwrap();
+        assert!(matches!(legacy.edit_type, EditType::Diverge));
+        assert!(matches!(default_edit_type(), EditType::Diverge));
     }
 
     async fn get_activity(

@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
-import { cancelTurn, interrupt, reply, resumeAgent } from '../api';
+import { cancelTurn, editMessage, interrupt, reply, resumeAgent } from '../api';
 
 vi.mock('../api', async () => {
   return {
     cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
+    editMessage: vi.fn(),
     getSession: vi.fn(async () => ({ data: null })),
     interrupt: vi.fn(),
     listApps: vi.fn(async () => ({ data: { apps: [] } })),
@@ -97,6 +98,7 @@ beforeEach(() => {
   vi.mocked(reply).mockReset();
   vi.mocked(interrupt).mockReset();
   vi.mocked(cancelTurn).mockReset();
+  vi.mocked(editMessage).mockReset();
   vi.mocked(cancelTurn).mockResolvedValue({ data: { cancelled: true } } as never);
   Object.assign(window, {
     electron: {
@@ -270,6 +272,42 @@ describe('ChatStreamRegistry', () => {
 
     await expect(controller.steer('too late')).resolves.toBe(false);
     expect(interrupt).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the canonical divergence event after an edited-message divergence', async () => {
+    const registry = new ChatStreamRegistry();
+    const sourceSessionId = 'edit-diverge-source';
+    const userMessage: Message = {
+      id: 'u1',
+      role: 'user',
+      created: 10,
+      content: [{ type: 'text', text: 'original prompt' }],
+      metadata: { userVisible: true, agentVisible: true },
+    };
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session(sourceSessionId), conversation: [userMessage] } },
+    } as never);
+    vi.mocked(editMessage).mockResolvedValue({ data: { sessionId: 's2' } } as never);
+    const onDiverged = vi.fn();
+    window.addEventListener('session-diverged', onDiverged);
+
+    const controller = registry.getController(sourceSessionId);
+    await controller.loadSession();
+    await controller.onMessageUpdate('u1', 'updated prompt', 'diverge');
+
+    expect(editMessage).toHaveBeenCalledWith({
+      path: { session_id: sourceSessionId },
+      body: { timestamp: 10, editType: 'diverge' },
+      throwOnError: true,
+    });
+    expect(onDiverged).toHaveBeenCalledTimes(1);
+    expect((onDiverged.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      newSessionId: 's2',
+      shouldStartAgent: true,
+      editedMessage: 'updated prompt',
+    });
+
+    window.removeEventListener('session-diverged', onDiverged);
   });
 
   it('reports a rejected soft interrupt so the caller can fall back', async () => {

@@ -1192,7 +1192,7 @@ function BaseChatContent({
   }, []);
 
   useEffect(() => {
-    const handleSessionForked = (event: Event) => {
+    const handleSessionDiverged = (event: Event) => {
       const customEvent = event as CustomEvent<{
         newSessionId: string;
         shouldStartAgent?: boolean;
@@ -1214,10 +1214,10 @@ function BaseChatContent({
       });
     };
 
-    window.addEventListener('session-forked', handleSessionForked);
+    window.addEventListener('session-diverged', handleSessionDiverged);
 
     return () => {
-      window.removeEventListener('session-forked', handleSessionForked);
+      window.removeEventListener('session-diverged', handleSessionDiverged);
     };
   }, [location.pathname, navigate]);
 
