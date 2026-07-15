@@ -41,6 +41,7 @@ interface BioRouterMessageProps {
     userData: Record<string, unknown>
   ) => Promise<void>;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 export default function BioRouterMessage({
@@ -54,6 +55,7 @@ export default function BioRouterMessage({
   toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
   onOpenArtifact,
+  workingDir,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
 
@@ -150,7 +152,11 @@ export default function BioRouterMessage({
         {displayText && (
           <div className="flex flex-col group">
             <div ref={contentRef} className="w-full">
-              <MarkdownContent content={displayText} onOpenArtifact={onOpenArtifact} />
+              <MarkdownContent
+                content={displayText}
+                onOpenArtifact={onOpenArtifact}
+                workingDir={workingDir}
+              />
             </div>
 
             {imagePaths.length > 0 && (
@@ -210,6 +216,7 @@ export default function BioRouterMessage({
                       isStreamingMessage={isStreaming}
                       append={append}
                       onOpenArtifact={onOpenArtifact}
+                      workingDir={workingDir}
                     />
                   </div>
                 ))}

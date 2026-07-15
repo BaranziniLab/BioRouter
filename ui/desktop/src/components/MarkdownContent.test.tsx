@@ -236,6 +236,90 @@ console.log('Hello, World!');
       expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
+    it('opens an absolute generated-file path formatted as inline code', async () => {
+      const onOpenArtifact = vi.fn();
+      const content =
+        'Created a self-contained weather website at: `/Users/wgu/Desktop/weather-website/index.html`';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: '/Users/wgu/Desktop/weather-website/index.html',
+        })
+      );
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'index.html',
+        path: '/Users/wgu/Desktop/weather-website/index.html',
+      });
+    });
+
+    it('resolves a relative inline-code file path from the session working directory', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="Open `dist/index.html` to view the site."
+          workingDir="/Users/wgu/Desktop/weather-website"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'dist/index.html' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'index.html',
+        path: '/Users/wgu/Desktop/weather-website/dist/index.html',
+      });
+    });
+
+    it('links a bare relative generated-file path in table content', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = `| Output | Location |
+| --- | --- |
+| Website | dist/index.html |`;
+
+      render(
+        <MarkdownContent
+          content={content}
+          workingDir="/Users/wgu/Desktop/weather-website"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'dist/index.html' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'index.html',
+        path: '/Users/wgu/Desktop/weather-website/dist/index.html',
+      });
+    });
+
+    it('opens inline-code loopback sites in the side panel', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="Preview the site at `http://localhost:4173/dashboard`."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'http://localhost:4173/dashboard' })
+      );
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'externalUrl',
+        title: 'http://localhost:4173/dashboard',
+        url: 'http://localhost:4173/dashboard',
+      });
+    });
+
     it('renders tables correctly', async () => {
       const content = `| Name | Value |
 |------|-------|
