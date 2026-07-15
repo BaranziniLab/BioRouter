@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
 const base = process.argv[2] || 'http://127.0.0.1:3000';
-const ESB = '/Users/wanjun/Desktop/BioRouter/ui/desktop/node_modules/.bin/esbuild';
+const ESB = '/Users/wanjun/Desktop/biorouter/ui/desktop/node_modules/.bin/esbuild';
 const rs = readFileSync(
   '/Users/wanjun/Desktop/biorouter-apps-wt/scripts/agent-drafter-apps/round.sh',
   'utf8'

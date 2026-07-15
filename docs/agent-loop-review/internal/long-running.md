@@ -6,7 +6,7 @@ jobs, subagents, the cron scheduler, mid-run user decisions, and what survives a
 daemon restart.
 
 Note on paths: the review worktree path arrived as literal `undefined`, so this
-review was run against the live checkout at `/Users/wanjun/Desktop/BioRouter`.
+review was run against the live checkout at `/Users/wanjun/Desktop/biorouter`.
 All citations are repo-relative.
 
 ## Overview

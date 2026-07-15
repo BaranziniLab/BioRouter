@@ -4,7 +4,7 @@ self-contained, design-system-faithful HTML report. pandoc does md->html;
 this script themes and stitches. Output lands in the task worktree only."""
 import subprocess, re, html, sys, pathlib
 
-SRC = pathlib.Path("/Users/wanjun/Desktop/BioRouter/.worktrees/agent-loop-review/docs/agent-loop-review")
+SRC = pathlib.Path("/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review/docs/agent-loop-review")
 OUT = SRC / "review.html"
 
 # (group, key, relpath, friendly title)

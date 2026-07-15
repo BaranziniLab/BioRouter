@@ -2,7 +2,7 @@
 
 *Subsystem review — BioRouter agentic feedback loop.*
 Paths are relative to the review worktree root
-(`/Users/wanjun/Desktop/BioRouter/.worktrees/agent-loop-review`). Line numbers
+(`/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review`). Line numbers
 match files as read on 2026-07-12.
 
 ## Overview

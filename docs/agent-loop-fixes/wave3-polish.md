@@ -1,6 +1,6 @@
 # Wave 3 — "polish" cluster verification report
 
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/polish`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/polish`
 Verified: 2026-07-13
 Verdict: **GREEN** — gate met, zero new failures.
 

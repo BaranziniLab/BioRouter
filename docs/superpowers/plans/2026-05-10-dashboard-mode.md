@@ -56,7 +56,7 @@
 
 ## Conventions
 
-- Paths absolute from repo root `/Users/wgu/Desktop/BioRouter`.
+- Paths absolute from repo root `/Users/wgu/Desktop/biorouter`.
 - Frontend tests: `cd ui/desktop && npm run test:run -- <path>`.
 - Type-check: `cd ui/desktop && npx tsc --noEmit`.
 - Lint: `cd ui/desktop && npm run lint:check`.
@@ -76,7 +76,7 @@ Mechanical refactor. Move the folder, rename every identifier, update import pat
 - [ ] **Step 1: Move the folder via `git mv` to preserve history**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git mv ui/desktop/src/components/LabMeeting ui/desktop/src/components/Dashboard
 git mv ui/desktop/src/contexts/LabMeetingContext.tsx ui/desktop/src/contexts/DashboardContext.tsx
 ```
@@ -104,7 +104,7 @@ git rm LabMeetingStatusBar.tsx
 Use a single combined sed sweep over all `.ts`, `.tsx` files. Note ordering: replace the longer/more specific tokens first so we don't get partial matches.
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop
+cd /Users/wgu/Desktop/biorouter/ui/desktop
 # Update content (note: sed -i '' on macOS)
 files=$(grep -rIl --include='*.ts' --include='*.tsx' -E "Lab.?Meeting|labMeeting|lab-meeting" src/ 2>/dev/null)
 for f in $files; do
@@ -144,7 +144,7 @@ done
 - [ ] **Step 4: Verify grep is clean**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop
+cd /Users/wgu/Desktop/biorouter/ui/desktop
 grep -rin "lab.\?meeting\|LabMeeting\|labMeeting\|labmeeting" src/ \
   | grep -v "src/test/setup.ts" | head
 ```
@@ -154,21 +154,21 @@ Expected: empty output (zero hits). The single allowed exception is the in-test 
 - [ ] **Step 5: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -20
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -20
 ```
 Expected: no errors mentioning Lab/lab.
 
 - [ ] **Step 6: Run renamed unit tests**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/
 ```
 Expected: all four test files pass with the same counts as before (palette 4, layoutEngine 12, dashboardStorage 5, DashboardProvider 9).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src
 git commit -m "refactor(dashboard): rename LabMeeting → Dashboard end-to-end"
 ```
@@ -257,7 +257,7 @@ import { LayoutDashboard } from '../icons/app-icons';
 - [ ] **Step 3: Sanity build**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 4: Commit**
@@ -319,7 +319,7 @@ Rename any test references inside the file from `loadLabMeetingState`/`saveLabMe
 - [ ] **Step 2: Run tests, expect new tests to FAIL, others PASS**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -15
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -15
 ```
 Expected: 2 new tests FAIL (load returns null when only the legacy key is present).
 
@@ -358,7 +358,7 @@ export function loadDashboardState(): SerializedDashboardState | null {
 - [ ] **Step 4: Run tests, expect all green**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -10
 ```
 Expected: 7 tests pass (5 existing + 2 new).
 
@@ -433,7 +433,7 @@ In `ui/desktop/src/components/Dashboard/DashboardRoute.tsx`, find the existing `
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 5: Commit**
@@ -531,7 +531,7 @@ NEW: (delete this line)
 - [ ] **Step 3: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 4: Commit**
@@ -571,7 +571,7 @@ And remove the old test referencing `NAME_POOL`. Also remove the `NAME_POOL` imp
 - [ ] **Step 2: Run tests — should fail**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
 ```
 Expected: FAIL — current `generateName(0)` returns `'Atlas'`, not `'Session 1'`.
 
@@ -588,21 +588,21 @@ export function generateName(index: number): string {
 Delete the `NAME_POOL` constant entirely (and its `export`). If any other file imports `NAME_POOL`, that import is now stale — Task 1's sed didn't touch identifier `NAME_POOL`, but tests in step 1 removed the import. Verify with:
 
 ```bash
-grep -rn "NAME_POOL" /Users/wgu/Desktop/BioRouter/ui/desktop/src/
+grep -rn "NAME_POOL" /Users/wgu/Desktop/biorouter/ui/desktop/src/
 ```
 Expected: empty.
 
 - [ ] **Step 4: Run tests — should pass**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
 ```
 Expected: 3 tests pass.
 
 - [ ] **Step 5: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 6: Commit**
@@ -671,7 +671,7 @@ export function hash32(s: string): number {
 - [ ] **Step 3: Run hash test — should pass**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -10
 ```
 Expected: PASS (new hash32 tests + 12 existing tests).
 
@@ -804,7 +804,7 @@ In `layoutEngine.ts`, change the constants from `const X` to `export const X` fo
 - [ ] **Step 6: Run tests — most new ones fail**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -25
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -25
 ```
 Expected: at least the comfort-size, pinned-avoidance, and edge-guarantee tests FAIL.
 
@@ -1167,7 +1167,7 @@ The other three overflow tests keep their structural assertions — they don't r
 - [ ] **Step 9: Run all layout-engine tests, expect green**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -15
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -15
 ```
 Expected: all tests pass (the 7 new + the updated 8 existing).
 
@@ -1255,7 +1255,7 @@ Find the outer `<div>` of `ChatWindow` that uses `style={stylePos}`. Change to:
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 5: Commit**
@@ -1428,14 +1428,14 @@ Also remove the `import { DashboardStatusBar } from './DashboardStatusBar';` lin
 - [ ] **Step 6: Run unit tests for any regressions**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
 ```
 Expected: PASS (counts unchanged, ~30+).
 
 - [ ] **Step 7: Type-check + lint**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 8: Commit**
@@ -1611,7 +1611,7 @@ Add the import: `import { updateSessionName } from '../../api';` at the top of C
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npx tsc --noEmit 2>&1 | head -15
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -15
 ```
 
 - [ ] **Step 5: Commit**
@@ -1813,7 +1813,7 @@ In `ui/desktop/src/components/Dashboard/DashboardProvider.test.tsx`, ADD this te
 - [ ] **Step 6: Run tests, expect green**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
+cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
 ```
 Expected: all tests pass; counts now include the new provider tests.
 
@@ -1842,7 +1842,7 @@ Launch the dev app via Terminal.app (`script` workaround we found in the prior s
 - [ ] **Step 1: Kill any prior Electron, launch dev with CDP**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 killall -9 Electron "Electron Helper" 2>/dev/null
 osascript -e 'tell application "Terminal" to do script "/tmp/launch-biorouter.sh"'
 # wait until CDP is up
@@ -1909,7 +1909,7 @@ From `/dashboard`, click Home in the sidebar. Verify `window.outerWidth` and `ou
 - [ ] **Step 12: Spec-cleanup grep**
 
 ```bash
-grep -rin "lab.\?meeting\|LabMeeting\|labMeeting" /Users/wgu/Desktop/BioRouter/ui/desktop/src/ | head
+grep -rin "lab.\?meeting\|LabMeeting\|labMeeting" /Users/wgu/Desktop/biorouter/ui/desktop/src/ | head
 ```
 Expected: empty.
 

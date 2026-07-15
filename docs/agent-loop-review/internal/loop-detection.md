@@ -4,7 +4,7 @@ Subsystem review of BioRouter's agentic feedback loop, focused on how the agent
 avoids infinite loops, repetitive tool calls, runaway turns, and stuck states.
 
 Primary files reviewed (all under the review worktree
-`/Users/wanjun/Desktop/BioRouter/.worktrees/agent-loop-review`):
+`/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review`):
 
 - `crates/biorouter/src/tool_monitor.rs` (165 lines — read fully)
 - `crates/biorouter/src/tool_inspection.rs` (the trait + result-application glue)

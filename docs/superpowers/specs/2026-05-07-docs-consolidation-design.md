@@ -156,8 +156,8 @@ Replace card grids with plain markdown link lists. Drop embedded videos entirely
 | --- | --- |
 | `goose` / `Goose` / `GOOSE` | `BioRouter` |
 | `geese` / `Geese` / `GEESE` | `BioRouter` |
-| `block.xyz`, `block.github.io` | `https://github.com/BaranziniLab/BioRouter` |
-| `sq.github.io/goose` | `https://github.com/BaranziniLab/BioRouter` |
+| `block.xyz`, `block.github.io` | `https://github.com/BaranziniLab/biorouter` |
+| `sq.github.io/goose` | `https://github.com/BaranziniLab/biorouter` |
 | "Block" as a company name | remove sentence or rewrite without company attribution |
 
 ### 3. Recipe → Workflow rename

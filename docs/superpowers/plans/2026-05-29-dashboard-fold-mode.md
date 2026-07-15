@@ -110,7 +110,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/palette.ts ui/desktop/src/components/Dashboard/palette.test.ts
 git commit -m "feat(dashboard): switch accent palette to muted hues"
 ```
@@ -181,7 +181,7 @@ Expected: errors about `DashboardProvider` not implementing the new fields/metho
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/contexts/DashboardContext.tsx
 git commit -m "feat(dashboard): extend DashboardWindow + Api with fold/busy fields"
 ```
@@ -260,7 +260,7 @@ Expected: PASS (no test changes; the new optional field doesn't break existing a
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/dashboardStorage.ts
 git commit -m "feat(dashboard): persist window.folded across reloads"
 ```
@@ -470,7 +470,7 @@ Expected: no errors related to `DashboardProvider.tsx` or `DashboardContext.tsx`
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/DashboardProvider.tsx
 git commit -m "feat(dashboard): implement foldWindow/foldAll/unfoldAll/setWindowBusy"
 ```
@@ -581,7 +581,7 @@ Expected: PASS (the implementation from Task 4 already covers these). If any fai
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/DashboardProvider.test.tsx
 git commit -m "test(dashboard): cover fold/unfold/busy provider actions"
 ```
@@ -623,7 +623,7 @@ Expected: no errors mentioning `app-icons.tsx`.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/icons/app-icons.tsx
 git commit -m "feat(icons): export Minus icon"
 ```
@@ -654,7 +654,7 @@ At the end of `ui/desktop/src/styles/main.css`, append:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/styles/main.css
 git commit -m "style(dashboard): add breathe keyframes for busy indicator"
 ```
@@ -740,7 +740,7 @@ Expected: error on `ChatWindow.tsx` for not passing the new required `onFold` pr
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/WindowTitleBar.tsx
 git commit -m "feat(dashboard): add Fold button to WindowTitleBar"
 ```
@@ -889,7 +889,7 @@ Expected: no errors mentioning `FoldedCard.tsx`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/FoldedCard.tsx
 git commit -m "feat(dashboard): add FoldedCard component"
 ```
@@ -1087,7 +1087,7 @@ Expected: error on `BaseChat` not accepting `onBusyChange` — fixed in Task 11.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/ChatWindow.tsx
 git commit -m "feat(dashboard): render FoldedCard when window.folded is true"
 ```
@@ -1166,7 +1166,7 @@ Expected: no errors mentioning `BaseChat.tsx` or `ChatWindow.tsx`.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/BaseChat.tsx
 git commit -m "feat(chat): emit onBusyChange when chatState leaves Idle"
 ```
@@ -1264,7 +1264,7 @@ Expected: no errors.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add ui/desktop/src/components/Dashboard/DashboardToolbar.tsx
 git commit -m "feat(dashboard): add Fold toggle to toolbar"
 ```
@@ -1294,7 +1294,7 @@ Expected: PASS for everything Dashboard-related. Unrelated failures (if any pre-
 - [ ] **Step 3: Run the GUI**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 just run-dev
 ```
 
@@ -1320,7 +1320,7 @@ In the running app, navigate to the Dashboard and verify each item below. Note a
 If all 10 smoke checks pass, append a CHANGELOG note or simply commit the existing `Cargo.lock` and `package-lock.json` updates produced by the dev build, with message:
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add -u
 git commit --allow-empty -m "chore(dashboard): manual fold-mode smoke test passed"
 ```

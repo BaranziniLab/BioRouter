@@ -35,8 +35,8 @@ docker run --rm \
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/BaranziniLab/BioRouter.git
-cd BioRouter
+git clone https://github.com/BaranziniLab/biorouter.git
+cd biorouter
 ```
 
 2. Build the Docker image:

@@ -1,7 +1,7 @@
 # Wave 1 — Processes cluster verification report
 
 Cluster: **Long-running & processes** (`agent-loop-processes`)
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/processes`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/processes`
 Isolated target dir: `/Users/wanjun/.cache/br-targets/processes`
 Base for diff: `agent-loop-integration`
 

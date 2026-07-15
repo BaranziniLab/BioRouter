@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prevent native-tls/OpenSSL from being added to the dependency tree.
 # These cause Linux compatibility issues with OpenSSL version mismatches.
-# See: https://github.com/BaranziniLab/BioRouter/issues/6034
+# See: https://github.com/BaranziniLab/biorouter/issues/6034
 
 set -e
 

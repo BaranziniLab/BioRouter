@@ -70,4 +70,4 @@ CMD ["--help"]
 LABEL org.opencontainers.image.title="biorouter"
 LABEL org.opencontainers.image.description="BioRouter CLI"
 LABEL org.opencontainers.image.vendor="UCSF Baranzini Lab"
-LABEL org.opencontainers.image.source="https://github.com/BaranziniLab/BioRouter"
+LABEL org.opencontainers.image.source="https://github.com/BaranziniLab/biorouter"

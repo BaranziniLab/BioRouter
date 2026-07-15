@@ -1,6 +1,6 @@
 # Wave 3 — `xplat` cluster verification report
 
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/xplat`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/xplat`
 Branch: `agent-loop-xplat`
 Base: `agent-loop-integration` (merge-base `a54c4d79`)
 Verifier date: 2026-07-13

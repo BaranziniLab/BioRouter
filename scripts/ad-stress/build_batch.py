@@ -19,11 +19,11 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path("/Users/wgu/Desktop/BioRouter-ad-stress")
+ROOT = Path("/Users/wgu/Desktop/biorouter-ad-stress")
 SANDBOX = ROOT / ".ad-sandbox"
 CLI = ROOT / "target/debug/biorouter"
 STORE = SANDBOX / ".config/biorouter/agent_drafter"
-ESBUILD = "/Users/wgu/Desktop/BioRouter/ui/desktop/node_modules/.bin/esbuild"
+ESBUILD = "/Users/wgu/Desktop/biorouter/ui/desktop/node_modules/.bin/esbuild"
 RAW = ROOT / "docs/agent-drafter-stress/build-logs"
 RAW.mkdir(parents=True, exist_ok=True)
 LEDGER = RAW / "rounds.json"

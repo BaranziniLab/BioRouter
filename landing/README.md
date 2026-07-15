@@ -118,6 +118,6 @@ Then visit `http://localhost:8080`.
 
 ## Related
 
-- **BioRouter app repo:** <https://github.com/BaranziniLab/BioRouter>
+- **BioRouter app repo:** <https://github.com/BaranziniLab/biorouter>
 - **Baranzini Lab:** <https://baranzinilab.ucsf.edu/>
 - **UCSF Versa:** <https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa>

@@ -109,7 +109,7 @@ impl PkceAuthFlow {
         let response = client
             .post(TETRATE_TOKEN_URL)
             .header("X-Title", "biorouter")
-            .header("Referer", "https://github.com/BaranziniLab/BioRouter")
+            .header("Referer", "https://github.com/BaranziniLab/biorouter")
             .json(&request_body)
             .send()
             .await?;

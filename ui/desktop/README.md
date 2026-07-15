@@ -6,8 +6,8 @@ Native desktop app for BioRouter built with [Electron](https://www.electronjs.or
 BioRouter uses [Hermit](https://github.com/cashapp/hermit) to manage dependencies, so you will need to have it installed and activated.
 
 ```
-git clone git@github.com:BaranziniLab/BioRouter.git
-cd BioRouter
+git clone git@github.com:BaranziniLab/biorouter.git
+cd biorouter
 source ./bin/activate-hermit
 cd ui/desktop
 npm install

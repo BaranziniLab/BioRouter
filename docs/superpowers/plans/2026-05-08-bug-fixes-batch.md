@@ -605,9 +605,9 @@ APPLE_ID=<apple-id> APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> npm run 
 Restore ARM64 binaries first, then build Linux:
 
 ```bash
-cp /Users/wgu/Desktop/BioRouter/target/release/biorouter ui/desktop/src/bin/biorouter
-cp /Users/wgu/Desktop/BioRouter/target/release/biorouterd ui/desktop/src/bin/biorouterd
-cd /Users/wgu/Desktop/BioRouter && just make-ui-linux
+cp /Users/wgu/Desktop/biorouter/target/release/biorouter ui/desktop/src/bin/biorouter
+cp /Users/wgu/Desktop/biorouter/target/release/biorouterd ui/desktop/src/bin/biorouterd
+cd /Users/wgu/Desktop/biorouter && just make-ui-linux
 ```
 
 - [ ] **Step 6: Build Windows package**

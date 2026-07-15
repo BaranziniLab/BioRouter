@@ -150,19 +150,19 @@ and stepping through the server code while interacting with the UI.
 
 To fork the repository:
 
-1. Go to https://github.com/BaranziniLab/BioRouter and click "Fork" (top-right corner).
+1. Go to https://github.com/BaranziniLab/biorouter and click "Fork" (top-right corner).
 2. This creates https://github.com/<your-username>/BioRouter under your GitHub account.
 3. Clone your fork (not the main repo):
 
 ```
-git clone https://github.com/<your-username>/BioRouter.git
-cd BioRouter
+git clone https://github.com/<your-username>/biorouter.git
+cd biorouter
 ```
 
 4. Add the main repository as upstream:
 
 ```
-git remote add upstream https://github.com/BaranziniLab/BioRouter.git
+git remote add upstream https://github.com/BaranziniLab/biorouter.git
 ```
 
 5. Create a branch in your fork for your changes:
@@ -187,7 +187,7 @@ git merge upstream/main
 git push origin my-feature-branch
 ```
 
-8. Open a Pull Request from your branch on your fork to BaranziniLab/BioRouter's main branch.
+8. Open a Pull Request from your branch on your fork to BaranziniLab/biorouter's main branch.
 
 ## Keeping Your Fork Up-to-Date
 
@@ -198,7 +198,7 @@ To ensure a smooth integration of your contributions, it's important that your f
 1. **Add the Main Repository as a Remote** (Skip if you have already set this up):
 
    ```bash
-   git remote add upstream https://github.com/BaranziniLab/BioRouter.git
+   git remote add upstream https://github.com/BaranziniLab/biorouter.git
    ```
 
 2. **Fetch the Latest Changes from the Main Repository**:
@@ -282,7 +282,7 @@ Then you can view your traces at http://localhost:3000
 
 This project follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification for PR titles. Conventional Commits make it easier to understand the history of a project and facilitate automation around versioning and changelog generation.
 
-[issues]: https://github.com/BaranziniLab/BioRouter/issues
+[issues]: https://github.com/BaranziniLab/biorouter/issues
 [rustup]: https://doc.rust-lang.org/cargo/getting-started/installation.html
 [nvm]: https://github.com/nvm-sh/nvm
 [just]: https://github.com/casey/just?tab=readme-ov-file#installation
@@ -311,7 +311,7 @@ There are numerous ways to be an open source contributor and contribute to BioRo
 
 - **Stars on GitHub:** If you resonate with our project and find it valuable, consider starring BioRouter on GitHub! 🌟
 - **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to ask it on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
-- **Give Feedback:** Have a feature you want to see or encounter an issue with BioRouter, [click here to open an issue](https://github.com/BaranziniLab/BioRouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
+- **Give Feedback:** Have a feature you want to see or encounter an issue with BioRouter, [click here to open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
 - **Improve Documentation:** Good documentation is key to the success of any project. You can help improve the quality of our existing docs or add new pages.
 - **Help Other Members:** See another community member stuck? Or a contributor blocked by a question you know the answer to? Reply to community threads or do a code review for others to help.
 - **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).

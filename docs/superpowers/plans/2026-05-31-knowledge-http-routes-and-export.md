@@ -26,7 +26,7 @@
 - [ ] **Pre-step A:** confirm branch + baseline.
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge && source bin/activate-hermit
+cd /Users/wgu/Desktop/biorouter-knowledge && source bin/activate-hermit
 git rev-parse --abbrev-ref HEAD       # expect feature/knowledge
 cargo test -p biorouter-mcp --lib knowledge 2>&1 | tail -3  # expect 105 passed
 ```
@@ -1320,7 +1320,7 @@ In the Core Agent Library section, append to the knowledge bullet: "…and HTTP 
 - [ ] **Step 2: Verification**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 source bin/activate-hermit
 cargo fmt -p biorouter -p biorouter-mcp -p biorouter-server -- --check 2>&1 | grep -i 'knowledge' | head -10
 cargo clippy -p biorouter -p biorouter-mcp -p biorouter-server --no-deps -- -D warnings 2>&1 | tail -20

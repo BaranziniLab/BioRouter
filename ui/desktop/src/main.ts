@@ -3818,7 +3818,7 @@ function buildApplicationMenu() {
           label: 'Report a Bug…',
           click() {
             shell.openExternal(
-              'https://github.com/BaranziniLab/BioRouter/issues/new?template=bug_report.md'
+              'https://github.com/BaranziniLab/biorouter/issues/new?template=bug_report.md'
             );
           },
         },
@@ -3826,7 +3826,7 @@ function buildApplicationMenu() {
           label: 'Request a Feature…',
           click() {
             shell.openExternal(
-              'https://github.com/BaranziniLab/BioRouter/issues/new?template=feature_request.md'
+              'https://github.com/BaranziniLab/biorouter/issues/new?template=feature_request.md'
             );
           },
         },

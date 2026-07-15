@@ -630,7 +630,7 @@ git show &lt;sha&gt;</code></pre>
     <h2 class="doc__title">Wave 0 — foundation + agent.rs seams</h2>
   </header>
   <div class="doc__body">
-<p>Verifier run against branch <code>ui-hardening-a11y-tests</code> worktree at <code>/Users/wanjun/Desktop/BioRouter/.worktrees/wave0</code>, comparing <code>agent-loop-integration..HEAD</code>.</p>
+<p>Verifier run against branch <code>ui-hardening-a11y-tests</code> worktree at <code>/Users/wanjun/Desktop/biorouter/.worktrees/wave0</code>, comparing <code>agent-loop-integration..HEAD</code>.</p>
 <p><strong>Merge gate: GREEN.</strong> Zero new (unexplained) test failures across all seven crates. The single test failure observed (<code>test_anthropic_provider</code>) is pre-existing in the baseline (a live-API test with no credentials) and is not a regression. Clippy and rustfmt are clean for wave-0 code after two small fixes committed here.</p>
 <hr />
 <h2 id="wave0-1-what-landed-br--status--commit--files--tests">1. What landed (BR → status / commit / files / tests)</h2>
@@ -839,7 +839,7 @@ test result: ok. 1 passed; 0 failed; ...</code></pre>
     <h2 class="doc__title">Wave 1 — Compaction &amp; memory</h2>
   </header>
   <div class="doc__body">
-<p>Worktree: <code>/Users/wanjun/Desktop/BioRouter/.worktrees/compaction</code> Branch: <code>agent-loop-compaction</code> (base <code>agent-loop-integration</code>) Target dir: <code>/Users/wanjun/.cache/br-targets/compaction</code></p>
+<p>Worktree: <code>/Users/wanjun/Desktop/biorouter/.worktrees/compaction</code> Branch: <code>agent-loop-compaction</code> (base <code>agent-loop-integration</code>) Target dir: <code>/Users/wanjun/.cache/br-targets/compaction</code></p>
 <h2 id="wave1-compaction-verdict">Verdict</h2>
 <p><strong>GATE GREEN.</strong> Every proposal is its own commit, <code>cargo fmt</code> is clean, the one genuine clippy error introduced by the cluster is fixed, and all five crates pass with <strong>zero new test failures</strong> versus the baseline. Two agent-loop tests that regressed were fixed inside the cluster (see BR-17 regression below) and now pass against the real (polluted) session DB.</p>
 <h2 id="wave1-compaction-br-proposal--status-table">BR proposal → status table</h2>
@@ -1104,7 +1104,7 @@ test result: ok. 1 passed; 0 failed; ...</code></pre>
     <h2 class="doc__title">Wave 1 — Checkpoints &amp; VCS</h2>
   </header>
   <div class="doc__body">
-<p>Worktree: <code>/Users/wanjun/Desktop/BioRouter/.worktrees/checkpoints</code> Base: <code>agent-loop-integration</code> Verifier gate: <strong>GREEN</strong> (zero new failures introduced by this cluster).</p>
+<p>Worktree: <code>/Users/wanjun/Desktop/biorouter/.worktrees/checkpoints</code> Base: <code>agent-loop-integration</code> Verifier gate: <strong>GREEN</strong> (zero new failures introduced by this cluster).</p>
 <h2 id="wave1-checkpoints-br-proposals--status">BR proposals → status</h2>
 <div class="tablewrap"><table>
 <thead>
@@ -1227,7 +1227,7 @@ test result: ok. 1 passed; 0 failed; ...</code></pre>
     <h2 class="doc__title">Wave 1 — Long-running &amp; processes</h2>
   </header>
   <div class="doc__body">
-<p>Cluster: <strong>Long-running &amp; processes</strong> (<code>agent-loop-processes</code>) Worktree: <code>/Users/wanjun/Desktop/BioRouter/.worktrees/processes</code> Isolated target dir: <code>/Users/wanjun/.cache/br-targets/processes</code> Base for diff: <code>agent-loop-integration</code></p>
+<p>Cluster: <strong>Long-running &amp; processes</strong> (<code>agent-loop-processes</code>) Worktree: <code>/Users/wanjun/Desktop/biorouter/.worktrees/processes</code> Isolated target dir: <code>/Users/wanjun/.cache/br-targets/processes</code> Base for diff: <code>agent-loop-integration</code></p>
 <h2 id="wave1-processes-verdict-green">Verdict: GREEN</h2>
 <p>Zero test failures or clippy violations attributable to this cluster. Every proposal is its own commit; the working tree is clean. All residual reds (2 flaky live-network tunnel tests, 1 known live-API provider test, frontend lint/<code>biorouterd</code> binary-not-built, stale clippy allowlist entries) were confirmed pre-existing and/or environmental and unrelated to the files this cluster touches.</p>
 <h2 id="wave1-processes-br-proposal-status">BR proposal status</h2>
@@ -1347,7 +1347,7 @@ test result: ok. 1 passed; 0 failed; ...</code></pre>
     <h2 class="doc__title">Wave 1 — Context &amp; prompts</h2>
   </header>
   <div class="doc__body">
-<p>Worktree: <code>/Users/wanjun/Desktop/BioRouter/.worktrees/context</code> Branch: <code>agent-loop-context</code> (base: <code>agent-loop-integration</code>) Verifier gate: <strong>GREEN</strong></p>
+<p>Worktree: <code>/Users/wanjun/Desktop/biorouter/.worktrees/context</code> Branch: <code>agent-loop-context</code> (base: <code>agent-loop-integration</code>) Verifier gate: <strong>GREEN</strong></p>
 <h2 id="wave1-context-proposal--status--commit--files--tests">Proposal → status / commit / files / tests</h2>
 <div class="tablewrap"><table>
 <thead>

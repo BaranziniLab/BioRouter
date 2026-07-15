@@ -3,7 +3,7 @@
 Review of BioRouter's agentic feedback loop, subsystem: **how the agent knows
 where it is, what it is doing, what it has done, and whether it is going wrong.**
 
-All paths relative to repo root (`/Users/wanjun/Desktop/BioRouter`). Reviewed at
+All paths relative to repo root (`/Users/wanjun/Desktop/biorouter`). Reviewed at
 branch `ui-hardening-a11y-tests`.
 
 ## Overview

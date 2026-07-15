@@ -373,7 +373,7 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
         .build()
         .ok()?;
     let resp = client
-        .get("https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest")
+        .get("https://api.github.com/repos/BaranziniLab/biorouter/releases/latest")
         .send()
         .await
         .ok()?;
@@ -389,7 +389,7 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
     let url = json
         .get("html_url")
         .and_then(|v| v.as_str())
-        .unwrap_or("https://github.com/BaranziniLab/BioRouter/releases")
+        .unwrap_or("https://github.com/BaranziniLab/biorouter/releases")
         .to_string();
     Some(UpdateInfo {
         update_available: version_newer(&latest, CURRENT),

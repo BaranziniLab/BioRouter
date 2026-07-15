@@ -138,7 +138,7 @@ Create `/Users/wgu/Desktop/CodeGraphAgent/README.md`:
 ```markdown
 # CodeGraphAgent
 
-A [BioRouter](https://github.com/BaranziniLab/BioRouter) extension (`.brxt`)
+A [BioRouter](https://github.com/BaranziniLab/biorouter) extension (`.brxt`)
 that provides a pre-indexed code knowledge graph (callers, callees, impact,
 trace) via a vendored fork of [CodeGraph](https://github.com/colbymchenry/codegraph).
 
@@ -3295,7 +3295,7 @@ Expected: `codegraphagent.brxt` (~20-40 KB) created at repo root.
 
 - [ ] **Step 2: Install into local BioRouter**
 
-In BioRouter (running locally — see `/Users/wgu/Desktop/BioRouter/CLAUDE.md` for run commands):
+In BioRouter (running locally — see `/Users/wgu/Desktop/biorouter/CLAUDE.md` for run commands):
 1. Open BioRouter
 2. Settings → Extensions → Install from file
 3. Select `/Users/wgu/Desktop/CodeGraphAgent/codegraphagent.brxt`
@@ -3307,7 +3307,7 @@ Expected: extension shows as installed but disabled (per BioRouter's default-off
 
 In BioRouter:
 1. Settings → Extensions → CodeGraphAgent → Enable
-2. Open a session against `/Users/wgu/Desktop/BioRouter` (a real Rust + TS project)
+2. Open a session against `/Users/wgu/Desktop/biorouter` (a real Rust + TS project)
 3. Ask the agent: "use codegraph_search to find functions named 'analyze'"
 
 Expected: agent calls `codegraph_search`, results list `analyze` from `crates/biorouter-mcp/src/developer/analyze/mod.rs` and related locations.
@@ -3316,8 +3316,8 @@ Expected: agent calls `codegraph_search`, results list `analyze` from `crates/bi
 
 Run:
 ```bash
-ls -la /Users/wgu/Desktop/BioRouter/.biorouter/codegraph/ && \
-ls -la /Users/wgu/Desktop/BioRouter/.codegraph
+ls -la /Users/wgu/Desktop/biorouter/.biorouter/codegraph/ && \
+ls -la /Users/wgu/Desktop/biorouter/.codegraph
 ```
 
 Expected: `.biorouter/codegraph/codegraph.db` exists; `.codegraph` is a symlink pointing into `.biorouter/codegraph/`.
@@ -3376,7 +3376,7 @@ In the BioRouter repo, edit [docs/superpowers/specs/2026-05-29-codegraphagent-ex
 
 Run:
 ```bash
-cd /Users/wgu/Desktop/BioRouter && \
+cd /Users/wgu/Desktop/biorouter && \
 git add docs/superpowers/specs/2026-05-29-codegraphagent-extension-design.md && \
 git commit -m "docs(specs): mark CodeGraphAgent foundation released"
 ```

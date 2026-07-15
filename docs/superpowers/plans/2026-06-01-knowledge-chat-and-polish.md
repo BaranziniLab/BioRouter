@@ -26,7 +26,7 @@
 - [ ] **Pre-step A:** baseline.
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge && source bin/activate-hermit
+cd /Users/wgu/Desktop/biorouter-knowledge && source bin/activate-hermit
 git rev-parse --abbrev-ref HEAD       # expect feature/knowledge
 cargo test -p biorouter-server --test knowledge_routes 2>&1 | tail -3
 cargo test -p biorouter-mcp --lib knowledge:: 2>&1 | tail -3
@@ -482,7 +482,7 @@ Expected: zero errors.
 - [ ] **Step 3: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/KnowledgeContext.tsx
 git commit -m "feat(ui): sync active KB through POST /knowledge/active so chat sees it"
 ```
@@ -631,7 +631,7 @@ Expected: zero errors.
 - [ ] **Step 6: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx \
         ui/desktop/src/components/ChatInput.tsx \
         ui/desktop/src/components/knowledge/KnowledgeView.tsx \
@@ -684,7 +684,7 @@ Expected: zero errors.
 - [ ] **Step 4: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/MentionPopover.tsx
 git commit -m "feat(ui): /knowledge slash command inserts templated prompt for the active KB"
 ```
@@ -830,7 +830,7 @@ When working on the Knowledge feature:
 - [ ] **Step 2: Run full smoke.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge && source bin/activate-hermit
+cd /Users/wgu/Desktop/biorouter-knowledge && source bin/activate-hermit
 cargo fmt --check 2>&1 | tail -5
 cargo clippy -p biorouter-server -p biorouter-mcp --tests 2>&1 | tail -10
 cargo test -p biorouter-server --test knowledge_routes 2>&1 | tail -3

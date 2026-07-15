@@ -1,7 +1,7 @@
 # Guardrails, Security & Permission System — Architecture Review
 
 Reviewer subsystem: Guardrails, security & permission system
-Reviewed at commit `24cdc3a2` (branch `main`; review worktree path was passed as `undefined`, so files were read from the canonical tree at `/Users/wanjun/Desktop/BioRouter`, which is on the same commit as the review worktree `.worktrees/agent-loop-review`).
+Reviewed at commit `24cdc3a2` (branch `main`; review worktree path was passed as `undefined`, so files were read from the canonical tree at `/Users/wanjun/Desktop/biorouter`, which is on the same commit as the review worktree `.worktrees/agent-loop-review`).
 
 ## Overview
 

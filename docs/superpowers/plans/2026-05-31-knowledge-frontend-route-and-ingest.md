@@ -27,7 +27,7 @@
 - [ ] **Pre-step A:** branch + baseline.
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge && source bin/activate-hermit
+cd /Users/wgu/Desktop/biorouter-knowledge && source bin/activate-hermit
 git rev-parse --abbrev-ref HEAD       # expect feature/knowledge
 # Verify backend tests still pass:
 cargo test -p biorouter-server --test knowledge_routes 2>&1 | tail -3   # 14 passed

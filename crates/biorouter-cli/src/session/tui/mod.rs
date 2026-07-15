@@ -1813,8 +1813,8 @@ mod tests {
     #[test]
     fn paste_file_uri_list_inserts_local_paths() {
         let mut app = App::new(StatusInfo::default());
-        app.paste("file:///Users/wgu/Desktop/BioRouter/README.md\n");
-        assert_eq!(app.input, "/Users/wgu/Desktop/BioRouter/README.md");
+        app.paste("file:///Users/wgu/Desktop/biorouter/README.md\n");
+        assert_eq!(app.input, "/Users/wgu/Desktop/biorouter/README.md");
     }
 
     #[test]

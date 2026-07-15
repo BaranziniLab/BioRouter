@@ -27,7 +27,7 @@
 - [ ] **Pre-step A:** branch + baseline.
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge && source bin/activate-hermit
+cd /Users/wgu/Desktop/biorouter-knowledge && source bin/activate-hermit
 git rev-parse --abbrev-ref HEAD       # expect feature/knowledge
 # Backend baseline
 cargo test -p biorouter-server --test knowledge_routes 2>&1 | tail -3
@@ -118,7 +118,7 @@ A `NodePreview` panel needs the markdown body of any KB page. The `KnowledgeServ
 - [ ] **Step 1: Confirm where `read_page` already lives, if at all.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 rg -n "pub fn read_page|pub async fn read_page" crates/biorouter-mcp/src/knowledge/
 rg -n "resolve_readable_path" crates/biorouter-mcp/src/knowledge/
 ```
@@ -347,7 +347,7 @@ The lint workflow (`kb_lint`) reports pages with no inbound links as orphans
 - [ ] **Step 2: Verify the new file lints / has no broken markdown.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 cargo build -p biorouter-mcp 2>&1 | tail -3
 # schema_default.md is embedded with include_str! — confirm:
 rg -n 'include_str!.*schema_default' crates/biorouter-mcp/src/knowledge/
@@ -375,7 +375,7 @@ git commit -m "fix(knowledge): default schema spells out [[link]] emission rules
 - [ ] **Step 1: Install.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm install react-force-graph-2d@1.27.1 d3-force@3.0.0 --save
 ```
 
@@ -384,7 +384,7 @@ Pin to known-good versions to avoid surprise ESM/CJS breakage (the package has a
 - [ ] **Step 2: Verify the imports resolve in TS.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 node -e "import('react-force-graph-2d').then(m => console.log(Object.keys(m)))"
 ```
 
@@ -393,7 +393,7 @@ Expected: prints `[ 'default' ]` (the default export is the React component).
 - [ ] **Step 3: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/package.json ui/desktop/package-lock.json
 git commit -m "feat(ui): add react-force-graph-2d + d3-force for knowledge graph rendering"
 ```
@@ -480,7 +480,7 @@ export const HUB_TOP_N = 6;
 - [ ] **Step 3: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -489,7 +489,7 @@ Expected: no new errors.
 - [ ] **Step 4: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/graph/
 git commit -m "feat(ui): credibility colour map + graph visual constants"
 ```
@@ -659,7 +659,7 @@ The earlier `// TODO Plan 6: ...` comment was scaffolding for active-KB server s
 - [ ] **Step 3: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -668,7 +668,7 @@ Expected: no new errors. If `useKnowledge` is imported anywhere already, all exi
 - [ ] **Step 4: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/hooks/useKnowledgeGraph.ts \
         ui/desktop/src/components/knowledge/KnowledgeContext.tsx
 git commit -m "feat(ui): useKnowledgeGraph hook + graph-refresh ref in KnowledgeContext"
@@ -857,7 +857,7 @@ void retractedColor;
 - [ ] **Step 2: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -866,7 +866,7 @@ Expected: no new errors. If `ForceGraphMethods` doesn't export from the version 
 - [ ] **Step 3: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/graph/ForceGraphCanvas.tsx
 git commit -m "feat(ui): ForceGraphCanvas renders knowledge graph with credibility colors + hover dimming"
 ```
@@ -931,7 +931,7 @@ export function usePagePreview(kbId: string | null, path: string | null): UsePag
 If the generated SDK uses `query` differently (some versions inline path queries), grep the file:
 
 ```bash
-grep -n "readPage" /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop/src/api/sdk.gen.ts
+grep -n "readPage" /Users/wgu/Desktop/biorouter-knowledge/ui/desktop/src/api/sdk.gen.ts
 ```
 
 and follow whatever signature it generated.
@@ -992,7 +992,7 @@ export function NodePreview({ kbId, node, onClose }: Props) {
 - [ ] **Step 3: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -1001,7 +1001,7 @@ Expected: no new errors.
 - [ ] **Step 4: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/hooks/usePagePreview.ts \
         ui/desktop/src/components/knowledge/graph/NodePreview.tsx
 git commit -m "feat(ui): NodePreview card shows page body when a graph node is clicked"
@@ -1135,7 +1135,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 - [ ] **Step 2: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -1144,7 +1144,7 @@ Expected: no new errors.
 - [ ] **Step 3: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 git commit -m "feat(ui): KnowledgeGraphPanel composes ForceGraph + NodePreview + refresh wiring"
 ```
@@ -1388,7 +1388,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
 - [ ] **Step 4: Verify TS compiles.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge/ui/desktop
+cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
@@ -1397,7 +1397,7 @@ Expected: no new errors. If `Sheet`'s prop API differs from the snippet (`side`,
 - [ ] **Step 5: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/hooks/useHistory.ts \
         ui/desktop/src/components/knowledge/changelog/
 git commit -m "feat(ui): ChangeLogDrawer with filter chips, preview, and restore flow"
@@ -1515,7 +1515,7 @@ No new import needed.
 - [ ] **Step 3: Delete the placeholder.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git rm ui/desktop/src/components/knowledge/RightSidePlaceholder.tsx
 ```
 
@@ -1530,7 +1530,7 @@ Expected: no new errors. If there are stale references to `RightSidePlaceholder`
 - [ ] **Step 5: Commit.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 git add ui/desktop/src/components/knowledge/KnowledgeView.tsx \
         ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx
 # RightSidePlaceholder.tsx was already staged by `git rm`
@@ -1549,7 +1549,7 @@ Plan 3 added `list_history` / `preview_state` / `restore_state` route tests. Con
 - [ ] **Step 1: Check what exists.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 find crates -name 'knowledge_revert*' -o -name 'knowledge*revert*'
 ls crates/biorouter-test/tests/ 2>/dev/null
 ```
@@ -1622,7 +1622,7 @@ and adapt. The point of the test is the **behavior** (page A persists, page B di
 - [ ] **Step 3: Run the test.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 cargo test -p biorouter-test --test knowledge_revert_integration 2>&1 | tail -10
 ```
 
@@ -1649,7 +1649,7 @@ A focused end-to-end smoke that proves the new panel works against the real back
 If the dev server isn't already running:
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 just run-dev    # or just run-ui
 ```
 
@@ -1685,7 +1685,7 @@ ENABLE_PLAYWRIGHT=1 npm run start-gui
 - [ ] **Step 1: Run the full check.**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter-knowledge
+cd /Users/wgu/Desktop/biorouter-knowledge
 just check-everything 2>&1 | tail -30
 ```
 

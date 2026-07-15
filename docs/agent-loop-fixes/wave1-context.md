@@ -1,6 +1,6 @@
 # Wave 1 — "Context & prompts" cluster verification report
 
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/context`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/context`
 Branch: `agent-loop-context` (base: `agent-loop-integration`)
 Verifier gate: **GREEN**
 

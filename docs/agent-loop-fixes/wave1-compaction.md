@@ -1,6 +1,6 @@
 # Wave 1 — Compaction & Memory cluster verification
 
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/compaction`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/compaction`
 Branch: `agent-loop-compaction` (base `agent-loop-integration`)
 Target dir: `/Users/wanjun/.cache/br-targets/compaction`
 

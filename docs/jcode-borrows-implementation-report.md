@@ -7,7 +7,7 @@
 commit per change, and benchmark/verify each one.
 
 > **Recoverability.** All work is on the `perf/jcode-borrows` branch in a separate
-> worktree at `/Users/wanjun/Desktop/BioRouter-perf`. `main`'s uncommitted WIP is
+> worktree at `/Users/wanjun/Desktop/biorouter-perf`. `main`'s uncommitted WIP is
 > untouched and fully intact. Every change is its own commit, so any of them can be
 > reverted individually (`git revert <hash>`) or the whole branch dropped. The
 > shared `target/` build cache was reused for speed; main's source is unaffected
@@ -146,7 +146,7 @@ what a busy daemon actually pays. Startup is unchanged despite jemalloc init.
 
 ## Reverting / recoverability
 
-- Whole branch: `git -C /Users/wanjun/Desktop/BioRouter checkout main` (main is
+- Whole branch: `git -C /Users/wanjun/Desktop/biorouter checkout main` (main is
   untouched); delete the worktree with `git worktree remove ../BioRouter-perf`.
 - Single change: `git revert <hash>` (commits are 1:1 with changes).
 - All new behavior is **off-switchable at runtime**: `--no-default-features` (FW1

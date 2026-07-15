@@ -31,7 +31,7 @@ beforeEach(() => {
     value: {
       createTerminalSession: vi.fn(async () => ({
         backend: 'pty',
-        cwd: '/Users/wgu/Desktop/BioRouter',
+        cwd: '/Users/wgu/Desktop/biorouter',
         sessionId: window.crypto.randomUUID(),
         success: true,
       })),
@@ -59,11 +59,11 @@ describe('InAppTerminalDock', () => {
   it('opens with a visible active tab and lets users add another terminal tab', async () => {
     const user = userEvent.setup();
 
-    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />);
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
     const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
     expect(tabList).toBeInTheDocument();
-    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter');
     expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('hidden');
     expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('invisible');
 
@@ -72,14 +72,14 @@ describe('InAppTerminalDock', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(2);
     });
-    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter 2');
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter 2');
   });
 
   it('closes only the selected terminal tab and keeps another tab active', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />);
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={onClose} />);
 
     await user.click(screen.getByRole('button', { name: /new terminal session/i }));
     await waitFor(() => {
@@ -91,7 +91,7 @@ describe('InAppTerminalDock', () => {
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(1);
     });
-    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter');
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -99,10 +99,10 @@ describe('InAppTerminalDock', () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />);
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={onClose} />);
 
     await waitFor(() => {
-      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter');
     });
 
     await user.click(screen.getByRole('button', { name: /close terminal tab biorouter/i }));
@@ -123,7 +123,7 @@ describe('InAppTerminalDock', () => {
         <button type="button" onClick={onOutsideAction}>
           Outside action
         </button>
-        <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />
+        <InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={onClose} />
       </>
     );
 
@@ -144,7 +144,7 @@ describe('InAppTerminalDock', () => {
   it('caps concurrent terminal panes and keeps the tab strip scrollable', async () => {
     const user = userEvent.setup();
 
-    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />);
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
     const addButton = await screen.findByRole('button', { name: /new terminal session/i });
     for (let index = 1; index < MAX_TERMINAL_PANES; index += 1) {

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 const base = process.argv[2], id = process.argv[3];
 const OUT = `/tmp/exports/${id}`;
-const ESB = '/Users/wanjun/Desktop/BioRouter/ui/desktop/node_modules/.bin/esbuild';
+const ESB = '/Users/wanjun/Desktop/biorouter/ui/desktop/node_modules/.bin/esbuild';
 const res = { id, files: 0, hasRun: false, hasDist: false, endpointOk: false, themeOk: false, rebuildOk: false, ok: false, err: '' };
 try {
   const r = await fetch(`${base}/apps/${id}/export`);

@@ -57,7 +57,7 @@
 
 ## Conventions used in this plan
 
-- All paths are absolute from repo root `/Users/wgu/Desktop/BioRouter`.
+- All paths are absolute from repo root `/Users/wgu/Desktop/biorouter`.
 - Frontend test runner: `cd ui/desktop && npm run test:run -- <path>` (Vitest).
 - Frontend type-check + lint: `cd ui/desktop && npm run lint:check`.
 - Commit conventions follow the repo's existing pattern (`feat(ui):`, `fix(...):`, `docs(...):` etc.). See `.claude/skills/git-commit-style/` if present, otherwise mirror recent commits.
@@ -2450,7 +2450,7 @@ Expected: clean.
 From repo root:
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && source bin/activate-hermit && just run-ui
+cd /Users/wgu/Desktop/biorouter && source bin/activate-hermit && just run-ui
 ```
 
 This will rebuild the Rust backend, build the renderer, and launch the Electron app.

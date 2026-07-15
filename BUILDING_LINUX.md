@@ -37,8 +37,8 @@ sudo zypper install dpkg fakeroot gcc gcc-c++ make
 
 ### 1. Clone and Setup
 ```bash
-git clone https://github.com/BaranziniLab/BioRouter.git
-cd BioRouter
+git clone https://github.com/BaranziniLab/biorouter.git
+cd biorouter
 ```
 
 ### 2. Build the Rust Backend
@@ -120,7 +120,7 @@ These are harmless and don't affect functionality. To suppress them, create a la
 
 ```bash
 #!/bin/bash
-cd /path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64
+cd /path/to/biorouter/ui/desktop/out/BioRouter-linux-x64
 ./BioRouter 2>&1 | grep -v "GLib-GObject" | grep -v "browser_main_loop"
 ```
 
@@ -170,8 +170,8 @@ Create `~/.local/share/applications/biorouter.desktop`:
 [Desktop Entry]
 Name=BioRouter AI Agent
 Comment=AI research environment for biomedical discovery
-Exec=/path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64/BioRouter %U
-Icon=/path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
+Exec=/path/to/biorouter/ui/desktop/out/BioRouter-linux-x64/BioRouter %U
+Icon=/path/to/biorouter/ui/desktop/out/BioRouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
 Terminal=false
 Type=Application
 Categories=Science;Education;Utility;

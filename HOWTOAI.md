@@ -99,12 +99,12 @@ Questions? Join our [GitHub Discussions](https://github.com/BaranziniLab/biorout
 **Using BioRouter (meta!):**
 ```bash
 # Install BioRouter — download the installer for your platform from
-# https://github.com/BaranziniLab/BioRouter/releases/latest
+# https://github.com/BaranziniLab/biorouter/releases/latest
 # (macOS .dmg, Windows .zip, Linux .deb/.rpm), or build the CLI from source
 # with `cargo build --release` (binary at target/release/biorouter).
 
 # Navigate to your BioRouter clone
-cd /path/to/BioRouter
+cd /path/to/biorouter
 
 # Start BioRouter in the repo
 biorouter

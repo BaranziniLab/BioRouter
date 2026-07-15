@@ -434,7 +434,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 "Error {}.\n\
                 Please check your system keychain and run 'biorouter configure' again.\n\
                 If your system is unable to use the keyring, please try setting secret key(s) via environment variables.\n\
-                For more info, see: https://BaranziniLab.github.io/BioRouter/docs/troubleshooting/#keychainkeyring-errors",
+                For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors",
                 e
             ));
             process::exit(1);

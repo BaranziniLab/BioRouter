@@ -55,7 +55,7 @@ docs/sitemap.xml           DELETE (and all other Docusaurus root files)
 - [ ] **Step 1: Create the verification script**
 
 ```bash
-cat > /Users/wgu/Desktop/BioRouter/scripts/verify-docs.sh << 'EOF'
+cat > /Users/wgu/Desktop/biorouter/scripts/verify-docs.sh << 'EOF'
 #!/usr/bin/env bash
 # Verification script for docs consolidation.
 # All checks must pass (exit 0) when migration is complete.
@@ -117,13 +117,13 @@ else
   exit 1
 fi
 EOF
-chmod +x /Users/wgu/Desktop/BioRouter/scripts/verify-docs.sh
+chmod +x /Users/wgu/Desktop/biorouter/scripts/verify-docs.sh
 ```
 
 - [ ] **Step 2: Run verify script — expect failures (migration not done yet)**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && bash scripts/verify-docs.sh || true
+cd /Users/wgu/Desktop/biorouter && bash scripts/verify-docs.sh || true
 ```
 
 Expected output: several `FAIL` lines (HTML files exist, docs/docs/ exists, etc.)
@@ -139,7 +139,7 @@ Expected output: several `FAIL` lines (HTML files exist, docs/docs/ exists, etc.
 - [ ] **Step 1: Create the script**
 
 ```bash
-cat > /Users/wgu/Desktop/BioRouter/scripts/migrate-docs.py << 'PYEOF'
+cat > /Users/wgu/Desktop/biorouter/scripts/migrate-docs.py << 'PYEOF'
 #!/usr/bin/env python3
 """
 Migrate docs from Docusaurus/MDX to plain markdown.
@@ -173,10 +173,10 @@ STRIP_FM_KEYS = {
 # ── Branding replacements (order matters — longer patterns first) ──────────────
 BRANDING = [
     # URLs first (before bare word replacements)
-    ('block.gitmcp.io',          'github.com/BaranziniLab/BioRouter'),
-    ('block.xyz',                'https://github.com/BaranziniLab/BioRouter'),
-    ('block.github.io',          'https://github.com/BaranziniLab/BioRouter'),
-    ('sq.github.io/goose',       'https://github.com/BaranziniLab/BioRouter'),
+    ('block.gitmcp.io',          'github.com/BaranziniLab/biorouter'),
+    ('block.xyz',                'https://github.com/BaranziniLab/biorouter'),
+    ('block.github.io',          'https://github.com/BaranziniLab/biorouter'),
+    ('sq.github.io/goose',       'https://github.com/BaranziniLab/biorouter'),
     # Bare word branding (case variants)
     (re.compile(r'\bGOOSE\b'),   'BIOROUTER'),
     (re.compile(r'\bGoose\b'),   'BioRouter'),
@@ -400,13 +400,13 @@ if __name__ == '__main__':
         print(f'Errors ({len(errors)}): {errors}')
         sys.exit(1)
 PYEOF
-chmod +x /Users/wgu/Desktop/BioRouter/scripts/migrate-docs.py
+chmod +x /Users/wgu/Desktop/biorouter/scripts/migrate-docs.py
 ```
 
 - [ ] **Step 2: Dry-run to verify all source files exist**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && python3 scripts/migrate-docs.py --dry-run
+cd /Users/wgu/Desktop/biorouter && python3 scripts/migrate-docs.py --dry-run
 ```
 
 Expected: 36 `DRY-RUN:` lines, no `MISSING:` lines.
@@ -424,7 +424,7 @@ If any `MISSING:` lines appear, check the source path against the actual file lo
 - [ ] **Step 1: Run migration**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && python3 scripts/migrate-docs.py
+cd /Users/wgu/Desktop/biorouter && python3 scripts/migrate-docs.py
 ```
 
 Expected: 36 lines of `source -> dest`, then `Done. 36/36 files migrated.`
@@ -433,13 +433,13 @@ Expected: 36 lines of `source -> dest`, then `Done. 36/36 files migrated.`
 
 ```bash
 # 1. extensions-skills.md — should have no JSX, no Goose references
-head -40 /Users/wgu/Desktop/BioRouter/docs/guides/extensions-skills.md
+head -40 /Users/wgu/Desktop/biorouter/docs/guides/extensions-skills.md
 
 # 2. guides/workflows/reference.md — verify recipe→workflow rename
-grep -i "recipe\|goose" /Users/wgu/Desktop/BioRouter/docs/guides/workflows/reference.md | head -10
+grep -i "recipe\|goose" /Users/wgu/Desktop/biorouter/docs/guides/workflows/reference.md | head -10
 
 # 3. extensions/developer.md — verify JSX stripped, GooseBuiltinInstaller gone
-grep -i "GooseBuiltinInstaller\|className\|import " /Users/wgu/Desktop/BioRouter/docs/extensions/developer.md | head -10
+grep -i "GooseBuiltinInstaller\|className\|import " /Users/wgu/Desktop/biorouter/docs/extensions/developer.md | head -10
 ```
 
 Expected for check 2: no output (no recipe/goose hits).
@@ -448,9 +448,9 @@ Expected for check 3: no output (no JSX artifacts).
 - [ ] **Step 3: Check landing pages that were pure JSX — may need a content line**
 
 ```bash
-wc -l /Users/wgu/Desktop/BioRouter/docs/guides/context-engineering.md \
-       /Users/wgu/Desktop/BioRouter/docs/guides/sessions.md \
-       /Users/wgu/Desktop/BioRouter/docs/troubleshooting/index.md
+wc -l /Users/wgu/Desktop/biorouter/docs/guides/context-engineering.md \
+       /Users/wgu/Desktop/biorouter/docs/guides/sessions.md \
+       /Users/wgu/Desktop/biorouter/docs/troubleshooting/index.md
 ```
 
 If any file is under 5 lines, view it and add a one-sentence intro describing what the section covers:
@@ -465,7 +465,7 @@ If any file is under 5 lines, view it and add a one-sentence intro describing wh
 - [ ] **Step 4: Commit migrated files**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add docs/getting-started/ docs/architecture/ docs/guides/ docs/extensions/ docs/troubleshooting/
 git commit -m "docs: migrate 36 files to plain markdown, purge Goose branding and recipe terminology"
 ```
@@ -483,7 +483,7 @@ git commit -m "docs: migrate 36 files to plain markdown, purge Goose branding an
 - [ ] **Step 1: Delete Docusaurus-generated directories**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 
 # Large Docusaurus sections
 rm -rf docs/blog \
@@ -518,26 +518,26 @@ rm -f docs/404.html \
 The `docs/extensions/` directory exists in the Docusaurus site and contains `index.html` and a `detail/` subdirectory. Our migrated `.md` files now live alongside those. Remove only the HTML artifacts; leave the `.md` files intact.
 
 ```bash
-find /Users/wgu/Desktop/BioRouter/docs/extensions -name "*.html" -delete
-find /Users/wgu/Desktop/BioRouter/docs/extensions -name "detail" -type d -exec rm -rf {} + 2>/dev/null || true
+find /Users/wgu/Desktop/biorouter/docs/extensions -name "*.html" -delete
+find /Users/wgu/Desktop/biorouter/docs/extensions -name "detail" -type d -exec rm -rf {} + 2>/dev/null || true
 ```
 
 - [ ] **Step 3: Delete docs/docs/ entirely (old Docusaurus source)**
 
 ```bash
-rm -rf /Users/wgu/Desktop/BioRouter/docs/docs
+rm -rf /Users/wgu/Desktop/biorouter/docs/docs
 ```
 
 - [ ] **Step 4: Delete documentation/ (all content merged into docs/)**
 
 ```bash
-rm -rf /Users/wgu/Desktop/BioRouter/documentation
+rm -rf /Users/wgu/Desktop/biorouter/documentation
 ```
 
 - [ ] **Step 4: Check for any remaining non-superpowers directories**
 
 ```bash
-ls /Users/wgu/Desktop/BioRouter/docs/
+ls /Users/wgu/Desktop/biorouter/docs/
 ```
 
 Expected: only `getting-started/  architecture/  guides/  extensions/  troubleshooting/  superpowers/`
@@ -554,7 +554,7 @@ If any unexpected directory remains (e.g. `docs/markdown-page/`, `docs/recipes/`
 - [ ] **Step 5: Commit deletions**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add -A
 git commit -m "docs: delete Docusaurus infrastructure, blog, audio, video, third-party MCP pages"
 ```
@@ -570,7 +570,7 @@ git commit -m "docs: delete Docusaurus infrastructure, blog, audio, video, third
 - [ ] **Step 1: Run the full verification suite**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && bash scripts/verify-docs.sh
+cd /Users/wgu/Desktop/biorouter && bash scripts/verify-docs.sh
 ```
 
 Expected: `ALL CHECKS PASSED` with all 7 checks showing `PASS`.
@@ -580,7 +580,7 @@ Expected: `ALL CHECKS PASSED` with all 7 checks showing `PASS`.
 If check 3 (goose/geese) fails, find and fix the specific file:
 
 ```bash
-grep -rn "goose\|geese\|Goose\|Geese" /Users/wgu/Desktop/BioRouter/docs --include="*.md" \
+grep -rn "goose\|geese\|Goose\|Geese" /Users/wgu/Desktop/biorouter/docs --include="*.md" \
   | grep -v superpowers/
 ```
 
@@ -594,7 +594,7 @@ For each hit, open the file and replace manually. Common missed cases:
 If check 4 (recipe) fails:
 
 ```bash
-grep -rn "\brecipe\b\|\brecipes\b" /Users/wgu/Desktop/BioRouter/docs --include="*.md" \
+grep -rn "\brecipe\b\|\brecipes\b" /Users/wgu/Desktop/biorouter/docs --include="*.md" \
   -i | grep -v superpowers/
 ```
 
@@ -607,7 +607,7 @@ Fix each file. Common missed cases:
 
 ```bash
 grep -rn "className\|import React\|<Card\|<Tabs\|<TabItem\|<GooseBuiltin" \
-  /Users/wgu/Desktop/BioRouter/docs --include="*.md" | grep -v superpowers/
+  /Users/wgu/Desktop/biorouter/docs --include="*.md" | grep -v superpowers/
 ```
 
 For each hit, open the file and remove the remaining JSX manually.
@@ -615,7 +615,7 @@ For each hit, open the file and remove the remaining JSX manually.
 - [ ] **Step 5: Verify target directory tree looks correct**
 
 ```bash
-find /Users/wgu/Desktop/BioRouter/docs -type f -name "*.md" \
+find /Users/wgu/Desktop/biorouter/docs -type f -name "*.md" \
   | grep -v superpowers/ | sort
 ```
 
@@ -624,7 +624,7 @@ Expected: 36 files across `getting-started/`, `architecture/`, `guides/`, `guide
 - [ ] **Step 6: Commit fixes**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add docs/
 git commit -m "docs: fix remaining branding, JSX, and recipe references after migration"
 ```
@@ -636,7 +636,7 @@ git commit -m "docs: fix remaining branding, JSX, and recipe references after mi
 - [ ] **Step 1: Run verification one final time**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter && bash scripts/verify-docs.sh
+cd /Users/wgu/Desktop/biorouter && bash scripts/verify-docs.sh
 ```
 
 Expected: `ALL CHECKS PASSED`
@@ -644,7 +644,7 @@ Expected: `ALL CHECKS PASSED`
 - [ ] **Step 2: Remove the migration script (no longer needed)**
 
 ```bash
-rm /Users/wgu/Desktop/BioRouter/scripts/migrate-docs.py
+rm /Users/wgu/Desktop/biorouter/scripts/migrate-docs.py
 ```
 
 Keep `scripts/verify-docs.sh` — it's useful for future audits.
@@ -652,7 +652,7 @@ Keep `scripts/verify-docs.sh` — it's useful for future audits.
 - [ ] **Step 3: Final commit**
 
 ```bash
-cd /Users/wgu/Desktop/BioRouter
+cd /Users/wgu/Desktop/biorouter
 git add -A
 git commit -m "docs: remove migration script, consolidation complete"
 ```
@@ -660,7 +660,7 @@ git commit -m "docs: remove migration script, consolidation complete"
 - [ ] **Step 4: Confirm final structure**
 
 ```bash
-find /Users/wgu/Desktop/BioRouter/docs -type d | sort
+find /Users/wgu/Desktop/biorouter/docs -type d | sort
 ```
 
 Expected directories:

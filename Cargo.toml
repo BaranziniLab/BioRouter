@@ -7,7 +7,7 @@ edition = "2021"
 version = "1.88.0"
 authors = ["Wanjun Gu <wanjun.gu@ucsf.edu>"]
 license = "Apache-2.0"
-repository = "https://github.com/BaranziniLab/BioRouter"
+repository = "https://github.com/BaranziniLab/biorouter"
 description = "An AI-powered integrated research environment for biomedical discovery"
 
 [workspace.lints.clippy]

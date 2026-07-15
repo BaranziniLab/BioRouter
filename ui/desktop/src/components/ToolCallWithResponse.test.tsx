@@ -8,7 +8,7 @@ describe('summarizeToolCall', () => {
     expect(
       summarizeToolCall({
         name: 'developer__text_editor',
-        arguments: { command: 'view', path: '/Users/wgu/Desktop/BioRouter/package.json' },
+        arguments: { command: 'view', path: '/Users/wgu/Desktop/biorouter/package.json' },
       })
     ).toBe('Reading package.json');
 
@@ -75,7 +75,7 @@ describe('summarizeToolCall', () => {
         status: 'success',
         value: {
           name: 'developer__text_editor',
-          arguments: { command: 'view', path: '/Users/wgu/Desktop/BioRouter/package.json' },
+          arguments: { command: 'view', path: '/Users/wgu/Desktop/biorouter/package.json' },
         },
       },
     };
@@ -90,14 +90,14 @@ describe('summarizeToolCall', () => {
 
     expect(screen.getByText(/Reading package\.json/)).toBeInTheDocument();
     expect(screen.queryByText('command')).not.toBeInTheDocument();
-    expect(screen.queryByText('/Users/wgu/Desktop/BioRouter/package.json')).not.toBeInTheDocument();
+    expect(screen.queryByText('/Users/wgu/Desktop/biorouter/package.json')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/Reading package\.json/).closest('button') as HTMLElement);
     fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
 
     expect(screen.getByText('command')).toBeInTheDocument();
     expect(screen.getByText('view')).toBeInTheDocument();
-    expect(screen.getByText('/Users/wgu/Desktop/BioRouter/package.json')).toBeInTheDocument();
+    expect(screen.getByText('/Users/wgu/Desktop/biorouter/package.json')).toBeInTheDocument();
   });
 
   it('keeps the tool call trigger compact while preserving click-to-expand details', () => {

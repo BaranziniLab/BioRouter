@@ -47,7 +47,7 @@ project hook config):
     "Stop": [
       { "hooks": [
         { "type": "command",
-          "command": "/absolute/path/to/BioRouter/scripts/hooks/verify-and-checkpoint.sh" }
+          "command": "/absolute/path/to/biorouter/scripts/hooks/verify-and-checkpoint.sh" }
       ] }
     ]
   }

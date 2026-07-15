@@ -1,7 +1,7 @@
 # Wave-0 Verification Report — Agent-Loop Fix Campaign
 
 Verifier run against branch `ui-hardening-a11y-tests` worktree at
-`/Users/wanjun/Desktop/BioRouter/.worktrees/wave0`, comparing
+`/Users/wanjun/Desktop/biorouter/.worktrees/wave0`, comparing
 `agent-loop-integration..HEAD`.
 
 **Merge gate: GREEN.** Zero new (unexplained) test failures across all seven

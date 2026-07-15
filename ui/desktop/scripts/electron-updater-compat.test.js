@@ -66,7 +66,7 @@ const { yaml } = buildMacManifest({
 });
 
 const baseUrl = new URL(
-  'https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.0/'
+  'https://github.com/BaranziniLab/biorouter/releases/download/v1.86.0/'
 );
 
 console.log('electron-updater manifest compatibility');

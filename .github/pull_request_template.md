@@ -15,7 +15,7 @@
 - [ ] Other (specify below)
 
 ### AI Assistance
-<!-- great that you got assistance 🔥, just check out the HOWTOAI guidance: https://github.com/BaranziniLab/BioRouter/blob/main/HOWTOAI.md-->
+<!-- great that you got assistance 🔥, just check out the HOWTOAI guidance: https://github.com/BaranziniLab/biorouter/blob/main/HOWTOAI.md-->
 - [ ] This PR was created or reviewed with AI assistance
 
 ### Testing

@@ -2011,7 +2011,7 @@ Working directory: /path/to/cwd
   </header>
   <div class="doc__body">
 
-<p>Reviewer subsystem: Guardrails, security &amp; permission system Reviewed at commit <code>24cdc3a2</code> (branch <code>main</code>; review worktree path was passed as <code>undefined</code>, so files were read from the canonical tree at <code>/Users/wanjun/Desktop/BioRouter</code>, which is on the same commit as the review worktree <code>.worktrees/agent-loop-review</code>).</p>
+<p>Reviewer subsystem: Guardrails, security &amp; permission system Reviewed at commit <code>24cdc3a2</code> (branch <code>main</code>; review worktree path was passed as <code>undefined</code>, so files were read from the canonical tree at <code>/Users/wanjun/Desktop/biorouter</code>, which is on the same commit as the review worktree <code>.worktrees/agent-loop-review</code>).</p>
 <h2 id="internal-guardrails-permissions-overview">Overview</h2>
 <p>BioRouter's guard rail surface is split across three loosely coupled subsystems that live at different points in the tool lifecycle:</p>
 <ol type="1">
@@ -2115,7 +2115,7 @@ BRSDK app socket (separate path): apply_pii_policy on user input → mask/block;
   <div class="doc__body">
 
 <p>Subsystem review of BioRouter's agentic feedback loop, focused on how the agent avoids infinite loops, repetitive tool calls, runaway turns, and stuck states.</p>
-<p>Primary files reviewed (all under the review worktree <code>/Users/wanjun/Desktop/BioRouter/.worktrees/agent-loop-review</code>):</p>
+<p>Primary files reviewed (all under the review worktree <code>/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review</code>):</p>
 <ul>
 <li><code>crates/biorouter/src/tool_monitor.rs</code> (165 lines — read fully)</li>
 <li><code>crates/biorouter/src/tool_inspection.rs</code> (the trait + result-application glue)</li>
@@ -2281,7 +2281,7 @@ tokio::select! {
   <div class="doc__body">
 
 <p>Review subsystem: how BioRouter (a Goose fork: CLI + <code>biorouterd</code> daemon + Electron GUI) handles work that outlives a single tool call — background shell jobs, subagents, the cron scheduler, mid-run user decisions, and what survives a daemon restart.</p>
-<p>Note on paths: the review worktree path arrived as literal <code>undefined</code>, so this review was run against the live checkout at <code>/Users/wanjun/Desktop/BioRouter</code>. All citations are repo-relative.</p>
+<p>Note on paths: the review worktree path arrived as literal <code>undefined</code>, so this review was run against the live checkout at <code>/Users/wanjun/Desktop/biorouter</code>. All citations are repo-relative.</p>
 <h2 id="internal-long-running-overview">Overview</h2>
 <p>There are four largely independent mechanisms for "work that does not finish in one blocking call":</p>
 <ol type="1">
@@ -2394,7 +2394,7 @@ agent → shell_kill{job_id} → SIGTERM(-pgid) then SIGKILL</code></pre>
   <div class="doc__body">
 
 <p>Review of BioRouter's agentic feedback loop, subsystem: <strong>how the agent knows where it is, what it is doing, what it has done, and whether it is going wrong.</strong></p>
-<p>All paths relative to repo root (<code>/Users/wanjun/Desktop/BioRouter</code>). Reviewed at branch <code>ui-hardening-a11y-tests</code>.</p>
+<p>All paths relative to repo root (<code>/Users/wanjun/Desktop/biorouter</code>). Reviewed at branch <code>ui-hardening-a11y-tests</code>.</p>
 <h2 id="internal-state-awareness-overview">Overview</h2>
 <p>The agent's situational state is assembled from four largely-independent mechanisms, none of which resemble the "repo map + checkpoint + diagnostics" stack of a modern coding agent:</p>
 <ol type="1">
@@ -2608,7 +2608,7 @@ Permission ask (mid-turn):
   </header>
   <div class="doc__body">
 
-<p><em>Subsystem review — BioRouter agentic feedback loop.</em> Paths are relative to the review worktree root (<code>/Users/wanjun/Desktop/BioRouter/.worktrees/agent-loop-review</code>). Line numbers match files as read on 2026-07-12.</p>
+<p><em>Subsystem review — BioRouter agentic feedback loop.</em> Paths are relative to the review worktree root (<code>/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review</code>). Line numbers match files as read on 2026-07-12.</p>
 <h2 id="internal-verification-overview">Overview</h2>
 <p>BioRouter's "self-verification" story is thin and mostly <strong>prompt-level</strong>. There are exactly three code-level checkpoints, and only one of them is a hard, enforced gate:</p>
 <ol type="1">

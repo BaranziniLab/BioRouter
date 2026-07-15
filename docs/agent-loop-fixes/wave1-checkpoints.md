@@ -1,6 +1,6 @@
 # Wave 1 — Checkpoints & VCS cluster: verification report
 
-Worktree: `/Users/wanjun/Desktop/BioRouter/.worktrees/checkpoints`
+Worktree: `/Users/wanjun/Desktop/biorouter/.worktrees/checkpoints`
 Base: `agent-loop-integration`
 Verifier gate: **GREEN** (zero new failures introduced by this cluster).
 

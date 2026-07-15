@@ -1261,7 +1261,7 @@ If no changes, skip the commit.
 ```bash
 killall -9 Electron "Electron Helper" "Electron Helper (GPU)" "Electron Helper (Renderer)" 2>/dev/null
 osascript -e 'tell application "Terminal" to activate' \
-          -e 'tell application "Terminal" to do script "cd /Users/wgu/Desktop/BioRouter/ui/desktop && ENABLE_PLAYWRIGHT=1 npm run start-gui 2>&1 | tee /tmp/biorouter-start.log"'
+          -e 'tell application "Terminal" to do script "cd /Users/wgu/Desktop/biorouter/ui/desktop && ENABLE_PLAYWRIGHT=1 npm run start-gui 2>&1 | tee /tmp/biorouter-start.log"'
 ```
 
 Wait for CDP via Monitor until `curl -sf http://localhost:9222/json/version` returns 200.

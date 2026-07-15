@@ -175,7 +175,7 @@ This governance model may evolve as BioRouter grows. Any proposed modification t
 
 ## Current Membership
 
-Core Maintainers and Maintainers are listed in the main BioRouter repository's [MAINTAINERS.md](https://github.com/BaranziniLab/BioRouter/blob/main/MAINTAINERS.md) file with their areas of expertise where applicable.
+Core Maintainers and Maintainers are listed in the main BioRouter repository's [MAINTAINERS.md](https://github.com/BaranziniLab/biorouter/blob/main/MAINTAINERS.md) file with their areas of expertise where applicable.
 
 ## Summary
 

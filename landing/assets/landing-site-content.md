@@ -26,7 +26,7 @@ BioRouter Landing/
 
 Source icon: `/Users/wgu/Desktop/biorouter/ui/desktop/src/images/icon.png`
 Source docs: `/Users/wgu/Desktop/biorouter/documentation/`
-GitHub: https://github.com/BaranziniLab/BioRouter
+GitHub: https://github.com/BaranziniLab/biorouter
 
 ---
 
@@ -90,7 +90,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.88.0 Release Notes (https://github.com/BaranziniLab/BioRouter/releases/tag/v1.88.0)
+- v1.88.0 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -115,14 +115,14 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 ### Download Links (v1.88.0)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | BioRouter-1.88.0-arm64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-arm64.dmg |
-| macOS Intel | BioRouter-1.88.0-x64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-x64.dmg |
-| Windows x64 | BioRouter-win32-x64-1.88.0.zip | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-win32-x64-1.88.0.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.88.0_amd64.deb | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter_1.88.0_amd64.deb |
-| Linux Fedora/RHEL | BioRouter-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-1.x86_64.rpm |
-| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.0_amd64.deb | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-cli_1.88.0_amd64.deb |
-| Linux CLI Fedora/RHEL | biorouter-cli-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-cli-1.88.0-1.x86_64.rpm |
-| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-headless-linux-x64.tar.gz |
+| macOS Apple Silicon | BioRouter-1.88.0-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/BioRouter-1.88.0-arm64.dmg |
+| macOS Intel | BioRouter-1.88.0-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/BioRouter-1.88.0-x64.dmg |
+| Windows x64 | BioRouter-win32-x64-1.88.0.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/BioRouter-win32-x64-1.88.0.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.88.0_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/biorouter_1.88.0_amd64.deb |
+| Linux Fedora/RHEL | BioRouter-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/BioRouter-1.88.0-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.0_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/biorouter-cli_1.88.0_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/biorouter-cli-1.88.0-1.x86_64.rpm |
+| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.0/biorouter-headless-linux-x64.tar.gz |
 
 ### Install Commands
 - macOS: Open DMG and drag BioRouter.app to /Applications
@@ -282,7 +282,7 @@ Each card contains:
 
 ### News
 1. **BioRouter v1.88.0 Release** (July 2026)
-   - Link: https://github.com/BaranziniLab/BioRouter/releases/tag/v1.88.0
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0
    - What's new: controllable agent runs, honest usage accounting, faster desktop and TUI rendering, responsive workspaces, Agent Drafter hardening, cross-platform security, and desktop/CLI/headless packages
 
 2. **UCSF AI Research Day** (2026)
@@ -290,7 +290,7 @@ Each card contains:
    - BioRouter to be featured
 
 ### Resource Links
-- GitHub: https://github.com/BaranziniLab/BioRouter
+- GitHub: https://github.com/BaranziniLab/biorouter
 - Baranzini Lab: https://baranzinilab.ucsf.edu/
 - Bakar CHSI: https://bakarinstitute.ucsf.edu/
 - UCSF ARS: https://ars.ucsf.edu/
@@ -384,5 +384,5 @@ Each card contains:
 - `/Users/wgu/Desktop/biorouter/ui/desktop/src/images/icon.png`
 - `/Users/wgu/Desktop/biorouter/README.md`
 - `/Users/wgu/Desktop/biorouter/docs/release-notes/vX.Y.Z.md`
-- GitHub: https://github.com/BaranziniLab/BioRouter
+- GitHub: https://github.com/BaranziniLab/biorouter
 - GitHub Agents: UCSFOMOPAgent, SPOKEAgent, MedCP, playwright-mcp

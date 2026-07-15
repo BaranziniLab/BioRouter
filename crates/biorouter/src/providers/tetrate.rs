@@ -67,7 +67,7 @@ impl TetrateProvider {
 
         let auth = AuthMethod::BearerToken(api_key);
         let api_client = ApiClient::new(host, auth)?
-            .with_header("HTTP-Referer", "https://BaranziniLab.github.io/BioRouter")?
+            .with_header("HTTP-Referer", "https://BaranziniLab.github.io/biorouter")?
             .with_header("X-Title", "biorouter")?;
 
         Ok(Self {

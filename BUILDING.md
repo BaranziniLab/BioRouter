@@ -40,7 +40,7 @@ Also required for macOS signed builds — see [One-Time Setup](#one-time-setup):
 
 All commands below assume you start from the repo root:
 ```bash
-cd /path/to/BioRouter
+cd /path/to/biorouter
 ```
 
 ---
