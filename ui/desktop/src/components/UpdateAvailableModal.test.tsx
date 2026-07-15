@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react';
 import UpdateAvailableModal from './UpdateAvailableModal';
-import type { UpdaterEventPayload } from '../utils/updaterState';
+import type { UpdaterEventPayload, UpdaterState } from '../utils/updaterState';
+import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
 
 // Capture the callback the component registers via onUpdaterEvent so the test
 // can push real updater events at it, then assert on the rendered UI.
@@ -11,6 +12,12 @@ let openExternal: ReturnType<typeof vi.fn>;
 
 function emitAct(p: UpdaterEventPayload) {
   act(() => emit(p));
+}
+
+function requestModal(state: UpdaterState) {
+  act(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_UPDATE_MODAL_EVENT, { detail: state }));
+  });
 }
 
 beforeEach(() => {
@@ -49,6 +56,13 @@ describe('UpdateAvailableModal — one-click flow', () => {
 
     emitAct({ event: 'update-available', data: { version: '1.86.0' } });
     emitAct({ event: 'download-progress', data: { percent: 47 } });
+    expect(screen.queryByText(/Downloading update/i)).toBeNull();
+    requestModal({
+      phase: 'available',
+      latestVersion: '1.86.0',
+      percent: 47,
+      usingFallback: false,
+    });
 
     // Downloading state: progress shown, no install button yet.
     expect(await screen.findByText(/Downloading update/i)).toBeTruthy();
@@ -76,6 +90,13 @@ describe('UpdateAvailableModal — one-click flow', () => {
     });
 
     render(<UpdateAvailableModal />);
+    expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
     const installBtn = await screen.findByRole('button', { name: /Restart & Update/i });
     fireEvent.click(installBtn);
     expect(installUpdate).toHaveBeenCalledTimes(1);
@@ -84,6 +105,12 @@ describe('UpdateAvailableModal — one-click flow', () => {
   it('"Later" dismisses and records per-version dismissal', async () => {
     render(<UpdateAvailableModal />);
     emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
 
     const laterBtn = await screen.findByRole('button', { name: /^Later$/i });
     fireEvent.click(laterBtn);
@@ -93,7 +120,15 @@ describe('UpdateAvailableModal — one-click flow', () => {
 
   it('shows an error state without a fake install button', async () => {
     render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' } });
     emitAct({ event: 'error', data: 'network unreachable' });
+    requestModal({
+      phase: 'error',
+      latestVersion: '1.86.0',
+      percent: 0,
+      usingFallback: false,
+      error: 'network unreachable',
+    });
 
     expect(await screen.findByText(/Update download failed/i)).toBeTruthy();
     expect(screen.getByText(/network unreachable/i)).toBeTruthy();
@@ -103,19 +138,53 @@ describe('UpdateAvailableModal — one-click flow', () => {
   it('a background error after download does not hide the install button', async () => {
     render(<UpdateAvailableModal />);
     emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
     await screen.findByRole('button', { name: /Restart & Update/i });
 
     emitAct({ event: 'error', data: 'late blip' });
     expect(screen.getByRole('button', { name: /Restart & Update/i })).toBeTruthy();
   });
 
-  it('does not re-prompt for a version already dismissed (pre-download)', async () => {
+  it('does not interrupt the user when an update is detected', async () => {
     localStorage.setItem('biorouter:update-modal-dismissed-version', '1.86.0');
     render(<UpdateAvailableModal />);
     emitAct({ event: 'update-available', data: { version: '1.86.0' } });
-    // Modal stays closed for a dismissed in-progress version.
     await waitFor(() => {
       expect(screen.queryByText(/Downloading update/i)).toBeNull();
     });
+
+    requestModal({
+      phase: 'available',
+      latestVersion: '1.86.0',
+      percent: 0,
+      usingFallback: false,
+    });
+    expect(await screen.findByText(/Downloading update/i)).toBeTruthy();
+  });
+
+  it('reopens a dismissed update when the sidebar button requests it', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Later$/i }));
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
+
+    expect(await screen.findByRole('button', { name: /Restart & Update/i })).toBeTruthy();
   });
 });

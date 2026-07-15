@@ -9,8 +9,10 @@ import {
   shouldShowUpdateModal,
   stateFromSnapshot,
   normalizeVersion,
+  hasKnownUpdate,
   type UpdaterState,
 } from '../utils/updaterState';
+import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
 
 const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 const DISMISS_STORAGE_KEY = 'biorouter:update-modal-dismissed-version';
@@ -19,12 +21,13 @@ const DISMISS_STORAGE_KEY = 'biorouter:update-modal-dismissed-version';
  * One-click auto-update prompt.
  *
  * The Electron main process (`src/utils/autoUpdater.ts`) checks GitHub on
- * startup and, when a newer release is found, downloads it in the background
- * via `electron-updater`. This modal listens to those events and, once the
- * update is fully downloaded, offers a single **Restart & Update** button that
- * calls `installUpdate()` → `autoUpdater.quitAndInstall()`. The app quits,
- * swaps in the new version (all bundled binaries included), and relaunches —
- * no manual DMG download, drag-and-drop, or app restart required.
+ * startup and every three hours. When a newer release is found, the sidebar
+ * shows UPDATE while `electron-updater` downloads it in the background. This
+ * modal opens when the user clicks that button and, once the update is fully
+ * downloaded, offers a single **Restart & Update** action that calls
+ * `installUpdate()` → `autoUpdater.quitAndInstall()`. The app quits, swaps in
+ * the new version (all bundled binaries included), and relaunches — no manual
+ * DMG download, drag-and-drop, or app restart required.
  *
  * User settings live in `~/.config/biorouter` and are untouched by the
  * in-place app replacement, so nothing is lost across the update.
@@ -43,11 +46,7 @@ export default function UpdateAvailableModal() {
 
     // Subscribe to live updater events from the main process.
     const dispose = window.electron.onUpdaterEvent((payload) => {
-      setState((prev) => {
-        const next = reduceUpdaterEvent(prev, payload);
-        maybeOpen(next);
-        return next;
-      });
+      setState((prev) => reduceUpdaterEvent(prev, payload));
     });
 
     // Recover any state that was already established before this mounted (the
@@ -62,7 +61,6 @@ export default function UpdateAvailableModal() {
           const order = ['idle', 'up-to-date', 'checking', 'error', 'available', 'downloaded'];
           const next =
             order.indexOf(recovered.phase) > order.indexOf(prev.phase) ? recovered : prev;
-          maybeOpen(next);
           return next;
         });
       })
@@ -70,21 +68,19 @@ export default function UpdateAvailableModal() {
         /* no snapshot available — rely on live events */
       });
 
-    function maybeOpen(next: UpdaterState) {
-      if (cancelled) return;
-      if (!shouldShowUpdateModal(next)) return;
-      // Respect per-version dismissal so we don't nag for the same release,
-      // but always surface the ready-to-install state at least once.
-      if (next.latestVersion && next.phase !== 'downloaded') {
-        const dismissed = localStorage.getItem(DISMISS_STORAGE_KEY);
-        if (dismissed === next.latestVersion) return;
-      }
+    const handleOpenRequest = (event: Event) => {
+      const requestedState = (event as CustomEvent<UpdaterState>).detail;
+      if (!requestedState || !hasKnownUpdate(requestedState)) return;
+      setState(requestedState);
       setOpen(true);
-    }
+    };
+
+    window.addEventListener(OPEN_UPDATE_MODAL_EVENT, handleOpenRequest);
 
     return () => {
       cancelled = true;
       dispose?.();
+      window.removeEventListener(OPEN_UPDATE_MODAL_EVENT, handleOpenRequest);
     };
   }, []);
 
@@ -164,8 +160,8 @@ export default function UpdateAvailableModal() {
           {state.phase === 'available' && (
             <div className="space-y-2">
               <p className="text-sm text-text-default">
-                A new version is downloading in the background. You can keep working — we&apos;ll
-                let you know the moment it&apos;s ready to install.
+                A new version is downloading in the background. You can keep working. We&apos;ll let
+                you know the moment it&apos;s ready to install.
               </p>
               <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
                 <div

@@ -29,6 +29,7 @@ import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
 import { listApps } from '../../api';
 import { useRunningChats, RunningChatEntry } from '../../hooks/chatStreamStore';
+import SidebarUpdateButton from './SidebarUpdateButton';
 
 interface SidebarProps {
   onSelectSession: (sessionId: string) => void;
@@ -297,6 +298,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       </SidebarContent>
 
       <SidebarFooter className="pb-4 px-4">
+        <SidebarUpdateButton />
         <div className="flex items-center gap-2">
           <BioRouter className="size-7 biorouter-icon-animation flex-shrink-0" />
           <span className="text-sm font-semibold leading-none">Biorouter</span>

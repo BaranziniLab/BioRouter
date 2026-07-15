@@ -17,6 +17,7 @@ import { writeFileSync } from 'fs';
 import log from './logger';
 import { githubUpdater } from './githubUpdater';
 import { loadRecentDirs } from './recentDirs';
+import { scheduleUpdateChecks, type AutomaticUpdateCheckReason } from './updateCheckSchedule';
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
@@ -139,7 +140,6 @@ export function registerUpdateIpcHandlers() {
             };
 
             updateAvailable = true;
-            lastUpdateState = { updateAvailable: true, latestVersion: result.latestVersion };
             updateTrayIcon(true);
             sendStatusToWindow('update-available', { version: result.latestVersion });
 
@@ -147,9 +147,7 @@ export function registerUpdateIpcHandlers() {
             log.info('Auto-downloading update via GitHub fallback...');
             await githubAutoDownload(result.downloadUrl!, result.latestVersion!, 'manual check');
           } else {
-            updateAvailable = false;
-            lastUpdateState = { updateAvailable: false };
-            updateTrayIcon(false);
+            clearUpdateAvailabilityUnlessDownloaded();
             sendStatusToWindow('update-not-available', {
               version: autoUpdater.currentVersion.version,
             });
@@ -390,11 +388,14 @@ export function setupAutoUpdater(tray?: Tray) {
 
   log.info('Auto-updater setup completed');
 
-  // Check for updates on startup
-  setTimeout(() => {
+  let automaticCheckInFlight = false;
+  const runAutomaticUpdateCheck = async (reason: AutomaticUpdateCheckReason) => {
+    if (automaticCheckInFlight) return;
+    automaticCheckInFlight = true;
     const checkStartTime = Date.now();
-    log.info('=== STARTUP UPDATE CHECK INITIATED ===');
-    log.info(`Checking for updates on startup at ${new Date().toISOString()}`);
+    const reasonLabel = reason.toUpperCase();
+    log.info(`=== ${reasonLabel} UPDATE CHECK INITIATED ===`);
+    log.info(`Checking for updates (${reason}) at ${new Date().toISOString()}`);
     log.info(`autoUpdater.currentVersion: ${JSON.stringify(autoUpdater.currentVersion)}`);
     log.info(`autoUpdater.getFeedURL(): ${autoUpdater.getFeedURL()}`);
     log.info(
@@ -414,75 +415,72 @@ export function setupAutoUpdater(tray?: Tray) {
       );
     }, 60000);
 
-    autoUpdater
-      .checkForUpdates()
-      .then((result) => {
-        clearTimeout(timeoutWarning);
-        clearTimeout(timeoutError);
-        const duration = Date.now() - checkStartTime;
-        log.info(`=== STARTUP UPDATE CHECK COMPLETED in ${duration}ms ===`);
-        log.info('Update check result:', result);
-      })
-      .catch((err) => {
-        clearTimeout(timeoutWarning);
-        clearTimeout(timeoutError);
-        const duration = Date.now() - checkStartTime;
-        log.error(`=== STARTUP UPDATE CHECK FAILED after ${duration}ms ===`);
-        log.error('Error checking for updates on startup:', err);
-        log.error('Error details:', {
-          message: err.message,
-          stack: err.stack,
-          name: err.name,
-          code: 'code' in err ? err.code : undefined,
-        });
-
-        // If electron-updater fails, try GitHub API as fallback
-        if (
-          err.message.includes('HttpError: 404') ||
-          err.message.includes('ERR_CONNECTION_REFUSED') ||
-          err.message.includes('ENOTFOUND') ||
-          err.message.includes('No published versions')
-        ) {
-          log.info('Using GitHub API fallback for startup update check...');
-          log.info('Fallback triggered by error containing:', err.message);
-          isUsingGitHubFallback = true;
-
-          githubUpdater
-            .checkForUpdates()
-            .then(async (result) => {
-              if (result.error) {
-                sendStatusToWindow('error', result.error);
-              } else if (result.updateAvailable) {
-                // Store GitHub update info
-                githubUpdateInfo = {
-                  latestVersion: result.latestVersion,
-                  downloadUrl: result.downloadUrl,
-                  releaseUrl: result.releaseUrl,
-                };
-
-                updateAvailable = true;
-                lastUpdateState = { updateAvailable: true, latestVersion: result.latestVersion };
-                updateTrayIcon(true);
-                sendStatusToWindow('update-available', { version: result.latestVersion });
-
-                // Auto-download for GitHub fallback (matching autoDownload behavior)
-                log.info('Auto-downloading update via GitHub fallback on startup...');
-                await githubAutoDownload(result.downloadUrl!, result.latestVersion!, 'on startup');
-              } else {
-                updateAvailable = false;
-                lastUpdateState = { updateAvailable: false };
-                updateTrayIcon(false);
-                sendStatusToWindow('update-not-available', {
-                  version: autoUpdater.currentVersion.version,
-                });
-              }
-            })
-            .catch((fallbackError) => {
-              log.error('GitHub fallback also failed on startup:', fallbackError);
-            });
-        }
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const duration = Date.now() - checkStartTime;
+      log.info(`=== ${reasonLabel} UPDATE CHECK COMPLETED in ${duration}ms ===`);
+      log.info('Update check result:', result);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      const duration = Date.now() - checkStartTime;
+      log.error(`=== ${reasonLabel} UPDATE CHECK FAILED after ${duration}ms ===`);
+      log.error(`Error checking for updates (${reason}):`, error);
+      log.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        code: 'code' in error ? error.code : undefined,
       });
-  }, 5000); // Wait 5 seconds after app starts
+
+      // If electron-updater fails, try GitHub API as fallback
+      if (
+        error.message.includes('HttpError: 404') ||
+        error.message.includes('ERR_CONNECTION_REFUSED') ||
+        error.message.includes('ENOTFOUND') ||
+        error.message.includes('No published versions')
+      ) {
+        log.info(`Using GitHub API fallback for ${reason} update check...`);
+        log.info('Fallback triggered by error containing:', error.message);
+        isUsingGitHubFallback = true;
+
+        try {
+          const result = await githubUpdater.checkForUpdates();
+          if (result.error) {
+            sendStatusToWindow('error', result.error);
+          } else if (result.updateAvailable) {
+            githubUpdateInfo = {
+              latestVersion: result.latestVersion,
+              downloadUrl: result.downloadUrl,
+              releaseUrl: result.releaseUrl,
+            };
+
+            updateAvailable = true;
+            updateTrayIcon(true);
+            sendStatusToWindow('update-available', { version: result.latestVersion });
+
+            await githubAutoDownload(
+              result.downloadUrl!,
+              result.latestVersion!,
+              `during ${reason} check`
+            );
+          } else {
+            clearUpdateAvailabilityUnlessDownloaded();
+            sendStatusToWindow('update-not-available', {
+              version: autoUpdater.currentVersion.version,
+            });
+          }
+        } catch (fallbackError) {
+          log.error(`GitHub fallback also failed during ${reason} check:`, fallbackError);
+        }
+      }
+    } finally {
+      clearTimeout(timeoutWarning);
+      clearTimeout(timeoutError);
+      automaticCheckInFlight = false;
+    }
+  };
+
+  scheduleUpdateChecks(runAutomaticUpdateCheck);
 
   // Handle update events
   autoUpdater.on('checking-for-update', () => {
@@ -495,16 +493,13 @@ export function setupAutoUpdater(tray?: Tray) {
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     log.info('Update available:', info);
     updateAvailable = true;
-    lastUpdateState = { updateAvailable: true, latestVersion: info.version };
     updateTrayIcon(true);
     sendStatusToWindow('update-available', info);
   });
 
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     log.info('Update not available:', info);
-    updateAvailable = false;
-    lastUpdateState = { updateAvailable: false };
-    updateTrayIcon(false);
+    clearUpdateAvailabilityUnlessDownloaded();
     sendStatusToWindow('update-not-available', info);
   });
 
@@ -550,8 +545,7 @@ export function setupAutoUpdater(tray?: Tray) {
           log.info('Auto-downloading update via GitHub fallback after error...');
           await githubAutoDownload(result.downloadUrl!, result.latestVersion!, 'after error');
         } else {
-          updateAvailable = false;
-          updateTrayIcon(false);
+          clearUpdateAvailabilityUnlessDownloaded();
           sendStatusToWindow('update-not-available', {
             version: autoUpdater.currentVersion.version,
           });
@@ -609,7 +603,7 @@ export function setupAutoUpdater(tray?: Tray) {
       process.env.BIOROUTER_UPDATE_FEED_URL &&
       process.env.BIOROUTER_UPDATE_AUTO_INSTALL === '1'
     ) {
-      log.info('[test] BIOROUTER_UPDATE_AUTO_INSTALL set — installing update now');
+      log.info('[test] BIOROUTER_UPDATE_AUTO_INSTALL set. Installing update now');
       setTimeout(() => autoUpdater.quitAndInstall(false, true), 1500);
     }
   });
@@ -703,6 +697,12 @@ function recordStateForEvent(event: string, data?: unknown) {
       };
       break;
   }
+}
+
+function clearUpdateAvailabilityUnlessDownloaded() {
+  const hasDownloadedUpdate = lastUpdateState?.status === 'downloaded';
+  updateAvailable = hasDownloadedUpdate;
+  updateTrayIcon(hasDownloadedUpdate);
 }
 
 // centralize GitHub fallback auto-download logic.
