@@ -823,7 +823,7 @@ const MentionPopover = forwardRef<
                         <div className="text-xs leading-4 truncate text-text-default">
                           {item.name}
                         </div>
-                        {item.builtIn && <BuiltInBadge title="Built in. Ships with Biorouter." />}
+                        {item.builtIn && <BuiltInBadge title="Built in. Ships with BioRouter." />}
                       </div>
                       <div className="text-[11px] leading-3 truncate text-text-muted">
                         {item.extra}

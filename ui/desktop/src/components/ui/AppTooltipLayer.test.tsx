@@ -27,7 +27,14 @@ describe('AppTooltipLayer', () => {
     fireEvent.pointerOver(target);
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('Native action');
-    expect(tooltip).toHaveClass('bg-background-accent', 'text-text-on-accent', 'font-sans');
+    expect(tooltip).toHaveClass(
+      'bg-background-inverse',
+      'text-text-inverse',
+      'rounded-sm',
+      'font-sans'
+    );
+    expect(tooltip).not.toHaveClass('text-balance');
+    expect(tooltip.querySelector('[aria-hidden="true"]')).toBeNull();
   });
 
   it('keeps dynamic tooltip text and generated accessible names synchronized', async () => {
@@ -76,7 +83,7 @@ describe('AppTooltipLayer', () => {
     expect(tooltip).toHaveTextContent('Ships with BioRouter. Recreated automatically if deleted.', {
       normalizeWhitespace: true,
     });
-    expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-snug');
+    expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-4');
   });
 
   it('uses intrinsic width for short action labels', async () => {
@@ -93,6 +100,24 @@ describe('AppTooltipLayer', () => {
     fireEvent.pointerOver(target);
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('Delete local model');
-    expect(tooltip).toHaveClass('w-max', 'max-w-xs');
+    expect(tooltip).toHaveClass('w-max', 'max-w-[min(20rem,calc(100vw-16px))]', 'break-words');
+  });
+
+  it('does not open after the pointer leaves during the delay', async () => {
+    render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title="Delayed action" />
+      </>
+    );
+
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('title', ''));
+
+    fireEvent.pointerOver(target);
+    fireEvent.pointerOut(target);
+    await new Promise((resolve) => window.setTimeout(resolve, 550));
+
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });

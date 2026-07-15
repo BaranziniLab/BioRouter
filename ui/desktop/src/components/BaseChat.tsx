@@ -1363,7 +1363,6 @@ function BaseChatContent({
               isTerminalDockOpen && 'bg-background-medium text-text-default'
             )}
             aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
-            title={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
           >
             <Terminal className="h-4 w-4" />
           </Button>
@@ -1382,7 +1381,6 @@ function BaseChatContent({
                 shape="round"
                 className={HEADER_ACTION_BUTTON_CLASS}
                 aria-label="Review session summary"
-                title="Review session summary"
               >
                 <ScrollText className="h-4 w-4" />
               </Button>

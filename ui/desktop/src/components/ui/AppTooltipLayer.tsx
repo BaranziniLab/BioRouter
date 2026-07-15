@@ -6,6 +6,9 @@ import { TOOLTIP_SURFACE_CLASS_NAME } from './Tooltip';
 const TOOLTIP_ATTRIBUTE = 'data-biorouter-tooltip';
 const GENERATED_ARIA_LABEL_ATTRIBUTE = 'data-biorouter-tooltip-aria-label';
 const TOOLTIP_SELECTOR = `[${TOOLTIP_ATTRIBUTE}]`;
+const TOOLTIP_OPEN_DELAY_MS = 500;
+const TOOLTIP_OFFSET = 8;
+const VIEWPORT_PADDING = 8;
 const INTERACTIVE_SELECTOR =
   'button, a[href], input, select, textarea, iframe, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 
@@ -59,6 +62,7 @@ export function AppTooltipLayer() {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [horizontalShift, setHorizontalShift] = useState(0);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const openTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     upgradeTitlesWithin(document.body);
@@ -88,16 +92,33 @@ export function AppTooltipLayer() {
       const text = target?.getAttribute(TOOLTIP_ATTRIBUTE)?.trim();
       if (!target || !text) return;
 
-      const bounds = target.getBoundingClientRect();
-      const side = bounds.top >= 48 ? 'top' : 'bottom';
-      setHorizontalShift(0);
-      setTooltip({
-        target,
-        text,
-        x: bounds.left + bounds.width / 2,
-        y: side === 'top' ? bounds.top - 8 : bounds.bottom + 8,
-        side,
-      });
+      if (event.type === 'pointerover') {
+        const relatedTarget = (event as PointerEvent).relatedTarget;
+        const previousTarget =
+          relatedTarget instanceof Element
+            ? relatedTarget.closest<HTMLElement>(TOOLTIP_SELECTOR)
+            : null;
+        if (previousTarget === target) return;
+      }
+
+      if (openTimerRef.current !== null) window.clearTimeout(openTimerRef.current);
+      openTimerRef.current = window.setTimeout(() => {
+        openTimerRef.current = null;
+        if (!target.isConnected) return;
+
+        const bounds = target.getBoundingClientRect();
+        const spaceAbove = bounds.top - TOOLTIP_OFFSET - VIEWPORT_PADDING;
+        const spaceBelow = window.innerHeight - bounds.bottom - TOOLTIP_OFFSET - VIEWPORT_PADDING;
+        const side = spaceAbove >= spaceBelow ? 'top' : 'bottom';
+        setHorizontalShift(0);
+        setTooltip({
+          target,
+          text,
+          x: bounds.left + bounds.width / 2,
+          y: side === 'top' ? bounds.top - TOOLTIP_OFFSET : bounds.bottom + TOOLTIP_OFFSET,
+          side,
+        });
+      }, TOOLTIP_OPEN_DELAY_MS);
     };
 
     const hideTooltip = (event?: Event) => {
@@ -109,6 +130,10 @@ export function AppTooltipLayer() {
             ? relatedTarget.closest<HTMLElement>(TOOLTIP_SELECTOR)
             : null;
         if (currentTarget && currentTarget === nextTarget) return;
+      }
+      if (openTimerRef.current !== null) {
+        window.clearTimeout(openTimerRef.current);
+        openTimerRef.current = null;
       }
       setTooltip(null);
     };
@@ -128,6 +153,7 @@ export function AppTooltipLayer() {
     window.addEventListener('scroll', hideTooltip, true);
 
     return () => {
+      if (openTimerRef.current !== null) window.clearTimeout(openTimerRef.current);
       observer.disconnect();
       document.removeEventListener('pointerover', showTooltip, true);
       document.removeEventListener('pointerout', hideTooltip, true);
@@ -145,18 +171,29 @@ export function AppTooltipLayer() {
     const surface = tooltipRef.current;
     if (!surface || !tooltip) return;
 
-    const bounds = surface.getBoundingClientRect();
-    const viewportPadding = 8;
-    const unshiftedLeft = tooltip.x - bounds.width / 2;
-    const unshiftedRight = tooltip.x + bounds.width / 2;
+    const surfaceBounds = surface.getBoundingClientRect();
+    const targetBounds = tooltip.target.getBoundingClientRect();
+    const spaceAbove = targetBounds.top - TOOLTIP_OFFSET - VIEWPORT_PADDING;
+    const spaceBelow = window.innerHeight - targetBounds.bottom - TOOLTIP_OFFSET - VIEWPORT_PADDING;
+    const side = spaceAbove >= surfaceBounds.height || spaceAbove >= spaceBelow ? 'top' : 'bottom';
+    const x = targetBounds.left + targetBounds.width / 2;
+    const y =
+      side === 'top' ? targetBounds.top - TOOLTIP_OFFSET : targetBounds.bottom + TOOLTIP_OFFSET;
+    const unshiftedLeft = x - surfaceBounds.width / 2;
+    const unshiftedRight = x + surfaceBounds.width / 2;
     let nextShift = 0;
-    if (unshiftedLeft < viewportPadding) {
-      nextShift = viewportPadding - unshiftedLeft;
-    } else if (unshiftedRight > window.innerWidth - viewportPadding) {
-      nextShift = window.innerWidth - viewportPadding - unshiftedRight;
+    if (unshiftedLeft < VIEWPORT_PADDING) {
+      nextShift = VIEWPORT_PADDING - unshiftedLeft;
+    } else if (unshiftedRight > window.innerWidth - VIEWPORT_PADDING) {
+      nextShift = window.innerWidth - VIEWPORT_PADDING - unshiftedRight;
     }
 
     if (nextShift !== horizontalShift) setHorizontalShift(nextShift);
+    if (side !== tooltip.side || x !== tooltip.x || y !== tooltip.y) {
+      setTooltip((current) =>
+        current?.target === tooltip.target ? { ...current, side, x, y } : current
+      );
+    }
   }, [horizontalShift, tooltip]);
 
   useEffect(() => {
@@ -173,7 +210,7 @@ export function AppTooltipLayer() {
       data-side={tooltip.side}
       className={cn(
         TOOLTIP_SURFACE_CLASS_NAME,
-        'pointer-events-none fixed w-max max-w-xs whitespace-pre-line text-left leading-snug animate-in fade-in-0 zoom-in-95 duration-[var(--motion-fast)]'
+        'pointer-events-none fixed max-h-[calc(100vh-16px)] overflow-hidden whitespace-pre-line animate-in fade-in-0 duration-[120ms]'
       )}
       style={{
         left: tooltip.x + horizontalShift,
@@ -182,13 +219,6 @@ export function AppTooltipLayer() {
       }}
     >
       {tooltip.text}
-      <span
-        aria-hidden="true"
-        className={cn(
-          'absolute left-1/2 size-2.5 -translate-x-1/2 rotate-45 bg-background-accent',
-          tooltip.side === 'top' ? 'top-full -translate-y-[7px]' : 'bottom-full translate-y-[7px]'
-        )}
-      />
     </div>,
     document.body
   );

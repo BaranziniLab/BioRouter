@@ -56,9 +56,11 @@ describe('ContextWindowGauge compaction control', () => {
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('Nothing to compact yet');
     expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveClass(
-      'bg-background-accent',
-      'text-text-on-accent'
+      'bg-background-inverse',
+      'text-text-inverse',
+      'rounded-sm'
     );
+    expect(document.querySelector('[data-slot="tooltip-content"] svg')).toBeNull();
   });
 
   it('runs compaction from the enabled control', async () => {
