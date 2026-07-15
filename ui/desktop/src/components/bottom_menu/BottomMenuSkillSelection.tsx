@@ -24,6 +24,7 @@ import {
 } from '../skills/skillUtils';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 
 interface BottomMenuSkillSelectionProps {
   sessionId: string | null;
@@ -215,17 +216,21 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         }
       }}
     >
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
-          title="manage skills"
-          aria-label={`Manage skills (${activeCount} enabled)`}
-        >
-          <Layers className="mr-0.5 h-4 w-4" />
-          <span>{activeCount}</span>
-        </button>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
+              aria-label={`Manage skills (${activeCount} enabled)`}
+            >
+              <Layers className="mr-0.5 h-4 w-4" />
+              <span>{activeCount}</span>
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">Manage skills</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side="top"
         align="center"

@@ -135,7 +135,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             <div>
               <p className="text-sm font-medium text-text-default">Notifications</p>
               <p className="text-xs text-text-muted mt-0.5 max-w-md">
-                Notifications are managed by your OS{' — '}
+                Notifications are managed by your OS.{' '}
                 <span
                   className="underline cursor-pointer"
                   onClick={() => setShowNotificationModal(true)}
@@ -216,9 +216,6 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         </div>
       </div>
 
-      {/* Usage — accumulated (billed) tokens + cost, month-to-date vs budget */}
-      {COST_TRACKING_ENABLED && showPricing && <UsageSection />}
-
       {/* Theme */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
@@ -229,10 +226,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         </div>
         <div className="flex flex-col gap-4">
           <div>
-            <p className="text-xs text-text-muted mb-1.5">
-              Palette{' — '}
-              <span className="text-text-subtle">Parchment (warm) or Alma Mater (UCSF)</span>
-            </p>
+            <p className="text-xs text-text-muted mb-1.5">Palette</p>
             <div className="biorouter-settings-control-strip">
               <ThemeFamilySelector className="w-auto" hideTitle horizontal />
             </div>
@@ -245,6 +239,9 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </div>
         </div>
       </div>
+
+      {/* Usage — accumulated (billed) tokens + cost, month-to-date vs budget */}
+      {COST_TRACKING_ENABLED && showPricing && <UsageSection />}
 
       {/* Help & Feedback */}
       <div className="biorouter-settings-section">

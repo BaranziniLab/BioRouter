@@ -11,7 +11,7 @@ import { Button } from './ui/button';
 
 interface UserMessageProps {
   message: Message;
-  onMessageUpdate?: (messageId: string, newContent: string, editType?: 'fork' | 'edit') => void;
+  onMessageUpdate?: (messageId: string, newContent: string, editType?: 'diverge' | 'edit') => void;
 }
 
 export default function UserMessage({ message, onMessageUpdate }: UserMessageProps) {
@@ -95,7 +95,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   }, []);
 
   const handleSave = useCallback(
-    (editType: 'fork' | 'edit' = 'fork') => {
+    (editType: 'diverge' | 'edit' = 'diverge') => {
       if (editContent.trim().length === 0) {
         setError('Message cannot be empty');
         return;
@@ -189,7 +189,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             <div className="flex justify-between items-center mt-4">
               <div className="text-xs text-text-muted">
                 <span className="font-semibold">Edit in Place</span> updates this session •{' '}
-                <span className="font-semibold">Fork Session</span> creates a new session
+                <span className="font-semibold">Diverge Session</span> creates a new session
               </div>
               <div className="flex gap-3">
                 <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
@@ -204,11 +204,11 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                   Edit in Place
                 </Button>
                 <Button
-                  onClick={() => handleSave('fork')}
-                  aria-label="Fork session with edited message"
+                  onClick={() => handleSave('diverge')}
+                  aria-label="Diverge session with edited message"
                   title="Create a new session with the edited message"
                 >
-                  Fork Session
+                  Diverge Session
                 </Button>
               </div>
             </div>
@@ -277,7 +277,6 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                       className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-[transform,opacity,color] duration-150 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
-                      title="Edit message"
                     >
                       <Edit className="h-3 w-3" />
                       <span>Edit</span>

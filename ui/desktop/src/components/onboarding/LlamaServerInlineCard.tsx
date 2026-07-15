@@ -162,7 +162,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
           setIsStarting(false);
           toastService.error({
             title: 'Llama Server failed to start',
-            msg: res.data.sidecar.detail || 'Unknown error — see logs.',
+            msg: res.data.sidecar.detail || 'Unknown error. See logs.',
             traceback: '',
           });
         }
@@ -305,8 +305,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
           Llama Server
         </h2>
         <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-          Built-in local models — pick one and start chatting in minutes. Free, private, offline,
-          nothing else to install.
+          Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing
+          else to install.
         </p>
 
         {isChecking ? (
@@ -402,7 +402,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                     {sidecar?.state === 'ready' && sidecar.model === selectedModel
                       ? `Running warm-up prompt for ${selectedModel}...`
                       : sidecar?.state === 'starting'
-                        ? `Preparing ${selectedModel} — loading or downloading on first use…`
+                        ? `Preparing ${selectedModel}. Loading or downloading on first use…`
                         : `Starting llama-server…`}
                   </span>
                 </div>

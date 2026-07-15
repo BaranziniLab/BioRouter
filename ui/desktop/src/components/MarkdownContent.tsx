@@ -22,16 +22,20 @@ import {
   basenameFromPath,
   looksLikePreviewableFile,
   pathFromArtifactHref,
+  resolveArtifactPath,
 } from './artifacts/artifactUtils';
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 interface MarkdownContentProps {
   content: string;
   className?: string;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -120,14 +124,65 @@ const CodeBlock = memo(function CodeBlock({
   );
 });
 
+const LOOPBACK_URL_RE =
+  /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i;
+
+function artifactSourceFromMarkdownValue(
+  value: string,
+  workingDir?: string
+): ArtifactSource | null {
+  const candidate = value.trim();
+  if (!candidate || candidate.includes('\n') || candidate.includes('\r')) return null;
+  if (LOOPBACK_URL_RE.test(candidate)) {
+    return { kind: 'externalUrl', title: candidate, url: candidate };
+  }
+  if (!looksLikePreviewableFile(candidate)) return null;
+  const rawPath = pathFromArtifactHref(candidate);
+  const path = resolveArtifactPath(rawPath, workingDir) ?? rawPath;
+  return { kind: 'file', title: basenameFromPath(path), path };
+}
+
+function ArtifactLinkButton({
+  artifact,
+  children,
+  onOpenArtifact,
+  inlineCode = false,
+}: {
+  artifact: ArtifactSource;
+  children: React.ReactNode;
+  onOpenArtifact: (artifact: ArtifactSource) => void;
+  inlineCode?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={`inline cursor-pointer break-all rounded-sm text-left underline decoration-border-strong underline-offset-2 transition-colors hover:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus ${
+        inlineCode
+          ? 'bg-inline-code px-1 py-0.5 font-mono text-[0.9em] text-text-default hover:bg-background-medium'
+          : 'font-mono text-[0.95em] text-text-default'
+      }`}
+      onClick={() => onOpenArtifact(artifact)}
+      title={`Preview ${artifact.title} in the side panel`}
+    >
+      {children}
+    </button>
+  );
+}
+
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
-    { inline, className, children, ...props }: CodeProps,
+    { inline, className, children, onOpenArtifact, workingDir, ...props }: CodeProps,
     ref: React.Ref<HTMLElement>
   ) {
     const match = /language-(\w+)/.exec(className || '');
+    const text = String(children);
+    const artifact = !match ? artifactSourceFromMarkdownValue(text, workingDir) : null;
     return !inline && match ? (
-      <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
+      <CodeBlock language={match[1]}>{text.replace(/\n$/, '')}</CodeBlock>
+    ) : artifact && onOpenArtifact ? (
+      <ArtifactLinkButton artifact={artifact} onOpenArtifact={onOpenArtifact} inlineCode>
+        {children}
+      </ArtifactLinkButton>
     ) : (
       <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-mono">
         {children}
@@ -136,16 +191,16 @@ const MarkdownCode = memo(
   })
 );
 
-// Bare absolute file paths the assistant mentions in prose (e.g.
-// /Users/me/report.md or ~/notes.txt) aren't markdown links, so ReactMarkdown
-// renders them as plain text. Turn them into clickable spans so a user can open
-// them straight in the side preview instead of digging through Files. Requires a
-// leading / or ~/ and a short extension to avoid linkifying arbitrary slashes.
-const FILE_PATH_RE = /(?<![\w:/@.])((?:~\/|\/)[\w.\-+@/]+\.[A-Za-z0-9]{1,8})(?![\w/])/g;
+// File paths the assistant mentions in prose aren't markdown links, so
+// ReactMarkdown renders them as plain text. Keep the match narrow: an absolute,
+// home-relative, or multi-segment relative path with a filename extension.
+const FILE_PATH_RE =
+  /(?<![\w:/\\@.])((?:file:\/\/|~\/|\/|[A-Za-z]:[\\/]|(?:[\w.\-+@%]+[\\/])+)[\w.\-+@%/\\]*\.[A-Za-z0-9]{1,12})(?![\w/\\])/g;
 
 function linkifyFilePaths(
   children: React.ReactNode,
-  onOpenArtifact?: (artifact: ArtifactSource) => void
+  onOpenArtifact?: (artifact: ArtifactSource) => void,
+  workingDir?: string
 ): React.ReactNode {
   if (!onOpenArtifact) return children;
   return React.Children.map(children, (child) => {
@@ -157,17 +212,16 @@ function linkifyFilePaths(
     while ((match = FILE_PATH_RE.exec(child)) !== null) {
       const filePath = match[1];
       if (match.index > last) out.push(child.slice(last, match.index));
+      const artifact = artifactSourceFromMarkdownValue(filePath, workingDir);
+      if (!artifact) {
+        out.push(filePath);
+        last = match.index + filePath.length;
+        continue;
+      }
       out.push(
-        <button
-          key={match.index}
-          type="button"
-          className="inline cursor-pointer break-all text-left font-mono text-[0.95em] text-text-default underline underline-offset-2 decoration-border-strong hover:text-text-muted"
-          onClick={() =>
-            onOpenArtifact({ kind: 'file', title: basenameFromPath(filePath), path: filePath })
-          }
-        >
+        <ArtifactLinkButton key={match.index} artifact={artifact} onOpenArtifact={onOpenArtifact}>
           {filePath}
-        </button>
+        </ArtifactLinkButton>
       );
       last = match.index + filePath.length;
     }
@@ -180,9 +234,11 @@ function linkifyFilePaths(
 const MarkdownParagraph = ({
   children,
   onOpenArtifact,
+  workingDir,
   ...props
 }: React.HTMLAttributes<globalThis.HTMLParagraphElement> & {
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }) => {
   const childArray = React.Children.toArray(children);
   const meaningfulChildren = childArray.filter(
@@ -203,13 +259,14 @@ const MarkdownParagraph = ({
       </p>
     );
   }
-  return <p {...props}>{linkifyFilePaths(children, onOpenArtifact)}</p>;
+  return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</p>;
 };
 
 const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
   onOpenArtifact,
+  workingDir,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -260,24 +317,22 @@ const MarkdownContent = memo(function MarkdownContent({
           ],
         ]}
         components={{
-          a: ({ href, children, ...props }) => {
+          a: ({ href, children, node: _node, ...props }) => {
             const artifactPath =
               href && looksLikePreviewableFile(href) ? pathFromArtifactHref(href) : null;
             if (artifactPath && onOpenArtifact) {
+              const resolvedPath = resolveArtifactPath(artifactPath, workingDir) ?? artifactPath;
               return (
-                <button
-                  type="button"
-                  className="inline cursor-pointer break-all text-left text-text-default underline underline-offset-2 decoration-border-strong hover:text-text-muted"
-                  onClick={() =>
-                    onOpenArtifact({
-                      kind: 'file',
-                      title: basenameFromPath(artifactPath),
-                      path: artifactPath,
-                    })
-                  }
+                <ArtifactLinkButton
+                  artifact={{
+                    kind: 'file',
+                    title: basenameFromPath(resolvedPath),
+                    path: resolvedPath,
+                  }}
+                  onOpenArtifact={onOpenArtifact}
                 >
                   {children}
-                </button>
+                </ArtifactLinkButton>
               );
             }
             // Loopback/app URLs (the daemon serves BioRouter apps on 127.0.0.1)
@@ -285,11 +340,7 @@ const MarkdownContent = memo(function MarkdownContent({
             // websites almost always send X-Frame-Options / frame-ancestors and
             // would render as a BLANK iframe, so those open in the real browser
             // (via the <a> below) where they actually load.
-            const isLoopbackUrl =
-              !!href &&
-              /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(
-                href
-              );
+            const isLoopbackUrl = !!href && LOOPBACK_URL_RE.test(href);
             if (isLoopbackUrl && onOpenArtifact) {
               return (
                 <button
@@ -307,10 +358,20 @@ const MarkdownContent = memo(function MarkdownContent({
               </a>
             );
           },
-          code: MarkdownCode,
-          p: (props) => <MarkdownParagraph {...props} onOpenArtifact={onOpenArtifact} />,
-          li: ({ children, ...props }) => (
-            <li {...props}>{linkifyFilePaths(children, onOpenArtifact)}</li>
+          code: ({ node: _node, ...props }) => (
+            <MarkdownCode {...props} onOpenArtifact={onOpenArtifact} workingDir={workingDir} />
+          ),
+          p: ({ node: _node, ...props }) => (
+            <MarkdownParagraph {...props} onOpenArtifact={onOpenArtifact} workingDir={workingDir} />
+          ),
+          li: ({ children, node: _node, ...props }) => (
+            <li {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</li>
+          ),
+          td: ({ children, node: _node, ...props }) => (
+            <td {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</td>
+          ),
+          th: ({ children, node: _node, ...props }) => (
+            <th {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</th>
           ),
         }}
       >

@@ -141,6 +141,28 @@ The single step the live runner does **not** execute is the final
 **code signature** before replacing the bundle, so it only completes for a
 signed + notarized build — which is exactly Sections B/C below.
 
+### Conditional sidebar UPDATE button — executed 2026-07-14 ✅
+
+The updater now checks shortly after every launch and then every three hours
+while BioRouter stays open. Detection is non-interruptive: a small **UPDATE**
+button appears above the BioRouter identity in the lower-left sidebar only when
+a newer version is known. Clicking it opens the existing progress/restart
+prompt; after BioRouter restarts on the current version, the button is absent.
+
+- [x] `src/utils/updateCheckSchedule.test.ts` — **2** tests prove the startup
+  delay, exact three-hour cadence, repeated checks, and cancellation.
+- [x] `src/components/BioRouterSidebar/SidebarUpdateButton.test.tsx` — **5**
+  tests cover hidden/current, visible/newer, persisted-state recovery,
+  recheck/error stability, and button-to-modal integration.
+- [x] Focused updater suite — **46/46** tests passed across cadence, reducer,
+  sidebar, modal, and Settings update flows.
+- [x] Full desktop suite — **104/104 files, 843/843 tests** passed.
+- [x] Focused ESLint/Prettier, renderer/main/preload production builds,
+  manifest compatibility, and the real Electron updater E2E all passed.
+- [x] Real Electron dev-app QA confirmed the button's lower-left placement,
+  verified no modal appears on detection, clicked the button through the
+  accessibility surface, and observed the normal update prompt open.
+
 ### Why Sections B/C below still need a human + hardware
 
 Everything that can be validated without minting an Apple-notarized binary and
@@ -172,7 +194,7 @@ build `X-1`.
 
 Install `X-1` into `/Applications`, launch it, then (with release `X` published):
 
-- [ ] Within ~5s of launch, the startup modal appears: title **"Downloading update…"**, current vs new version shown, a live progress bar advancing 0→100%.
+- [ ] Within ~5s of launch, the lower-left **UPDATE** button appears without interrupting the user; clicking it opens **"Downloading update…"** with current vs new version and a live progress bar advancing 0→100%.
 - [ ] During download the app stays fully usable (not blocked/frozen).
 - [ ] When the download finishes, the modal switches to **"Update ready to install"** with a **Restart & Update** button.
 - [ ] Clicking **Restart & Update**: the app quits, the new `.app` is installed in place, and BioRouter **relaunches automatically** on version `X` — no Finder, no DMG, no drag-and-drop, no manual quit.

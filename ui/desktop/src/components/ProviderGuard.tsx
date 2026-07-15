@@ -154,7 +154,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
             </h1>
             <p className="text-sm text-text-muted mt-1.5 leading-relaxed">
               An integrated research environment that connects local, institution-hosted, and
-              commercial AI models in one interface — built for biomedical discovery.
+              commercial AI models in one interface, built for biomedical discovery.
             </p>
           </div>
         </div>

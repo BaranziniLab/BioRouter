@@ -419,7 +419,7 @@ function ArtifactPreviewBody({
     return (
       <iframe
         ref={trustedFrameRef}
-        title={artifact.title}
+        aria-label={artifact.title}
         // Inject the app theme so this preview matches the expanded/opened view,
         // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
         srcDoc={withHostTheme(preview.html, resolvedTheme)}
@@ -432,7 +432,7 @@ function ArtifactPreviewBody({
   if (preview.kind === 'externalUrl') {
     return (
       <iframe
-        title={artifact.title}
+        aria-label={artifact.title}
         src={preview.url}
         sandbox="allow-scripts allow-forms allow-modals"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
@@ -687,7 +687,7 @@ function TextFilePreview({
           // is withheld so the framed HTML can't window.open() into a real BrowserWindow
           // that would inherit the preload IPC bridge.
           <iframe
-            title={file.title}
+            aria-label={file.title}
             srcDoc={withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)}
             sandbox="allow-scripts allow-forms allow-modals"
             className="h-full w-full bg-white"

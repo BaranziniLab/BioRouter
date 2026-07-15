@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, { summarizeToolCall } from './ToolCallWithResponse';
 import type { ToolRequestMessageContent } from '../types/message';
@@ -135,5 +135,50 @@ describe('summarizeToolCall', () => {
 
     expect(screen.getByText('cmd')).toBeInTheDocument();
     expect(screen.getByText('npm run typecheck')).toBeInTheDocument();
+  });
+
+  it('opens generated files named in tool output in the side panel', () => {
+    const onOpenArtifact = vi.fn();
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-3',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__exec_command',
+          arguments: { cmd: 'build-site' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-3',
+          toolResult: {
+            status: 'success',
+            value: {
+              is_error: false,
+              content: [{ type: 'text', text: 'Created `dist/index.html`' }],
+            },
+          },
+        }}
+        workingDir="/Users/wgu/Desktop/weather-website"
+        onOpenArtifact={onOpenArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Running build-site/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View output').closest('button') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'dist/index.html' }));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith({
+      kind: 'file',
+      title: 'index.html',
+      path: '/Users/wgu/Desktop/weather-website/dist/index.html',
+    });
   });
 });

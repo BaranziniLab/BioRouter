@@ -74,7 +74,7 @@ export default function ProviderSettings({
           </h1>
           <p className="text-sm text-text-muted">
             {isOnboarding
-              ? 'Select a provider to get started. API keys are encrypted and stored locally — you can switch providers any time in settings.'
+              ? 'Select a provider to get started. API keys are encrypted and stored locally. You can switch providers any time in settings.'
               : 'Configure your AI model providers. API keys are encrypted and stored locally.'}
           </p>
         </div>

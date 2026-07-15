@@ -61,9 +61,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: chatrecall_extension::EXTENSION_NAME,
                 description:
                     "Search past conversations and load session summaries for contextual memory",
-                // Default-on since recall is now FTS5 relevance-ranked (BR-17),
-                // making it worth always having rather than an opt-in.
-                default_enabled: true,
+                default_enabled: false,
                 client_factory: |ctx| {
                     Box::new(chatrecall_extension::ChatRecallClient::new(ctx).unwrap())
                 },
@@ -96,7 +94,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: code_execution_extension::EXTENSION_NAME,
                 description: "Execute JavaScript code in a sandboxed environment",
-                default_enabled: false,
+                default_enabled: true,
                 client_factory: |ctx| {
                     Box::new(code_execution_extension::CodeExecutionClient::new(ctx).unwrap())
                 },
@@ -660,7 +658,18 @@ impl ToolInfo {
 
 #[cfg(test)]
 mod tests {
+    use super::PLATFORM_EXTENSIONS;
     use crate::agents::*;
+
+    #[test]
+    fn platform_extension_defaults_match_capabilities() {
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 5);
+        assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
+        assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
+        assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
+        assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
+        assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
+    }
 
     #[test]
     fn test_deserialize_missing_description() {

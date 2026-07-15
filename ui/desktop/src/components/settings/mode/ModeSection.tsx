@@ -55,8 +55,7 @@ export const ModeSection = () => {
   }, [fetchCurrentMode, fetchMaxTurns]);
 
   return (
-    <div className="space-y-1">
-      {/* Mode Selection */}
+    <div className="space-y-1" role="radiogroup" aria-label="BioRouter mode">
       {all_biorouter_modes.map((mode) => (
         <ModeSelectionItem
           key={mode.key}
@@ -68,7 +67,6 @@ export const ModeSection = () => {
         />
       ))}
 
-      {/* Conversation Limits Dropdown */}
       <ConversationLimitsDropdown maxTurns={maxTurns} onMaxTurnsChange={handleMaxTurnsChange} />
     </div>
   );

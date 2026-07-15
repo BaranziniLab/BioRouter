@@ -73,14 +73,14 @@ describe('ModelBreakdownTable', () => {
       '100',
       '70',
       '970',
-      '≥$1.23',
+      '$1.23',
     ]);
 
     // Sub-cent cost renders as the compact "<$0.01".
     const claudeRow = screen.getByText('anthropic/claude-fable-5').closest('tr')!;
     expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('<$0.01');
 
-    // Unknown bucket: labelled "unknown", null price shown as an em dash.
+    // Unknown bucket: labelled "unknown", null price explicitly unavailable.
     const unknownRow = screen.getByText('unknown').closest('tr')!;
     const unknownCells = within(unknownRow).getAllByRole('cell');
     expect(unknownCells.map((c) => c.textContent)).toEqual([
@@ -91,7 +91,7 @@ describe('ModelBreakdownTable', () => {
       '0',
       '2',
       '3',
-      '—',
+      'Unavailable',
     ]);
   });
 
@@ -126,7 +126,7 @@ describe('ModelBreakdownTable', () => {
     expect(cells[6].textContent).toBe('13,300,000');
   });
 
-  it('shows nullable cache buckets as unknown and the measured buckets as a lower bound', () => {
+  it('shows nullable cache buckets as unrecorded and measured buckets as conservative totals', () => {
     render(
       <ModelBreakdownTable
         rows={[
@@ -151,6 +151,6 @@ describe('ModelBreakdownTable', () => {
       within(row)
         .getAllByRole('cell')
         .map((cell) => cell.textContent)
-    ).toEqual(['anthropic/legacy-model', '2', '100', '—', '5', '20', '≥125', '≥$1.25']);
+    ).toEqual(['anthropic/legacy-model', '2', '100', 'Not recorded', '5', '20', '125', '$1.25']);
   });
 });

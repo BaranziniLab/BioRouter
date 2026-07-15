@@ -3,6 +3,7 @@ import {
   initialUpdaterState,
   reduceUpdaterEvent,
   shouldShowUpdateModal,
+  hasKnownUpdate,
   stateFromSnapshot,
   isNewerVersion,
   normalizeVersion,
@@ -161,6 +162,25 @@ describe('shouldShowUpdateModal', () => {
     expect(shouldShowUpdateModal(initialUpdaterState)).toBe(false);
     expect(shouldShowUpdateModal({ ...initialUpdaterState, phase: 'checking' })).toBe(false);
     expect(shouldShowUpdateModal({ ...initialUpdaterState, phase: 'up-to-date' })).toBe(false);
+  });
+});
+
+describe('hasKnownUpdate', () => {
+  it('tracks a known update through download, recheck, and error states', () => {
+    const available = fold([{ event: 'update-available', data: { version: '1.86.0' } }]);
+    expect(hasKnownUpdate(available)).toBe(true);
+    expect(hasKnownUpdate(reduceUpdaterEvent(available, { event: 'checking-for-update' }))).toBe(
+      true
+    );
+    expect(hasKnownUpdate(reduceUpdaterEvent(available, { event: 'error', data: 'offline' }))).toBe(
+      true
+    );
+  });
+
+  it('does not claim an update for an initial error or an up-to-date result', () => {
+    expect(hasKnownUpdate(initialUpdaterState)).toBe(false);
+    expect(hasKnownUpdate(fold([{ event: 'error', data: 'offline' }]))).toBe(false);
+    expect(hasKnownUpdate(fold([{ event: 'update-not-available' }]))).toBe(false);
   });
 });
 

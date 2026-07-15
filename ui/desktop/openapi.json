@@ -552,7 +552,7 @@
           {
             "name": "session_id",
             "in": "query",
-            "description": "Required session ID to scope tools to a specific session",
+            "description": "Session ID used to inspect active tools; pass an empty string to inspect one globally enabled extension from settings",
             "required": true,
             "schema": {
               "type": "string"
@@ -575,6 +575,9 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "408": {
+            "description": "Extension timed out while loading for settings"
           },
           "424": {
             "description": "Agent not initialized"
@@ -3249,7 +3252,7 @@
           "Session Management"
         ],
         "summary": "Diverge (branch) a session into a brand-new session that inherits the full",
-        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Fork`, no\ntruncation is performed — the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
+        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Diverge`, no\ntruncation is performed — the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
         "operationId": "diverge_session",
         "parameters": [
           {
@@ -4483,7 +4486,7 @@
           },
           "tokensComplete": {
             "type": "boolean",
-            "description": "False when at least one event in the window predates billed-token\naccounting; numeric token fields are then known subtotals, not zero/exact."
+            "description": "False when at least one event in the window lacks billed-token accounting.\nConsult each day's `tokens_complete` for display semantics."
           }
         }
       },
@@ -5056,6 +5059,7 @@
           "date",
           "sessions",
           "tokens",
+          "tokensComplete",
           "inputTokens",
           "outputTokens",
           "messages",
@@ -5094,6 +5098,10 @@
             "type": "integer",
             "format": "int64",
             "description": "Tokens processed that day, summed from per-turn `token_events`."
+          },
+          "tokensComplete": {
+            "type": "boolean",
+            "description": "False when at least one token event that day lacks billed-token\naccounting. `tokens` is then a known subtotal; zero is unavailable, not\na measured zero."
           }
         }
       },
@@ -5275,7 +5283,7 @@
           },
           "truncateAfterId": {
             "type": "string",
-            "description": "Optional anchor by durable message id (`Message.id`), the BR-45 fork\npoint. Preferred over `truncate_after`: it is unambiguous when two\nmessages share a whole second and it records the branch's fork point. It\ntakes precedence when both are supplied; `truncate_after` stays for\nback-compatibility with older clients.",
+            "description": "Optional anchor by durable message id (`Message.id`), the BR-45 divergence\npoint. Preferred over `truncate_after`: it is unambiguous when two\nmessages share a whole second and it records the branch's divergence point. It\ntakes precedence when both are supplied; `truncate_after` stays for\nback-compatibility with older clients.",
             "nullable": true
           }
         }
@@ -5336,7 +5344,7 @@
       "EditType": {
         "type": "string",
         "enum": [
-          "fork",
+          "diverge",
           "edit"
         ]
       },
@@ -8022,7 +8030,7 @@
           },
           "branch_point_msg_uid": {
             "type": "string",
-            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at — the fork point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
+            "description": "The durable `msg_uid` of the exact parent message this session was\nbranched at — the divergence point (BR-45). Paired with `diverged_from`\n(parent session), it is the edge label of the branch forest. `None` for\nnormally-created sessions. Anchoring on this stable id instead of a\nwhole-second timestamp is what fixes the same-second over-truncation.",
             "nullable": true
           },
           "conversation": {

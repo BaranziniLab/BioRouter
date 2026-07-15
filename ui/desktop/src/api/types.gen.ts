@@ -89,8 +89,8 @@ export type ActivityWindow = {
     maxTokens: number;
     start: string;
     /**
-     * False when at least one event in the window predates billed-token
-     * accounting; numeric token fields are then known subtotals, not zero/exact.
+     * False when at least one event in the window lacks billed-token accounting.
+     * Consult each day's `tokens_complete` for display semantics.
      */
     tokensComplete: boolean;
 };
@@ -329,6 +329,12 @@ export type DailyActivity = {
      * Tokens processed that day, summed from per-turn `token_events`.
      */
     tokens: number;
+    /**
+     * False when at least one token event that day lacks billed-token
+     * accounting. `tokens` is then a known subtotal; zero is unavailable, not
+     * a measured zero.
+     */
+    tokensComplete: boolean;
 };
 
 export type DeclarativeProviderConfig = {
@@ -413,9 +419,9 @@ export type DivergeSessionRequest = {
      */
     truncateAfter?: number | null;
     /**
-     * Optional anchor by durable message id (`Message.id`), the BR-45 fork
+     * Optional anchor by durable message id (`Message.id`), the BR-45 divergence
      * point. Preferred over `truncate_after`: it is unambiguous when two
-     * messages share a whole second and it records the branch's fork point. It
+     * messages share a whole second and it records the branch's divergence point. It
      * takes precedence when both are supplied; `truncate_after` stays for
      * back-compatibility with older clients.
      */
@@ -452,7 +458,7 @@ export type EditMessageResponse = {
     sessionId: string;
 };
 
-export type EditType = 'fork' | 'edit';
+export type EditType = 'diverge' | 'edit';
 
 export type EmbeddedResource = {
     _meta?: {
@@ -1415,7 +1421,7 @@ export type Session = {
     accumulated_total_tokens?: number | null;
     /**
      * The durable `msg_uid` of the exact parent message this session was
-     * branched at — the fork point (BR-45). Paired with `diverged_from`
+     * branched at — the divergence point (BR-45). Paired with `diverged_from`
      * (parent session), it is the edge label of the branch forest. `None` for
      * normally-created sessions. Anchoring on this stable id instead of a
      * whole-second timestamp is what fixes the same-second over-truncation.
@@ -2523,7 +2529,7 @@ export type GetToolsData = {
          */
         extension_name?: string | null;
         /**
-         * Required session ID to scope tools to a specific session
+         * Session ID used to inspect active tools; pass an empty string to inspect one globally enabled extension from settings
          */
         session_id: string;
     };
@@ -2535,6 +2541,10 @@ export type GetToolsErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * Extension timed out while loading for settings
+     */
+    408: unknown;
     /**
      * Agent not initialized
      */

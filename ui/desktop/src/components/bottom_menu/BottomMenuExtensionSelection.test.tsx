@@ -14,17 +14,40 @@ vi.mock('../ConfigContext', () => ({
     extensionsList: [
       {
         type: 'builtin',
+        name: 'autovisualiser',
+        display_name: 'Auto Visualiser',
+        description: 'Visualization capability',
+        enabled: true,
+      },
+      {
+        type: 'platform',
+        name: 'code_execution',
+        description: 'Code execution capability',
+        enabled: true,
+      },
+      {
+        type: 'platform',
+        name: 'chatrecall',
+        description: 'Chat recall capability',
+        enabled: false,
+      },
+      {
+        type: 'builtin',
+        name: 'agent_drafter',
+        description: 'Agent drafter capability',
+        enabled: false,
+      },
+      {
+        type: 'stdio',
         name: 'example',
         display_name: 'Example',
         description: 'Example extension',
+        cmd: 'example',
+        args: [],
         enabled: false,
       },
     ],
   }),
-}));
-
-vi.mock('../settings/capabilities/capabilities', () => ({
-  isCapabilityExtension: () => false,
 }));
 
 vi.mock('../settings/extensions/subcomponents/ExtensionList', () => ({
@@ -58,7 +81,8 @@ describe('BottomMenuExtensionSelection', () => {
 
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
-    const trigger = screen.getByTitle('manage extensions');
+    const trigger = screen.getByLabelText(/Manage extensions/);
+    expect(trigger).not.toHaveAttribute('title');
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
     const toggle = await screen.findByRole('menuitemcheckbox');
@@ -77,13 +101,29 @@ describe('BottomMenuExtensionSelection', () => {
     expect(mocks.overrides.get('example')).toBe(false);
   });
 
+  it('keeps shipped capabilities out of the per-chat extension selector', async () => {
+    render(<BottomMenuExtensionSelection sessionId={null} />);
+    const trigger = screen.getByLabelText('Manage extensions (0 enabled)');
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+
+    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(1);
+    expect(screen.getByText('example')).toBeInTheDocument();
+    expect(screen.queryByText('autovisualiser')).not.toBeInTheDocument();
+    expect(screen.queryByText('code_execution')).not.toBeInTheDocument();
+    expect(screen.queryByText('chatrecall')).not.toBeInTheDocument();
+    expect(screen.queryByText('agent_drafter')).not.toBeInTheDocument();
+  });
+
   it('serializes rapid session toggles so the latest choice reaches the backend last', async () => {
     let resolveEnable: (() => void) | undefined;
     mocks.addToAgent.mockImplementationOnce(
       () => new Promise<void>((resolve) => (resolveEnable = resolve))
     );
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
-    fireEvent.pointerDown(screen.getByTitle('manage extensions'), { button: 0, ctrlKey: false });
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
 
     const toggle = await screen.findByRole('menuitemcheckbox');
     fireEvent.click(toggle);

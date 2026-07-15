@@ -1,5 +1,6 @@
 import { useEffect, useState, forwardRef } from 'react';
-import { Gear } from '../../icons';
+import { SlidersHorizontal } from '../../icons/app-icons';
+import { Button } from '../../ui/button';
 import { ConfigureApproveMode } from './ConfigureApproveMode';
 import PermissionRulesModal from '../permission/PermissionRulesModal';
 
@@ -13,22 +14,22 @@ export const all_biorouter_modes: BioRouterMode[] = [
   {
     key: 'auto',
     label: 'Autonomous',
-    description: 'Full file modification capabilities, edit, create, and delete files freely.',
+    description: 'Use tools and edit, create, or delete files without asking first.',
   },
   {
     key: 'approve',
     label: 'Manual',
-    description: 'All tools, extensions and file modifications will require human approval',
+    description: 'Ask before using tools, extensions, or making file changes.',
   },
   {
     key: 'smart_approve',
     label: 'Smart',
-    description: 'Intelligently determine which actions need approval based on risk level ',
+    description: 'Ask only when an action’s risk level requires your approval.',
   },
   {
     key: 'chat',
     label: 'Chat only',
-    description: 'Engage with the selected provider without using tools or extensions.',
+    description: 'Chat with the selected model without tools or extensions.',
   },
 ];
 
@@ -53,28 +54,43 @@ export const ModeSelectionItem = forwardRef<HTMLDivElement, ModeSelectionItemPro
     return (
       <div ref={ref} className="group hover:cursor-pointer text-sm">
         <div
-          className={`biorouter-settings-row flex items-center justify-between text-text-default px-3 py-2.5 cursor-pointer ${checked ? 'bg-background-medium/70' : ''}`}
+          className={`biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default cursor-pointer ${checked ? 'bg-background-medium/70' : ''}`}
           onClick={() => handleModeChange(mode.key)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              handleModeChange(mode.key);
+            }
+          }}
+          role="radio"
+          aria-checked={checked}
+          tabIndex={0}
         >
-          <div className="flex">
-            <div>
-              <p className="text-sm font-medium text-text-default">{mode.label}</p>
-              {showDescription && (
-                <p className="text-xs text-text-muted mt-0.5">{mode.description}</p>
-              )}
-            </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-text-default break-words">{mode.label}</p>
+            {showDescription && (
+              <p className="mt-0.5 text-xs leading-5 text-text-muted break-words [overflow-wrap:anywhere]">
+                {mode.description}
+              </p>
+            )}
           </div>
 
-          <div className="relative flex items-center gap-2">
+          <div className="relative flex flex-shrink-0 items-center gap-2">
             {!isApproveModeConfigure && (mode.key == 'approve' || mode.key == 'smart_approve') && (
-              <button
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="px-2 text-xs text-text-muted hover:text-text-default"
                 onClick={(e) => {
-                  e.stopPropagation(); // Prevent triggering the mode change
+                  e.stopPropagation();
                   setIsPermissionModalOpen(true);
                 }}
+                aria-label={`Configure ${mode.label} tool permissions`}
               >
-                <Gear className="w-4 h-4 text-text-muted hover:text-text-default" />
-              </button>
+                <SlidersHorizontal className="h-4 w-4" />
+                <span className="hidden sm:inline">Permissions</span>
+              </Button>
             )}
             <input
               type="radio"
@@ -82,6 +98,8 @@ export const ModeSelectionItem = forwardRef<HTMLDivElement, ModeSelectionItemPro
               value={mode.key}
               checked={checked}
               onChange={() => handleModeChange(mode.key)}
+              aria-hidden="true"
+              tabIndex={-1}
               className="peer sr-only"
             />
             <div

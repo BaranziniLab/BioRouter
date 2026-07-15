@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   aggregateModelRowsCost,
-  billedTokensSummary,
+  costEstimateSummary,
   formatCostEstimate,
   formatTooltipMoney,
+  sessionTokensSummary,
 } from './CostTracker';
 
 describe('formatTooltipMoney', () => {
@@ -11,41 +12,21 @@ describe('formatTooltipMoney', () => {
     expect(formatTooltipMoney(0)).toBe('$0.00');
     expect(formatTooltipMoney(0.0000042)).toBe('<$0.01');
     expect(formatTooltipMoney(12.345)).toBe('$12.35');
-    expect(formatTooltipMoney(null)).toBe('—');
-    expect(formatTooltipMoney(Number.NaN)).toBe('—');
+    expect(formatTooltipMoney(null)).toBe('Unavailable');
+    expect(formatTooltipMoney(Number.NaN)).toBe('Unavailable');
   });
 });
 
-describe('billedTokensSummary', () => {
-  it('sums input+output into the billed total (Issue #1 accumulated figure)', () => {
-    const summary = billedTokensSummary(12_000_000, 1_300_000);
-    expect(summary).toContain('13,300,000 billed tokens');
-    expect(summary).toContain('12,000,000 fresh in');
-    expect(summary).toContain('1,300,000 out');
-    expect(summary).toContain('accumulated across all turns');
-  });
-
-  it('handles zero tokens without producing a wrong total', () => {
-    expect(billedTokensSummary(0, 0)).toContain('0 billed tokens');
-  });
-
-  it('includes cache reads and writes in the billed headline', () => {
-    const summary = billedTokensSummary(100, 25, 300, 50);
-    expect(summary).toContain('475 billed tokens');
-    expect(summary).toContain('300 cache read');
-    expect(summary).toContain('50 cache write');
-  });
-
-  it('labels incomplete history as a lower bound without turning unknown cache into zero', () => {
-    const summary = billedTokensSummary(100, 20, null, 5, null);
-    expect(summary).toContain('≥125 billed tokens');
-    expect(summary).toContain('— cache read');
-    expect(summary).not.toContain('0 cache read');
+describe('sessionTokensSummary', () => {
+  it('shows only input and output on separate lines', () => {
+    expect(sessionTokensSummary(12_000_000, 1_300_000)).toBe(
+      'Input: 12,000,000 tokens\nOutput: 1,300,000 tokens'
+    );
   });
 });
 
 describe('cost estimates', () => {
-  it('labels mixed known and unknown rows as a lower-bound subtotal', () => {
+  it('labels mixed known and unknown rows as a conservative subtotal', () => {
     const estimate = aggregateModelRowsCost([
       {
         provider: 'openai',
@@ -74,7 +55,10 @@ describe('cost estimates', () => {
     ]);
 
     expect(estimate).toEqual({ amount: 1.25, partial: true });
-    expect(formatCostEstimate(estimate)).toBe('≥$1.25');
+    expect(formatCostEstimate(estimate)).toBe('$1.25');
+    expect(costEstimateSummary(estimate)).toBe(
+      'Estimated total: $1.25\nConservative estimate based on available token and pricing data.'
+    );
   });
 
   it('keeps an entirely unknown total unavailable', () => {
@@ -94,6 +78,6 @@ describe('cost estimates', () => {
     ]);
 
     expect(estimate).toEqual({ amount: null, partial: true });
-    expect(formatCostEstimate(estimate)).toBe('—');
+    expect(formatCostEstimate(estimate)).toBe('Unavailable');
   });
 });

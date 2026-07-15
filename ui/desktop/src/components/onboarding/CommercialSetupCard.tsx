@@ -42,7 +42,7 @@ function messageForReason(reason: string | null | undefined): { title: string; d
     case 'invalid_key':
       return {
         title: 'Key was rejected',
-        detail: "The key matched a provider but was rejected — check it's complete and active.",
+        detail: "The key matched a provider but was rejected. Check that it's complete and active.",
       };
     case 'no_match':
     default:
@@ -135,7 +135,7 @@ export default function CommercialSetupCard({
         Auto-detect from API key
       </h2>
       <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-        Paste a key from {supportedLabel} — we'll detect the provider for you.
+        Paste a key from {supportedLabel}. We'll detect the provider for you.
       </p>
 
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">

@@ -54,7 +54,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
   const canSteerMessage = (message: QueuedMessage) =>
     Boolean(onSteerMessage) && !message.attachments?.length;
 
-  const STEER_TITLE = 'Send now without stopping — the agent picks it up on its next step';
+  const STEER_TITLE = 'Send now without stopping. The agent picks it up on its next step';
 
   const handleDragStart = (e: React.DragEvent, messageId: string) => {
     setDraggedItem(messageId);

@@ -7,29 +7,20 @@ import {
 } from '../../../api';
 import { Button } from '../../ui/button';
 import { Skeleton } from '../../ui/skeleton';
-import { UsagePanel } from './UsagePanel';
-
-/** Selectable report windows, in days. */
-const RANGES = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-] as const;
+import { fillCalendarDays, UsagePanel } from './UsagePanel';
 
 /**
  * Settings-embedded Usage surface: fetches the month-to-date summary and the
- * day- and model-grouped reports for the selected range, and hands them to the
- * pure {@link UsagePanel}. Fetch failures remain visible and retryable instead
- * of making the entire settings section disappear.
+ * matching day- and model-grouped reports, and hands them to the pure
+ * {@link UsagePanel}. Fetch failures remain visible and retryable instead of
+ * making the entire settings section disappear.
  */
 export default function UsageSection() {
-  const [days, setDays] = useState<number>(30);
   const [summary, setSummary] = useState<UsageSummaryResponse | null>(null);
   const [dayRows, setDayRows] = useState<UsageReportRow[]>([]);
   const [modelRows, setModelRows] = useState<UsageReportRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [loadedDays, setLoadedDays] = useState<number | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
 
   useEffect(() => {
@@ -38,8 +29,11 @@ export default function UsageSection() {
       setLoading(true);
       setLoadError(null);
       try {
-        const now = Math.floor(Date.now() / 1000);
-        const from = now - days * 86_400;
+        const currentTime = new Date();
+        const now = Math.floor(currentTime.getTime() / 1000);
+        const from = Math.floor(
+          new Date(currentTime.getFullYear(), currentTime.getMonth(), 1).getTime() / 1000
+        );
         const [summaryRes, dayRes, modelRes] = await Promise.all([
           getUsageSummary<true>({ throwOnError: true }),
           getUsageReport<true>({ query: { from, to: now, group: 'day' }, throwOnError: true }),
@@ -47,9 +41,8 @@ export default function UsageSection() {
         ]);
         if (cancelled) return;
         setSummary(summaryRes.data);
-        setDayRows(dayRes.data.rows);
+        setDayRows(fillCalendarDays(dayRes.data.rows, currentTime));
         setModelRows(modelRes.data.rows);
-        setLoadedDays(days);
       } catch (error) {
         if (cancelled) return;
         console.error('Failed to load usage:', error);
@@ -62,34 +55,17 @@ export default function UsageSection() {
     return () => {
       cancelled = true;
     };
-  }, [days, retryVersion]);
+  }, [retryVersion]);
 
   return (
     <div className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header flex items-center justify-between">
-        <div>
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-            Usage
-          </h2>
-          <p className="text-xs text-text-muted">
-            Accumulated (billed) tokens and cost per day and per model, with month-to-date usage
-            against your configured budget.
-          </p>
-        </div>
-        <div className="flex gap-1" role="group" aria-label="Usage range">
-          {RANGES.map((r) => (
-            <Button
-              key={r.days}
-              type="button"
-              size="xs"
-              variant={days === r.days ? 'secondary' : 'ghost'}
-              aria-pressed={days === r.days}
-              onClick={() => setDays(r.days)}
-            >
-              {r.label}
-            </Button>
-          ))}
-        </div>
+      <div className="biorouter-settings-section-header">
+        <h2 className="mb-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+          Usage
+        </h2>
+        <p className="text-xs text-text-muted">
+          Billed tokens and estimated cost for the current month, grouped by day and model.
+        </p>
       </div>
 
       {loadError && (
@@ -100,7 +76,7 @@ export default function UsageSection() {
         >
           <p className="text-xs text-text-muted">
             {loadError}
-            {summary && loadedDays != null ? ` Showing the last loaded ${loadedDays}d report.` : ''}
+            {summary ? ' Showing the last loaded month-to-date report.' : ''}
           </p>
           <Button
             type="button"

@@ -28,7 +28,10 @@ use biorouter::session::{EnabledExtensionsState, Session};
 use biorouter::workflow::Workflow;
 use biorouter::workflow_deeplink;
 use biorouter::{
-    agents::{extension::ToolInfo, extension_manager::get_parameter_names},
+    agents::{
+        extension::ToolInfo,
+        extension_manager::{get_parameter_names, normalize},
+    },
     config::permission::PermissionLevel,
 };
 use rmcp::model::{CallToolRequestParams, Content};
@@ -39,6 +42,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
+
+const PERMISSION_SETTINGS_SESSION_ID: &str = "__permission_settings__";
+const PERMISSION_SETTINGS_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateFromSessionRequest {
@@ -503,11 +509,12 @@ async fn update_from_session(
     path = "/agent/tools",
     params(
         ("extension_name" = Option<String>, Query, description = "Optional extension name to filter tools"),
-        ("session_id" = String, Query, description = "Required session ID to scope tools to a specific session")
+        ("session_id" = String, Query, description = "Session ID used to inspect active tools; pass an empty string to inspect one globally enabled extension from settings")
     ),
     responses(
         (status = 200, description = "Tools retrieved successfully", body = Vec<ToolInfo>),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 408, description = "Extension timed out while loading for settings"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -519,7 +526,49 @@ async fn get_tools(
     let config = Config::global();
     let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
     let session_id = query.session_id;
-    let agent = state.get_agent_for_route(session_id.clone()).await?;
+    let extension_name = query.extension_name.map(|name| normalize(&name));
+    let agent_session_id = if session_id.is_empty() {
+        PERMISSION_SETTINGS_SESSION_ID
+    } else {
+        &session_id
+    };
+    let agent = state
+        .get_agent_for_route(agent_session_id.to_string())
+        .await?;
+
+    if session_id.is_empty() {
+        let Some(extension_name) = extension_name.as_deref() else {
+            return Ok(Json(Vec::new()));
+        };
+        let Some(extension) = biorouter::config::get_all_extensions()
+            .into_iter()
+            .find(|entry| entry.enabled && entry.config.key() == extension_name)
+        else {
+            return Ok(Json(Vec::new()));
+        };
+
+        agent
+            .remove_extension(extension_name)
+            .await
+            .map_err(|error| {
+                warn!(extension = extension_name, %error, "Failed to refresh permission settings extension");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        tokio::time::timeout(
+            PERMISSION_SETTINGS_LOAD_TIMEOUT,
+            agent.add_extension(extension.config),
+        )
+        .await
+        .map_err(|_| {
+            warn!(extension = extension_name, "Timed out loading extension for permission settings");
+            StatusCode::REQUEST_TIMEOUT
+        })?
+        .map_err(|error| {
+            warn!(extension = extension_name, %error, "Failed to load extension for permission settings");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
     let permission_manager = agent.config.permission_manager.clone();
     // BR-18: SmartApprove now auto-approves read-only-annotated tools, so the
     // level shown here has to reflect the risk grade the inspector will actually
@@ -529,7 +578,7 @@ async fn get_tools(
     let smart = SmartApproveConfig::from_config();
 
     let mut tools: Vec<ToolInfo> = agent
-        .list_tools(&session_id, query.extension_name)
+        .list_tools(&session_id, extension_name)
         .await
         .into_iter()
         .map(|tool| {

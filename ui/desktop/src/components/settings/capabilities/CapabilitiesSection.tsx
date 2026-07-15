@@ -13,8 +13,7 @@ interface CapabilityItemProps {
 
 function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
   const [isToggling, setIsToggling] = useState(false);
-  // Treat a not-yet-loaded capability as enabled — they are on by default.
-  const enabled = entry ? entry.enabled : true;
+  const enabled = entry ? entry.enabled : meta.defaultEnabled;
 
   const handleToggle = async () => {
     if (!entry || isToggling) return;

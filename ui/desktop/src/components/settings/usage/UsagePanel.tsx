@@ -1,9 +1,47 @@
+import { useState } from 'react';
 import type { UsageReportRow, UsageSummaryResponse, UsageTotals } from '../../../api';
 import {
   billedTokens,
   cacheTokens as combinedCacheTokens,
   knownBilledTokens,
 } from '../../../utils/usageAccounting';
+import { Button } from '../../ui/button';
+
+const COLLAPSED_DAY_COUNT = 3;
+
+function emptyDayRow(date: string): UsageReportRow {
+  return {
+    date,
+    modelId: null,
+    provider: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    turns: 0,
+    cost: 0,
+    hasUnpriced: false,
+    costExcludesCache: false,
+  };
+}
+
+/** The report omits inactive dates; restore them so recency remains a calendar sequence. */
+export function fillCalendarDays(rows: UsageReportRow[], through: Date): UsageReportRow[] {
+  if (rows.length === 0) return [];
+
+  const year = through.getFullYear();
+  const month = through.getMonth() + 1;
+  const monthPrefix = `${year}-${String(month).padStart(2, '0')}`;
+  const rowsByDate = new Map(
+    rows.filter((row) => row.date?.startsWith(monthPrefix)).map((row) => [row.date, row])
+  );
+
+  return Array.from({ length: through.getDate() }, (_, index) => {
+    const date = `${monthPrefix}-${String(index + 1).padStart(2, '0')}`;
+    return rowsByDate.get(date) ?? emptyDayRow(date);
+  });
+}
 
 export interface UsagePanelProps {
   summary: UsageSummaryResponse;
@@ -12,18 +50,32 @@ export interface UsagePanelProps {
 }
 
 export function formatTokens(n: number | null | undefined): string {
-  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n.toLocaleString('en-US') : '—';
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0
+    ? n.toLocaleString('en-US')
+    : 'Not recorded';
 }
 
 export function formatCost(cost: number | null | undefined): string {
-  if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) return '—';
+  if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
+    return 'Unavailable';
+  }
   if (cost > 0 && cost < 0.01) return '<$0.01';
   return `$${cost.toFixed(2)}`;
 }
 
-export function formatCostEstimate(cost: number | null | undefined, partial: boolean): string {
-  const formatted = formatCost(cost);
-  return partial && formatted !== '—' ? `≥${formatted}` : formatted;
+export function formatCostEstimate(cost: number | null | undefined): string {
+  return formatCost(cost);
+}
+
+export function formatUsageDate(date: string | null | undefined): string {
+  const match = date?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return date ?? 'Unknown date';
+  const [, year, month, day] = match;
+  return new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): string {
@@ -42,7 +94,7 @@ export function formatBilledTokens(row: UsageReportRow | UsageTotals): string {
   const exact = billedTokens(row);
   if (exact !== null) return formatTokens(exact);
   const knownSubtotal = knownBilledTokens(row);
-  return knownSubtotal > 0 ? `≥${formatTokens(knownSubtotal)}` : '—';
+  return knownSubtotal > 0 ? formatTokens(knownSubtotal) : 'Unavailable';
 }
 
 function costIsPartial(row: Pick<UsageReportRow, 'hasUnpriced' | 'costExcludesCache'>) {
@@ -52,7 +104,7 @@ function costIsPartial(row: Pick<UsageReportRow, 'hasUnpriced' | 'costExcludesCa
 function rowHasUnknownCost(
   row: Pick<UsageReportRow | UsageTotals, 'turns' | 'cost' | 'hasUnpriced'>
 ) {
-  return row.hasUnpriced || (row.turns > 0 && formatCost(row.cost) === '—');
+  return row.hasUnpriced || (row.turns > 0 && formatCost(row.cost) === 'Unavailable');
 }
 
 function hasIncompleteTokens(row: UsageReportRow | UsageTotals): boolean {
@@ -61,30 +113,57 @@ function hasIncompleteTokens(row: UsageReportRow | UsageTotals): boolean {
   );
 }
 
-function showsCacheBuckets(row: UsageReportRow | UsageTotals): boolean {
+function hasRecordedCacheUsage(row: UsageReportRow | UsageTotals): boolean {
   return (
-    row.cacheReadTokens == null ||
-    row.cacheCreationTokens == null ||
-    row.cacheReadTokens > 0 ||
-    row.cacheCreationTokens > 0
+    (row.cacheReadTokens != null && row.cacheReadTokens > 0) ||
+    (row.cacheCreationTokens != null && row.cacheCreationTokens > 0)
   );
 }
 
-function chartTokens(row: UsageReportRow | UsageTotals): number {
-  return billedTokens(row) ?? knownBilledTokens(row);
+function hasKnownCost(row: UsageReportRow | UsageTotals): boolean {
+  return row.cost != null && Number.isFinite(row.cost) && row.cost >= 0;
+}
+
+function hasUsage(row: UsageReportRow): boolean {
+  return row.turns > 0 || knownBilledTokens(row) > 0;
 }
 
 function serverPercent(percent: number | null | undefined): number | null {
   return typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 ? percent : null;
 }
 
+function UsageTableColumns({
+  detailColumns,
+  showCost,
+}: {
+  detailColumns: number;
+  showCost: boolean;
+}) {
+  return (
+    <colgroup>
+      <col className={showCost ? 'w-[38%]' : 'w-[40%]'} />
+      <col className="w-[10%]" />
+      <col span={detailColumns} />
+      <col className={showCost ? 'w-[16%]' : 'w-[18%]'} />
+      {showCost && <col className="w-[14%]" />}
+    </colgroup>
+  );
+}
+
 export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
+  const [showAllDays, setShowAllDays] = useState(false);
   const mtd = summary.monthToDate;
-  const maxDayTotal = Math.max(1, ...dayRows.map(chartTokens));
   const anyUnpriced =
     rowHasUnknownCost(mtd) || dayRows.some(rowHasUnknownCost) || modelRows.some(rowHasUnknownCost);
-  const anyCache =
-    showsCacheBuckets(mtd) || dayRows.some(showsCacheBuckets) || modelRows.some(showsCacheBuckets);
+  const showMtdCache = hasRecordedCacheUsage(mtd);
+  const showModelCache = modelRows.some(hasRecordedCacheUsage);
+  const showDayCost = dayRows.some((row) => hasUsage(row) && hasKnownCost(row));
+  const showModelCost = modelRows.some(hasKnownCost);
+  const showSharedCost = showDayCost || showModelCost;
+  const detailColumnCount = showModelCache ? 4 : 2;
+  const alignedTableClass = showModelCache
+    ? 'w-full min-w-[960px] table-fixed border-collapse text-xs'
+    : 'w-full min-w-[640px] table-fixed border-collapse text-xs';
   const anyIncompleteTokens =
     hasIncompleteTokens(mtd) ||
     dayRows.some(hasIncompleteTokens) ||
@@ -98,6 +177,10 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
     mtd.cost != null && Number.isFinite(mtd.cost) && mtd.cost >= 0 ? mtd.cost : null;
   const tokenPercent = serverPercent(summary.tokenPercent);
   const dollarPercent = serverPercent(summary.dollarPercent);
+  const orderedDayRows = [...dayRows].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+  const visibleDayRows = showAllDays
+    ? orderedDayRows
+    : orderedDayRows.slice(0, COLLAPSED_DAY_COUNT);
   const tokenUnavailableReason =
     tokenPercent !== null
       ? null
@@ -118,20 +201,20 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             : 'Budget percentage unavailable.';
 
   return (
-    <div className="flex flex-col gap-5" data-testid="usage-panel">
+    <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div>
         <div className="flex items-baseline justify-between">
-          <p className="text-sm font-medium text-text-default">Month to date</p>
+          <p className="text-[11px] font-normal tracking-wide text-text-subtle">Month to date</p>
           <p className="text-xs text-text-muted">{summary.month}</p>
         </div>
         <p className="mt-0.5 text-xs text-text-muted">
           {formatBilledTokens(mtd)} billed tokens
           {' · '}
-          {formatCostEstimate(mtd.cost, mtdCostPartial)}
+          {formatCostEstimate(mtd.cost)}
           {' · '}
           {mtd.turns.toLocaleString('en-US')} turns
         </p>
-        {showsCacheBuckets(mtd) && (
+        {showMtdCache && (
           <p className="mt-0.5 text-xs text-text-muted" data-testid="usage-mtd-cache">
             {formatTokens(mtd.cacheReadTokens)} cache read
             {' · '}
@@ -153,7 +236,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
           <UsageGauge
             testid="usage-gauge-dollars"
             label="Dollar budget"
-            used={formatCostEstimate(mtd.cost, mtdCostPartial)}
+            used={formatCostEstimate(mtd.cost)}
             limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
             percent={dollarPercent}
             unavailableReason={dollarUnavailableReason}
@@ -162,67 +245,92 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
       </div>
 
       <div>
-        <p className="mb-2 text-sm font-medium text-text-default">Usage by day</p>
+        <div className="mb-2 flex w-full max-w-[680px] items-center justify-between gap-3">
+          <p className="text-[11px] font-normal tracking-wide text-text-subtle">By day</p>
+          {orderedDayRows.length > COLLAPSED_DAY_COUNT && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              aria-expanded={showAllDays}
+              aria-label={
+                showAllDays
+                  ? 'Show recent 3 calendar days'
+                  : `Show all ${orderedDayRows.length} calendar days this month`
+              }
+              onClick={() => setShowAllDays((expanded) => !expanded)}
+            >
+              {showAllDays ? 'Show recent 3 days' : 'Show month'}
+            </Button>
+          )}
+        </div>
         {dayRows.length === 0 ? (
-          <p className="text-xs text-text-muted">No usage in this range.</p>
+          <p className="text-xs text-text-muted">No usage this month.</p>
         ) : (
-          <div className="flex flex-col gap-1" data-testid="usage-day-bars">
-            {dayRows.map((row) => {
-              const total = chartTokens(row);
-              const totalLabel = formatBilledTokens(row);
-              return (
-                <div
-                  key={row.date}
-                  className="flex min-h-10 items-center gap-2 text-xs"
-                  aria-label={`${row.date}: ${totalLabel} billed tokens`}
-                >
-                  <span className="w-24 shrink-0 text-text-muted tabular-nums">{row.date}</span>
-                  <div className="h-4 flex-1 overflow-hidden rounded-sm bg-heat-0">
-                    <div
-                      className="h-full rounded-sm bg-heat-3"
-                      style={{ width: `${Math.max(2, (total / maxDayTotal) * 100)}%` }}
-                      data-testid="usage-day-bar-fill"
-                    />
-                  </div>
-                  <span className="w-28 shrink-0 text-right text-text-default tabular-nums">
-                    {totalLabel} billed
-                  </span>
-                  {anyCache && (
-                    <span
-                      className="w-40 shrink-0 text-right text-text-muted tabular-nums"
-                      aria-label={`${formatTokens(row.cacheReadTokens)} cache read, ${formatTokens(row.cacheCreationTokens)} cache write`}
-                    >
-                      {formatTokens(row.cacheReadTokens)} read ·{' '}
-                      {formatTokens(row.cacheCreationTokens)} write
-                    </span>
-                  )}
-                  <span className="w-20 shrink-0 text-right text-text-muted tabular-nums">
-                    {formatCostEstimate(row.cost, costIsPartial(row))}
-                  </span>
-                </div>
-              );
-            })}
+          <div className="w-full max-w-[680px] overflow-x-auto" data-testid="usage-day-table-wrap">
+            <table className={alignedTableClass} data-testid="usage-day-table">
+              <UsageTableColumns detailColumns={detailColumnCount} showCost={showSharedCost} />
+              <thead>
+                <tr className="h-8 border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-text-muted">
+                  <th className="pr-3 font-medium">Day</th>
+                  <th className="px-3 text-right font-medium">Turns</th>
+                  <th colSpan={detailColumnCount} aria-hidden="true" />
+                  <th className="px-3 text-right font-medium">Billed</th>
+                  {showSharedCost && <th className="pl-3 text-right font-medium">Cost</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleDayRows.map((row) => (
+                  <tr
+                    key={row.date}
+                    className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
+                  >
+                    <td className="pr-3 text-text-muted">
+                      <time dateTime={row.date ?? undefined} title={row.date ?? undefined}>
+                        {formatUsageDate(row.date)}
+                      </time>
+                    </td>
+                    <td className="px-3 text-right text-text-muted tabular-nums">
+                      {row.turns.toLocaleString('en-US')}
+                    </td>
+                    <td colSpan={detailColumnCount} aria-hidden="true" />
+                    <td className="px-3 text-right font-medium tabular-nums">
+                      {formatBilledTokens(row)}
+                    </td>
+                    {showSharedCost && (
+                      <td className="pl-3 text-right text-text-muted tabular-nums">
+                        {formatCostEstimate(row.cost)}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
 
       <div>
-        <p className="mb-2 text-sm font-medium text-text-default">Usage by model</p>
+        <p className="mb-2 text-[11px] font-normal tracking-wide text-text-subtle">By model</p>
         {modelRows.length === 0 ? (
-          <p className="text-xs text-text-muted">No usage in this range.</p>
+          <p className="text-xs text-text-muted">No usage this month.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-xs" data-testid="usage-model-table">
+          <div
+            className="w-full max-w-[680px] overflow-x-auto"
+            data-testid="usage-model-table-wrap"
+          >
+            <table className={alignedTableClass} data-testid="usage-model-table">
+              <UsageTableColumns detailColumns={detailColumnCount} showCost={showSharedCost} />
               <thead>
                 <tr className="h-8 border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-text-muted">
-                  <th className="pr-2 font-medium">Model</th>
-                  <th className="px-2 text-right font-medium">Turns</th>
-                  <th className="px-2 text-right font-medium">Fresh in</th>
-                  {anyCache && <th className="px-2 text-right font-medium">Cache read</th>}
-                  {anyCache && <th className="px-2 text-right font-medium">Cache write</th>}
-                  <th className="px-2 text-right font-medium">Out</th>
-                  <th className="px-2 text-right font-medium">Billed</th>
-                  <th className="pl-2 text-right font-medium">Cost</th>
+                  <th className="pr-3 font-medium">Model</th>
+                  <th className="px-3 text-right font-medium">Turns</th>
+                  <th className="px-3 text-right font-medium">Fresh in</th>
+                  {showModelCache && <th className="px-3 text-right font-medium">Cache read</th>}
+                  {showModelCache && <th className="px-3 text-right font-medium">Cache write</th>}
+                  <th className="px-3 text-right font-medium">Out</th>
+                  <th className="px-3 text-right font-medium">Billed</th>
+                  {showSharedCost && <th className="pl-3 text-right font-medium">Cost</th>}
                 </tr>
               </thead>
               <tbody>
@@ -231,30 +339,36 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
                     key={`${modelLabel(row)}-${index}`}
                     className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
                   >
-                    <td className="pr-2 font-mono">{modelLabel(row)}</td>
-                    <td className="px-2 text-right tabular-nums">
+                    <td className="pr-3 font-mono">
+                      <span className="block truncate" title={modelLabel(row)}>
+                        {modelLabel(row)}
+                      </span>
+                    </td>
+                    <td className="px-3 text-right tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="px-2 text-right tabular-nums">
+                    <td className="px-3 text-right tabular-nums">
                       {formatTokens(row.inputTokens)}
                     </td>
-                    {anyCache && (
-                      <td className="px-2 text-right tabular-nums">
+                    {showModelCache && (
+                      <td className="px-3 text-right tabular-nums">
                         {formatTokens(row.cacheReadTokens)}
                       </td>
                     )}
-                    {anyCache && (
-                      <td className="px-2 text-right tabular-nums">
+                    {showModelCache && (
+                      <td className="px-3 text-right tabular-nums">
                         {formatTokens(row.cacheCreationTokens)}
                       </td>
                     )}
-                    <td className="px-2 text-right tabular-nums">
+                    <td className="px-3 text-right tabular-nums">
                       {formatTokens(row.outputTokens)}
                     </td>
-                    <td className="px-2 text-right tabular-nums">{formatBilledTokens(row)}</td>
-                    <td className="pl-2 text-right tabular-nums">
-                      {formatCostEstimate(row.cost, costIsPartial(row))}
-                    </td>
+                    <td className="px-3 text-right tabular-nums">{formatBilledTokens(row)}</td>
+                    {showSharedCost && (
+                      <td className="pl-3 text-right tabular-nums">
+                        {formatCostEstimate(row.cost)}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -265,22 +379,22 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
 
       {anyIncompleteTokens && (
         <p className="text-xs text-text-muted" data-testid="usage-incomplete-note" role="status">
-          Some historical token buckets are incomplete. Values marked ≥ are known subtotals; — means
-          no trustworthy total is available.
+          Some historical token details were not recorded. Displayed totals are conservative
+          estimates; cache and cost columns are hidden when they contain no usable data.
         </p>
       )}
 
       {anyUnpriced && (
         <p className="text-xs text-text-muted" data-testid="usage-unpriced-note">
-          Some usage could not be fully priced. Unknown costs show —; mixed or incomplete totals
-          show ≥ because only the known subtotal can be reported.
+          Some historical usage has no stored model or pricing attribution, so its cost cannot be
+          recovered. Available cost estimates are conservative.
         </p>
       )}
 
       {anyCostExcludesCache && (
         <p className="text-xs text-text-muted" data-testid="usage-cache-excluded-note">
           Some cache cost is unavailable because a model has no cache rate or historical cache
-          accounting is incomplete. The shown cost is a lower bound.
+          accounting is incomplete. The shown cost is conservative.
         </p>
       )}
     </div>
