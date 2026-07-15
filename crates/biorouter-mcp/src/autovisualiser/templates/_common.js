@@ -84,6 +84,8 @@
     root.style.setProperty('--muted', colors.muted);
     root.style.setProperty('--border', colors.border);
     root.style.setProperty('--grid', colors.grid);
+    root.style.setProperty('--tooltip-bg', colors.tooltipBg);
+    root.style.setProperty('--tooltip-text', colors.tooltipText);
   } catch (e) {
     /* ignore */
   }
@@ -194,6 +196,31 @@
     C.defaults.font = C.defaults.font || {};
     C.defaults.font.family =
       '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    applyChartTooltipDefaults();
+  }
+
+  function applyChartTooltipDefaults() {
+    if (typeof window.Chart === 'undefined') return;
+    var C = window.Chart;
+    var tooltipDefaults = C.defaults.plugins && C.defaults.plugins.tooltip;
+    if (!tooltipDefaults) return;
+    tooltipDefaults.backgroundColor = colors.tooltipBg;
+    tooltipDefaults.titleColor = colors.tooltipText;
+    tooltipDefaults.bodyColor = colors.tooltipText;
+    tooltipDefaults.borderWidth = 0;
+    tooltipDefaults.cornerRadius = 4;
+    tooltipDefaults.padding = 8;
+    tooltipDefaults.caretSize = 0;
+    tooltipDefaults.titleFont = {
+      family: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+      size: 12,
+      weight: '600',
+    };
+    tooltipDefaults.bodyFont = {
+      family: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+      size: 12,
+      weight: '400',
+    };
   }
 
   // Apply the page background/text once the body exists.
@@ -201,6 +228,77 @@
     if (!document.body) return;
     document.body.style.background = colors.bg;
     document.body.style.color = colors.text;
+  }
+
+  function installTooltipStyles() {
+    if (!document.head || document.querySelector('[data-biorouter-viz-tooltip-styles]')) return;
+    var style = document.createElement('style');
+    style.setAttribute('data-biorouter-viz-tooltip-styles', '');
+    style.textContent =
+      '.tooltip{' +
+      'box-sizing:border-box!important;' +
+      'width:max-content!important;' +
+      'max-width:min(20rem,calc(100vw - 16px))!important;' +
+      'max-height:calc(100vh - 16px)!important;' +
+      'overflow:hidden;' +
+      'overflow-wrap:anywhere;' +
+      'background:var(--tooltip-bg)!important;' +
+      'color:var(--tooltip-text)!important;' +
+      'padding:6px 8px!important;' +
+      'border-radius:4px!important;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;' +
+      'font-size:12px!important;' +
+      'font-weight:400;' +
+      'line-height:16px;' +
+      'text-align:left;' +
+      'pointer-events:none!important;' +
+      'transition:opacity 120ms ease!important;' +
+      'z-index:10!important;' +
+      '}';
+    document.head.appendChild(style);
+  }
+
+  var tooltipFitFrame = null;
+  function fitVisibleTooltips() {
+    tooltipFitFrame = null;
+    document.querySelectorAll('.tooltip').forEach(function (tooltip) {
+      if (parseFloat(window.getComputedStyle(tooltip).opacity) <= 0) return;
+
+      var bounds = tooltip.getBoundingClientRect();
+      var padding = 8;
+      var shiftX = 0;
+      var shiftY = 0;
+      if (bounds.left < padding) shiftX = padding - bounds.left;
+      if (bounds.right + shiftX > window.innerWidth - padding) {
+        shiftX += window.innerWidth - padding - (bounds.right + shiftX);
+      }
+      if (bounds.top < padding) shiftY = padding - bounds.top;
+      if (bounds.bottom + shiftY > window.innerHeight - padding) {
+        shiftY += window.innerHeight - padding - (bounds.bottom + shiftY);
+      }
+
+      var left = parseFloat(tooltip.style.left);
+      var top = parseFloat(tooltip.style.top);
+      if (shiftX && Number.isFinite(left)) tooltip.style.left = left + shiftX + 'px';
+      if (shiftY && Number.isFinite(top)) tooltip.style.top = top + shiftY + 'px';
+    });
+  }
+
+  function queueTooltipFit() {
+    if (tooltipFitFrame !== null) return;
+    tooltipFitFrame = window.requestAnimationFrame(fitVisibleTooltips);
+  }
+
+  function initializeTooltipLayer() {
+    installTooltipStyles();
+    window.addEventListener('mouseover', queueTooltipFit);
+    window.addEventListener('mousemove', queueTooltipFit);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeTooltipLayer, { once: true });
+  } else {
+    initializeTooltipLayer();
   }
 
   // Map a normalized value [0,1] to a sequential colour (blue→red), theme-aware.
@@ -222,6 +320,7 @@
     showError: showError,
     guard: guard,
     applyChartDefaults: applyChartDefaults,
+    applyChartTooltipDefaults: applyChartTooltipDefaults,
     applyPageTheme: applyPageTheme,
     sequential: sequential,
   };

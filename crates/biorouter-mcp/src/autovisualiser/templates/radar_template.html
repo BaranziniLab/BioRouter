@@ -171,6 +171,7 @@
     <script>
         // Data will be injected here
         const radarData = {{RADAR_DATA}};
+        BioRouterViz.applyChartTooltipDefaults();
 
         let chart;
         
@@ -252,12 +253,6 @@
                             }
                         },
                         tooltip: {
-                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                            titleColor: 'white',
-                            bodyColor: 'white',
-                            borderColor: 'rgba(255, 255, 255, 0.1)',
-                            borderWidth: 1,
-                            cornerRadius: 6,
                             displayColors: true,
                             callbacks: {
                                 label: function(context) {
