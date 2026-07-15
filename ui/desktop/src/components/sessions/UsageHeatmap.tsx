@@ -127,6 +127,11 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
       }}
     >
       <p className="mb-2 text-[13px] font-semibold text-text-default">{label}</p>
+      {cell.inStreak && (
+        <p className="-mt-1 mb-2 text-[11px] font-medium text-text-muted">
+          Part of your current streak
+        </p>
+      )}
       {d ? (
         <>
           <Row label="Sessions started" value={full.format(d.sessions)} />
@@ -326,7 +331,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
               onBlur={hide}
               aria-label={
                 cell.day
-                  ? `${cell.key}: ${cell.day.sessions} sessions, ${tokenAria(cell.day)}`
+                  ? `${cell.key}: ${cell.day.sessions} sessions, ${tokenAria(cell.day)}${cell.inStreak ? ', part of current streak' : ''}`
                   : `${cell.key}: no activity`
               }
               className={[
@@ -343,12 +348,23 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
       </div>
 
       <div className="mt-4 flex items-center justify-between text-[11px] text-text-muted">
-        <div className="flex items-center gap-1">
-          <span className="mr-1">Less</span>
-          {[0, 1, 2, 3, 4].map((l) => (
-            <i key={l} className={`block h-3 w-3 rounded-[3px] ${LEVEL_CLASS[l]}`} />
-          ))}
-          <span className="ml-1">More</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <span className="mr-1">Less</span>
+            {[0, 1, 2, 3, 4].map((l) => (
+              <i key={l} className={`block h-3 w-3 rounded-[3px] ${LEVEL_CLASS[l]}`} />
+            ))}
+            <span className="ml-1">More</span>
+          </div>
+          {activity.currentStreak > 0 && (
+            <div className="flex items-center gap-1.5">
+              <i
+                aria-hidden="true"
+                className="block h-3 w-3 rounded-[3px] bg-heat-0 shadow-[inset_0_0_0_2px_var(--text-default)]"
+              />
+              <span>Current streak</span>
+            </div>
+          )}
         </div>
         <span className="tabular-nums">
           {activity.tokensComplete

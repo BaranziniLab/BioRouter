@@ -1,25 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Greeting } from '../common/Greeting';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
 import { ChatSmart } from '../icons/';
 import { Skeleton } from '../ui/skeleton';
-import { getSessionActivity, listSessions, ActivityWindow, Session } from '../../api';
+import { ActivityWindow, Session } from '../../api';
 import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
-
-/** ~5 months of weeks; 22 columns fit the 760px chat column at 24px cells. */
-const ACTIVITY_DAYS = 155;
+import { getCachedSessionList, refreshSessionList } from '../../utils/sessionListCache';
+import {
+  cacheHomeRecentSessions,
+  getCachedHomeActivity,
+  getCachedRecentSessions,
+  refreshHomeActivity,
+} from '../../utils/homeInsightsCache';
 
 const RECENT_LIMIT = 3;
 
 export function SessionInsights() {
-  const [activity, setActivity] = useState<ActivityWindow | null>(null);
+  const initialActivity = useRef(getCachedHomeActivity()).current;
+  const initialSessions = useRef(
+    getCachedSessionList()?.slice(0, RECENT_LIMIT) ?? getCachedRecentSessions()
+  ).current;
+  const [activity, setActivity] = useState<ActivityWindow | null>(initialActivity);
   const [activityFailed, setActivityFailed] = useState(false);
-  const [recentSessions, setRecentSessions] = useState<Session[]>([]);
-  const [isLoadingSessions, setIsLoadingSessions] = useState(true);
+  const [recentSessions, setRecentSessions] = useState<Session[]>(initialSessions ?? []);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(initialSessions === null);
   const navigate = useNavigate();
   const setView = useNavigation();
 
@@ -29,24 +37,25 @@ export function SessionInsights() {
     // state and the greeting renders instantly.
     const loadActivity = async () => {
       try {
-        const response = await getSessionActivity<true>({
-          query: { days: ACTIVITY_DAYS },
-          throwOnError: true,
-        });
-        setActivity(response.data);
+        const refreshedActivity = await refreshHomeActivity();
+        setActivity(refreshedActivity);
         setActivityFailed(false);
       } catch (error) {
         // A missing/old backend (404) or any failure must not leave a permanent
         // blank where the heatmap should be — collapse the section instead.
         console.error('Failed to load activity:', error);
-        setActivityFailed(true);
+        if (!initialActivity) setActivityFailed(true);
       }
     };
 
     const loadRecentSessions = async () => {
       try {
-        const response = await listSessions<true>({ throwOnError: true });
-        setRecentSessions(response.data.sessions.slice(0, RECENT_LIMIT));
+        const sessions = await refreshSessionList();
+        const refreshedRecentSessions = sessions.slice(0, RECENT_LIMIT);
+        cacheHomeRecentSessions(refreshedRecentSessions);
+        setRecentSessions(refreshedRecentSessions);
+      } catch (error) {
+        console.error('Failed to load recent sessions:', error);
       } finally {
         setIsLoadingSessions(false);
       }
@@ -54,7 +63,7 @@ export function SessionInsights() {
 
     loadActivity();
     loadRecentSessions();
-  }, []);
+  }, [initialActivity]);
 
   const handleSessionClick = async (session: Session) => {
     try {
