@@ -1627,7 +1627,7 @@ function BaseChatContent({
                     <Greeting
                       key={sessionId}
                       className={cn(
-                        'text-center text-2xl font-semibold tracking-tight text-text-default animate-in fade-in duration-300'
+                        'text-center text-2xl font-semibold tracking-tight text-text-default'
                       )}
                     />
                     {renderChatInput()}
