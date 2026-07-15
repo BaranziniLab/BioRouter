@@ -173,7 +173,7 @@ export function AppTooltipLayer() {
       data-side={tooltip.side}
       className={cn(
         TOOLTIP_SURFACE_CLASS_NAME,
-        'pointer-events-none fixed max-w-xs whitespace-pre-line text-left leading-snug animate-in fade-in-0 zoom-in-95 duration-[var(--motion-fast)]'
+        'pointer-events-none fixed w-max max-w-xs whitespace-pre-line text-left leading-snug animate-in fade-in-0 zoom-in-95 duration-[var(--motion-fast)]'
       )}
       style={{
         left: tooltip.x + horizontalShift,

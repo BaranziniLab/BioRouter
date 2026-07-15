@@ -78,4 +78,21 @@ describe('AppTooltipLayer', () => {
     });
     expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-snug');
   });
+
+  it('uses intrinsic width for short action labels', async () => {
+    render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title="Delete local model" />
+      </>
+    );
+
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('title', ''));
+
+    fireEvent.pointerOver(target);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Delete local model');
+    expect(tooltip).toHaveClass('w-max', 'max-w-xs');
+  });
 });
