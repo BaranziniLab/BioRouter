@@ -518,7 +518,7 @@ enum SessionCommand {
         new_name: String,
     },
     #[command(
-        about = "Diverge (fork) a saved session into a new one, preserving full history",
+        about = "Diverge a saved session into a new one, preserving full history",
         long_about = "Branch a stored conversation into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
     )]
     Diverge {

@@ -751,7 +751,7 @@ class ChatStreamController {
   onMessageUpdate = async (
     messageId: string,
     newContent: string,
-    editType: 'fork' | 'edit' = 'fork'
+    editType: 'diverge' | 'edit' = 'diverge'
   ): Promise<void> => {
     try {
       const { editMessage } = await import('../api');
@@ -777,8 +777,8 @@ class ChatStreamController {
         throw new Error('No session ID returned from edit_message');
       }
 
-      if (editType === 'fork') {
-        const event = new CustomEvent('session-forked', {
+      if (editType === 'diverge') {
+        const event = new CustomEvent('session-diverged', {
           detail: {
             newSessionId: targetSessionId,
             shouldStartAgent: true,
@@ -786,7 +786,9 @@ class ChatStreamController {
           },
         });
         window.dispatchEvent(event);
-        window.electron?.logInfo(`Dispatched session-forked event for session ${targetSessionId}`);
+        window.electron?.logInfo(
+          `Dispatched session-diverged event for session ${targetSessionId}`
+        );
       } else {
         const sessionResponse = await getSession({
           path: { session_id: targetSessionId },
