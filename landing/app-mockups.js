@@ -139,7 +139,7 @@
       '<span class="chip">' + svgI('skills') + '5</span>' +
       '<span class="chip">' + svgI('book') + '6 KBs visible</span>' +
       '<span class="chip">' + svgI('dollar') + '0.0000</span>' +
-      '<span class="chip">' + svgI('brain') + 'gpt-5.5</span>' +
+      '<span class="chip">' + svgI('brain') + 'gpt-5.6</span>' +
       '<span class="grow"></span>' + right + '</div></div>';
   }
 
@@ -313,11 +313,11 @@
       '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Built-in extensions (7)</div>' +
       erow('Developer', 'General development tools useful for software engineering.', true) +
       erow('Computer Controller', 'General computer control tools that don’t require you to be a developer or engineer.', true) +
-      erow('Auto Visualiser', 'Data visualization and UI generation tools.', false) +
+      erow('Auto Visualiser', 'Data visualization and UI generation tools.', true) +
       erow('Memory', 'Teach BioRouter your preferences as you go.', true) +
       erow('Tutorial', 'Access interactive tutorials and guides.', false) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +
-      erow('Agent Drafter', 'Build interactive artifacts and export them as standalone projects.', false) +
+      erow('Agent Drafter', 'Build interactive artifacts and export them as standalone projects.', true) +
       '</div>';
     return win('extensions', {}, main);
   };
@@ -463,16 +463,16 @@
       '<h2>Provider Configuration</h2>' +
       '<div class="lead">Configure your AI model providers. API keys are encrypted and stored locally.</div>' +
       '<div class="bw-grp"><i class="local"></i>Local models</div>' +
-      prow('L', 'Llama Server', 'Bundled llama.cpp runtime. Default qwen3.5-4b; no external install required.', true) +
+      prow('L', 'Llama Server', 'Bundled llama.cpp runtime. Gemma 4 E4B laptop default; Qwen3.6 35B on 64 GiB systems.', true) +
       prow('O', 'Ollama', 'Local open source models. Default qwen3.', true) +
       '<div class="bw-grp"><i class="inst"></i>Institutional models</div>' +
-      prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.2-2025-12-11.', true) +
+      prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.5-2026-04-24.', true) +
       prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-6-v1.', true) +
       '<div class="bw-grp"><i class="comm"></i>Commercial models</div>' +
       prow('A', 'Azure OpenAI', 'Models through Azure OpenAI Service (uses Azure credential chain by default).', false) +
       prow('A', 'Amazon Bedrock', 'Run models through Amazon Bedrock.', true) +
       prow('A', 'Anthropic', 'Claude and other models from Anthropic.', true) +
-      prow('O', 'OpenAI', 'GPT-4 and other OpenAI models, including OpenAI compatible ones.', true) +
+      prow('O', 'OpenAI', 'OpenAI models with gpt-5.6 as the default, plus compatible endpoints.', true) +
       prow('G', 'Google Gemini', 'Gemini models from Google AI.', false) +
       prow('R', 'OpenRouter', 'Route to Claude, Gemini, Grok, DeepSeek, Qwen, and more.', false) +
       '</div>';

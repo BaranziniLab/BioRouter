@@ -34,7 +34,7 @@ GitHub: https://github.com/BaranziniLab/BioRouter
 
 ### Banner / Hero
 - BioRouter logo (icon.png) with glow animation
-- Version badge: "v1.20.0 Now Available"
+- Version badge: "v1.88.0 Now Available"
 - Headline: "UCSF BioRouter"
 - Subheading: AI-powered integrated research environment tagline
 - CTA buttons: Download, Documentation, GitHub
@@ -90,7 +90,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.20.0 Release Notes (https://github.com/BaranziniLab/BioRouter/releases/tag/v1.20.0)
+- v1.88.0 Release Notes (https://github.com/BaranziniLab/BioRouter/releases/tag/v1.88.0)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -98,7 +98,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ## Tab 2 — Download (`download.html`)
 
 ### Hero
-- Version badge: "v1.20.0 — February 2026"
+- Version badge: "v1.88.0 — July 2026"
 - Title: "Download BioRouter"
 - Subtitle: "Native installers for every major platform. Open source and free."
 
@@ -112,20 +112,23 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 - Linux → amd64.deb (default for Linux)
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.20.0)
+### Download Links (v1.88.0)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | BioRouter-1.20.0-arm64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.20.0/BioRouter-1.20.0-arm64.dmg |
-| macOS Intel | BioRouter-1.20.0-x64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.20.0/BioRouter-1.20.0-x64.dmg |
-| Windows x64 | BioRouter-win32-x64-1.20.0.zip | https://github.com/BaranziniLab/BioRouter/releases/download/v1.20.0/BioRouter-win32-x64-1.20.0.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.20.0_amd64.deb | https://github.com/BaranziniLab/BioRouter/releases/download/v1.20.0/biorouter_1.20.0_amd64.deb |
-| Linux Fedora/RHEL | BioRouter-1.20.0-1.x86_64.rpm | https://github.com/BaranziniLab/BioRouter/releases/download/v1.20.0/BioRouter-1.20.0-1.x86_64.rpm |
+| macOS Apple Silicon | BioRouter-1.88.0-arm64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-arm64.dmg |
+| macOS Intel | BioRouter-1.88.0-x64.dmg | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-x64.dmg |
+| Windows x64 | BioRouter-win32-x64-1.88.0.zip | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-win32-x64-1.88.0.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.88.0_amd64.deb | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter_1.88.0_amd64.deb |
+| Linux Fedora/RHEL | BioRouter-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/BioRouter-1.88.0-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.0_amd64.deb | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-cli_1.88.0_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.88.0-1.x86_64.rpm | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-cli-1.88.0-1.x86_64.rpm |
+| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/BioRouter/releases/download/v1.88.0/biorouter-headless-linux-x64.tar.gz |
 
 ### Install Commands
 - macOS: Open DMG and drag BioRouter.app to /Applications
 - Windows: Unzip and run BioRouter.exe
-- Linux Debian: sudo dpkg -i biorouter_1.20.0_amd64.deb
-- Linux RPM: sudo rpm -i BioRouter-1.20.0-1.x86_64.rpm
+- Linux Debian: sudo apt install ./biorouter_1.88.0_amd64.deb
+- Linux RPM: sudo dnf install ./BioRouter-1.88.0-1.x86_64.rpm
 
 ### Setup Note / Info Box
 After installing, users should:
@@ -278,9 +281,9 @@ Each card contains:
 ## Tab 5 — About (`about.html`)
 
 ### News
-1. **BioRouter v1.20.0 Release** (February 2026)
-   - Link: https://github.com/BaranziniLab/BioRouter/releases/tag/v1.20.0
-   - What's new: multi-platform, updated models, new branding, simplified setup, full docs
+1. **BioRouter v1.88.0 Release** (July 2026)
+   - Link: https://github.com/BaranziniLab/BioRouter/releases/tag/v1.88.0
+   - What's new: controllable agent runs, honest usage accounting, faster desktop and TUI rendering, responsive workspaces, Agent Drafter hardening, cross-platform security, and desktop/CLI/headless packages
 
 2. **UCSF AI Research Day** (2026)
    - Link: https://ai.ucsf.edu/researchday

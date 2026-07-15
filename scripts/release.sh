@@ -24,8 +24,9 @@
 #   mac-manifest <ver>
 #                     Generate latest-mac.yml for electron-updater.
 #   verify <ver>      Verify all release artifacts (arch, notarization, dmg format).
-#   publish <ver>     Create the GitHub release with assets + notes.
-#   all <ver>         Run every phase in order (bump → … → publish).
+#   draft <ver>       Create a draft GitHub release with assets + notes.
+#   publish <ver>     Publish a verified draft after native Windows smoke passes.
+#   all <ver>         Run every build/verify phase and create the draft release.
 #
 # Hard-won invariants (see CLAUDE.md for the long version):
 #   * The macOS .dmg maker (macos-alias native module) only builds under
@@ -41,8 +42,8 @@
 #   * Every bundle writes ui/desktop/src/bin/ and clobbers the others — phases
 #     stage the correct binaries and run strictly one platform at a time.
 #   * The Linux docker package runs `npm ci` and leaves node_modules Linux-
-#     flavored, so it MUST be the last package phase; `verify`/`publish` and any
-#     later mac build need `cd ui/desktop && rm -rf node_modules && npm install`.
+#     flavored. Host-side browser, macOS, and headless builds must restore the
+#     native optional dependencies before they run.
 #   * Notarization credentials are read from notarization/APPLE_DEVELOPER_NOTES.md
 #     (gitignored). Override via APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD env vars.
 #
@@ -104,10 +105,24 @@ ensure_docker() {
 ensure_mac_dmg_deps() {
   ( cd "$DESK"
     if ! node -e "require.resolve('appdmg')" >/dev/null 2>&1; then
-      log "installing macOS dmg deps (appdmg)…"; npm install >/dev/null 2>&1
+      log "installing macOS dmg deps (appdmg)…"; npm install --package-lock=false >/dev/null 2>&1
     fi
     npm rebuild macos-alias ds-store >/dev/null 2>&1 || true
     node -e "require('appdmg')" >/dev/null 2>&1 || die "appdmg still not loadable — run: (cd ui/desktop && rm -rf node_modules && npm install)"
+  )
+}
+
+ensure_host_node_deps() {
+  activate_hermit
+  (
+    cd "$DESK"
+    if ! node -e "require('rollup')" >/dev/null 2>&1; then
+      log "restoring host-native desktop dependencies…"
+      rm -rf node_modules
+      npm install --package-lock=false >/dev/null
+    fi
+    node -e "require('rollup')" >/dev/null 2>&1 \
+      || die "host-native Rollup dependency is unavailable"
   )
 }
 
@@ -153,17 +168,27 @@ cmd_linux-backend() {
   log "cross-compiling linux-gnu backend (docker, $LINUX_RUST_IMG)"
   rm -rf "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
          "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd"
-  # The docker build compiles build.rs scripts for the container's host arch
-  # (aarch64-linux) into the shared target/release/build. A prior release built
-  # under a newer-glibc image leaves those ELF binaries behind, and reusing them
-  # under the pinned bullseye fails at build time with "GLIBC_2.3x not found".
-  # Drop only the Linux (ELF) build scripts so they recompile against bullseye's
-  # glibc; the mac (Mach-O) build scripts and final mac binaries are left intact.
-  # (The check-cross gate uses a per-triple target dir and never hits this.)
-  find "$ROOT/target/release/build" -name 'build-script-build' -type f 2>/dev/null \
-    | while read -r f; do file "$f" 2>/dev/null | grep -q ELF && rm -rf "$(dirname "$f")"; done
-  cross_linux "cargo build --release --bin biorouterd --bin biorouter"
+  run_cross_release \
+    cross_linux \
+    biorouter-linux-release-target \
+    "cargo build --release --bin biorouterd --bin biorouter" \
+    "mkdir -p /usr/src/myapp/target/x86_64-unknown-linux-gnu/release && \
+     cp -f /cross-target/x86_64-unknown-linux-gnu/release/biorouter \
+           /cross-target/x86_64-unknown-linux-gnu/release/biorouterd \
+           /usr/src/myapp/target/x86_64-unknown-linux-gnu/release/"
   log "linux backend compiled"
+}
+
+run_cross_release() { # <cross function> <target volume> <cargo command> <post command>
+  local cross_fn="$1" target_volume="$2" cargo_cmd="$3" post_cmd="$4" rc=0
+  docker volume rm -f "$target_volume" >/dev/null 2>&1 || true
+  docker volume create "$target_volume" >/dev/null
+  (
+    export CROSS_TARGET_MOUNT="$target_volume"
+    "$cross_fn" "$cargo_cmd" /cross-target "$post_cmd"
+  ) || rc=$?
+  docker volume rm -f "$target_volume" >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 cmd_backends() {
@@ -176,7 +201,15 @@ cmd_backends() {
 
   ensure_docker
   log "cross-compiling windows-gnu backend (docker)"
-  cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
+  run_cross_release \
+    cross_windows \
+    biorouter-windows-release-target \
+    "cargo build --release --bin biorouterd --bin biorouter" \
+    "mkdir -p /usr/src/myapp/target/x86_64-pc-windows-gnu/release && \
+     cp -f /cross-target/x86_64-pc-windows-gnu/release/biorouter.exe \
+           /cross-target/x86_64-pc-windows-gnu/release/biorouterd.exe \
+           /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
+     $WIN_DLL_STAGE"
 
   cmd_linux-backend
   log "all 4 backends compiled"
@@ -225,7 +258,7 @@ cmd_linux() {
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
-    node:20-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh
+    node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh
   log "deb: $DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
   log "rpm: $DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
   log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && rm -rf node_modules && npm install' before any further mac build."
@@ -248,7 +281,7 @@ cmd_cli-linux() {
 # used for Debian/Ubuntu deployments and verifies that no local profiles or
 # credential material were packaged.
 cmd_headless-linux() {
-  local v="$1"; ensure_docker
+  local v="$1"; ensure_docker; ensure_host_node_deps
   log "building headless Linux browser artifact"
   "$ROOT/scripts/package-headless-linux.sh"
   local tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
@@ -288,6 +321,7 @@ cmd_verify() {
     file "$DESK/out/BioRouter-darwin-x64/BioRouter.app/Contents/Resources/bin/biorouterd" | grep -q x86_64 && log "intel bundled binary is x86_64 ✓" || { echo "intel binary WRONG ARCH"; ok=0; }
     xcrun stapler validate "$DESK/out/BioRouter-darwin-x64/BioRouter.app" >/dev/null 2>&1 && log "intel app stapled ✓" || { echo "intel NOT stapled"; ok=0; }
   fi
+  "$ROOT/scripts/smoke-test-release-artifacts.sh" "$v" || ok=0
   [ "$ok" = 1 ] || die "verification failed"
   log "all artifacts verified"
 }
@@ -312,14 +346,10 @@ cmd_mac-manifest() {
   log "latest-mac.yml: $DESK/out/make/latest-mac.yml"
 }
 
-# ── publish ───────────────────────────────────────────────────────────────────
-cmd_publish() {
+# ── draft + publish ───────────────────────────────────────────────────────────
+release_assets() {
   local v="$1"
-  local notes="$ROOT/docs/release-notes/v$v.md"
-  [ -f "$notes" ] || die "release notes missing: $notes"
-  cmd_mac-manifest "$v"
-  log "creating GitHub release v$v"
-  gh release create "v$v" --title "BioRouter v$v" --notes-file "$notes" \
+  printf '%s\n' \
     "$DESK/out/make/BioRouter-$v-arm64.dmg" \
     "$DESK/out/make/BioRouter-$v-x64.dmg" \
     "$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip" \
@@ -331,6 +361,35 @@ cmd_publish() {
     "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
     "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm" \
     "$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
+}
+
+cmd_draft() {
+  local v="$1"
+  local notes="$ROOT/docs/release-notes/v$v.md"
+  [ -f "$notes" ] || die "release notes missing: $notes"
+  cmd_mac-manifest "$v"
+  local assets=()
+  while IFS= read -r asset; do
+    [ -f "$asset" ] || die "release asset missing: $asset"
+    assets+=("$asset")
+  done < <(release_assets "$v")
+  log "creating draft GitHub release v$v"
+  gh release create "v$v" --draft --target main --title "BioRouter v$v" \
+    --notes-file "$notes" "${assets[@]}"
+  log "draft ready: $(gh release view "v$v" --json url --jq .url)"
+}
+
+cmd_publish() {
+  local v="$1"
+  cmd_verify "$v"
+  local is_draft windows_smoke
+  is_draft="$(gh release view "v$v" --json isDraft --jq .isDraft 2>/dev/null || true)"
+  [ "$is_draft" = true ] || die "v$v must exist as a draft release before publication"
+  windows_smoke="$(gh run list --workflow release-artifact-smoke.yml --limit 30 \
+    --json displayTitle,conclusion \
+    --jq "[.[] | select(.displayTitle == \"Release artifact smoke v$v\" and .conclusion == \"success\")] | length")"
+  [ "$windows_smoke" -gt 0 ] || die "native Windows release smoke has not passed for v$v"
+  gh release edit "v$v" --draft=false
   log "published: $(gh release view "v$v" --json url --jq .url)"
 }
 
@@ -340,13 +399,14 @@ cmd_all() {
   cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
   cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
   cmd_headless-linux "$v"                                                # browser-served headless Linux
-  ( cd "$DESK" && rm -rf node_modules && npm install >/dev/null 2>&1 )  # un-Linux node_modules
-  cmd_verify "$v"; cmd_publish "$v"
+  ( cd "$DESK" && rm -rf node_modules && npm install --package-lock=false >/dev/null 2>&1 )  # un-Linux node_modules
+  cmd_verify "$v"; cmd_draft "$v"
+  log "draft created; run the native Windows smoke workflow, then: scripts/release.sh publish $v"
 }
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|publish|all)
+  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all)
     need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|publish|all} <version>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all} <version>" ;;
 esac

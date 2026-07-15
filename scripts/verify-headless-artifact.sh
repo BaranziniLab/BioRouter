@@ -99,7 +99,7 @@ sed -n '1,20p' "$ARTIFACT/manifest.txt"
 if [ "$CREATE_TARBALL" = true ]; then
   tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
   log "creating $tarball"
-  tar -C "$ROOT/dist" -czf "$tarball" "$(basename "$ARTIFACT")"
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$ROOT/dist" -czf "$tarball" "$(basename "$ARTIFACT")"
   shasum -a 256 "$tarball"
 fi
 
