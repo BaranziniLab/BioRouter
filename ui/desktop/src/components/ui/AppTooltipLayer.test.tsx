@@ -59,4 +59,23 @@ describe('AppTooltipLayer', () => {
     await waitFor(() => expect(target).not.toHaveAttribute('data-biorouter-tooltip'));
     expect(target).not.toHaveAttribute('aria-label');
   });
+
+  it('preserves intentional line breaks in compact native-title tooltips', async () => {
+    render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title={'Ships with BioRouter.\nRecreated automatically if deleted.'} />
+      </>
+    );
+
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('title', ''));
+
+    fireEvent.pointerOver(target);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Ships with BioRouter. Recreated automatically if deleted.', {
+      normalizeWhitespace: true,
+    });
+    expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-snug');
+  });
 });

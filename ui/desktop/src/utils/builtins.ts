@@ -6,7 +6,7 @@ export const MEDITATION_WORKFLOW_FILE = 'meditation.yaml';
 export const MEDITATION_SCHEDULE_ID = 'daily-meditation';
 export const MEDITATION_SCHEDULE_DISPLAY_NAME = 'Daily Meditation';
 
-export const BUILTIN_RECREATED_TITLE = 'Ships with Biorouter. Recreated automatically if deleted.';
+export const BUILTIN_RECREATED_TITLE = 'Ships with BioRouter.\nRecreated automatically if deleted.';
 
 export function isBuiltinKnowledgeBase(kbId: string): boolean {
   return kbId === SOUL_KB_ID;
