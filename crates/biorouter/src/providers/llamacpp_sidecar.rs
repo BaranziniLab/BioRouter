@@ -141,6 +141,7 @@ impl LaunchSource {
 
 struct Inner {
     child: Option<Child>,
+    log_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Port the current/last process was started on.
     port: Option<u16>,
     model: Option<String>,
@@ -154,12 +155,14 @@ struct Inner {
     /// memory-tiered default if automatic startup falls back after an OOM.
     requested_context_size: Option<usize>,
     automatic_context_size: bool,
+    partial_download_restart_attempted: bool,
     warmed_model: Option<String>,
 }
 
 /// Singleton manager for the llama-server sidecar.
 pub struct LlamaSidecar {
     inner: Mutex<Inner>,
+    startup: Mutex<()>,
 }
 
 static SIDECAR: OnceLock<LlamaSidecar> = OnceLock::new();
@@ -169,6 +172,7 @@ pub fn global() -> &'static LlamaSidecar {
     SIDECAR.get_or_init(|| LlamaSidecar {
         inner: Mutex::new(Inner {
             child: None,
+            log_tasks: Vec::new(),
             port: None,
             model: None,
             model_source: None,
@@ -178,8 +182,10 @@ pub fn global() -> &'static LlamaSidecar {
             context_size: None,
             requested_context_size: None,
             automatic_context_size: false,
+            partial_download_restart_attempted: false,
             warmed_model: None,
         }),
+        startup: Mutex::new(()),
     })
 }
 
@@ -713,6 +719,9 @@ async fn live_context_size(port: u16) -> Option<usize> {
 }
 
 fn launch_source_for(source: &ModelSource) -> LaunchSource {
+    if model_cache_status(&source.hf_spec) == ModelCacheStatus::Downloaded {
+        return LaunchSource::HuggingFace(source.hf_spec.clone());
+    }
     model_source_path(source)
         .map(LaunchSource::OllamaBlob)
         .unwrap_or_else(|| LaunchSource::HuggingFace(source.hf_spec.clone()))
@@ -731,10 +740,6 @@ fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) ->
     args.extend([
         "--alias".to_string(),
         alias.to_string(),
-        "--host".to_string(),
-        "127.0.0.1".to_string(),
-        "--port".to_string(),
-        port.to_string(),
         "--ctx-size".to_string(),
         ctx_size.to_string(),
         "--jinja".to_string(),
@@ -761,10 +766,8 @@ fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) ->
     if let Ok(extra) = config.get_param::<String>("LLAMACPP_EXTRA_ARGS") {
         args.extend(sanitize_extra_args(&extra));
     }
-    // Belt-and-suspenders: re-assert the loopback bind as the LAST `--host`/
-    // `--port` on the line. llama-server's arg parser honors the last value, so
-    // even if a dangerous flag slipped past the filter above it cannot move the
-    // server off 127.0.0.1 or onto a different port.
+    // Keep the managed bind after user-supplied arguments as a second layer of
+    // protection in case the sanitizer misses a future argument form.
     args.push("--host".to_string());
     args.push("127.0.0.1".to_string());
     args.push("--port".to_string());
@@ -977,6 +980,12 @@ fn log_tail_joined(tail: &StdMutex<VecDeque<String>>, n: usize) -> String {
         .unwrap_or_default()
 }
 
+async fn finish_log_tasks(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    for task in std::mem::take(tasks) {
+        let _ = task.await;
+    }
+}
+
 fn spawn_child(
     inner: &mut Inner,
     binary: &Path,
@@ -1007,6 +1016,7 @@ fn spawn_child_with_launch_source(
     port: u16,
     ctx_size: usize,
 ) -> Result<Child> {
+    debug_assert!(inner.log_tasks.is_empty());
     let args = build_args(&launch_source, model, port, ctx_size);
     tracing::info!(
         "Starting llama-server ({}) on port {port}: {} {}",
@@ -1032,25 +1042,25 @@ fn spawn_child_with_launch_source(
 
     if let Some(stdout) = child.stdout.take() {
         let tail = inner.log_tail.clone();
-        tokio::spawn(async move {
+        inner.log_tasks.push(tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
                     push_log(&tail, line);
                 }
             }
-        });
+        }));
     }
     if let Some(stderr) = child.stderr.take() {
         let tail = inner.log_tail.clone();
-        tokio::spawn(async move {
+        inner.log_tasks.push(tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
                     push_log(&tail, line);
                 }
             }
-        });
+        }));
     }
 
     if let Some(child_pid) = child.id() {
@@ -1085,6 +1095,7 @@ impl LlamaSidecar {
                     }
                 }
                 // Process died — fall through to respawn.
+                finish_log_tasks(&mut inner.log_tasks).await;
                 inner.last_error = Some(log_tail_joined(&inner.log_tail, 8));
                 inner.child = None;
                 inner.warmed_model = None;
@@ -1095,6 +1106,7 @@ impl LlamaSidecar {
         if let Some(mut child) = inner.child.take() {
             let _ = child.start_kill();
             let _ = child.wait().await;
+            finish_log_tasks(&mut inner.log_tasks).await;
         }
 
         // Clean up llama-servers leaked by Biorouter processes that died
@@ -1141,6 +1153,7 @@ impl LlamaSidecar {
         inner.context_size = None;
         inner.requested_context_size = Some(ctx_size);
         inner.automatic_context_size = automatic_context_size;
+        inner.partial_download_restart_attempted = false;
         inner.warmed_model = None;
         Ok(port)
     }
@@ -1148,6 +1161,7 @@ impl LlamaSidecar {
     /// Wait until `GET /health` succeeds or `timeout` elapses. The first run
     /// can include a large fallback download, so generous timeouts are expected.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<u16> {
+        let _startup = self.startup.lock().await;
         let mut deadline = tokio::time::Instant::now() + timeout;
         loop {
             let (port, dead, tail) = {
@@ -1159,6 +1173,9 @@ impl LlamaSidecar {
                     Some(child) => child.try_wait()?.is_some(),
                     None => true,
                 };
+                if dead {
+                    finish_log_tasks(&mut inner.log_tasks).await;
+                }
                 (port, dead, inner.log_tail.clone())
             };
 
@@ -1169,6 +1186,10 @@ impl LlamaSidecar {
                     continue;
                 }
                 if self.retry_with_huggingface_fallback(&tail).await? {
+                    deadline = tokio::time::Instant::now() + timeout;
+                    continue;
+                }
+                if self.retry_partial_huggingface_download_once().await? {
                     deadline = tokio::time::Instant::now() + timeout;
                     continue;
                 }
@@ -1210,7 +1231,7 @@ impl LlamaSidecar {
         let Some(model) = inner.model.clone() else {
             return Ok(false);
         };
-        let Some(source) = inner.model_source.clone() else {
+        let Some(launch_source) = inner.launch_source.clone() else {
             return Ok(false);
         };
         let Some(port) = inner.port else {
@@ -1233,8 +1254,14 @@ impl LlamaSidecar {
             "llama-server exited while loading {model} with {current_ctx} context; retrying \
              automatic context at {next_ctx}"
         );
-        let child = spawn_child(
-            &mut inner, &binary, &cache_dir, &model, &source, port, next_ctx,
+        let child = spawn_child_with_launch_source(
+            &mut inner,
+            &binary,
+            &cache_dir,
+            &model,
+            launch_source,
+            port,
+            next_ctx,
         )?;
         inner.child = Some(child);
         inner.context_size = None;
@@ -1305,6 +1332,64 @@ impl LlamaSidecar {
         Ok(true)
     }
 
+    async fn retry_partial_huggingface_download_once(&self) -> Result<bool> {
+        let mut inner = self.inner.lock().await;
+        if inner.partial_download_restart_attempted
+            || !matches!(inner.launch_source, Some(LaunchSource::HuggingFace(_)))
+        {
+            return Ok(false);
+        }
+        let Some(model) = inner.model.clone() else {
+            return Ok(false);
+        };
+        let Some(source) = inner.model_source.clone() else {
+            return Ok(false);
+        };
+        if model_cache_status(&source.hf_spec) != ModelCacheStatus::Partial {
+            return Ok(false);
+        }
+        let Some(port) = inner.port else {
+            return Ok(false);
+        };
+        let ctx_size = inner
+            .requested_context_size
+            .unwrap_or_else(configured_context_size);
+
+        inner.child = None;
+        inner.partial_download_restart_attempted = true;
+        clear_pidfile();
+        let binary = find_binary().ok_or_else(|| {
+            anyhow!(
+                "llama-server binary not found. It ships with the Biorouter desktop app; for \
+                 CLI-only installs, install llama.cpp (e.g. `brew install llama.cpp`) or set \
+                 BIOROUTER_LLAMACPP_BIN to a llama-server path."
+            )
+        })?;
+        let cache_dir = model_cache_dir();
+        std::fs::create_dir_all(&cache_dir)?;
+
+        tracing::warn!(
+            "llama-server exited with a partial Hugging Face download for {model}; resuming once"
+        );
+        let child = spawn_child_with_launch_source(
+            &mut inner,
+            &binary,
+            &cache_dir,
+            &model,
+            LaunchSource::HuggingFace(source.hf_spec),
+            port,
+            ctx_size,
+        )?;
+        inner.child = Some(child);
+        inner.context_size = None;
+        inner.warmed_model = None;
+        push_log(
+            &inner.log_tail,
+            "Resuming the interrupted Hugging Face download once".to_string(),
+        );
+        Ok(true)
+    }
+
     /// Non-blocking-ish status snapshot for UIs.
     pub async fn status(&self) -> SidecarStatus {
         let binary = find_binary();
@@ -1344,23 +1429,21 @@ impl LlamaSidecar {
             return status;
         }
 
-        let running = match inner.child.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(None) => true,
-                _ => {
-                    status.state = SidecarState::Error;
-                    status.warmed = false;
-                    status.detail = Some(
-                        inner
-                            .last_error
-                            .clone()
-                            .unwrap_or_else(|| log_tail_joined(&inner.log_tail, 8)),
-                    );
-                    return status;
-                }
-            },
-            None => false,
-        };
+        let had_child = inner.child.is_some();
+        let running = matches!(inner.child.as_mut().map(Child::try_wait), Some(Ok(None)));
+
+        if had_child && !running {
+            finish_log_tasks(&mut inner.log_tasks).await;
+            status.state = SidecarState::Error;
+            status.warmed = false;
+            status.detail = Some(
+                inner
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| log_tail_joined(&inner.log_tail, 8)),
+            );
+            return status;
+        }
 
         if !running {
             // No process managed by this instance. A server may still be
@@ -1414,6 +1497,7 @@ impl LlamaSidecar {
         if let Some(mut child) = inner.child.take() {
             let _ = child.start_kill();
             let _ = child.wait().await;
+            finish_log_tasks(&mut inner.log_tasks).await;
         }
         clear_pidfile();
         inner.model = None;
@@ -1423,6 +1507,7 @@ impl LlamaSidecar {
         inner.context_size = None;
         inner.requested_context_size = None;
         inner.automatic_context_size = false;
+        inner.partial_download_restart_attempted = false;
         inner.warmed_model = None;
     }
 }
@@ -1553,6 +1638,49 @@ mod tests {
     }
 
     #[test]
+    fn launch_source_prefers_downloaded_huggingface_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let manifest = tmp
+            .path()
+            .join("manifests/registry.ollama.ai/library/gemma4/latest");
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            manifest,
+            serde_json::json!({
+                "layers": [{
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": digest,
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let blob = tmp
+            .path()
+            .join(format!("blobs/{}", digest.replace(':', "-")));
+        std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        std::fs::write(&blob, b"GGUF").unwrap();
+        let source =
+            ModelSource::ollama("gemma4:latest", "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0");
+
+        assert_eq!(launch_source_for(&source), LaunchSource::OllamaBlob(blob));
+
+        let fallback = tmp
+            .path()
+            .join("models--google--gemma-4-E4B-it-qat-q4_0-gguf/snapshots/rev");
+        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::write(fallback.join("gemma-4-E4B-Q4_0.gguf"), b"GGUF").unwrap();
+
+        assert_eq!(
+            launch_source_for(&source),
+            LaunchSource::HuggingFace("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0".to_string())
+        );
+    }
+
+    #[test]
     fn parse_ollama_name_applies_registry_defaults() {
         assert_eq!(
             parse_ollama_name("qwen3.6:latest"),
@@ -1632,6 +1760,14 @@ mod tests {
         assert!(joined.contains("--cache-type-v q8_0"));
         assert!(joined.contains("--jinja"));
         assert!(joined.contains("--host 127.0.0.1"));
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--host").count(),
+            1
+        );
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--port").count(),
+            1
+        );
         assert!(joined.contains("--no-webui"));
         assert!(joined.contains("--no-mmproj"));
         // Thinking is disabled by default via the current --reasoning flag.
@@ -1753,6 +1889,29 @@ mod tests {
         assert_eq!(args[last_host + 1], "127.0.0.1");
         let last_port = args.iter().rposition(|a| a == "--port").unwrap();
         assert_eq!(args[last_port + 1], "11543");
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--host").count(),
+            1
+        );
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--port").count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_log_tasks_waits_for_pending_output() {
+        let tail = Arc::new(StdMutex::new(VecDeque::new()));
+        let task_tail = tail.clone();
+        let mut tasks = vec![tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            push_log(&task_tail, "final stderr line".to_string());
+        })];
+
+        finish_log_tasks(&mut tasks).await;
+
+        assert!(tasks.is_empty());
+        assert_eq!(last_log(&tail).as_deref(), Some("final stderr line"));
     }
 
     #[test]
