@@ -812,10 +812,11 @@ body.br-has-dock-bottom { padding-bottom: var(--br-dock-h); }
 .br-network__canvas:active { cursor: grabbing; }
 .br-network__tip {
   position: absolute; z-index: 3; pointer-events: none;
-  padding: 4px 8px; font-size: 0.75rem; border-radius: 4px;
-  background: var(--br-surface); color: var(--br-text);
-  border: 1px solid var(--br-border); box-shadow: var(--br-shadow-pop);
-  max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-sizing: border-box; width: max-content; max-width: min(20rem, calc(100% - 16px));
+  padding: 6px 8px; border-radius: 4px;
+  background: var(--br-text); color: var(--br-surface);
+  font-size: 0.75rem; line-height: 1rem; text-align: left;
+  white-space: normal; overflow-wrap: anywhere;
 }
 
 /* Server-sanitized privileged HTML */

@@ -4365,8 +4365,22 @@ function buildNetworkEngine(canvas: HTMLCanvasElement, spec: NetworkSpec): Netwo
     }
     el.textContent = n.label + (n.type ? " · " + n.type : "");
     el.style.display = "block";
-    el.style.left = xy[0] + 12 + "px";
-    el.style.top = xy[1] + 12 + "px";
+    const host = el.parentElement;
+    const padding = 8;
+    const offset = 12;
+    const hostWidth = host ? host.clientWidth : W;
+    const hostHeight = host ? host.clientHeight : H;
+    const maxLeft = Math.max(padding, hostWidth - el.offsetWidth - padding);
+    const maxTop = Math.max(padding, hostHeight - el.offsetHeight - padding);
+    const left = Math.min(Math.max(padding, xy[0] + offset), maxLeft);
+    const preferredTop = xy[1] + offset;
+    const flippedTop = xy[1] - el.offsetHeight - offset;
+    const top =
+      preferredTop <= maxTop
+        ? preferredTop
+        : Math.min(Math.max(padding, flippedTop), maxTop);
+    el.style.left = left + "px";
+    el.style.top = top + "px";
   }
   function onDown(ev) {
     const xy = localXY(ev);
