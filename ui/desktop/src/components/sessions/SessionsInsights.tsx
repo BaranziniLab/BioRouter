@@ -8,7 +8,7 @@ import { getSessionActivity, listSessions, ActivityWindow, Session } from '../..
 import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { UsageHeatmap } from './UsageHeatmap';
+import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
 
 /** ~5 months of weeks; 22 columns fit the 760px chat column at 24px cells. */
 const ACTIVITY_DAYS = 155;
@@ -95,9 +95,7 @@ export function SessionInsights() {
             <UsageHeatmap window={activity} />
           </div>
         ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
-          // A plain Skeleton is `bg-background-muted` — the same colour as this
-          // canvas, so it reads as blank. Give it a real surface while loading.
-          <Skeleton className="h-[204px] w-full rounded-xl border border-border-subtle !bg-background-default" />
+          <UsageHeatmapLoading />
         )}
       </ReadableContent>
 

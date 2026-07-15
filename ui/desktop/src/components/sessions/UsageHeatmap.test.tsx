@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { ActivityWindow } from '../../api';
-import { UsageHeatmap } from './UsageHeatmap';
+import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
 
 function windowOf(overrides: Partial<ActivityWindow> = {}): ActivityWindow {
   return {
@@ -17,10 +17,11 @@ function windowOf(overrides: Partial<ActivityWindow> = {}): ActivityWindow {
   };
 }
 
-const day = (date: string, level: number, sessions = 1, tokens = 1000) => ({
+const day = (date: string, level: number, sessions = 1, tokens = 1000, tokensComplete = true) => ({
   date,
   sessions,
   tokens,
+  tokensComplete,
   inputTokens: 0,
   outputTokens: 0,
   messages: 4,
@@ -28,6 +29,11 @@ const day = (date: string, level: number, sessions = 1, tokens = 1000) => ({
 });
 
 describe('UsageHeatmap', () => {
+  it('does not repeat the hover explanation above the grid', () => {
+    render(<UsageHeatmap window={windowOf()} />);
+    expect(screen.queryByText(/Daily usage intensity/)).not.toBeInTheDocument();
+  });
+
   it('renders whole weeks, padded to Sunday..Saturday', () => {
     render(<UsageHeatmap window={windowOf()} />);
     const cells = screen.getAllByRole('button');
@@ -77,18 +83,54 @@ describe('UsageHeatmap', () => {
       <UsageHeatmap
         window={windowOf({
           tokensComplete: false,
-          days: [day('2026-03-02', 3, 3, 128402)],
+          days: [day('2026-03-02', 3, 3, 128402, false)],
         })}
       />
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('Token values marked ≥');
-    expect(screen.getByText(/tokens on the highest measured day/)).toHaveTextContent(
-      '≥128.4K tokens on the highest measured day'
+    expect(screen.getByRole('status')).toHaveTextContent('conservative estimates');
+    expect(screen.getByText(/Highest recorded estimate/)).toHaveTextContent(
+      'Highest recorded estimate · 128.4K tokens'
     );
-    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, at least 128402 tokens/);
+    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, 128402 estimated tokens/);
     fireEvent.mouseEnter(cell);
-    expect(screen.getByRole('tooltip')).toHaveTextContent('≥128,402');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('128,402');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conservative estimate');
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent('≥');
+  });
+
+  it('shows unavailable instead of a meaningless lower bound of zero', () => {
+    render(
+      <UsageHeatmap
+        window={windowOf({
+          tokensComplete: false,
+          maxTokens: 0,
+          days: [day('2026-03-02', 3, 3, 0, false)],
+        })}
+      />
+    );
+
+    expect(screen.getByText('Token totals unavailable for older activity')).toBeInTheDocument();
+    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, token total unavailable/);
+    fireEvent.mouseEnter(cell);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Tokens processedUnavailable');
+    expect(screen.getByRole('tooltip')).toHaveTextContent('exact total cannot be shown');
+  });
+
+  it('keeps exact days exact when another day makes the window incomplete', () => {
+    render(
+      <UsageHeatmap
+        window={windowOf({
+          tokensComplete: false,
+          days: [day('2026-03-02', 3, 3, 42000, true)],
+        })}
+      />
+    );
+
+    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, 42000 tokens/);
+    fireEvent.mouseEnter(cell);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('42,000');
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent('Conservative estimate');
   });
 
   it('opens the tooltip on keyboard focus, not hover alone', () => {
@@ -144,5 +186,15 @@ describe('UsageHeatmap', () => {
     render(<UsageHeatmap window={windowOf({ currentStreak: 1, longestStreak: 1 })} />);
     expect(screen.getByText('1 day streak')).toBeInTheDocument();
     expect(screen.getByText(/Longest streak · 1 day$/)).toBeInTheDocument();
+  });
+});
+
+describe('UsageHeatmapLoading', () => {
+  it('fills the loading state with an animated heatmap-shaped placeholder', () => {
+    render(<UsageHeatmapLoading />);
+
+    expect(screen.getByRole('status', { name: 'Loading usage activity' })).toBeInTheDocument();
+    expect(screen.getAllByTestId('heatmap-loading-cell')).toHaveLength(154);
+    expect(screen.getByText('Loading activity')).toBeInTheDocument();
   });
 });

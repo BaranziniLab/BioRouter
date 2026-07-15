@@ -12,6 +12,8 @@ import type { ActivityWindow, DailyActivity } from '../../api';
  */
 
 const DAY_MS = 86_400_000;
+const LOADING_WEEKS = 22;
+const LOADING_CELLS = LOADING_WEEKS * 7;
 
 /** Local calendar day, `YYYY-MM-DD`, matching the server's `date('now','localtime')`. */
 function isoDay(d: Date): string {
@@ -84,15 +86,7 @@ const full = new Intl.NumberFormat('en');
 /** The subset of a cell's box the tooltip needs, as plain numbers. */
 type Anchor = { left: number; top: number; bottom: number; width: number };
 
-function Tooltip({
-  cell,
-  anchor,
-  tokensComplete,
-}: {
-  cell: Cell;
-  anchor: Anchor;
-  tokensComplete: boolean;
-}) {
+function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -136,20 +130,33 @@ function Tooltip({
       {d ? (
         <>
           <Row label="Sessions started" value={full.format(d.sessions)} />
-          <Row
-            label="Tokens processed"
-            value={`${tokensComplete ? '' : '≥'}${full.format(d.tokens)}`}
-          />
+          <Row label="Tokens processed" value={tokenDisplay(d)} />
           <Row label="Messages" value={full.format(d.messages)} />
           <p className="mt-2 border-t border-border-subtle pt-2 text-[11px] leading-snug text-text-subtle">
-            Tokens are attributed to the turn that spent them.
+            {d.tokensComplete
+              ? 'Tokens are attributed to the turn that spent them.'
+              : d.tokens > 0
+                ? 'Conservative estimate; some token events that day could not be counted.'
+                : 'Complete token accounting is unavailable for this day, so an exact total cannot be shown.'}
           </p>
         </>
       ) : (
-        <Row label="No activity" value="—" />
+        <Row label="No activity" value="0" />
       )}
     </div>
   );
+}
+
+function tokenDisplay(day: DailyActivity): string {
+  if (day.tokensComplete) return full.format(day.tokens);
+  if (day.tokens === 0) return 'Unavailable';
+  return full.format(day.tokens);
+}
+
+function tokenAria(day: DailyActivity): string {
+  if (day.tokensComplete) return `${day.tokens} tokens`;
+  if (day.tokens === 0) return 'token total unavailable';
+  return `${day.tokens} estimated tokens`;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -157,6 +164,72 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-baseline justify-between gap-5 text-[12.5px] leading-[1.9] text-text-muted">
       <span>{label}</span>
       <b className="font-mono font-medium tabular-nums text-text-default">{value}</b>
+    </div>
+  );
+}
+
+export function UsageHeatmapLoading() {
+  return (
+    <div className="biorouter-heatmap" role="status" aria-label="Loading usage activity">
+      <div aria-hidden="true">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <span className="biorouter-heatmap-loading-line h-6 w-24 rounded-md bg-heat-0" />
+          <span className="biorouter-heatmap-loading-line h-2.5 w-28 rounded bg-heat-0" />
+        </div>
+
+        <div className="grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
+          <span />
+          <div className="flex justify-between pr-8">
+            {[0, 1, 2, 3].map((month) => (
+              <span
+                key={month}
+                className="biorouter-heatmap-loading-line h-2.5 w-7 rounded bg-heat-0"
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-1.5 grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
+          <div className="grid grid-rows-7 gap-[var(--heat-gap)] text-[10px] leading-none text-text-muted/60">
+            {['Sun', '', 'Tue', '', 'Thu', '', 'Sat'].map((label, index) => (
+              <span key={index} className="flex h-[var(--heat-cell)] items-center">
+                {label}
+              </span>
+            ))}
+          </div>
+          <div
+            className="grid grid-flow-col justify-start gap-[var(--heat-gap)]"
+            style={{
+              gridTemplateRows: 'repeat(7, var(--heat-cell))',
+              gridAutoColumns: 'var(--heat-cell)',
+            }}
+          >
+            {Array.from({ length: LOADING_CELLS }, (_, index) => {
+              const column = Math.floor(index / 7);
+              const row = index % 7;
+              return (
+                <i
+                  key={index}
+                  data-testid="heatmap-loading-cell"
+                  className="biorouter-heatmap-loading-cell block h-[var(--heat-cell)] w-[var(--heat-cell)] rounded-[5px] bg-heat-0"
+                  style={{ animationDelay: `${-((column * 70 + row * 25) % 1400)}ms` }}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between text-[11px] text-text-muted/70">
+          <div className="flex items-center gap-1">
+            <span className="mr-1">Less</span>
+            {[0, 1, 2, 3, 4].map((level) => (
+              <i key={level} className={`block h-3 w-3 rounded-[3px] ${LEVEL_CLASS[level]}`} />
+            ))}
+            <span className="ml-1">More</span>
+          </div>
+          <span>Loading activity</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -190,7 +263,9 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
 
   return (
     <div className="biorouter-heatmap">
-      <div className="mb-1.5 flex items-baseline justify-between gap-4">
+      <div
+        className={`${activity.tokensComplete ? 'mb-4' : 'mb-2'} flex items-baseline justify-between gap-4`}
+      >
         <h2 className="text-lg font-semibold tracking-tight text-text-default">
           {activity.currentStreak === 1 ? '1 day streak' : `${activity.currentStreak} day streak`}
         </h2>
@@ -198,13 +273,10 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
           Longest streak · {activity.longestStreak} {activity.longestStreak === 1 ? 'day' : 'days'}
         </span>
       </div>
-      <p className="mb-4 text-[13px] text-text-muted">
-        Daily usage intensity — sessions started and tokens processed.
-      </p>
       {!activity.tokensComplete && (
         <p className="mb-4 text-[11px] text-text-subtle" role="status">
-          Token values marked ≥ are known subtotals because older activity predates complete billing
-          accounting.
+          Some days have incomplete token history, so their totals are conservative estimates.
+          Unavailable means no trustworthy total was recorded.
         </p>
       )}
 
@@ -254,7 +326,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
               onBlur={hide}
               aria-label={
                 cell.day
-                  ? `${cell.key}: ${cell.day.sessions} sessions, ${activity.tokensComplete ? '' : 'at least '}${cell.day.tokens} tokens`
+                  ? `${cell.key}: ${cell.day.sessions} sessions, ${tokenAria(cell.day)}`
                   : `${cell.key}: no activity`
               }
               className={[
@@ -281,19 +353,14 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
         <span className="tabular-nums">
           {activity.tokensComplete
             ? `${compact.format(activity.maxTokens)} tokens on your busiest day`
-            : `≥${compact.format(activity.maxTokens)} tokens on the highest measured day`}
+            : activity.maxTokens > 0
+              ? `Highest recorded estimate · ${compact.format(activity.maxTokens)} tokens`
+              : 'Token totals unavailable for older activity'}
         </span>
       </div>
 
       {hovered &&
-        createPortal(
-          <Tooltip
-            cell={hovered.cell}
-            anchor={hovered.rect}
-            tokensComplete={activity.tokensComplete}
-          />,
-          document.body
-        )}
+        createPortal(<Tooltip cell={hovered.cell} anchor={hovered.rect} />, document.body)}
     </div>
   );
 }

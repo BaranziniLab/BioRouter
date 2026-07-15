@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getUsageReport, getUsageSummary } from '../../../api';
@@ -47,31 +47,25 @@ beforeEach(() => {
 });
 
 describe('UsageSection', () => {
-  it('uses shared pressed-state buttons and reloads when the range changes', async () => {
-    const user = userEvent.setup();
+  it('uses one coherent month-to-date period without competing range controls', async () => {
+    const currentTime = new Date();
+    const monthStart = Math.floor(
+      new Date(currentTime.getFullYear(), currentTime.getMonth(), 1).getTime() / 1000
+    );
     render(<UsageSection />);
 
-    const sevenDays = screen.getByRole('button', { name: '7d' });
-    const thirtyDays = screen.getByRole('button', { name: '30d' });
-    const ninetyDays = screen.getByRole('button', { name: '90d' });
-
-    for (const button of [sevenDays, thirtyDays, ninetyDays]) {
-      expect(button).toHaveAttribute('data-slot', 'button');
-    }
-    expect(thirtyDays).toHaveAttribute('aria-pressed', 'true');
-    expect(sevenDays).toHaveAttribute('aria-pressed', 'false');
-
     await screen.findByTestId('usage-panel');
+    expect(screen.queryByRole('group', { name: 'Usage range' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '7d' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '30d' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '90d' })).toBeNull();
     expect(getUsageSummary).toHaveBeenCalledTimes(1);
     expect(getUsageReport).toHaveBeenCalledTimes(2);
-
-    await user.click(sevenDays);
-
-    expect(sevenDays).toHaveAttribute('aria-pressed', 'true');
-    expect(thirtyDays).toHaveAttribute('aria-pressed', 'false');
-    await waitFor(() => {
-      expect(getUsageSummary).toHaveBeenCalledTimes(2);
-      expect(getUsageReport).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(getUsageReport).mock.calls[0]?.[0]).toMatchObject({
+      query: { from: monthStart, group: 'day' },
+    });
+    expect(vi.mocked(getUsageReport).mock.calls[1]?.[0]).toMatchObject({
+      query: { from: monthStart, group: 'model' },
     });
   });
 
