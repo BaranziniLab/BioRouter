@@ -59,7 +59,7 @@ function TruncationNote() {
   return (
     <div className="flex items-center gap-1.5 border-t border-border-subtle px-3 py-1.5 text-xs text-text-muted">
       <Info className="h-3.5 w-3.5 shrink-0" />
-      <span>Preview truncated — the full call is larger than shown.</span>
+      <span>Preview truncated. The full call is larger than shown.</span>
     </div>
   );
 }

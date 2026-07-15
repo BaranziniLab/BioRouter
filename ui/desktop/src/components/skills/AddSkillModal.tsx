@@ -192,7 +192,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
           >
             <p className="text-sm font-medium text-text-default mb-1">Drop a skill file here</p>
             <p className="text-xs text-text-muted">
-              or click to browse — accepts <code>.md</code> or <code>.zip</code>
+              or click to browse. Accepts <code>.md</code> or <code>.zip</code>
             </p>
           </div>
           <input
@@ -232,7 +232,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
                 {preview.bundleSkills.map((s) => (
                   <p key={s.name} className="text-xs text-text-muted leading-relaxed">
                     · {s.name}
-                    {s.description && <span className="text-text-subtle"> — {s.description}</span>}
+                    {s.description && <span className="text-text-subtle">: {s.description}</span>}
                   </p>
                 ))}
               </div>

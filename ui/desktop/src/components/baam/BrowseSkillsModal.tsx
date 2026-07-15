@@ -146,8 +146,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
           <div>
             <DialogTitle>Browse Skills</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
-              Install skills from the BioRouter marketplace. Select as many as you like — skills
-              need no setup.
+              Install skills from the BioRouter marketplace. Select as many as you like. Skills need
+              no setup.
               {!live && (
                 <span className="text-text-subtle"> · showing bundled catalog (offline)</span>
               )}

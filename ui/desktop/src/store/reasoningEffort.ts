@@ -27,9 +27,9 @@ export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
 };
 
 export const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffort, string> = {
-  quick: 'Answer fast. Low reasoning effort, less exploration.',
+  quick: 'Fast answers with minimal exploration.',
   normal: "The model's default depth.",
-  deep: 'Think hard. High reasoning effort, extended thinking, more exploration.',
+  deep: 'More thinking and exploration.',
 };
 
 function isReasoningEffort(value: unknown): value is ReasoningEffort {

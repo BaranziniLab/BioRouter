@@ -109,7 +109,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
       {previewSha && (
         <div className="mx-4 mt-2 flex items-center justify-between rounded-md border border-border-warning/40 bg-background-warning/10 px-4 py-2 text-xs text-text-warning">
-          <span>Previewing commit {previewSha.slice(0, 7)} — read-only</span>
+          <span>Previewing commit {previewSha.slice(0, 7)}: read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
           </button>

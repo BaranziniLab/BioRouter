@@ -61,13 +61,13 @@ export const BrsdkSection = () => {
         return (
           <div
             key={toggle.key}
-            className="flex items-center justify-between py-3 px-2 -mx-2 hover:bg-background-muted rounded-lg transition-all"
+            className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default"
           >
-            <div>
-              <h3 className="text-sm font-medium text-text-default">{toggle.label}</h3>
-              <p className="text-xs text-text-muted max-w-md mt-[2px]">{toggle.description}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-text-default">{toggle.label}</p>
+              <p className="mt-0.5 max-w-md text-xs text-text-muted">{toggle.description}</p>
             </div>
-            <div className="flex items-center flex-shrink-0">
+            <div className="flex flex-shrink-0 items-center">
               <Switch
                 checked={enabled}
                 onCheckedChange={(checked) => handleToggle(toggle.key, checked)}

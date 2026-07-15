@@ -58,8 +58,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       const providerModel =
         info.provider && info.model
-          ? `${info.provider} – ${info.model}`
-          : info.provider || info.model || '[e.g. Google – gemini-1.5-pro]';
+          ? `${info.provider}: ${info.model}`
+          : info.provider || info.model || '[e.g. Google: gemini-1.5-pro]';
 
       const extensions =
         info.enabled_extensions.length > 0

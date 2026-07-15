@@ -15,6 +15,7 @@ import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
@@ -168,30 +169,44 @@ export default function ModelsBottomBar({
     <div className="relative flex items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
       <DropdownMenu>
-        <DropdownMenuTrigger
-          title={fullModelLabel}
-          aria-label={`Current model: ${fullModelLabel}`}
-          className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-1 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
-        >
-          <div className="flex items-center truncate max-w-full min-w-0">
-            <Brain className="mr-1 h-4 w-4 flex-shrink-0" />
-            <span className="truncate text-xs">{inlineModelLabel}</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger
+              aria-label={`Current model: ${fullModelLabel}`}
+              className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-0.5 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
+            >
+              <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
+                <Brain className="size-[18px] flex-shrink-0" />
+                <span className="truncate text-xs">{inlineModelLabel}</span>
+              </div>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="top">Model: {fullModelLabel}</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
+          <div className="border-b border-border-subtle px-3 py-2.5">
+            <div className="text-sm font-medium text-text-default">Current model</div>
+            <div className="mt-0.5 text-[11px] leading-4 text-text-muted">
+              {displayModelName}
+              {displayProvider && ` · ${displayProvider}`}
+            </div>
           </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="center" className="w-64 text-sm">
-          <h6 className="text-xs text-textProminent mt-2 ml-2">Current model</h6>
-          <p className="flex items-center justify-between text-sm mx-2 pb-2 border-b mb-2">
-            {displayModelName}
-            {displayProvider && ` — ${displayProvider}`}
-          </p>
-          <DropdownMenuItem onClick={() => setIsAddModelModalOpen(true)}>
-            <span>Change Model</span>
-            <Sliders className="ml-auto h-4 w-4 rotate-90" />
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setIsLeadWorkerModalOpen(true)}>
-            <span>Lead/Worker Settings</span>
-            <Sliders className="ml-auto h-4 w-4" />
-          </DropdownMenuItem>
+          <div className="p-1.5">
+            <DropdownMenuItem
+              className="h-auto rounded-md px-2 py-1.5 text-xs font-medium text-text-default"
+              onClick={() => setIsAddModelModalOpen(true)}
+            >
+              <span>Change Model</span>
+              <Sliders className="ml-auto size-3.5 rotate-90" />
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="h-auto rounded-md px-2 py-1.5 text-xs font-medium text-text-default"
+              onClick={() => setIsLeadWorkerModalOpen(true)}
+            >
+              <span>Lead/Worker Settings</span>
+              <Sliders className="ml-auto size-3.5" />
+            </DropdownMenuItem>
+          </div>
         </DropdownMenuContent>
       </DropdownMenu>
 
