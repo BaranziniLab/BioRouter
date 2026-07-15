@@ -1025,12 +1025,13 @@ fn persist_created_app(
     kind: ArtifactKind,
     archetype: Archetype,
     use_starter: bool,
-    has_session: bool,
 ) -> Result<(), ErrorData> {
+    if let Some(theme) = p.theme.take() {
+        manifest.theme = theme.into_config();
+    }
+
     if kind != ArtifactKind::Agentic {
-        if has_session {
-            store.save_manifest(manifest).map_err(internal)?;
-        }
+        store.save_manifest(manifest).map_err(internal)?;
         return Ok(());
     }
 
@@ -1051,9 +1052,6 @@ fn persist_created_app(
         }
     } else if use_starter {
         manifest.surface = archetype.surface();
-    }
-    if let Some(theme) = p.theme.take() {
-        manifest.theme = theme.into_config();
     }
     store.save_manifest(manifest).map_err(internal)
 }
@@ -1636,9 +1634,9 @@ impl AgentDrafterServer {
             THEME PACK — choose a `theme` pack that fits the domain instead of
             shipping the default light theme everywhere: `biorouter` (default),
             `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` (each
-            with a dark variant). Compose within the pack's tokens; for
-            distinctive, non-generic layouts within the token system, consult the
-            **frontend-design** skill.
+            with its own native light or dark palette). Compose within the pack's
+            tokens; for distinctive, non-generic layouts within the token system,
+            consult the **frontend-design** skill.
 
             DESIGN CONTRACT — the user's requested product design is the source of
             truth. Do not force a pre-designed app pattern, dashboard structure, or
@@ -1663,8 +1661,9 @@ impl AgentDrafterServer {
             `var(--br-text-muted)` for secondary/placeholder text, `var(--br-surface)`
             / `var(--br-bg)` for backgrounds, `var(--br-border)` for lines. A
             hardcoded `color:#333` looks fine while you author in light mode but goes
-            invisible when the app is themed dark. The app renders light by default;
-            the agent may switch it with `ui_theme`.
+            invisible when the app is themed dark. An unthemed app renders light by
+            default; a selected pack supplies its native palette, and the agent may
+            switch it with `ui_theme`.
 
             AGENT DESIGN CONTRACT — before or while authoring an agentic app,
             make the agent's operational choices explicit:
@@ -1954,15 +1953,7 @@ impl AgentDrafterServer {
         .map_err(internal)?;
         manifest.session_id = session_id.clone();
 
-        persist_created_app(
-            &store,
-            &mut manifest,
-            p,
-            kind,
-            archetype,
-            use_starter,
-            session_id.is_some(),
-        )?;
+        persist_created_app(&store, &mut manifest, p, kind, archetype, use_starter)?;
 
         let arch_note = if kind == ArtifactKind::Agentic {
             format!(" [{} archetype]", archetype.as_str())
@@ -2943,6 +2934,22 @@ mod tests {
             s.store().load_manifest("nosession").unwrap().session_id,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn create_static_app_persists_its_theme_pack() {
+        let (_d, s) = server();
+        let mut p = create("Midnight Static", Some("static"));
+        p.theme = Some(declare::ThemeParam {
+            pack: declare::ThemePack::Midnight,
+            accent: None,
+            tokens: None,
+        });
+
+        s.create_app_inner(p, None).await.unwrap();
+
+        let manifest = s.store().load_manifest("midnight-static").unwrap();
+        assert_eq!(manifest.theme.resolved_pack(), "midnight");
     }
 
     #[tokio::test]

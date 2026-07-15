@@ -35,9 +35,9 @@ export interface AppConfig {
   autoChat?: boolean;
   /** Mount the agent-driven UI runtime (panels, charts, highlights). Default on. */
   ui?: boolean;
-  /** Initial theme: "light" (default, deterministic), "dark", or "auto"
-   *  (follow the viewer's OS). Left unset → light, so authored colors render as
-   *  intended regardless of the viewer's OS. The agent's `ui_theme` overrides. */
+  /** Initial mode: "light", "dark", or "auto" (follow the viewer's OS).
+   *  Left unset → the manifest's theme pack when one is selected, otherwise
+   *  deterministic light. The agent's `ui_theme` overrides. */
   theme?: "light" | "dark" | "auto";
   /**
    * Per-app WebSocket auth token minted into the served page (same-origin
@@ -6107,9 +6107,8 @@ export class UiRuntime {
   }
 
   /** Switch the active theme pack. Validated against the curated set — an unknown
-   *  pack is ignored with a warning. A dark-native pack advertises its intended
-   *  color mode via the `--br-forced-mode` custom property; honor it by setting
-   *  `data-br-theme` so text stays legible. */
+   *  pack is ignored with a warning. A pack owns its complete palette, so clear a
+   *  stale generic mode; an explicit mode in the same command is applied next. */
   private applyPack(pack: string, root: HTMLElement): void {
     if (!KNOWN_PACKS[pack]) {
       try {
@@ -6120,13 +6119,7 @@ export class UiRuntime {
       return;
     }
     root.setAttribute("data-br-pack", pack);
-    let forced = "";
-    try {
-      forced = window.getComputedStyle(root).getPropertyValue("--br-forced-mode").trim();
-    } catch {
-      forced = "";
-    }
-    if (forced === "light" || forced === "dark") root.setAttribute("data-br-theme", forced);
+    root.removeAttribute("data-br-theme");
   }
 
   private applyLayout(cmd: UiCommand): void {
@@ -6859,15 +6852,17 @@ export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
   const client = new BioRouterClient(cfg);
   window.BioRouter = client;
 
-  // Render deterministically as the app was authored (light) rather than
-  // following the *viewer's* OS theme. Models compose and eyeball apps in light
-  // mode and routinely hardcode light-appropriate text colors; a dark-OS viewer
-  // would otherwise get invisible dark-on-dark masthead/placeholder text. The
-  // agent's `ui_theme` still switches this deliberately, and an app can opt back
-  // into follow-OS by setting `theme: "auto"` in its config.
+  // A persisted theme pack is already stamped onto <html> by the server and owns
+  // its complete palette. Do not overwrite it with the legacy light default.
+  // Unthemed apps remain deterministic instead of following the viewer's OS;
+  // callers can still explicitly request light, dark, or auto.
   const root = document.documentElement;
-  if (cfg.theme !== "auto" && !root.hasAttribute("data-br-theme")) {
-    root.setAttribute("data-br-theme", cfg.theme === "dark" ? "dark" : "light");
+  if (cfg.theme === "auto") {
+    root.removeAttribute("data-br-theme");
+  } else if (cfg.theme === "light" || cfg.theme === "dark") {
+    root.setAttribute("data-br-theme", cfg.theme);
+  } else if (!root.hasAttribute("data-br-pack") && !root.hasAttribute("data-br-theme")) {
+    root.setAttribute("data-br-theme", "light");
   }
 
   // Connect eagerly so agent-driven UI works in apps that never call prompt()

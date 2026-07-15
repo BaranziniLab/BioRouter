@@ -84,14 +84,6 @@
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode */
 
-  /* Agent Drafter theme-pack identities. These contextual tokens keep pack
-     accents out of TSX and provide a legible counterpart for each app theme. */
-  --app-theme-swatch-clinical: #2563eb;
-  --app-theme-swatch-lab-notebook: #34557a;
-  --app-theme-swatch-terminal: #3b9b62;
-  --app-theme-swatch-journal: #7a2e2e;
-  --app-theme-swatch-midnight: #7c3aed;
-
   --z-base: 0;
   --z-sticky: 100;
   --z-dropdown: 200;
@@ -209,12 +201,6 @@
 }
 
 .dark {
-  --app-theme-swatch-clinical: #7ea6ff;
-  --app-theme-swatch-lab-notebook: #8fb0d5;
-  --app-theme-swatch-terminal: #6fe8a3;
-  --app-theme-swatch-journal: #e08b8b;
-  --app-theme-swatch-midnight: #bda7ff;
-
   /* Accent (D-01). The dark accent is coral-400; ink on it is the surface
      colour, not black: #16120c on #e8895f is 7.26:1. */
   --background-accent: var(--color-coral-400);
@@ -997,30 +983,6 @@
   .biorouter-home-hero {
     display: none;
   }
-}
-
-.app-theme-swatch {
-  background: var(--border-strong);
-}
-
-.app-theme-swatch--clinical {
-  background: var(--app-theme-swatch-clinical);
-}
-
-.app-theme-swatch--lab-notebook {
-  background: var(--app-theme-swatch-lab-notebook);
-}
-
-.app-theme-swatch--terminal {
-  background: var(--app-theme-swatch-terminal);
-}
-
-.app-theme-swatch--journal {
-  background: var(--app-theme-swatch-journal);
-}
-
-.app-theme-swatch--midnight {
-  background: var(--app-theme-swatch-midnight);
 }
 
 .biorouter-settings-tabs {

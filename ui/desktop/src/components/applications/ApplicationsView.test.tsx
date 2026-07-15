@@ -77,7 +77,7 @@ describe('ApplicationItem', () => {
     expect(container.firstElementChild).toHaveAttribute('aria-busy', 'true');
   });
 
-  it('shows theme-pack swatch and surface badges for a v2 manifest', () => {
+  it('shows surface badges without exposing internal theme metadata', () => {
     render(
       <ApplicationItem
         app={{
@@ -95,15 +95,11 @@ describe('ApplicationItem', () => {
       />
     );
 
-    const themeBadge = screen.getByText('midnight');
-    expect(themeBadge).toBeInTheDocument();
-    expect(themeBadge.querySelector('[aria-hidden="true"]')).toHaveClass(
-      'app-theme-swatch--midnight'
-    );
+    expect(screen.queryByText('midnight')).not.toBeInTheDocument();
     expect(screen.getByText('2 actions · 1 signal')).toBeInTheDocument();
   });
 
-  it('renders no v2 badges for a plain v1 manifest (or the default theme pack)', () => {
+  it('renders no surface badge for a plain v1 manifest', () => {
     render(
       <ApplicationItem
         app={{ ...app, theme: { pack: 'biorouter' } }}

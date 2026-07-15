@@ -27,21 +27,6 @@ import {
 import type { AppManifest, ExportOptions } from './appManagement';
 import ExportAppDialog from './ExportAppDialog';
 
-/**
- * Representative accent per curated theme pack (Apps SDK v2, Pillar 6), for the
- * small swatch on the app card. Mirrors the `--br-accent` of each
- * `[data-br-pack]` layer in `agent_drafter/templates/theme.css`. The base
- * `biorouter` pack gets no badge (it is the default look).
- */
-const PACK_SWATCH_CLASSES: Record<string, string> = {
-  clinical: 'app-theme-swatch--clinical',
-  'lab-notebook': 'app-theme-swatch--lab-notebook',
-  terminal: 'app-theme-swatch--terminal',
-  journal: 'app-theme-swatch--journal',
-  midnight: 'app-theme-swatch--midnight',
-};
-const DEFAULT_THEME_PACK = 'biorouter';
-
 /** Format a Unix-seconds timestamp as a short, readable date (e.g. "Jun 24, 2026"). */
 function formatDate(secs?: number | null): string {
   if (!secs) return 'unknown';
@@ -301,10 +286,6 @@ export function ApplicationItem({
 }: ApplicationItemProps) {
   const model = app.agent?.model?.model;
   const kb = app.agent?.knowledge_base;
-  // Apps SDK v2 audit badges: the archetype isn't stored on the manifest, so
-  // surface the app's v2-ness through what is — a non-default theme pack and
-  // the declared surface (actions/signals). v1 manifests carry neither key.
-  const themePack = app.theme?.pack;
   const actionCount = app.surface?.actions?.length ?? 0;
   const signalCount = app.surface?.signals?.length ?? 0;
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -323,23 +304,6 @@ export function ApplicationItem({
           <span className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0">
             {app.kind}
           </span>
-          {themePack && themePack !== DEFAULT_THEME_PACK && (
-            <span
-              className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0 inline-flex items-center gap-1"
-              title={`Theme pack: ${themePack}`}
-            >
-              <span
-                aria-hidden="true"
-                className={[
-                  'app-theme-swatch inline-block w-2 h-2 rounded-full',
-                  PACK_SWATCH_CLASSES[themePack],
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-              />
-              {themePack}
-            </span>
-          )}
           {surfaceSummary && (
             <span
               className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0"

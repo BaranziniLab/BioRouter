@@ -363,6 +363,12 @@ async function runSelftest() {
   const doc = win.document;
   const $ = (id) => doc.getElementById(id);
 
+  check(
+    "an unthemed app starts in deterministic light mode",
+    doc.documentElement.getAttribute("data-br-theme") === "light",
+    doc.documentElement.getAttribute("data-br-theme")
+  );
+
   // Wait until the SDK connected, processed `ready`, and reported its surface
   // (which also indexes the author bindings).
   const up = await waitFor(() => received.some((f) => f.type === "ui_surface"));
@@ -1045,6 +1051,11 @@ async function runSelftest() {
     doc.documentElement.getAttribute("data-br-pack") === "clinical",
     doc.documentElement.getAttribute("data-br-pack")
   );
+  check(
+    "theme pack clears the generic mode so its palette can win",
+    doc.documentElement.getAttribute("data-br-theme") === null,
+    doc.documentElement.getAttribute("data-br-theme")
+  );
   {
     const warnBefore = warnLog.length;
     emitUi({ cmd: "theme", pack: "nonsense-pack" });
@@ -1310,9 +1321,10 @@ async function runSelftest() {
   const TAG_ID = "biorouter-app-config";
   const jsonTag = (json) =>
     '<script type="application/json" id="' + TAG_ID + '">' + json + "</scr" + "ipt>";
-  async function probeConfig(bodyHtml, windowConfig) {
+  async function probeConfig(bodyHtml, windowConfig, htmlAttrs = "") {
     const doc2 =
-      "<!doctype html><html><head><title>cfg</title></head><body>" + bodyHtml + "</body></html>";
+      "<!doctype html><html" + (htmlAttrs ? " " + htmlAttrs : "") +
+      "><head><title>cfg</title></head><body>" + bodyHtml + "</body></html>";
     const dom2 = new JSDOM(doc2, {
       url: `http://127.0.0.1:${PORT}/`,
       runScripts: "outside-only",
@@ -1335,8 +1347,10 @@ async function runSelftest() {
     w.eval(bundle);
     await delay(30);
     const cfg = w.BioRouter ? w.BioRouter.config : null;
+    const mode = w.document.documentElement.getAttribute("data-br-theme");
+    const pack = w.document.documentElement.getAttribute("data-br-pack");
     dom2.window.close();
-    return { cfg, warns };
+    return { cfg, warns, mode, pack };
   }
 
   const cfgTag = await probeConfig(jsonTag('{"appId":"cfg-from-tag","autoChat":false,"ui":false}'), null);
@@ -1349,6 +1363,28 @@ async function runSelftest() {
     "the JSON script-tag config is fully applied (autoChat/ui carried through)",
     !!cfgTag.cfg && cfgTag.cfg.autoChat === false && cfgTag.cfg.ui === false,
     JSON.stringify(cfgTag.cfg)
+  );
+
+  const cfgPack = await probeConfig(
+    jsonTag('{"appId":"cfg-pack","autoChat":false,"ui":false}'),
+    null,
+    'data-br-pack="midnight"'
+  );
+  check(
+    "a persisted theme pack is not overwritten by the legacy light default",
+    cfgPack.pack === "midnight" && cfgPack.mode === null,
+    JSON.stringify({ pack: cfgPack.pack, mode: cfgPack.mode })
+  );
+
+  const cfgExplicitMode = await probeConfig(
+    jsonTag('{"appId":"cfg-pack-mode","autoChat":false,"ui":false,"theme":"light"}'),
+    null,
+    'data-br-pack="midnight"'
+  );
+  check(
+    "an explicit initial mode can still override a persisted theme pack",
+    cfgExplicitMode.pack === "midnight" && cfgExplicitMode.mode === "light",
+    JSON.stringify({ pack: cfgExplicitMode.pack, mode: cfgExplicitMode.mode })
   );
 
   const cfgPrec = await probeConfig(jsonTag('{"appId":"from-tag"}'), { appId: "from-window" });

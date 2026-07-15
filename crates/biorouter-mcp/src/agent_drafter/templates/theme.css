@@ -77,13 +77,11 @@
    `:root[data-br-pack="…"]` selector (specificity 0,2,0), which beats both the
    base `:root` and the `@media dark` base but is still overridden by an
    explicit `ui_theme` mode (`:root[data-br-theme="…"]`, same specificity, later
-   in source). Dark-native packs set dark values directly and hint the SDK via
-   `--br-forced-mode`.
+   in source). Each pack declares its native light or dark palette directly.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* clinical — cool slate grays, blue accent, high contrast, compact. */
 :root[data-br-pack="clinical"] {
-  --br-forced-mode: light;
   --br-bg: #ffffff;
   --br-surface: #ffffff;
   --br-muted: #f1f5f9;
@@ -109,7 +107,6 @@
 
 /* lab-notebook — warm paper, serif headings, ruled ink-blue borders. */
 :root[data-br-pack="lab-notebook"] {
-  --br-forced-mode: light;
   --br-bg: #f7f3e8;
   --br-surface: #fffdf6;
   --br-muted: #f2ecdb;
@@ -132,7 +129,6 @@
 
 /* terminal — dark, monospace throughout, green accent, sharp corners. */
 :root[data-br-pack="terminal"] {
-  --br-forced-mode: dark;
   --br-bg: #0a0e0a;
   --br-surface: #111811;
   --br-muted: #0f160f;
@@ -158,7 +154,6 @@
 
 /* journal — light editorial serif, generous spacing, wide measure. */
 :root[data-br-pack="journal"] {
-  --br-forced-mode: light;
   --br-bg: #fffef9;
   --br-surface: #ffffff;
   --br-muted: #f6f3ea;
@@ -186,7 +181,6 @@
 
 /* midnight — deep dark, violet accent. */
 :root[data-br-pack="midnight"] {
-  --br-forced-mode: dark;
   --br-bg: #0b0b14;
   --br-surface: #14141f;
   --br-muted: #1a1a28;
