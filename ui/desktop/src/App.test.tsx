@@ -189,7 +189,7 @@ describe('ImmediateHashRouter', () => {
     );
 
     expect(screen.getByText('Ready')).toBeInTheDocument();
-    expect(routerMocks.hashRouterProps).toHaveBeenCalledWith({ unstable_useTransitions: false });
+    expect(routerMocks.hashRouterProps).toHaveBeenCalledWith({ useTransitions: false });
   });
 });
 

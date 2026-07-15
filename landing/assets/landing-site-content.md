@@ -283,7 +283,7 @@ Each card contains:
 ### News
 1. **BioRouter v1.88.1 Release** (July 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1
-   - What's new: preview-first selective reset controls, immediate cached Home activity and recent sessions, current-streak indicators, resilient llama.cpp startup and warm-up, persistent theme packs, bounded tooltips, synchronized CLI/server/headless versions, and complete cross-platform packages
+   - What's new: preview-first selective reset controls, immediate cached Home activity and recent sessions, current-streak indicators, resilient llama.cpp startup and warm-up, persistent theme packs, bounded tooltips, a production dependency graph with zero known audit vulnerabilities, synchronized CLI/server/headless versions, and complete cross-platform packages
 
 2. **BioRouter v1.88.0 Release** (July 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0
