@@ -577,7 +577,7 @@ export const getSession = <ThrowOnError extends boolean = false>(options: Option
  * Diverge (branch) a session into a brand-new session that inherits the full
  *
  * conversation history and metadata of the original, while leaving the
- * original completely untouched. Unlike `edit_message` with `Fork`, no
+ * original completely untouched. Unlike `edit_message` with `Diverge`, no
  * truncation is performed — the entire history is carried over so the user can
  * continue a fresh conversation from exactly where they left off.
  */
