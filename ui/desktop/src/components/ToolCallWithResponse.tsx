@@ -57,6 +57,7 @@ interface ToolCallWithResponseProps {
   isStreamingMessage?: boolean;
   append?: (value: string) => void;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
@@ -156,6 +157,7 @@ export default function ToolCallWithResponse({
   isStreamingMessage,
   append,
   onOpenArtifact,
+  workingDir,
 }: ToolCallWithResponseProps) {
   // Handle both the wrapped ToolResult format and the unwrapped format
   // The server serializes ToolResult<T> as { status: "success", value: T } or { status: "error", error: string }
@@ -195,6 +197,8 @@ export default function ToolCallWithResponse({
             toolResponse,
             notifications,
             isStreamingMessage,
+            onOpenArtifact,
+            workingDir,
           }}
         />
       </div>
@@ -287,6 +291,8 @@ interface ToolCallViewProps {
   toolResponse?: ToolResponseMessageContent;
   notifications?: NotificationEvent[];
   isStreamingMessage?: boolean;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
 interface Progress {
@@ -486,6 +492,8 @@ function ToolCallView({
   toolResponse,
   notifications,
   isStreamingMessage = false,
+  onOpenArtifact,
+  workingDir,
 }: ToolCallViewProps) {
   const [responseStyle, setResponseStyle] = useState(() => localStorage.getItem('response_style'));
 
@@ -672,7 +680,12 @@ function ToolCallView({
         <>
           {toolResults.map((result, index) => (
             <div key={index} className={cn('border-t border-border-subtle')}>
-              <ToolResultView result={result} isStartExpanded={false} />
+              <ToolResultView
+                result={result}
+                isStartExpanded={false}
+                onOpenArtifact={onOpenArtifact}
+                workingDir={workingDir}
+              />
             </div>
           ))}
         </>
@@ -750,9 +763,16 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
 interface ToolResultViewProps {
   result: Content;
   isStartExpanded: boolean;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
 }
 
-function ToolResultView({ result, isStartExpanded }: ToolResultViewProps) {
+function ToolResultView({
+  result,
+  isStartExpanded,
+  onOpenArtifact,
+  workingDir,
+}: ToolResultViewProps) {
   const hasText = (c: Content): c is Content & { text: string } =>
     'text' in c && typeof (c as Record<string, unknown>).text === 'string';
 
@@ -774,6 +794,8 @@ function ToolResultView({ result, isStartExpanded }: ToolResultViewProps) {
           <MarkdownContent
             content={result.text}
             className="whitespace-pre-wrap max-w-full overflow-x-auto"
+            onOpenArtifact={onOpenArtifact}
+            workingDir={workingDir}
           />
         )}
         {hasImage(result) && (

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '../api';
 import {
   collectArtifactsFromMessages,
+  getDefaultArtifactPanelWidth,
   getArtifactPanelExpansionContentWidth,
   shouldAutoRepairArtifact,
 } from './BaseChat';
@@ -206,6 +207,16 @@ describe('collectArtifactsFromMessages', () => {
     expect(collectArtifactsFromMessages(messages, '/work')).toHaveLength(1);
   });
 
+  it('resolves relative files named in assistant text from the session working directory', () => {
+    const messages = visibleMessage([
+      { type: 'text', text: 'Open the generated page at ./dist/index.html' },
+    ]);
+
+    expect(collectArtifactsFromMessages([messages], '/work/site')).toEqual([
+      { kind: 'file', title: 'index.html', path: '/work/site/dist/index.html' },
+    ]);
+  });
+
   const dashboardRequest = (id: string): Message =>
     visibleMessage([
       {
@@ -308,6 +319,17 @@ describe('getArtifactPanelExpansionContentWidth', () => {
 
   it('does not request expansion when the split pane already fits the artifact panel', () => {
     expect(getArtifactPanelExpansionContentWidth(1200, 1100)).toBeNull();
+  });
+});
+
+describe('getDefaultArtifactPanelWidth', () => {
+  it('uses 42% of the available width for a comfortably wider initial preview', () => {
+    expect(getDefaultArtifactPanelWidth(1600)).toBe(672);
+  });
+
+  it('preserves the panel bounds and minimum chat width', () => {
+    expect(getDefaultArtifactPanelWidth(900)).toBe(360);
+    expect(getDefaultArtifactPanelWidth(3000)).toBe(860);
   });
 });
 

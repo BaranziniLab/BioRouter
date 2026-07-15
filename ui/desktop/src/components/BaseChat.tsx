@@ -74,6 +74,7 @@ import {
   fileArtifactPathsFromToolCall,
   looksLikePreviewableFile,
   pathFromArtifactHref,
+  resolveArtifactPath,
 } from './artifacts/artifactUtils';
 import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
 
@@ -84,6 +85,7 @@ export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 const ARTIFACT_PANEL_MIN_WIDTH = 360;
 const ARTIFACT_PANEL_MAX_WIDTH = 860;
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
+const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.42;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
   ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
@@ -105,6 +107,17 @@ const PREVIEWABLE_TEXT_ARTIFACT_RE =
 
 function clampArtifactPanelWidth(value: number, max: number) {
   return Math.min(Math.max(value, ARTIFACT_PANEL_MIN_WIDTH), max);
+}
+
+export function getDefaultArtifactPanelWidth(containerWidth: number): number {
+  const maxWidth = Math.max(
+    ARTIFACT_PANEL_MIN_WIDTH,
+    Math.min(ARTIFACT_PANEL_MAX_WIDTH, containerWidth - ARTIFACT_PANEL_MIN_CHAT_WIDTH)
+  );
+  return clampArtifactPanelWidth(
+    Math.round(containerWidth * ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO),
+    maxWidth
+  );
 }
 
 export function getArtifactPanelExpansionContentWidth(
@@ -172,12 +185,13 @@ function artifactKey(artifact: ArtifactSource) {
   }
 }
 
-function collectTextArtifacts(text: string): ArtifactSource[] {
+function collectTextArtifacts(text: string, workingDir?: string): ArtifactSource[] {
   const artifacts: ArtifactSource[] = [];
   for (const match of text.matchAll(PREVIEWABLE_TEXT_ARTIFACT_RE)) {
     const href = match[0];
     if (!looksLikePreviewableFile(href)) continue;
-    const path = pathFromArtifactHref(href);
+    const rawPath = pathFromArtifactHref(href);
+    const path = resolveArtifactPath(rawPath, workingDir) ?? rawPath;
     artifacts.push({
       kind: 'file',
       title: basenameFromPath(path),
@@ -226,7 +240,7 @@ export function collectArtifactsFromMessages(
 
   for (const message of messages) {
     if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
-    for (const artifact of collectTextArtifacts(getTextContent(message))) {
+    for (const artifact of collectTextArtifacts(getTextContent(message), workingDir)) {
       addArtifact(artifact);
     }
     for (const content of message.content) {
@@ -681,15 +695,15 @@ function BaseChatContent({
     );
   }, []);
 
-  const getDefaultArtifactPanelWidth = useCallback(() => {
+  const getInitialArtifactPanelWidth = useCallback(() => {
     const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    return clampArtifactPanelWidth(Math.round(containerWidth * 0.38), getMaxArtifactPanelWidth());
-  }, [getMaxArtifactPanelWidth]);
+    return getDefaultArtifactPanelWidth(containerWidth);
+  }, []);
 
   useEffect(() => {
     if (!presentedArtifact || isMobile || artifactPanelWidth !== null) return;
-    setArtifactPanelWidth(getDefaultArtifactPanelWidth());
-  }, [artifactPanelWidth, getDefaultArtifactPanelWidth, isMobile, presentedArtifact]);
+    setArtifactPanelWidth(getInitialArtifactPanelWidth());
+  }, [artifactPanelWidth, getInitialArtifactPanelWidth, isMobile, presentedArtifact]);
 
   useEffect(() => {
     const splitPane = splitPaneRef.current;
@@ -699,7 +713,7 @@ function BaseChatContent({
       setArtifactPanelWidth((currentWidth) => {
         const maxWidth = getMaxArtifactPanelWidth();
         if (currentWidth === null || !artifactPanelWidthUserSetRef.current) {
-          return getDefaultArtifactPanelWidth();
+          return getInitialArtifactPanelWidth();
         }
         const nextWidth = clampArtifactPanelWidth(currentWidth, maxWidth);
         return nextWidth === currentWidth ? currentWidth : nextWidth;
@@ -716,7 +730,7 @@ function BaseChatContent({
     const resizeObserver = new ResizeObserver(updateArtifactPanelWidth);
     resizeObserver.observe(splitPane);
     return () => resizeObserver.disconnect();
-  }, [getDefaultArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile, presentedArtifact]);
+  }, [getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile, presentedArtifact]);
 
   const handleArtifactPanelResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -728,7 +742,7 @@ function BaseChatContent({
       artifactPanelResizeCleanupRef.current?.();
 
       const startX = event.clientX;
-      const startWidth = artifactPanelWidth ?? getDefaultArtifactPanelWidth();
+      const startWidth = artifactPanelWidth ?? getInitialArtifactPanelWidth();
       const previousCursor = document.body.style.cursor;
       const previousUserSelect = document.body.style.userSelect;
       const resizeHandle = event.currentTarget;
@@ -812,7 +826,7 @@ function BaseChatContent({
       window.addEventListener('blur', handleWindowBlur);
       resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
     },
-    [artifactPanelWidth, getDefaultArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
+    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
   );
 
   const {
@@ -1666,6 +1680,7 @@ function BaseChatContent({
                             onMessageUpdate={onMessageUpdate}
                             submitElicitationResponse={submitElicitationResponse}
                             onOpenArtifact={handleOpenArtifact}
+                            workingDir={sessionWorkingDir}
                           />
                         </SearchView>
 
@@ -1704,8 +1719,8 @@ function BaseChatContent({
                 isMobile
                   ? undefined
                   : {
-                      width: artifactPanelWidth ?? getDefaultArtifactPanelWidth(),
-                      flexBasis: artifactPanelWidth ?? getDefaultArtifactPanelWidth(),
+                      width: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
+                      flexBasis: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
                     }
               }
               className={
