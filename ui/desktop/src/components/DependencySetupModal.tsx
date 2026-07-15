@@ -337,9 +337,9 @@ export default function DependencySetupModal() {
                   </p>
                   <p className="text-[11px] text-text-muted mt-0.5">
                     {cliState === 'done'
-                      ? 'Installed — open a new terminal and run `biorouter`.'
+                      ? 'Installed. Open a new terminal and run `biorouter`.'
                       : cli?.brokenOnPath
-                        ? 'The `biorouter` on your PATH won’t run — reinstall it.'
+                        ? 'The `biorouter` on your PATH won’t run. Reinstall it.'
                         : cliIsUpdate
                           ? `Update ${cli?.pathVersion ?? 'older'} → ${cli?.bundledVersion ?? 'latest'} to match this app.`
                           : 'Call `biorouter` from any terminal.'}
@@ -450,7 +450,7 @@ export default function DependencySetupModal() {
                 {/* Linux sudo note */}
                 {info.requiresSudo && !installed && installState !== 'running' && (
                   <p className="mt-1 text-[11px] text-text-warning">
-                    Requires sudo — you may be prompted for your password in a terminal.
+                    Requires sudo. You may be prompted for your password in a terminal.
                   </p>
                 )}
               </div>

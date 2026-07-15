@@ -658,7 +658,7 @@ export function WorkflowFormFields({
                 <div>
                   <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
                     Temperature{' '}
-                    <span className="normal-case font-normal">(0–2, blank = default)</span>
+                    <span className="normal-case font-normal">(0 to 2, blank = default)</span>
                   </label>
                   <input
                     type="number"

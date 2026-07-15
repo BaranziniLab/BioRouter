@@ -283,7 +283,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                     </p>
                     {skillsPreview.map((skill) => (
                       <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
-                        · <span className="font-medium">{skill.name}</span> — {skill.description}
+                        · <span className="font-medium">{skill.name}</span>: {skill.description}
                       </p>
                     ))}
                   </div>

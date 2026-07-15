@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollText } from './icons/app-icons';
+import { ChevronsDownUp } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { readConfig, upsertConfig } from '../api';
@@ -256,19 +256,32 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
           <span>{pct}%</span>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onCompact();
-        }}
-        disabled={current === 0}
-        title={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
-        className={`flex items-center justify-center w-7 h-7 rounded transition-colors flex-shrink-0 ${current === 0 ? 'opacity-40 cursor-not-allowed' : 'text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer'}`}
-      >
-        <ScrollText size={14} />
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="flex flex-shrink-0">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onCompact();
+              }}
+              disabled={current === 0}
+              aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
+              className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${current === 0 ? 'cursor-not-allowed text-text-default/40' : 'cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default'}`}
+            >
+              <ChevronsDownUp
+                data-testid="compact-conversation-icon"
+                className="size-4"
+                strokeWidth={1.75}
+              />
+            </button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          {current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 };
@@ -286,7 +299,7 @@ function fmt(n: number): string {
 }
 
 interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
-  /** Override the popover trigger button's title hover text. */
+  /** Override the popover trigger tooltip text. */
   triggerTitle?: string;
 }
 
@@ -314,7 +327,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const radius = 8;
   const circumference = 2 * Math.PI * radius;
   const strokeOffset = circumference * (1 - remainingRatio);
-  const tooltip = `${triggerTitle}: ${fmt(remainingTokens)} remaining of ${fmt(total)} tokens (${remainingPct}% remaining, ${pct}% used)`;
+  const remainingSummary = `${fmt(remainingTokens)} of ${fmt(total)} tokens remaining`;
+  const usageSummary = `${remainingPct}% remaining, ${pct}% used`;
+  const tooltip = `${triggerTitle}. ${remainingSummary}. ${usageSummary}`;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
@@ -322,18 +337,17 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              title={tooltip}
               aria-label={tooltip}
-              className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer transition-colors"
+              className="relative flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer transition-colors"
             >
-              <svg className="absolute inset-1" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="absolute size-[18px]" viewBox="0 0 24 24" aria-hidden="true">
                 <circle
                   cx="12"
                   cy="12"
                   r={radius}
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.5"
+                  strokeWidth="2.75"
                   className="text-border-subtle"
                 />
                 <circle
@@ -342,7 +356,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   r={radius}
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.5"
+                  strokeWidth="2.75"
                   strokeLinecap="round"
                   strokeDasharray={circumference}
                   strokeDashoffset={strokeOffset}
@@ -354,7 +368,11 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>{tooltip}</TooltipContent>
+        <TooltipContent side="top" className="w-52 text-left text-pretty">
+          <span className="block font-medium">{triggerTitle}</span>
+          <span className="block">{remainingSummary}</span>
+          <span className="block">{usageSummary}</span>
+        </TooltipContent>
       </Tooltip>
       <PopoverContent side="top" align="start" className="w-72 p-1.5">
         <ContextWindowGauge

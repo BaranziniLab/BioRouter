@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
+import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import ArtifactViewer from './ArtifactViewer';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
 
@@ -83,10 +84,45 @@ describe('ArtifactViewer', () => {
     await waitFor(() => {
       expect(screen.getByTestId('artifact-viewer')).toBeInTheDocument();
       expect(
-        screen.getByTestId('artifact-viewer').querySelector('iframe[title="visualization.html"]')
+        screen
+          .getByTestId('artifact-viewer')
+          .querySelector('iframe[aria-label="visualization.html"]')
       ).toHaveAttribute('sandbox');
     });
     expect(screen.queryByText(/read-only artifact preview/i)).not.toBeInTheDocument();
+  });
+
+  it('does not show a redundant filename tooltip over the preview frame', async () => {
+    installElectronMock();
+
+    render(
+      <>
+        <AppTooltipLayer />
+        <ThemeProvider>
+          <ArtifactViewer
+            artifact={{
+              kind: 'html',
+              title: 'visualization.html',
+              html: '<!doctype html><html><body><h1>Plot</h1></body></html>',
+            }}
+            onClose={vi.fn()}
+            onOpenArtifact={vi.fn()}
+          />
+        </ThemeProvider>
+      </>
+    );
+
+    const frame = await waitFor(() => {
+      const element = screen
+        .getByTestId('artifact-viewer')
+        .querySelector<HTMLIFrameElement>('iframe[aria-label="visualization.html"]');
+      expect(element).toBeInTheDocument();
+      return element as HTMLIFrameElement;
+    });
+
+    expect(frame).not.toHaveAttribute('title');
+    fireEvent.pointerOver(frame);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 
   it('shields every preview surface from pointer input while the panel is resizing', async () => {

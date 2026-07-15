@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Check, Gauge } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Button } from '../ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import {
   DEFAULT_REASONING_EFFORT,
   getReasoningEffort,
@@ -34,30 +35,33 @@ export function BottomMenuReasoningEffort() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          shape="pill"
-          className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
-          title={`Reasoning effort: ${REASONING_EFFORT_LABELS[effort]}`}
-          aria-label={`Reasoning effort: ${REASONING_EFFORT_LABELS[effort]}`}
-        >
-          <Gauge className="mr-0.5 h-4 w-4" strokeWidth={1.5} />
-          {/* The default is the quiet state — only a deliberate quick/deep
-              choice is worth spending composer width on. */}
-          {!isDefault && <span>{REASONING_EFFORT_LABELS[effort]}</span>}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent side="top" align="center" className="w-80 p-0">
-        <div className="border-b border-border-subtle px-4 py-3">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="flex h-7 items-center gap-0.5 rounded-md px-0.5 cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
+              aria-label={`Reasoning effort: ${REASONING_EFFORT_LABELS[effort]}`}
+            >
+              <Gauge className="size-[18px]" strokeWidth={1.75} />
+              {/* The default is the quiet state — only a deliberate quick/deep
+                  choice is worth spending composer width on. */}
+              {!isDefault && <span>{REASONING_EFFORT_LABELS[effort]}</span>}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          Reasoning effort: {REASONING_EFFORT_LABELS[effort]}
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent side="top" align="center" className="w-64 p-0 font-sans">
+        <div className="border-b border-border-subtle px-3 py-2.5">
           <div className="text-sm font-medium text-text-default">Reasoning effort</div>
-          <div className="mt-1 text-xs text-text-muted">
+          <div className="mt-0.5 text-[11px] leading-4 text-text-muted">
             How hard to think on the next message. Also settable with /effort.
           </div>
         </div>
-        <div className="p-2" role="menu" aria-label="Reasoning effort">
+        <div className="p-1.5" role="menu" aria-label="Reasoning effort">
           {REASONING_EFFORTS.map((level) => {
             const selected = level === effort;
             return (
@@ -70,17 +74,19 @@ export function BottomMenuReasoningEffort() {
                 role="menuitemradio"
                 aria-checked={selected}
                 onClick={() => select(level)}
-                className="h-auto w-full items-start justify-start gap-3 rounded-lg px-2 py-2 text-left whitespace-normal hover:bg-background-medium/40"
+                className="h-auto w-full items-start justify-start gap-2 rounded-md px-2 py-1.5 text-left whitespace-normal hover:bg-background-medium/40"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-text-default">{REASONING_EFFORT_LABELS[level]}</div>
-                  <div className="text-[11px] text-text-muted">
+                  <div className="text-xs font-medium text-text-default">
+                    {REASONING_EFFORT_LABELS[level]}
+                  </div>
+                  <div className="text-[10px] leading-3.5 text-text-muted">
                     {REASONING_EFFORT_DESCRIPTIONS[level]}
                   </div>
                 </div>
-                {selected && (
-                  <Check aria-hidden="true" className="mt-0.5 h-4 w-4 text-text-default" />
-                )}
+                <span aria-hidden="true" className="mt-0.5 size-3.5 shrink-0">
+                  {selected && <Check className="size-3.5 text-text-default" />}
+                </span>
               </Button>
             );
           })}

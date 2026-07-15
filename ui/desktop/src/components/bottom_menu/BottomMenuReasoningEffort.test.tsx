@@ -16,8 +16,24 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
   it('starts on the default and shows no level chip', () => {
     render(<BottomMenuReasoningEffort />);
 
-    expect(screen.getByLabelText('Reasoning effort: Normal')).toBeInTheDocument();
+    const trigger = screen.getByLabelText('Reasoning effort: Normal');
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).not.toHaveAttribute('title');
+    expect(trigger.querySelector('svg')).toHaveClass('size-[18px]');
     expect(screen.queryByText('Normal')).not.toBeInTheDocument();
+  });
+
+  it('keeps every option aligned while showing only the selected tick', () => {
+    render(<BottomMenuReasoningEffort />);
+
+    fireEvent.click(screen.getByLabelText('Reasoning effort: Normal'));
+    const options = screen.getAllByRole('menuitemradio');
+
+    options.forEach((option) => {
+      expect(Array.from(option.children).some((child) => child.tagName === 'svg')).toBe(false);
+      expect(option.lastElementChild).toHaveClass('size-3.5', 'shrink-0');
+    });
+    expect(options.filter((option) => option.querySelector('svg'))).toHaveLength(1);
   });
 
   it('picking deep updates the store, so the next chat request carries it', () => {

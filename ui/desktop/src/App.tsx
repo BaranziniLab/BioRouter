@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
@@ -53,6 +53,7 @@ import { DashboardRoute } from './components/Dashboard/DashboardRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
+import { AppTooltipLayer } from './components/ui/AppTooltipLayer';
 
 // Route Components
 const HubRouteWrapper = () => {
@@ -88,7 +89,7 @@ const PairRouteWrapper = ({
     | string
     | undefined;
 
-  // Session ID and initialMessage come from route state (Hub, fork) or URL params (refresh, deeplink)
+  // Session ID and initialMessage come from route state (Hub, diverge) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
   const sessionId = sessionIdFromState || resumeSessionId || chat.sessionId || undefined;
 
@@ -571,16 +572,21 @@ export function AppInner() {
 
   return (
     <>
+      <AppTooltipLayer />
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() =>
-          `relative mb-3 p-3 rounded-xl
+          `relative mb-3 px-3 py-2.5 rounded-xl w-full min-w-0
                flex items-start overflow-hidden cursor-pointer
                text-text-default bg-background-default
                border border-border-subtle shadow-popover
               `
         }
-        style={{ width: '450px' }}
+        style={{
+          width: 'fit-content',
+          minWidth: '280px',
+          maxWidth: 'min(420px, calc(100vw - 32px))',
+        }}
         className="mt-6"
         position="top-right"
         autoClose={3000}
@@ -651,13 +657,17 @@ export function AppInner() {
   );
 }
 
+export function ImmediateHashRouter({ children }: { children: ReactNode }) {
+  return <HashRouter unstable_useTransitions={false}>{children}</HashRouter>;
+}
+
 export default function App() {
   return (
     <ThemeProvider>
       <ModelAndProviderProvider>
-        <HashRouter>
+        <ImmediateHashRouter>
           <AppInner />
-        </HashRouter>
+        </ImmediateHashRouter>
         <AnnouncementModal />
         <UpdateAvailableModal />
       </ModelAndProviderProvider>

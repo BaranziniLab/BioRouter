@@ -99,8 +99,8 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
         <DialogHeader>
           <DialogTitle>Export “{app.title}”</DialogTitle>
           <DialogDescription>
-            Choose what travels with the exported folder. Credentials never travel — the recipient
-            is prompted on first run.
+            Choose what travels with the exported folder. Credentials never travel. The recipient is
+            prompted on first run.
           </DialogDescription>
         </DialogHeader>
 
@@ -164,7 +164,7 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
               hint="Skips the biorouterd download on the recipient's machine."
             />
             <p className="text-xs text-text-muted mt-1">
-              Full exports can be large — a bundled knowledge base carries its sources.
+              Full exports can be large. A bundled knowledge base carries its sources.
             </p>
           </div>
         )}

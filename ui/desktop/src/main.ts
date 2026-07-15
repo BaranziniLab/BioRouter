@@ -2723,13 +2723,13 @@ ipcMain.handle('brxt:validate-and-read', async (_event, { filePath }: { filePath
     const entries = zip.getEntries().map((e) => e.entryName);
 
     if (!entries.some((e) => e === 'manifest.json'))
-      return { error: 'Missing manifest.json — not a valid .brxt bundle' };
+      return { error: 'Missing manifest.json. This is not a valid .brxt bundle.' };
     if (!entries.some((e) => e.toLowerCase() === 'readme.md'))
-      return { error: 'Missing README.md — not a valid .brxt bundle' };
+      return { error: 'Missing README.md. This is not a valid .brxt bundle.' };
     if (!entries.some((e) => e === 'pyproject.toml'))
-      return { error: 'Missing pyproject.toml — not a valid .brxt bundle' };
+      return { error: 'Missing pyproject.toml. This is not a valid .brxt bundle.' };
     if (!entries.some((e) => e.startsWith('src/')))
-      return { error: 'Missing src/ directory — not a valid .brxt bundle' };
+      return { error: 'Missing src/ directory. This is not a valid .brxt bundle.' };
 
     const manifestEntry = zip.getEntry('manifest.json');
     if (!manifestEntry) return { error: 'Could not read manifest.json' };
@@ -2781,7 +2781,7 @@ function uvSyncHint(detail: string): string | null {
     // upgraded; `brew upgrade rust` does not reliably fix it, so steer to the
     // self-contained rustup toolchain and removing the Homebrew one.
     return (
-      'Your Homebrew Rust toolchain is broken — rustc aborts because Homebrew’s llvm was ' +
+      'Your Homebrew Rust toolchain is broken. rustc aborts because Homebrew’s llvm was ' +
       'upgraded out from under it (a known Homebrew issue). `brew upgrade rust` usually ' +
       'does NOT fix this. Install the self-contained rustup toolchain and remove the ' +
       'Homebrew one so it takes priority:\n' +

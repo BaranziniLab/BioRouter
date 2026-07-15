@@ -32,7 +32,9 @@ describe('BrsdkSection', () => {
     render(<BrsdkSection />);
 
     for (const [label] of toggles) {
-      expect(switchFor(label)).toHaveAttribute('aria-checked', 'false');
+      const toggle = switchFor(label);
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+      expect(toggle.closest('.biorouter-settings-row')).toHaveClass('px-3', 'py-2.5');
     }
   });
 

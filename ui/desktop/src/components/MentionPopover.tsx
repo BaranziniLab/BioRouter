@@ -36,7 +36,7 @@ const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: stri
     insert: '/ext:knowledge ',
   },
   diverge: {
-    description: 'Branch this conversation into a new chat, keeping the full history — press Enter',
+    description: 'Branch this conversation into a new chat with full history. Press Enter',
     insert: '/diverge',
   },
 };
