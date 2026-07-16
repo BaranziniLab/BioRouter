@@ -6,7 +6,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::agents::{AgentEvent, ReasoningEffort, SessionConfig};
+use biorouter::agents::{AgentEvent, ReasoningEffort, SessionConfig, TurnAbortCode};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
@@ -146,6 +146,11 @@ pub enum MessageEvent {
     },
     Error {
         error: String,
+        code: String,
+        scope: TurnErrorScope,
+        retryable: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider_kind: Option<String>,
     },
     Finish {
         reason: String,
@@ -165,6 +170,33 @@ pub enum MessageEvent {
         token_state: TokenState,
     },
     Ping,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnErrorScope {
+    Provider,
+    Session,
+    Inference,
+    Internal,
+}
+
+impl MessageEvent {
+    fn error(
+        error: impl Into<String>,
+        code: impl Into<String>,
+        scope: TurnErrorScope,
+        retryable: bool,
+        provider_kind: Option<String>,
+    ) -> Self {
+        Self::Error {
+            error: error.into(),
+            code: code.into(),
+            scope,
+            retryable,
+            provider_kind,
+        }
+    }
 }
 
 /// Read the session's token counters straight from the store.
@@ -200,10 +232,14 @@ async fn stream_event(
     cancel_token: &CancellationToken,
 ) {
     let json = serde_json::to_string(&event).unwrap_or_else(|e| {
-        format!(
-            r#"{{"type":"Error","error":"Failed to serialize event: {}"}}"#,
-            e
-        )
+        serde_json::json!({
+            "type": "Error",
+            "error": format!("Failed to serialize stream event: {e}"),
+            "code": "stream_serialization_failed",
+            "scope": "internal",
+            "retryable": false,
+        })
+        .to_string()
     });
 
     if tx.send(format!("data: {}\n\n", json)).await.is_err() {
@@ -453,8 +489,10 @@ pub async fn reply(
 
     let task_cancel = cancel_token.clone();
     let task_tx = tx.clone();
+    let supervisor_tx = tx.clone();
+    let supervisor_cancel = cancel_token.clone();
 
-    let _handle = tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         // Holds the per-session turn lock for the lifetime of this reply stream;
         // dropped (releasing the session) when the task ends.
         let _turn_guard = turn_guard;
@@ -466,10 +504,14 @@ pub async fn reply(
             Ok(agent) => agent,
             Err(e) => {
                 tracing::error!("Failed to get session agent: {}", e);
-                let _ = stream_event(
-                    MessageEvent::Error {
-                        error: format!("Failed to get session agent: {}", e),
-                    },
+                stream_event(
+                    MessageEvent::error(
+                        format!("Failed to get session agent: {e}"),
+                        "agent_unavailable",
+                        TurnErrorScope::Session,
+                        true,
+                        None,
+                    ),
                     &task_tx,
                     &task_cancel,
                 )
@@ -482,10 +524,14 @@ pub async fn reply(
             Ok(metadata) => metadata,
             Err(e) => {
                 tracing::error!("Failed to read session for {}: {}", session_id, e);
-                let _ = stream_event(
-                    MessageEvent::Error {
-                        error: format!("Failed to read session: {}", e),
-                    },
+                stream_event(
+                    MessageEvent::error(
+                        format!("Failed to read session: {e}"),
+                        "session_unavailable",
+                        TurnErrorScope::Session,
+                        true,
+                        None,
+                    ),
                     &task_tx,
                     &cancel_token,
                 )
@@ -544,9 +590,13 @@ pub async fn reply(
             Err(e) => {
                 tracing::error!("Failed to start reply stream: {:?}", e);
                 stream_event(
-                    MessageEvent::Error {
-                        error: e.to_string(),
-                    },
+                    MessageEvent::error(
+                        e.to_string(),
+                        "inference_start_failed",
+                        TurnErrorScope::Inference,
+                        false,
+                        None,
+                    ),
                     &task_tx,
                     &cancel_token,
                 )
@@ -559,6 +609,7 @@ pub async fn reply(
         // BR-53a: batch the provider's token-by-token text deltas into one SSE
         // frame per window (`BIOROUTER_SSE_COALESCE_MS`; disabled by default).
         let mut coalescer = DeltaCoalescer::new(sse_coalesce_window());
+        let mut terminal_error = false;
         loop {
             // When a run of text deltas is buffered, wake to flush it once the
             // window elapses. Disabled branch (no buffer) never fires.
@@ -624,25 +675,48 @@ pub async fn reply(
                             // desktop rendered a provider 403 as a completed turn.
                             // Surface it as a real error and stop.
                             tracing::error!(abort = code.wire_code(), "Turn aborted: {message}");
+                            let (scope, retryable, provider_kind) = match &code {
+                                TurnAbortCode::ProviderFailure { kind } => (
+                                    TurnErrorScope::Provider,
+                                    kind.is_transient(),
+                                    Some(kind.wire_code().to_string()),
+                                ),
+                                TurnAbortCode::ToolLoop { .. } => {
+                                    (TurnErrorScope::Inference, false, None)
+                                }
+                                TurnAbortCode::WorkerTimeout { .. } => {
+                                    (TurnErrorScope::Inference, true, None)
+                                }
+                            };
                             stream_event(
-                                MessageEvent::Error {
-                                    error: format!("{}: {message}", code.wire_code()),
-                                },
+                                MessageEvent::error(
+                                    message,
+                                    code.wire_code(),
+                                    scope,
+                                    retryable,
+                                    provider_kind,
+                                ),
                                 &tx,
                                 &cancel_token,
                             ).await;
+                            terminal_error = true;
                             break;
                         }
                         Ok(Some(Err(e))) => {
                             flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             tracing::error!("Error processing message: {}", e);
                             stream_event(
-                                MessageEvent::Error {
-                                    error: e.to_string(),
-                                },
+                                MessageEvent::error(
+                                    e.to_string(),
+                                    "inference_error",
+                                    TurnErrorScope::Inference,
+                                    false,
+                                    None,
+                                ),
                                 &tx,
                                 &cancel_token,
                             ).await;
+                            terminal_error = true;
                             break;
                         }
                         Ok(None) => {
@@ -675,6 +749,13 @@ pub async fn reply(
         }
 
         let session_duration = session_start.elapsed();
+        let exit_type = if terminal_error {
+            "error"
+        } else if task_cancel.is_cancelled() {
+            "cancelled"
+        } else {
+            "normal"
+        };
 
         if let Ok(session) = state.session_manager().get_session(&session_id, true).await {
             let total_tokens = session.total_tokens.unwrap_or(0);
@@ -682,7 +763,7 @@ pub async fn reply(
                 counter.biorouter.session_completions = 1,
                 session_type = "app",
                 interface = "ui",
-                exit_type = "normal",
+                exit_type = exit_type,
                 duration_ms = session_duration.as_millis() as u64,
                 total_tokens = total_tokens,
                 message_count = session.message_count,
@@ -709,7 +790,7 @@ pub async fn reply(
                 counter.biorouter.session_completions = 1,
                 session_type = "app",
                 interface = "ui",
-                exit_type = "normal",
+                exit_type = exit_type,
                 duration_ms = session_duration.as_millis() as u64,
                 total_tokens = 0u64,
                 message_count = all_messages.len(),
@@ -730,15 +811,39 @@ pub async fn reply(
         // scheduled run) can leave the UI on a stale count.
         let final_token_state = get_token_state(state.session_manager(), &session_id).await;
 
-        let _ = stream_event(
-            MessageEvent::Finish {
-                reason: "stop".to_string(),
-                token_state: final_token_state,
-            },
-            &task_tx,
-            &cancel_token,
-        )
-        .await;
+        if !terminal_error {
+            stream_event(
+                MessageEvent::Finish {
+                    reason: if task_cancel.is_cancelled() {
+                        "cancelled".to_string()
+                    } else {
+                        "stop".to_string()
+                    },
+                    token_state: final_token_state,
+                },
+                &task_tx,
+                &cancel_token,
+            )
+            .await;
+        }
+    });
+
+    tokio::spawn(async move {
+        if let Err(join_error) = handle.await {
+            tracing::error!("Reply task terminated unexpectedly: {join_error}");
+            stream_event(
+                MessageEvent::error(
+                    "The model turn ended unexpectedly. Please retry.",
+                    "internal_error",
+                    TurnErrorScope::Internal,
+                    true,
+                    None,
+                ),
+                &supervisor_tx,
+                &supervisor_cancel,
+            )
+            .await;
+        }
     });
     SseResponse::new(stream).into_response()
 }
@@ -865,6 +970,25 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_events_preserve_machine_readable_metadata() {
+        let event = MessageEvent::error(
+            "quota exhausted",
+            "provider_failure",
+            TurnErrorScope::Provider,
+            false,
+            Some("quota".to_string()),
+        );
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "Error");
+        assert_eq!(value["error"], "quota exhausted");
+        assert_eq!(value["code"], "provider_failure");
+        assert_eq!(value["scope"], "provider");
+        assert_eq!(value["retryable"], false);
+        assert_eq!(value["provider_kind"], "quota");
+    }
 
     /// BR-53a: the pure state machine that batches streamed text deltas.
     mod coalesce_tests {

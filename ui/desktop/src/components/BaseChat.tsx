@@ -1673,7 +1673,7 @@ function BaseChatContent({
                       </div>
                     )}
 
-                    {messages.length > 0 || workflow ? (
+                    {messages.length > 0 || workflow || turnError ? (
                       <>
                         <SearchView>
                           <>

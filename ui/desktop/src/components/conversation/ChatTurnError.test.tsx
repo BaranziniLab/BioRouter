@@ -1,38 +1,86 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { ChatTurnError, presentChatTurnError } from './ChatTurnError';
+import type { ChatTurnErrorData } from '../../types/turnError';
 
 const QUOTA_ERROR =
   'Stream error: provider_failure: Request failed: Stream decode error: Responses API error: Object {"type": String("insufficient_quota"), "code": String("insufficient_quota"), "message": String("You exceeded your current quota, please check your plan and billing details."), "param": Null}';
 
+function error(overrides: Partial<ChatTurnErrorData> = {}): ChatTurnErrorData {
+  return {
+    message: 'Provider rejected the request',
+    code: 'provider_failure',
+    scope: 'provider',
+    retryable: false,
+    ...overrides,
+  };
+}
+
 describe('ChatTurnError', () => {
-  it('extracts the provider message from the quota error shown in the reported failure', () => {
-    expect(presentChatTurnError(QUOTA_ERROR)).toEqual({
+  it('presents known provider categories without depending on raw provider wording', () => {
+    expect(presentChatTurnError(error({ providerKind: 'quota' }))).toMatchObject({
+      title: 'Model quota exceeded',
+      message: 'Provider rejected the request',
+    });
+    expect(presentChatTurnError(error({ providerKind: 'auth' }))).toMatchObject({
+      title: 'Model authentication failed',
+    });
+  });
+
+  it('extracts a provider message from the reported legacy quota payload', () => {
+    expect(
+      presentChatTurnError(error({ message: QUOTA_ERROR, technicalDetails: QUOTA_ERROR }))
+    ).toEqual({
       title: 'Model quota exceeded',
       message: 'You exceeded your current quota, please check your plan and billing details.',
       details: QUOTA_ERROR,
     });
   });
 
-  it('renders a compact inline alert with collapsed technical details', () => {
-    render(<ChatTurnError error={QUOTA_ERROR} />);
+  it('renders unknown future errors with a safe generic fallback', () => {
+    render(
+      <ChatTurnError
+        error={error({
+          providerKind: 'brand_new_rejection',
+          message: 'A future provider-specific rejection',
+        })}
+      />
+    );
 
     const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent('Model quota exceeded');
-    expect(alert).toHaveTextContent(
-      'You exceeded your current quota, please check your plan and billing details.'
-    );
-    expect(screen.getByTestId('chat-turn-error')).toHaveClass('mt-4');
-
-    const details = screen.getByText('Technical details').closest('details');
-    expect(details).not.toHaveAttribute('open');
-    fireEvent.click(screen.getByText('Technical details'));
-    expect(details).toHaveAttribute('open');
-    expect(alert).toHaveTextContent('provider_failure');
+    expect(alert).toHaveTextContent('Model request failed');
+    expect(alert).toHaveTextContent('A future provider-specific rejection');
   });
 
-  it('uses connection-specific recovery copy without dropping the original details', () => {
-    const presentation = presentChatTurnError('Submit error: Failed to fetch');
+  it('keeps long technical details wrapped in a collapsed expandable region', () => {
+    const details = `provider_failure: ${'very-long-provider-payload'.repeat(20)}`;
+    render(
+      <ChatTurnError
+        error={error({
+          providerKind: 'unknown',
+          technicalDetails: details,
+        })}
+      />
+    );
+
+    const disclosure = screen.getByText('Technical details').closest('details');
+    expect(disclosure).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('Technical details'));
+    expect(disclosure).toHaveAttribute('open');
+
+    const detailBody = screen.getByText(details);
+    expect(detailBody).toHaveClass('break-words');
+    expect(detailBody).toHaveClass('[overflow-wrap:anywhere]');
+  });
+
+  it('uses connection-specific recovery copy without dropping technical details', () => {
+    const presentation = presentChatTurnError(
+      error({
+        message: 'Failed to fetch',
+        scope: 'transport',
+        technicalDetails: 'Submit error: Failed to fetch',
+      })
+    );
 
     expect(presentation).toMatchObject({
       title: 'Model connection failed',

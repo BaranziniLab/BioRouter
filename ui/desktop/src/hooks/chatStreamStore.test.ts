@@ -111,14 +111,19 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
-  it('keeps provider failures inline instead of converting them into session-load failures', async () => {
+  it('routes structured provider failures inline without failing the session', async () => {
     const registry = new ChatStreamRegistry();
-    const providerError =
-      'provider_failure: Request failed: Responses API error: Object {"type": String("insufficient_quota"), "message": String("You exceeded your current quota, please check your plan and billing details.")}';
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
     vi.mocked(reply).mockResolvedValue({
       stream: (async function* () {
-        yield { type: 'Error', error: providerError } as MessageEvent;
+        yield {
+          type: 'Error',
+          error: 'You exceeded your current quota.',
+          code: 'provider_failure',
+          scope: 'provider',
+          retryable: false,
+          provider_kind: 'quota',
+        } as MessageEvent;
       })(),
     } as never);
 
@@ -127,10 +132,15 @@ describe('ChatStreamRegistry', () => {
 
     expect(controller.getSnapshot()).toMatchObject({
       chatState: ChatState.Idle,
-      turnError: `Stream error: ${providerError}`,
+      turnError: {
+        message: 'You exceeded your current quota.',
+        code: 'provider_failure',
+        scope: 'provider',
+        retryable: false,
+        providerKind: 'quota',
+      },
     });
     expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
-    expect(controller.getSnapshot().messages).toHaveLength(1);
     expect(controller.getSnapshot().messages[0]).toMatchObject({ role: 'user' });
   });
 
@@ -140,7 +150,13 @@ describe('ChatStreamRegistry', () => {
     vi.mocked(reply)
       .mockResolvedValueOnce({
         stream: (async function* () {
-          yield { type: 'Error', error: 'provider unavailable' } as MessageEvent;
+          yield {
+            type: 'Error',
+            error: 'provider unavailable',
+            code: 'provider_failure',
+            scope: 'provider',
+            retryable: true,
+          } as MessageEvent;
         })(),
       } as never)
       .mockResolvedValueOnce({
@@ -151,18 +167,127 @@ describe('ChatStreamRegistry', () => {
 
     const controller = registry.getController('s1');
     await controller.handleSubmit('first try');
-    expect(controller.getSnapshot().turnError).toBe('Stream error: provider unavailable');
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      message: 'provider unavailable',
+      code: 'provider_failure',
+    });
 
     await controller.handleSubmit('second try');
     expect(controller.getSnapshot().turnError).toBeUndefined();
     expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
   });
 
-  it('still reserves sessionLoadError for an actual session resume failure', async () => {
+  it('uses the generic inline path for an unknown future provider error', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Error',
+          error: 'Provider returned a new rejection type',
+          code: 'provider_failure',
+          scope: 'provider',
+          retryable: false,
+          provider_kind: 'unknown',
+        } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('hello');
+
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      message: 'Provider returned a new rejection type',
+      providerKind: 'unknown',
+    });
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+  });
+
+  it('treats a stream ending without a terminal event as an inline interruption', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Message',
+          message: assistantMessage('a1', 'partial response'),
+          token_state: tokenState,
+        } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('hello');
+
+    expect(controller.getSnapshot()).toMatchObject({
+      chatState: ChatState.Idle,
+      turnError: {
+        code: 'stream_interrupted',
+        scope: 'transport',
+        retryable: true,
+      },
+    });
+  });
+
+  it('catches non-Error stream failures instead of leaving the chat running', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: {
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => {
+              throw 'decoder rejected an unknown frame';
+            },
+          };
+        },
+      },
+    } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('hello');
+
+    expect(controller.getSnapshot()).toMatchObject({
+      chatState: ChatState.Idle,
+      turnError: {
+        message: 'decoder rejected an unknown frame',
+        code: 'stream_error',
+      },
+    });
+  });
+
+  it('keeps a provider initialization failure inline after loading the session', async () => {
+    const registry = new ChatStreamRegistry();
+    const sessionId = 'provider-init-failure-session';
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: {
+        session: session(sessionId),
+        initialization_error: {
+          code: 'provider_restore_failed',
+          message: 'Configured model no longer exists',
+          retryable: false,
+        },
+      },
+    } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.loadSession();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      session: { id: sessionId },
+      turnError: {
+        code: 'provider_restore_failed',
+        scope: 'session',
+      },
+    });
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+  });
+
+  it('reserves the full-session error state for an actual resume failure', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockRejectedValue(new Error('session database unavailable'));
 
-    const controller = registry.getController('load-failure-session');
+    const controller = registry.getController('actual-session-load-failure');
     await controller.loadSession();
 
     expect(controller.getSnapshot().sessionLoadError).toBe('session database unavailable');

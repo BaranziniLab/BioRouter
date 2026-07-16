@@ -201,6 +201,15 @@ pub struct ResumeAgentResponse {
     pub session: Session,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension_results: Option<Vec<ExtensionLoadResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initialization_error: Option<AgentInitializationError>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AgentInitializationError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -397,42 +406,59 @@ async fn resume_agent(
             }
         })?;
 
+    let mut initialization_error = None;
     let extension_results = if payload.load_model_and_extensions {
-        let agent = state
-            .get_agent_for_route(payload.session_id.clone())
-            .await
-            .map_err(|code| ErrorResponse {
-                message: "Failed to get agent for route".into(),
-                status: code,
-            })?;
-
-        agent
-            .restore_provider_from_session(&session)
-            .await
-            .map_err(|e| ErrorResponse {
-                message: e.to_string(),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            })?;
-
-        let extension_results =
-            if let Some(results) = state.take_extension_loading_task(&payload.session_id).await {
-                tracing::debug!(
-                    "Using background extension loading results for session {}",
-                    payload.session_id
+        match state.get_agent_for_route(payload.session_id.clone()).await {
+            Ok(agent) => match agent.restore_provider_from_session(&session).await {
+                Ok(()) => {
+                    let extension_results = if let Some(results) =
+                        state.take_extension_loading_task(&payload.session_id).await
+                    {
+                        tracing::debug!(
+                            "Using background extension loading results for session {}",
+                            payload.session_id
+                        );
+                        state
+                            .remove_extension_loading_task(&payload.session_id)
+                            .await;
+                        results
+                    } else {
+                        tracing::debug!(
+                            "No background task found, loading extensions for session {}",
+                            payload.session_id
+                        );
+                        agent.load_extensions_from_session(&session).await
+                    };
+                    Some(extension_results)
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to restore provider for session {}: {}",
+                        payload.session_id,
+                        error
+                    );
+                    initialization_error = Some(AgentInitializationError {
+                        code: "provider_restore_failed".into(),
+                        message: error.to_string(),
+                        retryable: false,
+                    });
+                    None
+                }
+            },
+            Err(status) => {
+                tracing::error!(
+                    "Failed to prepare agent for session {}: {}",
+                    payload.session_id,
+                    status
                 );
-                state
-                    .remove_extension_loading_task(&payload.session_id)
-                    .await;
-                results
-            } else {
-                tracing::debug!(
-                    "No background task found, loading extensions for session {}",
-                    payload.session_id
-                );
-                agent.load_extensions_from_session(&session).await
-            };
-
-        Some(extension_results)
+                initialization_error = Some(AgentInitializationError {
+                    code: "agent_unavailable".into(),
+                    message: "Biorouter could not prepare the model agent for this session.".into(),
+                    retryable: status.is_server_error(),
+                });
+                None
+            }
+        }
     } else {
         None
     };
@@ -440,6 +466,7 @@ async fn resume_agent(
     Ok(Json(ResumeAgentResponse {
         session,
         extension_results,
+        initialization_error,
     }))
 }
 
