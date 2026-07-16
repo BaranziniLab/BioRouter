@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Brain, ExternalLink } from '../../../icons/app-icons';
 
 import {
@@ -152,6 +152,7 @@ type SwitchModelModalProps = {
   setView: (view: View) => void;
   onModelSelected?: (model: string) => void;
   initialProvider?: string | null;
+  initialModel?: string | null;
   titleOverride?: string;
 };
 export const SwitchModelModal = ({
@@ -160,6 +161,7 @@ export const SwitchModelModal = ({
   setView,
   onModelSelected,
   initialProvider,
+  initialModel,
   titleOverride,
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read } = useConfig();
@@ -180,7 +182,9 @@ export const SwitchModelModal = ({
   const initialProviderResolved = initialProvider || currentProvider || null;
   const carryOverCurrentModel =
     !!currentModel && !!currentProvider && currentProvider === initialProviderResolved;
-  const [model, setModel] = useState<string>(carryOverCurrentModel ? currentModel : '');
+  const [model, setModel] = useState<string>(
+    initialModel || (carryOverCurrentModel ? currentModel : '')
+  );
   const [isCustomModel, setIsCustomModel] = useState(false);
   const [validationErrors, setValidationErrors] = useState({
     provider: '',
@@ -194,6 +198,7 @@ export const SwitchModelModal = ({
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
   const [userClearedModel, setUserClearedModel] = useState(false);
   const [modelInputValue, setModelInputValue] = useState('');
+  const loadedProvidersRef = useRef(false);
 
   // Validate form data
   const validateForm = useCallback(() => {
@@ -272,7 +277,8 @@ export const SwitchModelModal = ({
       // Initialize selected predefined model with current model
       (async () => {
         try {
-          const currentModelName = (await read('BIOROUTER_MODEL', false)) as string;
+          const currentModelName =
+            initialModel || ((await read('BIOROUTER_MODEL', false)) as string);
           const matchingModel = models.find((model) => model.name === currentModelName);
           if (matchingModel) {
             setSelectedPredefinedModel(matchingModel);
@@ -296,8 +302,13 @@ export const SwitchModelModal = ({
     // cached list is fine here — the user can reopen the modal to pick up
     // newly-configured providers.
     (async () => {
+      if (loadedProvidersRef.current) return;
+      loadedProvidersRef.current = true;
       try {
-        const providersResponse = await getProviders(false);
+        // Onboarding has just written a new API key, so the provider catalog
+        // loaded at app startup is stale. Refresh it once before resolving the
+        // detected provider; other model switches can keep using the cache.
+        const providersResponse = await getProviders(Boolean(initialProvider));
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
         setActiveProviders(activeProviders);
         // Create provider options and add "Use other provider" option
@@ -315,7 +326,7 @@ export const SwitchModelModal = ({
         console.error('Failed to query providers:', error);
       }
     })();
-  }, [getProviders, usePredefinedModels, read]);
+  }, [getProviders, initialModel, initialProvider, usePredefinedModels, read]);
 
   useEffect(() => {
     if (usePredefinedModels || !provider || modelOptionsByProvider[provider]) return;

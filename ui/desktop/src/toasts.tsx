@@ -173,6 +173,24 @@ export function toastSuccess({ title, msg, toastOptions = {} }: ToastSuccessProp
   );
 }
 
+export function toastInfo({ title, msg, toastOptions = {} }: ToastSuccessProps) {
+  return toast.info(<NotificationContent status="info" title={title} message={msg} />, {
+    ...commonToastOptions,
+    icon: false,
+    autoClose: 4000,
+    ...toastOptions,
+  });
+}
+
+export function toastWarning({ title, msg, toastOptions = {} }: ToastSuccessProps) {
+  return toast.warning(<NotificationContent status="warning" title={title} message={msg} />, {
+    ...commonToastOptions,
+    icon: false,
+    autoClose: 5000,
+    ...toastOptions,
+  });
+}
+
 type ToastErrorProps = {
   title: string;
   msg: string;

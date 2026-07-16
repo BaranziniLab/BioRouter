@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,14 +7,23 @@ import { clearSessionListCache } from '../../utils/sessionListCache';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
+  deleteSession: vi.fn(),
+  updateSessionName: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
   listSessions: mocks.listSessions,
-  deleteSession: vi.fn(),
+  deleteSession: mocks.deleteSession,
   exportSession: vi.fn(),
   importSession: vi.fn(),
-  updateSessionName: vi.fn(),
+  updateSessionName: mocks.updateSessionName,
+}));
+
+vi.mock('../../toasts', () => ({
+  toastSuccess: mocks.toastSuccess,
+  toastError: mocks.toastError,
 }));
 
 vi.mock('../../contexts/DashboardContext', () => ({
@@ -27,6 +36,11 @@ vi.mock('../conversation/SearchView', () => ({
 
 vi.mock('../ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock('../ui/ConfirmationModal', () => ({
+  ConfirmationModal: ({ isOpen, onConfirm }: { isOpen: boolean; onConfirm: () => void }) =>
+    isOpen ? <button onClick={onConfirm}>Confirm deletion</button> : null,
 }));
 
 beforeEach(() => {
@@ -191,5 +205,75 @@ describe('SessionListView row actions', () => {
     expect(deleteAction).toHaveAttribute('data-slot', 'tooltip-trigger');
     expect(deleteAction).toHaveClass('h-8', 'w-8', 'text-text-danger');
     expect(deleteAction).not.toHaveAttribute('title');
+  });
+
+  it('uses the shared notification surface after deleting a session', async () => {
+    const session = {
+      id: 'session-1',
+      name: 'A session name long enough to exercise notification wrapping',
+      created_at: '2026-07-14T12:00:00Z',
+      updated_at: '2026-07-14T12:00:00Z',
+      extension_data: {},
+      message_count: 3,
+      working_dir: '/Users/wgu/Desktop',
+    };
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete ${session.name}` }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm deletion' }));
+
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith({
+        title: 'Session deleted',
+        msg: `"${session.name}" was removed from chat history.`,
+      })
+    );
+    expect(mocks.deleteSession).toHaveBeenCalledWith({
+      path: { session_id: session.id },
+      throwOnError: true,
+    });
+  });
+
+  it('uses the shared notification surface after editing a session', async () => {
+    const session = {
+      id: 'session-1',
+      name: 'Original session name',
+      created_at: '2026-07-14T12:00:00Z',
+      updated_at: '2026-07-14T12:00:00Z',
+      extension_data: {},
+      message_count: 3,
+      working_dir: '/Users/wgu/Desktop',
+    };
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: `Edit ${session.name}` }));
+    fireEvent.change(await screen.findByPlaceholderText('Enter session description'), {
+      target: { value: 'Updated session name' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith({
+        title: 'Session updated',
+        msg: 'The session description was saved successfully.',
+      })
+    );
+    expect(mocks.updateSessionName).toHaveBeenCalledWith({
+      path: { session_id: session.id },
+      body: { name: 'Updated session name' },
+      throwOnError: true,
+    });
   });
 });

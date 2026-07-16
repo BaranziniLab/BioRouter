@@ -25,19 +25,26 @@ const capture = (text, re, label) => {
 const docs = landing('docs.html');
 const index = landing('index.html');
 const download = landing('download.html');
+const about = landing('about.html');
+const content = landing('assets/landing-site-content.md');
 const mockups = landing('app-mockups.js');
 const baam = landing('baam.html');
 const registry = JSON.parse(landing('registry.json'));
 
 const cargoVersion = capture(source('Cargo.toml'), /version = "([^"]+)"/, 'Cargo workspace version');
 const packageVersion = capture(source('ui/desktop/package.json'), /"version": "([^"]+)"/, 'desktop package version');
+const landingVersion = capture(content, /\*\*Version:\*\* v([^\s]+)/, 'landing release version');
 check(cargoVersion === packageVersion, `Biorouter version mismatch: Cargo ${cargoVersion}, package ${packageVersion}`);
-includes(docs, `biorouter v${cargoVersion}`, 'docs provider defaults should cite the current Biorouter version');
-includes(docs, `biorouter v${cargoVersion}`, 'docs extension defaults should cite the current Biorouter version');
-includes(index, `v${cargoVersion}`, 'index fallback release version should match Biorouter version');
-includes(download, `v${cargoVersion}`, 'download fallback badge should match Biorouter version');
-includes(download, `Biorouter-${cargoVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
-includes(download, `Biorouter-win32-x64-${cargoVersion}.zip`, 'download Windows fallback should match release asset');
+includes(docs, `biorouter v${landingVersion}`, 'docs provider defaults should cite the latest published Biorouter version');
+includes(docs, `biorouter v${landingVersion}`, 'docs extension defaults should cite the latest published Biorouter version');
+includes(index, `v${landingVersion}`, 'index fallback release version should match the latest published version');
+includes(download, `v${landingVersion}`, 'download fallback badge should match the latest published version');
+includes(download, `BioRouter-${landingVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
+includes(download, `BioRouter-win32-x64-${landingVersion}.zip`, 'download Windows fallback should match release asset');
+includes(about, `releases/tag/v${landingVersion}`, 'about news should link to the latest published release');
+for (const page of [index, download, docs, about, content]) {
+  check(!page.includes('1.88.2'), 'landing content should not advertise the retracted 1.88.2 release');
+}
 
 const providerChecks = [
   ['crates/biorouter/src/providers/versa_bedrock.rs', /VERSA_BEDROCK_DEFAULT_MODEL: &str = "([^"]+)"/, 'Versa Bedrock'],

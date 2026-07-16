@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { FolderDot } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import { updateWorkingDir } from '../../api';
-import { toast } from 'react-toastify';
+import { toastError } from '../../toasts';
 
 interface DirSwitcherProps {
   className: string;
@@ -53,7 +53,10 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
         });
       } catch (error) {
         console.error('[DirSwitcher] Failed to update working directory:', error);
-        toast.error('Failed to update working directory');
+        toastError({
+          title: 'Working directory update failed',
+          msg: 'Failed to update the working directory.',
+        });
       } finally {
         onRestartEnd?.();
       }

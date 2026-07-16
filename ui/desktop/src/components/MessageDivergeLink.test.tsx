@@ -57,18 +57,27 @@ describe('MessageDivergeLink', () => {
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
   });
 
-  it('passes the message timestamp as truncateAfter so the branch ends at this answer', async () => {
+  it('passes the durable message id and timestamp so the branch ends at this answer', async () => {
     mockDivergeSession.mockResolvedValue({
       data: { sessionId: '20260622_9', workingDir: '/home/u/proj' },
     });
 
-    render(<MessageDivergeLink sessionId="20260622_1" truncateAfterMs={1717171717000} />);
+    render(
+      <MessageDivergeLink
+        sessionId="20260622_1"
+        truncateAfterMs={1717171717000}
+        truncateAfterId="assistant-message-1"
+      />
+    );
     fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
     await waitFor(() => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
         path: { session_id: '20260622_1' },
-        body: { truncateAfter: 1717171717000 },
+        body: {
+          truncateAfter: 1717171717000,
+          truncateAfterId: 'assistant-message-1',
+        },
         throwOnError: true,
       });
     });

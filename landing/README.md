@@ -1,6 +1,6 @@
 # Biorouter Landing Site
 
-Static landing site for **Biorouter v1.60.0** — a local-first AI routing layer for clinical research developed at the [Baranzini Lab](https://baranzinilab.ucsf.edu/), UCSF.
+Static landing site for **Biorouter v1.88.1** — a local-first AI routing layer for clinical research developed at the [Baranzini Lab](https://baranzinilab.ucsf.edu/), UCSF.
 
 **Live site:** <https://biorouter.ucsf.edu/>
 

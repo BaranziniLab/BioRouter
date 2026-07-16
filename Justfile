@@ -192,7 +192,7 @@ copy-binary-windows:
 run-ui:
     @just release-binary
     @echo "Running UI..."
-    cd ui/desktop && npm install && npm run start-gui
+    cd ui/desktop && npm ci && npm run start-gui
 
 run-ui-playwright:
     #!/usr/bin/env sh
@@ -238,7 +238,7 @@ dev-ui-playwright:
 
 run-ui-only:
     @echo "Running UI..."
-    cd ui/desktop && npm install && npm run start-gui
+    cd ui/desktop && npm ci && npm run start-gui
 
 debug-ui *alpha:
     @echo "🚀 Starting biorouter frontend in external backend mode{{ if alpha == "alpha" { " with alpha features enabled" } else { "" } }}"
@@ -246,7 +246,7 @@ debug-ui *alpha:
     export BIOROUTER_EXTERNAL_BACKEND=true && \
     export BIOROUTER_EXTERNAL_PORT=3000 && \
     {{ if alpha == "alpha" { "export ALPHA=true &&" } else { "" } }} \
-    npm install && \
+    npm ci && \
     npm run {{ if alpha == "alpha" { "start-alpha-gui" } else { "start-gui" } }}
 
 # Run UI with main process debugging enabled
@@ -260,21 +260,21 @@ debug-ui-main-process:
 	@echo "🔍 Starting biorouter UI with main process debugging enabled"
 	@just release-binary
 	cd ui/desktop && \
-	npm install && \
+	npm ci && \
 	npm run start-gui-debug
 
 # Run UI with alpha changes
 run-ui-alpha:
     @just release-binary
     @echo "Running UI with alpha features..."
-    cd ui/desktop && npm install && ALPHA=true npm run start-alpha-gui
+    cd ui/desktop && npm ci && ALPHA=true npm run start-alpha-gui
 
 # Run UI with latest (Windows version)
 run-ui-windows:
     @just release-windows
     @powershell.exe -Command "Write-Host 'Copying Windows binary...'"
     @just copy-binary-windows
-    @powershell.exe -Command "Write-Host 'Running UI...'; Set-Location ui/desktop; npm install; npm run start-gui"
+    @powershell.exe -Command "Write-Host 'Running UI...'; Set-Location ui/desktop; npm ci; npm run start-gui"
 
 # Run Docusaurus server for documentation
 run-docs:
@@ -354,7 +354,7 @@ run-dev:
 
 # Install all dependencies (run once after fresh clone)
 install-deps:
-    cd ui/desktop && npm install
+    cd ui/desktop && npm ci
     cd documentation && yarn
 
 ensure-release-branch:
@@ -477,7 +477,7 @@ win-bld-rls-all:
 
 ### Install npm stuff
 win-app-deps:
-  cd ui{{s}}desktop ; npm install
+  cd ui{{s}}desktop ; npm ci
 
 ### Windows copy {release|debug} files to ui\desktop\src\bin
 ### s = os depenent file seperator
@@ -497,7 +497,7 @@ win-copy-oth profile:
 win-app-copy profile="release":
   just win-copy-{{ if os() == "windows" { "win" } else { "oth" } }} {{profile}}
 
-### Only copy binaries, npm install, start-gui
+### Only copy binaries, npm ci, start-gui
 ### profile = release or debug
 ### s = os depenent file seperator
 win-app-run profile:

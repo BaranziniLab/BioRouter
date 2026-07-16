@@ -17,6 +17,7 @@ import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import McpAppRenderer from './McpApps/McpAppRenderer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
 
 interface ToolGraphNode {
   tool: string;
@@ -60,15 +61,88 @@ interface ToolCallWithResponseProps {
   workingDir?: string;
 }
 
-function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
-  if (toolResult.status !== 'success') {
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function normalizeToolGraph(value: unknown): ToolGraphNode[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((candidate, index) => {
+    const node = recordOf(candidate);
+    if (!node) return [];
+
+    const dependencies = Array.isArray(node.depends_on)
+      ? node.depends_on.filter(
+          (dependency): dependency is number =>
+            typeof dependency === 'number' && Number.isInteger(dependency) && dependency >= 0
+        )
+      : [];
+
+    return [
+      {
+        tool:
+          typeof node.tool === 'string' && node.tool.trim()
+            ? node.tool
+            : `Unknown tool ${index + 1}`,
+        description:
+          typeof node.description === 'string' && node.description.trim()
+            ? node.description
+            : 'No description was provided.',
+        depends_on: dependencies,
+      },
+    ];
+  });
+}
+
+function normalizedToolResultValue(toolResult: unknown): Record<string, unknown> | null {
+  const result = recordOf(toolResult);
+  if (!result) return null;
+  if (result.status === 'error') return null;
+  if (result.status === 'success') return recordOf(result.value);
+  return result;
+}
+
+function getToolResultContent(toolResult: unknown): Content[] {
+  const value = normalizedToolResultValue(toolResult);
+  if (!Array.isArray(value?.content)) {
     return [];
   }
-  const value = toolResult.value as CallToolResponse;
-  return value.content.filter((item) => {
+
+  return value.content.filter((item): item is Content => {
+    if (!recordOf(item)) return false;
     const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
     return !annotations?.audience || annotations.audience.includes('user');
   });
+}
+
+function displayError(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error;
+  const record = recordOf(error);
+  if (typeof record?.message === 'string' && record.message.trim()) return record.message;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}') return serialized;
+  } catch {
+    return 'The tool returned an unreadable error.';
+  }
+  return 'The tool call failed without an error message.';
+}
+
+function getToolResultError(toolResult: unknown): string | null {
+  const result = recordOf(toolResult);
+  if (!result) return null;
+  if (result.status === 'error') return displayError(result.error);
+
+  const value = normalizedToolResultValue(result);
+  if (value?.is_error !== true) return null;
+  const text = getToolResultContent(result)
+    .flatMap((content) =>
+      'text' in content && typeof content.text === 'string' ? [content.text] : []
+    )
+    .join('\n')
+    .trim();
+  return text || 'The tool reported that it could not complete the request.';
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
@@ -148,7 +222,59 @@ function McpAppWrapper({
   );
 }
 
-export default function ToolCallWithResponse({
+interface ToolCallRenderBoundaryProps {
+  children: React.ReactNode;
+  resetValue: unknown;
+}
+
+class ToolCallRenderBoundary extends React.Component<
+  ToolCallRenderBoundaryProps,
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidUpdate(previousProps: ToolCallRenderBoundaryProps) {
+    if (this.state.error && previousProps.resetValue !== this.props.resetValue) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <NotificationSurface
+        status="error"
+        role="alert"
+        title="Tool details unavailable"
+        message="This tool returned an unexpected response. The conversation can continue."
+      >
+        <details className="mt-2.5 text-xs text-text-muted">
+          <summary className="w-fit cursor-pointer select-none font-medium text-text-default">
+            Technical details
+          </summary>
+          <div className="mt-2 whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">
+            {this.state.error.message}
+          </div>
+        </details>
+      </NotificationSurface>
+    );
+  }
+}
+
+export default function ToolCallWithResponse(props: ToolCallWithResponseProps) {
+  return (
+    <ToolCallRenderBoundary resetValue={props.toolResponse ?? props.toolRequest}>
+      <ToolCallWithResponseContent {...props} />
+    </ToolCallRenderBoundary>
+  );
+}
+
+function ToolCallWithResponseContent({
   sessionId,
   isCancelledMessage,
   toolRequest,
@@ -176,7 +302,7 @@ export default function ToolCallWithResponse({
   const hasMcpAppResourceURI = Boolean(
     requestWithMeta._meta?.ui?.resourceUri || resultWithMeta?.value?._meta?.ui?.resourceUri
   );
-  const isError = resultWithMeta?.status === 'error';
+  const isError = getToolResultError(toolResponse?.toolResult) !== null;
 
   return (
     <>
@@ -437,8 +563,8 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   }
 
   if (toolName === 'execute_code') {
-    const toolGraph = args.tool_graph as unknown as ToolGraphNode[] | undefined;
-    if (Array.isArray(toolGraph) && toolGraph.length > 0) {
+    const toolGraph = normalizeToolGraph(args.tool_graph);
+    if (toolGraph.length > 0) {
       if (toolGraph.length === 1) return compactValue(toolGraph[0].description);
       return `Coordinating ${toolGraph.length} tool steps`;
     }
@@ -518,12 +644,13 @@ function ToolCallView({
   // This is a workaround for cases where the backend doesn't send tool responses
   const isStreamingComplete = !isStreamingMessage;
   const shouldShowAsComplete = isStreamingComplete && !toolResponse;
+  const toolError = getToolResultError(toolResponse?.toolResult);
 
   const loadingStatus: LoadingStatus = !toolResponse
     ? shouldShowAsComplete
       ? 'success'
       : 'loading'
-    : (toolResponse.toolResult as Record<string, unknown>).status === 'error'
+    : toolError
       ? 'error'
       : 'success';
 
@@ -628,13 +755,9 @@ function ToolCallView({
     <ToolCallExpandable isStartExpanded={false} isForceExpand={false} label={toolLabel}>
       {(() => {
         const toolName = toolCall.name.substring(toolCall.name.lastIndexOf('__') + 2);
-        const toolGraph = toolCall.arguments?.tool_graph as unknown as ToolGraphNode[] | undefined;
+        const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
         const code = toolCall.arguments?.code as unknown as string | undefined;
-        const hasToolGraph =
-          toolName === 'execute_code' &&
-          toolGraph &&
-          Array.isArray(toolGraph) &&
-          toolGraph.length > 0;
+        const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
 
         if (hasToolGraph) {
           return (
@@ -654,6 +777,12 @@ function ToolCallView({
 
         return null;
       })()}
+
+      {toolError && (
+        <div className="border-t border-border-subtle px-3 py-3">
+          <NotificationContent status="error" title="Tool call failed" message={toolError} />
+        </div>
+      )}
 
       {logs && logs.length > 0 && (
         <div className="border-t border-border-subtle">

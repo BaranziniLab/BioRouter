@@ -13,7 +13,7 @@ import {
 } from '../icons/app-icons';
 import { resumeSession } from '../../sessions';
 import { Button } from '../ui/button';
-import { toast } from 'react-toastify';
+import { toastError } from '../../toasts';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
@@ -191,9 +191,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       setIsShareModalOpen(true);
     } catch (error) {
       console.error('Error sharing session:', error);
-      toast.error(
-        `Failed to share session: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      toastError({
+        title: 'Failed to share session',
+        msg: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setIsSharing(false);
     }
@@ -208,7 +209,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       })
       .catch((err) => {
         console.error('Failed to copy link:', err);
-        toast.error('Failed to copy link to clipboard');
+        toastError({
+          title: 'Failed to copy link',
+          msg: 'The session link could not be copied to the clipboard.',
+        });
       });
   };
 
@@ -216,7 +220,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     try {
       resumeSession(session, setView);
     } catch (error) {
-      toast.error(`Could not launch session: ${error instanceof Error ? error.message : error}`);
+      toastError({
+        title: 'Could not launch session',
+        msg: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 

@@ -12,6 +12,7 @@ import { WorkflowFormData } from './shared/workflowFormSchema';
 import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateEditWorkflowModalProps {
   isOpen: boolean;
@@ -87,7 +88,7 @@ export default function CreateEditWorkflowModal({
       setJsonSchema(form.state.values.jsonSchema);
       setSettings(form.state.values.settings);
     });
-    return subscription;
+    return storeSubscriptionCleanup(subscription);
   }, [form]);
   const [copied, setCopied] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

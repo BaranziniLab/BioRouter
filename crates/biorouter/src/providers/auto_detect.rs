@@ -103,6 +103,8 @@ const CANDIDATES: &[Candidate] = &[
 pub struct Detected {
     /// Registry provider name (e.g. `"openai"`).
     pub provider: String,
+    /// Exact secret config key consumed by the detected provider.
+    pub api_key_config_key: String,
     /// All model ids the provider reported for this key.
     pub models: Vec<String>,
     /// A sensible default/recommended chat model, when one can be determined.
@@ -227,6 +229,7 @@ async fn probe_candidate(c: &'static Candidate, key: String) -> Result<Detected,
 
         Ok(Detected {
             provider: c.provider.to_string(),
+            api_key_config_key: c.env_key.to_string(),
             models,
             default_model,
             extra_config,
@@ -376,17 +379,43 @@ mod tests {
 
     #[test]
     fn detectable_providers_lists_all_candidates() {
-        let providers = detectable_providers();
-        for expected in [
-            "anthropic",
-            "google",
-            "groq",
-            "xai",
-            "openai",
-            "zai",
-            "xiaomi_mimo",
-        ] {
-            assert!(providers.contains(&expected), "missing {expected}");
+        assert_eq!(
+            detectable_providers(),
+            vec![
+                "anthropic",
+                "google",
+                "groq",
+                "xai",
+                "openai",
+                "zai",
+                "xiaomi_mimo",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_candidate_uses_its_registered_secret_key() {
+        let registered = crate::providers::providers().await;
+
+        for candidate in CANDIDATES {
+            let metadata = registered
+                .iter()
+                .find(|(metadata, _)| metadata.name == candidate.provider)
+                .map(|(metadata, _)| metadata)
+                .unwrap_or_else(|| panic!("missing registered provider {}", candidate.provider));
+
+            let key = metadata
+                .config_keys
+                .iter()
+                .find(|key| key.name == candidate.env_key)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} detection saves {}, but the provider does not declare that key",
+                        candidate.provider, candidate.env_key
+                    )
+                });
+            assert!(key.secret, "{} key must be secret", candidate.provider);
+            assert!(key.required, "{} key must be required", candidate.provider);
         }
     }
 

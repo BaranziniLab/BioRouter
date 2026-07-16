@@ -167,6 +167,7 @@ export interface ChatStreamSnapshot {
   messages: Message[];
   chatState: ChatState;
   sessionLoadError?: string;
+  turnError?: string;
   tokenState: TokenState;
   notifications: NotificationEvent[];
 }
@@ -330,6 +331,7 @@ class ChatStreamController {
         messages: [],
         session: undefined,
         sessionLoadError: undefined,
+        turnError: undefined,
         chatState: ChatState.LoadingConversation,
       }));
 
@@ -396,7 +398,7 @@ class ChatStreamController {
 
   private finishCurrentStream = async (error?: string): Promise<void> => {
     if (error) {
-      this.updateSnapshot((prev) => ({ ...prev, sessionLoadError: error }));
+      this.updateSnapshot((prev) => ({ ...prev, turnError: error }));
     }
     this.abortController = null;
 
@@ -546,6 +548,7 @@ class ChatStreamController {
       ...prev,
       chatState: ChatState.Streaming,
       notifications: [],
+      turnError: undefined,
     }));
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;

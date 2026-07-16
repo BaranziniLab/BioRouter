@@ -5,7 +5,7 @@ Landing site for UCSF Biorouter. Design: Material Design with OpenAI aesthetics 
 
 **Color palette:** UCSF teal (#18A3AC), UCSF navy (#052049), dark background (#0a0a0a)
 **Font:** Inter (body), JetBrains Mono (code)
-**Version:** v1.88.2 (July 2026)
+**Version:** v1.88.1 (July 2026)
 
 ---
 
@@ -34,7 +34,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
 
 ### Banner / Hero
 - Biorouter logo (icon.png) with glow animation
-- Version badge: "v1.88.2 Now Available"
+- Version badge: "v1.88.1 Now Available"
 - Headline: "UCSF Biorouter"
 - Subheading: AI-powered integrated research environment tagline
 - CTA buttons: Download, Documentation, GitHub
@@ -90,7 +90,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.88.2 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.2)
+- v1.88.1 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -98,7 +98,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ## Tab 2 — Download (`download.html`)
 
 ### Hero
-- Version badge: "v1.88.2 — July 2026"
+- Version badge: "v1.88.1 — July 2026"
 - Title: "Download Biorouter"
 - Subtitle: "Native installers for every major platform. Open source and free."
 
@@ -112,23 +112,23 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 - Linux → amd64.deb (default for Linux)
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.88.2)
+### Download Links (v1.88.1)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | Biorouter-1.88.2-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-arm64.dmg |
-| macOS Intel | Biorouter-1.88.2-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-x64.dmg |
-| Windows x64 | Biorouter-win32-x64-1.88.2.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-win32-x64-1.88.2.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.88.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter_1.88.2_amd64.deb |
-| Linux Fedora/RHEL | Biorouter-1.88.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-1.x86_64.rpm |
-| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-cli_1.88.2_amd64.deb |
-| Linux CLI Fedora/RHEL | biorouter-cli-1.88.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-cli-1.88.2-1.x86_64.rpm |
-| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-headless-linux-x64.tar.gz |
+| macOS Apple Silicon | BioRouter-1.88.1-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-arm64.dmg |
+| macOS Intel | BioRouter-1.88.1-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-x64.dmg |
+| Windows x64 | BioRouter-win32-x64-1.88.1.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-win32-x64-1.88.1.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.88.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter_1.88.1_amd64.deb |
+| Linux Fedora/RHEL | BioRouter-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli_1.88.1_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli-1.88.1-1.x86_64.rpm |
+| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-headless-linux-x64.tar.gz |
 
 ### Install Commands
 - macOS: Open DMG and drag Biorouter.app to /Applications
 - Windows: Unzip and run Biorouter.exe
-- Linux Debian: sudo apt install ./biorouter_1.88.2_amd64.deb
-- Linux RPM: sudo dnf install ./Biorouter-1.88.2-1.x86_64.rpm
+- Linux Debian: sudo apt install ./biorouter_1.88.1_amd64.deb
+- Linux RPM: sudo dnf install ./BioRouter-1.88.1-1.x86_64.rpm
 
 ### Setup Note / Info Box
 After installing, users should:
@@ -281,8 +281,8 @@ Each card contains:
 ## Tab 5 — About (`about.html`)
 
 ### News
-1. **Biorouter v1.88.2 Release** (July 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.2
+1. **Biorouter v1.88.1 Release** (July 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1
    - What's new: preview-first selective reset controls, immediate cached Home activity and recent sessions, current-streak indicators, resilient llama.cpp startup and warm-up, persistent theme packs, bounded tooltips, a production dependency graph with zero known audit vulnerabilities, synchronized CLI/server/headless versions, and complete cross-platform packages
 
 2. **Biorouter v1.88.0 Release** (July 2026)

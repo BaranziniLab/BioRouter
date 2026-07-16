@@ -2,7 +2,9 @@ use super::api_client::{ApiClient, AuthMethod};
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
-use super::formats::openai::{create_request, get_usage, response_to_message};
+use super::formats::openai::{
+    create_request, get_usage, model_uses_responses_api, response_to_message,
+};
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message,
     responses_api_to_streaming_message, ResponsesApiResponse,
@@ -270,12 +272,7 @@ impl OpenAiProvider {
     }
 
     fn uses_responses_api(model_name: &str) -> bool {
-        model_name.starts_with("gpt-5-codex")
-            || model_name.starts_with("gpt-5.1-codex")
-            || model_name.starts_with("gpt-5.3-codex")
-            || model_name.starts_with("gpt-5.4")
-            || model_name.starts_with("gpt-5.5")
-            || model_name.starts_with("gpt-5.6")
+        model_uses_responses_api(model_name)
     }
 
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
@@ -637,8 +634,11 @@ mod alias_tests {
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
-mod gpt_5_6_tests {
+mod model_capability_tests {
     use super::*;
+    use crate::providers::formats::openai::{
+        model_reasoning_effort, model_supports_reasoning_effort,
+    };
 
     /// The three GPT-5.6 variants plus the `gpt-5.6` alias, all 1,050,000 ctx.
     /// Verified against developers.openai.com/api/docs/models (July 2026).
@@ -671,6 +671,60 @@ mod gpt_5_6_tests {
             assert!(
                 !OpenAiProvider::uses_responses_api(id),
                 "{id} must stay on /v1/chat/completions"
+            );
+        }
+    }
+
+    #[test]
+    fn o4_mini_reasoning_tool_calls_use_the_responses_api() {
+        for id in ["o4-mini", "o4-mini-2025-04-16"] {
+            assert!(
+                OpenAiProvider::uses_responses_api(id),
+                "{id} must use /v1/responses so function tools and reasoning effort can be combined"
+            );
+        }
+    }
+
+    #[test]
+    fn every_configured_openai_model_has_the_expected_reasoning_capability() {
+        const NON_REASONING_MODELS: &[&str] = &["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"];
+
+        for (id, _) in OPEN_AI_KNOWN_MODELS {
+            let expected_support = !NON_REASONING_MODELS.contains(id);
+            assert_eq!(
+                model_supports_reasoning_effort(id),
+                expected_support,
+                "unexpected reasoning capability for {id}"
+            );
+            let expected_quick_effort = if !expected_support {
+                None
+            } else if id.ends_with("-pro") {
+                Some("medium")
+            } else {
+                Some("low")
+            };
+            assert_eq!(
+                model_reasoning_effort(id, "low"),
+                expected_quick_effort,
+                "unexpected Quick effort mapping for {id}"
+            );
+        }
+
+        // A saved session can still name this recently deprecated model even
+        // though it is no longer offered in the new-session picker.
+        assert!(model_supports_reasoning_effort("o4-mini-2025-04-16"));
+    }
+
+    #[test]
+    fn every_configured_azure_openai_model_has_the_expected_reasoning_capability() {
+        use crate::providers::azure::AZURE_OPENAI_KNOWN_MODELS;
+
+        for id in AZURE_OPENAI_KNOWN_MODELS {
+            let expected = !id.starts_with("gpt-4.1") && !id.starts_with("gpt-4o");
+            assert_eq!(
+                model_supports_reasoning_effort(id),
+                expected,
+                "unexpected reasoning capability for Azure OpenAI model {id}"
             );
         }
     }

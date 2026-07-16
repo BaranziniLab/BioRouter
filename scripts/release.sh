@@ -104,11 +104,10 @@ ensure_docker() {
 # "Cannot find module 'appdmg'" / a NODE_MODULE_VERSION mismatch.
 ensure_mac_dmg_deps() {
   ( cd "$DESK"
-    if ! node -e "require.resolve('appdmg')" >/dev/null 2>&1; then
-      log "installing macOS dmg deps (appdmg)…"; npm install --package-lock=false >/dev/null 2>&1
-    fi
+    log "installing locked macOS desktop dependencies…"
+    npm ci >/dev/null 2>&1
     npm rebuild macos-alias ds-store >/dev/null 2>&1 || true
-    node -e "require('appdmg')" >/dev/null 2>&1 || die "appdmg still not loadable — run: (cd ui/desktop && rm -rf node_modules && npm install)"
+    node -e "require('appdmg')" >/dev/null 2>&1 || die "appdmg still not loadable after npm ci"
   )
 }
 
@@ -116,11 +115,8 @@ ensure_host_node_deps() {
   activate_hermit
   (
     cd "$DESK"
-    if ! node -e "require('rollup')" >/dev/null 2>&1; then
-      log "restoring host-native desktop dependencies…"
-      rm -rf node_modules
-      npm install --package-lock=false >/dev/null
-    fi
+    log "installing locked host-native desktop dependencies…"
+    npm ci >/dev/null
     node -e "require('rollup')" >/dev/null 2>&1 \
       || die "host-native Rollup dependency is unavailable"
   )
@@ -241,7 +237,7 @@ cmd_mac-intel() {
 
 # ── windows packaging (host forge, Node 24) ───────────────────────────────────
 cmd_windows() {
-  local v="$1"; activate_hermit
+  local v="$1"; activate_hermit; ensure_host_node_deps
   local WR="$ROOT/target/x86_64-pc-windows-gnu/release"
   [ -f "$WR/biorouterd.exe" ] || die "windows backend missing — run: scripts/release.sh backends $v"
   rm -rf "$DESK/src/bin"; mkdir -p "$DESK/src/bin"
@@ -261,7 +257,7 @@ cmd_linux() {
     node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh
   log "deb: $DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
   log "rpm: $DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
-  log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && rm -rf node_modules && npm install' before any further mac build."
+  log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && npm ci' before any further mac build."
 }
 
 # ── CLI-only Linux packages (deb + rpm; headless biorouter + biorouterd) ───────
@@ -400,7 +396,7 @@ cmd_all() {
   cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
   cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
   cmd_headless-linux "$v"                                                # browser-served headless Linux
-  ( cd "$DESK" && rm -rf node_modules && npm install --package-lock=false >/dev/null 2>&1 )  # un-Linux node_modules
+  ( cd "$DESK" && npm ci >/dev/null 2>&1 )
   cmd_verify "$v"; cmd_draft "$v"
   log "draft created; run the native Windows smoke workflow, then: scripts/release.sh publish $v"
 }

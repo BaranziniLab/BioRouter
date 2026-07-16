@@ -7,6 +7,7 @@ import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
 import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from './onboarding/OllamaInlineCard';
 import CommercialSetupCard from './onboarding/CommercialSetupCard';
+import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
 import { createNavigationHandler } from '../utils/navigationUtils';
 
@@ -26,6 +27,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const [userInActiveSetup, setUserInActiveSetup] = useState(false);
   const [showSwitchModelModal, setShowSwitchModelModal] = useState(false);
   const [switchModelProvider, setSwitchModelProvider] = useState<string | null>(null);
+  const [switchModel, setSwitchModel] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollIndicator, setShowScrollIndicator] = useState(true);
 
@@ -42,14 +44,14 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
-  const handleCommercialSuccess = async (
-    provider: string,
-    _model: string,
-    apiKey: string,
-    extraConfig: Record<string, string> = {}
-  ) => {
-    const keyName = `${provider.toUpperCase()}_API_KEY`;
-    await upsert(keyName, apiKey, true);
+  const handleCommercialSuccess = async ({
+    provider,
+    model,
+    apiKey,
+    apiKeyConfigKey,
+    extraConfig,
+  }: DetectedProviderSetup) => {
+    await upsert(apiKeyConfigKey, apiKey, true);
     // Persist any non-secret endpoint config (e.g. a regional host) so the saved
     // provider targets the same endpoint detection validated against.
     for (const [key, value] of Object.entries(extraConfig)) {
@@ -57,6 +59,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     }
     await upsert('BIOROUTER_PROVIDER', provider, false);
     setSwitchModelProvider(provider);
+    setSwitchModel(model || null);
     setShowSwitchModelModal(true);
   };
 
@@ -207,6 +210,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
             setView={setView}
             onModelSelected={handleModelSelected}
             initialProvider={switchModelProvider}
+            initialModel={switchModel}
             titleOverride="Choose Model"
           />
         )}

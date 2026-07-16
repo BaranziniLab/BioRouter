@@ -370,6 +370,10 @@ export type DetectProviderRequest = {
 
 export type DetectProviderResponse = {
     /**
+     * Exact secret config key used by the detected provider.
+     */
+    api_key_config_key?: string | null;
+    /**
      * A recommended default chat model, when one could be determined.
      */
     default_model?: string | null;

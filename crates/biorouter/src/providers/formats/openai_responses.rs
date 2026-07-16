@@ -1,6 +1,7 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
+use crate::providers::formats::openai::model_reasoning_effort;
 use anyhow::{anyhow, Error};
 use async_stream::try_stream;
 use chrono;
@@ -440,6 +441,7 @@ pub fn create_responses_request(
     if let Some(effort) = model_config
         .reasoning_effort
         .and_then(|effort| effort.provider_effort())
+        .and_then(|effort| model_reasoning_effort(&model_config.model_name, effort))
     {
         payload
             .as_object_mut()
@@ -752,6 +754,7 @@ mod tests {
     use super::*;
     use crate::agents::effort::ReasoningEffort;
     use futures::StreamExt;
+    use rmcp::object;
     use tokio::pin;
 
     // BR-63: the Responses API takes the effort nested under `reasoning`, not as
@@ -785,6 +788,70 @@ mod tests {
         )?;
 
         assert_eq!(payload["reasoning"]["effort"], json!("low"));
+        Ok(())
+    }
+
+    #[test]
+    fn o4_mini_combines_function_tools_with_nested_reasoning_effort() -> anyhow::Result<()> {
+        let model_config = ModelConfig::new_or_fail("o4-mini-2025-04-16")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        let tool = Tool::new(
+            "lookup_record",
+            "Look up a record",
+            object!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        );
+
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("Find record 42")],
+            &[tool],
+        )?;
+
+        assert_eq!(payload["reasoning"]["effort"], json!("high"));
+        assert_eq!(payload["tools"][0]["name"], json!("lookup_record"));
+        assert!(payload.get("reasoning_effort").is_none());
+        assert!(payload.get("messages").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn quick_effort_uses_the_minimum_supported_pro_effort() -> anyhow::Result<()> {
+        for model_name in ["gpt-5.4-pro", "gpt-5.5-pro"] {
+            let model_config = ModelConfig::new_or_fail(model_name)
+                .with_reasoning_effort(Some(ReasoningEffort::Quick));
+            let payload = create_responses_request(
+                &model_config,
+                "system",
+                &[Message::user().with_text("hi")],
+                &[],
+            )?;
+
+            assert_eq!(
+                payload["reasoning"]["effort"],
+                json!("medium"),
+                "{model_name} does not accept low reasoning effort"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn responses_builder_omits_effort_for_non_reasoning_models() -> anyhow::Result<()> {
+        let model_config =
+            ModelConfig::new_or_fail("gpt-4.1").with_reasoning_effort(Some(ReasoningEffort::Deep));
+        let payload = create_responses_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert!(payload.get("reasoning").is_none());
         Ok(())
     }
 

@@ -67,6 +67,7 @@ import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import InAppTerminalDock from './InAppTerminalDock';
+import { ChatTurnError } from './conversation/ChatTurnError';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
@@ -840,6 +841,7 @@ function BaseChatContent({
     stopStreaming,
     steer,
     sessionLoadError,
+    turnError,
     setWorkflowUserParams,
     tokenState,
     notifications: toolCallNotifications,
@@ -853,9 +855,9 @@ function BaseChatContent({
     () => messages.some((message) => message.role === 'assistant'),
     [messages]
   );
-  const handleTitleDiverge = useCallback(() => {
+  const handleTitleDiverge = useCallback(async () => {
     if (!canDivergeSession) return;
-    void diverge(sessionId);
+    await diverge(sessionId);
   }, [canDivergeSession, diverge, sessionId]);
 
   const submitArtifactRepairMessage = useCallback(
@@ -1674,19 +1676,22 @@ function BaseChatContent({
                     {messages.length > 0 || workflow ? (
                       <>
                         <SearchView>
-                          <ProgressiveMessageList
-                            messages={messages}
-                            chat={{ sessionId }}
-                            toolCallNotifications={toolCallNotifications}
-                            append={(text: string) => handleSubmit(text)}
-                            isUserMessage={(m: Message) => m.role === 'user'}
-                            isStreamingMessage={chatState !== ChatState.Idle}
-                            onRenderingComplete={handleRenderingComplete}
-                            onMessageUpdate={onMessageUpdate}
-                            submitElicitationResponse={submitElicitationResponse}
-                            onOpenArtifact={handleOpenArtifact}
-                            workingDir={sessionWorkingDir}
-                          />
+                          <>
+                            <ProgressiveMessageList
+                              messages={messages}
+                              chat={{ sessionId }}
+                              toolCallNotifications={toolCallNotifications}
+                              append={(text: string) => handleSubmit(text)}
+                              isUserMessage={(m: Message) => m.role === 'user'}
+                              isStreamingMessage={chatState !== ChatState.Idle}
+                              onRenderingComplete={handleRenderingComplete}
+                              onMessageUpdate={onMessageUpdate}
+                              submitElicitationResponse={submitElicitationResponse}
+                              onOpenArtifact={handleOpenArtifact}
+                              workingDir={sessionWorkingDir}
+                            />
+                            {turnError && <ChatTurnError error={turnError} />}
+                          </>
                         </SearchView>
 
                         <div className="block h-8" />

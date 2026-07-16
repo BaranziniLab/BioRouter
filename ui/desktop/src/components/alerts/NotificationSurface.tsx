@@ -18,6 +18,11 @@ import { CheckCircle, AlertCircle, AlertTriangle, Info, Loader2, X } from '../ic
  */
 export type NotificationStatus = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
+export const TOAST_SURFACE_CLASS_NAME = `relative mb-3 pl-3 pr-12 py-2.5 rounded-xl w-full min-w-0
+  flex items-start overflow-hidden cursor-pointer
+  text-text-default bg-background-default
+  border border-border-subtle shadow-popover`;
+
 const STATUS_ICON: Record<NotificationStatus, React.FC<{ className?: string }>> = {
   success: CheckCircle,
   error: AlertCircle,
@@ -80,7 +85,7 @@ export function NotificationContent({
       >
         {icon ?? <Icon className={cn('w-4 h-4', status === 'loading' && 'animate-spin')} />}
       </span>
-      <div className="flex-1 min-w-0">
+      <div data-notification-text className="flex-1 min-w-0 pt-[5px]">
         {hasText(title) && (
           <div className="text-[13px] leading-[18px] font-semibold text-text-default [overflow-wrap:anywhere]">
             {title}
@@ -144,7 +149,7 @@ export function NotificationSurface({
           type="button"
           onClick={onClose}
           aria-label={dismissLabel}
-          className="absolute right-2.5 top-2.5 inline-flex h-5 w-5 items-center justify-center rounded-sm text-text-subtle transition-colors hover:bg-background-medium hover:text-text-default"
+          className="absolute right-2.5 top-4 inline-flex h-5 w-5 items-center justify-center rounded-sm text-text-subtle transition-colors hover:bg-background-medium hover:text-text-default"
         >
           <X className="h-3.5 w-3.5" />
         </button>

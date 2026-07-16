@@ -6,13 +6,17 @@ import { ArrowRight } from '../icons/ArrowRight';
 import OnboardingSectionLabel from './OnboardingSectionLabel';
 
 interface CommercialSetupCardProps {
-  onSuccess: (
-    provider: string,
-    model: string,
-    apiKey: string,
-    extraConfig: Record<string, string>
-  ) => void;
+  onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
   onStartTesting?: () => void;
+}
+
+export interface DetectedProviderSetup {
+  provider: string;
+  model: string;
+  models: string[];
+  apiKey: string;
+  apiKeyConfigKey: string;
+  extraConfig: Record<string, string>;
 }
 
 interface DetectionResult {
@@ -38,6 +42,11 @@ function messageForReason(reason: string | null | undefined): { title: string; d
       return {
         title: 'Could not reach the provider',
         detail: 'A network error occurred while validating the key. Check your connection.',
+      };
+    case 'configuration':
+      return {
+        title: 'Could not save provider',
+        detail: 'The key was valid, but Biorouter could not save the provider configuration.',
       };
     case 'invalid_key':
       return {
@@ -86,8 +95,8 @@ export default function CommercialSetupCard({
   }, []);
 
   const testApiKey = async () => {
-    const actualValue = inputRef.current?.value || apiKey;
-    if (!actualValue.trim()) return;
+    const actualValue = (inputRef.current?.value || apiKey).trim();
+    if (!actualValue) return;
 
     onStartTesting?.();
     setIsLoading(true);
@@ -100,16 +109,28 @@ export default function CommercialSetupCard({
 
       if (data && data.provider_name) {
         const model = data.default_model ?? data.models?.[0] ?? '';
+        const models = data.models ?? [];
         const extraConfig = data.extra_config ?? {};
+        const apiKeyConfigKey =
+          data.api_key_config_key ?? `${data.provider_name.toUpperCase()}_API_KEY`;
         setResult({
           provider: data.provider_name,
           model,
-          totalModels: data.models?.length ?? 0,
+          totalModels: models.length,
         });
-        setTimeout(
-          () => onSuccess(data.provider_name as string, model, actualValue, extraConfig),
-          1500
-        );
+        try {
+          await onSuccess({
+            provider: data.provider_name,
+            model,
+            models,
+            apiKey: actualValue,
+            apiKeyConfigKey,
+            extraConfig,
+          });
+        } catch {
+          setResult(null);
+          setErrorReason('configuration');
+        }
       } else {
         setErrorReason(data?.reason ?? 'no_match');
       }

@@ -5354,6 +5354,11 @@
       "DetectProviderResponse": {
         "type": "object",
         "properties": {
+          "api_key_config_key": {
+            "type": "string",
+            "description": "Exact secret config key used by the detected provider.",
+            "nullable": true
+          },
           "default_model": {
             "type": "string",
             "description": "A recommended default chat model, when one could be determined.",

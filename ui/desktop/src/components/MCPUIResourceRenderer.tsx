@@ -8,9 +8,9 @@ import {
   UIActionResult,
 } from '@mcp-ui/client';
 import { useState, useEffect } from 'react';
-import { toast } from 'react-toastify';
 import { EmbeddedResource } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
+import { toastError, toastInfo } from '../toasts';
 import { Maximize2 } from './icons/app-icons';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
@@ -61,37 +61,6 @@ enum UIActionErrorCode {
   TIMEOUT = 'TIMEOUT',
 }
 
-// toast component
-const ToastComponent = ({
-  messageType,
-  message,
-  isImplemented = true,
-}: {
-  messageType: string;
-  message?: string;
-  isImplemented?: boolean;
-}) => {
-  const title = `MCP-UI ${messageType} message`;
-
-  return (
-    <div className="flex flex-col gap-0 py-2 pr-4">
-      <p className="font-semibold">{title}</p>
-      {isImplemented ? (
-        <p>
-          Message received for <span className="font-semibold">{message}</span>.
-        </p>
-      ) : (
-        <p>
-          Message received for <span className="font-semibold">{message}</span>.
-          <br />
-          {messageType.charAt(0).toUpperCase() + messageType.slice(1)} messages aren't supported
-          yet, refer to console for more details.
-        </p>
-      )}
-    </div>
-  );
-};
-
 export default function MCPUIResourceRenderer({
   content,
   appendPromptToChat,
@@ -126,8 +95,9 @@ export default function MCPUIResourceRenderer({
       actionEvent: UIActionResultToolCall
     ): Promise<UIActionHandlerResult> => {
       const { toolName, params } = actionEvent.payload;
-      toast.info(<ToastComponent messageType="tool" message={toolName} isImplemented={false} />, {
-        theme: resolvedTheme,
+      toastInfo({
+        title: 'MCP-UI tool message',
+        msg: `Message received for ${toolName}. Tool messages aren't supported yet; refer to the console for more details.`,
       });
       return {
         status: 'error' as const,
@@ -234,8 +204,9 @@ export default function MCPUIResourceRenderer({
     ): Promise<UIActionHandlerResult> => {
       const { message } = actionEvent.payload;
 
-      toast.info(<ToastComponent messageType="notify" message={message} isImplemented={true} />, {
-        theme: resolvedTheme,
+      toastInfo({
+        title: 'MCP-UI notification message',
+        msg: `Message received for ${message}.`,
       });
       return {
         status: 'success' as const,
@@ -250,16 +221,10 @@ export default function MCPUIResourceRenderer({
     const handleIntentAction = async (
       actionEvent: UIActionResultIntent
     ): Promise<UIActionHandlerResult> => {
-      toast.info(
-        <ToastComponent
-          messageType="intent"
-          message={actionEvent.payload.intent}
-          isImplemented={false}
-        />,
-        {
-          theme: resolvedTheme,
-        }
-      );
+      toastInfo({
+        title: 'MCP-UI intent message',
+        msg: `Message received for ${actionEvent.payload.intent}. Intent messages aren't supported yet; refer to the console for more details.`,
+      });
       return {
         status: 'error' as const,
         error: {
@@ -365,7 +330,10 @@ export default function MCPUIResourceRenderer({
       return;
     }
     if (!html) {
-      toast.error('Could not read the artifact contents.');
+      toastError({
+        title: 'Artifact unavailable',
+        msg: 'Could not read the artifact contents.',
+      });
       return;
     }
     if (artifactSource && onOpenArtifact) {
@@ -381,7 +349,10 @@ export default function MCPUIResourceRenderer({
         theme: resolvedTheme,
       });
     } catch {
-      toast.error('Could not open the artifact window.');
+      toastError({
+        title: 'Artifact unavailable',
+        msg: 'Could not open the artifact window.',
+      });
     }
   };
 

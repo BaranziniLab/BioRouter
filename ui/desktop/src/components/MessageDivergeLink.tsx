@@ -8,6 +8,9 @@ interface MessageDivergeLinkProps {
   /** `created` timestamp (ms) of this assistant message. The branch is trimmed
    * to end exactly at this answer. */
   truncateAfterMs?: number;
+  /** Durable id of this assistant message. Preferred over the timestamp when
+   * resolving the exact branch point. */
+  truncateAfterId?: string;
 }
 
 /**
@@ -24,6 +27,7 @@ interface MessageDivergeLinkProps {
 export default function MessageDivergeLink({
   sessionId,
   truncateAfterMs,
+  truncateAfterId,
 }: MessageDivergeLinkProps) {
   const [busy, setBusy] = useState(false);
   const { diverge, inDashboard } = useDiverge();
@@ -32,7 +36,7 @@ export default function MessageDivergeLink({
     if (busy) return;
     setBusy(true);
     try {
-      await diverge(sessionId, truncateAfterMs);
+      await diverge(sessionId, truncateAfterMs, truncateAfterId);
     } finally {
       setBusy(false);
     }

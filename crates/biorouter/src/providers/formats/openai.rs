@@ -687,6 +687,66 @@ where
     }
 }
 
+/// OpenAI model families that accept a configurable reasoning effort.
+///
+/// Keep this separate from endpoint routing: GPT-4.1/4o support tools but are
+/// non-reasoning models, while some reasoning models need the Responses API to
+/// combine reasoning controls with function tools.
+pub(crate) fn model_supports_reasoning_effort(model_name: &str) -> bool {
+    let model_name = model_name.to_ascii_lowercase();
+    model_name.starts_with("o1")
+        || model_name.starts_with("o2")
+        || model_name.starts_with("o3")
+        || model_name.starts_with("o4")
+        || model_name.starts_with("gpt-5")
+}
+
+/// Return an effort accepted by the selected model.
+///
+/// BioRouter's Quick/Deep control maps to low/high. GPT-5 Pro only accepts
+/// high, while the newer numbered Pro variants start at medium; clamp Quick to
+/// each model's documented minimum instead of sending a request that will 400.
+pub(crate) fn model_reasoning_effort(
+    model_name: &str,
+    requested: &'static str,
+) -> Option<&'static str> {
+    if !model_supports_reasoning_effort(model_name) {
+        return None;
+    }
+
+    let model_name = model_name.to_ascii_lowercase();
+    if model_name == "gpt-5-pro" || model_name.starts_with("gpt-5-pro-") {
+        return Some("high");
+    }
+
+    if requested == "low"
+        && (model_name.starts_with("gpt-5.2-pro")
+            || model_name.starts_with("gpt-5.4-pro")
+            || model_name.starts_with("gpt-5.5-pro"))
+    {
+        return Some("medium");
+    }
+
+    Some(requested)
+}
+
+/// Models routed through Responses by BioRouter.
+///
+/// `o4-mini` supports Chat Completions in isolation, but OpenAI rejects the
+/// function-tools + `reasoning_effort` combination there. Responses supports
+/// that combination and is also the preferred endpoint for reasoning models.
+pub(crate) fn model_uses_responses_api(model_name: &str) -> bool {
+    let model_name = model_name.to_ascii_lowercase();
+    model_name.starts_with("gpt-5-codex")
+        || model_name.starts_with("gpt-5.1-codex")
+        || model_name.starts_with("gpt-5.3-codex")
+        || model_name.starts_with("gpt-5.4")
+        || model_name.starts_with("gpt-5.5")
+        || model_name.starts_with("gpt-5.6")
+        || model_name.starts_with("o3-pro")
+        || model_name.starts_with("o4-mini")
+}
+
 pub fn create_request(
     model_config: &ModelConfig,
     system: &str,
@@ -701,21 +761,14 @@ pub fn create_request(
         ));
     }
 
-    // gpt-5.4+ and gpt-5.5+ use the /v1/responses API (not /v1/chat/completions)
-    // so they should not be treated as ox-model here — those go through create_responses_request()
-    let uses_responses_api = model_config.model_name.starts_with("gpt-5.4")
-        || model_config.model_name.starts_with("gpt-5.5")
-        || model_config.model_name.starts_with("gpt-5-codex")
-        || model_config.model_name.starts_with("gpt-5.1-codex");
+    // Responses-routed models do not belong in this Chat Completions builder.
+    // Treating them as ordinary reasoning-chat models would recreate the
+    // incompatible tools + reasoning_effort payload reported for o4-mini.
+    let uses_responses_api = model_uses_responses_api(&model_config.model_name);
+    let is_ox_model =
+        !uses_responses_api && model_supports_reasoning_effort(&model_config.model_name);
 
-    let is_ox_model = !uses_responses_api
-        && (model_config.model_name.starts_with("o1")
-            || model_config.model_name.starts_with("o2")
-            || model_config.model_name.starts_with("o3")
-            || model_config.model_name.starts_with("o4")
-            || model_config.model_name.starts_with("gpt-5"));
-
-    // Only extract reasoning effort for O-series models
+    // Extract reasoning effort only for reasoning-capable Chat Completions models.
     let (model_name, mut reasoning_effort) = if is_ox_model {
         let parts: Vec<&str> = model_config.model_name.split('-').collect();
         let last_part = parts.last().unwrap();
@@ -742,6 +795,7 @@ pub fn create_request(
         if let Some(effort) = model_config
             .reasoning_effort
             .and_then(|effort| effort.provider_effort())
+            .and_then(|effort| model_reasoning_effort(&model_config.model_name, effort))
         {
             reasoning_effort = Some(effort.to_string());
         }

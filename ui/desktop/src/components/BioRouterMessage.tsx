@@ -193,7 +193,11 @@ export default function BioRouterMessage({
                 {message.content.every((content) => content.type === 'text') && !isStreaming && (
                   <div className="absolute left-0 pt-1 flex items-center gap-3">
                     <MessageCopyLink text={displayText} contentRef={contentRef} />
-                    <MessageDivergeLink sessionId={sessionId} truncateAfterMs={message.created} />
+                    <MessageDivergeLink
+                      sessionId={sessionId}
+                      truncateAfterMs={message.created}
+                      truncateAfterId={message.id ?? undefined}
+                    />
                   </div>
                 )}
               </div>

@@ -137,6 +137,151 @@ describe('summarizeToolCall', () => {
     expect(screen.getByText('npm run typecheck')).toBeInTheDocument();
   });
 
+  it('expands a partial execute-code graph when dependency metadata is missing', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-partial-graph',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'multi_tool_use__execute_code',
+          arguments: {
+            tool_graph: [
+              {
+                tool: 'developer/shell',
+                description: 'Attempt the command',
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-partial-graph',
+          toolResult: { status: 'error', error: 'The command could not be started' },
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Attempt the command').closest('button') as HTMLElement);
+
+    expect(screen.getByText('1. developer/shell: Attempt the command')).toBeInTheDocument();
+    expect(screen.getByText('Tool call failed')).toBeInTheDocument();
+    expect(screen.getByText('The command could not be started')).toBeInTheDocument();
+    expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
+  });
+
+  it('treats a successful wrapper with missing content as an empty result', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-partial-result',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__exec_command',
+          arguments: { cmd: 'partially-started-command' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-partial-result',
+          toolResult: {
+            status: 'success',
+            value: { is_error: false },
+          } as never,
+        }}
+      />
+    );
+
+    expect(screen.getByText(/Running partially-started-command/)).toBeInTheDocument();
+    expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
+  });
+
+  it('shows MCP is_error text as an inline tool failure', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-mcp-error',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'example__lookup',
+          arguments: { id: 'missing-record' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-mcp-error',
+          toolResult: {
+            status: 'success',
+            value: {
+              is_error: true,
+              content: [{ type: 'text', text: 'Record missing-record was not found' }],
+            },
+          },
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+
+    expect(screen.getByText('Tool call failed')).toBeInTheDocument();
+    expect(screen.getByText('Record missing-record was not found')).toBeInTheDocument();
+  });
+
+  it('contains an unexpected tool-card render failure instead of crashing the chat', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-boundary',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'example__lookup',
+          arguments: { id: 'record-1' },
+        },
+      },
+    };
+
+    try {
+      render(
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={toolRequest}
+          notifications={[
+            {
+              type: 'Notification',
+              request_id: 'broken-notification',
+              message: undefined,
+            } as never,
+          ]}
+        />
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Tool details unavailable');
+      expect(screen.getByRole('alert')).toHaveTextContent('The conversation can continue');
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it('opens generated files named in tool output in the side panel', () => {
     const onOpenArtifact = vi.fn();
     const toolRequest: ToolRequestMessageContent = {

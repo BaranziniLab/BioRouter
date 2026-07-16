@@ -16,7 +16,7 @@ import {
 import { GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../contexts/DashboardContext';
-import { toastError } from '../../toasts';
+import { toastError, toastSuccess } from '../../toasts';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,7 +32,6 @@ import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
 import { Skeleton } from '../ui/skeleton';
-import { toast } from 'react-toastify';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
@@ -109,13 +108,17 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
         });
         await onSave(session.id, trimmedDescription);
         onClose();
-        setTimeout(() => {
-          toast.success('Session description updated successfully');
-        }, 300);
+        toastSuccess({
+          title: 'Session updated',
+          msg: 'The session description was saved successfully.',
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         console.error('Failed to update session description:', errorMessage);
-        toast.error(`Failed to update session description: ${errorMessage}`);
+        toastError({
+          title: 'Failed to update session',
+          msg: errorMessage,
+        });
         setDescription(session.name);
       } finally {
         setIsUpdating(false);
@@ -563,11 +566,17 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           currentSessions.filter((session) => session.id !== sessionToDeleteId);
         updateCachedSessionList(removeDeletedSession);
         setSessions(removeDeletedSession);
-        toast.success('Session deleted successfully');
+        toastSuccess({
+          title: 'Session deleted',
+          msg: `"${sessionName}" was removed from chat history.`,
+        });
       } catch (error) {
         console.error('Error deleting session:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        toast.error(`Failed to delete session "${sessionName}": ${errorMessage}`);
+        toastError({
+          title: 'Failed to delete session',
+          msg: `Could not delete "${sessionName}": ${errorMessage}`,
+        });
       }
       await loadSessions();
     }, [sessionToDelete, loadSessions]);
@@ -595,7 +604,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success('Session exported successfully');
+      toastSuccess({
+        title: 'Session exported',
+        msg: `"${session.name}" was downloaded successfully.`,
+      });
     }, []);
 
     const handleImportClick = useCallback(() => {
@@ -605,7 +617,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const handleImportSession = useCallback(
       async (json: string) => {
         await importSession({ body: { json }, throwOnError: true });
-        toast.success('Session imported successfully');
+        toastSuccess({
+          title: 'Session imported',
+          msg: 'The imported session is now available in chat history.',
+        });
         await loadSessions();
       },
       [loadSessions]

@@ -2846,7 +2846,7 @@ impl SessionStorage {
     ) -> Result<Conversation> {
         let pool = self.pool().await?;
         let rows = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<String>)>(
-            "SELECT role, content_json, created_timestamp, metadata_json, msg_uid FROM messages WHERE session_id = ? ORDER BY timestamp",
+            "SELECT role, content_json, created_timestamp, metadata_json, msg_uid FROM messages WHERE session_id = ? ORDER BY id",
         )
             .bind(session_id)
             .fetch_all(pool)
@@ -7535,6 +7535,40 @@ mod tests {
         let new_id = &after_ids[4];
         assert!(!new_id.starts_with("msg_"));
         assert!(!before.contains(new_id));
+    }
+
+    #[tokio::test]
+    async fn conversation_rewrite_preserves_message_order_when_timestamps_tie() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/message_order"),
+                "Message order".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let conversation = Conversation::new_unvalidated(vec![
+            umsg(10, "question").with_id("z-user-message"),
+            amsg(20, "answer").with_id("a-assistant-message"),
+        ]);
+        sm.replace_conversation(&session.id, &conversation)
+            .await
+            .unwrap();
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let messages = loaded.conversation.unwrap();
+        assert_eq!(messages.messages()[0].role, Role::User);
+        assert_eq!(messages.messages()[1].role, Role::Assistant);
+        let texts = messages
+            .messages()
+            .iter()
+            .map(Message::as_concat_text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, vec!["question", "answer"]);
     }
 
     /// A row an in-flight upgrade left with a NULL `msg_uid` still loads, using

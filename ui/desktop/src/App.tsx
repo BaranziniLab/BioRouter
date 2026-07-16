@@ -11,6 +11,7 @@ import {
 import { openSharedSessionFromDeepLink } from './sessionLinks';
 import { type SharedSessionDetails } from './sharedSessions';
 import { ErrorUI } from './components/ErrorBoundary';
+import { TOAST_SURFACE_CLASS_NAME } from './components/alerts/NotificationSurface';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
@@ -590,13 +591,7 @@ export function AppInner() {
       <AppTooltipLayer />
       <ToastContainer
         aria-label="Toast notifications"
-        toastClassName={() =>
-          `relative mb-3 px-3 py-2.5 rounded-xl w-full min-w-0
-               flex items-start overflow-hidden cursor-pointer
-               text-text-default bg-background-default
-               border border-border-subtle shadow-popover
-              `
-        }
+        toastClassName={() => TOAST_SURFACE_CLASS_NAME}
         style={{
           width: 'fit-content',
           minWidth: '280px',

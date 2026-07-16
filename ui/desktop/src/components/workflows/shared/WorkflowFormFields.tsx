@@ -12,6 +12,7 @@ import { WorkflowFormApi, WorkflowFormData } from './workflowFormSchema';
 import { getExtensions } from '../../../api';
 import type { ExtensionConfig } from '../../../api';
 import { WorkflowResourceItem, WorkflowResourcePicker } from './WorkflowResourcePicker';
+import { storeSubscriptionCleanup } from '../../../utils/storeSubscription';
 
 // Type for field API to avoid linting issues - use any to bypass complex type constraints
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,7 +107,7 @@ export function WorkflowFormFields({
       // Force re-render when any form field changes to update parameter usage indicators
       setForceRender((prev) => prev + 1);
     });
-    return subscription;
+    return storeSubscriptionCleanup(subscription);
   }, [form.store]);
 
   const parseParametersFromInstructions = React.useCallback(

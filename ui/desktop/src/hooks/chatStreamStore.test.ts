@@ -111,6 +111,64 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
+  it('keeps provider failures inline instead of converting them into session-load failures', async () => {
+    const registry = new ChatStreamRegistry();
+    const providerError =
+      'provider_failure: Request failed: Responses API error: Object {"type": String("insufficient_quota"), "message": String("You exceeded your current quota, please check your plan and billing details.")}';
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Error', error: providerError } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('hello');
+
+    expect(controller.getSnapshot()).toMatchObject({
+      chatState: ChatState.Idle,
+      turnError: `Stream error: ${providerError}`,
+    });
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+    expect(controller.getSnapshot().messages).toHaveLength(1);
+    expect(controller.getSnapshot().messages[0]).toMatchObject({ role: 'user' });
+  });
+
+  it('clears the previous inline turn error when a new model turn starts', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply)
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield { type: 'Error', error: 'provider unavailable' } as MessageEvent;
+        })(),
+      } as never)
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+
+    const controller = registry.getController('s1');
+    await controller.handleSubmit('first try');
+    expect(controller.getSnapshot().turnError).toBe('Stream error: provider unavailable');
+
+    await controller.handleSubmit('second try');
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+  });
+
+  it('still reserves sessionLoadError for an actual session resume failure', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockRejectedValue(new Error('session database unavailable'));
+
+    const controller = registry.getController('load-failure-session');
+    await controller.loadSession();
+
+    expect(controller.getSnapshot().sessionLoadError).toBe('session database unavailable');
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+  });
+
   it('submits attachment-only messages as new user messages', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);

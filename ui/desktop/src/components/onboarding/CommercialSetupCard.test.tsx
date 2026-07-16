@@ -46,6 +46,7 @@ describe('CommercialSetupCard', () => {
     mockDetectProvider.mockResolvedValue({
       data: {
         provider_name: 'openai',
+        api_key_config_key: 'OPENAI_API_KEY',
         models: ['gpt-4o', 'gpt-4o-mini'],
         default_model: 'gpt-4o',
         extra_config: { FOO_HOST: 'https://example.com' },
@@ -58,13 +59,72 @@ describe('CommercialSetupCard', () => {
     typeKeyAndSubmit('sk-test-key');
 
     await waitFor(() => expect(screen.getByText('Detected openai')).toBeInTheDocument());
-    await waitFor(
-      () =>
-        expect(onSuccess).toHaveBeenCalledWith('openai', 'gpt-4o', 'sk-test-key', {
-          FOO_HOST: 'https://example.com',
-        }),
-      { timeout: 2500 }
+    await waitFor(() =>
+      expect(onSuccess).toHaveBeenCalledWith({
+        provider: 'openai',
+        model: 'gpt-4o',
+        models: ['gpt-4o', 'gpt-4o-mini'],
+        apiKey: 'sk-test-key',
+        apiKeyConfigKey: 'OPENAI_API_KEY',
+        extraConfig: { FOO_HOST: 'https://example.com' },
+      })
     );
+  });
+
+  it.each([
+    ['anthropic', 'ANTHROPIC_API_KEY', 'sk-ant-test'],
+    ['google', 'GOOGLE_API_KEY', 'AIza-test'],
+    ['groq', 'GROQ_API_KEY', 'gsk_test'],
+    ['xai', 'XAI_API_KEY', 'xai-test'],
+    ['openai', 'OPENAI_API_KEY', 'sk-openai-test'],
+    ['zai', 'ZAI_API_KEY', 'zai-test'],
+    ['xiaomi_mimo', 'XIAOMI_MIMO_API_KEY', 'mimo-test'],
+  ])('hands off the exact %s secret configuration key', async (provider, configKey, key) => {
+    mockDetectProvider.mockResolvedValue({
+      data: {
+        provider_name: provider,
+        api_key_config_key: configKey,
+        models: ['model-1'],
+        default_model: 'model-1',
+        extra_config: {},
+        reason: null,
+      },
+    });
+    const onSuccess = vi.fn();
+    render(<CommercialSetupCard onSuccess={onSuccess} />);
+
+    typeKeyAndSubmit(`  ${key}  `);
+
+    await waitFor(() =>
+      expect(onSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider,
+          apiKeyConfigKey: configKey,
+          apiKey: key,
+          model: 'model-1',
+        })
+      )
+    );
+    expect(mockDetectProvider).toHaveBeenCalledWith({ body: { api_key: key } });
+  });
+
+  it('keeps onboarding open with an actionable error when saving fails', async () => {
+    mockDetectProvider.mockResolvedValue({
+      data: {
+        provider_name: 'openai',
+        api_key_config_key: 'OPENAI_API_KEY',
+        models: ['gpt-4o'],
+        default_model: 'gpt-4o',
+        extra_config: {},
+        reason: null,
+      },
+    });
+    render(<CommercialSetupCard onSuccess={vi.fn().mockRejectedValue(new Error('disk full'))} />);
+
+    typeKeyAndSubmit('sk-test');
+
+    await waitFor(() => expect(screen.getByText('Could not save provider')).toBeInTheDocument());
+    expect(screen.queryByText('Detected openai')).not.toBeInTheDocument();
   });
 
   it('shows the invalid-key message when the provider rejects the key', async () => {

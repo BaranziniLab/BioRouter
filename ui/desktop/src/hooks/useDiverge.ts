@@ -15,14 +15,19 @@ export interface UseDivergeResult {
    * - Everywhere else (single chat / Hub / Pair) → opens a NEW focused Electron
    *   window for the branch, leaving the current window exactly where it is.
    *
-   * `truncateAfterMs` is the `created` timestamp of the assistant message a
-   * per-message Diverge button was clicked on; the branch ends at that answer.
-   * Omit it (slash command) to branch from the most recent complete answer.
+   * `truncateAfterMs` and `truncateAfterId` identify the assistant message a
+   * per-message Diverge button was clicked on; the durable id takes precedence
+   * and the timestamp remains as a compatibility fallback. Omit both to branch
+   * from the most recent complete answer.
    *
    * Returns the new session id on success, or null if it failed (a toast is
    * shown on failure).
    */
-  diverge: (sessionId: string, truncateAfterMs?: number) => Promise<string | null>;
+  diverge: (
+    sessionId: string,
+    truncateAfterMs?: number,
+    truncateAfterId?: string
+  ) => Promise<string | null>;
   /** True when rendered on the Dashboard canvas, so callers can tailor wording. */
   inDashboard: boolean;
 }
@@ -37,7 +42,11 @@ export function useDiverge(): UseDivergeResult {
   const useCanvasSpawn = onCanvas && dashboard != null;
 
   const diverge = useCallback(
-    async (sessionId: string, truncateAfterMs?: number): Promise<string | null> => {
+    async (
+      sessionId: string,
+      truncateAfterMs?: number,
+      truncateAfterId?: string
+    ): Promise<string | null> => {
       if (!sessionId) {
         toastError({ title: 'Diverge failed', msg: 'No active session to diverge.' });
         return null;
@@ -45,7 +54,10 @@ export function useDiverge(): UseDivergeResult {
       try {
         const response = await divergeSession({
           path: { session_id: sessionId },
-          body: truncateAfterMs != null ? { truncateAfter: truncateAfterMs } : {},
+          body: {
+            ...(truncateAfterMs != null ? { truncateAfter: truncateAfterMs } : {}),
+            ...(truncateAfterId ? { truncateAfterId } : {}),
+          },
           throwOnError: true,
         });
 

@@ -3,12 +3,20 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import {
   NotificationSurface,
   NotificationContent,
+  TOAST_SURFACE_CLASS_NAME,
   type NotificationStatus,
 } from '../NotificationSurface';
 
 const STATUSES: NotificationStatus[] = ['success', 'error', 'warning', 'info', 'loading'];
 
 describe('NotificationContent (shared layout primitive)', () => {
+  it('reserves the close-button gutter on the toast card that React-Toastify always renders', () => {
+    const classes = TOAST_SURFACE_CLASS_NAME.split(/\s+/);
+
+    expect(classes).toEqual(expect.arrayContaining(['pl-3', 'pr-12', 'min-w-0']));
+    expect(classes).not.toContain('px-3');
+  });
+
   it('renders the title and message together', () => {
     render(<NotificationContent status="success" title="Model changed" message="Now using Opus" />);
     expect(screen.getByText('Model changed')).toBeInTheDocument();
@@ -44,10 +52,35 @@ describe('NotificationContent (shared layout primitive)', () => {
     expect(chip!.querySelector('svg')).toBeInTheDocument();
   });
 
+  it.each(STATUSES)(
+    'centers the first text line against the 28px status chip for "%s"',
+    (status) => {
+      const { container } = render(<NotificationContent status={status} title="Aligned title" />);
+      expect(container.querySelector('[data-notification-text]')).toHaveClass('pt-[5px]');
+    }
+  );
+
   it('top-aligns the status chip so it anchors to the first line at any height (never floats)', () => {
     const { container } = render(<NotificationContent status="error" title="t" message="m" />);
     const chip = container.querySelector('[data-status="error"]')!;
     expect(chip.className).toContain('self-start');
+  });
+
+  it('keeps long session names in a shrinkable, wrapping text column', () => {
+    const { container } = render(
+      <NotificationContent
+        status="success"
+        title="Session deleted"
+        message={`"${'unbroken-session-name-'.repeat(12)}" was removed from chat history.`}
+      />
+    );
+
+    const textColumn = container.querySelector('.min-w-0');
+    expect(textColumn).toHaveClass('flex-1', 'min-w-0');
+    expect(screen.getByText('Session deleted')).toHaveClass('[overflow-wrap:anywhere]');
+    expect(screen.getByText(/was removed from chat history/)).toHaveClass(
+      '[overflow-wrap:anywhere]'
+    );
   });
 
   it('renders an actions region and an expanded children region', () => {

@@ -63,8 +63,8 @@ export const ChatWindow: React.FC<Props> = ({
   // input row.
   const [focusTrigger, setFocusTrigger] = useState(0);
   const prevFoldedRef = useRef(win.folded);
-  const handleTitleDiverge = React.useCallback(() => {
-    void diverge(win.sessionId);
+  const handleTitleDiverge = React.useCallback(async () => {
+    await diverge(win.sessionId);
   }, [diverge, win.sessionId]);
 
   useEffect(() => {

@@ -146,6 +146,8 @@ pub struct DetectProviderRequest {
 pub struct DetectProviderResponse {
     /// The detected provider, or `null` when detection failed.
     pub provider_name: Option<String>,
+    /// Exact secret config key used by the detected provider.
+    pub api_key_config_key: Option<String>,
     /// All model ids the provider reported for the key (empty on failure).
     #[serde(default)]
     pub models: Vec<String>,
@@ -614,6 +616,7 @@ pub async fn detect_provider(
     match detect_provider_from_api_key(api_key).await {
         Ok(detected) => Json(DetectProviderResponse {
             provider_name: Some(detected.provider),
+            api_key_config_key: Some(detected.api_key_config_key),
             models: detected.models,
             default_model: detected.default_model,
             extra_config: detected.extra_config,
@@ -621,6 +624,7 @@ pub async fn detect_provider(
         }),
         Err(err) => Json(DetectProviderResponse {
             provider_name: None,
+            api_key_config_key: None,
             models: Vec::new(),
             default_model: None,
             extra_config: HashMap::new(),
@@ -962,6 +966,7 @@ mod tests {
             "google",
             "groq",
             "xai",
+            "zai",
             "xiaomi_mimo",
         ] {
             assert!(names.contains(&expected), "missing {expected}");

@@ -13,6 +13,7 @@ import type { ExtensionConfig, Manifest } from '../../api';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateWorkflowFromSessionModalProps {
   isOpen: boolean;
@@ -255,7 +256,7 @@ export default function CreateWorkflowFromSessionModal({
 
   // Subscribe to form changes using the form's subscribe method
   useEffect(() => {
-    const unsubscribe = form.store.subscribe(() => {
+    const subscription = form.store.subscribe(() => {
       const hasTitle = form.state.values.title?.trim();
       const hasDescription = form.state.values.description?.trim();
       const hasInstructions = form.state.values.instructions?.trim();
@@ -271,7 +272,7 @@ export default function CreateWorkflowFromSessionModal({
     const valid = !!(hasTitle && hasDescription && hasInstructions);
     setIsFormValid(valid);
 
-    return unsubscribe;
+    return storeSubscriptionCleanup(subscription);
   }, [form]);
 
   const handleCreateWorkflow = async (formData: WorkflowFormData, runAfterSave = false) => {

@@ -26,6 +26,7 @@ interface UseChatStreamReturn {
   /** BR-61: inject a message into the running turn without cancelling it. */
   steer: (text: string) => Promise<boolean>;
   sessionLoadError?: string;
+  turnError?: string;
   tokenState: TokenState;
   notifications: Map<string, NotificationEvent[]>;
   onMessageUpdate: (
@@ -68,6 +69,7 @@ export function useChatStream({
 
   return {
     sessionLoadError: snapshot.sessionLoadError,
+    turnError: snapshot.turnError,
     messages: snapshot.messages,
     session: snapshot.session,
     chatState: snapshot.chatState,

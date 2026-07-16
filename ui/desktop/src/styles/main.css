@@ -731,12 +731,12 @@
 }
 
 /* Toast body + close button.
-   The toast body is the SINGLE owner of the close-button gutter: it reserves
-   36px on the inline-end which, added to the toast wrapper's own 12px right
-   padding (px-3), clears the 20px close button positioned at right:10px. Callers
-   (toastSuccess/toastError/GroupedExtensionLoadingToast) add NO per-message
-   `pr-*` — that double-reservation was what let long names / action buttons run
-   under the ×. The NotificationContent primitive lays out the icon + text. */
+   React-Toastify v11 renders custom content directly inside our toast card; it
+   does not emit `.Toastify__toast-body`. The card class exported by
+   NotificationSurface therefore owns the close-button gutter (`pr-12`) and is
+   the one element that can reliably keep every title, message, and action clear
+   of the ×. This body rule is only a neutral reset for any library-managed
+   content that still supplies the wrapper. */
 .Toastify__toast-body {
   display: block;
   flex: 1 1 auto;
@@ -744,7 +744,6 @@
   margin: 0;
   min-width: 0;
   padding: 0;
-  padding-inline-end: 36px;
 }
 
 /* react-toastify's own status icon is disabled (icon: false) — the tinted chip
@@ -767,9 +766,9 @@
   padding: 4px;
   position: absolute !important;
   right: 10px !important;
-  /* Top-aligned to pair with the title/icon line, not centred against the
-     toast's total height (a centred × floated on tall / expanded toasts). */
-  top: 10px !important;
+  /* The 20px close control and 28px status chip share a visual centre. They
+     stay anchored to the first row instead of centring against a tall toast. */
+  top: 14px !important;
   bottom: auto !important;
   transform: none !important;
   width: 20px;
