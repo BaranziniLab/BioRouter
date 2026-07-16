@@ -722,6 +722,7 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 | New Session action | Same standard 32px navigation-row treatment; 12px horizontal inset, `--radius-md`, 16px plus icon + 14/20 label; no border, boxed ground, or special weight |
 | Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
 | Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
+| Compact titlebar controls | Three 32px controls in an explicit non-drag layer above the chat header; the session title starts 8px after their measured endpoint and moves beyond the 240px sidebar when it overlays the canvas |
 | Rest | transparent, `--text-muted` icon + label |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |

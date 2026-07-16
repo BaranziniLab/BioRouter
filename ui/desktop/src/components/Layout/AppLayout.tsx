@@ -3,11 +3,14 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from '../BioRouterSidebar/AppSidebar';
 import { View, ViewOptions } from '../../utils/navigationUtils';
 import { useNavigation } from '../../hooks/useNavigation';
-import { Plus, LayoutDashboard } from '../icons/app-icons';
-import { Button } from '../ui/button';
-import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
+import { Sidebar, SidebarInset, SidebarProvider, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
+import {
+  getTitlebarControlReserve,
+  TitlebarControls,
+  TITLEBAR_CONTROL_RESERVE_PROPERTY,
+} from './TitlebarControls';
 
 const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1120;
 
@@ -18,10 +21,6 @@ const AppLayoutContent: React.FC = () => {
   const { isMobile, open, openMobile, setOpen } = useSidebar();
   const autoCollapsedSidebarRef = React.useRef(false);
   const resizeSettlingTimerRef = React.useRef<number | null>(null);
-
-  // Calculate padding based on sidebar state and macOS
-  const headerPadding = safeIsMacOS ? 'pl-[100px]' : 'pl-4';
-  // const headerPadding = '';
 
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
@@ -93,37 +92,23 @@ const AppLayoutContent: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-1 w-full relative animate-fade-in">
-      {!shouldHideButtons && (
-        <div className={`${headerPadding} absolute top-2 z-[120] flex items-center`}>
-          {/* All three chrome icons share one size (sm / 32px) and the same calm
-              surface-shift hover as the rest of the app's icon buttons — the
-              trigger no longer scales/borders differently from its neighbours. */}
-          <SidebarTrigger size="sm" shape="round" className="no-drag hover:!bg-background-medium" />
-          <Button
-            onClick={handleNewWindow}
-            className="no-drag hover:!bg-background-medium"
-            variant="ghost"
-            size="sm"
-            shape="round"
-            title="Start a new session in a new window"
-          >
-            <Plus className="w-4 h-4" />
-          </Button>
-          <Button
-            onClick={() => navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')}
-            className={`no-drag hover:!bg-background-medium ${
-              location.pathname === '/dashboard' ? 'bg-background-medium' : ''
-            }`}
-            variant="ghost"
-            size="sm"
-            shape="round"
-            title={location.pathname === '/dashboard' ? 'Exit Dashboard' : 'Open Dashboard'}
-          >
-            <LayoutDashboard className="w-4 h-4" />
-          </Button>
-        </div>
-      )}
+    <div
+      className="relative flex w-full flex-1 animate-fade-in"
+      style={
+        {
+          [TITLEBAR_CONTROL_RESERVE_PROPERTY]: `${getTitlebarControlReserve(safeIsMacOS)}px`,
+        } as React.CSSProperties
+      }
+    >
+      <TitlebarControls
+        hidden={shouldHideButtons}
+        isMacOS={safeIsMacOS}
+        isDashboard={location.pathname === '/dashboard'}
+        onNewWindow={handleNewWindow}
+        onToggleDashboard={() =>
+          navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')
+        }
+      />
       <Sidebar variant="inset" collapsible="offcanvas">
         <AppSidebar
           onSelectSession={handleSelectSession}
