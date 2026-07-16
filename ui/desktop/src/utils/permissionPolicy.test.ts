@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isAllowedRendererPermission, isAppOrigin } from './permissionPolicy';
+import {
+  isAllowedRendererPermission,
+  isAppOrigin,
+  shouldOpenExternalNavigation,
+} from './permissionPolicy';
 
 describe('permissionPolicy', () => {
   it('matches only the configured development renderer origin', () => {
@@ -20,6 +24,15 @@ describe('permissionPolicy', () => {
       )
     ).toBe(true);
     expect(isAppOrigin('file:///tmp/biorouter-artifacts/artifact-1.html', appUrl)).toBe(false);
+  });
+
+  it('never hands BioRouter itself to the external browser', () => {
+    const appUrl = new URL('http://localhost:5174/');
+    expect(shouldOpenExternalNavigation('http://localhost:5174/', appUrl)).toBe(false);
+    expect(shouldOpenExternalNavigation('http://localhost:5174/pair', appUrl)).toBe(false);
+    expect(shouldOpenExternalNavigation('https://example.com/report', appUrl)).toBe(true);
+    expect(shouldOpenExternalNavigation('file:///tmp/report.pdf', appUrl)).toBe(false);
+    expect(shouldOpenExternalNavigation('not a URL', appUrl)).toBe(false);
   });
 
   it('allows only audio capture requested by BioRouter itself', () => {

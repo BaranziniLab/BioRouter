@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import ArtifactViewer from './ArtifactViewer';
+import type { ArtifactSource } from './artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
 
 function installElectronMock() {
@@ -22,6 +24,7 @@ function installElectronMock() {
       })),
       openArtifactWindow: vi.fn(),
       openArtifactInBrowser: vi.fn(),
+      openDirectoryInExplorer: vi.fn(),
       openExternal: vi.fn(),
       broadcastThemeChange: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
@@ -177,6 +180,148 @@ describe('ArtifactViewer', () => {
       expect(window.electron.readArtifactFile).toHaveBeenCalledWith('/tmp/analysis.sql');
       expect(screen.getByText(/select/)).toBeInTheDocument();
     });
+  });
+
+  it('normalizes legacy flat folder entries instead of crashing the tree', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'directory',
+      title: 'project',
+      path: '/work/project',
+      entries: [
+        {
+          name: 'README.md',
+          path: '/work/project/README.md',
+          isDirectory: false,
+          size: 10,
+        },
+      ],
+      found: true,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'project', path: '/work/project' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByRole('treeitem', { name: 'README.md' })).toHaveAttribute(
+      'title',
+      'README.md'
+    );
+  });
+
+  it('keeps plain folders in a root-scoped tree while opening nested files', async () => {
+    installElectronMock();
+    const onOpenArtifact = vi.fn();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    readFile.mockImplementation(async (path: string) => {
+      if (path === '/work/project') {
+        return {
+          kind: 'directory',
+          title: 'project',
+          path,
+          entries: [
+            {
+              name: 'notes',
+              path: '/work/project/notes',
+              relativePath: 'notes',
+              parentPath: '',
+              isDirectory: true,
+            },
+            {
+              name: 'report.md',
+              path: '/work/project/notes/report.md',
+              relativePath: 'notes/report.md',
+              parentPath: 'notes',
+              isDirectory: false,
+              size: 10,
+            },
+          ],
+          found: true,
+        };
+      }
+      return {
+        kind: 'text',
+        title: 'report.md',
+        path,
+        mimeType: 'text/markdown',
+        text: '# Report',
+        size: 10,
+        found: true,
+      };
+    });
+
+    function Harness() {
+      const [artifact, setArtifact] = useState<ArtifactSource>({
+        kind: 'file' as const,
+        title: 'project',
+        path: '/work/project',
+      });
+      return (
+        <ThemeProvider>
+          <ArtifactViewer
+            artifact={artifact}
+            onClose={vi.fn()}
+            onOpenArtifact={(nextArtifact) => {
+              onOpenArtifact(nextArtifact);
+              setArtifact(nextArtifact);
+            }}
+          />
+        </ThemeProvider>
+      );
+    }
+
+    render(<Harness />);
+    expect(await screen.findByRole('tree', { name: 'project folder files' })).toBeVisible();
+    const notes = screen.getByRole('treeitem', { name: 'notes' });
+    expect(notes).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /up to parent|back to containing/i })).toBeNull();
+    await userEvent.click(screen.getByRole('treeitem', { name: /report\.md/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Report' })).toBeInTheDocument();
+    expect(screen.getByRole('tree', { name: 'project folder files' })).toBeVisible();
+    expect(
+      screen.getByRole('treeitem', { name: /report\.md, currently viewing/i })
+    ).toHaveAttribute('aria-current', 'true');
+    expect(screen.getAllByRole('tab')).toHaveLength(1);
+    expect(screen.getByRole('tab', { name: 'project' })).toHaveAttribute('aria-selected', 'true');
+    expect(onOpenArtifact).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /up to parent|back to containing/i })).toBeNull();
+
+    await userEvent.dblClick(
+      screen.getByRole('treeitem', { name: /report\.md, currently viewing/i })
+    );
+
+    expect(onOpenArtifact).toHaveBeenCalledWith({
+      kind: 'file',
+      title: 'report.md',
+      path: '/work/project/notes/report.md',
+    });
+    expect(await screen.findByRole('tab', { name: 'report.md' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole('tab', { name: 'project' }));
+    expect(await screen.findByRole('tree', { name: 'project folder files' })).toBeVisible();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'report.md' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Close report.md' }));
+    expect(screen.queryByRole('tab', { name: 'report.md' })).toBeNull();
+    expect(screen.getByRole('tab', { name: 'project' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('tree', { name: 'project folder files' })).toBeVisible();
+
+    const reopenedNotes = screen.getByRole('treeitem', { name: 'notes' });
+    await userEvent.click(reopenedNotes);
+    expect(screen.queryByRole('treeitem', { name: /report\.md/i })).toBeNull();
+    await userEvent.click(reopenedNotes);
+    expect(screen.getByRole('treeitem', { name: 'report.md' })).toBeVisible();
   });
 
   it('renders a written markdown report as prose, with the raw text one click away', async () => {
@@ -543,12 +688,14 @@ describe('ArtifactViewer', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: /open artifact outside side viewer/i })
+        screen.getByRole('button', { name: /open active artifact outside preview/i })
       ).toBeInTheDocument();
     });
 
     const viewer = screen.getByTestId('artifact-viewer');
-    const expandButton = screen.getByRole('button', { name: /open artifact outside side viewer/i });
+    const expandButton = screen.getByRole('button', {
+      name: /open active artifact outside preview/i,
+    });
     const closeButton = screen.getByRole('button', { name: /close artifact viewer/i });
     expect(viewer).toHaveClass('no-drag');
     expect(expandButton).toHaveClass('no-drag');
@@ -564,6 +711,327 @@ describe('ArtifactViewer', () => {
 
     await user.click(closeButton);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps multiple files in tabs with path tooltips and per-tab controls', async () => {
+    installElectronMock();
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onOpenArtifact = vi.fn();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    readFile.mockImplementation(async (path: string) => ({
+      kind: 'text',
+      title: path.split('/').pop() ?? path,
+      path,
+      mimeType: 'text/plain',
+      text: `Preview of ${path}`,
+      size: 32,
+      found: true,
+    }));
+
+    const renderViewer = (artifact: ArtifactSource) => (
+      <ThemeProvider>
+        <ArtifactViewer artifact={artifact} onClose={onClose} onOpenArtifact={onOpenArtifact} />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(
+      renderViewer({ kind: 'file', title: 'chart-a.html', path: '/work/charts/chart-a.html' })
+    );
+
+    rerender(renderViewer({ kind: 'file', title: 'summary.md', path: '/work/reports/summary.md' }));
+
+    const chartTab = await screen.findByRole('tab', { name: 'chart-a.html' });
+    const summaryTab = await screen.findByRole('tab', { name: 'summary.md' });
+    expect(chartTab).toHaveAttribute('title', '/work/charts/chart-a.html');
+    expect(summaryTab).toHaveAttribute('title', '/work/reports/summary.md');
+    expect(summaryTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).toHaveClass(
+      'overflow-hidden'
+    );
+    expect(chartTab.closest('[data-artifact-tab-id]')).toHaveClass(
+      'min-w-0',
+      'max-w-[220px]',
+      'flex-1',
+      'basis-[175px]'
+    );
+
+    await user.click(chartTab);
+    expect(chartTab).toHaveAttribute('aria-selected', 'true');
+    expect(onOpenArtifact).toHaveBeenLastCalledWith({
+      kind: 'file',
+      title: 'chart-a.html',
+      path: '/work/charts/chart-a.html',
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Close chart-a.html' }));
+    expect(screen.queryByRole('tab', { name: 'chart-a.html' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'summary.md' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    expect(onClose).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: /open active artifact outside preview/i }));
+    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(
+      '/work/reports/summary.md'
+    );
+  });
+
+  it('closes the active tab with macOS and Windows/Linux browser shortcuts', async () => {
+    installElectronMock();
+    const onClose = vi.fn();
+    const onOpenArtifact = vi.fn();
+    const renderViewer = (title: string) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title, path: `/work/${title}` }}
+          onClose={onClose}
+          onOpenArtifact={onOpenArtifact}
+        />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(renderViewer('one.txt'));
+    rerender(renderViewer('two.txt'));
+    rerender(renderViewer('three.txt'));
+
+    await screen.findByRole('tab', { name: 'three.txt' });
+    const macShortcut = new KeyboardEvent('keydown', {
+      key: 'w',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(macShortcut);
+    await waitFor(() =>
+      expect(screen.queryByRole('tab', { name: 'three.txt' })).not.toBeInTheDocument()
+    );
+    expect(macShortcut.defaultPrevented).toBe(true);
+    expect(screen.getByRole('tab', { name: 'two.txt' })).toHaveAttribute('aria-selected', 'true');
+
+    const crossPlatformShortcut = new KeyboardEvent('keydown', {
+      key: 'w',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(crossPlatformShortcut);
+    await waitFor(() =>
+      expect(screen.queryByRole('tab', { name: 'two.txt' })).not.toBeInTheDocument()
+    );
+    expect(crossPlatformShortcut.defaultPrevented).toBe(true);
+    expect(screen.getByRole('tab', { name: 'one.txt' })).toHaveAttribute('aria-selected', 'true');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('cycles tabs with Ctrl+Tab and Ctrl+Shift+Tab', async () => {
+    installElectronMock();
+    const onOpenArtifact = vi.fn();
+    const renderViewer = (title: string) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title, path: `/work/${title}` }}
+          onClose={vi.fn()}
+          onOpenArtifact={onOpenArtifact}
+        />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(renderViewer('one.txt'));
+    rerender(renderViewer('two.txt'));
+    rerender(renderViewer('three.txt'));
+    expect(await screen.findByRole('tab', { name: 'three.txt' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+
+    const nextShortcut = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(nextShortcut);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'one.txt' })).toHaveAttribute('aria-selected', 'true')
+    );
+    expect(nextShortcut.defaultPrevented).toBe(true);
+
+    const previousShortcut = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(previousShortcut);
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'three.txt' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      )
+    );
+    expect(previousShortcut.defaultPrevented).toBe(true);
+    expect(onOpenArtifact).toHaveBeenNthCalledWith(1, {
+      kind: 'file',
+      title: 'one.txt',
+      path: '/work/one.txt',
+    });
+    expect(onOpenArtifact).toHaveBeenNthCalledWith(2, {
+      kind: 'file',
+      title: 'three.txt',
+      path: '/work/three.txt',
+    });
+  });
+
+  it('reorders tabs with a pointer drag without changing the active file', async () => {
+    installElectronMock();
+    const renderViewer = (title: string) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title, path: `/work/${title}` }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(renderViewer('one.txt'));
+    rerender(renderViewer('two.txt'));
+    rerender(renderViewer('three.txt'));
+    const oneTab = await screen.findByRole('tab', { name: 'one.txt' });
+    const threeTab = screen.getByRole('tab', { name: 'three.txt' });
+    const threeTabContainer = threeTab.closest('[data-artifact-tab-id]');
+    expect(threeTabContainer).not.toBeNull();
+
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => threeTabContainer as HTMLElement),
+    });
+    fireEvent.pointerDown(oneTab, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 100, clientY: 10 });
+    fireEvent.pointerUp(window, { clientX: 100, clientY: 10 });
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'two.txt',
+      'three.txt',
+      'one.txt',
+    ]);
+    expect(threeTab).toHaveAttribute('aria-selected', 'true');
+    await userEvent.click(oneTab);
+    expect(oneTab).toHaveAttribute('aria-selected', 'true');
+    Reflect.deleteProperty(document, 'elementFromPoint');
+  });
+
+  it('keeps a Git repository rooted while files open beside its status-colored tree', async () => {
+    installElectronMock();
+    const user = userEvent.setup();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    readFile.mockImplementation(async (path: string) => {
+      if (path === '/work/repository') {
+        return {
+          kind: 'gitDirectory',
+          title: 'repository',
+          path,
+          branch: 'feat/preview',
+          found: true,
+          entries: [
+            {
+              name: 'src',
+              path: '/work/repository/src',
+              relativePath: 'src',
+              parentPath: '',
+              isDirectory: true,
+              status: 'staged',
+            },
+            {
+              name: 'README.md',
+              path: '/work/repository/README.md',
+              relativePath: 'README.md',
+              parentPath: '',
+              isDirectory: false,
+              status: 'pushed',
+            },
+            {
+              name: 'staged.ts',
+              path: '/work/repository/src/staged.ts',
+              relativePath: 'src/staged.ts',
+              parentPath: 'src',
+              isDirectory: false,
+              status: 'staged',
+            },
+          ],
+        };
+      }
+      return {
+        kind: 'text',
+        title: path.split('/').pop() ?? path,
+        path,
+        mimeType: path.endsWith('.md') ? 'text/markdown' : 'text/typescript',
+        text: path.endsWith('.md') ? '# Repository guide' : 'export const ready = true;',
+        size: 26,
+        found: true,
+      };
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'repository', path: '/work/repository' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByRole('tree', { name: 'repository repository files' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: /up to parent|back to containing/i })).toBeNull();
+    expect(screen.getByRole('treeitem', { name: 'staged.ts' })).toHaveAttribute(
+      'title',
+      'src/staged.ts · Staged'
+    );
+
+    await user.click(screen.getByRole('treeitem', { name: 'staged.ts' }));
+    expect(await screen.findByText('export')).toBeInTheDocument();
+    expect(
+      screen.getByRole('treeitem', { name: /staged\.ts, currently viewing/i })
+    ).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('tree', { name: 'repository repository files' })).toBeVisible();
+
+    await user.type(screen.getByRole('searchbox', { name: 'Filter repository files' }), 'readme');
+    expect(screen.getByRole('treeitem', { name: 'README.md' })).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: 'staged.ts' })).toBeNull();
+  });
+
+  it('recognizes Jupyter notebook files in the file-preview flow', async () => {
+    installElectronMock();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    readFile.mockResolvedValue({
+      kind: 'text',
+      title: 'analysis.ipynb',
+      path: '/work/analysis.ipynb',
+      mimeType: 'application/x-ipynb+json',
+      text: JSON.stringify({
+        metadata: { kernelspec: { display_name: 'Python 3', language: 'python' } },
+        cells: [{ cell_type: 'markdown', source: ['# Notebook result'] }],
+      }),
+      size: 150,
+      found: true,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.ipynb', path: '/work/analysis.ipynb' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByText('Jupyter notebook')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Notebook result' })).toBeInTheDocument();
   });
 });
 
