@@ -1,4 +1,4 @@
-//! `biorouter-sandbox` — capability-scoped sandboxed execution for BioRouter.
+//! `biorouter-sandbox` — capability-scoped sandboxed execution for Biorouter.
 //!
 //! This is a **leaf crate**: it depends only on small runtime utilities, never
 //! on `biorouter` or `biorouter-mcp`. Both of those depend on *this* crate, so

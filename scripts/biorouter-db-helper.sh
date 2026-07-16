@@ -176,15 +176,15 @@ show_version_history() {
 }
 
 show_status() {
-    echo -e "${BLUE}=== BioRouter Database Status ===${NC}"
+    echo -e "${BLUE}=== Biorouter Database Status ===${NC}"
     echo "Database path: ${DB_PATH}"
     echo ""
 
     if [[ ! -f "${DB_PATH}" ]]; then
         echo -e "${YELLOW}Status: No database found${NC}"
         echo ""
-        echo "This is normal if you haven't run BioRouter yet."
-        echo "Once you run BioRouter, a database will be created automatically."
+        echo "This is normal if you haven't run Biorouter yet."
+        echo "Once you run Biorouter, a database will be created automatically."
         return
     fi
 
@@ -673,7 +673,7 @@ generate_migrations() {
 show_help() {
     local latest_version=$(get_latest_version)
 
-    echo -e "${BLUE}BioRouter Database Migration Helper${NC}"
+    echo -e "${BLUE}Biorouter Database Migration Helper${NC}"
     echo ""
     echo "This script is a developer utility for manually managing database schema"
     echo "versions when switching between branches with different schema requirements."

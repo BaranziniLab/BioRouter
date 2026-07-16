@@ -40,9 +40,9 @@ describe('summarizeToolCall', () => {
     expect(
       summarizeToolCall({
         name: 'web__search_query',
-        arguments: { search_query: [{ q: 'BioRouter agent drafter guardrails' }] },
+        arguments: { search_query: [{ q: 'Biorouter agent drafter guardrails' }] },
       })
-    ).toBe('Searching for BioRouter agent drafter guardrails');
+    ).toBe('Searching for Biorouter agent drafter guardrails');
 
     expect(
       summarizeToolCall({

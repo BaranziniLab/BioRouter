@@ -963,7 +963,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   </Button>
                 </div>
                 <p className="text-sm text-text-muted">
-                  View and search your past conversations with BioRouter. {getSearchShortcutText()}{' '}
+                  View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
                   to search.
                 </p>
               </ReadableContent>

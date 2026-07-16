@@ -52,7 +52,7 @@ export default function ProviderConfigurationModal({
     ? isActiveProvider
       ? `You cannot delete this provider while it's currently in use. Please switch to a different model first.`
       : 'This will permanently delete the current provider configuration.'
-    : `Add your API key(s) for this provider to integrate into BioRouter`;
+    : `Add your API key(s) for this provider to integrate into Biorouter`;
 
   const handleSubmitForm = async (e: React.FormEvent) => {
     e.preventDefault();

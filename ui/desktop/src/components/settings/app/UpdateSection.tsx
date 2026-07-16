@@ -122,7 +122,7 @@ export default function UpdateSection() {
           </Button>
         )}
         <p className="text-xs text-text-muted">
-          BioRouter installs updates automatically. Restart to use the new version.
+          Biorouter installs updates automatically. Restart to use the new version.
         </p>
       </div>
 
@@ -139,7 +139,7 @@ export default function UpdateSection() {
           {phase === 'up-to-date' && (
             <div className="flex items-center gap-2 text-text-success">
               <CheckCircle className="w-4 h-4" />
-              BioRouter is up to date.
+              Biorouter is up to date.
             </div>
           )}
 

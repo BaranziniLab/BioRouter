@@ -1,4 +1,4 @@
-# BioRouter Linux command-policy tier (BR-68).
+# Biorouter Linux command-policy tier (BR-68).
 #
 # The shared baseline already covers `rm -rf` on system dirs, `mkfs`, `dd`, fork
 # bomb, `chmod/chown -R /`, `curl|bash`, and power-off. These are the

@@ -199,7 +199,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
               <FolderTree className="h-5 w-5 text-text-muted" strokeWidth={1.5} />
               <div className="mt-3 text-sm font-medium">Choose folder or archive</div>
               <p className="mt-1 text-xs leading-5 text-text-muted">
-                Let BioRouter unpack archives, skip binaries, and stage readable children one by one
+                Let Biorouter unpack archives, skip binaries, and stage readable children one by one
                 for curation.
               </p>
             </button>

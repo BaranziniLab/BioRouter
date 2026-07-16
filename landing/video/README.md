@@ -1,6 +1,6 @@
-# BioRouter landing-site videos (Hyperframes)
+# Biorouter landing-site videos (Hyperframes)
 
-Motion assets for the BioRouter landing site, authored as plain HTML/CSS +
+Motion assets for the Biorouter landing site, authored as plain HTML/CSS +
 [GSAP](https://gsap.com) and rendered to deterministic MP4/WebM with
 [Hyperframes](https://github.com/heygen-com/hyperframes) (Chrome + FFmpeg).
 
@@ -12,7 +12,7 @@ Everything here renders to `../assets/videos/` (`.mp4` + `.webm` + a poster
 
 | File              | Deliverable | Length | Where it's used on the site                 |
 |-------------------|-------------|--------|---------------------------------------------|
-| `index.html`      | #1 Hero     | 32s    | `index.html` hero — "BioRouter in motion"   |
+| `index.html`      | #1 Hero     | 32s    | `index.html` hero — "Biorouter in motion"   |
 | `tour.html`       | #3 Tour     | 48s    | `index.html` Product-tour player (chaptered)|
 | `baam.html`       | #4 BAAM     | 16s    | `baam.html` — composable-agent motion graphic|
 | `release.html`    | #2 Release  | 17s    | `about.html` — "What's new" (variable-driven)|

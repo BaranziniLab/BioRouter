@@ -8,7 +8,7 @@ pub struct FetchedSource {
 
 pub async fn fetch_url(url: &str) -> Result<FetchedSource> {
     let client = reqwest::Client::builder()
-        .user_agent("BioRouter-Knowledge/1.0")
+        .user_agent("Biorouter-Knowledge/1.0")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
     let resp = client

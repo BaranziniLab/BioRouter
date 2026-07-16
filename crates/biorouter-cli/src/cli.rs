@@ -1033,8 +1033,8 @@ enum KnowledgeCommand {
 
 #[derive(Subcommand)]
 enum AppsCommand {
-    /// List installed BioRouter apps
-    #[command(about = "List installed BioRouter apps")]
+    /// List installed Biorouter apps
+    #[command(about = "List installed Biorouter apps")]
     List {
         /// Emit machine-readable JSON instead of a table
         #[arg(long, help = "Emit machine-readable JSON instead of a table")]
@@ -1208,10 +1208,10 @@ enum Command {
         command: SkillCommand,
     },
 
-    /// List, open, and serve BioRouter apps (built by Agent Drafter)
+    /// List, open, and serve Biorouter apps (built by Agent Drafter)
     #[command(
-        about = "List, open, and serve BioRouter apps",
-        long_about = "List, open, and serve the BioRouter apps built by Agent Drafter.\n\n\
+        about = "List, open, and serve Biorouter apps",
+        long_about = "List, open, and serve the Biorouter apps built by Agent Drafter.\n\n\
                       `open`/`serve` reuse a `biorouterd` already listening on the configured\n\
                       port (BIOROUTER_PORT, default 3000) or start one for you, then open\n\
                       http://127.0.0.1:<port>/apps/<id>/ in your browser.\n\n\

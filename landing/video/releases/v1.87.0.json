@@ -9,7 +9,7 @@
   "feat3": "Agent Drafter: stronger app scaffolds, workflow planning and safety harnesses",
   "feat4": "Runtime hardening: steadier agent loop, sandbox, scheduler, providers and MCP surfaces",
   "feat5": "BAAM growth: Apache-2.0 skills plus .brxt extensions for scientific platforms",
-  "feat6": "Headless Linux: run BioRouter from a Debian/Ubuntu server and open it in a browser",
+  "feat6": "Headless Linux: run Biorouter from a Debian/Ubuntu server and open it in a browser",
   "feat7": "Release packaging: signed macOS builds, Linux GUI packages and CLI-only installs",
   "feat8": "UI reliability: responsive knowledge graphs, refined sidebars and safer update handling"
 }

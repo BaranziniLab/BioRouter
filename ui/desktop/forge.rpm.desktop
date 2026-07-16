@@ -1,7 +1,7 @@
 [Desktop Entry]
-Name=BioRouter
-Exec=/usr/lib/BioRouter/BioRouter %U
-Icon=/usr/share/pixmaps/BioRouter.png
+Name=Biorouter
+Exec=/usr/lib/Biorouter/Biorouter %U
+Icon=/usr/share/pixmaps/Biorouter.png
 Terminal=false
 Type=Application
 Categories=Development;

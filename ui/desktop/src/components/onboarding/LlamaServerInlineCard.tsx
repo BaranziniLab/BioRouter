@@ -226,7 +226,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       );
     } else if (detected == null) {
       warnings.push(
-        `BioRouter could not detect VRAM; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
+        `Biorouter could not detect VRAM; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
       );
     }
     if (selectedEntry.recommended_gpu_memory_gib > 16) {

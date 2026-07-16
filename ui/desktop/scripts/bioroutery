@@ -28,11 +28,11 @@ echo $dir
 
 # On macOS, use the .app bundle
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # Assuming BioRouter.app is installed in /Applications
-    if [ -d "/Applications/BioRouter.app" ]; then
-        /Applications/BioRouter.app/Contents/MacOS/BioRouter --args --dir "$dir"
+    # Assuming Biorouter.app is installed in /Applications
+    if [ -d "/Applications/Biorouter.app" ]; then
+        /Applications/Biorouter.app/Contents/MacOS/Biorouter --args --dir "$dir"
     else
-        echo "Error: BioRouter.app not found in /Applications"
+        echo "Error: Biorouter.app not found in /Applications"
         exit 1
     fi
 else

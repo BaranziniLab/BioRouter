@@ -58,7 +58,7 @@ impl ShadowRepo {
                     .with_context(|| format!("git init shadow repo {}", git_dir.display()))?;
                 {
                     let mut cfg = repo.config()?;
-                    cfg.set_str("user.name", "BioRouter Checkpoints")?;
+                    cfg.set_str("user.name", "Biorouter Checkpoints")?;
                     cfg.set_str("user.email", "checkpoints@biorouter.local")?;
                     cfg.set_str("commit.gpgsign", "false")?;
                     // Allow checkout into the runtime work-tree (a bare repo
@@ -262,7 +262,7 @@ impl ShadowRepo {
         self.inner
             .signature()
             .or_else(|_| {
-                git2::Signature::now("BioRouter Checkpoints", "checkpoints@biorouter.local")
+                git2::Signature::now("Biorouter Checkpoints", "checkpoints@biorouter.local")
             })
             .map_err(anyhow::Error::from)
     }

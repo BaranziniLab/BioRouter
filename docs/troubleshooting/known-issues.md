@@ -156,7 +156,7 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 **Data Locations**
 
 - **Logs and Config**: `~/.config/biorouter`
-- **Application Data**: `~/Library/Application Support/BioRouter`
+- **Application Data**: `~/Library/Application Support/Biorouter`
 - **Secrets**: macOS Keychain (credential named "biorouter").
 
 #### Removal Steps
@@ -170,15 +170,15 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 ```
 rm -rf ~/.config/biorouter
-rm -rf ~/Library/Application\ Support/BioRouter
+rm -rf ~/Library/Application\ Support/Biorouter
 ```
 4. Delete the "biorouter" app from your Applications folder (if using biorouter Desktop).
 
 #### Linux
 **Data Locations**
 
-- **Data/Sessions**: `~/.local/share/BioRouter/`
-- **Logs**: `~/.local/state/BioRouter/`
+- **Data/Sessions**: `~/.local/share/Biorouter/`
+- **Logs**: `~/.local/state/Biorouter/`
 - **Config**: `~/.config/biorouter/`
 - **Secrets**: System keyring (if available)
 
@@ -189,15 +189,15 @@ rm -rf ~/Library/Application\ Support/BioRouter
 - Remove data directories:
 
 ```
-rm -rf ~/.local/share/BioRouter/
-rm -rf ~/.local/state/BioRouter/
+rm -rf ~/.local/share/Biorouter/
+rm -rf ~/.local/state/Biorouter/
 rm -rf ~/.config/biorouter/
 ```
 #### Windows
 
 **Data Locations**
-- **Configuration and Data**: `%APPDATA%\BioRouter\`
-- **Local Application Data**: `%LOCALAPPDATA%\BioRouter\`
+- **Configuration and Data**: `%APPDATA%\Biorouter\`
+- **Local Application Data**: `%LOCALAPPDATA%\Biorouter\`
 - **Secrets**: Windows Credential Manager
 
 #### Removal Steps
@@ -209,8 +209,8 @@ rm -rf ~/.config/biorouter/
 2. Open Windows Credential Manager and delete credentials related to "biorouter"
 3. Remove data directories:
 ```
-rmdir /s /q "%APPDATA%\BioRouter"
-rmdir /s /q "%LOCALAPPDATA%\BioRouter"
+rmdir /s /q "%APPDATA%\Biorouter"
+rmdir /s /q "%LOCALAPPDATA%\Biorouter"
 ```
 4. Uninstall the biorouter Desktop app from Settings > Apps (if applicable)
 
@@ -261,7 +261,7 @@ You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which dis
 When the keyring is disabled, secrets are stored here:
 
 * macOS/Linux: `~/.config/biorouter/secrets.yaml`
-* Windows: `%APPDATA%\BioRouter\config\secrets.yaml`
+* Windows: `%APPDATA%\Biorouter\config\secrets.yaml`
 
 ---
 
@@ -366,7 +366,7 @@ Similarly, if tools fail to create files or directories during use, it could be 
 
 If you still experience issues after fixing permissions, try launching biorouter with superuser (admin) privileges:
 ```sh
-sudo /Applications/BioRouter.app/Contents/MacOS/BioRouter
+sudo /Applications/Biorouter.app/Contents/MacOS/Biorouter
 ```
 
 > **Note:** Running biorouter with sudo may create files owned by root, which could lead to further permission issues. Use this as a troubleshooting step rather than a permanent fix.

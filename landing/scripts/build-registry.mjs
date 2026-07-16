@@ -2,7 +2,7 @@
 // Generate registry.json from baam.html.
 //
 // The BAAM page keeps static cards as the no-JS fallback, and registry.json is
-// the machine-readable catalog consumed by the page at runtime and by BioRouter.
+// the machine-readable catalog consumed by the page at runtime and by Biorouter.
 // This script regenerates that catalog from the fallback cards so both surfaces
 // stay in sync.
 //

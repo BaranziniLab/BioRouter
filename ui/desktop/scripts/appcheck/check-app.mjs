@@ -1,4 +1,4 @@
-// Verify one BioRouter app end-to-end: HTTP serve + esbuild bundle + a real
+// Verify one Biorouter app end-to-end: HTTP serve + esbuild bundle + a real
 // streamed agent reply. Usage: node check-app.mjs <base> <id> "<prompt>"
 import WebSocket from 'ws';
 const base = process.argv[2], id = process.argv[3], prompt = process.argv[4] || 'Briefly, what can you do?';

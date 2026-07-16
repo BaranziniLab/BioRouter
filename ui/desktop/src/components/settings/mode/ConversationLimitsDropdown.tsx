@@ -42,7 +42,7 @@ export const ConversationLimitsDropdown = ({
             <div>
               <h4 className="text-text-default text-sm">Max Turns</h4>
               <p className="text-xs text-text-muted mt-[2px]">
-                Maximum agent turns before BioRouter asks for user input
+                Maximum agent turns before Biorouter asks for user input
               </p>
             </div>
             <Input

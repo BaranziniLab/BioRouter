@@ -3,7 +3,7 @@
  * Agent Drafter — in-app PREVIEW runtime test (Playwright).
  *
  * Exercises the "bridge" transport + auto-resize that power the in-app preview
- * (the `ui://` resource rendered in BioRouter's sandboxed MCP-UI iframe), which
+ * (the `ui://` resource rendered in Biorouter's sandboxed MCP-UI iframe), which
  * the existing acp-ws loop test never touches. It builds the *real* assembled
  * preview HTML (the actual templates/agent.js + theme.css, mirroring
  * render.rs::assemble) and drives it inside a faithful emulation of the host:
@@ -13,7 +13,7 @@
  *   - any other message is treated as a UI action and answered with
  *     `{type:"ui-message-response", messageId, payload:{response}}` (exactly like
  *     the @mcp-ui renderer dispatching onUIAction). A "prompt" action is the one
- *     BioRouter's MCPUIResourceRenderer routes into chat.
+ *     Biorouter's MCPUIResourceRenderer routes into chat.
  *
  * Two cases, asserting the behaviors the code review flagged:
  *   1. STATIC, tall content  -> the iframe must auto-grow (host gets ui-size-change).
@@ -77,7 +77,7 @@ function assemblePreview(entryHtml, { agentic, agent } = {}) {
   return html;
 }
 
-// --- the host page: emulates @mcp-ui renderer + BioRouter action routing -----
+// --- the host page: emulates @mcp-ui renderer + Biorouter action routing -----
 const HOST_PAGE = `<!doctype html><html><head><meta charset=utf-8><style>
   html,body{margin:0;height:100%} #frame{width:900px;height:560px;border:1px solid #ccc;display:block}
 </style></head><body>
@@ -96,7 +96,7 @@ const HOST_PAGE = `<!doctype html><html><head><meta charset=utf-8><style>
       return;
     }
     // Any non-size message == a UI action; @mcp-ui replies with ui-message-response
-    // keyed by messageId after running onUIAction. BioRouter routes "prompt" to chat.
+    // keyed by messageId after running onUIAction. Biorouter routes "prompt" to chat.
     window.__actions.push(d);
     const ok = d.type === 'prompt';
     frame.contentWindow.postMessage({

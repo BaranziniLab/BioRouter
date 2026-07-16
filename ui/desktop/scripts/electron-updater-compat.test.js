@@ -49,8 +49,8 @@ function selectMacZip(resolved, isArm64Mac) {
 
 // Build a real manifest from on-disk zip fixtures.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'br-eu-'));
-const armPath = path.join(tmp, 'BioRouter-darwin-arm64-1.86.0.zip');
-const x64Path = path.join(tmp, 'BioRouter-darwin-x64-1.86.0.zip');
+const armPath = path.join(tmp, 'Biorouter-darwin-arm64-1.86.0.zip');
+const x64Path = path.join(tmp, 'Biorouter-darwin-x64-1.86.0.zip');
 const armBytes = Buffer.from('arm64-app-archive');
 const x64Bytes = Buffer.from('x64-app-archive-bytes');
 fs.writeFileSync(armPath, armBytes);
@@ -84,11 +84,11 @@ test('real resolveFiles() yields correct GitHub asset URLs', () => {
   resolved = resolveFiles(info, baseUrl);
   const urls = resolved.map((r) => r.url.href);
   assert.ok(
-    urls.includes(`${baseUrl.href}BioRouter-darwin-arm64-1.86.0.zip`),
+    urls.includes(`${baseUrl.href}Biorouter-darwin-arm64-1.86.0.zip`),
     'arm64 url resolved'
   );
   assert.ok(
-    urls.includes(`${baseUrl.href}BioRouter-darwin-x64-1.86.0.zip`),
+    urls.includes(`${baseUrl.href}Biorouter-darwin-x64-1.86.0.zip`),
     'x64 url resolved'
   );
 });
@@ -105,13 +105,13 @@ test('every resolved file carries an sha512 checksum (verification gate)', () =>
 
 test('arm64 Mac selects the arm64 zip (MacUpdater arch filter)', () => {
   const chosen = selectMacZip(resolved, /* isArm64Mac */ true);
-  assert.ok(chosen.url.pathname.endsWith('BioRouter-darwin-arm64-1.86.0.zip'));
+  assert.ok(chosen.url.pathname.endsWith('Biorouter-darwin-arm64-1.86.0.zip'));
   assert.strictEqual(chosen.info.sha512, expectArmSha);
 });
 
 test('Intel Mac selects the x64 zip (MacUpdater arch filter)', () => {
   const chosen = selectMacZip(resolved, /* isArm64Mac */ false);
-  assert.ok(chosen.url.pathname.endsWith('BioRouter-darwin-x64-1.86.0.zip'));
+  assert.ok(chosen.url.pathname.endsWith('Biorouter-darwin-x64-1.86.0.zip'));
   assert.strictEqual(chosen.info.sha512, expectX64Sha);
 });
 

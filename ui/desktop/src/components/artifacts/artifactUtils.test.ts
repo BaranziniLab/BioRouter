@@ -6,7 +6,9 @@ import {
   fileArtifactPathsFromToolCall,
   languageFromPath,
   languageLabel,
+  looksLikePreviewableFile,
   parseDelimitedTable,
+  pathFromArtifactHref,
   resolveArtifactPath,
   withHostTheme,
 } from './artifactUtils';
@@ -37,6 +39,32 @@ describe('basenameFromPath', () => {
   it('extensionFromPath survives a literal percent sign in the name', () => {
     expect(() => extensionFromPath('/work/results 100%.csv')).not.toThrow();
     expect(extensionFromPath('/work/results 100%.csv')).toBe('csv');
+  });
+});
+
+describe('previewable artifact paths', () => {
+  it('accepts concrete local files and folders', () => {
+    expect(looksLikePreviewableFile('/Users/ada/project/report.pdf')).toBe(true);
+    expect(looksLikePreviewableFile('file:///Users/ada/project/My%20Folder')).toBe(true);
+    expect(looksLikePreviewableFile('./results/data.csv')).toBe(true);
+    expect(looksLikePreviewableFile('report.docx')).toBe(true);
+    expect(looksLikePreviewableFile('C:\\Users\\ada\\project')).toBe(true);
+    expect(looksLikePreviewableFile('\\\\server\\share\\report.pdf')).toBe(true);
+    expect(pathFromArtifactHref('file:///Users/ada/project/My%20Report.pdf')).toBe(
+      '/Users/ada/project/My Report.pdf'
+    );
+  });
+
+  it.each(['file://', 'file:///', '/', '~/', './', '../', '.git', '/work/.git'])(
+    'rejects non-artifact path token %s',
+    (value) => {
+      expect(looksLikePreviewableFile(value)).toBe(false);
+    }
+  );
+
+  it('rejects web links and unsupported bare filenames', () => {
+    expect(looksLikePreviewableFile('https://localhost:5174/report.pdf')).toBe(false);
+    expect(looksLikePreviewableFile('archive.bin')).toBe(false);
   });
 });
 

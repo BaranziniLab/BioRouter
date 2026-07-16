@@ -435,7 +435,7 @@ fn install_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if cfg!(target_os = "windows") {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(local).join("BioRouter").join("bin"));
+            dirs.push(PathBuf::from(local).join("Biorouter").join("bin"));
         }
     } else {
         dirs.push(PathBuf::from("/usr/local/bin"));

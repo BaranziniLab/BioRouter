@@ -1,4 +1,4 @@
-# BioRouter Web Interface
+# Biorouter Web Interface
 
 The `biorouter web` command provides a (preview) web-based chat interface for interacting with biorouter.
 Do not expose this publicly - this is in a preview state as an option.
@@ -53,9 +53,9 @@ The web interface provides:
 - [ ] Code syntax highlighting
 - [ ] Export chat history
 
-### Integration with BioRouter Agent
+### Integration with Biorouter Agent
 
-The web server creates an instance of the BioRouter Agent and processes messages through the same pipeline as the CLI. However, some features like:
+The web server creates an instance of the Biorouter Agent and processes messages through the same pipeline as the CLI. However, some features like:
 - Extension management
 - Tool confirmations
 - File system interactions

@@ -1,6 +1,6 @@
 # Headless Linux deployment
 
-This flow builds BioRouter on the Mac, deploys the Linux artifact to an
+This flow builds Biorouter on the Mac, deploys the Linux artifact to an
 Ubuntu 22.04/24.04 host, and serves the browser UI from that host while
 `biorouterd` does the compute locally on the server.
 
@@ -50,7 +50,7 @@ Vite. It must not copy any of the following into `dist/headless-linux-x64/`:
 - local `.env` files, OpenRouter keys, AWS keys, SSH keys, or downloaded access
   key CSV files
 
-Keep credential setup as a runtime concern. A deployment can point BioRouter at
+Keep credential setup as a runtime concern. A deployment can point Biorouter at
 a server-side config directory, but release artifacts must stay profile-free.
 
 ## Verify and package
@@ -101,12 +101,12 @@ scripts/sync-headless-secrets-macos.sh ubuntu@HOST /path/to/key.pem
 ```
 
 This is a separate runtime migration helper, not a packaging step. It reads the
-BioRouter macOS Keychain item and sends it over SSH into the Ubuntu file-backed
+Biorouter macOS Keychain item and sends it over SSH into the Ubuntu file-backed
 secret store at `~/.config/biorouter/secrets.yaml`. Secret values are not
 printed. The service uses `BIOROUTER_DISABLE_KEYRING=true` on headless Linux.
 
 Do not run this script when creating a release artifact for users. A user who
-starts headless BioRouter without credentials should be prompted by the app to
+starts headless Biorouter without credentials should be prompted by the app to
 configure providers in the browser UI.
 
 ## Get the browser URL
@@ -139,7 +139,7 @@ built-in skills are visible, and fails on relevant browser console warnings or
 errors. The `--live` mode additionally sends short completion requests through
 low-cost providers.
 
-Provider-specific failures can still be external to BioRouter. For example,
+Provider-specific failures can still be external to Biorouter. For example,
 an institutional provider may reject a new EC2 public IP until it is allowlisted,
 and a provider account can reject requests for billing reasons.
 

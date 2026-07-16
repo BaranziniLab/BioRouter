@@ -4,6 +4,10 @@
 # For macOS: uses sips (built-in) and iconutil
 # For Windows .ico: requires ImageMagick's convert command
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)
+cd "$SCRIPT_DIR" || exit 1
+
 # Detect if we're on macOS or have ImageMagick
 if command -v sips > /dev/null 2>&1; then
     echo "Using macOS sips for icon generation..."
@@ -33,13 +37,21 @@ if command -v sips > /dev/null 2>&1; then
     iconutil -c icns icon.iconset
     rm -rf icon.iconset
 
+    if command -v magick > /dev/null 2>&1; then
+        magick icon.svg -background none -define icon:auto-resize=256,128,64,48,32,16 icon.ico
+    elif command -v convert > /dev/null 2>&1; then
+        convert icon.svg -background none -define icon:auto-resize=256,128,64,48,32,16 icon.ico
+    else
+        echo "Error: ImageMagick is required to refresh the Windows icon"
+        exit 1
+    fi
+
     # Create light variants
     cp icon.svg icon-light.svg
     cp icon.icns icon-light.icns
     cp icon.png icon-light.png
 
-    echo "✓ Icon generation complete (macOS formats)"
-    echo "⚠ Note: Windows .ico generation requires ImageMagick"
+    echo "✓ Icon generation complete (macOS and Windows formats)"
 
 elif command -v convert > /dev/null 2>&1; then
     echo "Using ImageMagick convert for icon generation..."
@@ -84,3 +96,22 @@ else
     echo "Install ImageMagick: brew install imagemagick"
     exit 1
 fi
+
+# These copies keep every shipped logo surface tied to the same reviewed SVG.
+cp icon.svg "$ROOT/landing/icon.svg"
+cp icon.svg "$ROOT/landing/video/icon.svg"
+cp icon.svg "$ROOT/landing/video/assets/icon.svg"
+cp icon.svg "$ROOT/landing/video/reel/icon.svg"
+
+if command -v sips > /dev/null 2>&1; then
+    sips -s format png -z 512 512 icon.svg --out "$ROOT/landing/icon.png"
+elif command -v magick > /dev/null 2>&1; then
+    magick -background none -resize 512x512 icon.svg "$ROOT/landing/icon.png"
+else
+    convert -background none -resize 512x512 icon.svg "$ROOT/landing/icon.png"
+fi
+
+cp "$ROOT/landing/icon.png" "$ROOT/crates/biorouter-cli/static/img/logo_dark.png"
+cp "$ROOT/landing/icon.png" "$ROOT/crates/biorouter-cli/static/img/logo_light.png"
+
+echo "✓ Shared desktop, CLI, and landing assets synchronized"

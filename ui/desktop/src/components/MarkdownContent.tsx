@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
@@ -126,6 +126,16 @@ const CodeBlock = memo(function CodeBlock({
 
 const LOOPBACK_URL_RE =
   /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i;
+
+function artifactAwareUrlTransform(value: string) {
+  if (
+    (/^file:\/\//i.test(value) || /^[a-z]:[\\/]/i.test(value) || value.startsWith('\\\\')) &&
+    looksLikePreviewableFile(value)
+  ) {
+    return value;
+  }
+  return defaultUrlTransform(value);
+}
 
 function artifactSourceFromMarkdownValue(
   value: string,
@@ -303,6 +313,7 @@ const MarkdownContent = memo(function MarkdownContent({
       prose-li:m-0 prose-li:font-sans ${className}`}
     >
       <ReactMarkdown
+        urlTransform={artifactAwareUrlTransform}
         remarkPlugins={[remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[
           [
@@ -318,6 +329,7 @@ const MarkdownContent = memo(function MarkdownContent({
         ]}
         components={{
           a: ({ href, children, node: _node, ...props }) => {
+            if (!href) return <>{children}</>;
             const artifactPath =
               href && looksLikePreviewableFile(href) ? pathFromArtifactHref(href) : null;
             if (artifactPath && onOpenArtifact) {
@@ -335,7 +347,7 @@ const MarkdownContent = memo(function MarkdownContent({
                 </ArtifactLinkButton>
               );
             }
-            // Loopback/app URLs (the daemon serves BioRouter apps on 127.0.0.1)
+            // Loopback/app URLs (the daemon serves Biorouter apps on 127.0.0.1)
             // can be framed, so preview them inline in the side panel. Public
             // websites almost always send X-Frame-Options / frame-ancestors and
             // would render as a BLANK iframe, so those open in the real browser

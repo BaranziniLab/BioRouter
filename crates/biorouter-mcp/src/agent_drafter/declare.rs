@@ -181,7 +181,7 @@ impl SurfaceParam {
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemePack {
-    /// The base BioRouter look.
+    /// The base Biorouter look.
     Biorouter,
     /// Clean clinical/EHR surfaces.
     Clinical,

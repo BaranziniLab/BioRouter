@@ -1,6 +1,6 @@
 # Managed / enterprise policy (BR-65)
 
-BioRouter's hooks and permissions are normally configured per user (global
+Biorouter's hooks and permissions are normally configured per user (global
 `~/.config/biorouter/config.yaml`) and, opt-in, per project
 (`.biorouter/hooks.yaml`). Both tiers are owned by the user, so a lab or
 institutional deployment has no way to enforce a rule the user cannot turn off.
@@ -33,16 +33,16 @@ would defeat the tamper model):
 
 | OS      | Path                                                            |
 | ------- | -------------------------------------------------------------- |
-| macOS   | `/Library/Application Support/BioRouter/managed-policy.yaml`    |
+| macOS   | `/Library/Application Support/Biorouter/managed-policy.yaml`    |
 | Linux   | `/etc/biorouter/managed-policy.yaml`                           |
-| Windows | `%ProgramData%\BioRouter\managed-policy.yaml`                  |
+| Windows | `%ProgramData%\Biorouter\managed-policy.yaml`                  |
 
 Deploy it via MDM/Jamf (macOS), a package postinstall or Ansible (Linux), or
 Group Policy / an installer (Windows).
 
 ## Ownership verification
 
-Before the file is parsed, BioRouter verifies that neither the file nor its
+Before the file is parsed, Biorouter verifies that neither the file nor its
 parent directory can be rewritten by a non-privileged user (mirroring Gemini
 CLI's ownership verification against privilege escalation):
 
@@ -117,7 +117,7 @@ work).
   escalation-only inspection merge, so no later inspector can lower it. A tool
   the user "Always Allow"-ed silently becomes denied, surfaced as
   *"Blocked by your organization's managed policy."*
-- **The managed file is read-only** to BioRouter; the agent never writes it. No
+- **The managed file is read-only** to Biorouter; the agent never writes it. No
   session, `permission.yaml`, or `.biorouter/hooks.yaml` state changes.
 
 ## Roadmap (phase 2+)

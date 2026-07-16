@@ -60,7 +60,7 @@ export default function ElicitationRequest({
   return (
     <div className="flex flex-col">
       <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-text-default">
-        {message || 'BioRouter needs some information from you.'}
+        {message || 'Biorouter needs some information from you.'}
       </div>
       <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3">
         <JsonSchemaForm

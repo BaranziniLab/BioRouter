@@ -13,7 +13,7 @@ export const BioRouterHintsSection = () => {
         <div className="flex-1">
           <p className="text-sm font-medium text-text-default">Project Hints (.biorouterhints)</p>
           <p className="text-xs text-text-muted mt-0.5">
-            Configure your project's .biorouterhints file to provide additional context to BioRouter
+            Configure your project's .biorouterhints file to provide additional context to Biorouter
           </p>
         </div>
         <Button

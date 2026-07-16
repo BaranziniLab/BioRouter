@@ -216,7 +216,7 @@ pub async fn shared_token_counter() -> Result<Arc<TokenCounter>, String> {
 }
 
 /// Conservative inflation applied to the o200k-based estimate for providers
-/// whose real tokenizer BioRouter does not bundle. See `provider_token_calibration`.
+/// whose real tokenizer Biorouter does not bundle. See `provider_token_calibration`.
 const NON_OPENAI_TOKEN_MARGIN: f64 = 1.15;
 
 /// Per-provider calibration factor for the cold-path token *estimate* (BR-15).

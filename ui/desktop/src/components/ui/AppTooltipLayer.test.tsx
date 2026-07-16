@@ -11,7 +11,7 @@ function NativeTitleTarget({ title }: { title?: string }) {
 }
 
 describe('AppTooltipLayer', () => {
-  it('upgrades native titles to the BioRouter tooltip surface', async () => {
+  it('upgrades native titles to the Biorouter tooltip surface', async () => {
     render(
       <>
         <AppTooltipLayer />
@@ -71,7 +71,7 @@ describe('AppTooltipLayer', () => {
     render(
       <>
         <AppTooltipLayer />
-        <NativeTitleTarget title={'Ships with BioRouter.\nRecreated automatically if deleted.'} />
+        <NativeTitleTarget title={'Ships with Biorouter.\nRecreated automatically if deleted.'} />
       </>
     );
 
@@ -80,7 +80,7 @@ describe('AppTooltipLayer', () => {
 
     fireEvent.pointerOver(target);
     const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Ships with BioRouter. Recreated automatically if deleted.', {
+    expect(tooltip).toHaveTextContent('Ships with Biorouter. Recreated automatically if deleted.', {
       normalizeWhitespace: true,
     });
     expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-4');

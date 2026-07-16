@@ -47,7 +47,7 @@ let cfg = {
   // Protocol registration
   protocols: [
     {
-      name: 'BioRouterProtocol',
+      name: 'BiorouterProtocol',
       schemes: ['biorouter'],
     },
   ],
@@ -62,7 +62,7 @@ let cfg = {
         LSItemContentTypes: ['public.directory', 'public.folder'],
       },
       {
-        CFBundleTypeName: 'BioRouter Extension Bundle',
+        CFBundleTypeName: 'Biorouter Extension Bundle',
         CFBundleTypeRole: 'Viewer',
         CFBundleTypeExtensions: ['brxt'],
         LSHandlerRank: 'Owner',
@@ -73,8 +73,8 @@ let cfg = {
   fileAssociations: [
     {
       ext: 'brxt',
-      name: 'BioRouter Extension Bundle',
-      description: 'BioRouter Extension Bundle',
+      name: 'Biorouter Extension Bundle',
+      description: 'Biorouter Extension Bundle',
       role: 'Viewer',
     },
   ],
@@ -89,7 +89,7 @@ module.exports = {
       config: {
         repository: {
           owner: 'BaranziniLab',
-          name: 'BioRouter',
+          name: 'biorouter',
         },
         prerelease: false,
         draft: true,
@@ -119,8 +119,8 @@ module.exports = {
     {
       name: '@electron-forge/maker-deb',
       config: {
-        name: 'BioRouter',
-        bin: 'BioRouter',
+        name: 'Biorouter',
+        bin: 'Biorouter',
         maintainer: 'BaranziniLab',
         homepage: 'https://github.com/BaranziniLab/biorouter',
         categories: ['Development'],
@@ -138,8 +138,8 @@ module.exports = {
     {
       name: '@electron-forge/maker-rpm',
       config: {
-        name: 'BioRouter',
-        bin: 'BioRouter',
+        name: 'Biorouter',
+        bin: 'Biorouter',
         maintainer: 'BaranziniLab',
         homepage: 'https://github.com/BaranziniLab/biorouter',
         categories: ['Development'],
@@ -163,7 +163,7 @@ module.exports = {
           homepage: 'https://github.com/BaranziniLab/biorouter',
           runtimeVersion: '25.08',
           baseVersion: '25.08',
-          bin: 'BioRouter',
+          bin: 'Biorouter',
           modules: [
             {
               name: 'libbz2-shim',

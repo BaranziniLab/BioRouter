@@ -1,6 +1,6 @@
 //! Mistake-streak / recoverable-failure handling (BR-66).
 //!
-//! BioRouter had no notion of "how many things have gone wrong in a row". Each
+//! Biorouter had no notion of "how many things have gone wrong in a row". Each
 //! failure was handled where it happened and then forgotten: a failed tool call
 //! became a tool result the model was free to ignore, and a non-context provider
 //! error ended the turn outright with a "please retry if you think this is
@@ -326,7 +326,7 @@ pub fn is_user_decline(outcome: &ToolOutcome) -> bool {
 }
 
 /// The structured reflect-and-replan nudge. It does not tell the model *what* to
-/// do (BioRouter does not know); it forces it to say what it learned and what it
+/// do (Biorouter does not know); it forces it to say what it learned and what it
 /// will change, which is the step a stuck agent skips.
 ///
 /// BR-51: it now also names the *classes* of failure in the streak. "Your plan is
@@ -406,7 +406,7 @@ fn quoted_list(tools: &[String]) -> String {
 fn recovery_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
     format!(
         "The previous model call did not complete: {error}. Nothing you did in that step \
-         took effect, and no tool ran. BioRouter is retrying it ({attempt}/{limit}). If the \
+         took effect, and no tool ran. Biorouter is retrying it ({attempt}/{limit}). If the \
          failure looks like something about the request itself (an oversized or malformed \
          payload, an unsupported argument), send a smaller or simpler step this time rather \
          than repeating the same one; otherwise just carry on where you left off."
@@ -415,12 +415,12 @@ fn recovery_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
 
 /// The user-facing message when the turn ends on a provider error. The first
 /// sentence is unchanged from before BR-66 — only the retry count is new, so the
-/// user is not told to "retry" a call BioRouter already silently retried.
+/// user is not told to "retry" a call Biorouter already silently retried.
 fn stop_notice(error: &ProviderError, retried: u32) -> String {
     let retried_clause = match retried {
         0 => String::new(),
-        1 => " BioRouter already retried it once.".to_string(),
-        n => format!(" BioRouter already retried it {n} times."),
+        1 => " Biorouter already retried it once.".to_string(),
+        n => format!(" Biorouter already retried it {n} times."),
     };
     format!(
         "Ran into this error: {error}.\n\nPlease retry if you think this is a transient or \
@@ -655,7 +655,7 @@ mod tests {
         assert!(notice.contains("Ran into this error"), "{notice}");
         assert!(
             notice.contains("already retried it once"),
-            "the user is told BioRouter already tried: {notice}"
+            "the user is told Biorouter already tried: {notice}"
         );
     }
 

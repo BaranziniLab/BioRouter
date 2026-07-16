@@ -1753,7 +1753,7 @@
       "name": "Autoskill Workflow Discovery",
       "category": "Core",
       "type": "User-invocable · /autoskill-workflow-discovery",
-      "description": "Detects repeated workflows and drafts native BioRouter skills, hooks, checklist updates, or extension plans.",
+      "description": "Detects repeated workflows and drafts native Biorouter skills, hooks, checklist updates, or extension plans.",
       "tags": [
         "Skills",
         "Hooks",
@@ -2147,7 +2147,7 @@
       "name": "Skill Creator",
       "category": "Developer",
       "type": "User-invocable · /skill-creator",
-      "description": "The canonical guide to authoring BioRouter skills: frontmatter, progressive disclosure, packaging, and testing.",
+      "description": "The canonical guide to authoring Biorouter skills: frontmatter, progressive disclosure, packaging, and testing.",
       "tags": [
         "Authoring",
         "Meta"
@@ -2165,7 +2165,7 @@
     },
     {
       "id": "develop-biorouter-extension",
-      "name": "Develop BioRouter Extension",
+      "name": "Develop Biorouter Extension",
       "category": "Developer",
       "type": "User-invocable · /develop-biorouter-extension",
       "description": "Step-by-step guide for building a .brxt extension: manifest, MCP server, packaging, validation, and bundled skills.",
@@ -2194,7 +2194,7 @@
       "name": "Hookify (Hooks)",
       "category": "Developer",
       "type": "User-invocable · /hookify",
-      "description": "Turns project guardrails (warn/block rules) into real BioRouter hooks in .biorouter/hooks.yaml. A block rule stops the action; a warn rule shows a notice. Requires allow_project_hooks: true.",
+      "description": "Turns project guardrails (warn/block rules) into real Biorouter hooks in .biorouter/hooks.yaml. A block rule stops the action; a warn rule shows a notice. Requires allow_project_hooks: true.",
       "tags": [
         "Guardrails",
         "Safety"

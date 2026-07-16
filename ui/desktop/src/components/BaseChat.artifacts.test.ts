@@ -119,6 +119,48 @@ describe('collectArtifactsFromMessages', () => {
     ]);
   });
 
+  it('does not auto-preview protocol examples or hidden repository metadata', () => {
+    const messages = [
+      visibleMessage([
+        {
+          type: 'text',
+          text: 'These links require `file://` support. The folder also contains a hidden `.git` directory.',
+        },
+      ]),
+    ];
+
+    expect(collectArtifactsFromMessages(messages, '/Users/ada/Desktop')).toEqual([]);
+  });
+
+  it('still discovers a concrete file URI without trailing prose punctuation', () => {
+    const messages = [
+      visibleMessage([
+        { type: 'text', text: 'Open file:///Users/ada/Desktop/results/report.pdf).' },
+      ]),
+    ];
+
+    expect(collectArtifactsFromMessages(messages)).toEqual([
+      {
+        kind: 'file',
+        title: 'report.pdf',
+        path: '/Users/ada/Desktop/results/report.pdf',
+      },
+    ]);
+  });
+
+  it('does not extract web URLs or prefixes of non-artifact paths', () => {
+    const messages = [
+      visibleMessage([
+        {
+          type: 'text',
+          text: 'Ignore https://example.com/report.pdf, /tmp/report.pdf.bak, and /tmp/report.pdf/notes.',
+        },
+      ]),
+    ];
+
+    expect(collectArtifactsFromMessages(messages)).toEqual([]);
+  });
+
   it('previews an R script and the image its shell run produced', () => {
     const messages: Message[] = [
       writeRequest('t1', 'developer__text_editor', { command: 'write', path: 'analysis.R' }),
@@ -323,13 +365,13 @@ describe('getArtifactPanelExpansionContentWidth', () => {
 });
 
 describe('getDefaultArtifactPanelWidth', () => {
-  it('uses 42% of the available width for a comfortably wider initial preview', () => {
-    expect(getDefaultArtifactPanelWidth(1600)).toBe(672);
+  it('uses 48% of the available width for a squarer initial preview', () => {
+    expect(getDefaultArtifactPanelWidth(1600)).toBe(768);
   });
 
   it('preserves the panel bounds and minimum chat width', () => {
     expect(getDefaultArtifactPanelWidth(900)).toBe(360);
-    expect(getDefaultArtifactPanelWidth(3000)).toBe(860);
+    expect(getDefaultArtifactPanelWidth(3000)).toBe(920);
   });
 });
 

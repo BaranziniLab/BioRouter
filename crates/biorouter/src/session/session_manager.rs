@@ -147,6 +147,16 @@ pub struct Session {
     pub branch_point_msg_uid: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct SessionSummary {
+    pub id: String,
+    pub working_dir: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub message_count: i64,
+}
+
 /// One turn's token usage, applied additively and atomically in SQL.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenDelta {
@@ -1133,6 +1143,14 @@ impl SessionManager {
         self.storage.list_sessions().await
     }
 
+    pub async fn list_session_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<SessionSummary>> {
+        self.storage.list_session_summaries(limit, offset).await
+    }
+
     pub async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
         self.storage.list_sessions_by_types(types).await
     }
@@ -2012,7 +2030,7 @@ impl SessionStorage {
 
     async fn reconcile_usage_schema(pool: &Pool<Sqlite>) -> Result<()> {
         // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
-        // concurrently running BioRouter processes. A deferred transaction lets
+        // concurrently running Biorouter processes. A deferred transaction lets
         // two readers both observe a missing column before either ALTERs it.
         let mut connection = pool.acquire().await?;
         sqlx::query("BEGIN IMMEDIATE")
@@ -3216,6 +3234,31 @@ impl SessionStorage {
     async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.list_sessions_by_types(&[SessionType::User, SessionType::Scheduled])
             .await
+    }
+
+    async fn list_session_summaries(&self, limit: u32, offset: u32) -> Result<Vec<SessionSummary>> {
+        let pool = self.pool().await?;
+        sqlx::query_as::<_, SessionSummary>(
+            r#"
+            SELECT s.id,
+                   s.working_dir,
+                   COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
+                   s.created_at,
+                   s.updated_at,
+                   COUNT(m.id) AS message_count
+            FROM sessions s
+            INNER JOIN messages m ON s.id = m.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC, s.id ASC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(i64::from(limit))
+        .bind(i64::from(offset))
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -5129,6 +5172,36 @@ mod tests {
         }
 
         sm.get_session(&session.id, true).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn session_summaries_are_lightweight_and_paginated() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let created = vec![
+            seed_session_with_messages(&sm, 1).await,
+            seed_session_with_messages(&sm, 2).await,
+            seed_session_with_messages(&sm, 3).await,
+        ];
+
+        let first_page = sm.list_session_summaries(2, 0).await.unwrap();
+        let second_page = sm.list_session_summaries(2, 2).await.unwrap();
+
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(second_page.len(), 1);
+        assert!(first_page.iter().all(|session| session.message_count > 0));
+        assert!(first_page
+            .iter()
+            .all(|session| session.working_dir == "/tmp/diverge_test"));
+
+        let expected_ids: std::collections::HashSet<_> =
+            created.into_iter().map(|session| session.id).collect();
+        let actual_ids: std::collections::HashSet<_> = first_page
+            .into_iter()
+            .chain(second_page)
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(actual_ids, expected_ids);
     }
 
     #[tokio::test]

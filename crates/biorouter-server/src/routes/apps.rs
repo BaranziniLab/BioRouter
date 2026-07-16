@@ -1,4 +1,4 @@
-//! HTTP + WebSocket routes for **BioRouter apps** (built by Agent Drafter).
+//! HTTP + WebSocket routes for **Biorouter apps** (built by Agent Drafter).
 //!
 //! `biorouterd` serves each app's static bundle and exposes a per-app WebSocket
 //! that runs the *real* agent loop configured with that app's model, extensions,
@@ -550,7 +550,7 @@ fn check_ws_auth(
 ///
 /// A manifest-declared guardrail / encryption / tracing only activates when the
 /// user has explicitly enabled it in Settings — so these features NEVER
-/// auto-apply (and never touch normal, non-app BioRouter usage at all). Backed
+/// auto-apply (and never touch normal, non-app Biorouter usage at all). Backed
 /// by config params the Settings panel writes.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct BrsdkSettings {
@@ -1153,7 +1153,7 @@ fn append_orchestration_guidance(prompt: &mut String, cfg: &AgentConfig) {
 
 fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &CapabilityReport) -> String {
     let mut prompt = format!(
-        "You are the agent powering the BioRouter app \"{}\".",
+        "You are the agent powering the Biorouter app \"{}\".",
         manifest.title
     );
     if !manifest.description.is_empty() {
@@ -1245,7 +1245,7 @@ async fn configure_agent(
 
 // ─────────────────── Multi-agent worker profiles (design §3.8) ──────────────
 //
-// **Serialized, not parallel — by design.** BioRouter apps ship *serialized*
+// **Serialized, not parallel — by design.** Biorouter apps ship *serialized*
 // cross-profile turns in v2: each declared profile gets its own session, provider
 // and (subset-checked) capabilities, but only one turn runs at a time on the app
 // socket. A frame with `"agent": "<profile>"` runs on that worker exactly like a
@@ -1542,7 +1542,7 @@ async fn configure_worker_agent(
 
     // Persona + profile prompt + skill scoping + the untrusted-data boundary.
     let mut prompt = format!(
-        "You are the \"{profile_name}\" worker agent for the BioRouter app \"{}\".",
+        "You are the \"{profile_name}\" worker agent for the Biorouter app \"{}\".",
         manifest.title
     );
     if !cfg.system_prompt.trim().is_empty() {

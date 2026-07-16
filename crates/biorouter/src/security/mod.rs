@@ -100,7 +100,7 @@ impl SecurityManager {
             };
             if let Some(rule) = patterns::match_catastrophic_command(&text) {
                 let message = format!(
-                    "Blocked by BioRouter's always-on catastrophic-command denylist \
+                    "Blocked by Biorouter's always-on catastrophic-command denylist \
                      (rule: {}): {}. This safety rule cannot be bypassed by permission mode.",
                     rule.name, rule.description
                 );

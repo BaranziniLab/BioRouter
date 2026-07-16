@@ -191,7 +191,7 @@ impl MemoryServer {
 
         // choose_app_strategy().config_dir()
         // - macOS/Linux: ~/.config/biorouter/memory/
-        // - Windows:     ~\AppData\Roaming\BaranziniLab\BioRouter\config\memory
+        // - Windows:     ~\AppData\Roaming\BaranziniLab\Biorouter\config\memory
         // if it fails, fall back to `.config/biorouter/memory` (relative to the current dir)
         let global_memory_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
             .map(|strategy| strategy.in_config_dir("memory"))

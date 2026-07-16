@@ -20,8 +20,8 @@ smoke_mac() {
   mount="$(mktemp -d "/tmp/biorouter-${arch}-mount.XXXXXX")"
   tmp="$(mktemp -d "/tmp/biorouter-${arch}-smoke.XXXXXX")"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
-  local app="$mount/BioRouter.app"
-  [ -d "$app" ] || die "$arch DMG does not contain BioRouter.app"
+  local app="$mount/Biorouter.app"
+  [ -d "$app" ] || die "$arch DMG does not contain Biorouter.app"
   codesign --verify --deep --strict --verbose=2 "$app"
   spctl --assess --type execute --verbose "$app"
   xcrun stapler validate "$app"
@@ -34,14 +34,14 @@ smoke_mac() {
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
   HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true \
-    "${runner[@]}" "$app/Contents/MacOS/BioRouter" --disable-gpu >"$tmp/app.log" 2>&1 &
+    "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu >"$tmp/app.log" 2>&1 &
   local pid=$!
   sleep 12
   kill -0 "$pid" 2>/dev/null || { sed -n '1,160p' "$tmp/app.log" >&2; die "$arch desktop exited during startup"; }
   kill "$pid" 2>/dev/null || true
   sleep 1
   kill -KILL "$pid" 2>/dev/null || true
-  pkill -KILL -f "$mount/BioRouter.app/Contents/" 2>/dev/null || true
+  pkill -KILL -f "$mount/Biorouter.app/Contents/" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   hdiutil detach "$mount" >/dev/null 2>&1 || {
     sleep 2
@@ -74,18 +74,18 @@ smoke_deb() {
 }
 
 smoke_rpm() {
-  local rpm="$DESK/out/make/rpm/x64/BioRouter-${VERSION}-1.x86_64.rpm"
+  local rpm="$DESK/out/make/rpm/x64/Biorouter-${VERSION}-1.x86_64.rpm"
   require_file "$rpm"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
     -v "$rpm":/pkg/biorouter.rpm:ro rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
-      /usr/lib/BioRouter/resources/bin/biorouter --version | grep -q "$VERSION"
-      /usr/lib/BioRouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
+      /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
       Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
       xvfb=$!
       export DISPLAY=:99
       HOME=/tmp/biorouter-home BIOROUTER_DISABLE_KEYRING=true \
-        /usr/bin/BioRouter --no-sandbox >/tmp/biorouter.log 2>&1 &
+        /usr/bin/Biorouter --no-sandbox >/tmp/biorouter.log 2>&1 &
       pid=$!
       sleep 12
       kill -0 "$pid"
@@ -150,8 +150,8 @@ smoke_headless() {
 
 case "$TARGET" in
   all)
-    smoke_mac arm64 "$DESK/out/make/BioRouter-${VERSION}-arm64.dmg"
-    smoke_mac x64 "$DESK/out/make/BioRouter-${VERSION}-x64.dmg"
+    smoke_mac arm64 "$DESK/out/make/Biorouter-${VERSION}-arm64.dmg"
+    smoke_mac x64 "$DESK/out/make/Biorouter-${VERSION}-x64.dmg"
     smoke_deb
     smoke_rpm
     smoke_cli_packages
@@ -159,8 +159,8 @@ case "$TARGET" in
     log "all locally executable release artifacts passed"
     ;;
   mac)
-    smoke_mac arm64 "$DESK/out/make/BioRouter-${VERSION}-arm64.dmg"
-    smoke_mac x64 "$DESK/out/make/BioRouter-${VERSION}-x64.dmg"
+    smoke_mac arm64 "$DESK/out/make/Biorouter-${VERSION}-arm64.dmg"
+    smoke_mac x64 "$DESK/out/make/Biorouter-${VERSION}-x64.dmg"
     ;;
   deb) smoke_deb ;;
   rpm) smoke_rpm ;;

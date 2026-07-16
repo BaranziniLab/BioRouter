@@ -1,6 +1,6 @@
 # Making a Release
 
-BioRouter releases are cut locally with [`scripts/release.sh`](scripts/release.sh), not by a
+Biorouter releases are cut locally with [`scripts/release.sh`](scripts/release.sh), not by a
 GitHub Action. The script encodes the whole pipeline — version bump → compile all four backends →
 sign and notarize both macOS dmgs → package Windows and Linux → verify → publish to GitHub — so a
 human or an agent can reproduce a release exactly.

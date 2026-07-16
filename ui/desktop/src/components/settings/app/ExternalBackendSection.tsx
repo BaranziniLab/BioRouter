@@ -101,10 +101,10 @@ export default function ExternalBackendSection() {
     <section id="external-backend" className="space-y-4 pr-4 mt-1">
       <Card className="pb-2">
         <CardHeader className="pb-0">
-          <CardTitle>BioRouter Server</CardTitle>
+          <CardTitle>Biorouter Server</CardTitle>
           <CardDescription>
-            By default BioRouter launches a server for you, use this to connect to an external
-            BioRouter server
+            By default Biorouter launches a server for you, use this to connect to an external
+            Biorouter server
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-4 space-y-4 px-4">
@@ -112,7 +112,7 @@ export default function ExternalBackendSection() {
             <div>
               <h3 className="text-text-default text-xs">Use external server</h3>
               <p className="text-xs text-text-muted max-w-md mt-[2px]">
-                Connect to a BioRouter server running elsewhere (requires app restart)
+                Connect to a Biorouter server running elsewhere (requires app restart)
               </p>
             </div>
             <div className="flex items-center">
@@ -169,7 +169,7 @@ export default function ExternalBackendSection() {
 
               <div className="bg-background-warning/10 border border-border-warning/40 rounded-md p-3">
                 <p className="text-xs text-text-warning">
-                  <strong>Note:</strong> Changes require restarting BioRouter to take effect. New
+                  <strong>Note:</strong> Changes require restarting Biorouter to take effect. New
                   chat windows will connect to the external server.
                 </p>
               </div>

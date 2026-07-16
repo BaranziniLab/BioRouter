@@ -127,7 +127,7 @@ async fn auth_middleware(
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
         "WWW-Authenticate",
-        "Basic realm=\"BioRouter Web Interface\"".parse().unwrap(),
+        "Basic realm=\"Biorouter Web Interface\"".parse().unwrap(),
     );
     Ok(response)
 }

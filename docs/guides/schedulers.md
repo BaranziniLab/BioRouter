@@ -1,6 +1,6 @@
-# UCSF BioRouter — Schedulers
+# UCSF Biorouter — Schedulers
 
-BioRouter includes a built-in scheduler that lets you run workflows on a schedule — automatically, without manual intervention. This is useful for recurring analysis jobs, nightly data processing, periodic report generation, or any task you want to run at regular intervals.
+Biorouter includes a built-in scheduler that lets you run workflows on a schedule — automatically, without manual intervention. This is useful for recurring analysis jobs, nightly data processing, periodic report generation, or any task you want to run at regular intervals.
 
 ---
 
@@ -9,7 +9,7 @@ BioRouter includes a built-in scheduler that lets you run workflows on a schedul
 The scheduler lets you:
 
 - Schedule any workflow to run at a specified time or on a recurring cron schedule
-- Run BioRouter in headless (non-interactive) mode as a background job
+- Run Biorouter in headless (non-interactive) mode as a background job
 - Persist scheduled jobs across sessions
 - Manage (list, pause, delete) scheduled jobs through the Desktop UI or CLI
 
@@ -31,17 +31,17 @@ Scheduled jobs are stored persistently in an SQLite database, so they survive ap
 
 ### CLI
 
-Use the `schedule` command or ask BioRouter directly in a session:
+Use the `schedule` command or ask Biorouter directly in a session:
 
 ```sh
-# Start a session and instruct BioRouter to schedule a workflow
+# Start a session and instruct Biorouter to schedule a workflow
 biorouter session
 
 # In the session:
 > Schedule the "nightly-analysis" workflow to run every day at 2am
 ```
 
-BioRouter will create the scheduled job and confirm the cron expression.
+Biorouter will create the scheduled job and confirm the cron expression.
 
 ---
 
@@ -95,7 +95,7 @@ biorouter schedule delete <job-id>
 
 ## Headless (Non-Interactive) Mode
 
-Scheduled jobs always run in headless mode — BioRouter executes the workflow without any user interaction. For this to work correctly, your workflow must:
+Scheduled jobs always run in headless mode — Biorouter executes the workflow without any user interaction. For this to work correctly, your workflow must:
 
 1. Include a `prompt` field (not just `instructions`) — the `prompt` is the initial message sent automatically.
 2. Not depend on user input during execution (no `user_prompt` parameters that need interactive input at runtime).
@@ -117,7 +117,7 @@ settings:
 
 ## Environment and Credentials
 
-Scheduled jobs run in the same environment as the BioRouter server process. Make sure:
+Scheduled jobs run in the same environment as the Biorouter server process. Make sure:
 
 - API keys for the required LLM provider are available in the environment or keyring.
 - Any extensions the workflow uses are installed and configured.

@@ -1,9 +1,9 @@
-# BioRouter Desktop App
+# Biorouter Desktop App
 
-Native desktop app for BioRouter built with [Electron](https://www.electronjs.org/) and [ReactJS](https://react.dev/).
+Native desktop app for Biorouter built with [Electron](https://www.electronjs.org/) and [ReactJS](https://react.dev/).
 
 # Building and running
-BioRouter uses [Hermit](https://github.com/cashapp/hermit) to manage dependencies, so you will need to have it installed and activated.
+Biorouter uses [Hermit](https://github.com/cashapp/hermit) to manage dependencies, so you will need to have it installed and activated.
 
 ```
 git clone git@github.com:BaranziniLab/biorouter.git
@@ -41,9 +41,9 @@ This is an electron forge app, using vite and react.js. `biorouterd` runs as mul
 ## Building for different platforms
 
 ### macOS
-`npm run bundle:default` will give you a BioRouter.app/zip which is signed/notarized but only if you setup the env vars as per `forge.config.ts` (you can empty out the section on osxSign if you don't want to sign it) - this will have all defaults.
+`npm run bundle:default` will give you a Biorouter.app/zip which is signed/notarized but only if you setup the env vars as per `forge.config.ts` (you can empty out the section on osxSign if you don't want to sign it) - this will have all defaults.
 
-`npm run bundle:preconfigured` will make a BioRouter.app/zip signed and notarized, but use the following:
+`npm run bundle:preconfigured` will make a Biorouter.app/zip signed and notarized, but use the following:
 
 ```python
             f"        process.env.BIOROUTER_PROVIDER__TYPE = '{os.getenv("BIOROUTER_BUNDLE_TYPE")}';",
@@ -51,7 +51,7 @@ This is an electron forge app, using vite and react.js. `biorouterd` runs as mul
             f"        process.env.BIOROUTER_PROVIDER__MODEL = '{os.getenv("BIOROUTER_BUNDLE_MODEL")}';"
 ```
 
-This allows you to set for example BIOROUTER_PROVIDER__TYPE to be "databricks" by default if you want (so when people start biorouter.app - they will get that out of the box). Only use providers that support OAuth, otherwise use the default BioRouter.
+This allows you to set for example BIOROUTER_PROVIDER__TYPE to be "databricks" by default if you want (so when people start biorouter.app - they will get that out of the box). Only use providers that support OAuth, otherwise use the default Biorouter.
 
 ### Linux
 For Linux builds, first ensure you have the required system dependencies installed (see above), then:

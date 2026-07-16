@@ -14,7 +14,7 @@ use axum::{
 use biorouter::agents::ExtensionConfig;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{ActivityWindow, ModelUsageRow, SessionInsights};
-use biorouter::session::{EnabledExtensionsState, Session};
+use biorouter::session::{EnabledExtensionsState, Session, SessionSummary};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,6 +26,28 @@ use utoipa::ToSchema;
 pub struct SessionListResponse {
     /// List of available session information objects
     sessions: Vec<Session>,
+}
+
+const DEFAULT_SIDEBAR_SESSION_LIMIT: u32 = 10;
+const MAX_SIDEBAR_SESSION_LIMIT: u32 = 50;
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SidebarSessionsQuery {
+    #[serde(default = "default_sidebar_session_limit")]
+    limit: u32,
+    #[serde(default)]
+    offset: u32,
+}
+
+fn default_sidebar_session_limit() -> u32 {
+    DEFAULT_SIDEBAR_SESSION_LIMIT
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SidebarSessionListResponse {
+    sessions: Vec<SessionSummary>,
+    has_more: bool,
+    next_offset: Option<u32>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -151,6 +173,45 @@ async fn list_sessions(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionListResponse { sessions }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/sidebar",
+    params(
+        ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=50)"),
+        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip")
+    ),
+    responses(
+        (status = 200, description = "Paginated lightweight session summaries for the sidebar", body = SidebarSessionListResponse),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "Session Management"
+)]
+async fn list_sidebar_sessions(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SidebarSessionsQuery>,
+) -> Result<Json<SidebarSessionListResponse>, StatusCode> {
+    let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
+    let mut sessions = state
+        .session_manager()
+        .list_session_summaries(limit.saturating_add(1), query.offset)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let has_more = sessions.len() > limit as usize;
+    sessions.truncate(limit as usize);
+    let next_offset = has_more.then(|| query.offset.saturating_add(limit));
+
+    Ok(Json(SidebarSessionListResponse {
+        sessions,
+        has_more,
+        next_offset,
+    }))
 }
 
 #[utoipa::path(
@@ -704,6 +765,7 @@ async fn get_session_extensions(
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sessions", get(list_sessions))
+        .route("/sessions/sidebar", get(list_sidebar_sessions))
         .route("/sessions/{session_id}", get(get_session))
         .route("/sessions/{session_id}", delete(delete_session))
         .route("/sessions/{session_id}/export", get(export_session))
@@ -792,6 +854,23 @@ mod diverge_tests {
         (status, json)
     }
 
+    async fn get_sidebar_sessions(
+        state: Arc<AppState>,
+        query: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions/sidebar{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
     /// `/sessions/activity` must not be swallowed by the `/sessions/{session_id}`
     /// wildcard registered next to it, and the payload must be camelCase.
     ///
@@ -808,6 +887,41 @@ mod diverge_tests {
         assert!(body.get("currentStreak").is_some(), "camelCase payload");
         assert!(body.get("longestStreak").is_some());
         assert!(body.get("maxTokens").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn sidebar_route_returns_paginated_lightweight_sessions() {
+        let state = AppState::new().await.unwrap();
+        let (status, body) = get_sidebar_sessions(state, "?limit=2&offset=0").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+
+        let sessions = body
+            .get("sessions")
+            .and_then(|sessions| sessions.as_array())
+            .expect("sessions array");
+        assert!(sessions.len() <= 2);
+        assert!(body.get("has_more").is_some());
+        assert!(body.get("next_offset").is_some());
+
+        if let Some(session) = sessions.first().and_then(|session| session.as_object()) {
+            for field in [
+                "id",
+                "working_dir",
+                "name",
+                "created_at",
+                "updated_at",
+                "message_count",
+            ] {
+                assert!(
+                    session.contains_key(field),
+                    "missing {field} in {session:?}"
+                );
+            }
+            assert!(!session.contains_key("conversation"));
+            assert!(!session.contains_key("extension_data"));
+            assert!(!session.contains_key("workflow"));
+        }
     }
 
     async fn get_usage(

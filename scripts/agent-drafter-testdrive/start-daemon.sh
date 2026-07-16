@@ -31,7 +31,7 @@ PID_FILE="$ROOT/.br-testdrive/biorouterd.pid"
 LOG_FILE="$ROOT/.br-testdrive/biorouterd.log"
 
 if curl -sf -o /dev/null http://127.0.0.1:8899/status; then
-  echo "BioRouter test-drive daemon already ready on :8899"
+  echo "Biorouter test-drive daemon already ready on :8899"
   exit 0
 fi
 
@@ -40,15 +40,15 @@ pid=$!
 echo "$pid" >"$PID_FILE"
 for _ in $(seq 1 90); do
   if curl -sf -o /dev/null http://127.0.0.1:8899/status; then
-    echo "BioRouter test-drive daemon ready on :8899 (pid $pid)"
+    echo "Biorouter test-drive daemon ready on :8899 (pid $pid)"
     exit 0
   fi
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "BioRouter daemon exited during startup; inspect $LOG_FILE" >&2
+    echo "Biorouter daemon exited during startup; inspect $LOG_FILE" >&2
     exit 1
   fi
   sleep 1
 done
 
-echo "BioRouter daemon did not become ready; inspect $LOG_FILE" >&2
+echo "Biorouter daemon did not become ready; inspect $LOG_FILE" >&2
 exit 1

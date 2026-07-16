@@ -1,6 +1,6 @@
 /* ───────────────────────────────────────────────────────────────
-   UCSF BioRouter — Shared Stylesheet
-   Mirrors the BioRouter desktop app: warm cream surface,
+   UCSF Biorouter — Shared Stylesheet
+   Mirrors the Biorouter desktop app: warm cream surface,
    flat coral buttons, monochrome silhouette icons, low-chrome
    sectioned layouts.
    ─────────────────────────────────────────────────────────────── */
@@ -8,7 +8,7 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Surfaces — match the BioRouter Electron app */
+  /* Surfaces — match the Biorouter Electron app */
   --bg:          #faf8f3;   /* neutral-50, the sidebar/app surface */
   --bg-2:        #ffffff;   /* card / panel */
   --bg-3:        #f4f0e6;   /* neutral-100, medium hover */

@@ -31,13 +31,13 @@ const registry = JSON.parse(landing('registry.json'));
 
 const cargoVersion = capture(source('Cargo.toml'), /version = "([^"]+)"/, 'Cargo workspace version');
 const packageVersion = capture(source('ui/desktop/package.json'), /"version": "([^"]+)"/, 'desktop package version');
-check(cargoVersion === packageVersion, `BioRouter version mismatch: Cargo ${cargoVersion}, package ${packageVersion}`);
-includes(docs, `biorouter v${cargoVersion}`, 'docs provider defaults should cite the current BioRouter version');
-includes(docs, `biorouter v${cargoVersion}`, 'docs extension defaults should cite the current BioRouter version');
-includes(index, `v${cargoVersion}`, 'index fallback release version should match BioRouter version');
-includes(download, `v${cargoVersion}`, 'download fallback badge should match BioRouter version');
-includes(download, `BioRouter-${cargoVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
-includes(download, `BioRouter-win32-x64-${cargoVersion}.zip`, 'download Windows fallback should match release asset');
+check(cargoVersion === packageVersion, `Biorouter version mismatch: Cargo ${cargoVersion}, package ${packageVersion}`);
+includes(docs, `biorouter v${cargoVersion}`, 'docs provider defaults should cite the current Biorouter version');
+includes(docs, `biorouter v${cargoVersion}`, 'docs extension defaults should cite the current Biorouter version');
+includes(index, `v${cargoVersion}`, 'index fallback release version should match Biorouter version');
+includes(download, `v${cargoVersion}`, 'download fallback badge should match Biorouter version');
+includes(download, `Biorouter-${cargoVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
+includes(download, `Biorouter-win32-x64-${cargoVersion}.zip`, 'download Windows fallback should match release asset');
 
 const providerChecks = [
   ['crates/biorouter/src/providers/versa_bedrock.rs', /VERSA_BEDROCK_DEFAULT_MODEL: &str = "([^"]+)"/, 'Versa Bedrock'],
@@ -70,7 +70,7 @@ for (const recommended of ['Gemma 4 E4B', 'Qwen3.6 35B']) {
 
 const appSidebar = source('ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx');
 for (const label of ['Home', 'Chat', 'History', 'Workflows', 'Scheduler', 'Extensions', 'Skills', 'Knowledge', 'Apps', 'Settings']) {
-  includes(appSidebar, `label: '${label}'`, `BioRouter sidebar source should include ${label}`);
+  includes(appSidebar, `label: '${label}'`, `Biorouter sidebar source should include ${label}`);
   includes(mockups, `label: '${label}'`, `mockup sidebar should include ${label}`);
 }
 

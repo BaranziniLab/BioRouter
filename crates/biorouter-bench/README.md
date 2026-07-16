@@ -1,6 +1,6 @@
-# BioRouter Benchmarking Framework
+# Biorouter Benchmarking Framework
 
-The `biorouter-bench` crate provides a framework for benchmarking and evaluating LLM models with the BioRouter framework. This tool helps quantify model performance across various tasks and generate structured reports.
+The `biorouter-bench` crate provides a framework for benchmarking and evaluating LLM models with the Biorouter framework. This tool helps quantify model performance across various tasks and generate structured reports.
 
 ## Features
 

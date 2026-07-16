@@ -58,7 +58,7 @@ pub async fn check_token(
     if path == "/status" || path == "/mcp-ui-proxy" || path == "/mcp-app-proxy" {
         return Ok(next.run(request).await);
     }
-    // BioRouter apps are opened directly in the browser (and connect a WebSocket),
+    // Biorouter apps are opened directly in the browser (and connect a WebSocket),
     // so they can't send the secret-key header. Allow browser-facing GET reads
     // of a *specific* app (serving the bundle + the per-app agent socket);
     // management verbs (POST/DELETE) still require the secret.

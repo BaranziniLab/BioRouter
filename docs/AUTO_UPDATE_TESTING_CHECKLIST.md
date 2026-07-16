@@ -10,7 +10,7 @@ Applications, quit the app" experience.
 |------|--------|-------|
 | Startup "update available" modal | Opened `biorouter.ucsf.edu/download` in a browser | Listens to `electron-updater` events; background-downloads; shows a **Restart & Update** button that quits + installs + relaunches in one click |
 | Settings → Check for Updates | Opened the GitHub release page | Drives the same `electron-updater` pipeline with progress + one-click install |
-| Release artifacts | 7 (5 GUI + 2 CLI) | 10 — adds `BioRouter-darwin-arm64-{ver}.zip`, `BioRouter-darwin-x64-{ver}.zip`, `latest-mac.yml` so `electron-updater` can install in place on macOS |
+| Release artifacts | 7 (5 GUI + 2 CLI) | 10 — adds `Biorouter-darwin-arm64-{ver}.zip`, `Biorouter-darwin-x64-{ver}.zip`, `latest-mac.yml` so `electron-updater` can install in place on macOS |
 | Dependency / CLI checks | unchanged | **unchanged** (DependencySetupModal "Biorouter CLI Update" card behaves exactly as before) |
 | User config / sessions / extensions | preserved | **preserved** (live in `~/.config/biorouter`, never touched by app replacement) |
 
@@ -59,7 +59,7 @@ notarization creds + real hardware).
 - [x] `npx eslint <all changed + test files> --max-warnings 0` — clean.
 - [x] `npx vite build -c vite.renderer.config.mts` **and** `-c vite.main.config.mts` **and** `-c vite.preload.config.mts` — all three Electron bundles build with the new code (renderer + main-process `autoUpdater.ts` + `preload.ts`).
 - [x] `bash -n scripts/release.sh` — syntax OK.
-- [x] Manifest sanity against the real built zips in `out/make/zip/darwin/*`: each `sha512` equals `openssl dgst -sha512 -binary <zip> | base64`, and each `maker-zip` contains `BioRouter.app/` + `Contents/_CodeSignature` at the archive root (Squirrel.Mac requirement).
+- [x] Manifest sanity against the real built zips in `out/make/zip/darwin/*`: each `sha512` equals `openssl dgst -sha512 -binary <zip> | base64`, and each `maker-zip` contains `Biorouter.app/` + `Contents/_CodeSignature` at the archive root (Squirrel.Mac requirement).
 
 > Pre-existing baseline: the repo has **32 Vitest failures unrelated to this
 > work** (e.g. `LeadWorkerSettings`, `DashboardProvider`, `App.test.tsx`),
@@ -84,7 +84,7 @@ Procedure (scripted by `ui/desktop/scripts/notarized-swap-test.sh`):
    `--user-data-dir`, so the user's real install/config is untouched).
 4. Observed, from O's own log: `Update feed override active` → `Checking for
    update` → update found → handed to **native Squirrel.Mac**
-   (`…requested by Squirrel.Mac, pipe …BioRouter-darwin-arm64-1.86.0.zip`;
+   (`…requested by Squirrel.Mac, pipe …Biorouter-darwin-arm64-1.86.0.zip`;
    `Download completed to …com.electron.biorouter.ShipIt/update…`) → app quit
    and the on-disk bundle **swapped 1.85.5 → 1.86.0**.
 5. Verified the swapped bundle: version **1.86.0**, UCSF-signed, **stapler
@@ -144,10 +144,10 @@ signed + notarized build — which is exactly Sections B/C below.
 ### Conditional sidebar UPDATE button — executed 2026-07-14 ✅
 
 The updater now checks shortly after every launch and then every three hours
-while BioRouter stays open. Detection is non-interruptive: a small **UPDATE**
-button appears above the BioRouter identity in the lower-left sidebar only when
+while Biorouter stays open. Detection is non-interruptive: a small **UPDATE**
+button appears above the Biorouter identity in the lower-left sidebar only when
 a newer version is known. Clicking it opens the existing progress/restart
-prompt; after BioRouter restarts on the current version, the button is absent.
+prompt; after Biorouter restarts on the current version, the button is absent.
 
 - [x] `src/utils/updateCheckSchedule.test.ts` — **2** tests prove the startup
   delay, exact three-hour cadence, repeated checks, and cancellation.
@@ -181,12 +181,12 @@ build `X-1`.
 
 - [ ] `scripts/release.sh bump X` updates all 5 version files in lockstep (`scripts/check-version-consistency.sh` passes).
 - [ ] `scripts/release.sh mac-arm64 X` and `mac-intel X` produce:
-  - [ ] `ui/desktop/out/make/BioRouter-X-arm64.dmg` and `-x64.dmg`
-  - [ ] `ui/desktop/out/make/zip/darwin/arm64/BioRouter-darwin-arm64-X.zip`
-  - [ ] `ui/desktop/out/make/zip/darwin/x64/BioRouter-darwin-x64-X.zip`
-- [ ] Each darwin zip contains `BioRouter.app/` at the **root** with a `Contents/_CodeSignature` (`unzip -l … | head`).
-- [ ] The `.app` inside each zip is signed + **notarized**: `codesign -dv` and `xcrun stapler validate` pass on `out/BioRouter-darwin-<arch>/BioRouter.app`.
-- [ ] `scripts/release.sh mac-manifest X` writes `out/make/latest-mac.yml`; it references **both** `BioRouter-darwin-arm64-X.zip` and `BioRouter-darwin-x64-X.zip` with correct sizes and base64 SHA-512.
+  - [ ] `ui/desktop/out/make/Biorouter-X-arm64.dmg` and `-x64.dmg`
+  - [ ] `ui/desktop/out/make/zip/darwin/arm64/Biorouter-darwin-arm64-X.zip`
+  - [ ] `ui/desktop/out/make/zip/darwin/x64/Biorouter-darwin-x64-X.zip`
+- [ ] Each darwin zip contains `Biorouter.app/` at the **root** with a `Contents/_CodeSignature` (`unzip -l … | head`).
+- [ ] The `.app` inside each zip is signed + **notarized**: `codesign -dv` and `xcrun stapler validate` pass on `out/Biorouter-darwin-<arch>/Biorouter.app`.
+- [ ] `scripts/release.sh mac-manifest X` writes `out/make/latest-mac.yml`; it references **both** `Biorouter-darwin-arm64-X.zip` and `Biorouter-darwin-x64-X.zip` with correct sizes and base64 SHA-512.
 - [ ] `scripts/release.sh verify X` reports all 9 file artifacts present + the `latest-mac.yml` arch-zip cross-check ✓.
 - [ ] `scripts/release.sh publish X` uploads **10** assets (the 5 GUI + 2 CLI + 2 darwin zips + `latest-mac.yml`). Confirm with `gh release view vX --json assets --jq '.assets[].name'`.
 
@@ -197,7 +197,7 @@ Install `X-1` into `/Applications`, launch it, then (with release `X` published)
 - [ ] Within ~5s of launch, the lower-left **UPDATE** button appears without interrupting the user; clicking it opens **"Downloading update…"** with current vs new version and a live progress bar advancing 0→100%.
 - [ ] During download the app stays fully usable (not blocked/frozen).
 - [ ] When the download finishes, the modal switches to **"Update ready to install"** with a **Restart & Update** button.
-- [ ] Clicking **Restart & Update**: the app quits, the new `.app` is installed in place, and BioRouter **relaunches automatically** on version `X` — no Finder, no DMG, no drag-and-drop, no manual quit.
+- [ ] Clicking **Restart & Update**: the app quits, the new `.app` is installed in place, and Biorouter **relaunches automatically** on version `X` — no Finder, no DMG, no drag-and-drop, no manual quit.
 - [ ] After relaunch, **About / Settings shows version `X`**.
 - [ ] Repeat the entire flow on an **Intel** Mac (or Apple Silicon under Rosetta) and confirm it pulls the `x64` zip (check the app log: `electron-updater` logs the chosen file URL — it must contain `x64`, not `arm64`).
 - [ ] Apple Silicon pulls the `arm64` zip (log file URL contains `arm64`).
@@ -206,12 +206,12 @@ Install `X-1` into `/Applications`, launch it, then (with release `X` published)
 
 - [ ] Clicking **Later** dismisses the modal; because `autoInstallOnAppQuit = true`, quitting the app then installs the staged update — next launch is on `X`.
 - [ ] Per-version dismissal: dismissing version `X` does not re-nag for `X` on the next launch (localStorage `biorouter:update-modal-dismissed-version`), but the **ready-to-install** state still surfaces.
-- [ ] Settings → **Check for Updates**: when up to date shows "BioRouter is up to date."; when `X` is available it downloads with a progress bar and then shows a **Restart & Update to X** button that performs the same one-click install.
+- [ ] Settings → **Check for Updates**: when up to date shows "Biorouter is up to date."; when `X` is available it downloads with a progress bar and then shows a **Restart & Update to X** button that performs the same one-click install.
 - [ ] Tray icon shows the update badge while an update is available; the tray "Update Available…" / "Check for Updates" items open Settings → update section.
 
 ## E. Terminal / CLI propagation (TUI)
 
-- [ ] **macOS:** before update, `which biorouter` resolves to a symlink into `/Applications/BioRouter.app/Contents/Resources/bin/biorouter`. After the one-click update + relaunch, run `biorouter --version` in a **new** terminal → it reports `X` automatically (the symlink target was replaced in place). No second click needed.
+- [ ] **macOS:** before update, `which biorouter` resolves to a symlink into `/Applications/Biorouter.app/Contents/Resources/bin/biorouter`. After the one-click update + relaunch, run `biorouter --version` in a **new** terminal → it reports `X` automatically (the symlink target was replaced in place). No second click needed.
 - [ ] If the terminal `biorouter` was installed standalone (deb/rpm) or copied (Windows), the existing **"Biorouter CLI Update"** card appears post-update and its button re-links to the bundled `X` binary (`biorouter setup-path`). Confirm this card's behavior is **unchanged** from before.
 - [ ] `biorouterd --version` (the daemon bundled in the app) reports `X` after update — the GUI spawns the bundled daemon, so it always matches the app.
 - [ ] Launching the CLI from the GUI ("Open in terminal") starts the `X` CLI.

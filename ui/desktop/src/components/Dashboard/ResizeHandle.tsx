@@ -6,7 +6,7 @@ interface Props {
 
 // Minimalist resize corner: two short hairlines on the SE corner. Always visible
 // (z-20 so chat content never occludes it) but very subtle — matches the rest of
-// the BioRouter UI's light, low-chrome aesthetic. Hit area is the full 16×16 box.
+// the Biorouter UI's light, low-chrome aesthetic. Hit area is the full 16×16 box.
 export const ResizeHandle: React.FC<Props> = ({ onPointerDown }) => (
   <div
     onPointerDown={onPointerDown}

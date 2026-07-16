@@ -1,4 +1,4 @@
-// Benchmark v2 (apps SDK v2, plan Phase 6). Scores every BioRouter app in the
+// Benchmark v2 (apps SDK v2, plan Phase 6). Scores every Biorouter app in the
 // local store on the v2 axes, reading ONLY the RAW store files
 // (manifest.json + index.html + src/main.ts) — never served/rendered HTML.
 // This is the same honesty rule the v1 variety benchmark used: we score what the
@@ -232,7 +232,7 @@ function pad(s, w) {
 
 function renderTable(agg, apps) {
   const L = [];
-  L.push(`BioRouter apps benchmark v2`);
+  L.push(`Biorouter apps benchmark v2`);
   L.push(`store: ${STORE}`);
   L.push(`apps scored: ${agg.apps}`);
   L.push('');
@@ -307,7 +307,7 @@ function main() {
         ),
       );
     } else {
-      console.log(`BioRouter apps benchmark v2`);
+      console.log(`Biorouter apps benchmark v2`);
       console.log(`store: ${STORE}`);
       console.log(note);
       console.log('v2-score: 0% non-chat, 0 avg bound paths, 0% typed-calls');

@@ -5,6 +5,7 @@ import { UserAttachment } from '../types/message';
 import BaseChat from './BaseChat';
 
 export interface PairRouteState {
+  newChat?: boolean;
   resumeSessionId?: string;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];

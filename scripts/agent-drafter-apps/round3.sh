@@ -36,7 +36,7 @@ author_one() {
   local spec="$1"; IFS='|' read -r id title idea <<< "$spec"
   # Deliberately VAGUE: the idea + a usefulness nudge, nothing about controls,
   # the SDK, layout, or the design system. The agent must figure it out.
-  local instr="Use the Agent Drafter tools to build a BioRouter app with id \"$id\", titled \"$title\", that can $idea. Make it genuinely useful and pleasant to use. Build it and launch it."
+  local instr="Use the Agent Drafter tools to build a Biorouter app with id \"$id\", titled \"$title\", that can $idea. Make it genuinely useful and pleasant to use. Build it and launch it."
   "$HERE/author.sh" "$instr" > "/tmp/author3-$id.log" 2>&1
   echo "[done] $id (exit $?)"
 }

@@ -1325,7 +1325,7 @@ em > code.bg-inline-code {
   contain: layout style paint;
 }
 
-/* BioRouter icon animation to replace framer-motion */
+/* Biorouter icon animation to replace framer-motion */
 @keyframes biorouter-icon-entrance {
   from {
     opacity: 0;
@@ -1524,6 +1524,16 @@ em > code.bg-inline-code {
  */
 code [class~='token'] {
   display: inline;
+}
+
+.artifact-docx-preview .docx-wrapper {
+  box-sizing: border-box;
+  min-width: 100%;
+  padding: 16px 12px 0;
+}
+
+.artifact-docx-preview .docx-wrapper > section.docx {
+  transform-origin: top center;
 }
 
 @keyframes biorouter-heatmap-loading {

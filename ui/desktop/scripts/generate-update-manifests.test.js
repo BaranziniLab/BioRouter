@@ -23,8 +23,8 @@ function test(name, fn) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'br-manifest-'));
-const armPath = path.join(tmp, 'BioRouter-darwin-arm64-1.86.0.zip');
-const x64Path = path.join(tmp, 'BioRouter-darwin-x64-1.86.0.zip');
+const armPath = path.join(tmp, 'Biorouter-darwin-arm64-1.86.0.zip');
+const x64Path = path.join(tmp, 'Biorouter-darwin-x64-1.86.0.zip');
 const armBytes = Buffer.from('pretend-arm64-zip-contents');
 const x64Bytes = Buffer.from('pretend-x64-zip-contents-longer');
 fs.writeFileSync(armPath, armBytes);
@@ -52,14 +52,14 @@ test('manifest lists both arch zips with correct sha512 + size', () => {
   const arm = manifest.files.find((f) => f.url.includes('arm64'));
   const x64 = manifest.files.find((f) => f.url.endsWith('x64-1.86.0.zip'));
   assert.ok(arm && x64, 'both arch entries present');
-  assert.strictEqual(arm.url, 'BioRouter-darwin-arm64-1.86.0.zip');
+  assert.strictEqual(arm.url, 'Biorouter-darwin-arm64-1.86.0.zip');
   assert.strictEqual(arm.sha512, expectArmSha);
   assert.strictEqual(arm.size, armBytes.length);
   assert.strictEqual(x64.sha512, expectX64Sha);
   assert.strictEqual(x64.size, x64Bytes.length);
 
   // Legacy top-level fields point at the primary (arm64) entry.
-  assert.strictEqual(manifest.path, 'BioRouter-darwin-arm64-1.86.0.zip');
+  assert.strictEqual(manifest.path, 'Biorouter-darwin-arm64-1.86.0.zip');
   assert.strictEqual(manifest.sha512, expectArmSha);
   assert.strictEqual(manifest.releaseDate, '2026-06-20T00:00:00.000Z');
 });
@@ -83,7 +83,7 @@ test('yaml is well-formed and parseable back to the same values', () => {
   // Minimal structural assertions (no js-yaml dependency).
   assert.ok(yaml.startsWith('version: 1.86.0\n'));
   assert.ok(yaml.includes('files:\n'));
-  assert.ok(yaml.includes('  - url: BioRouter-darwin-arm64-1.86.0.zip\n'));
+  assert.ok(yaml.includes('  - url: Biorouter-darwin-arm64-1.86.0.zip\n'));
   assert.ok(yaml.includes(`    sha512: ${expectArmSha}\n`));
   assert.ok(yaml.includes(`    size: ${armBytes.length}\n`));
   assert.ok(yaml.includes("releaseDate: '2026-06-20T00:00:00.000Z'\n"));
@@ -93,7 +93,7 @@ test('yaml is well-formed and parseable back to the same values', () => {
 test('single-arch build (arm64 only) still produces a valid manifest', () => {
   const { manifest } = buildMacManifest({ version: '1.86.0', arm64Zip: armPath });
   assert.strictEqual(manifest.files.length, 1);
-  assert.strictEqual(manifest.path, 'BioRouter-darwin-arm64-1.86.0.zip');
+  assert.strictEqual(manifest.path, 'Biorouter-darwin-arm64-1.86.0.zip');
 });
 
 test('throws when no zips provided', () => {

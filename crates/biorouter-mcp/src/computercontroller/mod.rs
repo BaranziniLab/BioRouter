@@ -298,7 +298,7 @@ impl ComputerControllerServer {
     pub fn new() -> Self {
         // choose_app_strategy().cache_dir()
         // - macOS/Linux: ~/.cache/biorouter/computer_controller/
-        // - Windows:     ~\AppData\Local\BaranziniLab\BioRouter\cache\computer_controller\
+        // - Windows:     ~\AppData\Local\BaranziniLab\Biorouter\cache\computer_controller\
         // keep previous behavior of defaulting to /tmp/
         let cache_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
             .map(|strategy| strategy.in_cache_dir("computer_controller"))

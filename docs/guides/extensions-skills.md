@@ -1,23 +1,23 @@
-# UCSF BioRouter — Extensions, Skills, and MCP Agents
+# UCSF Biorouter — Extensions, Skills, and MCP Agents
 
-BioRouter is extensible through three complementary mechanisms: **Extensions** (MCP servers that add tools), **Skills** (reusable instruction sets), and **Platform extensions** (built-in agent capabilities). Together they allow BioRouter to connect to databases, APIs, file systems, and custom workflows.
+Biorouter is extensible through three complementary mechanisms: **Extensions** (MCP servers that add tools), **Skills** (reusable instruction sets), and **Platform extensions** (built-in agent capabilities). Together they allow Biorouter to connect to databases, APIs, file systems, and custom workflows.
 
 ---
 
 ## Extensions (MCP Servers)
 
-Extensions are add-ons based on the [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol). Each extension is an MCP server that exposes a set of tools BioRouter can invoke. BioRouter automatically scans extensions for known malware before activating them.
+Extensions are add-ons based on the [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol). Each extension is an MCP server that exposes a set of tools Biorouter can invoke. Biorouter automatically scans extensions for known malware before activating them.
 
 ### Built-in Extensions
 
-These extensions ship with BioRouter and are available immediately:
+These extensions ship with Biorouter and are available immediately:
 
 | Extension | Description | Default State |
 |---|---|---|
 | **Developer** | File operations, shell commands, text editing, code search — essential for software development | Enabled |
 | **Computer Controller** | Web scraping, file caching, browser automation | Disabled |
 | **Memory** | Remembers user preferences across sessions | Disabled |
-| **Tutorial** | Interactive tutorials for learning BioRouter | Disabled |
+| **Tutorial** | Interactive tutorials for learning Biorouter | Disabled |
 | **Auto Visualiser** | Automatically generates data visualizations in conversations | Disabled |
 
 ### Built-in Platform Extensions
@@ -34,7 +34,7 @@ Platform extensions provide global agent capabilities and run inside the agent p
 
 ### Adding External Extensions
 
-Any MCP server can be added as a BioRouter extension.
+Any MCP server can be added as a Biorouter extension.
 
 **Desktop UI:**
 1. Open the sidebar > Extensions > Add custom extension.
@@ -71,7 +71,7 @@ extensions:
 | Type | Description |
 |---|---|
 | `stdio` | Standard I/O process (most common — Node/Python MCP servers) |
-| `builtin` | Bundled with the BioRouter MCP server binary |
+| `builtin` | Bundled with the Biorouter MCP server binary |
 | `platform` | Runs in the agent process (platform extensions) |
 | `streamable_http` | Remote server over HTTP |
 | `inline_python` | Inline Python code executed via `uvx` |
@@ -94,19 +94,19 @@ Extensions are standard MCP servers. You can write one in any language (Python, 
 - **TypeScript:** Use the `@modelcontextprotocol/sdk` npm package.
 - **Reference:** https://modelcontextprotocol.io/quickstart/server
 
-Once built, add it to BioRouter as a `stdio` or `streamable_http` extension.
+Once built, add it to Biorouter as a `stdio` or `streamable_http` extension.
 
 ---
 
 ## Skills
 
-Skills are reusable instruction sets that teach BioRouter how to perform specific workflows. Unlike extensions (which add tools), skills add domain expertise and procedural knowledge — checklists, deployment procedures, API guides, etc.
+Skills are reusable instruction sets that teach Biorouter how to perform specific workflows. Unlike extensions (which add tools), skills add domain expertise and procedural knowledge — checklists, deployment procedures, API guides, etc.
 
 The **Skills platform extension** must be enabled (it is by default) for skills to work.
 
 ### How Skills Work
 
-When a session starts, BioRouter discovers all available skills and adds them to its context. During a session, BioRouter automatically loads a skill when your request clearly matches the skill's purpose. You can also invoke skills explicitly:
+When a session starts, Biorouter discovers all available skills and adds them to its context. During a session, Biorouter automatically loads a skill when your request clearly matches the skill's purpose. You can also invoke skills explicitly:
 
 ```
 Use the code-review skill to review this PR
@@ -114,17 +114,17 @@ Follow the new-service skill to set up the auth service
 Apply the deployment skill
 ```
 
-You can ask BioRouter "What skills are available?" to see the loaded skill list.
+You can ask Biorouter "What skills are available?" to see the loaded skill list.
 
 ### Skill Locations
 
-BioRouter checks all of these directories (later directories take priority if the same skill name exists in multiple):
+Biorouter checks all of these directories (later directories take priority if the same skill name exists in multiple):
 
 1. `~/.claude/skills/` — global, shared with Claude Desktop
 2. `~/.config/agents/skills/` — global, portable across AI coding agents
-3. `~/.config/biorouter/skills/` — global, BioRouter-specific
+3. `~/.config/biorouter/skills/` — global, Biorouter-specific
 4. `./.claude/skills/` — project-level, shared with Claude Desktop
-5. `./.biorouter/skills/` — project-level, BioRouter-specific
+5. `./.biorouter/skills/` — project-level, Biorouter-specific
 6. `./.agents/skills/` — project-level, portable across agents
 
 Use global skills for workflows that apply across projects. Use project-level skills for procedures tied to a specific codebase.
@@ -177,20 +177,20 @@ A skill directory can include helper scripts, templates, or config files:
         └── config.template.json
 ```
 
-BioRouter can access these supporting files when executing the skill via the Developer extension's file tools.
+Biorouter can access these supporting files when executing the skill via the Developer extension's file tools.
 
 ### Best Practices
 
 - Keep skills focused — one skill per workflow or domain.
 - Write for clarity — use numbered steps and direct language.
-- Include verification steps so BioRouter can confirm the workflow completed successfully.
+- Include verification steps so Biorouter can confirm the workflow completed successfully.
 - Split long skills into multiple focused skills rather than one large monolithic one.
 
 ---
 
 ## MCP Agent Integration
 
-BioRouter supports connecting to any remote MCP server as an agent, enabling access to specialized capabilities:
+Biorouter supports connecting to any remote MCP server as an agent, enabling access to specialized capabilities:
 
 - **Databases** — PostgreSQL, SQLite, Supabase
 - **Web** — Fetch, Brave Search, Browserbase (headless browser), Firecrawl
@@ -200,7 +200,7 @@ BioRouter supports connecting to any remote MCP server as an agent, enabling acc
 - **Memory** — Knowledge Graph Memory, Chat Recall
 - **Data / Science** — custom science-domain MCP servers
 
-MCP servers communicate over `stdio` (local process) or Streamable HTTP (remote service). Any server that implements the MCP specification is compatible with BioRouter.
+MCP servers communicate over `stdio` (local process) or Streamable HTTP (remote service). Any server that implements the MCP specification is compatible with Biorouter.
 
 A directory of available MCP servers is maintained at https://www.pulsemcp.com/servers.
 

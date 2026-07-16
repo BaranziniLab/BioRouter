@@ -1,4 +1,4 @@
-//! Unified execution management for BioRouter agents
+//! Unified execution management for Biorouter agents
 //!
 //! This module provides centralized agent lifecycle management with session isolation,
 //! enabling multiple concurrent sessions with independent agents, extensions, and providers.

@@ -1,4 +1,4 @@
-//! Digest BioRouter conversation/chat history into a knowledge base.
+//! Digest Biorouter conversation/chat history into a knowledge base.
 //!
 //! The knowledge `ingest` macro already knows how to turn an arbitrary text
 //! source into wiki pages. This module renders a stored [`Session`]'s full
@@ -194,7 +194,7 @@ pub async fn ingest_conversation(
     }
     let focus = args.focus.or_else(|| {
         Some(
-            "This source is a BioRouter chat transcript. Capture the user's questions, \
+            "This source is a Biorouter chat transcript. Capture the user's questions, \
              the approach taken, the tools and commands used, their results, and any \
              durable findings or preferences revealed."
                 .to_string(),

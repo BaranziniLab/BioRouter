@@ -2,7 +2,7 @@ use rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
 
 use crate::config::Config;
 
-/// BioRouter-specific credential store that uses the Config system
+/// Biorouter-specific credential store that uses the Config system
 ///
 /// This implementation stores OAuth credentials in the biorouter configuration
 /// system, which handles secure storage (e.g., keychain integration).

@@ -19,7 +19,7 @@
 //!
 //! ## Off unless asked for
 //!
-//! Every limit is `None` by default, so a stock BioRouter behaves exactly as it
+//! Every limit is `None` by default, so a stock Biorouter behaves exactly as it
 //! did. A limit can be set per session ([`crate::agents::types::SessionConfig::budget`])
 //! or globally via config/env (`BIOROUTER_REPLY_BUDGET_SECONDS`,
 //! `BIOROUTER_REPLY_BUDGET_TOKENS`, `BIOROUTER_REPLY_BUDGET_USD`); the session

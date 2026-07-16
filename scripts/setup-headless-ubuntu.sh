@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision an Ubuntu 22.04/24.04 host for a headless BioRouter deployment.
+# Provision an Ubuntu 22.04/24.04 host for a headless Biorouter deployment.
 # Run on the Ubuntu host after dist/headless-linux-x64 has been synced.
 set -euo pipefail
 
@@ -94,7 +94,7 @@ configure_systemd() {
   local display_num="${DISPLAY_ID#:}"
   sudo tee /etc/systemd/system/biorouter-xvfb.service >/dev/null <<EOF
 [Unit]
-Description=Virtual X display for BioRouter headless automation
+Description=Virtual X display for Biorouter headless automation
 After=network-online.target
 
 [Service]
@@ -110,7 +110,7 @@ EOF
 
   sudo tee /etc/systemd/system/biorouter-headless.service >/dev/null <<EOF
 [Unit]
-Description=BioRouter headless daemon
+Description=Biorouter headless daemon
 After=network-online.target biorouter-xvfb.service
 Wants=network-online.target biorouter-xvfb.service
 

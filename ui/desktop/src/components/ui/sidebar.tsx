@@ -16,8 +16,8 @@ import { useIsMobile } from '../../hooks/use-mobile';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = '13rem';
-const SIDEBAR_WIDTH_MOBILE = 'fit-content';
+const SIDEBAR_WIDTH = '15rem';
+const SIDEBAR_WIDTH_MOBILE = SIDEBAR_WIDTH;
 const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
 
@@ -173,7 +173,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) px-4 py-0 [&>button]:hidden !w-fit !max-w-none"
+          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) min-w-(--sidebar-width) max-w-(--sidebar-width) px-4 py-0 [&>button]:hidden"
           style={
             {
               '--sidebar-width': SIDEBAR_WIDTH_MOBILE,
@@ -185,7 +185,7 @@ function Sidebar({
             <SheetTitle>Sidebar</SheetTitle>
             <SheetDescription>Displays the mobile sidebar.</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full w-full flex-col overflow-hidden">{children}</div>
+          <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">{children}</div>
         </SheetContent>
       </Sheet>
     );
@@ -358,7 +358,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<'div'>) {
       data-slot="sidebar-content"
       data-sidebar="content"
       className={cn(
-        'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden group-data-[collapsible=icon]:overflow-hidden',
+        'flex min-h-0 w-full min-w-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden group-data-[collapsible=icon]:overflow-hidden',
         className
       )}
       {...props}

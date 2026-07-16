@@ -73,8 +73,14 @@ import {
   SPAWN_ENV,
 } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
-import { isAllowedRendererPermission, isAppOrigin } from './utils/permissionPolicy';
+import {
+  isAllowedRendererPermission,
+  isAppOrigin,
+  shouldOpenExternalNavigation,
+} from './utils/permissionPolicy';
 import { injectArtifactBrowserCsp, injectArtifactHostTheme } from './utils/artifactSecurity';
+import { readGitArtifactTree } from './utils/artifactGit';
+import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -87,6 +93,16 @@ function shouldSetupUpdater(): boolean {
 
 // Define temp directory for pasted images
 const biorouterTempDir = path.join(app.getPath('temp'), 'biorouter-pasted-images');
+
+function resolveImagePath(filename: string): string | undefined {
+  return [
+    path.join(process.resourcesPath, 'images', filename),
+    path.join(process.cwd(), 'src', 'images', filename),
+    path.join(__dirname, '..', 'images', filename),
+    path.join(__dirname, 'images', filename),
+    path.join(process.cwd(), 'images', filename),
+  ].find((candidate) => fsSync.existsSync(candidate));
+}
 
 function expandBiorouterPath(filePath: string): string {
   const expandedPath = expandTilde(filePath);
@@ -194,8 +210,13 @@ function mimeTypeForArtifactPath(filePath: string): string {
     '.jpg': 'image/jpeg',
     '.js': 'text/javascript',
     '.json': 'application/json',
+    '.ipynb': 'application/x-ipynb+json',
     '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
     '.png': 'image/png',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.py': 'text/x-python',
     '.r': 'text/x-r',
     '.rs': 'text/rust',
@@ -212,6 +233,16 @@ function mimeTypeForArtifactPath(filePath: string): string {
     '.yml': 'application/yaml',
   };
   return mimeTypes[ext] || 'application/octet-stream';
+}
+
+function documentFormatForArtifactPath(filePath: string) {
+  const formats = {
+    '.pdf': 'pdf',
+    '.docx': 'docx',
+    '.xlsx': 'xlsx',
+    '.pptx': 'pptx',
+  } as const;
+  return formats[path.extname(filePath).toLowerCase() as keyof typeof formats] ?? null;
 }
 
 function isTextArtifact(mimeType: string, buffer: Buffer): boolean {
@@ -321,7 +352,7 @@ if (started) app.quit();
 // Global safety net: turn uncaught exceptions / unhandled rejections in the
 // main process into logged diagnostics instead of bare brk #0 aborts. The
 // default Node behavior tears the process down with no readable cause line
-// in the crash report, which is what every recent BioRouter crash report
+// in the crash report, which is what every recent Biorouter crash report
 // has looked like. Logging here doesn't *prevent* the crash, but it
 // guarantees the next .ips will have actionable context.
 process.on('uncaughtException', (err, origin) => {
@@ -474,7 +505,7 @@ let pendingBrxtFilePath: string | null = null;
  * A window-owning deep link claims the launch, so appMain() will not open its
  * own window. If the link then fails to produce one — a malformed URL, a
  * backend that won't start — the app would sit running with nothing on screen,
- * which is indistinguishable from "clicking the link quit BioRouter". Always
+ * which is indistinguishable from "clicking the link quit Biorouter". Always
  * leave the user with a window.
  */
 async function ensureWindowAfterDeepLink(openDir?: string | null) {
@@ -678,7 +709,7 @@ app.on('open-url', async (_event, url) => {
 app.on('will-finish-launching', () => {
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
-      applicationName: 'BioRouter',
+      applicationName: 'Biorouter',
       applicationVersion: app.getVersion(),
     });
   }
@@ -741,7 +772,7 @@ async function handleFileOpen(filePath: string) {
 
     // Show user-friendly error notification
     new Notification({
-      title: 'BioRouter',
+      title: 'Biorouter',
       body: `Could not open directory: ${path.basename(filePath)}`,
     }).show();
   }
@@ -928,7 +959,13 @@ const createChat = async (
     resizable: true,
     useContentSize: true,
     show: windowOptions?.show ?? true,
-    icon: path.join(__dirname, '../images/icon.icns'),
+    icon: resolveImagePath(
+      process.platform === 'win32'
+        ? 'icon.ico'
+        : process.platform === 'darwin'
+          ? 'icon.icns'
+          : 'icon.png'
+    ),
     webPreferences: {
       spellcheck: settings.spellcheckEnabled ?? true,
       preload: path.join(__dirname, 'preload.js'),
@@ -1019,7 +1056,7 @@ const createChat = async (
     } else {
       dialog.showMessageBoxSync({
         type: 'error',
-        title: 'BioRouter Failed to Start',
+        title: 'Biorouter Failed to Start',
         message: 'The backend server failed to start.',
         detail: errorLog.join('\n'),
         buttons: ['OK'],
@@ -1102,7 +1139,7 @@ const createChat = async (
   // CSP is injected by onHeadersReceived. Agent-authored artifact HTML must
   // never reach such a window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternallyOpenableUrl(url)) {
+    if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
       shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -1115,7 +1152,7 @@ const createChat = async (
     event.preventDefault();
     // Unlike setWindowOpenHandler above, this legacy path used to hand any
     // scheme -- including file:// and custom protocols -- to the OS opener.
-    if (isExternallyOpenableUrl(url)) {
+    if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
       shell.openExternal(url);
     }
   });
@@ -1181,7 +1218,7 @@ const createChat = async (
     }
   }
 
-  // BioRouter's react app uses HashRouter, so the path + search params follow a #/
+  // Biorouter's react app uses HashRouter, so the path + search params follow a #/
   url.hash = `${appPath}?${searchParams.toString()}`;
   let formattedUrl = formatUrl(url);
   log.info('Opening URL: ', formattedUrl);
@@ -2406,37 +2443,23 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
 
     const stats = await fs.stat(resolvedPath);
     if (stats.isDirectory()) {
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const gitTree = await readGitArtifactTree(resolvedPath);
+      if (gitTree) {
+        return {
+          kind: 'gitDirectory',
+          title,
+          path: resolvedPath,
+          branch: gitTree.branch,
+          entries: gitTree.entries,
+          found: true,
+        };
+      }
       return {
         kind: 'directory',
         title,
         path: resolvedPath,
         found: true,
-        entries: await Promise.all(
-          entries
-            .filter((entry) => !entry.name.startsWith('.'))
-            .sort((a, b) => {
-              if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map(async (entry) => {
-              const entryPath = path.join(resolvedPath, entry.name);
-              let size: number | undefined;
-              if (entry.isFile()) {
-                try {
-                  size = (await fs.stat(entryPath)).size;
-                } catch {
-                  size = undefined;
-                }
-              }
-              return {
-                name: entry.name,
-                path: entryPath,
-                isDirectory: entry.isDirectory(),
-                size,
-              };
-            })
-        ),
+        entries: await readArtifactDirectoryTree(resolvedPath),
       };
     }
 
@@ -2462,6 +2485,20 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     }
 
     const buffer = await fs.readFile(resolvedPath);
+    const documentFormat = documentFormatForArtifactPath(resolvedPath);
+    if (documentFormat) {
+      return {
+        kind: 'document',
+        format: documentFormat,
+        title,
+        path: resolvedPath,
+        mimeType,
+        data: Uint8Array.from(buffer).buffer,
+        size: stats.size,
+        found: true,
+      };
+    }
+
     if (mimeType.startsWith('image/')) {
       return {
         kind: 'image',
@@ -2656,7 +2693,7 @@ function isAllowedRegistryUrl(rawUrl: string): URL | null {
 ipcMain.handle('registry:fetch', async () => {
   try {
     const response = await fetch(REGISTRY_URL, {
-      headers: { 'User-Agent': 'BioRouter', Accept: 'application/json' },
+      headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
     });
     if (!response.ok) return { error: `HTTP ${response.status}` };
     const json = await response.json();
@@ -2679,7 +2716,7 @@ ipcMain.handle('registry:download', async (_event, { url }: { url: string }) => 
 
   try {
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'BioRouter' },
+      headers: { 'User-Agent': 'Biorouter' },
       redirect: 'follow',
     });
     if (!response.ok) return { error: `Download failed: HTTP ${response.status}` };
@@ -2709,8 +2746,8 @@ ipcMain.handle('brxt:open-file-dialog', async (event) => {
   }
   const win = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(win!, {
-    title: 'Select BioRouter Extension Bundle',
-    filters: [{ name: 'BioRouter Extension Bundle', extensions: ['brxt'] }],
+    title: 'Select Biorouter Extension Bundle',
+    filters: [{ name: 'Biorouter Extension Bundle', extensions: ['brxt'] }],
     properties: ['openFile'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -3563,11 +3600,11 @@ function buildApplicationMenu() {
   ];
 
   const template: MenuItemConstructorOptions[] = [
-    // ── BioRouter app menu (macOS only) ──────────────────────────────────
+    // ── Biorouter app menu (macOS only) ──────────────────────────────────
     ...(isMac
       ? [
           {
-            label: 'BioRouter',
+            label: 'Biorouter',
             submenu: [
               { role: 'about' as const },
               { type: 'separator' as const },
@@ -3596,7 +3633,7 @@ function buildApplicationMenu() {
                 },
               },
               { type: 'separator' as const },
-              { role: 'quit' as const, label: 'Quit BioRouter' },
+              { role: 'quit' as const, label: 'Quit Biorouter' },
             ],
           } as MenuItemConstructorOptions,
         ]
@@ -3692,7 +3729,7 @@ function buildApplicationMenu() {
         { type: 'separator' as const },
         { role: 'close' as const },
         {
-          label: 'Focus BioRouter Window',
+          label: 'Focus Biorouter Window',
           accelerator: 'CmdOrCtrl+Alt+G',
           click() {
             focusWindow();
@@ -3990,10 +4027,10 @@ async function appMain() {
       : "default-src 'self';" +
         "style-src 'self' 'unsafe-inline';" +
         "script-src 'self';" +
-        "img-src 'self' data: https:;" +
+        "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
-        "frame-src 'self' https: http:;" +
+        "frame-src 'self' blob: https: http:;" +
         "font-src 'self' data: https:;" +
         "media-src 'self' mediastream:;" +
         "form-action 'none';" +
@@ -4247,7 +4284,7 @@ async function appMain() {
         response = await fetch(target.href, {
           redirect: 'manual',
           headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; BioRouter/1.0)',
+            'User-Agent': 'Mozilla/5.0 (compatible; Biorouter/1.0)',
           },
         });
         const location = response.headers.get('location');
@@ -4497,7 +4534,7 @@ async function appMain() {
 
       const isDark = payload.theme === 'dark';
       const win = new BrowserWindow({
-        title: payload.title || 'BioRouter Artifact',
+        title: payload.title || 'Biorouter Artifact',
         width: Math.min(Math.max(payload.width || 1000, 480), 1600),
         height: Math.min(Math.max(payload.height || 760, 360), 1200),
         resizable: true,
@@ -4634,9 +4671,13 @@ async function appMain() {
 
 app.whenReady().then(async () => {
   try {
+    if (process.platform === 'darwin') {
+      const dockIconPath = resolveImagePath('icon.png');
+      if (dockIconPath) app.dock?.setIcon(dockIconPath);
+    }
     await appMain();
   } catch (error) {
-    dialog.showErrorBox('BioRouter Error', `Failed to create main window: ${error}`);
+    dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
     app.quit();
   }
 });

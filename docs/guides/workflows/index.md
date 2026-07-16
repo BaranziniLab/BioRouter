@@ -1,6 +1,6 @@
-# UCSF BioRouter — Workflows
+# UCSF Biorouter — Workflows
 
-Workflows are reusable, shareable BioRouter configurations. A workflow packages instructions, prompts, extension requirements, parameters, and model settings into a single file that anyone can load to launch a reproducible, pre-configured BioRouter session.
+Workflows are reusable, shareable Biorouter configurations. A workflow packages instructions, prompts, extension requirements, parameters, and model settings into a single file that anyone can load to launch a reproducible, pre-configured Biorouter session.
 
 Common use cases: automated analysis pipelines, code review workflows, data processing routines, multi-step research tasks, scheduled jobs.
 
@@ -20,7 +20,7 @@ my-workflow.json     ← supported
 
 ## Workflow Locations
 
-BioRouter discovers workflows from:
+Biorouter discovers workflows from:
 
 1. The current working directory
 2. Paths listed in the `BIOROUTER_WORKFLOW_PATH` environment variable
@@ -136,7 +136,7 @@ extensions:
     timeout: 120
 ```
 
-If an extension requires a secret (listed in `env_keys`) that is not in the system keyring, BioRouter will prompt the user to enter it at launch and store it securely.
+If an extension requires a secret (listed in `env_keys`) that is not in the system keyring, Biorouter will prompt the user to enter it at launch and store it securely.
 
 ---
 
@@ -284,7 +284,7 @@ biorouter run --workflow my-workflow.yaml --param gene_name=BRCA1
 
 ## Workflow Validation
 
-BioRouter validates workflows on load. Common errors:
+Biorouter validates workflows on load. Common errors:
 
 - Missing required `title` or `description`
 - Optional parameters without a `default` value

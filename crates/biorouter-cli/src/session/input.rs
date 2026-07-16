@@ -20,7 +20,7 @@ pub enum InputResult {
     Compact,
     ToggleFullToolOutput,
     /// Branch the current conversation into a brand-new session (full history
-    /// preserved) and open it in a fresh BioRouter desktop window. An optional
+    /// preserved) and open it in a fresh Biorouter desktop window. An optional
     /// name is given to the new branch.
     Diverge(Option<String>),
     /// Rename the current session.
@@ -277,7 +277,7 @@ fn print_help() {
         ("/clear", "Clear the current chat history"),
         (
             "/diverge [name]",
-            "Branch this conversation into a new BioRouter window (keeps full history)",
+            "Branch this conversation into a new Biorouter window (keeps full history)",
         ),
         ("/rename <name>", "Rename the current session"),
         (

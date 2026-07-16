@@ -1,4 +1,4 @@
-// Drive a browser-opened BioRouter app with Playwright and verify the live
+// Drive a browser-opened Biorouter app with Playwright and verify the live
 // agent answers. Run from the main repo's ui/desktop dir so `playwright`
 // resolves:  node <thisfile> <url> "<prompt>"
 import { chromium } from 'playwright';

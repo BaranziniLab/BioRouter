@@ -30,7 +30,7 @@ impl BioRouterWiki {
         // Check for Wikipedia-style content
         let has_wiki_elements = content.contains("<h1") && // Has headings
                               (content.contains("<h2") || content.contains("<h3")) && // Has subheadings
-                              content.contains("BioRouter") && // Mentions BioRouter
+                              content.contains("Biorouter") && // Mentions Biorouter
                               content.contains("AI") && // Mentions AI
                               (content.contains("<p>") || content.contains("<div")); // Has paragraphs
 
@@ -50,7 +50,7 @@ impl Evaluation for BioRouterWiki {
         // Collect baseline metrics (execution time, token usage, tool calls)
         let (messages, perf_metrics) = collect_baseline_metrics(
             agent,
-            "Create a Wikipedia-style web page about BioRouter (Block's AI agent) in a new index.html file. The page should be a complete, well-structured HTML document with proper head and body sections. Use heading tags (h1, h2, h3) to organize the content into clear sections. Include comprehensive information about BioRouter organized in a way similar to how Wikipedia presents technical topics. Remember to use your tools if applicable.".to_string()
+            "Create a Wikipedia-style web page about Biorouter (Block's AI agent) in a new index.html file. The page should be a complete, well-structured HTML document with proper head and body sections. Use heading tags (h1, h2, h3) to organize the content into clear sections. Include comprehensive information about Biorouter organized in a way similar to how Wikipedia presents technical topics. Remember to use your tools if applicable.".to_string()
         ).await;
 
         // Convert HashMap to Vec for our metrics

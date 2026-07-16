@@ -206,7 +206,7 @@ export default function DependencySetupModal() {
               ...d,
               installState: 'error' as InstallState,
               errorMsg:
-                'Install completed but tool still not detected. Try opening a new terminal and re-running BioRouter.',
+                'Install completed but tool still not detected. Try opening a new terminal and re-running Biorouter.',
             };
           })
         );
@@ -307,7 +307,7 @@ export default function DependencySetupModal() {
                 ? cli?.brokenOnPath
                   ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
                   : 'Your terminal `biorouter` is older than this app. Update it to match.'
-                : 'The following tools are required for BioRouter features. Install them to continue.'}
+                : 'The following tools are required for Biorouter features. Install them to continue.'}
             </p>
           </div>
         </div>
@@ -467,7 +467,7 @@ export default function DependencySetupModal() {
                 ? 'Updating keeps the terminal CLI in sync with the desktop app.'
                 : deps.length === 0
                   ? 'Install the CLI to use `biorouter` from any terminal.'
-                  : 'BioRouter features may be limited until these are installed.'}
+                  : 'Biorouter features may be limited until these are installed.'}
           </p>
           <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
             {allDone ? 'Done' : 'Dismiss'}

@@ -24,7 +24,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
           $tag = "v$env:VERSION"
-          $assetName = "BioRouter-win32-x64-$env:VERSION.zip"
+          $assetName = "Biorouter-win32-x64-$env:VERSION.zip"
           $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
           $matches = @($releases | Where-Object { $_.tag_name -eq $tag -and $_.draft })
           if ($matches.Count -ne 1) {
@@ -52,10 +52,10 @@ jobs:
           VERSION: ${{ inputs.version }}
           BIOROUTER_DISABLE_KEYRING: "true"
         run: |
-          $app = Resolve-Path "artifact/unpacked/BioRouter-win32-x64"
+          $app = Resolve-Path "artifact/unpacked/Biorouter-win32-x64"
           $cli = Join-Path $app "resources/bin/biorouter.exe"
           $daemon = Join-Path $app "resources/bin/biorouterd.exe"
-          $desktop = Join-Path $app "BioRouter.exe"
+          $desktop = Join-Path $app "Biorouter.exe"
 
           $cliVersion = & $cli --version
           if ($LASTEXITCODE -ne 0 -or $cliVersion -notmatch [regex]::Escape($env:VERSION)) {

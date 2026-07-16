@@ -70,7 +70,7 @@ impl Paths {
         #[cfg(target_os = "macos")]
         {
             Some(PathBuf::from(
-                "/Library/Application Support/BioRouter/managed-policy.yaml",
+                "/Library/Application Support/Biorouter/managed-policy.yaml",
             ))
         }
         #[cfg(target_os = "linux")]
@@ -81,7 +81,7 @@ impl Paths {
         {
             std::env::var("ProgramData").ok().map(|program_data| {
                 PathBuf::from(program_data)
-                    .join("BioRouter")
+                    .join("Biorouter")
                     .join("managed-policy.yaml")
             })
         }

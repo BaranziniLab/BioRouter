@@ -236,6 +236,44 @@ console.log('Hello, World!');
       expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
+    it('keeps file URI links inside the artifact preview instead of opening localhost', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="[Preview report](file:///Users/wgu/project/report.pdf)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview report' }));
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'report.pdf',
+        path: '/Users/wgu/project/report.pdf',
+      });
+      expect(screen.queryByRole('link', { name: 'Preview report' })).not.toBeInTheDocument();
+    });
+
+    it('renders incomplete file schemes and metadata directories as inert text', async () => {
+      const onOpenArtifact = vi.fn();
+
+      render(
+        <MarkdownContent
+          content="Use `file://` links; the hidden `.git` directory is metadata. [Broken](file://)"
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      expect(await screen.findByText('file://')).toHaveProperty('tagName', 'CODE');
+      expect(screen.getByText('.git')).toHaveProperty('tagName', 'CODE');
+      expect(screen.queryByRole('button', { name: 'file://' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '.git' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Broken' })).not.toBeInTheDocument();
+      expect(onOpenArtifact).not.toHaveBeenCalled();
+    });
+
     it('opens an absolute generated-file path formatted as inline code', async () => {
       const onOpenArtifact = vi.fn();
       const content =

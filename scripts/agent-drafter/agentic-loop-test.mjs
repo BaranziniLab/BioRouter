@@ -3,7 +3,7 @@
  * Agent Drafter — agentic-loop test kit.
  *
  * Verifies the loop that powers agentic artifacts end-to-end: it launches the
- * BioRouter ACP agent over a WebSocket (`biorouter acp --ws`), connects as an
+ * Biorouter ACP agent over a WebSocket (`biorouter acp --ws`), connects as an
  * ACP client (exactly like the artifact runtime `agent.js` does), and checks
  * that replies are REAL agentic answers from the configured model — not
  * hardwired / rule-based strings:

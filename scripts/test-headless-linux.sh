@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke-test a headless BioRouter Ubuntu deployment.
+# Smoke-test a headless Biorouter Ubuntu deployment.
 set -euo pipefail
 
 REMOTE="${1:?usage: test-headless-linux.sh <user@host> <ssh-key> [--live]}"
@@ -91,7 +91,7 @@ try {
     throw new Error(`unexpected page title: ${home.title}`);
   }
   if (!home.text.includes('Biorouter')) {
-    throw new Error('home page did not render BioRouter content');
+    throw new Error('home page did not render Biorouter content');
   }
   if (!home.hasElectron || !home.hasAppConfig) {
     throw new Error(

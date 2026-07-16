@@ -95,7 +95,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
           <div>
             <DialogTitle>Browse Extensions</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
-              Install MCP extensions from the BioRouter marketplace. Add one at a time. Most need
+              Install MCP extensions from the Biorouter marketplace. Add one at a time. Most need
               credentials configured during install.
               {!live && (
                 <span className="text-text-subtle"> · showing bundled catalog (offline)</span>

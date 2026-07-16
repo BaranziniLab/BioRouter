@@ -59,6 +59,7 @@ import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
+import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
@@ -83,9 +84,9 @@ const CurrentModelContext = createContext<{ model: string; mode: string } | null
 export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 
 const ARTIFACT_PANEL_MIN_WIDTH = 360;
-const ARTIFACT_PANEL_MAX_WIDTH = 860;
+const ARTIFACT_PANEL_MAX_WIDTH = 920;
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
-const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.42;
+const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.48;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
   ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
@@ -103,7 +104,7 @@ const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
 const HEADER_ACTION_BUTTON_CLASS =
   'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
 const PREVIEWABLE_TEXT_ARTIFACT_RE =
-  /(file:\/\/[^\s)\]]+|(?:~|\.{1,2}|\/)[^\s)\]]+\.(?:html?|png|jpe?g|gif|webp|svg|sql|md|txt|json|csv|ts|tsx|js|jsx|py|r)(?:[?#][^\s)\]]*)?)/gi;
+  /(?<![\w:/\\@])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.(?:html?|png|jpe?g|gif|webp|svg|pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])/gi;
 
 function clampArtifactPanelWidth(value: number, max: number) {
   return Math.min(Math.max(value, ARTIFACT_PANEL_MIN_WIDTH), max);
@@ -567,11 +568,10 @@ function BaseChatContent({
   const isCompactSidebarOverlayOpen = isSidebarCompact && !isMobile && sidebarState !== 'collapsed';
   const reserveTitlebarControls =
     isMacOS && (isMobile || isSidebarCompact || sidebarState === 'collapsed');
-  const sessionPillWrapperCls = isCompactSidebarOverlayOpen
-    ? 'pl-[224px]'
-    : reserveTitlebarControls
-      ? `${isMacOS ? 'pl-[184px]' : 'pl-[104px]'}`
-      : 'pl-4';
+  const sessionPillPaddingLeft = getSessionTitlePadding(
+    isCompactSidebarOverlayOpen,
+    reserveTitlebarControls
+  );
   const setView = useNavigation();
 
   useEffect(() => {
@@ -1598,8 +1598,13 @@ function BaseChatContent({
                   // beside this one; a translucent, blurred fill made the two
                   // bottom hairlines read at different weights so they never
                   // visually aligned (D-18).
-                  className={`relative z-[var(--z-sticky)] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4 ${sessionPillWrapperCls}`}
-                  style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+                  className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4"
+                  style={
+                    {
+                      WebkitAppRegion: 'drag',
+                      paddingLeft: sessionPillPaddingLeft,
+                    } as React.CSSProperties
+                  }
                 >
                   <div className="min-w-0 flex-1">
                     <SessionNamePill

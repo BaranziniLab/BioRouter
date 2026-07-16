@@ -612,7 +612,7 @@ impl SkillsClient {
                     .is_some_and(|b| disabled.contains(b));
             if is_disabled {
                 return Err(format!(
-                    "Skill '{}' is currently disabled. Enable it in BioRouter's Skills settings to use it.",
+                    "Skill '{}' is currently disabled. Enable it in Biorouter's Skills settings to use it.",
                     skill_name
                 ));
             }

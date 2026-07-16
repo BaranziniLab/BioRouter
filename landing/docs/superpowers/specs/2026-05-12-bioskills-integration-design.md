@@ -1,11 +1,11 @@
 # BioSkills Integration Design
 
 **Date:** 2026-05-12
-**Scope:** Integrate the GPTomics/bioSkills bioinformatics skill collection (63 categories, ~457 skills) into `biorouter-skills/`, and surface them on the BAAM page of the BioRouter landing site.
+**Scope:** Integrate the GPTomics/bioSkills bioinformatics skill collection (63 categories, ~457 skills) into `biorouter-skills/`, and surface them on the BAAM page of the Biorouter landing site.
 
 ## Goal
 
-Bring the full bioSkills library into BioRouter's skill marketplace without losing fidelity, advertise every category on `baam.html`, and add a skills-side search bar mirroring the existing extensions search.
+Bring the full bioSkills library into Biorouter's skill marketplace without losing fidelity, advertise every category on `baam.html`, and add a skills-side search bar mirroring the existing extensions search.
 
 ## Repo changes (`biorouter-skills/`)
 

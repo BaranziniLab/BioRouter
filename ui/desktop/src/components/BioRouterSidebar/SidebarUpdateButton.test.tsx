@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe('SidebarUpdateButton', () => {
-  it('stays hidden when BioRouter is current', () => {
+  it('stays hidden when Biorouter is current', () => {
     render(<SidebarUpdateButton />);
     expect(screen.queryByTestId('sidebar-update-button')).toBeNull();
 
@@ -49,7 +49,7 @@ describe('SidebarUpdateButton', () => {
     render(<SidebarUpdateButton />);
     emit({ event: 'update-available', data: { version: '1.89.0' } });
 
-    const button = screen.getByRole('button', { name: 'Update BioRouter to 1.89.0' });
+    const button = screen.getByRole('button', { name: 'Update Biorouter to 1.89.0' });
     expect(button.textContent).toContain('UPDATE');
     fireEvent.click(button);
 
@@ -68,7 +68,7 @@ describe('SidebarUpdateButton', () => {
     emit({ event: 'update-available', data: { version: '1.89.0' } });
 
     expect(screen.queryByText(/Downloading update/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Update BioRouter to 1.89.0' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Update Biorouter to 1.89.0' }));
 
     expect(await screen.findByText(/Downloading update/i)).toBeTruthy();
   });
@@ -98,6 +98,6 @@ describe('SidebarUpdateButton', () => {
 
     render(<SidebarUpdateButton />);
 
-    expect(await screen.findByRole('button', { name: 'Update BioRouter to 1.89.0' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Update Biorouter to 1.89.0' })).toBeTruthy();
   });
 });

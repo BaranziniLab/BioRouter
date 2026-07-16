@@ -164,7 +164,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div>
               <p className="text-sm font-medium text-text-default">Menu bar icon</p>
-              <p className="text-xs text-text-muted mt-0.5">Show BioRouter in the menu bar</p>
+              <p className="text-xs text-text-muted mt-0.5">Show Biorouter in the menu bar</p>
             </div>
             <Switch
               checked={menuBarIconEnabled}
@@ -177,7 +177,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
               <div>
                 <p className="text-sm font-medium text-text-default">Dock icon</p>
-                <p className="text-xs text-text-muted mt-0.5">Show BioRouter in the dock</p>
+                <p className="text-xs text-text-muted mt-0.5">Show Biorouter in the dock</p>
               </div>
               <Switch
                 disabled={isDockSwitchDisabled}
@@ -192,7 +192,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             <div>
               <p className="text-sm font-medium text-text-default">Prevent Sleep</p>
               <p className="text-xs text-text-muted mt-0.5 max-w-md">
-                Keep your computer awake while BioRouter is running a task (screen can still lock)
+                Keep your computer awake while Biorouter is running a task (screen can still lock)
               </p>
             </div>
             <Switch
@@ -224,7 +224,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
             Theme
           </h2>
-          <p className="text-xs text-text-muted">Customize the look and feel of BioRouter</p>
+          <p className="text-xs text-text-muted">Customize the look and feel of Biorouter</p>
         </div>
         <div className="flex flex-col gap-4">
           <div>
@@ -258,7 +258,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             Help &amp; Feedback
           </h2>
           <p className="text-xs text-text-muted">
-            Help us improve BioRouter by reporting issues or requesting new features
+            Help us improve Biorouter by reporting issues or requesting new features
           </p>
         </div>
         <div className="biorouter-settings-control-strip">
@@ -318,7 +318,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
               Updates
             </h2>
             <p className="text-xs text-text-muted">
-              Check for and install updates to keep BioRouter running at its best
+              Check for and install updates to keep Biorouter running at its best
             </p>
           </div>
           <div className="biorouter-settings-control-strip">
@@ -347,7 +347,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open System Preferences</li>
                   <li>Click on Notifications</li>
-                  <li>Find and select BioRouter in the application list</li>
+                  <li>Find and select Biorouter in the application list</li>
                   <li>Enable notifications and adjust settings as desired</li>
                 </ol>
               </div>
@@ -357,7 +357,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open Settings</li>
                   <li>Go to System &gt; Notifications</li>
-                  <li>Find and select BioRouter in the application list</li>
+                  <li>Find and select Biorouter in the application list</li>
                   <li>Toggle notifications on and adjust settings as desired</li>
                 </ol>
               </div>

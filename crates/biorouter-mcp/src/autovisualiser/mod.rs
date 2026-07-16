@@ -455,7 +455,7 @@ impl AutoVisualiserRouter {
     pub fn new() -> Self {
         use etcetera::{choose_app_strategy, AppStrategy};
         // - macOS/Linux: ~/.cache/biorouter/autovisualiser/
-        // - Windows:     ~\AppData\Local\BaranziniLab\BioRouter\cache\autovisualiser\
+        // - Windows:     ~\AppData\Local\BaranziniLab\Biorouter\cache\autovisualiser\
         let cache_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
             .unwrap()
             .cache_dir()

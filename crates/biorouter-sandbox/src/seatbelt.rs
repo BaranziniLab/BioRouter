@@ -27,7 +27,7 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// block and any network allowance are appended dynamically by [`SeatbeltPolicy::profile`].
 const BASE_POLICY: &str = r#"(version 1)
 
-; BioRouter shell sandbox (macOS Seatbelt). Default-deny; full read; writes only
+; Biorouter shell sandbox (macOS Seatbelt). Default-deny; full read; writes only
 ; to injected writable roots; outbound network denied by omission.
 (deny default)
 

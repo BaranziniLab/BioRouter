@@ -41,7 +41,7 @@ const REGISTRY_DOWNLOAD_HOSTS: &[&str] = &[
 #[command(
     author,
     version,
-    about = "Serve BioRouter as a browser-only headless app"
+    about = "Serve Biorouter as a browser-only headless app"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -290,7 +290,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind_addr).await?;
     let url = public_url(args.public_url.clone(), args.port).await;
     println!("{url}");
-    info!("serving BioRouter headless at {url}");
+    info!("serving Biorouter headless at {url}");
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     let result = server.await.context("headless server failed");
@@ -756,7 +756,7 @@ async fn fs_roots(State(state): State<Arc<AppState>>) -> Json<RootsResponse> {
             path: path_string(&state.home_dir),
         },
         FsRoot {
-            label: "BioRouter config".to_string(),
+            label: "Biorouter config".to_string(),
             path: path_string(&state.home_dir.join(".config/biorouter")),
         },
         FsRoot {
@@ -921,7 +921,7 @@ async fn registry_download(
     let response = match state
         .client
         .get(url.clone())
-        .header(header::USER_AGENT, "BioRouter")
+        .header(header::USER_AGENT, "Biorouter")
         .send()
         .await
     {

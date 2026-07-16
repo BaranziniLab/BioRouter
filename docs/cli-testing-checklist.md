@@ -135,7 +135,7 @@ Slash commands (TUI):
 ---
 
 ## Bugs found & fixed in this pass
-1. `info` printed **"BioRouter"** → corrected to **"Biorouter"**.
+1. `info` printed **"Biorouter"** → corrected to **"Biorouter"**.
 2. TUI `/clear` only reset in-memory messages → now clears the **persisted** conversation
    + token counts (shared `CliSession::clear_conversation`), so the context meter and a
    reopened session stay correct.

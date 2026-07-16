@@ -17,6 +17,8 @@ check-everything:
     ./scripts/check-openapi-schema.sh
     @echo "  → Checking CLI/daemon/GUI version consistency..."
     ./scripts/check-version-consistency.sh
+    @echo "  → Checking Biorouter name and logo consistency..."
+    ./scripts/check-brand-consistency.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
     @echo ""

@@ -21,7 +21,7 @@ pub struct WindowProps {
     pub resizable: bool,
 }
 
-/// A BioRouter App combining MCP resource data with BioRouter-specific metadata
+/// A Biorouter App combining MCP resource data with Biorouter-specific metadata
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BioRouterApp {

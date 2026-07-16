@@ -1,7 +1,7 @@
 //! The built-in **Soul** knowledge base and its self-maintaining machinery.
 //!
 //! Soul is a personal, initially-empty knowledge base installed automatically
-//! the first time a user runs BioRouter. It accumulates durable facts about the
+//! the first time a user runs Biorouter. It accumulates durable facts about the
 //! user — how they approach scientific questions, which tools and commands they
 //! reach for, the shape of their tool calls and the responses they act on, and
 //! personal details they reveal (name, occupation, preferences). A built-in

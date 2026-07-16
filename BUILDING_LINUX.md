@@ -1,6 +1,6 @@
-# Building BioRouter Desktop on Linux
+# Building Biorouter Desktop on Linux
 
-This guide covers building the BioRouter Desktop application from source on various Linux distributions.
+This guide covers building the Biorouter Desktop application from source on various Linux distributions.
 
 ## Prerequisites
 
@@ -74,7 +74,7 @@ Works on all Linux distributions:
 npm run make -- --targets=@electron-forge/maker-zip
 ```
 
-Output: `out/make/zip/linux/x64/BioRouter-linux-x64-{version}.zip`
+Output: `out/make/zip/linux/x64/Biorouter-linux-x64-{version}.zip`
 
 #### Option B: DEB Package
 For Debian/Ubuntu systems:
@@ -93,7 +93,7 @@ npm run make
 
 #### From Build Directory
 ```bash
-./out/BioRouter-linux-x64/BioRouter
+./out/Biorouter-linux-x64/Biorouter
 ```
 
 #### Install DEB Package (if built)
@@ -120,8 +120,8 @@ These are harmless and don't affect functionality. To suppress them, create a la
 
 ```bash
 #!/bin/bash
-cd /path/to/biorouter/ui/desktop/out/BioRouter-linux-x64
-./BioRouter 2>&1 | grep -v "GLib-GObject" | grep -v "browser_main_loop"
+cd /path/to/biorouter/ui/desktop/out/Biorouter-linux-x64
+./Biorouter 2>&1 | grep -v "GLib-GObject" | grep -v "browser_main_loop"
 ```
 
 #### Server Binary Not Found
@@ -168,10 +168,10 @@ For active development:
 Create `~/.local/share/applications/biorouter.desktop`:
 ```ini
 [Desktop Entry]
-Name=BioRouter AI Agent
+Name=Biorouter AI Agent
 Comment=AI research environment for biomedical discovery
-Exec=/path/to/biorouter/ui/desktop/out/BioRouter-linux-x64/BioRouter %U
-Icon=/path/to/biorouter/ui/desktop/out/BioRouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
+Exec=/path/to/biorouter/ui/desktop/out/Biorouter-linux-x64/Biorouter %U
+Icon=/path/to/biorouter/ui/desktop/out/Biorouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
 Terminal=false
 Type=Application
 Categories=Science;Education;Utility;
@@ -182,8 +182,8 @@ MimeType=x-scheme-handler/biorouter
 ### System-wide Installation
 To install system-wide:
 ```bash
-sudo cp -r out/BioRouter-linux-x64 /opt/biorouter
-sudo ln -s /opt/biorouter/BioRouter /usr/local/bin/biorouter-gui
+sudo cp -r out/Biorouter-linux-x64 /opt/biorouter
+sudo ln -s /opt/biorouter/Biorouter /usr/local/bin/biorouter-gui
 ```
 
 ## Contributing

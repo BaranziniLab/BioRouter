@@ -1,6 +1,6 @@
 //! BRSDK observability — a span/trace model built from agent lifecycle events.
 //!
-//! BioRouter's hooks are fire-and-forget (shell/LLM judges) and the only live
+//! Biorouter's hooks are fire-and-forget (shell/LLM judges) and the only live
 //! channel the app WS sees is the `AgentEvent` stream, so surfacing a
 //! "what did the agent do" timeline needs a separate, observe-only signal. This
 //! module is the data model + the pure [`TraceBuilder`] that folds a stream of

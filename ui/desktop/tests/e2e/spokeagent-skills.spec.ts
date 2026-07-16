@@ -10,7 +10,7 @@
  * Notes:
  * - brxt:install (runs `uv sync`) is skipped — needs Python/uv + network.
  * - brxt:validate-and-read is fully tested (reads .brxt without installing).
- * - The BioRouter project root (.biorouter/skills/ralph/) provides a real
+ * - The Biorouter project root (.biorouter/skills/ralph/) provides a real
  *   project-specific skill fixture, no temp files needed.
  */
 
@@ -23,7 +23,7 @@ let electronApp: ElectronApplication;
 let page: Page;
 
 const SPOKE_BRXT_PATH = '/tmp/spokeagent-0.2.0.brxt';
-// The BioRouter project root has a real project-specific skill
+// The Biorouter project root has a real project-specific skill
 const BIOROUTER_PROJECT_ROOT = path.resolve(__dirname, '../../../..');
 
 test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
@@ -185,13 +185,13 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
 
   // -------------------------------------------------------------------------
   // Test 3: Project-specific .biorouter/skills/ appear in chat box skills tab
-  //         Uses the BioRouter repo's own .biorouter/skills/ralph as fixture
+  //         Uses the Biorouter repo's own .biorouter/skills/ralph as fixture
   // -------------------------------------------------------------------------
   test('project-specific .biorouter/skills appear in chat box skills dropdown', async () => {
-    // Verify the project skill exists at the BioRouter repo root
+    // Verify the project skill exists at the Biorouter repo root
     const ralphSkill = path.join(BIOROUTER_PROJECT_ROOT, '.biorouter/skills/ralph/SKILL.md');
     const ralphExists = fs.existsSync(ralphSkill);
-    console.log(`BioRouter project ralph skill exists: ${ralphExists} at ${ralphSkill}`);
+    console.log(`Biorouter project ralph skill exists: ${ralphExists} at ${ralphSkill}`);
     expect(ralphExists).toBe(true);
 
     // Verify SKILL.md frontmatter has name: ralph
@@ -231,7 +231,7 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
       await page.screenshot({ path: 'test-results/spoke-07-skills-search-ralph.png' });
 
       // The ralph skill should appear (it's in .biorouter/skills/ of the cwd)
-      // Note: this depends on the working directory being set to the BioRouter project root
+      // Note: this depends on the working directory being set to the Biorouter project root
       const ralphItem = page.locator('text=ralph');
       const ralphVisible = await ralphItem.isVisible().catch(() => false);
       console.log(`ralph skill visible in dropdown: ${ralphVisible}`);

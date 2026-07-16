@@ -1,4 +1,4 @@
-//! What this BioRouter install actually has.
+//! What this Biorouter install actually has.
 //!
 //! Agent Drafter's 12 tools were all create/configure/build/launch/read — **none
 //! of them could ask what exists**. The authoring instructions nonetheless told

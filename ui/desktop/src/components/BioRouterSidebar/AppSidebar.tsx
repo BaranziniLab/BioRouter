@@ -1,13 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Clock,
   Home,
   Layers,
   Puzzle,
-  History,
   AppWindow,
-  MessageSquare,
   Pipeline,
+  Plus,
   Settings,
   KnowledgeIcon,
 } from '../icons/app-icons';
@@ -22,16 +21,17 @@ import {
   SidebarGroupContent,
   SidebarSeparator,
 } from '../ui/sidebar';
-import { BioRouter } from '../icons/BioRouter';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
 import { listApps } from '../../api';
-import { useRunningChats, RunningChatEntry } from '../../hooks/chatStreamStore';
+import { useRunningChats } from '../../hooks/chatStreamStore';
 import { preloadSessionList } from '../../utils/sessionListCache';
 import { preloadHomeActivity } from '../../utils/homeInsightsCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
+import RecentChats from './RecentChats';
+import useSidebarSessions from './useSidebarSessions';
 
 function preloadHome(): void {
   preloadHomeActivity();
@@ -54,13 +54,22 @@ interface NavigationItem {
   tooltip: string;
 }
 
-interface NavigationSeparator {
-  type: 'separator';
-}
+const settingsItem: NavigationItem = {
+  type: 'item',
+  path: '/settings',
+  label: 'Settings',
+  icon: Settings,
+  tooltip: 'Configure Biorouter settings',
+};
 
-type NavigationEntry = NavigationItem | NavigationSeparator;
-
-const menuItems: NavigationEntry[] = [
+const menuItems: NavigationItem[] = [
+  {
+    type: 'item',
+    path: '/pair',
+    label: 'New Session',
+    icon: Plus,
+    tooltip: 'Start a new session',
+  },
   {
     type: 'item',
     path: '/',
@@ -68,22 +77,6 @@ const menuItems: NavigationEntry[] = [
     icon: Home,
     tooltip: 'Go back to the main chat screen',
   },
-  { type: 'separator' },
-  {
-    type: 'item',
-    path: '/pair',
-    label: 'Chat',
-    icon: MessageSquare,
-    tooltip: 'Start pairing with BioRouter',
-  },
-  {
-    type: 'item',
-    path: '/sessions',
-    label: 'History',
-    icon: History,
-    tooltip: 'View your session history',
-  },
-  { type: 'separator' },
   {
     type: 'item',
     path: '/workflows',
@@ -124,7 +117,7 @@ const menuItems: NavigationEntry[] = [
     path: '/applications',
     label: 'Applications',
     icon: AppWindow,
-    tooltip: 'BioRouter apps you built with Agent Drafter',
+    tooltip: 'Biorouter apps you built with Agent Drafter',
   },
   {
     type: 'item',
@@ -133,65 +126,21 @@ const menuItems: NavigationEntry[] = [
     icon: AppWindow,
     tooltip: 'Browse and launch MCP apps',
   },
-  { type: 'separator' },
-  {
-    type: 'item',
-    path: '/settings',
-    label: 'Settings',
-    icon: Settings,
-    tooltip: 'Configure BioRouter settings',
-  },
 ];
-
-function RunningChatItem({
-  entry,
-  onOpen,
-}: {
-  entry: RunningChatEntry;
-  onOpen: (sessionId: string) => void;
-}) {
-  const completed = Boolean(entry.completedAt);
-
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(entry.sessionId)}
-      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-[background-color,opacity,transform] duration-[var(--motion-base)] ease-[var(--ease-out)] hover:bg-sidebar-hover ${
-        completed ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'
-      }`}
-      title={entry.title}
-    >
-      <span
-        aria-hidden="true"
-        className="relative flex h-4 w-4 flex-shrink-0 items-center justify-center text-text-default/80"
-      >
-        {!completed && (
-          <>
-            <span className="absolute h-4 w-4 rounded-full border border-current animate-[biorouter-working-ring_1.8s_ease-out_infinite]" />
-            <span className="absolute h-2.5 w-2.5 rounded-full bg-current opacity-20 animate-[biorouter-working-glow_1.8s_ease-in-out_infinite]" />
-          </>
-        )}
-        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      </span>
-      <span className="min-w-0 flex-1 truncate font-medium text-text-default">{entry.title}</span>
-    </button>
-  );
-}
 
 const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const chatContext = useChatContext();
   const runningChats = useRunningChats();
-  const lastSessionIdRef = useRef<string | null>(null);
+  const { sessions, hasMore, isLoading, loadMore } = useSidebarSessions();
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const [hasApps, setHasApps] = useState(false);
-
-  useEffect(() => {
-    if (currentSessionId) {
-      lastSessionIdRef.current = currentSessionId;
-    }
-  }, [currentSessionId]);
+  const runningSessionIds = useMemo(
+    () =>
+      new Set(runningChats.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId)),
+    [runningChats]
+  );
 
   useEffect(() => {
     const checkApps = async () => {
@@ -209,9 +158,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   }, [currentPath]);
 
   useEffect(() => {
-    const currentItem = menuItems.find(
-      (item) => item.type === 'item' && item.path === currentPath
-    ) as NavigationItem | undefined;
+    const currentItem = [...menuItems, settingsItem].find((item) => item.path === currentPath);
 
     const titleBits = ['Biorouter'];
 
@@ -221,6 +168,8 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       chatContext.chat.name !== DEFAULT_CHAT_TITLE
     ) {
       titleBits.push(chatContext.chat.name);
+    } else if (currentPath === '/sessions') {
+      titleBits.push('Chat history');
     } else if (currentPath !== '/' && currentItem) {
       titleBits.push(currentItem.label);
     }
@@ -233,73 +182,41 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   };
 
   const handleNavigation = (path: string) => {
-    // For /pair, preserve the current session if one exists
-    // Priority: current URL param > last known session > context
-    const sessionId = currentSessionId || lastSessionIdRef.current || chatContext?.chat?.sessionId;
-    // Route through the shared navigation helper so every entry follows the same path.
-    if (path === '/pair' && sessionId && sessionId.length > 0) {
-      navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
-    } else {
-      navigateWithViewTransition(navigate, path);
+    if (path === '/pair') {
+      chatContext?.resetChat();
+      navigateWithViewTransition(navigate, '/pair', { newChat: true });
+      return;
     }
+
+    navigateWithViewTransition(navigate, path);
   };
 
-  const handleOpenRunningChat = (sessionId: string) => {
-    lastSessionIdRef.current = sessionId;
+  const handleOpenChat = (sessionId: string) => {
     navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
   };
 
-  const renderMenuItem = (entry: NavigationEntry, index: number) => {
-    if (entry.type === 'separator') {
-      return <SidebarSeparator key={index} />;
-    }
-
+  const renderMenuItem = (entry: NavigationItem) => {
     const IconComponent = entry.icon;
+    const isActive =
+      entry.path === '/pair'
+        ? currentPath === '/pair' && !currentSessionId
+        : isActivePath(entry.path);
 
     return (
-      <SidebarGroup key={entry.path}>
-        <SidebarGroupContent className="space-y-1">
-          <div className="sidebar-item">
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                data-testid={`sidebar-${entry.label.toLowerCase()}-button`}
-                onClick={() => handleNavigation(entry.path)}
-                onFocus={
-                  entry.path === '/sessions'
-                    ? preloadSessionList
-                    : entry.path === '/'
-                      ? preloadHome
-                      : undefined
-                }
-                onPointerEnter={
-                  entry.path === '/sessions'
-                    ? preloadSessionList
-                    : entry.path === '/'
-                      ? preloadHome
-                      : undefined
-                }
-                isActive={isActivePath(entry.path)}
-                tooltip={entry.tooltip}
-                className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-sidebar-hover transition-colors duration-150 data-[active=true]:bg-sidebar-active data-[active=true]:font-medium"
-              >
-                <IconComponent className="w-4 h-4" />
-                <span>{entry.label}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            {entry.path === '/sessions' && runningChats.length > 0 && (
-              <div className="ml-7 mt-0.5 mb-1 space-y-0.5">
-                {runningChats.map((running) => (
-                  <RunningChatItem
-                    key={running.sessionId}
-                    entry={running}
-                    onOpen={handleOpenRunningChat}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </SidebarGroupContent>
-      </SidebarGroup>
+      <SidebarMenuItem key={entry.path}>
+        <SidebarMenuButton
+          data-testid={`sidebar-${entry.label.toLowerCase().replace(/\s+/g, '-')}-button`}
+          onClick={() => handleNavigation(entry.path)}
+          onFocus={entry.path === '/' ? preloadHome : undefined}
+          onPointerEnter={entry.path === '/' ? preloadHome : undefined}
+          isActive={isActive}
+          tooltip={entry.tooltip}
+          className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+        >
+          <IconComponent className="h-4 w-4" />
+          <span>{entry.label}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
     );
   };
 
@@ -312,19 +229,53 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
   return (
     <>
-      <SidebarContent className="pt-16">
-        <SidebarMenu>
-          {visibleMenuItems.map((entry, index) => renderMenuItem(entry, index))}
-        </SidebarMenu>
+      <SidebarContent className="gap-0 overflow-hidden pt-10">
+        <div className="shrink-0">
+          <div
+            data-testid="sidebar-biorouter-wordmark"
+            className="flex h-8 items-center gap-2 px-5"
+          >
+            <span className="text-sm font-semibold leading-none">Biorouter</span>
+            <EnvironmentBadge />
+          </div>
+
+          <SidebarGroup className="px-2 pb-1">
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0">{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </div>
+
+        <SidebarSeparator data-testid="sidebar-nav-divider" className="shrink-0" />
+        <RecentChats
+          sessions={sessions}
+          activeSessionId={currentSessionId}
+          runningSessionIds={runningSessionIds}
+          hasMore={hasMore}
+          isLoadingMore={isLoading}
+          onLoadMore={loadMore}
+          onOpen={handleOpenChat}
+          onViewAll={() => navigateWithViewTransition(navigate, '/sessions')}
+        />
       </SidebarContent>
 
-      <SidebarFooter className="pb-4 px-4">
+      <SidebarSeparator data-testid="sidebar-footer-divider" className="shrink-0" />
+      <SidebarFooter className="gap-1 p-2">
         <SidebarUpdateButton />
-        <div className="flex items-center gap-2">
-          <BioRouter className="size-7 biorouter-icon-animation flex-shrink-0" />
-          <span className="text-sm font-semibold leading-none">Biorouter</span>
-          <EnvironmentBadge />
-        </div>
+        <SidebarMenu className="gap-0">
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              data-testid="sidebar-settings-button"
+              onClick={() => handleNavigation(settingsItem.path)}
+              isActive={isActivePath(settingsItem.path)}
+              tooltip={settingsItem.tooltip}
+              className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+            >
+              <Settings className="h-4 w-4" />
+              <span>{settingsItem.label}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
     </>
   );

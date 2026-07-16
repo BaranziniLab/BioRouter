@@ -16,10 +16,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// BioRouter warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
+/// Biorouter warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
 /// the closest 256-color match to the desktop brand coral `#cf6d47`).
 ///
-/// Per the BioRouter design language the accent is used *sparingly* — the input
+/// Per the Biorouter design language the accent is used *sparingly* — the input
 /// prompt, section rules, and active indicators — never for general decoration.
 pub const ACCENT: Color = Color::Color256(137);
 
@@ -525,7 +525,7 @@ fn render_artifact_note(note: &ArtifactNote) {
         ),
         None => println!(
             "    {}",
-            style("(rendered inline in the BioRouter desktop app)").dim()
+            style("(rendered inline in the Biorouter desktop app)").dim()
         ),
     }
 }
@@ -620,7 +620,7 @@ pub fn render_diverge_open_failed(new_session_id: &str, url: &str, error: &str) 
     );
     println!("  {} {}", style("reason:").dim(), style(error).dim());
     println!(
-        "  {} open BioRouter and run this link manually:",
+        "  {} open Biorouter and run this link manually:",
         style("tip:").dim()
     );
     println!("  {}", style(url).cyan());

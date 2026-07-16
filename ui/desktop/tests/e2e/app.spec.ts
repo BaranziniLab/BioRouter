@@ -162,7 +162,7 @@ async function selectProvider(mainWindow: any, provider: Provider) {
   await mainWindow.screenshot({ path: `test-results/chat-interface-${provider.name.toLowerCase()}.png` });
 }
 
-test.describe('BioRouter App', () => {
+test.describe('Biorouter App', () => {
   let electronApp;
   let appProcess;
 

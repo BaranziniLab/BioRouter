@@ -295,7 +295,7 @@ export default function TunnelSection() {
       <Dialog open={showAppStoreQRModal} onOpenChange={setShowAppStoreQRModal}>
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>Download BioRouter iOS App</DialogTitle>
+            <DialogTitle>Download Biorouter iOS App</DialogTitle>
           </DialogHeader>
 
           <div className="py-4 space-y-4">

@@ -1,9 +1,9 @@
 /**
- * BioRouter App SDK
+ * Biorouter App SDK
  * =================
- * The runtime every Agent-Drafter-built app uses to talk to a *real* BioRouter
+ * The runtime every Agent-Drafter-built app uses to talk to a *real* Biorouter
  * agent. Unlike the old "bridge" mode (which only forwarded a prompt into the
- * BioRouter chat box), this SDK opens a per-app WebSocket to the BioRouter
+ * Biorouter chat box), this SDK opens a per-app WebSocket to the Biorouter
  * backend, which runs the full agent loop — the app's own model, extensions,
  * skills and knowledge base — and streams the answer (text / markdown / tool
  * activity) straight back into the app.
@@ -401,6 +401,7 @@ declare global {
   interface Window {
     BIOROUTER_APP_CONFIG?: AppConfig;
     BioRouter?: BioRouterClient;
+    Biorouter?: BioRouterClient;
     /** Not in older lib.dom typings; used by `cssEscape`'s feature check. */
     CSS?: { escape?: (value: string) => string };
   }
@@ -737,7 +738,7 @@ export class BioRouterClient {
   }
 
   /**
-   * Open (or reuse) the WebSocket to the BioRouter agent backend, trying each
+   * Open (or reuse) the WebSocket to the Biorouter agent backend, trying each
    * candidate endpoint in turn. Rejects with an actionable message listing what
    * was tried, rather than a bare "could not reach the backend".
    */
@@ -755,7 +756,7 @@ export class BioRouterClient {
     const candidates = resolveEndpoints(this.config);
     if (!candidates.length) {
       throw new Error(
-        "No BioRouter endpoint to connect to. This page was opened from a file:// URL " +
+        "No Biorouter endpoint to connect to. This page was opened from a file:// URL " +
           "with no fallback configured — serve it with `npm start` instead."
       );
     }
@@ -793,7 +794,7 @@ export class BioRouterClient {
       }
     }
     throw new Error(
-      "Could not reach the BioRouter backend. Tried: " +
+      "Could not reach the Biorouter backend. Tried: " +
         tried.join(", ") +
         ". Start it with `biorouterd agent`, or run this app's `run.sh` / `npm start`, " +
         "which starts one for you."
@@ -1221,7 +1222,7 @@ export class BioRouterClient {
     // Socket not open yet — connect, then send (or reject if still unreachable).
     this.connect().then(
       () => {
-        if (!this.send(frame)) this.rejectKb(pending, new Error("Not connected to the BioRouter backend."));
+        if (!this.send(frame)) this.rejectKb(pending, new Error("Not connected to the Biorouter backend."));
       },
       (e: Error) => this.rejectKb(pending, e)
     );
@@ -1295,7 +1296,7 @@ export class BioRouterClient {
       if (this.send(frame)) return;
       this.connect().then(
         () => {
-          if (!this.send(frame)) this.failModelStatus(rec, new Error("Not connected to the BioRouter backend."));
+          if (!this.send(frame)) this.failModelStatus(rec, new Error("Not connected to the Biorouter backend."));
         },
         (e: Error) => this.failModelStatus(rec, e)
       );
@@ -1529,7 +1530,7 @@ export class BioRouterClient {
   async prompt(text: string, opts: PromptOptions = {}): Promise<void> {
     await this.connect();
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("Not connected to the BioRouter backend.");
+      throw new Error("Not connected to the Biorouter backend.");
     }
     const agent = opts.agent;
     return new Promise<void>((resolve, reject) => {
@@ -2026,7 +2027,7 @@ export class BioRouterClient {
     // Socket not open yet — connect, then send (or reject if still unreachable).
     this.connect().then(
       () => {
-        if (!this.send(frame)) this.rejectCall(pending, new Error("Not connected to the BioRouter backend."));
+        if (!this.send(frame)) this.rejectCall(pending, new Error("Not connected to the Biorouter backend."));
       },
       (e: Error) => this.rejectCall(pending, e)
     );
@@ -2477,7 +2478,7 @@ interface GraphPoint {
 
 /**
  * Render an AI-generated chart from a ```chart JSON block into dependency-free
- * SVG, themed with BioRouter tokens. Supports "bar" (default) and "line".
+ * SVG, themed with Biorouter tokens. Supports "bar" (default) and "line".
  * Returns a quiet placeholder on malformed/partial JSON (streaming-safe).
  */
 const CHART_PALETTE = [
@@ -2503,7 +2504,7 @@ function normalizeSeries(spec: ChartSpec): ChartSeries[] {
 
 /**
  * Render an AI-generated chart from a ```chart JSON block into dependency-free
- * SVG, themed with BioRouter tokens. Supports bar / line / pie, single-series
+ * SVG, themed with Biorouter tokens. Supports bar / line / pie, single-series
  * (`data`) or multi-series (`series` — grouped bars or overlaid lines with a
  * legend). Returns a quiet placeholder on malformed/partial JSON (streaming-safe).
  */
@@ -3045,7 +3046,7 @@ export function mountTimeline(
 // the agent emits a `widget` frame, the app renders the tree, and a Button with
 // `submit` collects the named form fields and sends a `widget_action` frame the
 // server feeds back into the agent as the next turn. Dependency-free DOM,
-// built only from the BioRouter theme classes so it stays on-brand and passes
+// built only from the Biorouter theme classes so it stays on-brand and passes
 // the build lint.
 
 export type WidgetNode =
@@ -3481,7 +3482,7 @@ function unknownWidgetEl(kind: string): HTMLElement {
   if (!warnedWidgetKinds.has(kind)) {
     warnedWidgetKinds.add(kind);
     try {
-      console.warn("[BioRouter] unsupported widget kind: " + kind);
+      console.warn("[Biorouter] unsupported widget kind: " + kind);
     } catch {
       /* console may be unavailable */
     }
@@ -6126,7 +6127,7 @@ export class UiRuntime {
   private applyPack(pack: string, root: HTMLElement): void {
     if (!KNOWN_PACKS[pack]) {
       try {
-        console.warn("[BioRouter] ignoring unknown theme pack: " + pack);
+        console.warn("[Biorouter] ignoring unknown theme pack: " + pack);
       } catch {
         /* console may be unavailable */
       }
@@ -6218,7 +6219,7 @@ export class UiRuntime {
       } else if (!warned[name]) {
         warned[name] = true;
         try {
-          console.warn("[BioRouter] layout area has no matching element: " + name);
+          console.warn("[Biorouter] layout area has no matching element: " + name);
         } catch {
           /* console may be unavailable */
         }
@@ -6428,7 +6429,7 @@ export class UiRuntime {
     // Executable sinks are refused outright.
     if (name.indexOf("on") === 0 || name === "style") {
       try {
-        console.warn("[BioRouter] refused data-br-bind-attr on forbidden attribute: " + name);
+        console.warn("[Biorouter] refused data-br-bind-attr on forbidden attribute: " + name);
       } catch {
         /* ignore */
       }
@@ -6440,7 +6441,7 @@ export class UiRuntime {
       name.indexOf("data-") === 0;
     if (!allowed) {
       try {
-        console.warn("[BioRouter] refused data-br-bind-attr on unlisted attribute: " + name);
+        console.warn("[Biorouter] refused data-br-bind-attr on unlisted attribute: " + name);
       } catch {
         /* ignore */
       }
@@ -6461,7 +6462,7 @@ export class UiRuntime {
       const url = value == null ? "" : String(value);
       if (!isSafeBindUrl(url)) {
         try {
-          console.warn("[BioRouter] refused unsafe " + name + " value: " + url);
+          console.warn("[Biorouter] refused unsafe " + name + " value: " + url);
         } catch {
           /* ignore */
         }
@@ -6865,6 +6866,7 @@ export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
   };
   const client = new BioRouterClient(cfg);
   window.BioRouter = client;
+  window.Biorouter = client;
 
   // A persisted theme pack is already stamped onto <html> by the server and owns
   // its complete palette. Do not overwrite it with the legacy light default.
@@ -6938,7 +6940,7 @@ export function showDegradedBanner(missingProfiles: string[]): void {
 }
 
 /**
- * A visible, actionable banner when no BioRouter daemon could be reached. This
+ * A visible, actionable banner when no Biorouter daemon could be reached. This
  * is the failure an exported app used to show as a bare console error, leaving
  * the user with a UI that silently did nothing.
  */
@@ -6949,7 +6951,7 @@ export function mountBackendError(message: string): void {
   bar.setAttribute("data-br-backend-error", "1");
   bar.setAttribute("role", "alert");
   const title = document.createElement("strong");
-  title.textContent = "No BioRouter backend";
+  title.textContent = "No Biorouter backend";
   const body = document.createElement("div");
   body.textContent = message;
   bar.appendChild(title);

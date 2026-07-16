@@ -449,7 +449,7 @@ fn apply_landlock(writable_roots: &[PathBuf]) -> Result<(), String> {
 /// internet/raw families (`AF_INET`, `AF_INET6`, `AF_PACKET`) with a clean
 /// `EPERM` (not `SIGSYS`, so programs print a sane error) and **allow
 /// `AF_UNIX`** — without it D-Bus/X11/nscd break and the sandbox looks like a
-/// BioRouter bug (the exact failure Codex hit). `AF_NETLINK` is also left
+/// Biorouter bug (the exact failure Codex hit). `AF_NETLINK` is also left
 /// allowed: it carries no outbound internet traffic and NSS/`getaddrinfo` use it
 /// to enumerate interfaces. Note we deliberately do NOT unconditionally deny
 /// `connect`/`bind` — those take a pointer we cannot inspect, so a blanket deny

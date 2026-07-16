@@ -37,7 +37,7 @@ impl GitRepo {
         let inner = git2::Repository::init_opts(path, &opts)
             .with_context(|| format!("git init {}", path.display()))?;
         let mut cfg = inner.config()?;
-        cfg.set_str("user.name", "BioRouter Knowledge")?;
+        cfg.set_str("user.name", "Biorouter Knowledge")?;
         cfg.set_str("user.email", "knowledge@biorouter.local")?;
         cfg.set_str("commit.gpgsign", "false")?;
         Ok(Self { inner })

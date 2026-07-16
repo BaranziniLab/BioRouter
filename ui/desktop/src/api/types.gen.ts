@@ -117,7 +117,7 @@ export type AuthorRequest = {
 };
 
 /**
- * A BioRouter App combining MCP resource data with BioRouter-specific metadata
+ * A Biorouter App combining MCP resource data with Biorouter-specific metadata
  */
 export type BioRouterApp = McpAppResource & (WindowProps | null) & {
     mcpServer?: string | null;
@@ -1535,6 +1535,15 @@ export type SessionModelUsageResponse = {
     models: Array<ModelUsageRow>;
 };
 
+export type SessionSummary = {
+    created_at: string;
+    id: string;
+    message_count: number;
+    name: string;
+    updated_at: string;
+    working_dir: string;
+};
+
 export type SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'terminal';
 
 export type SessionsQuery = {
@@ -1573,6 +1582,12 @@ export type Settings = {
 export type SetupResponse = {
     message: string;
     success: boolean;
+};
+
+export type SidebarSessionListResponse = {
+    has_more: boolean;
+    next_offset?: number | null;
+    sessions: Array<SessionSummary>;
 };
 
 /**
@@ -4642,6 +4657,42 @@ export type GetSessionInsightsResponses = {
 };
 
 export type GetSessionInsightsResponse = GetSessionInsightsResponses[keyof GetSessionInsightsResponses];
+
+export type ListSidebarSessionsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Session summaries per page (default 10, clamped to 1..=50)
+         */
+        limit?: number | null;
+        /**
+         * Number of session summaries to skip
+         */
+        offset?: number | null;
+    };
+    url: '/sessions/sidebar';
+};
+
+export type ListSidebarSessionsErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type ListSidebarSessionsResponses = {
+    /**
+     * Paginated lightweight session summaries for the sidebar
+     */
+    200: SidebarSessionListResponse;
+};
+
+export type ListSidebarSessionsResponse = ListSidebarSessionsResponses[keyof ListSidebarSessionsResponses];
 
 export type DeleteSessionData = {
     body?: never;

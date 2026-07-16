@@ -1,12 +1,12 @@
-# BioRouter Design System
+# Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
-> D-01 … D-11, D-13, D-14; **D-12 was overridden to option B (40px rows everywhere, no compact mode).**
+> D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile: 40px content rows and 32px sidebar navigation/session rows.**
 > The [drift register](#part-7--drift-register) is now the active work backlog.
 
-This is the single source of truth for how BioRouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
+This is the single source of truth for how Biorouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
 
 > **Companion artifact:** [`docs/design-system.html`](docs/design-system.html) — also hosted at
 > **<https://claude.ai/code/artifact/0726814d-a317-4dd2-bf34-a447e5c6ae6d>** — renders every token, element, and state
@@ -36,7 +36,7 @@ Where a genuine aesthetic trade-off exists, you'll see a **`Decision D-nn`** cal
 
 ### The thesis
 
-> **A quiet instrument.** BioRouter is a warm, low-chroma, flat-surface research console — paper-like rather than glassy, dense rather than airy, and confident enough to stay silent. Colour is evidence, not decoration.
+> **A quiet instrument.** Biorouter is a warm, low-chroma, flat-surface research console — paper-like rather than glassy, dense rather than airy, and confident enough to stay silent. Colour is evidence, not decoration.
 
 This is a tool that clinicians and computational biologists keep open for eight hours. It sits next to a terminal, a genome browser, and a stack of PDFs. It must never look like it is trying to sell them something.
 
@@ -50,7 +50,7 @@ This is a tool that clinicians and computational biologists keep open for eight 
 
 ### Lineage
 
-BioRouter sits between three named traditions, and borrows deliberately from each:
+Biorouter sits between three named traditions, and borrows deliberately from each:
 
 - **The scientific instrument panel** (Tektronix, LabVIEW, IGV) — dense readouts, monospace as a first-class citizen, colour reserved for signal.
 - **The editorial reading surface** (Readability, iA Writer) — warm paper ground, generous measure in prose, restrained typography.
@@ -58,7 +58,7 @@ BioRouter sits between three named traditions, and borrows deliberately from eac
 
 It is explicitly **not** a consumer chat app. The chat surface is an instrument readout that happens to accept prose.
 
-### Anti-patterns — what BioRouter must never look like
+### Anti-patterns — what Biorouter must never look like
 
 - **Glassmorphism.** No frosted panels floating over blurred wallpaper. (The one legitimate blur is the modal scrim.)
 - **Multi-layer drop shadows** used to fake depth on ordinary content. Elevation is reserved for things that genuinely float above the page.
@@ -134,7 +134,7 @@ Warm, paper-biased. Hue drifts from bone toward umber as it darkens — this is 
 
 #### The accent
 
-BioRouter has exactly one brand hue: a terracotta coral.
+Biorouter has exactly one brand hue: a terracotta coral.
 
 | Token | Hex | Contrast facts |
 |---|---|---|
@@ -294,7 +294,7 @@ Six steps. Nothing between them.
 | Header bottom padding | 24px (`pb-6`) |
 | Header separator | 1px `--border-subtle` |
 | Max content measure | 1080px, centred |
-| Row height | 40px (D-12·B — one value, no compact mode) |
+| Row height | 40px content · 32px sidebar navigation/session (D-12·B) |
 | Sidebar width | 240px expanded / 60px collapsed |
 
 **Today:** the documented flat header (`px-8 pt-12 pb-6 border-b`) is contradicted by `.biorouter-page-header`, which sets `border-bottom-color: transparent !important` and replaces the hairline with a gradient wash plus `box-shadow: var(--shadow-modal-chrome-bottom)` ([`main.css:519`](ui/desktop/src/styles/main.css#L519)). So the "flat header with a bottom border" is actually a shadowed, gradient header with no border. `DR-09`. See **[Decision D-05](#d-05--elevation-policy)**.
@@ -480,7 +480,7 @@ site. All 68 such classes and all 54 focus-scoped ring utilities were removed; t
 | Property | Value |
 |---|---|
 | Library | `lucide-react` for everything with a Lucide equivalent |
-| Custom set | `components/icons/` only for domain marks (BioRouter logo, provider logos, SPOKE) |
+| Custom set | `components/icons/` only for domain marks (Biorouter logo, provider logos, SPOKE) |
 | Sizes | 16px (inline/dense), 20px (default), 24px (page-level) |
 | Stroke | 1.5px at all sizes |
 | Colour | `currentColor`, always. Never a hex. |
@@ -490,7 +490,7 @@ Inline `<svg>` literals in view components are forbidden; promote to `components
 
 #### The logo
 
-`components/icons/BioRouter.tsx` draws the wordmark with gradient stops at `#EC5D2A` (20×) and `#57B9AF` (20×) — an orange and a teal that **exist nowhere else in the system** and are not the token coral `#cf6d47`. `DR-19`. See **[Decision D-02](#d-02--brand-mark-palette)**.
+`components/icons/Biorouter.tsx` draws the wordmark with gradient stops at `#EC5D2A` (20×) and `#57B9AF` (20×) — an orange and a teal that **exist nowhere else in the system** and are not the token coral `#cf6d47`. `DR-19`. See **[Decision D-02](#d-02--brand-mark-palette)**.
 
 ---
 
@@ -715,11 +715,14 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 
 ### 4.11 · Sidebar & navigation
 
-**Canonical.** 240px expanded, 60px collapsed. Surface `--sidebar`, right edge 1px `--sidebar-border`. Eleven destinations: Home, Chat, History, Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps, Settings.
+**Canonical.** 240px expanded, 60px collapsed. The responsive overlay also stays at the fixed 240px expanded width; it never grows to fit content. Surface `--sidebar`, right edge 1px `--sidebar-border`. The first navigation action is **New Session**, followed by Home, Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, and conditional Apps. A date-grouped Recents list follows it, with **View all chat history** attached to that section; Settings remains fixed in the footer.
 
 | | Value |
 |---|---|
-| Row | 36px, 8px×10px, `--radius-md`, 8px gap, 18px icon + 13/18 label |
+| New Session action | Same standard 32px navigation-row treatment; 12px horizontal inset, `--radius-md`, 16px plus icon + 14/20 label; no border, boxed ground, or special weight |
+| Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
+| Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
+| Compact titlebar controls | Three 32px controls in an explicit non-drag layer above the chat header; the session title starts 8px after their measured endpoint and moves beyond the 240px sidebar when it overlays the canvas |
 | Rest | transparent, `--text-muted` icon + label |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |
@@ -873,7 +876,7 @@ Terminals, code, diffs and logs are where this app earns its trust. Today they a
 
 ### 5.1 · Code blocks
 
-> **Code in BioRouter does not render in a monospace font.**
+> **Code in Biorouter does not render in a monospace font.**
 >
 > `MarkdownContent.tsx` sets `fontFamily: 'var(--font-sans)'` on the fenced-code renderer ([line 110](ui/desktop/src/components/MarkdownContent.tsx#L110)), wraps it in `font-sans` ([125](ui/desktop/src/components/MarkdownContent.tsx#L125)), renders inline code with `font-sans` ([155](ui/desktop/src/components/MarkdownContent.tsx#L155)), and adds `prose-code:font-sans` ([209](ui/desktop/src/components/MarkdownContent.tsx#L209)). `.bg-inline-code` sets `font-family: var(--font-sans)` ([`main.css:872`](ui/desktop/src/styles/main.css#L872)).
 >
@@ -959,7 +962,7 @@ Foreground `#e8e1d2` (14.33:1). See **[Decision D-11](#d-11--terminal-ground)**.
 > | D-09 | Sidebar | **Keep two-tone**; `--text-muted` → `#6e6760` |
 > | D-10 | Code theme | **Custom warm theme**, light + dark, token-derived |
 > | D-11 | Terminal ground | **`--background-muted`** — `#faf8f3` / `#16120c` |
-> | D-12 | Row density | **40px everywhere** — no compact mode ⚠️ *override* |
+> | D-12 | Row density | **40px content · 32px sidebar navigation/session** — one fixed profile, no density setting ⚠️ *refined 2026-07-15* |
 > | D-13 | Status colours | **Split `--fill-{s}` from `--text-{s}`**, per theme |
 > | D-14 | Decorative motion | **Delete** sidebar entrance + `Bird1–6` |
 >
@@ -1003,7 +1006,7 @@ The wordmark's gradient uses `#EC5D2A` → `#57B9AF` (orange → teal). Neither 
 | B | Keep the mark; add `#57B9AF` as an official secondary | Introduces a second brand colour to a system built on one. |
 | C | Keep the mark as-is, unmanaged | Documented exception; logo drifts from the UI forever. |
 
-★ **A**. *Touches: `components/icons/BioRouter.tsx`.*
+★ **A**. *Touches: `components/icons/Biorouter.tsx`.*
 
 ---
 
@@ -1131,10 +1134,13 @@ The warm two-tone sidebar shipped in v1.87.1.
 | | Option | Consequence |
 |---|---|---|
 | A | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
-| **B** ✅ | **40px everywhere** | One value, no setting. **← chosen (override)** |
+| **B** ✅ | **40px content; compact sidebar rhythm** | 40px content rows and 32px sidebar navigation/session rows; no setting. **← chosen and refined 2026-07-15** |
 
-✅ **B.** Rows are 40px. There is no compact mode and no density setting. Table body rows, list rows,
-and settings rows all share the single 40px rhythm.
+✅ **B.** There is one authored density profile and no user-facing compact mode or density setting.
+Table body rows, content lists, and settings rows use the 40px rhythm. The persistent sidebar is the
+deliberate exception: primary navigation, the New Session action, and recent-session rows are 32px,
+and adjacent navigation rows have no added gap. This keeps the always-visible rail dense without
+changing the established type scale, icon sizes, or hit-target clarity.
 
 ---
 
@@ -1214,7 +1220,7 @@ The original backlog, as audited:
 | `DR-16` | High | Six competing focus treatments across 131 usages | app-wide |
 | `DR-17` | Low | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | `package.json` |
 | `DR-18` | Med | 96 inline `<svg>` literals in view components | app-wide |
-| `DR-19` | Med | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/BioRouter.tsx` |
+| `DR-19` | Med | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/Biorouter.tsx` |
 | `DR-20` | Med | Button `outline` variant has no border; identical to `secondary` | `button.tsx:15–18` |
 | `DR-21` | Low | `shape="pill"` renders `rounded-md`; `shape="round"` also renders `rounded-md` | `button.tsx:28–31` |
 | `DR-22` | **High** | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `button.tsx:14`, 8 call sites |
@@ -1276,4 +1282,3 @@ The original backlog, as audited:
 5. **CI should enforce** what review can't: no hex literals in `.tsx`; no `<button>`/`<input>`/`<select>` outside `components/ui/`; no `shadow-*` outside the four permitted tokens; contrast assertions on the token pairs in [3.1](#31--colour).
 
 `.claude/commands/frontend-design.md` is now downstream of this file. Regenerate it from Parts 1–3 once Part 6 is settled.
-

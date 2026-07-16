@@ -196,7 +196,7 @@ export const useWhisper = ({ onTranscription, onError, onSizeWarning }: UseWhisp
         if (!response.ok) {
           if (response.status === 404) {
             throw new Error(
-              `Audio transcription endpoint not found. Please implement ${endpoint} endpoint in the BioRouter backend.`
+              `Audio transcription endpoint not found. Please implement ${endpoint} endpoint in the Biorouter backend.`
             );
           } else if (response.status === 401) {
             throw new Error('Invalid API key. Please check your API key is correct.');

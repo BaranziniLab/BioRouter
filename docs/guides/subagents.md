@@ -33,7 +33,7 @@ Internal subagents spawn biorouter instances to handle tasks using your current 
 ### Direct Prompts
 Direct prompts provided for one-off tasks using natural language prompts. The main agent automatically configures the subagent based on your request.
 
-**BioRouter Prompt:**
+**Biorouter Prompt:**
 ```
 "Use 2 subagents to create hello.html with 'Hello World' content and goodbye.html with 'Goodbye World' content in parallel"
 ```
@@ -105,12 +105,12 @@ prompt: |
 - Set [`BIOROUTER_WORKFLOW_PATH`](/docs/guides/workflows/reference#workflow-location) environment variable to your workflow directory
 - Or place it in your current working directory
 
-**BioRouter Prompt**
+**Biorouter Prompt**
 ```
 Use the "code-reviewer" workflow to analyze the authentication feature I implemented
 ```
 
-**BioRouter Output**
+**Biorouter Output**
 ```
 I'll use your code-reviewer workflow to create a specialized subagent for this analysis.
 
@@ -135,7 +135,7 @@ I'll use your code-reviewer workflow to create a specialized subagent for this a
 
 External subagents let you bring in AI agents from other providers and platforms, enabling biorouter to coordinate and integrate your workflow with the broader ecosystem. In the below example, we use Codex as a subagent by running it as an MCP server:
 
-**[BioRouter Configuration File](/docs/guides/config-files)** (`~/.config/biorouter/config.yaml`):
+**[Biorouter Configuration File](/docs/guides/config-files)** (`~/.config/biorouter/config.yaml`):
 ```yaml
 subagent:
   args:
@@ -165,12 +165,12 @@ approval_policy = "never"
 mode = "workspace-write"
 ```
 
-**BioRouter Prompt:**
+**Biorouter Prompt:**
 ```
 "Use the codex subagent to analyze my codebase structure and identify the main components"
 ```
 
-**BioRouter Output:**
+**Biorouter Output:**
 
 ```md
 Based on my analysis of your codebase, here are the main components:

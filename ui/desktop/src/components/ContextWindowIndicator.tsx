@@ -26,7 +26,7 @@ function clampThresholdPct(v: number): number {
  * indicator (chat-tab mode). Icon stays neutral so it matches the rest of
  * the picker icons; the bar alone goes green → yellow → orange → red as
  * usage climbs. The bar also carries a draggable threshold marker — the
- * point at which BioRouter auto-compacts — clamped to 20–90%. */
+ * point at which Biorouter auto-compacts — clamped to 20–90%. */
 export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   totalTokens,
   tokenLimit,

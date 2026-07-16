@@ -86,7 +86,7 @@ pub enum ToolErrorKind {
     /// The file / resource / record the call names does not exist.
     NotFound,
     /// The environment refused: filesystem permissions, a sandbox rule, a
-    /// BioRouter permission decision, an auth failure at the far end.
+    /// Biorouter permission decision, an auth failure at the far end.
     PermissionDenied,
     /// The call exceeded its deadline. Retryable: the far end may just be slow.
     Timeout,
@@ -99,7 +99,7 @@ pub enum ToolErrorKind {
     /// The tool ran and reported a domain failure (tests failed, the build broke,
     /// the query returned an error). The default when nothing else fits.
     ToolFailure,
-    /// BioRouter or the server itself malfunctioned — protocol violation,
+    /// Biorouter or the server itself malfunctioned — protocol violation,
     /// serialization failure, a panic. Not the model's fault, and not fixable by
     /// repeating the call.
     Internal,
@@ -180,7 +180,7 @@ impl ToolErrorKind {
                 "The tool ran and reported a failure. Read the message and address its cause."
             }
             Self::Internal => {
-                "BioRouter or the server malfunctioned. Repeating the call will not help; \
+                "Biorouter or the server malfunctioned. Repeating the call will not help; \
                  try another route or tell the user."
             }
         }

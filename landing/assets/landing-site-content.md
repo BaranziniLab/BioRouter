@@ -1,18 +1,18 @@
-# BioRouter Landing Site — Content & Requirements Tracker
+# Biorouter Landing Site — Content & Requirements Tracker
 
 ## Overview
-Landing site for UCSF BioRouter. Design: Material Design with OpenAI aesthetics — minimalist, dark theme, mobile/tablet/desktop responsive.
+Landing site for UCSF Biorouter. Design: Material Design with OpenAI aesthetics — minimalist, dark theme, mobile/tablet/desktop responsive.
 
 **Color palette:** UCSF teal (#18A3AC), UCSF navy (#052049), dark background (#0a0a0a)
 **Font:** Inter (body), JetBrains Mono (code)
-**Version:** v1.88.1 (July 2026)
+**Version:** v1.88.2 (July 2026)
 
 ---
 
 ## File Structure
 
 ```
-BioRouter Landing/
+Biorouter Landing/
 ├── index.html          # Main entry — redirects to intro.html
 ├── intro.html          # Tab 1: Introduction
 ├── download.html       # Tab 2: Download
@@ -20,7 +20,7 @@ BioRouter Landing/
 ├── baam.html           # Tab 4: BAAM (Agent Marketplace)
 ├── about.html          # Tab 5: About
 ├── shared.css          # Shared styles across all pages
-├── icon.png            # BioRouter logo (copied from ui/desktop/src/images/)
+├── icon.png            # Biorouter logo (copied from ui/desktop/src/images/)
 └── landing-site-content.md  # This file
 ```
 
@@ -33,21 +33,21 @@ GitHub: https://github.com/BaranziniLab/biorouter
 ## Tab 1 — Introduction (`intro.html`)
 
 ### Banner / Hero
-- BioRouter logo (icon.png) with glow animation
-- Version badge: "v1.88.1 Now Available"
-- Headline: "UCSF BioRouter"
+- Biorouter logo (icon.png) with glow animation
+- Version badge: "v1.88.2 Now Available"
+- Headline: "UCSF Biorouter"
 - Subheading: AI-powered integrated research environment tagline
 - CTA buttons: Download, Documentation, GitHub
 
 ### Summary (from presentation)
-**Core message:** BioRouter is an Agentic-AI-powered Integrated Biomedical Research Environment.
+**Core message:** Biorouter is an Agentic-AI-powered Integrated Biomedical Research Environment.
 
 **Problem statement:**
 - Biomedical researchers face: heavy local compute needs, unique local setups, proprietary codebases, on-prem datasets, sensitive patient/research data
 - Commercial AI services are limited due to privacy/security
 - UCSF enterprise AI lacks agentic support
 
-**Solution — BioRouter is an all-in-one tool with:**
+**Solution — Biorouter is an all-in-one tool with:**
 - Security offered by enterprise AI models
 - Ability to orchestrate diverse workflows with AI agents
 - Share workflows without sharing data across collaborations
@@ -69,7 +69,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
 - Structured and unstructured electronic health records
 - Biological knowledge graph (SPOKE)
 
-**Conclusion — BioRouter:**
+**Conclusion — Biorouter:**
 - Unifies the full research stack (commercial + institution-hosted + local AI models)
 - Is secure by design: enterprise-grade AI security
 - Enables agentic orchestration and automation
@@ -90,7 +90,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.88.1 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1)
+- v1.88.2 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.2)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -98,8 +98,8 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ## Tab 2 — Download (`download.html`)
 
 ### Hero
-- Version badge: "v1.88.1 — July 2026"
-- Title: "Download BioRouter"
+- Version badge: "v1.88.2 — July 2026"
+- Title: "Download Biorouter"
 - Subtitle: "Native installers for every major platform. Open source and free."
 
 ### Smart OS Detection
@@ -112,23 +112,23 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 - Linux → amd64.deb (default for Linux)
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.88.1)
+### Download Links (v1.88.2)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | BioRouter-1.88.1-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-arm64.dmg |
-| macOS Intel | BioRouter-1.88.1-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-x64.dmg |
-| Windows x64 | BioRouter-win32-x64-1.88.1.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-win32-x64-1.88.1.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.88.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter_1.88.1_amd64.deb |
-| Linux Fedora/RHEL | BioRouter-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-1.x86_64.rpm |
-| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli_1.88.1_amd64.deb |
-| Linux CLI Fedora/RHEL | biorouter-cli-1.88.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli-1.88.1-1.x86_64.rpm |
-| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-headless-linux-x64.tar.gz |
+| macOS Apple Silicon | Biorouter-1.88.2-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-arm64.dmg |
+| macOS Intel | Biorouter-1.88.2-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-x64.dmg |
+| Windows x64 | Biorouter-win32-x64-1.88.2.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-win32-x64-1.88.2.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.88.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter_1.88.2_amd64.deb |
+| Linux Fedora/RHEL | Biorouter-1.88.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/Biorouter-1.88.2-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.88.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-cli_1.88.2_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.88.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-cli-1.88.2-1.x86_64.rpm |
+| Linux headless web | biorouter-headless-linux-x64.tar.gz | https://github.com/BaranziniLab/biorouter/releases/download/v1.88.2/biorouter-headless-linux-x64.tar.gz |
 
 ### Install Commands
-- macOS: Open DMG and drag BioRouter.app to /Applications
-- Windows: Unzip and run BioRouter.exe
-- Linux Debian: sudo apt install ./biorouter_1.88.1_amd64.deb
-- Linux RPM: sudo dnf install ./BioRouter-1.88.1-1.x86_64.rpm
+- macOS: Open DMG and drag Biorouter.app to /Applications
+- Windows: Unzip and run Biorouter.exe
+- Linux Debian: sudo apt install ./biorouter_1.88.2_amd64.deb
+- Linux RPM: sudo dnf install ./Biorouter-1.88.2-1.x86_64.rpm
 
 ### Setup Note / Info Box
 After installing, users should:
@@ -221,11 +221,11 @@ Source: `/Users/wgu/Desktop/biorouter/documentation/architecture.md`
 
 ## Tab 4 — BAAM (`baam.html`)
 
-**Full name:** UCSF BioRouter AI Agent Marketplace (UCSF BAAM)
+**Full name:** UCSF Biorouter AI Agent Marketplace (UCSF BAAM)
 
 ### Hero
 - BAAM acronym badge
-- Title: "BioRouter AI Agent Marketplace"
+- Title: "Biorouter AI Agent Marketplace"
 - Description: curated, quality-controlled ecosystem for biomedical research
 - Search box (filters agent cards in real-time)
 
@@ -261,7 +261,7 @@ Each card contains:
 - **Name:** MedCP
 - **Org:** BaranziniLab / UCSF
 - **GitHub:** https://github.com/BaranziniLab/MedCP
-- **Description:** Medical Model Context Protocol. Transforms BioRouter into a medical AI assistant with secure, local access to EHRs and biomedical knowledge graphs.
+- **Description:** Medical Model Context Protocol. Transforms Biorouter into a medical AI assistant with secure, local access to EHRs and biomedical knowledge graphs.
 - **Command:** `uvx --from git+https://github.com/BaranziniLab/MedCP medcp`
 - **Tags:** UCSF, MCP, Clinical AI, Local
 
@@ -281,17 +281,17 @@ Each card contains:
 ## Tab 5 — About (`about.html`)
 
 ### News
-1. **BioRouter v1.88.1 Release** (July 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1
+1. **Biorouter v1.88.2 Release** (July 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.2
    - What's new: preview-first selective reset controls, immediate cached Home activity and recent sessions, current-streak indicators, resilient llama.cpp startup and warm-up, persistent theme packs, bounded tooltips, a production dependency graph with zero known audit vulnerabilities, synchronized CLI/server/headless versions, and complete cross-platform packages
 
-2. **BioRouter v1.88.0 Release** (July 2026)
+2. **Biorouter v1.88.0 Release** (July 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0
    - What's new: controllable agent runs, honest usage accounting, faster desktop and TUI rendering, responsive workspaces, Agent Drafter hardening, cross-platform security, and desktop/CLI/headless packages
 
 3. **UCSF AI Research Day** (2026)
    - Link: https://ai.ucsf.edu/researchday
-   - BioRouter to be featured
+   - Biorouter to be featured
 
 ### Resource Links
 - GitHub: https://github.com/BaranziniLab/biorouter
@@ -333,7 +333,7 @@ Each card contains:
 - [x] UCSF teal (#18A3AC) as accent color
 - [x] Minimalist, clean, lots of whitespace
 - [x] Mobile/tablet/desktop responsive
-- [x] BioRouter logo in banner (with glow/shadow)
+- [x] Biorouter logo in banner (with glow/shadow)
 - [x] No emoji unless UI icons
 
 ### Navigation

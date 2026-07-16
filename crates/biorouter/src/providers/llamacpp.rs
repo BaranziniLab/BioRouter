@@ -643,7 +643,7 @@ mod tests {
                     .map(|e| e.context_limit >= llamacpp_sidecar::LLAMACPP_AGENT_CONTEXT_SIZE)
                     .unwrap_or(false)
             }),
-            "16 GB recommended models should leave room for BioRouter's agent bootstrap"
+            "16 GB recommended models should leave room for Biorouter's agent bootstrap"
         );
     }
 

@@ -323,7 +323,7 @@ fn curation_warning(relative_path: &str, ext: &str, size: u64) -> Option<Expande
             WarningLevel::Warning,
             "Staging as plain readable text",
             format!(
-                "{relative_path} is not one of the common first-class ingest formats. BioRouter will try to read it as text, but during curation you should gloss over or omit files that are clearly not meant to encode readable knowledge."
+                "{relative_path} is not one of the common first-class ingest formats. Biorouter will try to read it as text, but during curation you should gloss over or omit files that are clearly not meant to encode readable knowledge."
             ),
         ));
     }

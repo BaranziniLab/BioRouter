@@ -446,10 +446,10 @@ async function runSelftest() {
 
   // ── Scenario B: br.state.set → state_write(baseVersion); echo patch → subscribe ─
   win.eval(
-    "window.__xSub = []; window.__unsub = window.BioRouter.state.subscribe('/x', function (v) { window.__xSub.push(v); });"
+    "window.__xSub = []; window.__unsub = window.Biorouter.state.subscribe('/x', function (v) { window.__xSub.push(v); });"
   );
   const beforeSet = received.length;
-  win.eval("window.BioRouter.state.set('/x', 5);");
+  win.eval("window.Biorouter.state.set('/x', 5);");
   const gotWrite = await waitFor(() =>
     received.slice(beforeSet).some((f) => f.type === "state_write")
   );
@@ -474,7 +474,7 @@ async function runSelftest() {
   emitUi({ cmd: "state", mode: "patch", version: 5, patch: [{ op: "replace", path: "/x", value: 9 }] });
   await waitFor(() => win.__xSub.some((v) => v === 9));
   check("echoed patch fires subscribe('/x')", win.__xSub.some((v) => v === 9), JSON.stringify(win.__xSub));
-  check("state.get('/x') reflects the echoed value", win.eval("window.BioRouter.state.get('/x')") === 9, "get=" + win.eval("window.BioRouter.state.get('/x')"));
+  check("state.get('/x') reflects the echoed value", win.eval("window.Biorouter.state.get('/x')") === 9, "get=" + win.eval("window.Biorouter.state.get('/x')"));
   // Unsubscribe stops further notifications.
   const subCountBefore = win.__xSub.length;
   win.eval("window.__unsub();");
@@ -486,7 +486,7 @@ async function runSelftest() {
   const countBefore = $("cnt").textContent;
   emitUi({ cmd: "totally_unknown_cmd", foo: 1 });
   await delay(80);
-  check("unknown cmd is a silent no-op (client still alive)", !!win.BioRouter && $("cnt").textContent === countBefore, "cnt=" + $("cnt").textContent);
+  check("unknown cmd is a silent no-op (client still alive)", !!win.Biorouter && $("cnt").textContent === countBefore, "cnt=" + $("cnt").textContent);
 
   emitUi({ cmd: "render", target: "@region:results", body: [{ t: "quantum_widget", label: "x" }] });
   await waitFor(() => doc.querySelector("#results-probe, [data-br-region='results'] .br-unknown-widget"));
@@ -623,9 +623,9 @@ async function runSelftest() {
   netCanvas.addEventListener("br-network-select", (e) => {
     netSel = e && e.detail ? e.detail.id : null;
   });
-  win.BioRouter.ui.network("net1").select("n1");
+  win.Biorouter.ui.network("net1").select("n1");
   check("programmatic select fires a br-network-select CustomEvent", netSel === "n1", "detail.id=" + netSel);
-  const netPos = win.BioRouter.ui.network("net1").positions();
+  const netPos = win.Biorouter.ui.network("net1").positions();
   check(
     "network exposes a positions object keyed by node id",
     !!netPos && typeof netPos === "object" && !!netPos.n1 && typeof netPos.n1.x === "number",
@@ -635,7 +635,7 @@ async function runSelftest() {
   // ── Scenario J: author component registry — mount + update ─────────────────
   win.eval(
     "window.__cMount = []; window.__cUpdate = [];" +
-      "window.BioRouter.components.register('greeter', {" +
+      "window.Biorouter.components.register('greeter', {" +
       "  mount: function (el, props) { window.__cMount.push(props && props.name); el.setAttribute('data-greet', (props && props.name) || ''); el.textContent = 'hi ' + ((props && props.name) || ''); }," +
       "  update: function (el, props) { window.__cUpdate.push(props && props.name); el.setAttribute('data-greet', (props && props.name) || ''); el.textContent = 'hi ' + ((props && props.name) || ''); }" +
       "});"
@@ -669,10 +669,10 @@ async function runSelftest() {
 
   // ── Scenario L: app.actions — app_call round-trip, errors, truncation ──────
   win.eval(
-    "window.BioRouter.actions.register('greet', function (args) { return { hello: (args && args.who) || '?' }; });" +
-      "window.BioRouter.actions.register('boom', function () { throw new Error('kaboom'); });" +
-      "window.BioRouter.actions.register('big', function () { return { blob: new Array(70001).join('x') }; });" +
-      "window.BioRouter.actions.register('slow', function (args) { return Promise.resolve({ doubled: (args && args.n) * 2 }); });"
+    "window.Biorouter.actions.register('greet', function (args) { return { hello: (args && args.who) || '?' }; });" +
+      "window.Biorouter.actions.register('boom', function () { throw new Error('kaboom'); });" +
+      "window.Biorouter.actions.register('big', function () { return { blob: new Array(70001).join('x') }; });" +
+      "window.Biorouter.actions.register('slow', function (args) { return Promise.resolve({ doubled: (args && args.n) * 2 }); });"
   );
   emitUi({ cmd: "app_call", callId: "ac1", action: "greet", args: { who: "Ada" } });
   await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac1"));
@@ -718,14 +718,14 @@ async function runSelftest() {
   }
   check(
     "br.actions.list() reports the registered action names",
-    win.eval("window.BioRouter.actions.list().indexOf('greet') >= 0 && window.BioRouter.actions.list().indexOf('boom') >= 0"),
-    win.eval("JSON.stringify(window.BioRouter.actions.list())")
+    win.eval("window.Biorouter.actions.list().indexOf('greet') >= 0 && window.Biorouter.actions.list().indexOf('boom') >= 0"),
+    win.eval("JSON.stringify(window.Biorouter.actions.list())")
   );
 
   // ── Scenario M: br.call — typed turns with structured / prose results ──────
   win.eval(
     "window.__callResult = null;" +
-      "window.BioRouter.call({ name: 'analyze', args: { x: 1 }, outputSchema: { type: 'object' } }).then(function (r) { window.__callResult = r; });"
+      "window.Biorouter.call({ name: 'analyze', args: { x: 1 }, outputSchema: { type: 'object' } }).then(function (r) { window.__callResult = r; });"
   );
   await waitFor(() => received.some((f) => f.type === "call"));
   const callFrame = received.find((f) => f.type === "call");
@@ -745,7 +745,7 @@ async function runSelftest() {
 
   win.eval(
     "window.__callText = null;" +
-      "window.BioRouter.call({ text: 'summarize the cohort' }).then(function (r) { window.__callText = r; });"
+      "window.Biorouter.call({ text: 'summarize the cohort' }).then(function (r) { window.__callText = r; });"
   );
   await waitFor(() => received.filter((f) => f.type === "call").length >= 2);
   const callFrame2 = received.filter((f) => f.type === "call").pop();
@@ -764,8 +764,8 @@ async function runSelftest() {
   const baseSup = received.length;
   win.eval(
     "window.__sup1 = null; window.__sup2 = null;" +
-      "window.BioRouter.call({ name: 'search', args: { q: 'a' }, supersede: true }).then(function (r) { window.__sup1 = r; });" +
-      "window.BioRouter.call({ name: 'search', args: { q: 'ab' }, supersede: true }).then(function (r) { window.__sup2 = r; });"
+      "window.Biorouter.call({ name: 'search', args: { q: 'a' }, supersede: true }).then(function (r) { window.__sup1 = r; });" +
+      "window.Biorouter.call({ name: 'search', args: { q: 'ab' }, supersede: true }).then(function (r) { window.__sup2 = r; });"
   );
   await waitFor(() => win.eval("window.__sup1") != null);
   check("a superseded br.call resolves {superseded:true}", win.eval("window.__sup1 && window.__sup1.superseded") === true, win.eval("JSON.stringify(window.__sup1)"));
@@ -788,16 +788,16 @@ async function runSelftest() {
       actions: ["greet"],
     },
   });
-  await waitFor(() => win.eval("window.BioRouter.signals.declared().length") >= 2);
+  await waitFor(() => win.eval("window.Biorouter.signals.declared().length") >= 2);
   check(
     "the ready surface's signals are latched into signals.declared()",
-    win.eval("window.BioRouter.signals.declared().map(function (s) { return s.name; }).indexOf('filter_changed') >= 0"),
-    win.eval("JSON.stringify(window.BioRouter.signals.declared())")
+    win.eval("window.Biorouter.signals.declared().map(function (s) { return s.name; }).indexOf('filter_changed') >= 0"),
+    win.eval("JSON.stringify(window.Biorouter.signals.declared())")
   );
   const baseSig = received.length;
   win.eval(
-    "window.BioRouter.signals.emit('filter_changed', { q: 'first' });" +
-      "window.BioRouter.signals.emit('filter_changed', { q: 'second' });"
+    "window.Biorouter.signals.emit('filter_changed', { q: 'first' });" +
+      "window.Biorouter.signals.emit('filter_changed', { q: 'second' });"
   );
   await waitFor(() => received.slice(baseSig).some((f) => f.type === "signal" && f.name === "filter_changed"), 2000);
   await delay(80);
@@ -809,8 +809,8 @@ async function runSelftest() {
   // An UNdeclared signal falls back to the 250ms default (proves declared wins).
   const baseUn = received.length;
   win.eval(
-    "window.BioRouter.signals.emit('mystery', { v: 1 });" +
-      "window.BioRouter.signals.emit('mystery', { v: 2 });"
+    "window.Biorouter.signals.emit('mystery', { v: 1 });" +
+      "window.Biorouter.signals.emit('mystery', { v: 2 });"
   );
   await delay(80);
   check(
@@ -838,7 +838,7 @@ async function runSelftest() {
     ],
   });
   await waitFor(() => doc.querySelector("[data-br-iid='net2'] canvas"));
-  win.eval("window.BioRouter.ui.network('net2').select('x1');");
+  win.eval("window.Biorouter.ui.network('net2').select('x1');");
   await waitFor(() => received.slice(baseNode).some((f) => f.type === "signal" && f.name === "node_selected"), 2000);
   {
     const nodeSig = received.slice(baseNode).filter((f) => f.type === "signal" && f.name === "node_selected");
@@ -856,7 +856,7 @@ async function runSelftest() {
   const baseNoGrant = received.length;
   win.eval(
     "window.__kbNoGrant = 'pending';" +
-      "window.BioRouter.kb.search('x').then(" +
+      "window.Biorouter.kb.search('x').then(" +
       "  function () { window.__kbNoGrant = 'resolved'; }," +
       "  function (e) { window.__kbNoGrant = String(e && e.message); });"
   );
@@ -875,14 +875,14 @@ async function runSelftest() {
   // Advertise the `data` grant (what manifest.advertised() emits for a KB
   // source); the KB methods now round-trip to the server.
   send({ type: "ready", protocol: 2, capabilities: ["ui", "data"], sessionId: "harness", resumed: false });
-  await waitFor(() => win.eval("window.BioRouter.has('data')"));
-  check("a ready frame advertising 'data' lifts the KB grant gate", win.eval("window.BioRouter.has('data')") === true);
+  await waitFor(() => win.eval("window.Biorouter.has('data')"));
+  check("a ready frame advertising 'data' lifts the KB grant gate", win.eval("window.Biorouter.has('data')") === true);
 
   // Scenario P1: search resolves.
   const baseSearch = received.length;
   win.eval(
     "window.__search = null;" +
-      "window.BioRouter.kb.search('cohort', { limit: 5 }).then(" +
+      "window.Biorouter.kb.search('cohort', { limit: 5 }).then(" +
       "  function (r) { window.__search = r; }," +
       "  function (e) { window.__search = { err: String(e.message) }; });"
   );
@@ -905,7 +905,7 @@ async function runSelftest() {
   const baseErr = received.length;
   win.eval(
     "window.__pageErr = null;" +
-      "window.BioRouter.kb.page('missing.md').then(" +
+      "window.Biorouter.kb.page('missing.md').then(" +
       "  function (r) { window.__pageErr = { ok: r }; }," +
       "  function (e) { window.__pageErr = String(e.message); });"
   );
@@ -924,7 +924,7 @@ async function runSelftest() {
   const baseIng = received.length;
   win.eval(
     "window.__ingProg = []; window.__ingDone = null;" +
-      "window.BioRouter.kb.ingest([{ url: 'https://x' }], {" +
+      "window.Biorouter.kb.ingest([{ url: 'https://x' }], {" +
       "  onProgress: function (p) { window.__ingProg.push(p.stage + ':' + (p.pct == null ? '-' : p.pct)); } })" +
       ".then(function (r) { window.__ingDone = r; }, function (e) { window.__ingDone = { err: String(e.message) }; });"
   );
@@ -956,7 +956,7 @@ async function runSelftest() {
   const baseTo = received.length;
   win.eval(
     "window.__toRes = null;" +
-      "window.BioRouter.kb.search('slow', { timeoutMs: 100 }).then(" +
+      "window.Biorouter.kb.search('slow', { timeoutMs: 100 }).then(" +
       "  function (r) { window.__toRes = { ok: r }; }," +
       "  function (e) { window.__toRes = String(e.message); });"
   );
@@ -972,7 +972,7 @@ async function runSelftest() {
   const baseMs = received.length;
   win.eval(
     "window.__ms = null;" +
-      "window.BioRouter.model.status().then(" +
+      "window.Biorouter.model.status().then(" +
       "  function (s) { window.__ms = s; }, function (e) { window.__ms = { err: String(e.message) }; });"
   );
   await waitFor(() => received.slice(baseMs).some((f) => f.type === "model_status"));
@@ -994,7 +994,7 @@ async function runSelftest() {
 
   // ── Scenario R: br.kb.graphToNetwork — pure KB-graph → network-spec mapping ─
   win.eval(
-    "window.__net = window.BioRouter.kb.graphToNetwork({" +
+    "window.__net = window.Biorouter.kb.graphToNetwork({" +
       "  nodes: [" +
       "    { id: 'n1', label: 'Gene A', kind: 'Gene' }," +
       "    { id: 'n2', label: 'Disease B', kind: 'Disease' }," +
@@ -1041,7 +1041,7 @@ async function runSelftest() {
       win.eval("typeof window.__net.edges[1].kind") === "undefined",
     netDump
   );
-  check("graphToNetwork is defensive about a non-graph input (empty spec)", win.eval("(function(){var n=window.BioRouter.kb.graphToNetwork(null);return n.nodes.length===0&&n.edges.length===0;})()"));
+  check("graphToNetwork is defensive about a non-graph input (empty spec)", win.eval("(function(){var n=window.Biorouter.kb.graphToNetwork(null);return n.nodes.length===0&&n.edges.length===0;})()"));
 
   // ── Scenario S: theme pack frame sets data-br-pack; unknown ignored ────────
   emitUi({ cmd: "theme", pack: "clinical" });
@@ -1104,20 +1104,20 @@ async function runSelftest() {
   {
     const chip = doc.querySelector(".br-presence");
     check("a panel frame flashes the presence chip", !!chip && chip.classList.contains("br-presence--on"), chip && chip.className);
-    const text = win.eval("window.BioRouter.ui.presenceText()");
+    const text = win.eval("window.Biorouter.ui.presenceText()");
     check("derived presence text is 'AI · updating panel <title>'", text === "AI · updating panel Cohort", JSON.stringify(text));
   }
   emitUi({ cmd: "render", target: "@region:results", body: [{ t: "text", value: "x" }], narrate: "Building your cohort view" });
-  await waitFor(() => win.eval("window.BioRouter.ui.presenceText()") === "Building your cohort view");
+  await waitFor(() => win.eval("window.Biorouter.ui.presenceText()") === "Building your cohort view");
   {
     const chip = doc.querySelector(".br-presence");
-    check("a frame's narrate string is shown verbatim in the presence chip", (chip && chip.textContent) === "Building your cohort view" && win.eval("window.BioRouter.ui.presenceText()") === "Building your cohort view", chip && chip.textContent);
+    check("a frame's narrate string is shown verbatim in the presence chip", (chip && chip.textContent) === "Building your cohort view" && win.eval("window.Biorouter.ui.presenceText()") === "Building your cohort view", chip && chip.textContent);
   }
   check(
     "br.ui.presence(msg) lets authors show the chip directly",
     (function () {
-      win.eval("window.BioRouter.ui.presence('Author note here');");
-      return doc.querySelector(".br-presence").textContent === "Author note here" && win.eval("window.BioRouter.ui.presenceText()") === "Author note here";
+      win.eval("window.Biorouter.ui.presence('Author note here');");
+      return doc.querySelector(".br-presence").textContent === "Author note here" && win.eval("window.Biorouter.ui.presenceText()") === "Author note here";
     })(),
     doc.querySelector(".br-presence") && doc.querySelector(".br-presence").textContent
   );
@@ -1172,7 +1172,7 @@ async function runSelftest() {
   };
   advance(60000);
   // W1: a single throwing component mount → neutral placeholder + exactly one ui_error.
-  win.eval("window.BioRouter.components.register('crashOne', { mount: function () { throw new Error('mount-boom'); } });");
+  win.eval("window.Biorouter.components.register('crashOne', { mount: function () { throw new Error('mount-boom'); } });");
   const baseW1 = received.length;
   emitUi({ cmd: "render", target: "@region:results", body: [{ t: "component", id: "co1", name: "crashOne", props: {} }] });
   await waitFor(() => doc.querySelector(".br-unknown-widget[data-br-iid='co1']"));
@@ -1184,7 +1184,7 @@ async function runSelftest() {
   }
   // W2: rate limit — 5 rapid errors within the window yield ≤3 ui_error frames.
   advance(120000); // fresh window again
-  win.eval("window.BioRouter.components.register('crashRate', { mount: function () { throw new Error('rate-boom'); } });");
+  win.eval("window.Biorouter.components.register('crashRate', { mount: function () { throw new Error('rate-boom'); } });");
   const baseW2 = received.length;
   emitUi({
     cmd: "render",
@@ -1206,7 +1206,7 @@ async function runSelftest() {
   }
   // W3: after the window frees up, the next frame carries droppedCount for the drops.
   advance(180000); // window free again; 2 were dropped in W2
-  win.eval("window.BioRouter.components.register('crashDrop', { mount: function () { throw new Error('drop-boom'); } });");
+  win.eval("window.Biorouter.components.register('crashDrop', { mount: function () { throw new Error('drop-boom'); } });");
   const baseW3 = received.length;
   emitUi({ cmd: "render", target: "@region:results", body: [{ t: "component", id: "cd1", name: "crashDrop", props: {} }] });
   await waitFor(() => received.slice(baseW3).some((f) => f.type === "ui_error"));
@@ -1228,19 +1228,19 @@ async function runSelftest() {
     resumed: false,
     profiles: ["critic"],
   });
-  await waitFor(() => win.eval("JSON.stringify(window.BioRouter.agents())") === '["critic"]');
+  await waitFor(() => win.eval("JSON.stringify(window.Biorouter.agents())") === '["critic"]');
   check(
     "ready.profiles is exposed via br.agents()",
-    win.eval("JSON.stringify(window.BioRouter.agents())") === '["critic"]',
-    win.eval("JSON.stringify(window.BioRouter.agents())")
+    win.eval("JSON.stringify(window.Biorouter.agents())") === '["critic"]',
+    win.eval("JSON.stringify(window.Biorouter.agents())")
   );
 
   // Start a scoped call and register a facade-scoped + a global listener.
   win.eval(
     "window.__critCall = null; window.__critMsgs = []; window.__mainMsgs = [];" +
-      "window.BioRouter.agent('critic').on('message', function (ev) { window.__critMsgs.push(ev.delta); });" +
-      "window.BioRouter.on('message', function (ev) { window.__mainMsgs.push(ev.delta); });" +
-      "window.BioRouter.agent('critic').call({ text: 'grade this answer' }).then(function (r) { window.__critCall = r; });"
+      "window.Biorouter.agent('critic').on('message', function (ev) { window.__critMsgs.push(ev.delta); });" +
+      "window.Biorouter.on('message', function (ev) { window.__mainMsgs.push(ev.delta); });" +
+      "window.Biorouter.agent('critic').call({ text: 'grade this answer' }).then(function (r) { window.__critCall = r; });"
   );
   const baseAg = received.length;
   await waitFor(() => received.slice(baseAg).some((f) => f.type === "call" && f.agent === "critic"));
@@ -1262,8 +1262,8 @@ async function runSelftest() {
   );
   check(
     "a worker message frame shows the presence chip attributed to the profile",
-    /^critic · /.test(String(win.eval("window.BioRouter.ui.presenceText() || ''"))),
-    "presence=" + win.eval("String(window.BioRouter.ui.presenceText())")
+    /^critic · /.test(String(win.eval("window.Biorouter.ui.presenceText() || ''"))),
+    "presence=" + win.eval("String(window.Biorouter.ui.presenceText())")
   );
 
   // An un-tagged (main) frame reaches the global on() but NOT the critic facade.
@@ -1293,8 +1293,8 @@ async function runSelftest() {
   const baseGhost = received.length;
   win.eval(
     "window.__ghostCall = null; window.__ghostPrompt = null;" +
-      "window.BioRouter.agent('ghost').call({ text: 'hi' }).then(function () { window.__ghostCall = 'ok'; }, function (e) { window.__ghostCall = String(e && e.message); });" +
-      "window.BioRouter.agent('ghost').prompt('hi').then(function () { window.__ghostPrompt = 'ok'; }, function (e) { window.__ghostPrompt = String(e && e.message); });"
+      "window.Biorouter.agent('ghost').call({ text: 'hi' }).then(function () { window.__ghostCall = 'ok'; }, function (e) { window.__ghostCall = String(e && e.message); });" +
+      "window.Biorouter.agent('ghost').prompt('hi').then(function () { window.__ghostPrompt = 'ok'; }, function (e) { window.__ghostPrompt = String(e && e.message); });"
   );
   await waitFor(() => win.eval("window.__ghostCall") != null && win.eval("window.__ghostPrompt") != null);
   check(
@@ -1346,7 +1346,7 @@ async function runSelftest() {
     if (windowConfig) w.BIOROUTER_APP_CONFIG = windowConfig;
     w.eval(bundle);
     await delay(30);
-    const cfg = w.BioRouter ? w.BioRouter.config : null;
+    const cfg = w.Biorouter ? w.Biorouter.config : null;
     const mode = w.document.documentElement.getAttribute("data-br-theme");
     const pack = w.document.documentElement.getAttribute("data-br-pack");
     dom2.window.close();

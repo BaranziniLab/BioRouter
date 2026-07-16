@@ -22,7 +22,7 @@ check() {
   fi
 }
 
-echo "=== BioRouter Docs Verification ==="
+echo "=== Biorouter Docs Verification ==="
 
 check "no .html files in docs/" \
   "find '$DOCS' -name '*.html' 2>/dev/null"

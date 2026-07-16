@@ -1,6 +1,6 @@
 # Agent-driven UI example apps
 
-Each folder is a BioRouter app whose **agent drives the interface** with the
+Each folder is a Biorouter app whose **agent drives the interface** with the
 `ui_*` tools (see `crates/biorouter-mcp/src/agent_drafter/control.rs`) instead of
 only writing text into a chat log.
 

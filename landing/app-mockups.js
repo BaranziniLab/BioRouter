@@ -1,6 +1,6 @@
 /* ───────────────────────────────────────────────────────────────
-   UCSF BioRouter — App UI mockup renderer
-   Builds hand-coded, vector recreations of the BioRouter desktop app
+   UCSF Biorouter — App UI mockup renderer
+   Builds hand-coded, vector recreations of the Biorouter desktop app
    screens and mounts them into [data-screen] containers, replacing the
    old low-resolution screenshots. Pure DOM, so it zooms losslessly and
    reads at the website's own text size.
@@ -262,7 +262,7 @@
     }
     var main = '<div class="bw-scroll">' +
       '<div class="bw-headrow"><div class="bw-head"><h2>Chat history</h2>' +
-      '<p>View and search your past conversations with BioRouter. ⌘F to search.</p></div>' +
+      '<p>View and search your past conversations with Biorouter. ⌘F to search.</p></div>' +
       '<span class="bw-btn soft">' + svg(I.upload) + 'Import Session</span></div>' +
       '<div class="bw-sectionrule"></div>' +
       '<div class="bw-day">Today</div>' +
@@ -305,7 +305,7 @@
     }
     var main = '<div class="bw-scroll">' +
       '<div class="bw-head"><h2>Extensions</h2>' +
-      '<p>MCP extensions expand BioRouter’s capabilities with Prompts, Resources, and Tools. Enable extension apps at all-new costs. ⌘F to search.</p>' +
+      '<p>MCP extensions expand Biorouter’s capabilities with Prompts, Resources, and Tools. Enable extension apps at all-new costs. ⌘F to search.</p>' +
       '<div class="bw-head-actions"><span class="bw-btn dark">' + svg(I.plus) + 'Add Extension</span>' +
       '<span class="bw-btn soft">' + svg(I.ext) + 'Browse Extensions</span>' +
       '<span class="bw-btn soft">' + svg(I.plus) + 'Add Custom Extension</span></div></div>' +
@@ -314,7 +314,7 @@
       erow('Developer', 'General development tools useful for software engineering.', true) +
       erow('Computer Controller', 'General computer control tools that don’t require you to be a developer or engineer.', true) +
       erow('Auto Visualiser', 'Data visualization and UI generation tools.', true) +
-      erow('Memory', 'Teach BioRouter your preferences as you go.', true) +
+      erow('Memory', 'Teach Biorouter your preferences as you go.', true) +
       erow('Tutorial', 'Access interactive tutorials and guides.', false) +
       erow('Knowledge', 'Personal, LLM-maintained knowledge bases backed by markdown folders and git history.', true) +
       erow('Agent Drafter', 'Build interactive artifacts and export them as standalone projects.', true) +
@@ -332,12 +332,12 @@
     }
     var main = '<div class="bw-scroll">' +
       '<div class="bw-head"><h2>Skills</h2>' +
-      '<p>Reusable instruction sets that guide BioRouter’s behavior. ⌘F to search.</p>' +
+      '<p>Reusable instruction sets that guide Biorouter’s behavior. ⌘F to search.</p>' +
       '<div class="bw-head-actions"><span class="bw-btn dark">' + svg(I.plus) + 'Add Skill</span>' +
       '<span class="bw-btn soft">' + svg(I.ext) + 'Browse Skills</span>' +
       '<span class="bw-btn soft">' + svg(I.plus) + 'Add Custom Skill</span></div></div>' +
       '<div class="bw-sectionrule"></div>' +
-      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>BioRouter skills (62)</div>' +
+      '<div class="bw-grp" style="margin:14px 0 2px"><i class="inst"></i>Biorouter skills (62)</div>' +
       skill('clinical-databases', '13 skills', ['clinical-databases', 'allele-frequency', 'clinical-trials', 'drug-interactions', 'gene-disease', 'pathway-enrichment', 'variant-annotation', 'literature-search', 'omop-query']) +
       skill('single-cell', '9 skills', ['single-cell', 'qc-filtering', 'normalization', 'clustering', 'cell-typing', 'trajectory', 'differential-expression']) +
       skill('data-visualization', '6 skills', ['data-visualization', 'ggplot', 'volcano-plot', 'heatmap', 'survival-curve', 'forest-plot']) +
@@ -355,7 +355,7 @@
       '<div class="bw-sectionrule"></div>' +
       '<div class="bw-sched"><div class="body">' +
       '<div class="top"><span class="nm">Daily Meditation</span>' +
-      '<span class="badge" title="Built into BioRouter.">Built-in</span></div>' +
+      '<span class="badge" title="Built into Biorouter.">Built-in</span></div>' +
       '<div class="cron">At 03:00 AM — digests recent sessions into the Soul knowledge base</div>' +
       '<div class="last">Last run: Jun 20, 2026, 3:00 AM</div></div>' +
       '<div class="acts"><span class="a">' + svg(I.edit) + '</span>' +
@@ -375,7 +375,7 @@
     // [x, y, kind, label(optional)] — laid out as a connected graph.
     var N = [
       [388, 210, 'hub', 'Soul'],            // 0
-      [250, 250, 'hub', 'BioRouter'],       // 1
+      [250, 250, 'hub', 'Biorouter'],       // 1
       [510, 150, 'hub', 'OMOP CDM'],        // 2
       [300, 120, 'hub', 'EHR'],             // 3
       [560, 300, 'hub', 'R Shiny'],         // 4

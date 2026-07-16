@@ -13,8 +13,8 @@ function unregisterAllProtocolHandlers() {
   console.log('Unregistering ALL biorouter:// protocol handlers...');
   
   try {
-    // Get all registered BioRouter apps
-    console.log('Finding all registered BioRouter applications...');
+    // Get all registered Biorouter apps
+    console.log('Finding all registered Biorouter applications...');
     const lsregisterOutput = execSync(`/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -dump | grep -B 10 -A 10 "claimed schemes:.*${PROTOCOL}:"`, { encoding: 'utf8' });
 
     // Extract app paths from the output
@@ -24,13 +24,13 @@ function unregisterAllProtocolHandlers() {
     if (pathMatches) {
       pathMatches.forEach(match => {
         const path = match.replace(/path:\s+/, '').trim();
-        if (path.includes('BioRouter') || path.includes('biorouter')) {
+        if (path.includes('Biorouter') || path.includes('biorouter')) {
           uniquePaths.add(path);
         }
       });
     }
 
-    console.log(`Found ${uniquePaths.size} BioRouter app(s) to unregister:`);
+    console.log(`Found ${uniquePaths.size} Biorouter app(s) to unregister:`);
     uniquePaths.forEach(path => console.log(`  - ${path}`));
     
     // Unregister each app
@@ -70,15 +70,15 @@ function unregisterAllProtocolHandlers() {
       console.log('Warning: Could not rebuild Launch Services database');
     }
     
-    console.log(`\n✅ Successfully processed ${unregisteredCount} BioRouter applications`);
+    console.log(`\n✅ Successfully processed ${unregisteredCount} Biorouter applications`);
     console.log('All biorouter:// protocol handlers have been unregistered.');
     console.log('\nNote: You may need to restart your system for changes to take full effect.');
 
   } catch (error) {
     console.error('Error during unregistration:', error.message);
     console.log('\nManual cleanup options:');
-    console.log('1. Use Activity Monitor to quit all BioRouter processes');
-    console.log('2. Delete BioRouter apps from Applications folder');
+    console.log('1. Use Activity Monitor to quit all Biorouter processes');
+    console.log('2. Delete Biorouter apps from Applications folder');
     console.log('3. Run: sudo /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -kill -r -domain local -domain system -domain user');
   }
 }

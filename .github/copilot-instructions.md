@@ -44,7 +44,7 @@
 - Async runtime: tokio
 - See HOWTOAI.md for AI-assisted code standards
 - MCP protocol implementations require extra scrutiny
-- Naming convention: In `docs/`, always refer to the project as "BioRouter" (capitalized as a proper noun)
+- Naming convention: In `docs/`, always refer to the project as "Biorouter" (capitalized as a proper noun)
 - No prerelease docs: PRs should not contain updates in `/docs` that correspond to unreleased code changes, so that the public docs stay in sync with the latest released version.
 
 ## CI Pipeline Context
