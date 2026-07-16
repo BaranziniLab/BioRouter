@@ -1,9 +1,9 @@
 # BioRouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
-> D-01 … D-11, D-13, D-14; **D-12 was overridden to option B (40px rows everywhere, no compact mode).**
+> D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile: 40px content rows and 32px sidebar navigation/session rows.**
 > The [drift register](#part-7--drift-register) is now the active work backlog.
 
 This is the single source of truth for how BioRouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
@@ -294,7 +294,7 @@ Six steps. Nothing between them.
 | Header bottom padding | 24px (`pb-6`) |
 | Header separator | 1px `--border-subtle` |
 | Max content measure | 1080px, centred |
-| Row height | 40px (D-12·B — one value, no compact mode) |
+| Row height | 40px content · 32px sidebar navigation/session (D-12·B) |
 | Sidebar width | 240px expanded / 60px collapsed |
 
 **Today:** the documented flat header (`px-8 pt-12 pb-6 border-b`) is contradicted by `.biorouter-page-header`, which sets `border-bottom-color: transparent !important` and replaces the hairline with a gradient wash plus `box-shadow: var(--shadow-modal-chrome-bottom)` ([`main.css:519`](ui/desktop/src/styles/main.css#L519)). So the "flat header with a bottom border" is actually a shadowed, gradient header with no border. `DR-09`. See **[Decision D-05](#d-05--elevation-policy)**.
@@ -715,11 +715,13 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 
 ### 4.11 · Sidebar & navigation
 
-**Canonical.** 240px expanded, 60px collapsed. Surface `--sidebar`, right edge 1px `--sidebar-border`. Eleven destinations: Home, Chat, History, Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps, Settings.
+**Canonical.** 240px expanded, 60px collapsed. The responsive overlay also stays at the fixed 240px expanded width; it never grows to fit content. Surface `--sidebar`, right edge 1px `--sidebar-border`. The first navigation action is **New Session**, followed by Home, Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, and conditional Apps. A date-grouped Recents list follows it, with **View all chat history** attached to that section; Settings remains fixed in the footer.
 
 | | Value |
 |---|---|
-| Row | 36px, 8px×10px, `--radius-md`, 8px gap, 18px icon + 13/18 label |
+| New Session action | Same standard 32px navigation-row treatment; 12px horizontal inset, `--radius-md`, 16px plus icon + 14/20 label; no border, boxed ground, or special weight |
+| Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
+| Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
 | Rest | transparent, `--text-muted` icon + label |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |
@@ -959,7 +961,7 @@ Foreground `#e8e1d2` (14.33:1). See **[Decision D-11](#d-11--terminal-ground)**.
 > | D-09 | Sidebar | **Keep two-tone**; `--text-muted` → `#6e6760` |
 > | D-10 | Code theme | **Custom warm theme**, light + dark, token-derived |
 > | D-11 | Terminal ground | **`--background-muted`** — `#faf8f3` / `#16120c` |
-> | D-12 | Row density | **40px everywhere** — no compact mode ⚠️ *override* |
+> | D-12 | Row density | **40px content · 32px sidebar navigation/session** — one fixed profile, no density setting ⚠️ *refined 2026-07-15* |
 > | D-13 | Status colours | **Split `--fill-{s}` from `--text-{s}`**, per theme |
 > | D-14 | Decorative motion | **Delete** sidebar entrance + `Bird1–6` |
 >
@@ -1131,10 +1133,13 @@ The warm two-tone sidebar shipped in v1.87.1.
 | | Option | Consequence |
 |---|---|---|
 | A | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
-| **B** ✅ | **40px everywhere** | One value, no setting. **← chosen (override)** |
+| **B** ✅ | **40px content; compact sidebar rhythm** | 40px content rows and 32px sidebar navigation/session rows; no setting. **← chosen and refined 2026-07-15** |
 
-✅ **B.** Rows are 40px. There is no compact mode and no density setting. Table body rows, list rows,
-and settings rows all share the single 40px rhythm.
+✅ **B.** There is one authored density profile and no user-facing compact mode or density setting.
+Table body rows, content lists, and settings rows use the 40px rhythm. The persistent sidebar is the
+deliberate exception: primary navigation, the New Session action, and recent-session rows are 32px,
+and adjacent navigation rows have no added gap. This keeps the always-visible rail dense without
+changing the established type scale, icon sizes, or hit-target clarity.
 
 ---
 
@@ -1276,4 +1281,3 @@ The original backlog, as audited:
 5. **CI should enforce** what review can't: no hex literals in `.tsx`; no `<button>`/`<input>`/`<select>` outside `components/ui/`; no `shadow-*` outside the four permitted tokens; contrast assertions on the token pairs in [3.1](#31--colour).
 
 `.claude/commands/frontend-design.md` is now downstream of this file. Regenerate it from Parts 1–3 once Part 6 is settled.
-

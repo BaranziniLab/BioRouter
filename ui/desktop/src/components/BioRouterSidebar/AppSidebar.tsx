@@ -25,18 +25,13 @@ import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navig
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
-import { listApps, type Session } from '../../api';
+import { listApps } from '../../api';
 import { useRunningChats } from '../../hooks/chatStreamStore';
-import {
-  getCachedSessionList,
-  preloadSessionList,
-  refreshSessionList,
-  subscribeSessionList,
-} from '../../utils/sessionListCache';
+import { preloadSessionList } from '../../utils/sessionListCache';
 import { preloadHomeActivity } from '../../utils/homeInsightsCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
-import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import RecentChats from './RecentChats';
+import useSidebarSessions from './useSidebarSessions';
 
 function preloadHome(): void {
   preloadHomeActivity();
@@ -59,14 +54,6 @@ interface NavigationItem {
   tooltip: string;
 }
 
-const newChatItem: NavigationItem = {
-  type: 'item',
-  path: '/pair',
-  label: 'New Chat',
-  icon: Plus,
-  tooltip: 'Start a new chat',
-};
-
 const settingsItem: NavigationItem = {
   type: 'item',
   path: '/settings',
@@ -76,6 +63,13 @@ const settingsItem: NavigationItem = {
 };
 
 const menuItems: NavigationItem[] = [
+  {
+    type: 'item',
+    path: '/pair',
+    label: 'New Session',
+    icon: Plus,
+    tooltip: 'Start a new session',
+  },
   {
     type: 'item',
     path: '/',
@@ -134,54 +128,12 @@ const menuItems: NavigationItem[] = [
   },
 ];
 
-function useSidebarSessions(): Session[] {
-  const [sessions, setSessions] = useState<Session[]>(() => getCachedSessionList() ?? []);
-
-  useEffect(() => {
-    const syncCache = () => setSessions(getCachedSessionList() ?? []);
-    const refresh = () => {
-      void refreshSessionList().catch(() => undefined);
-    };
-    let refreshTimer: number | undefined;
-    const scheduleRefresh = () => {
-      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = undefined;
-        refresh();
-      }, 250);
-    };
-
-    const unsubscribe = subscribeSessionList(syncCache);
-    const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionId ? { ...session, name, user_set_name: userSetName } : session
-        )
-      );
-    });
-
-    refresh();
-    window.addEventListener('session-created', scheduleRefresh);
-    window.addEventListener('message-stream-finished', scheduleRefresh);
-
-    return () => {
-      unsubscribe();
-      unsubscribeNames();
-      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
-      window.removeEventListener('session-created', scheduleRefresh);
-      window.removeEventListener('message-stream-finished', scheduleRefresh);
-    };
-  }, []);
-
-  return sessions;
-}
-
 const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const chatContext = useChatContext();
   const runningChats = useRunningChats();
-  const sessions = useSidebarSessions();
+  const { sessions, hasMore, isLoading, loadMore } = useSidebarSessions();
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const [hasApps, setHasApps] = useState(false);
   const runningSessionIds = useMemo(
@@ -245,6 +197,10 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
   const renderMenuItem = (entry: NavigationItem) => {
     const IconComponent = entry.icon;
+    const isActive =
+      entry.path === '/pair'
+        ? currentPath === '/pair' && !currentSessionId
+        : isActivePath(entry.path);
 
     return (
       <SidebarMenuItem key={entry.path}>
@@ -253,7 +209,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           onClick={() => handleNavigation(entry.path)}
           onFocus={entry.path === '/' ? preloadHome : undefined}
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
-          isActive={isActivePath(entry.path)}
+          isActive={isActive}
           tooltip={entry.tooltip}
           className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
         >
@@ -277,36 +233,15 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         <div className="shrink-0">
           <div
             data-testid="sidebar-biorouter-wordmark"
-            className="flex h-9 items-center gap-2 px-5"
+            className="flex h-8 items-center gap-2 px-5"
           >
             <span className="text-sm font-semibold leading-none">Biorouter</span>
             <EnvironmentBadge />
           </div>
 
-          <SidebarGroup className="px-2 pb-2 pt-1">
+          <SidebarGroup className="px-2 pb-1">
             <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    data-testid="sidebar-new-chat-button"
-                    onClick={() => handleNavigation(newChatItem.path)}
-                    onFocus={preloadSessionList}
-                    onPointerEnter={preloadSessionList}
-                    isActive={currentPath === '/pair' && !currentSessionId}
-                    tooltip={newChatItem.tooltip}
-                    className="relative h-10 w-full justify-start rounded-lg border border-sidebar-border bg-background-default/55 px-2.5 text-[13px] font-semibold text-text-default transition-colors duration-[var(--motion-base)] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-background-default data-[active=true]:bg-sidebar-active data-[active=true]:before:bg-accent-bar"
-                  >
-                    <Plus className="size-4" />
-                    <span>{newChatItem.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-
-          <SidebarGroup className="px-2 pb-2">
-            <SidebarGroupContent>
-              <SidebarMenu>{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
+              <SidebarMenu className="gap-0">{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </div>
@@ -316,6 +251,9 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           sessions={sessions}
           activeSessionId={currentSessionId}
           runningSessionIds={runningSessionIds}
+          hasMore={hasMore}
+          isLoadingMore={isLoading}
+          onLoadMore={loadMore}
           onOpen={handleOpenChat}
           onViewAll={() => navigateWithViewTransition(navigate, '/sessions')}
         />

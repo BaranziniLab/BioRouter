@@ -1,16 +1,16 @@
-import { useMemo } from 'react';
-import type { Session } from '../../api';
+import { useCallback, useEffect, useMemo, useRef, type UIEvent } from 'react';
+import type { SessionSummary } from '../../api';
 import { Clock, Folder, History } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 
-export const RECENT_CHAT_LIMIT = 10;
+const LOAD_MORE_THRESHOLD_PX = 64;
 
 export interface RecentChatGroup {
   label: string;
-  sessions: Session[];
+  sessions: SessionSummary[];
 }
 
-function sessionActivityTime(session: Session): number {
+function sessionActivityTime(session: SessionSummary): number {
   const updatedAt = Date.parse(session.updated_at);
   if (!Number.isNaN(updatedAt)) return updatedAt;
 
@@ -18,13 +18,11 @@ function sessionActivityTime(session: Session): number {
   return Number.isNaN(createdAt) ? 0 : createdAt;
 }
 
-export function getRecentChats(sessions: Session[], limit = RECENT_CHAT_LIMIT): Session[] {
-  return [...sessions]
-    .sort((left, right) => {
-      const activityDifference = sessionActivityTime(right) - sessionActivityTime(left);
-      return activityDifference || left.id.localeCompare(right.id);
-    })
-    .slice(0, limit);
+export function sortRecentChats(sessions: SessionSummary[]): SessionSummary[] {
+  return [...sessions].sort((left, right) => {
+    const activityDifference = sessionActivityTime(right) - sessionActivityTime(left);
+    return activityDifference || left.id.localeCompare(right.id);
+  });
 }
 
 function localCalendarDay(timestamp: number): number {
@@ -51,10 +49,13 @@ export function formatSessionDateLabel(updatedAt: string, now = Date.now()): str
   }).format(date);
 }
 
-export function groupRecentChatsByDate(sessions: Session[], now = Date.now()): RecentChatGroup[] {
+export function groupRecentChatsByDate(
+  sessions: SessionSummary[],
+  now = Date.now()
+): RecentChatGroup[] {
   const groups: RecentChatGroup[] = [];
 
-  for (const session of getRecentChats(sessions)) {
+  for (const session of sortRecentChats(sessions)) {
     const label = formatSessionDateLabel(session.updated_at, now);
     const existingGroup = groups[groups.length - 1];
     if (existingGroup?.label === label) {
@@ -118,7 +119,7 @@ function ActiveChatIndicator({ sessionId }: { sessionId: string }) {
 }
 
 interface RecentChatRowProps {
-  session: Session;
+  session: SessionSummary;
   isActive: boolean;
   isRunning: boolean;
   onOpen: (sessionId: string) => void;
@@ -139,15 +140,11 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           onClick={() => onOpen(session.id)}
           aria-label={accessibleLabel}
           aria-current={isActive ? 'page' : undefined}
-          className={`relative flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-3 text-left transition-colors duration-[var(--motion-base)] ease-[var(--ease-out)] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
-            isActive
-              ? 'bg-sidebar-active before:bg-accent-bar'
-              : 'text-text-muted hover:text-text-default'
+          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
+            isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
           }`}
         >
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-[18px] text-text-default">
-            {title}
-          </span>
+          <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
           {isRunning && <ActiveChatIndicator sessionId={session.id} />}
         </button>
       </TooltipTrigger>
@@ -181,9 +178,12 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
 }
 
 interface RecentChatsProps {
-  sessions: Session[];
+  sessions: SessionSummary[];
   activeSessionId?: string | null;
   runningSessionIds: ReadonlySet<string>;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  onLoadMore: () => void;
   onOpen: (sessionId: string) => void;
   onViewAll: () => void;
 }
@@ -192,29 +192,60 @@ export default function RecentChats({
   sessions,
   activeSessionId,
   runningSessionIds,
+  hasMore,
+  isLoadingMore,
+  onLoadMore,
   onOpen,
   onViewAll,
 }: RecentChatsProps) {
   const groups = useMemo(() => groupRecentChatsByDate(sessions), [sessions]);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const handleScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      if (!hasMore || isLoadingMore) return;
+
+      const container = event.currentTarget;
+      const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (remainingScroll <= LOAD_MORE_THRESHOLD_PX) onLoadMore();
+    },
+    [hasMore, isLoadingMore, onLoadMore]
+  );
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !hasMore || isLoadingMore || container.clientHeight === 0) return;
+    if (container.scrollHeight <= container.clientHeight) onLoadMore();
+  }, [hasMore, isLoadingMore, onLoadMore, sessions.length]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="recent-chats">
-      <div className="flex h-9 shrink-0 items-center px-4 pt-1">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col" data-testid="recent-chats">
+      <div className="flex h-8 shrink-0 items-center px-5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle">
           Recents
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-1">
+      <div
+        ref={scrollContainerRef}
+        data-testid="recent-chat-scroll"
+        className="min-h-0 w-full min-w-0 shrink overflow-y-auto overflow-x-hidden px-2 pb-1"
+        onScroll={handleScroll}
+      >
         {groups.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-text-subtle">No recent chats yet</p>
+          <p className="px-3 py-3 text-xs text-text-subtle">
+            {isLoadingMore ? 'Loading chats…' : 'No recent chats yet'}
+          </p>
         ) : (
           groups.map((group) => (
-            <section key={group.label} aria-label={group.label} className="mb-1.5 last:mb-0">
-              <p className="px-3 pb-0.5 text-[11px] font-medium leading-4 text-text-subtle">
+            <section
+              key={group.label}
+              aria-label={group.label}
+              className="mb-2 min-w-0 last:mb-0"
+            >
+              <p className="px-3 pb-0.5 text-xs font-normal leading-4 text-text-subtle">
                 {group.label}
               </p>
-              <div>
+              <div className="min-w-0">
                 {group.sessions.map((session) => (
                   <RecentChatRow
                     key={session.id}
@@ -227,6 +258,15 @@ export default function RecentChats({
               </div>
             </section>
           ))
+        )}
+        {isLoadingMore && groups.length > 0 && (
+          <p
+            role="status"
+            data-testid="recent-chat-loading"
+            className="px-3 py-2 text-xs text-text-subtle"
+          >
+            Loading more chats…
+          </p>
         )}
       </div>
 

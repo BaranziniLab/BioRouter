@@ -1,13 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Session } from '../../api';
+import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
 import RecentChats, {
   formatSessionDateLabel,
   formatTimeSinceLastWorked,
-  getRecentChats,
   groupRecentChatsByDate,
+  sortRecentChats,
 } from './RecentChats';
 
 const now = Date.parse('2026-07-15T12:00:00.000Z');
@@ -28,7 +28,7 @@ beforeAll(() => {
   });
 });
 
-function makeSession(index: number): Session {
+function makeSession(index: number): SessionSummary {
   const updatedAt = new Date(now - index * 60_000).toISOString();
   return {
     id: `session-${index}`,
@@ -37,7 +37,6 @@ function makeSession(index: number): Session {
     updated_at: updatedAt,
     working_dir: `/workspace/project-${index}`,
     message_count: index,
-    extension_data: {},
   };
 }
 
@@ -47,6 +46,9 @@ function renderRecentChats(props: Partial<ComponentProps<typeof RecentChats>> = 
       <RecentChats
         sessions={[makeSession(2), makeSession(0), makeSession(1)]}
         runningSessionIds={new Set(['session-1'])}
+        hasMore={false}
+        isLoadingMore={false}
+        onLoadMore={vi.fn()}
         onOpen={vi.fn()}
         onViewAll={vi.fn()}
         {...props}
@@ -55,12 +57,12 @@ function renderRecentChats(props: Partial<ComponentProps<typeof RecentChats>> = 
   );
 }
 
-describe('getRecentChats', () => {
-  it('orders chats by most recent activity and caps the list at ten', () => {
+describe('sortRecentChats', () => {
+  it('orders every loaded chat by most recent activity without a fixed cap', () => {
     const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index));
 
-    expect(getRecentChats(sessions).map((session) => session.id)).toEqual(
-      Array.from({ length: 10 }, (_, index) => `session-${index}`)
+    expect(sortRecentChats(sessions).map((session) => session.id)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `session-${index}`)
     );
   });
 
@@ -98,17 +100,22 @@ describe('formatTimeSinceLastWorked', () => {
 describe('RecentChats', () => {
   it('opens individual chats, marks an ongoing chat, and exposes a compact summary on focus', async () => {
     const onOpen = vi.fn();
-    renderRecentChats({ onOpen });
+    renderRecentChats({ onOpen, activeSessionId: 'session-0' });
 
     const currentChat = screen.getByTestId('recent-chat-session-0');
     const ongoingChat = screen.getByTestId('recent-chat-session-1');
     expect(ongoingChat).toHaveAccessibleName('Open ongoing chat: Chat 1');
-    expect(ongoingChat).toHaveClass('w-full', 'h-8');
+    expect(ongoingChat).toHaveClass('w-full', 'h-8', 'px-3', 'text-sm');
+    expect(ongoingChat).not.toHaveClass('font-medium');
+    expect(currentChat).toHaveClass('font-medium');
+    expect(currentChat).toHaveAttribute('aria-current', 'page');
     expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
     expect(ongoingChat).toHaveTextContent('Chat 1');
     expect(ongoingChat).not.toHaveTextContent('1 message');
     expect(currentChat.querySelector('svg')).toBeNull();
-    expect(screen.getByText('Recents')).toBeInTheDocument();
+    const recentsLabel = screen.getByText('Recents');
+    expect(recentsLabel.parentElement).toHaveClass('h-8', 'px-5');
+    expect(screen.getByText('Today')).toHaveClass('text-xs', 'font-normal');
     expect(screen.queryByText('3')).not.toBeInTheDocument();
     expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
 
@@ -124,6 +131,21 @@ describe('RecentChats', () => {
     expect(summary).toHaveTextContent('Jul 15');
   });
 
+  it('truncates an overlong row title while preserving the full hover summary', async () => {
+    const longTitle = 'app:ucsf-versa-gpt55-kb-visualizer-smoke-with-an-even-longer-suffix';
+    const longSession = { ...makeSession(0), name: longTitle };
+    renderRecentChats({ sessions: [longSession] });
+
+    const row = screen.getByTestId('recent-chat-session-0');
+    const title = screen.getByText(longTitle);
+    expect(row).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-hidden');
+    expect(title).toHaveClass('min-w-0', 'flex-1', 'truncate');
+
+    fireEvent.focus(row);
+    const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
+    expect(summary).toHaveTextContent(longTitle);
+  });
+
   it('keeps a dedicated View all chat history action beneath the recent rows', () => {
     const onViewAll = vi.fn();
     renderRecentChats({ onViewAll });
@@ -134,5 +156,30 @@ describe('RecentChats', () => {
 
     fireEvent.click(viewAllButton);
     expect(onViewAll).toHaveBeenCalledOnce();
+  });
+
+  it('keeps View all chat history attached to Recents when the list is empty', () => {
+    renderRecentChats({ sessions: [] });
+
+    const scrollContainer = screen.getByTestId('recent-chat-scroll');
+    expect(scrollContainer).toHaveClass('shrink', 'overflow-y-auto');
+    expect(scrollContainer).not.toHaveClass('flex-1');
+    expect(screen.getByText('No recent chats yet')).toBeInTheDocument();
+    expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
+  });
+
+  it('requests another page when the user scrolls near the end of the loaded chats', () => {
+    const onLoadMore = vi.fn();
+    renderRecentChats({ hasMore: true, onLoadMore });
+
+    const scrollContainer = screen.getByTestId('recent-chat-scroll');
+    Object.defineProperties(scrollContainer, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, value: 350 },
+    });
+
+    fireEvent.scroll(scrollContainer);
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 });
