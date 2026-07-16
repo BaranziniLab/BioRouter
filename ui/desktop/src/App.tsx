@@ -88,17 +88,30 @@ const PairRouteWrapper = ({
   const workflowDeeplinkFromConfig = window.appConfig?.get('workflowDeeplink') as
     | string
     | undefined;
+  const isNewChat = routeState.newChat === true;
 
   // Session ID and initialMessage come from route state (Hub, diverge) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
-  const sessionId = sessionIdFromState || resumeSessionId || chat.sessionId || undefined;
+  const sessionId = isNewChat
+    ? undefined
+    : sessionIdFromState || resumeSessionId || chat.sessionId || undefined;
 
   // Use route state if available, otherwise use captured state
-  const initialMessage = routeState.initialMessage || capturedInitialMessage;
-  const initialAttachments = routeState.initialAttachments || capturedInitialAttachments;
+  const initialMessage = isNewChat
+    ? undefined
+    : routeState.initialMessage || capturedInitialMessage;
+  const initialAttachments = isNewChat
+    ? undefined
+    : routeState.initialAttachments || capturedInitialAttachments;
 
   // Capture initialMessage when it comes from route state
   useEffect(() => {
+    if (isNewChat) {
+      setCapturedInitialMessage(undefined);
+      setCapturedInitialAttachments(undefined);
+      return;
+    }
+
     console.log(
       '[PairRouteWrapper] capture effect:',
       JSON.stringify({
@@ -112,11 +125,12 @@ const PairRouteWrapper = ({
     if (routeState.initialAttachments) {
       setCapturedInitialAttachments(routeState.initialAttachments);
     }
-  }, [routeState.initialMessage, routeState.initialAttachments]);
+  }, [isNewChat, routeState.initialMessage, routeState.initialAttachments]);
 
   // Create session if we have an initialMessage, workflowId, or workflowDeeplink but no sessionId
   useEffect(() => {
     if (
+      !isNewChat &&
       (initialMessage || workflowId || workflowDeeplinkFromConfig) &&
       !sessionId &&
       !isCreatingSession
@@ -144,6 +158,7 @@ const PairRouteWrapper = ({
   }, [
     initialMessage,
     initialAttachments,
+    isNewChat,
     workflowId,
     workflowDeeplinkFromConfig,
     sessionId,
@@ -182,7 +197,7 @@ const PairRouteWrapper = ({
 
   return (
     <Pair
-      key={sessionId}
+      key={isNewChat ? location.key : sessionId}
       setChat={setChat}
       sessionId={sessionId ?? ''}
       initialMessage={initialMessage}
@@ -658,7 +673,7 @@ export function AppInner() {
 }
 
 export function ImmediateHashRouter({ children }: { children: ReactNode }) {
-  return <HashRouter useTransitions={false}>{children}</HashRouter>;
+  return <HashRouter>{children}</HashRouter>;
 }
 
 export default function App() {
