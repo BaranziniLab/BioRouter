@@ -34,7 +34,7 @@ describe('UsageHeatmap', () => {
     expect(screen.queryByText(/Daily usage intensity/)).not.toBeInTheDocument();
   });
 
-  it('renders whole weeks, padded to Sunday..Saturday', () => {
+  it('renders complete weeks when the window ends on Saturday', () => {
     render(<UsageHeatmap window={windowOf()} />);
     const cells = screen.getAllByRole('button');
     // Mar 1 2026 is a Sunday and Mar 14 a Saturday: exactly two full weeks.
@@ -42,10 +42,24 @@ describe('UsageHeatmap', () => {
     expect(cells.length % 7).toBe(0);
   });
 
-  it('pads a window that does not start on a Sunday', () => {
-    // Mar 4 is a Wednesday; Mar 11 a Wednesday. The grid must still be whole weeks.
+  it('pads the start back to Sunday but stops on the window end', () => {
+    // Mar 4 is a Wednesday; Mar 11 is the following Wednesday. The leading
+    // Sunday..Tuesday positions exist, but Thursday..Saturday in the last
+    // column would represent future days and must not exist.
     render(<UsageHeatmap window={windowOf({ start: '2026-03-04', end: '2026-03-11' })} />);
-    expect(screen.getAllByRole('button').length % 7).toBe(0);
+    expect(screen.getAllByRole('button')).toHaveLength(11);
+    expect(screen.getByLabelText('2026-03-01: no activity')).toBeInTheDocument();
+    expect(screen.getByLabelText('2026-03-11: no activity')).toBeInTheDocument();
+    expect(screen.queryByLabelText('2026-03-12: no activity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('2026-03-14: no activity')).not.toBeInTheDocument();
+  });
+
+  it('does not create cells after today in the current week', () => {
+    render(<UsageHeatmap window={windowOf({ start: '2026-07-01', end: '2026-07-15' })} />);
+
+    expect(screen.getByLabelText('2026-07-15: no activity')).toBeInTheDocument();
+    expect(screen.queryByLabelText('2026-07-16: no activity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('2026-07-18: no activity')).not.toBeInTheDocument();
   });
 
   it('omitted days render as level 0, present days keep their level', () => {

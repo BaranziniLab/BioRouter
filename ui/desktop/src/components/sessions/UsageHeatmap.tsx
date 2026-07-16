@@ -36,15 +36,14 @@ type Cell = {
 };
 
 /**
- * Lay the window out as whole weeks, Sunday-first, so the columns line up with
- * the day labels and the month ruler.
+ * Lay the window out Sunday-first so the columns line up with the day labels
+ * and the month ruler. The first column is padded back to Sunday, but the last
+ * column stops at the window end so future days do not look like idle days.
  */
 function buildGrid(window: ActivityWindow): { cells: Cell[]; weeks: number } {
   const byDate = new Map(window.days.map((d) => [d.date, d]));
 
   const end = parseIsoDay(window.end);
-  // pad forward to Saturday so the final column is complete
-  end.setDate(end.getDate() + (6 - end.getDay()));
   const start = parseIsoDay(window.start);
   // pad back to Sunday
   start.setDate(start.getDate() - start.getDay());
@@ -69,7 +68,7 @@ function buildGrid(window: ActivityWindow): { cells: Cell[]; weeks: number } {
     const key = isoDay(date);
     cells.push({ key, date, day: byDate.get(key) ?? null, inStreak: streakDays.has(key) });
   }
-  return { cells, weeks: total / 7 };
+  return { cells, weeks: Math.ceil(total / 7) };
 }
 
 const LEVEL_CLASS: Record<number, string> = {
