@@ -115,12 +115,7 @@ impl RetryConfig {
 }
 
 pub fn should_retry(error: &ProviderError) -> bool {
-    matches!(
-        error,
-        ProviderError::RateLimitExceeded { .. }
-            | ProviderError::ServerError(_)
-            | ProviderError::RequestFailed(_)
-    )
+    error.kind().is_transient()
 }
 
 pub async fn retry_operation<F, Fut, T>(
@@ -279,5 +274,22 @@ mod tests {
             retry_delay: None,
         };
         assert_eq!(effective_max_retries(&rate_limit, &config), 20);
+    }
+
+    #[test]
+    fn permanent_request_rejections_are_not_retried() {
+        for message in [
+            "insufficient_quota",
+            "Bad request (400): unsupported parameter",
+            "model_not_found",
+            "content blocked by safety filter",
+            "provider rejected the request",
+        ] {
+            assert!(!should_retry(&ProviderError::RequestFailed(message.into())));
+        }
+
+        assert!(should_retry(&ProviderError::RequestFailed(
+            "connection timed out".into()
+        )));
     }
 }

@@ -4652,6 +4652,25 @@
           }
         }
       },
+      "AgentInitializationError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        }
+      },
       "Annotations": {
         "type": "object",
         "properties": {
@@ -6968,11 +6987,27 @@
             "type": "object",
             "required": [
               "error",
+              "code",
+              "scope",
+              "retryable",
               "type"
             ],
             "properties": {
+              "code": {
+                "type": "string"
+              },
               "error": {
                 "type": "string"
+              },
+              "provider_kind": {
+                "type": "string",
+                "nullable": true
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/TurnErrorScope"
               },
               "type": {
                 "type": "string",
@@ -8077,6 +8112,14 @@
             "items": {
               "$ref": "#/components/schemas/ExtensionLoadResult"
             },
+            "nullable": true
+          },
+          "initialization_error": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentInitializationError"
+              }
+            ],
             "nullable": true
           },
           "session": {
@@ -9536,6 +9579,15 @@
           "running",
           "error",
           "disabled"
+        ]
+      },
+      "TurnErrorScope": {
+        "type": "string",
+        "enum": [
+          "provider",
+          "session",
+          "inference",
+          "internal"
         ]
       },
       "UiMetadata": {

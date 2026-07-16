@@ -175,9 +175,13 @@ pub enum ProviderErrorAction {
 pub fn is_recoverable(error: &ProviderError) -> bool {
     match error {
         ProviderError::ServerError(_)
-        | ProviderError::RequestFailed(_)
         | ProviderError::ExecutionError(_)
         | ProviderError::UsageError(_) => true,
+        ProviderError::RequestFailed(_) => matches!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Server
+                | crate::providers::errors::ProviderErrorKind::Network
+        ),
         ProviderError::Authentication(_)
         | ProviderError::RateLimitExceeded { .. }
         | ProviderError::NotImplemented(_)

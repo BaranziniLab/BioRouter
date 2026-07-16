@@ -46,12 +46,20 @@ pub enum ProviderErrorKind {
     Auth,
     /// 429 — back off and retry.
     RateLimit,
+    /// The account has no remaining credit or has hit a billing limit.
+    Quota,
     /// 5xx from the provider.
     Server,
     /// The request never got a usable answer (timeout, DNS, connection reset).
     Network,
     /// The prompt exceeded the model's context window.
     ContextLength,
+    /// The request shape or one of its parameters is not supported.
+    InvalidRequest,
+    /// The requested model or deployment does not exist or is unavailable.
+    ModelUnavailable,
+    /// The provider rejected the request under a safety or content policy.
+    Policy,
     /// Anything else.
     Other,
 }
@@ -66,6 +74,21 @@ impl ProviderErrorKind {
     /// True when retrying the same request could plausibly succeed.
     pub fn is_transient(&self) -> bool {
         matches!(self, Self::RateLimit | Self::Server | Self::Network)
+    }
+
+    pub fn wire_code(&self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::RateLimit => "rate_limit",
+            Self::Quota => "quota",
+            Self::Server => "server",
+            Self::Network => "network",
+            Self::ContextLength => "context_length",
+            Self::InvalidRequest => "invalid_request",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::Policy => "policy",
+            Self::Other => "unknown",
+        }
     }
 }
 
@@ -87,21 +110,67 @@ impl ProviderError {
                 let d = details.to_ascii_lowercase();
                 if d.contains("401") || d.contains("403") || d.contains("unauthorized") {
                     ProviderErrorKind::Auth
-                } else if d.contains("429") {
+                } else if d.contains("insufficient_quota")
+                    || d.contains("quota_exceeded")
+                    || d.contains("billing_hard_limit")
+                    || d.contains("payment required")
+                    || d.contains("credit balance")
+                {
+                    ProviderErrorKind::Quota
+                } else if d.contains("429") || d.contains("rate_limit") {
                     ProviderErrorKind::RateLimit
+                } else if d.contains("context_length")
+                    || d.contains("context window")
+                    || d.contains("maximum context")
+                    || d.contains("too many tokens")
+                {
+                    ProviderErrorKind::ContextLength
+                } else if d.contains("content_policy")
+                    || d.contains("safety policy")
+                    || d.contains("safety filter")
+                    || d.contains("content blocked")
+                {
+                    ProviderErrorKind::Policy
+                } else if d.contains("404")
+                    || d.contains("model_not_found")
+                    || d.contains("model not found")
+                    || d.contains("resource not found")
+                    || d.contains("deployment not found")
+                {
+                    ProviderErrorKind::ModelUnavailable
+                } else if d.contains("400")
+                    || d.contains("422")
+                    || d.contains("bad request")
+                    || d.contains("invalid_request")
+                    || d.contains("invalid argument")
+                    || d.contains("invalid_argument")
+                    || d.contains("unsupported parameter")
+                    || d.contains("not supported")
+                {
+                    ProviderErrorKind::InvalidRequest
                 } else if d.contains("500")
                     || d.contains("502")
                     || d.contains("503")
                     || d.contains("504")
                 {
                     ProviderErrorKind::Server
-                } else {
+                } else if d.contains("timeout")
+                    || d.contains("timed out")
+                    || d.contains("connection")
+                    || d.contains("dns")
+                    || d.contains("network")
+                    || d.contains("failed to fetch")
+                    || d.contains("error sending request")
+                {
                     ProviderErrorKind::Network
+                } else {
+                    ProviderErrorKind::Other
                 }
             }
-            ProviderError::ExecutionError(_)
-            | ProviderError::UsageError(_)
-            | ProviderError::NotImplemented(_) => ProviderErrorKind::Other,
+            ProviderError::ExecutionError(_) | ProviderError::UsageError(_) => {
+                ProviderErrorKind::Other
+            }
+            ProviderError::NotImplemented(_) => ProviderErrorKind::InvalidRequest,
         }
     }
 
@@ -197,5 +266,43 @@ impl GoogleErrorCode {
             503 => Some(Self::ServiceUnavailable),
             _ => Some(Self::InternalServerError),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_common_provider_rejections_without_treating_them_as_network_errors() {
+        let cases = [
+            ("insufficient_quota", ProviderErrorKind::Quota),
+            (
+                "Bad request (400): unsupported parameter reasoning_effort",
+                ProviderErrorKind::InvalidRequest,
+            ),
+            ("model_not_found", ProviderErrorKind::ModelUnavailable),
+            (
+                "request rejected by safety filter",
+                ProviderErrorKind::Policy,
+            ),
+            ("429 rate_limit_exceeded", ProviderErrorKind::RateLimit),
+            ("connection timed out", ProviderErrorKind::Network),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                ProviderError::RequestFailed(message.into()).kind(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_rejections_are_explicitly_unknown_and_not_retryable() {
+        let kind = ProviderError::RequestFailed("provider rejected the request".into()).kind();
+        assert_eq!(kind, ProviderErrorKind::Other);
+        assert_eq!(kind.wire_code(), "unknown");
+        assert!(!kind.is_transient());
     }
 }

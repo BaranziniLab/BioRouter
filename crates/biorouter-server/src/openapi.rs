@@ -30,7 +30,7 @@ use biorouter::conversation::message::{
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
 
-use crate::routes::reply::MessageEvent;
+use crate::routes::reply::{MessageEvent, TurnErrorScope};
 use crate::routes::workflow_utils::WorkflowManifest;
 use utoipa::openapi::schema::{
     AdditionalProperties, AnyOfBuilder, ArrayBuilder, ObjectBuilder, OneOfBuilder, Schema,
@@ -533,6 +533,7 @@ derive_utoipa!(Icon as IconSchema);
         SystemNotificationType,
         SystemNotificationContent,
         MessageEvent,
+        TurnErrorScope,
         JsonObjectSchema,
         RoleSchema,
         ProviderMetadata,
@@ -630,6 +631,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::agent::AddExtensionRequest,
         super::routes::agent::RemoveExtensionRequest,
         super::routes::agent::ResumeAgentResponse,
+        super::routes::agent::AgentInitializationError,
         super::routes::agent::RestartAgentResponse,
         biorouter::agents::ExtensionLoadResult,
         super::routes::setup::SetupResponse,

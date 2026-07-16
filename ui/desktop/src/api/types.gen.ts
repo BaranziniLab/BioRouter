@@ -100,6 +100,12 @@ export type AddExtensionRequest = {
     session_id: string;
 };
 
+export type AgentInitializationError = {
+    code: string;
+    message: string;
+    retryable: boolean;
+};
+
 export type Annotations = {
     audience?: Array<Role>;
     lastModified?: string;
@@ -944,7 +950,11 @@ export type MessageEvent = {
     token_state: TokenState;
     type: 'Message';
 } | {
+    code: string;
     error: string;
+    provider_kind?: string | null;
+    retryable: boolean;
+    scope: TurnErrorScope;
     type: 'Error';
 } | {
     reason: string;
@@ -1360,6 +1370,7 @@ export type ResumeAgentRequest = {
 
 export type ResumeAgentResponse = {
     extension_results?: Array<ExtensionLoadResult> | null;
+    initialization_error?: AgentInitializationError | null;
     session: Session;
 };
 
@@ -1914,6 +1925,8 @@ export type TunnelInfo = {
 };
 
 export type TunnelState = 'idle' | 'starting' | 'running' | 'error' | 'disabled';
+
+export type TurnErrorScope = 'provider' | 'session' | 'inference' | 'internal';
 
 /**
  * UI-specific metadata for MCP resources

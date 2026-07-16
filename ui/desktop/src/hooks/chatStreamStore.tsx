@@ -33,9 +33,10 @@ import {
   UserAttachment,
 } from '../types/message';
 import { getToolResponses } from '../types/message';
-import { errorMessage } from '../utils/conversionUtils';
+import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
+import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 
 const openedAppUrls = new Set<string>();
 
@@ -167,8 +168,24 @@ export interface ChatStreamSnapshot {
   messages: Message[];
   chatState: ChatState;
   sessionLoadError?: string;
+  turnError?: ChatTurnErrorData;
   tokenState: TokenState;
   notifications: NotificationEvent[];
+}
+
+function clientTurnError(
+  error: unknown,
+  code: string,
+  defaultScope: TurnErrorScope
+): ChatTurnErrorData {
+  const message = errorMessage(error);
+  return {
+    message,
+    technicalDetails: message,
+    code,
+    scope: isConnectionError(error) ? 'transport' : defaultScope,
+    retryable: true,
+  };
 }
 
 export interface RunningChatEntry {
@@ -330,6 +347,7 @@ class ChatStreamController {
         messages: [],
         session: undefined,
         sessionLoadError: undefined,
+        turnError: undefined,
         chatState: ChatState.LoadingConversation,
       }));
 
@@ -345,6 +363,7 @@ class ChatStreamController {
           const resumeData = response.data;
           const loadedSession = resumeData?.session;
           const extensionResults = resumeData?.extension_results;
+          const initializationError = resumeData?.initialization_error;
 
           showExtensionLoadResults(extensionResults);
           this.messagesRef = loadedSession?.conversation || [];
@@ -361,6 +380,16 @@ class ChatStreamController {
               accumulatedTotalTokens: loadedSession?.accumulated_total_tokens ?? 0,
             },
             chatState: this.abortController ? prev.chatState : ChatState.Idle,
+            sessionLoadError: undefined,
+            turnError: initializationError
+              ? {
+                  message: initializationError.message,
+                  technicalDetails: initializationError.message,
+                  code: initializationError.code,
+                  scope: 'session',
+                  retryable: initializationError.retryable,
+                }
+              : undefined,
           }));
 
           listApps({
@@ -394,9 +423,9 @@ class ChatStreamController {
     onSessionLoaded?.();
   }
 
-  private finishCurrentStream = async (error?: string): Promise<void> => {
+  private finishCurrentStream = async (error?: ChatTurnErrorData): Promise<void> => {
     if (error) {
-      this.updateSnapshot((prev) => ({ ...prev, sessionLoadError: error }));
+      this.updateSnapshot((prev) => ({ ...prev, turnError: error }));
     }
     this.abortController = null;
 
@@ -505,7 +534,14 @@ class ChatStreamController {
             break;
           }
           case 'Error':
-            await this.finishCurrentStream('Stream error: ' + event.error);
+            await this.finishCurrentStream({
+              message: event.error,
+              technicalDetails: event.error,
+              code: event.code || 'unknown',
+              scope: event.scope || 'inference',
+              retryable: event.retryable ?? false,
+              providerKind: event.provider_kind ?? undefined,
+            });
             return;
           case 'Finish':
             this.updateTokenState(event.token_state);
@@ -525,11 +561,18 @@ class ChatStreamController {
         }
       }
 
-      await this.finishCurrentStream();
-    } catch (error) {
-      if (error instanceof Error && error.name !== 'AbortError') {
-        await this.finishCurrentStream('Stream error: ' + errorMessage(error));
+      if (this.activeStreamId === streamId && !this.abortController?.signal.aborted) {
+        await this.finishCurrentStream({
+          message: 'The connection closed before Biorouter received a completion status.',
+          code: 'stream_interrupted',
+          scope: 'transport',
+          retryable: true,
+        });
       }
+    } catch (error) {
+      if (this.activeStreamId !== streamId) return;
+      if (error instanceof Error && error.name === 'AbortError') return;
+      await this.finishCurrentStream(clientTurnError(error, 'stream_error', 'transport'));
     }
   }
 
@@ -546,6 +589,7 @@ class ChatStreamController {
       ...prev,
       chatState: ChatState.Streaming,
       notifications: [],
+      turnError: undefined,
     }));
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
@@ -575,7 +619,7 @@ class ChatStreamController {
       if (error instanceof Error && error.name === 'AbortError') {
         return;
       }
-      await this.finishCurrentStream('Submit error: ' + errorMessage(error));
+      await this.finishCurrentStream(clientTurnError(error, 'submit_error', 'inference'));
     } finally {
       if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
         this.abortController = null;
@@ -632,7 +676,9 @@ class ChatStreamController {
       try {
         newMessage = await createUserMessage(userMessage, attachments);
       } catch (error) {
-        await this.finishCurrentStream('Submit error: ' + errorMessage(error));
+        await this.finishCurrentStream(
+          clientTurnError(error, 'message_preparation_failed', 'inference')
+        );
         return;
       }
     } else {

@@ -3,6 +3,7 @@ import { ChatState } from '../types/chatState';
 import { Message, Session, TokenState } from '../api';
 import { NotificationEvent, UserAttachment } from '../types/message';
 import { useChatStreamController } from './chatStreamStore';
+import type { ChatTurnErrorData } from '../types/turnError';
 
 interface UseChatStreamProps {
   sessionId: string;
@@ -26,6 +27,7 @@ interface UseChatStreamReturn {
   /** BR-61: inject a message into the running turn without cancelling it. */
   steer: (text: string) => Promise<boolean>;
   sessionLoadError?: string;
+  turnError?: ChatTurnErrorData;
   tokenState: TokenState;
   notifications: Map<string, NotificationEvent[]>;
   onMessageUpdate: (
@@ -68,6 +70,7 @@ export function useChatStream({
 
   return {
     sessionLoadError: snapshot.sessionLoadError,
+    turnError: snapshot.turnError,
     messages: snapshot.messages,
     session: snapshot.session,
     chatState: snapshot.chatState,

@@ -78,6 +78,7 @@ import {
   resolveArtifactPath,
 } from './artifacts/artifactUtils';
 import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
+import { ChatTurnError } from './conversation/ChatTurnError';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -840,6 +841,7 @@ function BaseChatContent({
     stopStreaming,
     steer,
     sessionLoadError,
+    turnError,
     setWorkflowUserParams,
     tokenState,
     notifications: toolCallNotifications,
@@ -1671,22 +1673,25 @@ function BaseChatContent({
                       </div>
                     )}
 
-                    {messages.length > 0 || workflow ? (
+                    {messages.length > 0 || workflow || turnError ? (
                       <>
                         <SearchView>
-                          <ProgressiveMessageList
-                            messages={messages}
-                            chat={{ sessionId }}
-                            toolCallNotifications={toolCallNotifications}
-                            append={(text: string) => handleSubmit(text)}
-                            isUserMessage={(m: Message) => m.role === 'user'}
-                            isStreamingMessage={chatState !== ChatState.Idle}
-                            onRenderingComplete={handleRenderingComplete}
-                            onMessageUpdate={onMessageUpdate}
-                            submitElicitationResponse={submitElicitationResponse}
-                            onOpenArtifact={handleOpenArtifact}
-                            workingDir={sessionWorkingDir}
-                          />
+                          <>
+                            <ProgressiveMessageList
+                              messages={messages}
+                              chat={{ sessionId }}
+                              toolCallNotifications={toolCallNotifications}
+                              append={(text: string) => handleSubmit(text)}
+                              isUserMessage={(m: Message) => m.role === 'user'}
+                              isStreamingMessage={chatState !== ChatState.Idle}
+                              onRenderingComplete={handleRenderingComplete}
+                              onMessageUpdate={onMessageUpdate}
+                              submitElicitationResponse={submitElicitationResponse}
+                              onOpenArtifact={handleOpenArtifact}
+                              workingDir={sessionWorkingDir}
+                            />
+                            {turnError && <ChatTurnError error={turnError} />}
+                          </>
                         </SearchView>
 
                         <div className="block h-8" />
