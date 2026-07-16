@@ -9,60 +9,46 @@
 <body>
 <style>
   /* ============================================================
-     BioRouter · UI Cohesion Redesign — inspection sketch
-     Palette + radii + type pulled from design.md (Parchment theme,
-     signed off 2026-07-09) so this can be replicated 1:1 in-app.
+     BioRouter · UI Cohesion Redesign — inspection spec, rev 2
+     Palette / radii / type from design.md (Parchment, signed off
+     2026-07-09) so every value here is replicable 1:1 in-app.
+     Rev 2 adds: de-boxed preview panel, terminal, markdown +
+     math specimen, and the measured font/glyph forensics.
      ============================================================ */
 
   :root {
-    /* --- Parchment · light (from design.md §3.1) --- */
-    --app:            #ffffff;
-    --card:           #ffffff;
-    --ground:         #faf8f3;   /* --background-muted : chat/page ground */
-    --medium:         #f4f0e6;   /* --background-medium : user bubble, hover, inline code */
-    --strong:         #e8e1d2;   /* --background-strong */
-    --focus-fill:     #e4dcc9;
-
-    --sidebar:        #f3ede1;
-    --sidebar-hover:  #ece4d4;
-    --sidebar-active: #e4d9c3;
-    --sidebar-border: #e9e1d0;
-
-    --accent-bar:     #cf6d47;   /* coral-500 : rails / dots — the ONLY coral in the rail */
-    --accent-fill:    #b85a32;   /* coral-600 : CTA fill (AA-safe on white) */
-    --on-accent:      #ffffff;
-
-    --text:           #2a2520;
-    --muted:          #635c54;
-    --subtle:         #6e6760;
-
-    --border:         #e8e1d2;   /* --border-subtle : the one hairline */
-    --border-strong:  #d4cab6;
-
-    --ok:             #1f7a3d;
-    --info:           #1e5fbf;
-    --danger:         #b3261e;
+    /* --- Parchment · light (design.md §3.1) --- */
+    --app:#ffffff; --card:#ffffff; --ground:#faf8f3; --medium:#f4f0e6; --strong:#e8e1d2;
+    --focus-fill:#e4dcc9;
+    --sidebar:#f3ede1; --sidebar-hover:#ece4d4; --sidebar-active:#e4d9c3; --sidebar-border:#e9e1d0;
+    --accent-bar:#cf6d47; --accent-fill:#b85a32; --on-accent:#ffffff;
+    --text:#2a2520; --muted:#635c54; --subtle:#6e6760;
+    --border:#e8e1d2; --border-strong:#d4cab6;
+    --ok:#1f7a3d; --info:#1e5fbf; --danger:#b3261e; --warn:#8a5a00;
 
     /* syntax (design.md §5.1, light on #faf8f3) */
-    --sx-plain: #2a2520; --sx-comment: #6f6659; --sx-kw: #a94f2a;
-    --sx-str: #22784f; --sx-num: #8a5a00; --sx-fn: #255fb5;
-    --sx-type: #7847b8; --sx-op: #6e6760;
+    --sx-plain:#2a2520; --sx-comment:#6f6659; --sx-kw:#a94f2a; --sx-str:#22784f;
+    --sx-num:#8a5a00; --sx-fn:#255fb5; --sx-type:#7847b8; --sx-op:#6e6760;
+    --diff-add-bg: rgba(31,122,61,.09); --diff-add-bar: #1f7a3d;
 
-    /* geometry */
-    --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-full: 9999px;
-    --shadow-composer: 0 2px 6px -1px rgba(32,25,15,.09), 0 1px 2px rgba(32,25,15,.05);
-    --shadow-popover:  0 8px 24px rgba(32,25,15,.10), 0 0 1px rgba(32,25,15,.14);
-    --shadow-window:   0 30px 70px -30px rgba(32,25,15,.35), 0 8px 24px -18px rgba(32,25,15,.22);
+    /* terminal (InAppTerminalDock TERMINAL_THEMES, parchment) */
+    --term-bg:#faf8f3; --term-fg:#2d2a26; --term-cursor:#b85a32;
+    --term-green:#22784f; --term-blue:#255fb5; --term-yellow:#9b6818;
+    --term-red:#b63f3f; --term-dim:#6f6659; --term-magenta:#7847b8;
 
-    /* the page's own (studio) chrome — warm, editorial, distinct from the app */
-    --page-bg:   #ede6d8;
-    --page-bg2:  #e4dccb;
-    --page-ink:  #302a22;
-    --page-mut:  #6a6152;
-    --page-line: #d3c8b3;
-    --page-card: #f6f1e7;
+    --r-sm:4px; --r-md:8px; --r-lg:12px; --r-xl:16px; --r-full:9999px;
+    --shadow-composer:0 2px 6px -1px rgba(32,25,15,.09), 0 1px 2px rgba(32,25,15,.05);
+    --shadow-popover:0 8px 24px rgba(32,25,15,.10), 0 0 1px rgba(32,25,15,.14);
+    --shadow-window:0 30px 70px -30px rgba(32,25,15,.35), 0 8px 24px -18px rgba(32,25,15,.22);
 
-    --ease: cubic-bezier(.2,0,0,1);
+    /* studio chrome for this page (not the app) */
+    --page-bg:#ede6d8; --page-bg2:#e4dccb; --page-ink:#302a22; --page-mut:#6a6152;
+    --page-line:#d3c8b3; --page-card:#f6f1e7;
+
+    --ease:cubic-bezier(.2,0,0,1);
+
+    /* the cold Tailwind defaults the app actually paints today (forensics) */
+    --tw-gray-200:#e5e7eb; --tw-gray-700:#364153; --tw-gray-900:#101828;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -73,390 +59,381 @@
       --accent-bar:#e8895f; --accent-fill:#e8895f; --on-accent:#16120c;
       --text:#f4f0e6; --muted:#b0a892; --subtle:#9c937b;
       --border:#282217; --border-strong:#403928;
-      --ok:#7ac87c; --info:#7aabf5; --danger:#f07575;
+      --ok:#7ac87c; --info:#7aabf5; --danger:#f07575; --warn:#d9a441;
       --sx-plain:#e8e1d2; --sx-comment:#8d8266; --sx-kw:#e8895f; --sx-str:#7fbf6a;
       --sx-num:#d9a441; --sx-fn:#8fb8e8; --sx-type:#b98ad6; --sx-op:#b0a892;
-      --shadow-composer: 0 2px 8px -1px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4);
-      --shadow-popover:  0 8px 24px rgba(0,0,0,.55), 0 0 1px rgba(255,255,255,.06);
-      --shadow-window:   0 30px 70px -28px rgba(0,0,0,.7);
+      --diff-add-bg: rgba(122,200,124,.10); --diff-add-bar:#7ac87c;
+      --term-bg:#16120c; --term-fg:#e8e1d2; --term-cursor:#e8895f;
+      --term-green:#7fbf6a; --term-blue:#6f9fd8; --term-yellow:#d9a441;
+      --term-red:#e2665c; --term-dim:#8d8266; --term-magenta:#b98ad6;
+      --shadow-composer:0 2px 8px -1px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4);
+      --shadow-popover:0 8px 24px rgba(0,0,0,.55), 0 0 1px rgba(255,255,255,.06);
+      --shadow-window:0 30px 70px -28px rgba(0,0,0,.7);
       --page-bg:#17130d; --page-bg2:#211a11; --page-ink:#efe8da; --page-mut:#a99e88;
       --page-line:#332a1c; --page-card:#1d1710;
     }
   }
-  /* explicit toggle wins in both directions */
-  :root[data-theme="light"] { --app:#ffffff;--card:#ffffff;--ground:#faf8f3;--medium:#f4f0e6;--strong:#e8e1d2;--focus-fill:#e4dcc9;--sidebar:#f3ede1;--sidebar-hover:#ece4d4;--sidebar-active:#e4d9c3;--sidebar-border:#e9e1d0;--accent-bar:#cf6d47;--accent-fill:#b85a32;--on-accent:#fff;--text:#2a2520;--muted:#635c54;--subtle:#6e6760;--border:#e8e1d2;--border-strong:#d4cab6;--ok:#1f7a3d;--info:#1e5fbf;--danger:#b3261e;--sx-plain:#2a2520;--sx-comment:#6f6659;--sx-kw:#a94f2a;--sx-str:#22784f;--sx-num:#8a5a00;--sx-fn:#255fb5;--sx-type:#7847b8;--sx-op:#6e6760;--shadow-composer:0 2px 6px -1px rgba(32,25,15,.09),0 1px 2px rgba(32,25,15,.05);--shadow-popover:0 8px 24px rgba(32,25,15,.10),0 0 1px rgba(32,25,15,.14);--shadow-window:0 30px 70px -30px rgba(32,25,15,.35),0 8px 24px -18px rgba(32,25,15,.22);--page-bg:#ede6d8;--page-bg2:#e4dccb;--page-ink:#302a22;--page-mut:#6a6152;--page-line:#d3c8b3;--page-card:#f6f1e7; }
-  :root[data-theme="dark"]  { --app:#0d0a06;--card:#1e1810;--ground:#14110b;--medium:#2a2318;--strong:#362d1f;--focus-fill:#4d4430;--sidebar:#100d08;--sidebar-hover:#1c160d;--sidebar-active:#28200f;--sidebar-border:#2a2318;--accent-bar:#e8895f;--accent-fill:#e8895f;--on-accent:#16120c;--text:#f4f0e6;--muted:#b0a892;--subtle:#9c937b;--border:#282217;--border-strong:#403928;--ok:#7ac87c;--info:#7aabf5;--danger:#f07575;--sx-plain:#e8e1d2;--sx-comment:#8d8266;--sx-kw:#e8895f;--sx-str:#7fbf6a;--sx-num:#d9a441;--sx-fn:#8fb8e8;--sx-type:#b98ad6;--sx-op:#b0a892;--shadow-composer:0 2px 8px -1px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);--shadow-popover:0 8px 24px rgba(0,0,0,.55),0 0 1px rgba(255,255,255,.06);--shadow-window:0 30px 70px -28px rgba(0,0,0,.7);--page-bg:#17130d;--page-bg2:#211a11;--page-ink:#efe8da;--page-mut:#a99e88;--page-line:#332a1c;--page-card:#1d1710; }
+  :root[data-theme="light"]{--app:#fff;--card:#fff;--ground:#faf8f3;--medium:#f4f0e6;--strong:#e8e1d2;--focus-fill:#e4dcc9;--sidebar:#f3ede1;--sidebar-hover:#ece4d4;--sidebar-active:#e4d9c3;--sidebar-border:#e9e1d0;--accent-bar:#cf6d47;--accent-fill:#b85a32;--on-accent:#fff;--text:#2a2520;--muted:#635c54;--subtle:#6e6760;--border:#e8e1d2;--border-strong:#d4cab6;--ok:#1f7a3d;--info:#1e5fbf;--danger:#b3261e;--warn:#8a5a00;--sx-plain:#2a2520;--sx-comment:#6f6659;--sx-kw:#a94f2a;--sx-str:#22784f;--sx-num:#8a5a00;--sx-fn:#255fb5;--sx-type:#7847b8;--sx-op:#6e6760;--diff-add-bg:rgba(31,122,61,.09);--diff-add-bar:#1f7a3d;--term-bg:#faf8f3;--term-fg:#2d2a26;--term-cursor:#b85a32;--term-green:#22784f;--term-blue:#255fb5;--term-yellow:#9b6818;--term-red:#b63f3f;--term-dim:#6f6659;--term-magenta:#7847b8;--shadow-composer:0 2px 6px -1px rgba(32,25,15,.09),0 1px 2px rgba(32,25,15,.05);--shadow-popover:0 8px 24px rgba(32,25,15,.10),0 0 1px rgba(32,25,15,.14);--shadow-window:0 30px 70px -30px rgba(32,25,15,.35),0 8px 24px -18px rgba(32,25,15,.22);--page-bg:#ede6d8;--page-bg2:#e4dccb;--page-ink:#302a22;--page-mut:#6a6152;--page-line:#d3c8b3;--page-card:#f6f1e7;}
+  :root[data-theme="dark"]{--app:#0d0a06;--card:#1e1810;--ground:#14110b;--medium:#2a2318;--strong:#362d1f;--focus-fill:#4d4430;--sidebar:#100d08;--sidebar-hover:#1c160d;--sidebar-active:#28200f;--sidebar-border:#2a2318;--accent-bar:#e8895f;--accent-fill:#e8895f;--on-accent:#16120c;--text:#f4f0e6;--muted:#b0a892;--subtle:#9c937b;--border:#282217;--border-strong:#403928;--ok:#7ac87c;--info:#7aabf5;--danger:#f07575;--warn:#d9a441;--sx-plain:#e8e1d2;--sx-comment:#8d8266;--sx-kw:#e8895f;--sx-str:#7fbf6a;--sx-num:#d9a441;--sx-fn:#8fb8e8;--sx-type:#b98ad6;--sx-op:#b0a892;--diff-add-bg:rgba(122,200,124,.10);--diff-add-bar:#7ac87c;--term-bg:#16120c;--term-fg:#e8e1d2;--term-cursor:#e8895f;--term-green:#7fbf6a;--term-blue:#6f9fd8;--term-yellow:#d9a441;--term-red:#e2665c;--term-dim:#8d8266;--term-magenta:#b98ad6;--shadow-composer:0 2px 8px -1px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);--shadow-popover:0 8px 24px rgba(0,0,0,.55),0 0 1px rgba(255,255,255,.06);--shadow-window:0 30px 70px -28px rgba(0,0,0,.7);--page-bg:#17130d;--page-bg2:#211a11;--page-ink:#efe8da;--page-mut:#a99e88;--page-line:#332a1c;--page-card:#1d1710;}
 
-  * { box-sizing: border-box; }
-  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-  body {
-    margin: 0;
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background:
-      radial-gradient(120% 90% at 85% -10%, var(--page-bg2), transparent 60%),
-      var(--page-bg);
-    color: var(--page-ink);
-    line-height: 1.5;
-    transition: background .35s var(--ease), color .35s var(--ease);
+  *{box-sizing:border-box}
+  html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  body{
+    margin:0;
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:radial-gradient(120% 90% at 85% -10%, var(--page-bg2), transparent 60%), var(--page-bg);
+    color:var(--page-ink); line-height:1.5;
+    transition:background .35s var(--ease), color .35s var(--ease);
   }
-  .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace; }
-  .tnum { font-variant-numeric: tabular-nums; }
+  .mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace}
+  .tnum{font-variant-numeric:tabular-nums}
+  .wrap{max-width:1400px;margin:0 auto;padding:40px 32px 72px}
 
-  .wrap { max-width: 1400px; margin: 0 auto; padding: 40px 32px 72px; }
+  /* ---------- masthead ---------- */
+  .mast{display:flex;flex-wrap:wrap;align-items:flex-end;gap:20px 32px;margin-bottom:22px}
+  .mast__id{flex:1 1 420px;min-width:300px}
+  .kicker{font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--page-mut);margin:0 0 10px;display:flex;align-items:center;gap:10px}
+  .kicker::before{content:"";width:26px;height:2px;background:var(--accent-bar);border-radius:2px}
+  .mast h1{font-size:clamp(28px,4vw,44px);line-height:1.04;margin:0;font-weight:620;letter-spacing:-.02em;text-wrap:balance}
+  .mast h1 em{font-style:normal;color:var(--accent-fill)}
+  .mast p.lede{margin:12px 0 0;max-width:62ch;color:var(--page-mut);font-size:15px}
 
-  /* ---------- studio masthead ---------- */
-  .mast { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px 32px; margin-bottom: 24px; }
-  .mast__id { flex: 1 1 420px; min-width: 300px; }
-  .kicker {
-    font-size: 11px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase;
-    color: var(--page-mut); margin: 0 0 10px; display: flex; align-items: center; gap: 10px;
-  }
-  .kicker::before { content:""; width: 26px; height: 2px; background: var(--accent-bar); border-radius: 2px; }
-  .mast h1 {
-    font-size: clamp(28px, 4vw, 44px); line-height: 1.04; margin: 0; font-weight: 620;
-    letter-spacing: -.02em; text-wrap: balance; color: var(--page-ink);
-  }
-  .mast h1 em { font-style: normal; color: var(--accent-fill); }
-  .mast p.lede { margin: 12px 0 0; max-width: 60ch; color: var(--page-mut); font-size: 15px; }
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .seg{display:inline-flex;background:var(--page-card);border:1px solid var(--page-line);border-radius:var(--r-full);padding:3px;gap:2px}
+  .seg button{font:inherit;font-size:13px;font-weight:550;border:0;background:transparent;color:var(--page-mut);padding:7px 15px;border-radius:var(--r-full);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:all .18s var(--ease);white-space:nowrap}
+  .seg button:hover{color:var(--page-ink)}
+  .seg button[aria-pressed="true"]{background:var(--accent-fill);color:#fff}
+  :root[data-theme="dark"] .seg button[aria-pressed="true"]{color:var(--on-accent)}
+  .seg.solo button[aria-pressed="true"]{background:var(--page-ink);color:var(--page-bg)}
+  .seg .lbl{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--page-mut);padding:0 10px 0 12px;align-self:center;font-weight:600}
 
-  /* ---------- control bar ---------- */
-  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-  .seg {
-    display: inline-flex; background: var(--page-card); border: 1px solid var(--page-line);
-    border-radius: var(--r-full); padding: 3px; gap: 2px;
-  }
-  .seg button {
-    font: inherit; font-size: 13px; font-weight: 550; border: 0; background: transparent;
-    color: var(--page-mut); padding: 7px 15px; border-radius: var(--r-full); cursor: pointer;
-    display: inline-flex; align-items: center; gap: 7px; transition: all .18s var(--ease); white-space: nowrap;
-  }
-  .seg button:hover { color: var(--page-ink); }
-  .seg button[aria-pressed="true"] { background: var(--accent-fill); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
-  :root[data-theme="dark"] .seg button[aria-pressed="true"] { color: var(--on-accent); }
-  .seg.solo button[aria-pressed="true"] { background: var(--page-ink); color: var(--page-bg); }
-  .seg .lbl { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--page-mut); padding: 0 10px 0 12px; align-self: center; font-weight: 600; }
+  /* ---------- section furniture ---------- */
+  .sec{margin-top:52px}
+  .sec__head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px;padding-bottom:12px;border-bottom:1px solid var(--page-line)}
+  .sec__n{font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:700;color:var(--accent-fill);letter-spacing:.04em}
+  :root[data-theme="dark"] .sec__n{color:var(--accent-bar)}
+  .sec__head h2{margin:0;font-size:21px;font-weight:600;letter-spacing:-.015em;color:var(--page-ink)}
+  .sec__head .why{color:var(--page-mut);font-size:13.5px}
+  .sec > p.intro{margin:14px 0 20px;color:var(--page-mut);font-size:14px;max-width:74ch}
+  .sec > p.intro b{color:var(--page-ink)}
 
   /* =====================================================
-     THE APP WINDOW
+     APP WINDOW
      ===================================================== */
-  .frame {
-    margin-top: 26px; border-radius: 14px; overflow: hidden;
-    border: 1px solid var(--page-line); box-shadow: var(--shadow-window);
-    background: var(--app);
-  }
-  .titlebar {
-    height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px;
-    background: var(--sidebar); border-bottom: 1px solid var(--sidebar-border);
-  }
-  .tl { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); }
-  .titlebar .tl:nth-child(1){ background:#e0725d; } .titlebar .tl:nth-child(2){ background:#e6b04a; } .titlebar .tl:nth-child(3){ background:#7fb46b; }
-  .titlebar .caption { margin-left: 10px; font-size: 12px; color: var(--muted); }
-
-  .app {
-    display: grid; grid-template-columns: 240px minmax(0,1fr) 400px;
-    height: 748px; background: var(--ground);
-  }
+  .frame{margin-top:24px;border-radius:14px;overflow:hidden;border:1px solid var(--page-line);box-shadow:var(--shadow-window);background:var(--app)}
+  .titlebar{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--sidebar);border-bottom:1px solid var(--sidebar-border)}
+  .tl{width:11px;height:11px;border-radius:50%}
+  .titlebar .tl:nth-child(1){background:#e0725d}.titlebar .tl:nth-child(2){background:#e6b04a}.titlebar .tl:nth-child(3){background:#7fb46b}
+  .titlebar .caption{margin-left:10px;font-size:12px;color:var(--muted)}
+  .app{display:grid;grid-template-columns:240px minmax(0,1fr) 420px;height:756px;background:var(--ground)}
 
   /* ============ SIDEBAR ============ */
-  .side {
-    background: var(--sidebar); border-right: 1px solid var(--sidebar-border);
-    display: flex; flex-direction: column; min-height: 0; color: var(--text);
-    transition: background .35s var(--ease);
-  }
-
-  /* — brand band — */
-  .brand {
-    display: flex; align-items: center; gap: 10px;
-    height: 52px; padding: 0 16px; flex-shrink: 0;
-    border-bottom: 1px solid var(--sidebar-border);
-  }
-  .brand__mark {
-    width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
-    display: grid; place-items: center; color: #fff;
-    background: linear-gradient(150deg, var(--accent-bar), var(--accent-fill));
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
-  }
-  .brand__mark svg { width: 13px; height: 13px; }
-  .brand__word { font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1; }
-  .brand__env { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-left: auto; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
-
-  .side__scroll { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-  .grouplabel {
-    font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
-    color: var(--subtle); padding: 0 8px; height: 26px; display: flex; align-items: center;
-    justify-content: space-between;
-  }
-  .grouplabel a { color: var(--subtle); text-decoration: none; font-size: 11px; letter-spacing: .02em; text-transform: none; font-weight: 500; }
-  .grouplabel a:hover { color: var(--text); }
-
-  .navgroup { padding: 10px 10px 4px; }
-  .menuwrap .grouplabel { padding-left: 14px; }
-
-  .navrow {
-    position: relative; display: flex; align-items: center; gap: 10px;
-    height: 32px; padding: 0 12px; border-radius: var(--r-md);
-    color: var(--muted); font-size: 14px; line-height: 20px; cursor: pointer;
-    transition: background .12s var(--ease), color .12s var(--ease); text-decoration: none;
-  }
-  .navrow svg { width: 16px; height: 16px; flex-shrink: 0; stroke-width: 1.5; }
-  .navrow::before {
-    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
-    border-radius: 2px; background: transparent; transition: background .12s var(--ease);
-  }
-  .navrow:hover { background: var(--sidebar-hover); color: var(--text); }
-  .navrow.active { background: var(--sidebar-active); color: var(--text); font-weight: 500; }
-  .navrow.active::before { background: var(--accent-bar); }
-  .navrow.active svg { color: var(--text); }
-
-  /* — the zone divider between MENU and RECENTS — */
-  .zonediv { height: 1px; background: var(--sidebar-border); margin: 8px 14px; flex-shrink: 0; }
-
-  /* — RECENTS well — */
-  .recents { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; padding: 4px 10px 0; }
-  .recents .grouplabel { padding-left: 4px; padding-right: 4px; }
-  .recwell {
-    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
-    border-radius: var(--r-lg) var(--r-lg) 0 0; padding: 4px; margin-top: 2px;
-    /* one calm step deeper than the rail — the same two-tone device the
-       sidebar uses against the canvas (design.md §3.1), not a card. */
-    background: var(--rec-well-bg, color-mix(in srgb, var(--sidebar-border) 42%, transparent));
-    scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
-  }
-  .recwell::-webkit-scrollbar { width: 10px; }
-  .recwell::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; border: 3px solid transparent; background-clip: padding-box; }
-
-  .datelabel {
-    font-size: 12px; font-weight: 500; color: var(--subtle); padding: 0 8px;
-    height: 24px; display: flex; align-items: center; margin-top: 6px;
-  }
-  .recgroup:first-child .datelabel { margin-top: 0; }
-
-  .recrow {
-    position: relative; display: flex; align-items: center; gap: 9px;
-    height: 32px; padding: 0 10px; border-radius: var(--r-md);
-    color: var(--muted); font-size: 14px; line-height: 20px; cursor: pointer;
-    transition: background .12s var(--ease), color .12s var(--ease); text-decoration: none;
-  }
-  .recrow::before {
-    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
-    border-radius: 2px; background: transparent; transition: background .12s var(--ease);
-  }
-  .recrow:hover { background: var(--sidebar-hover); color: var(--text); }
-  .recrow.active { background: var(--sidebar-active); color: var(--text); font-weight: 500; }
-  .recrow.active::before { background: var(--accent-bar); }
-  .recrow .glyph { width: 14px; height: 14px; flex-shrink: 0; color: var(--subtle); stroke-width: 1.5; opacity: .85; }
-  .recrow.active .glyph { color: var(--accent-bar); opacity: 1; }
-  .recrow .title { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .recrow .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-bar); flex-shrink: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-bar) 22%, transparent); }
-  /* redesigned: "See all" lives on the section label, so the foot row retires */
-  .viewall { display: none; }
-
-  .side__foot { flex-shrink: 0; border-top: 1px solid var(--sidebar-border); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-  .updatepill {
-    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: var(--r-md);
-    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-    color: var(--accent-fill); border: 1px dashed color-mix(in srgb, var(--accent-fill) 45%, transparent);
-    cursor: pointer;
-  }
-  :root[data-theme="dark"] .updatepill { color: var(--accent-bar); }
+  .side{background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;min-height:0;color:var(--text);transition:background .35s var(--ease)}
+  .brand{display:flex;align-items:center;gap:10px;height:52px;padding:0 16px;flex-shrink:0;border-bottom:1px solid var(--sidebar-border)}
+  .brand__mark{width:22px;height:22px;border-radius:6px;flex-shrink:0;display:grid;place-items:center;color:#fff;background:linear-gradient(150deg,var(--accent-bar),var(--accent-fill));box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+  .brand__mark svg{width:13px;height:13px}
+  .brand__word{font-size:14px;font-weight:600;letter-spacing:-.01em;line-height:1}
+  .brand__env{width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:auto;box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  .side__scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  .grouplabel{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--subtle);padding:0 8px;height:26px;display:flex;align-items:center;justify-content:space-between}
+  .grouplabel a{color:var(--subtle);text-decoration:none;font-size:11px;letter-spacing:.02em;text-transform:none;font-weight:500;cursor:pointer}
+  .grouplabel a:hover{color:var(--text)}
+  .navgroup{padding:10px 10px 4px}
+  .menuwrap .grouplabel{padding-left:14px}
+  .navrow{position:relative;display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;border-radius:var(--r-md);color:var(--muted);font-size:14px;line-height:20px;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease);text-decoration:none}
+  .navrow svg{width:16px;height:16px;flex-shrink:0}
+  .navrow::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;background:transparent;transition:background .12s var(--ease)}
+  .navrow:hover{background:var(--sidebar-hover);color:var(--text)}
+  .navrow.active{background:var(--sidebar-active);color:var(--text);font-weight:500}
+  .navrow.active::before{background:var(--accent-bar)}
+  .zonediv{height:1px;background:var(--sidebar-border);margin:8px 14px;flex-shrink:0}
+  .recents{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;padding:4px 10px 0}
+  .recents .grouplabel{padding-left:4px;padding-right:4px}
+  .recwell{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-radius:var(--r-lg) var(--r-lg) 0 0;padding:4px;margin-top:2px;background:var(--rec-well-bg,color-mix(in srgb,var(--sidebar-border) 42%,transparent));scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+  .recwell::-webkit-scrollbar{width:10px}
+  .recwell::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:9999px;border:3px solid transparent;background-clip:padding-box}
+  .datelabel{font-size:12px;font-weight:500;color:var(--subtle);padding:0 8px;height:24px;display:flex;align-items:center;margin-top:6px}
+  .recgroup:first-child .datelabel{margin-top:0}
+  .recrow{position:relative;display:flex;align-items:center;gap:9px;height:32px;padding:0 10px;border-radius:var(--r-md);color:var(--muted);font-size:14px;line-height:20px;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease);text-decoration:none}
+  .recrow::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;background:transparent}
+  .recrow:hover{background:var(--sidebar-hover);color:var(--text)}
+  .recrow.active{background:var(--sidebar-active);color:var(--text);font-weight:500}
+  .recrow.active::before{background:var(--accent-bar)}
+  .recrow .glyph{width:14px;height:14px;flex-shrink:0;color:var(--subtle);opacity:.85}
+  .recrow.active .glyph{color:var(--accent-bar);opacity:1}
+  .recrow .title{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .recrow .live{width:7px;height:7px;border-radius:50%;background:var(--accent-bar);flex-shrink:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-bar) 22%,transparent)}
+  .viewall{display:none}
+  .side__foot{flex-shrink:0;border-top:1px solid var(--sidebar-border);padding:8px 10px;display:flex;flex-direction:column;gap:2px}
 
   /* ============ CHAT ============ */
-  .chat { display: flex; flex-direction: column; min-width: 0; background: var(--ground); }
-  .panelhead {
-    height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
-    padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--ground);
-  }
-  .titlepill { font-size: 14px; font-weight: 500; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
-  .titlepill .dots { color: var(--muted); }
-  .headactions { margin-left: auto; display: flex; gap: 4px; }
-  .iconbtn {
-    width: 32px; height: 32px; border-radius: var(--r-md); border: 0; background: transparent;
-    color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: all .12s var(--ease);
-  }
-  .iconbtn:hover { background: var(--medium); color: var(--text); }
-  .iconbtn svg { width: 16px; height: 16px; stroke-width: 1.5; }
+  .chat{display:flex;flex-direction:column;min-width:0;background:var(--ground)}
+  .panelhead{height:52px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--ground)}
+  .titlepill{font-size:14px;font-weight:500;color:var(--text);display:inline-flex;align-items:center;gap:6px}
+  .titlepill .dots{color:var(--muted)}
+  .headactions{margin-left:auto;display:flex;gap:4px}
+  .iconbtn{width:32px;height:32px;border-radius:var(--r-md);border:0;background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer;transition:all .12s var(--ease)}
+  .iconbtn:hover{background:var(--medium);color:var(--text)}
+  .iconbtn.on{background:var(--medium);color:var(--text)}
+  .iconbtn svg{width:16px;height:16px}
+  .transcript{flex:1 1 auto;min-height:0;overflow-y:auto;padding:22px 24px 8px}
+  .col{max-width:720px;margin:0 auto;display:flex;flex-direction:column}
+  .u-turn{display:flex;justify-content:flex-end;margin-top:4px}
+  .bubble{max-width:85%;background:var(--medium);border:1px solid var(--border);border-radius:var(--r-lg);padding:10px 16px;font-size:14px;line-height:1.5;color:var(--text)}
+  .stamp{text-align:right;font-size:13px;color:var(--muted);margin:6px 2px 16px}
+  .toolline{display:flex;align-items:center;gap:10px;height:34px;padding:0 8px;border-radius:var(--r-md);color:var(--muted);font-size:14px}
+  .toolline:hover{background:var(--ground)}
+  .toolline .st{width:16px;height:16px;border-radius:var(--r-sm);background:color-mix(in srgb,var(--ok) 18%,transparent);display:grid;place-items:center;flex-shrink:0}
+  .toolline .st svg{width:11px;height:11px;color:var(--ok)}
+  .toolline b{color:var(--text);font-weight:600}
+  .toolline .chev{margin-left:auto;color:var(--subtle)}
+  .a-turn{margin-top:16px}
+  .a-actions{display:flex;gap:18px;margin-top:14px;color:var(--muted);font-size:14px}
+  .a-actions span{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .a-actions span:hover{color:var(--text)}
+  .a-actions svg{width:14px;height:14px}
+  .composer-bar{flex-shrink:0;padding:8px 24px 20px;background:var(--ground)}
+  .composer{border:1px solid var(--border);background:var(--card);border-radius:var(--r-xl);box-shadow:var(--shadow-composer);padding:14px 16px 12px}
+  .composer .ph{font-size:14px;color:var(--muted)}
+  .composer .tools{display:flex;align-items:center;gap:14px;margin-top:14px;color:var(--subtle);font-size:13px}
+  .composer .tools .grp{display:inline-flex;align-items:center;gap:6px}
+  .composer .tools svg{width:15px;height:15px}
+  .composer .send{margin-left:auto;width:30px;height:30px;border-radius:var(--r-md);background:var(--accent-fill);color:var(--on-accent);display:grid;place-items:center;border:0;cursor:pointer}
+  .composer .send svg{width:15px;height:15px}
 
-  .transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 24px 8px; }
-  .col { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; }
+  /* ---- ONE icon contract: every glyph, one weight, one size (fix J) ---- */
+  .app svg{stroke-width:1.5;stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .app .brand__mark svg{stroke-width:2}
+  :root[data-mode="current"] .app .recrow .glyph,
+  :root[data-mode="current"] .app .toolline .st svg{stroke-width:1}   /* today: 1px, lighter than its neighbours */
+  :root[data-mode="current"] .app .composer .tools svg:nth-of-type(1){stroke-width:1.75}
 
-  .u-turn { display: flex; justify-content: flex-end; margin-top: 4px; }
-  .bubble {
-    max-width: 85%; background: var(--medium); border: 1px solid var(--border);
-    border-radius: var(--r-lg); padding: 10px 16px; font-size: 14px; line-height: 1.5; color: var(--text);
-  }
-  .stamp { text-align: right; font-size: 13px; color: var(--muted); margin: 6px 2px 18px; }
+  /* ============ PREVIEW PANEL ============ */
+  .arti{display:flex;flex-direction:column;min-width:0;background:var(--ground);border-left:1px solid var(--border)}
 
-  .toolline {
-    display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px;
-    border-radius: var(--r-md); color: var(--muted); font-size: 14px; transition: background .12s var(--ease);
-  }
-  .toolline:hover { background: var(--ground); }
-  .toolline .st { width: 16px; height: 16px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--ok) 18%, transparent); display: grid; place-items: center; flex-shrink: 0; }
-  .toolline .st svg { width: 11px; height: 11px; color: var(--ok); stroke-width: 2; }
-  .toolline b { color: var(--text); font-weight: 600; }
-  .toolline .chev { margin-left: auto; color: var(--subtle); }
+  /* redesigned: text tabs + 2px underline (design.md D-07), mono label */
+  .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--ground)}
+  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 10px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;background:none;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;transition:color .12s var(--ease)}
+  .utab::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:2px 2px 0 0;background:transparent;transition:background .18s var(--ease)}
+  .utab:hover{color:var(--text)}
+  .utab.active{color:var(--text);font-weight:500}
+  .utab.active::after{background:var(--accent-bar)}
+  .utab svg{width:13px;height:13px;flex-shrink:0}
+  .utab .tt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .utab .x{width:16px;height:16px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);opacity:0;transition:opacity .12s var(--ease)}
+  .utab:hover .x,.utab.active .x{opacity:1}
+  .arti__acts{margin-left:auto;display:flex;align-items:center;gap:2px}
 
-  .a-turn { margin-top: 18px; }
-  .prose { font-size: 14px; line-height: 1.62; color: var(--text); max-width: 68ch; }
-  .prose h3 { font-size: 14px; font-weight: 600; margin: 18px 0 6px; }
-  .prose p { margin: 0 0 12px; }
-  .prose ul { margin: 0 0 12px; padding-left: 18px; }
-  .prose li { margin: 3px 0; }
-  .prose code {
-    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em;
-    background: var(--medium); border-radius: var(--r-sm); padding: 1px 5px; color: var(--text);
-  }
-  .prose .em { font-weight: 600; }
-  .a-actions { display: flex; gap: 18px; margin-top: 14px; color: var(--muted); font-size: 14px; }
-  .a-actions span { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-  .a-actions span:hover { color: var(--text); }
-  .a-actions svg { width: 14px; height: 14px; stroke-width: 1.5; }
+  /* the status strip — Claude Code's "Last Turn · +4 -0" row */
+  .strip{height:34px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)}
+  .strip .path{color:var(--text)}
+  .strip .path .dim{color:var(--subtle)}
+  .strip .cap{font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--subtle)}
+  .strip .seg2{margin-left:auto;display:inline-flex;gap:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+  .strip .seg2 span{padding:3px 9px;color:var(--muted);cursor:pointer;font-size:11px}
+  .strip .seg2 span.on{background:var(--medium);color:var(--text)}
 
-  .composer-bar { flex-shrink: 0; padding: 8px 24px 22px; background: var(--ground); }
-  .composer {
-    border: 1px solid var(--border); background: var(--card); border-radius: var(--r-xl);
-    box-shadow: var(--shadow-composer); padding: 14px 16px 12px;
-  }
-  .composer .ph { font-size: 14px; color: var(--muted); }
-  .composer .tools { display: flex; align-items: center; gap: 14px; margin-top: 14px; color: var(--subtle); font-size: 13px; }
-  .composer .tools .grp { display: inline-flex; align-items: center; gap: 6px; }
-  .composer .tools svg { width: 15px; height: 15px; stroke-width: 1.5; }
-  .composer .send {
-    margin-left: auto; width: 30px; height: 30px; border-radius: var(--r-md);
-    background: var(--accent-fill); color: var(--on-accent); display: grid; place-items: center; border: 0; cursor: pointer;
-  }
-  .composer .send svg { width: 15px; height: 15px; }
+  /* body: content sits DIRECTLY on the panel ground — no card */
+  .artibody{flex:1 1 auto;min-height:0;overflow:auto;background:var(--ground)}
+  .code{padding:10px 0;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:20px}
+  .code .ln{display:flex}
+  .code .ln.add{background:var(--diff-add-bg);box-shadow:inset 2px 0 0 var(--diff-add-bar)}
+  .code .g{width:44px;flex-shrink:0;text-align:right;padding-right:14px;color:var(--subtle);opacity:.55;user-select:none;font-variant-numeric:tabular-nums}
+  .code .c{white-space:pre;padding-right:16px}
+  .kw{color:var(--sx-kw)}.st2{color:var(--sx-str)}.cm{color:var(--sx-comment);font-style:italic}
+  .fn{color:var(--sx-fn)}.nu{color:var(--sx-num)}.ty{color:var(--sx-type)}.op{color:var(--sx-op)}.pl{color:var(--sx-plain)}
 
-  /* ============ ARTIFACT PANEL ============ */
-  .arti { display: flex; flex-direction: column; min-width: 0; background: var(--ground); border-left: 1px solid var(--border); }
-  .arti .panelhead { gap: 6px; padding: 0 10px; }
-  .tabs { display: flex; gap: 6px; flex: 1; min-width: 0; }
-  .tab {
-    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
-    border-radius: var(--tab-radius, 12px); border: 1px solid transparent; min-width: 0; max-width: 200px; flex: 1;
-    font-size: var(--tab-fs, 13px); color: var(--muted); cursor: pointer; transition: all .12s var(--ease);
-  }
-  .tab.active { border-color: var(--border); background: var(--card); color: var(--text); box-shadow: var(--tab-shadow, none); }
-  .tab:not(.active):hover { background: var(--medium); color: var(--text); }
-  .tab svg { width: 14px; height: 14px; flex-shrink: 0; stroke-width: 1.5; }
-  .tab .tt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-  .tab .x { margin-left: auto; width: 18px; height: 18px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--subtle); }
-  .tab .x:hover { background: var(--strong); }
+  /* CURRENT preview: the box-in-box-in-box */
+  :root[data-mode="current"] .arti__tabs{gap:6px;align-items:center;padding:0 10px}
+  :root[data-mode="current"] .utab{border:1px solid transparent;border-radius:8px;height:32px;flex:1;font-family:inherit;font-size:12px}
+  :root[data-mode="current"] .utab.active{border-color:var(--border);background:var(--card);box-shadow:0 1px 2px rgba(32,25,15,.12)}
+  :root[data-mode="current"] .utab::after{display:none}
+  :root[data-mode="current"] .artibody{padding:12px;display:flex;overflow:hidden}
+  :root[data-mode="current"] .artiscroll{flex:1;min-height:0;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-popover)}
+  :root[data-mode="current"] .strip{border-bottom:none}
+  :root[data-mode="current"] .strip .cap{font-size:10.5px}
+  :root[data-mode="current"] .strip .path{font-size:9.5px}
+  .artiscroll{min-height:0}
+  :root[data-mode="current"] .arti .strip{order:0}
+  :root[data-mode="current"] .stripwrap{display:none}
+  :root[data-mode="current"] .stripinner{display:flex}
+  .stripinner{display:none}
 
-  .artibody { flex: 1 1 auto; min-height: 0; padding: 12px; display: flex; }
-  .preview {
-    flex: 1; min-height: 0; display: flex; flex-direction: column;
-    background: var(--card); border: 1px solid var(--border); border-radius: var(--card-radius, 12px);
-    box-shadow: var(--shadow-popover); overflow: hidden;
-  }
-  .preview__head {
-    height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 10px;
-    padding: 0 12px; border-bottom: 1px solid var(--border);
-  }
-  .preview__lang { font-size: var(--code-lang-fs, 11px); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--subtle); }
-  .preview__meta { font-size: var(--code-meta-fs, 11px); color: var(--muted); }
-  .preview__toggle { margin-left: auto; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); padding: 2px; font-size: 11px; }
-  .preview__toggle span { padding: 3px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; }
-  .preview__toggle span.on { background: var(--medium); color: var(--text); font-weight: 500; }
+  /* ============ TERMINAL DOCK ============ */
+  .dock{flex-shrink:0;border-top:1px solid var(--border);background:var(--ground);display:none;flex-direction:column;height:236px}
+  :root[data-term="on"] .dock{display:flex}
+  .dock__bar{height:40px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border)}
+  .dock__bar .utab{max-width:150px}
+  .dock__cwd{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--subtle)}
+  .term{flex:1;min-height:0;overflow:auto;background:var(--term-bg);color:var(--term-fg);font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:20px;padding:10px 14px}
+  .term .p1{color:var(--term-green)}
+  .term .p2{color:var(--term-blue)}
+  .term .p3{color:var(--term-magenta)}
+  .term .dim{color:var(--term-dim)}
+  .term .y{color:var(--term-yellow)}
+  .term .r{color:var(--term-red)}
+  .term .cur{display:inline-block;width:7px;height:15px;background:var(--term-cursor);vertical-align:-3px;animation:blink 1.2s steps(2,start) infinite}
+  @keyframes blink{50%{opacity:0}}
+  /* CURRENT terminal: rounded bordered box, same colour as its own gutter */
+  :root[data-mode="current"] .dock__bar{background:var(--medium)}
+  :root[data-mode="current"] .dock__bar .utab{border-radius:6px;height:28px;align-self:center;font-family:inherit;font-size:12px;padding:0 8px}
+  :root[data-mode="current"] .dock__bar .utab.active{background:var(--card);color:var(--text)}
+  :root[data-mode="current"] .dock__bar .utab::after{left:0;right:auto;top:4px;bottom:4px;width:2px;height:auto;border-radius:2px}
+  :root[data-mode="current"] .dock__bar .utab.active::after{background:var(--accent-bar)}
+  :root[data-mode="current"] .termwrap{padding:8px;background:var(--ground);display:flex;min-height:0}
+  :root[data-mode="current"] .term{border:1px solid var(--border);border-radius:var(--r-md);flex:1}
+  .termwrap{display:flex;min-height:0;flex:1}
 
-  .code { flex: 1; overflow: auto; padding: 12px 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; line-height: 20px; }
-  .code .ln { display: flex; }
-  .code .g { width: 40px; flex-shrink: 0; text-align: right; padding-right: 14px; color: var(--subtle); opacity: .6; user-select: none; }
-  .code .c { white-space: pre; padding-right: 16px; }
-  .kw{color:var(--sx-kw);} .st2{color:var(--sx-str);} .cm{color:var(--sx-comment);font-style:italic;}
-  .fn{color:var(--sx-fn);} .nu{color:var(--sx-num);} .ty{color:var(--sx-type);} .op{color:var(--sx-op);} .pl{color:var(--sx-plain);}
-
-  /* =====================================================
-     CURRENT (before) overrides — the quirks seen in-app
-     ===================================================== */
-  :root[data-mode="current"] .brand {
-    height: auto; border-bottom: none; padding: 40px 20px 0;
-  }
-  :root[data-mode="current"] .brand__mark { display: none; }
-  :root[data-mode="current"] .brand__word { line-height: 1; }
-  :root[data-mode="current"] .menuwrap > .grouplabel { display: none; }      /* app shows no MENU label */
-  :root[data-mode="current"] .navgroup { padding-top: 6px; }
-  :root[data-mode="current"] .zonediv { width: 32px; margin: 8px 0 8px 20px; } /* the tiny 32px hairline */
-  :root[data-mode="current"] .recwell { --rec-well-bg: transparent; border-radius: 0; padding: 0 0 0 0; }
-  :root[data-mode="current"] .recents { padding: 4px 8px 0; }
-  :root[data-mode="current"] .recrow { padding: 0 12px; gap: 0; }
-  :root[data-mode="current"] .recrow .glyph { display: none; }               /* app: no leading glyph */
-  :root[data-mode="current"] .datelabel { font-size: 12px; height: 20px; margin-top: 2px; }
-  :root[data-mode="current"] .recents > .grouplabel { padding-left: 14px; }
-  :root[data-mode="current"] .recents > .grouplabel a { display: none; }  /* today: "View all" is a row at the list foot */
-  :root[data-mode="current"] .viewall { display: flex; gap: 9px; }
-  :root[data-mode="current"] .viewall .glyph { display: block; }
-  /* artifact quirks: 8px tabs w/ shadow, one-off label sizes */
-  :root[data-mode="current"] .arti { --tab-radius: 8px; --tab-fs: 12px; --tab-shadow: 0 1px 2px rgba(32,25,15,.12); --card-radius: 8px; --code-lang-fs: 10.5px; --code-meta-fs: 9.5px; }
-
-  /* change-highlight outlines */
-  .halo { position: relative; }
-  :root[data-hl="on"] [data-change] { outline: 1.5px dashed color-mix(in srgb, var(--accent-bar) 70%, transparent); outline-offset: 2px; border-radius: 6px; }
-  :root[data-hl="on"] [data-change]::after {
-    content: attr(data-change); position: absolute; top: -9px; left: 8px; z-index: 5;
-    font-size: 10px; font-weight: 700; letter-spacing: .04em; background: var(--accent-fill); color: #fff;
-    padding: 1px 6px; border-radius: 9999px; line-height: 1.5;
-  }
-  :root[data-theme="dark"][data-hl="on"] [data-change]::after { color: var(--on-accent); }
-  :root:not([data-hl="on"]) [data-change]::after { display: none; }
-  :root[data-mode="current"][data-hl="on"] [data-change]::after { content: attr(data-change) " · now"; background: var(--page-mut); }
-
-  .modenote {
-    margin-top: 14px; font-size: 13px; color: var(--page-mut); display: flex; gap: 8px; align-items: center; min-height: 20px;
-  }
-  .modenote b { color: var(--page-ink); font-weight: 600; }
+  /* highlight overlay */
+  .halo{position:relative}
+  :root[data-hl="on"] [data-change]{outline:1.5px dashed color-mix(in srgb,var(--accent-bar) 70%,transparent);outline-offset:2px;border-radius:6px}
+  :root[data-hl="on"] [data-change]::after{content:attr(data-change);position:absolute;top:-9px;left:8px;z-index:5;font-size:10px;font-weight:700;letter-spacing:.04em;background:var(--accent-fill);color:#fff;padding:1px 6px;border-radius:9999px;line-height:1.5}
+  :root[data-theme="dark"][data-hl="on"] [data-change]::after{color:var(--on-accent)}
+  :root:not([data-hl="on"]) [data-change]::after{display:none}
+  :root[data-mode="current"][data-hl="on"] [data-change]::after{content:attr(data-change) " · now";background:var(--page-mut)}
+  .modenote{margin-top:14px;font-size:13px;color:var(--page-mut);min-height:20px}
+  .modenote b{color:var(--page-ink);font-weight:600}
 
   /* =====================================================
-     CHANGE LEGEND
+     MARKDOWN SPECIMEN
      ===================================================== */
-  .legend { margin-top: 44px; }
-  .legend h2 { font-size: 13px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--page-mut); margin: 0 0 4px; }
-  .legend .sub { margin: 0 0 22px; color: var(--page-mut); font-size: 14px; max-width: 64ch; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
-  .cardx {
-    background: var(--page-card); border: 1px solid var(--page-line); border-radius: 14px; padding: 18px 18px 16px;
-  }
-  .cardx .tag { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 7px; background: var(--accent-fill); color: #fff; font-size: 12px; font-weight: 700; margin-bottom: 12px; }
-  :root[data-theme="dark"] .cardx .tag { color: var(--on-accent); }
-  .cardx h3 { margin: 0 0 8px; font-size: 15.5px; font-weight: 600; color: var(--page-ink); letter-spacing: -.005em; }
-  .cardx p { margin: 0 0 10px; font-size: 13.5px; color: var(--page-mut); line-height: 1.55; }
-  .cardx .ba { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
-  .cardx .ba .row { display: flex; gap: 8px; align-items: baseline; }
-  .cardx .ba .k { flex-shrink: 0; width: 52px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px; padding-top: 1px; }
-  .cardx .ba .before .k { color: var(--page-mut); }
-  .cardx .ba .after .k { color: var(--accent-fill); }
-  :root[data-theme="dark"] .cardx .ba .after .k { color: var(--accent-bar); }
-  .cardx .ba .v { color: var(--page-ink); }
-  .cardx .ref { margin-top: 12px; font-size: 11px; color: var(--page-mut); font-family: ui-monospace, Menlo, monospace; }
+  .spec2{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:18px;margin-top:20px}
+  .paper{border:1px solid var(--page-line);border-radius:14px;overflow:hidden;background:var(--ground);box-shadow:var(--shadow-window)}
+  .paper__cap{display:flex;align-items:center;gap:9px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card);font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle)}
+  .paper__cap .pin{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+  .paper__cap .pin.bad{background:var(--danger)}
+  .paper__cap .pin.good{background:var(--ok)}
+  .paper__body{padding:20px 22px 24px}
 
-  .foot { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--page-line); font-size: 13px; color: var(--page-mut); max-width: 76ch; }
-  .foot b { color: var(--page-ink); }
+  /* --- the REDESIGNED prose --- */
+  .md{font-size:14px;line-height:1.62;color:var(--text);max-width:68ch}
+  .md h2{font-size:18px;line-height:26px;font-weight:600;letter-spacing:-.005em;margin:0 0 10px;color:var(--text)}
+  .md h3{font-size:15px;line-height:22px;font-weight:600;margin:20px 0 6px;color:var(--text)}
+  .md h4{font-size:13px;line-height:18px;font-weight:600;margin:16px 0 4px;color:var(--muted);letter-spacing:.02em}
+  .md p{margin:0 0 11px}
+  .md ul{margin:0 0 12px;padding-left:18px}
+  .md li{margin:3px 0}
+  .md li::marker{color:var(--subtle)}
+  .md strong{font-weight:600;color:var(--text)}
+  .md a{color:var(--text-accent,var(--accent-fill));text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent-fill) 40%,transparent);text-underline-offset:2px;font-weight:500}
+  :root[data-theme="dark"] .md a{color:var(--accent-bar)}
+  .md hr{border:0;border-top:1px solid var(--border);margin:20px 0}
+  .md code{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--medium);border-radius:var(--r-sm);padding:1px 5px;color:var(--text)}
+  .md blockquote{margin:0 0 12px;padding:0 0 0 14px;border-left:2px solid var(--border-strong);color:var(--muted);font-style:normal;font-weight:400}
+  .md blockquote p:last-child{margin-bottom:0}
+  /* table per design.md §4.17: no vertical rules, no header fill, no zebra */
+  .md table{width:100%;border-collapse:collapse;margin:6px 0 14px;font-size:13px}
+  .md thead th{height:32px;padding:0 10px 0 0;text-align:left;font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);vertical-align:middle}
+  .md tbody td{height:40px;padding:0 10px 0 0;border-bottom:1px solid var(--border);color:var(--text);vertical-align:middle}
+  .md tbody tr:last-child td{border-bottom:0}
+  .md th.num,.md td.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0}
+  /* math */
+  .md .math{display:block;text-align:center;margin:16px 0;font-size:14px;overflow-x:auto}
+  .md .math .k{font-family:"KaTeX_Main","Times New Roman",Times,serif;font-size:1em;line-height:1.45}
+  .frac{display:inline-flex;flex-direction:column;vertical-align:-.55em;text-align:center;margin:0 .18em}
+  .frac .n{border-bottom:1px solid currentColor;padding:0 .35em .12em}
+  .frac .d{padding:.12em .35em 0}
+  var{font-style:italic;font-family:"KaTeX_Math","Times New Roman",serif}
+  sub{font-size:.72em;vertical-align:-.28em}
+  sup{font-size:.72em;vertical-align:.42em}
 
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-  @media (max-width: 1120px) {
-    .app { grid-template-columns: 220px minmax(0,1fr); }
-    .arti { display: none; }
-  }
-  @media (max-width: 780px) {
-    .app { grid-template-columns: minmax(0,1fr); height: 620px; }
-    .side { display: none; }
-    .wrap { padding: 28px 16px 56px; }
-  }
+  /* --- the CURRENT (broken) prose, painted with what the app really renders.
+         Applies to the specimen pane AND to the in-frame chat when the
+         Current toggle is on, so the before/after never lies. --- */
+  .md--now strong,
+  :root[data-mode="current"] .app .md strong{color:var(--tw-gray-900)}
+  .md--now h3,.md--now h4,
+  :root[data-mode="current"] .app .md h3,
+  :root[data-mode="current"] .app .md h4{color:var(--tw-gray-900)}
+  .md--now h4,
+  :root[data-mode="current"] .app .md h4{font-size:14px;line-height:20px;font-weight:600;margin:16px 0 4px;letter-spacing:0}
+  .md--now h3,
+  :root[data-mode="current"] .app .md h3{font-size:14px;line-height:20px}
+  .md--now a,
+  :root[data-mode="current"] .app .md a{color:var(--tw-gray-900);text-decoration:underline;font-weight:500;text-decoration-color:currentColor}
+  .md--now hr,
+  :root[data-mode="current"] .app .md hr{border-top:1px solid var(--tw-gray-200)}
+  .md--now blockquote,
+  :root[data-mode="current"] .app .md blockquote{border-left:4px solid var(--border);padding-left:20px;quotes:"\201C" "\201D";font-weight:500}
+  .md--now blockquote p:first-of-type::before,
+  :root[data-mode="current"] .app .md blockquote p:first-of-type::before{content:open-quote}
+  .md--now blockquote p:first-of-type::after,
+  :root[data-mode="current"] .app .md blockquote p:first-of-type::after{content:close-quote}
+  .md--now table,
+  :root[data-mode="current"] .app .md table{font-size:12px}
+  .md--now thead,
+  :root[data-mode="current"] .app .md thead{background:var(--medium)}
+  .md--now thead th,
+  :root[data-mode="current"] .app .md thead th{border:1px solid var(--tw-gray-200);padding:8px;font-family:inherit;font-size:12px;text-transform:none;letter-spacing:0;font-weight:600;color:var(--tw-gray-900);height:auto;vertical-align:bottom;text-align:left}
+  .md--now tbody td,
+  :root[data-mode="current"] .app .md tbody td{border:1px solid var(--tw-gray-200);padding:8px;height:auto;vertical-align:top;text-align:left;font-variant-numeric:normal}
+  .md--now tbody tr:last-child td,
+  :root[data-mode="current"] .app .md tbody tr:last-child td{border-bottom:1px solid var(--tw-gray-200)}
+  .md--now td.num,.md--now th.num,
+  :root[data-mode="current"] .app .md td.num,
+  :root[data-mode="current"] .app .md th.num{text-align:left;font-variant-numeric:normal}
+  .md--now code,
+  :root[data-mode="current"] .app .md code{font-size:12.6px}
+  .md--now .math .k{font-size:1.21em;line-height:1.2}
+  .md--now .math{margin:12px 0;padding:8px 0}
 
-  /* load-in */
-  .frame, .legend { animation: rise .5s var(--ease) both; }
-  .legend { animation-delay: .08s; }
-  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  /* =====================================================
+     FORENSICS
+     ===================================================== */
+  .eviz{margin-top:18px;border:1px solid var(--page-line);border-radius:14px;overflow:hidden;background:var(--page-card)}
+  .etable{width:100%;border-collapse:collapse;font-size:13.5px}
+  .etable thead th{text-align:left;padding:11px 16px;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--page-mut);border-bottom:1px solid var(--page-line);white-space:nowrap}
+  .etable td{padding:12px 16px;border-bottom:1px solid var(--page-line);vertical-align:middle;color:var(--page-ink)}
+  .etable tr:last-child td{border-bottom:0}
+  .etable .what{font-weight:600;white-space:nowrap}
+  .etable .note{color:var(--page-mut);font-size:12.5px}
+  .sw{display:inline-flex;align-items:center;gap:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:nowrap}
+  .sw i{width:15px;height:15px;border-radius:4px;border:1px solid rgba(0,0,0,.14);flex-shrink:0}
+  :root[data-theme="dark"] .sw i{border-color:rgba(255,255,255,.16)}
+  .verdict{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:9999px;white-space:nowrap}
+  .verdict.bad{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+  .verdict.warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+  .stroke-demo{display:flex;align-items:center;gap:22px;flex-wrap:wrap;padding:16px;border:1px solid var(--page-line);border-radius:12px;background:var(--page-card);margin-top:16px}
+  .sd{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--page-ink)}
+  .sd svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .sd .lab{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--page-mut)}
+
+  /* =====================================================
+     LEGEND
+     ===================================================== */
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:20px}
+  .cardx{background:var(--page-card);border:1px solid var(--page-line);border-radius:14px;padding:18px 18px 16px}
+  .cardx .tag{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 7px;border-radius:7px;background:var(--accent-fill);color:#fff;font-size:12px;font-weight:700;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace}
+  :root[data-theme="dark"] .cardx .tag{color:var(--on-accent)}
+  .cardx .tag.fix{background:var(--danger)}
+  .cardx h3{margin:0 0 8px;font-size:15.5px;font-weight:600;color:var(--page-ink);letter-spacing:-.005em}
+  .cardx p{margin:0 0 10px;font-size:13.5px;color:var(--page-mut);line-height:1.55}
+  .cardx .ba{display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+  .cardx .ba .row{display:flex;gap:8px;align-items:baseline}
+  .cardx .ba .k{flex-shrink:0;width:46px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;padding-top:1px;font-family:ui-monospace,Menlo,monospace}
+  .cardx .ba .before .k{color:var(--page-mut)}
+  .cardx .ba .after .k{color:var(--accent-fill)}
+  :root[data-theme="dark"] .cardx .ba .after .k{color:var(--accent-bar)}
+  .cardx .ba .v{color:var(--page-ink)}
+  .cardx .ref{margin-top:12px;font-size:11px;color:var(--page-mut);font-family:ui-monospace,Menlo,monospace}
+  .foot{margin-top:40px;padding-top:20px;border-top:1px solid var(--page-line);font-size:13px;color:var(--page-mut);max-width:78ch}
+  .foot b{color:var(--page-ink)}
+  .foot code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  @media (max-width:1180px){.app{grid-template-columns:220px minmax(0,1fr)}.arti{display:none}}
+  @media (max-width:780px){.app{grid-template-columns:minmax(0,1fr);height:640px}.side{display:none}.wrap{padding:28px 16px 56px}}
+  .frame,.sec{animation:rise .5s var(--ease) both}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 </style>
 
 <div class="wrap">
 
   <header class="mast">
     <div class="mast__id">
-      <p class="kicker">BioRouter · Design studio</p>
-      <h1>Making the shell feel like <em>one instrument</em>.</h1>
-      <p class="lede">A cohesion pass on the sidebar, chat, and preview panel — same Parchment palette and tokens from <span class="mono" style="font-size:13px">design.md</span>, just organised so the three panels read as a single, calm surface. Toggle <b>Current&nbsp;⇄&nbsp;Redesigned</b> to see exactly what moves.</p>
+      <p class="kicker">BioRouter · Design studio · rev 2</p>
+      <h1>Fewer boxes. <em>One ink.</em></h1>
+      <p class="lede">Rev 1 aligned the sidebar. Rev 2 strips the preview panel and terminal back to a single surface, rebuilds the markdown layer — and fixes the reason the real app never looked like the sketch: <b>the chat's prose is painted in Tailwind's cold grey, not the Parchment tokens.</b></p>
     </div>
     <div class="controls">
       <div class="seg" role="group" aria-label="Theme">
@@ -469,8 +446,9 @@
         <button id="m-current" aria-pressed="false">Current</button>
         <button id="m-redesign" aria-pressed="true">Redesigned</button>
       </div>
-      <div class="seg" role="group" aria-label="Annotate">
-        <button id="hl" aria-pressed="false">◇ Highlight changes</button>
+      <div class="seg" role="group" aria-label="Options">
+        <button id="term" aria-pressed="true">▤ Terminal</button>
+        <button id="hl" aria-pressed="false">◇ Highlight</button>
       </div>
     </div>
   </header>
@@ -487,7 +465,7 @@
       <aside class="side">
         <div class="brand halo" data-change="A">
           <span class="brand__mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 6H15.6M6 8.4v5.2a4 4 0 0 0 4 4h5.6"/></svg>
+            <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 6H15.6M6 8.4v5.2a4 4 0 0 0 4 4h5.6"/></svg>
           </span>
           <span class="brand__word">Biorouter</span>
           <span class="brand__env" title="dev build"></span>
@@ -496,14 +474,14 @@
         <div class="side__scroll">
           <div class="navgroup menuwrap halo" data-change="B">
             <div class="grouplabel"><span>Menu</span></div>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg><span>New Session</span></a>
-            <a class="navrow active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 4l9 6.5M5 9.5V20h14V9.5"/></svg><span>Home</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="6" height="6" rx="1.5"/><rect x="15" y="14" width="6" height="6" rx="1.5"/><path d="M9 7h4a2 2 0 0 1 2 2v8"/></svg><span>Workflows</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Scheduler</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 4H6a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2 2 2 0 0 1 0 4H4v2a2 2 0 0 0 2 2h4"/><path d="M14 4h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2 2 2 0 0 0 0 4h2"/></svg><span>Extensions</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg><span>Skills</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="6" cy="12" r="2"/><circle cx="17" cy="6" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8 11l7-4M8 13l7 4"/></svg><span>Knowledge</span></a>
-            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg><span>Applications</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New Session</span></a>
+            <a class="navrow active"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 4l9 6.5M5 9.5V20h14V9.5"/></svg><span>Home</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="6" height="6" rx="1.5"/><rect x="15" y="14" width="6" height="6" rx="1.5"/><path d="M9 7h4a2 2 0 0 1 2 2v8"/></svg><span>Workflows</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Scheduler</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2 2 2 0 0 1 0 4H4v2a2 2 0 0 0 2 2h4"/><path d="M14 4h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2 2 2 0 0 0 0 4h2"/></svg><span>Extensions</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg><span>Skills</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2"/><circle cx="17" cy="6" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8 11l7-4M8 13l7 4"/></svg><span>Knowledge</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg><span>Applications</span></a>
           </div>
 
           <div class="zonediv halo" data-change="C"></div>
@@ -511,73 +489,63 @@
           <div class="recents">
             <div class="grouplabel"><span>Recents</span><a>See all</a></div>
             <div class="recwell halo" data-change="C">
-
               <div class="recgroup">
                 <div class="datelabel">Today</div>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Apple Watch news</span></a>
-                <a class="recrow active" data-change="D"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="6" cy="3" r="0"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Multiple sclerosis knowledge graph (branch 1)</span><span class="live" title="running"></span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">hi 4</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Status check-in</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow plans inquiry</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 1)</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16"/></svg><span class="title">app:spec-002-cohort-fu…</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow weather search</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 3)</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 2)</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Apple Watch news</span></a>
+                <a class="recrow active" data-change="D"><svg class="glyph" viewBox="0 0 24 24"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Multiple sclerosis knowledge graph (branch 1)</span><span class="live" title="running"></span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">hi 4</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Status check-in</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow plans inquiry</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 1)</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16"/></svg><span class="title">app:spec-002-cohort-fu…</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow weather search</span></a>
               </div>
-
               <div class="recgroup">
                 <div class="datelabel">Jul 14</div>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">UCSF HPC file listing</span></a>
-                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">CLI session</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">UCSF HPC file listing</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">CLI session</span></a>
               </div>
-
-              <a class="recrow viewall"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4M12 8v4l3 2"/></svg><span class="title">View all chat history</span></a>
+              <a class="recrow viewall"><svg class="glyph" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4M12 8v4l3 2"/></svg><span class="title">View all chat history</span></a>
             </div>
           </div>
         </div>
 
         <div class="side__foot">
-          <div class="updatepill">↑ Update · CLI 1.85</div>
-          <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.3-2.5H9.4L9 6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.3 2.5h4.9l.3-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span></a>
+          <a class="navrow"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.3-2.5H9.4L9 6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.3 2.5h4.9l.3-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span></a>
         </div>
       </aside>
 
-      <!-- ============ CHAT ============ -->
+      <!-- ============ CHAT + TERMINAL ============ -->
       <main class="chat">
         <div class="panelhead halo" data-change="F">
           <span class="titlepill">Multiple sclerosis knowledge graph (branch 1) <span class="dots">···</span></span>
           <div class="headactions">
-            <button class="iconbtn" title="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 8 4 4-4 4M12 16h8"/></svg></button>
-            <button class="iconbtn" title="Review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
+            <button class="iconbtn on" title="Terminal"><svg viewBox="0 0 24 24"><path d="m4 8 4 4-4 4M12 16h8"/></svg></button>
+            <button class="iconbtn" title="Review"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
           </div>
         </div>
 
         <div class="transcript">
           <div class="col">
-            <div class="u-turn">
-              <div class="bubble">Tell me more about multiple sclerosis using the SPOKE Biomedical Knowledge Graph</div>
-            </div>
+            <div class="u-turn"><div class="bubble">Which DMTs show the strongest MS association in SPOKE?</div></div>
             <div class="stamp tnum">07/09/2026 3:10 PM</div>
-
-            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Resolve Entity</b> · 1 result ready</div>
-            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Describe Node</b> · 1 result ready</div>
-            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Query SPOKE</b> · 1 result ready<span class="chev">›</span></div>
-
+            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Resolve Entity</b> · 1 result ready</div>
+            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Query SPOKE</b> · 1 result ready<span class="chev">›</span></div>
             <div class="a-turn">
-              <div class="prose">
-                <p>Here's what the SPOKE graph holds for <span class="em">Multiple sclerosis</span> (resolved to the <code>Disease</code> node <code>DOID:2377</code>):</p>
-                <h3>Treatments</h3>
-                <ul>
-                  <li><span class="em">142 compounds</span> connect via <code>TREATS_CtD</code> — established DMTs (Fingolimod, Dimethyl fumarate) alongside immunomodulators and symptomatic-management drugs.</li>
-                  <li>Only <span class="em">1 compound</span> is flagged as a contraindication: <span class="em">L-Ascorbic Acid</span>.</li>
-                </ul>
-                <h3>Epidemiology <code>PREVALENCE_DpL</code></h3>
-                <p>Prevalence estimates link to <span class="em">178 Location</span> nodes, reflecting the documented north–south gradient.</p>
+              <div class="md" style="max-width:none">
+                <p>The <strong>142 compounds</strong> linked by <code>TREATS_CtD</code> rank as follows by edge confidence:</p>
+                <table>
+                  <thead><tr><th>Compound</th><th class="num">Edges</th><th class="num">Confidence</th></tr></thead>
+                  <tbody>
+                    <tr><td>Fingolimod</td><td class="num">318</td><td class="num">0.94</td></tr>
+                    <tr><td>Dimethyl fumarate</td><td class="num">274</td><td class="num">0.91</td></tr>
+                    <tr><td>Natalizumab</td><td class="num">96</td><td class="num">0.87</td></tr>
+                  </tbody>
+                </table>
               </div>
               <div class="a-actions">
-                <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>Copy</span>
-                <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v6a3 3 0 0 0 3 3h9"/><path d="m15 9 3 3-3 3"/></svg>Diverge</span>
+                <span><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>Copy</span>
+                <span><svg viewBox="0 0 24 24"><path d="M6 3v6a3 3 0 0 0 3 3h9"/><path d="m15 9 3 3-3 3"/></svg>Diverge</span>
               </div>
             </div>
           </div>
@@ -587,50 +555,72 @@
           <div class="composer">
             <div class="ph">⌘↑ / ⌘↓ to navigate messages</div>
             <div class="tools">
-              <span class="grp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>Users/wanjun/</span>
-              <span class="grp tnum"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 4H6a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2 2 2 0 0 1 0 4H4"/></svg>4</span>
-              <span class="grp tnum"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 9 5-9 5-9-5Z"/></svg>8</span>
-              <span class="grp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3a4 4 0 0 1 4 4 4 4 0 0 1 0 8 4 4 0 0 1-8 0 4 4 0 0 1 0-8 4 4 0 0 1 4-4Z"/></svg>gpt-5.5</span>
+              <span class="grp"><svg viewBox="0 0 24 24"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>Users/wanjun/</span>
+              <span class="grp tnum"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>4</span>
+              <span class="grp"><svg viewBox="0 0 24 24"><path d="M12 3a4 4 0 0 1 4 4 4 4 0 0 1 0 8 4 4 0 0 1-8 0 4 4 0 0 1 0-8 4 4 0 0 1 4-4Z"/></svg>gpt-5.5</span>
               <span class="grp tnum">$0.00</span>
-              <button class="send" title="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 12 16-8-6 16-3-6-7-2Z"/></svg></button>
+              <button class="send" title="Send"><svg viewBox="0 0 24 24"><path d="m4 12 16-8-6 16-3-6-7-2Z"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- TERMINAL DOCK -->
+        <div class="dock halo" data-change="I">
+          <div class="dock__bar">
+            <button class="utab active"><svg viewBox="0 0 24 24"><path d="m4 8 4 4-4 4M12 16h8"/></svg><span class="tt">zsh</span><span class="x">×</span></button>
+            <button class="utab"><svg viewBox="0 0 24 24"><path d="m4 8 4 4-4 4M12 16h8"/></svg><span class="tt">python</span><span class="x">×</span></button>
+            <span class="dock__cwd">~/Desktop/biorouter</span>
+          </div>
+          <div class="termwrap">
+            <div class="term">
+<div><span class="p1">wanjun</span><span class="dim">@</span><span class="p2">mbp</span> <span class="p3">~/biorouter</span> <span class="dim">$</span> spoke query --disease "multiple sclerosis" --edge TREATS_CtD</div>
+<div class="dim">→ resolving entity … <span class="y">DOID:2377</span></div>
+<div class="dim">→ 142 compounds · 318 edges · 0.31s</div>
+<div><span class="p1">✓</span> wrote <span class="p2">ms_dmt_ranking.csv</span></div>
+<div><span class="p1">wanjun</span><span class="dim">@</span><span class="p2">mbp</span> <span class="p3">~/biorouter</span> <span class="dim">$</span> <span class="cur"></span></div>
             </div>
           </div>
         </div>
       </main>
 
-      <!-- ============ ARTIFACT PANEL ============ -->
+      <!-- ============ PREVIEW PANEL ============ -->
       <aside class="arti">
-        <div class="panelhead halo" data-change="G">
-          <div class="tabs">
-            <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m8 8-4 4 4 4M16 8l4 4-4 4"/></svg><span class="tt">query_spoke.py</span><span class="x">×</span></div>
-            <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/></svg><span class="tt">ms_prevalence.html</span><span class="x">×</span></div>
-          </div>
-          <button class="iconbtn" title="Expand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
-          <button class="iconbtn" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        <div class="arti__tabs halo" data-change="G">
+          <button class="utab active"><svg viewBox="0 0 24 24"><path d="m8 8-4 4 4 4M16 8l4 4-4 4"/></svg><span class="tt">query_spoke.py</span><span class="x">×</span></button>
+          <button class="utab"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/></svg><span class="tt">ms_prevalence.html</span><span class="x">×</span></button>
+          <span class="arti__acts">
+            <button class="iconbtn" title="Expand"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+            <button class="iconbtn" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </span>
+        </div>
+
+        <div class="strip stripwrap halo" data-change="H">
+          <span class="cap">Python</span>
+          <span class="path"><span class="dim">crates/spoke/</span>query_spoke.py</span>
+          <span class="seg2"><span>Preview</span><span class="on">Raw</span></span>
         </div>
 
         <div class="artibody">
-          <div class="preview">
-            <div class="preview__head">
-              <span class="preview__lang">Python</span>
-              <span class="preview__meta tnum">14 lines</span>
-              <span class="preview__toggle"><span>Preview</span><span class="on">Raw</span></span>
+          <div class="artiscroll">
+            <div class="strip stripinner">
+              <span class="cap">Python</span>
+              <span class="path"><span class="dim">crates/spoke/</span>query_spoke.py</span>
+              <span class="seg2"><span>Preview</span><span class="on">Raw</span></span>
             </div>
             <div class="code">
-              <div class="ln"><span class="g tnum">1</span><span class="c"><span class="cm"># Query SPOKE for MS drug associations</span></span></div>
-              <div class="ln"><span class="g tnum">2</span><span class="c"><span class="kw">from</span> <span class="pl">spoke</span> <span class="kw">import</span> <span class="ty">Graph</span></span></div>
-              <div class="ln"><span class="g tnum">3</span><span class="c"></span></div>
-              <div class="ln"><span class="g tnum">4</span><span class="c"><span class="pl">g</span> <span class="op">=</span> <span class="ty">Graph</span><span class="op">.</span><span class="fn">connect</span><span class="op">(</span><span class="pl">profile</span><span class="op">=</span><span class="st2">"ucsf"</span><span class="op">)</span></span></div>
-              <div class="ln"><span class="g tnum">5</span><span class="c"></span></div>
-              <div class="ln"><span class="g tnum">6</span><span class="c"><span class="pl">ms</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">resolve</span><span class="op">(</span><span class="st2">"Multiple sclerosis"</span><span class="op">,</span> <span class="pl">label</span><span class="op">=</span><span class="st2">"Disease"</span><span class="op">)</span></span></div>
-              <div class="ln"><span class="g tnum">7</span><span class="c"><span class="pl">edges</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">query</span><span class="op">(</span></span></div>
-              <div class="ln"><span class="g tnum">8</span><span class="c">    <span class="pl">source</span><span class="op">=</span><span class="pl">ms</span><span class="op">,</span></span></div>
-              <div class="ln"><span class="g tnum">9</span><span class="c">    <span class="pl">predicate</span><span class="op">=</span><span class="st2">"TREATS_CtD"</span><span class="op">,</span></span></div>
-              <div class="ln"><span class="g tnum">10</span><span class="c">    <span class="pl">limit</span><span class="op">=</span><span class="nu">200</span><span class="op">,</span></span></div>
-              <div class="ln"><span class="g tnum">11</span><span class="c"><span class="op">)</span></span></div>
-              <div class="ln"><span class="g tnum">12</span><span class="c"></span></div>
-              <div class="ln"><span class="g tnum">13</span><span class="c"><span class="pl">drugs</span> <span class="op">=</span> <span class="op">[</span><span class="pl">e</span><span class="op">.</span><span class="pl">target</span><span class="op">.</span><span class="pl">name</span> <span class="kw">for</span> <span class="pl">e</span> <span class="kw">in</span> <span class="pl">edges</span><span class="op">]</span></span></div>
-              <div class="ln"><span class="g tnum">14</span><span class="c"><span class="fn">print</span><span class="op">(</span><span class="kw">f</span><span class="st2">"{len(drugs)} compounds treat MS"</span><span class="op">)</span></span></div>
+              <div class="ln"><span class="g">1</span><span class="c"><span class="cm"># Rank MS disease-modifying therapies by edge confidence</span></span></div>
+              <div class="ln"><span class="g">2</span><span class="c"><span class="kw">from</span> <span class="pl">spoke</span> <span class="kw">import</span> <span class="ty">Graph</span></span></div>
+              <div class="ln"><span class="g">3</span><span class="c"></span></div>
+              <div class="ln"><span class="g">4</span><span class="c"><span class="pl">g</span> <span class="op">=</span> <span class="ty">Graph</span><span class="op">.</span><span class="fn">connect</span><span class="op">(</span><span class="pl">profile</span><span class="op">=</span><span class="st2">"ucsf"</span><span class="op">)</span></span></div>
+              <div class="ln"><span class="g">5</span><span class="c"><span class="pl">ms</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">resolve</span><span class="op">(</span><span class="st2">"Multiple sclerosis"</span><span class="op">)</span></span></div>
+              <div class="ln"><span class="g">6</span><span class="c"></span></div>
+              <div class="ln add"><span class="g">7</span><span class="c"><span class="pl">edges</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">query</span><span class="op">(</span></span></div>
+              <div class="ln add"><span class="g">8</span><span class="c">    <span class="pl">source</span><span class="op">=</span><span class="pl">ms</span><span class="op">,</span> <span class="pl">predicate</span><span class="op">=</span><span class="st2">"TREATS_CtD"</span><span class="op">,</span></span></div>
+              <div class="ln add"><span class="g">9</span><span class="c">    <span class="pl">min_confidence</span><span class="op">=</span><span class="nu">0.85</span><span class="op">,</span></span></div>
+              <div class="ln add"><span class="g">10</span><span class="c"><span class="op">)</span></span></div>
+              <div class="ln"><span class="g">11</span><span class="c"></span></div>
+              <div class="ln"><span class="g">12</span><span class="c"><span class="kw">for</span> <span class="pl">e</span> <span class="kw">in</span> <span class="fn">sorted</span><span class="op">(</span><span class="pl">edges</span><span class="op">,</span> <span class="pl">key</span><span class="op">=</span><span class="kw">lambda</span> <span class="pl">x</span><span class="op">:</span> <span class="op">-</span><span class="pl">x</span><span class="op">.</span><span class="pl">conf</span><span class="op">)</span><span class="op">:</span></span></div>
+              <div class="ln"><span class="g">13</span><span class="c">    <span class="fn">print</span><span class="op">(</span><span class="kw">f</span><span class="st2">"{e.target.name:24} {e.conf:.2f}"</span><span class="op">)</span></span></div>
             </div>
           </div>
         </div>
@@ -641,92 +631,271 @@
 
   <p class="modenote" id="modenote"></p>
 
-  <!-- ============ CHANGE LEGEND ============ -->
-  <section class="legend">
-    <h2>What changed &amp; why</h2>
-    <p class="sub">Seven cohesion fixes. Every value is drawn from the existing Parchment tokens — nothing new is invented, it's re-organised so the panels align. Refs point at the signed-off system doc.</p>
-    <div class="cards">
+  <!-- =====================================================
+       SECTION · FORENSICS
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">01</span>
+      <h2>Why the app never looked like the sketch</h2>
+      <span class="why">measured in the running build, not inferred</span>
+    </div>
+    <p class="intro">You were right that something was off, and it isn't taste — it's a defect. The font <em>stack</em> is identical in both (<span class="mono" style="font-size:12.5px">ui-sans-serif</span> → SF&nbsp;Pro), and so is the smoothing. The difference is that <b>the chat's prose is not painted with the design tokens at all.</b> <span class="mono" style="font-size:12.5px">@tailwindcss/typography</span> ships its own <span class="mono" style="font-size:12.5px">--tw-prose-*</span> variables, and nothing in the codebase ever remaps them — so every element the class list forgets falls back to Tailwind's stock <em>cold blue-grey</em> ramp, on a warm parchment ground.</p>
 
-      <div class="cardx">
-        <span class="tag">A</span>
-        <h3>A brand band that anchors the top</h3>
-        <p>The wordmark floated 40px down with no connective tissue to the menu. It now sits in a 52px band with a bottom hairline — the <em>same height</em> as the chat and preview headers, so all three panel tops align across one line.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">bare text, 40px top gap, no mark</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">logo lockup + wordmark, 52px band, hairline</span></div>
-        </div>
-        <div class="ref">design.md §4.11 · §3.3 page-shell</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">B</span>
-        <h3>The menu is a labelled zone</h3>
-        <p>The nine destinations now sit under a quiet <span class="mono" style="font-size:12px">MENU</span> caption, so the built-in app functions read as a group distinct from your conversations below.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">unlabelled stack, blends into history</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">"Menu" section label, 11px caps</span></div>
-        </div>
-        <div class="ref">design.md §4.11 section-label</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">C</span>
-        <h3>Menu and history are visibly separate</h3>
-        <p>A 32px-wide hairline was the only divider between built-ins and chat history. It becomes a full-width rule, and the Recents list gets its own inset scroll-well — a clear boundary between "what the app does" and "what I've done".</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">tiny 32px hairline, flush list</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">full-width rule + inset Recents well</span></div>
-        </div>
-        <div class="ref">design.md P2 rows-not-cards</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">D</span>
-        <h3>History rows carry a glyph</h3>
-        <p>Chat rows were a wall of identical text. A subtle leading glyph now distinguishes them from menu items — a speech mark for chats, a branch mark for diverged sessions, an app tile for apps. Live sessions keep the pulsing coral dot.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">title only, no glyph (§4.11 as-built)</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">14px conversation / branch / app glyph</span></div>
-        </div>
-        <div class="ref">your ask · revisits §4.11 "no leading icon"</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">E</span>
-        <h3>One type rhythm, sidebar ↔ chat</h3>
-        <p>Both already use the system stack, so the mismatch was <em>rhythm</em>, not family: the wordmark was <span class="mono" style="font-size:12px">leading-none</span> while rows breathed. Everything now shares one scale — 14/20 rows, 11px caps labels, 12px date labels — so the rail and the transcript feel set by the same hand.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">mixed leading &amp; weights</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">shared 14/20 + 11px caps scale</span></div>
-        </div>
-        <div class="ref">design.md §3.2 type scale · D-06</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">F</span>
-        <h3>Three headers, one bar</h3>
-        <p>Sidebar band, chat header and preview header are now all 52px on the same ground with the same single hairline — a continuous top edge across the whole window instead of three headers at slightly different weights.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">headers match; sidebar top doesn't</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">all three top edges aligned</span></div>
-        </div>
-        <div class="ref">design.md §4.12 · P1 hairline</div>
-      </div>
-
-      <div class="cardx">
-        <span class="tag">G</span>
-        <h3>The preview panel joins the system</h3>
-        <p>Preview tabs were 8px-radius with a drop shadow and a scatter of one-off label sizes (10.5 / 9.5 / 11px). They now match chat: 12px radii, flat tabs, and a single 11px caps label token — so the preview looks like part of the app, not a separate widget.</p>
-        <div class="ba">
-          <div class="row before"><span class="k">Now</span><span class="v">8px tabs + shadow, 10.5/9.5px labels</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">12px radii, flat, one 11px caps label</span></div>
-        </div>
-        <div class="ref">design.md §3.4 radius · §5.1 code</div>
-      </div>
-
+    <div class="eviz">
+      <table class="etable">
+        <thead>
+          <tr><th>Element</th><th>What the app paints</th><th>What the token says</th><th>Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="what">Paragraph</td>
+            <td><span class="sw"><i style="background:#2a2520"></i>#2a2520</span></td>
+            <td><span class="sw"><i style="background:#2a2520"></i>--text-default</span></td>
+            <td><span class="verdict" style="background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok)">✓ warm</span></td>
+          </tr>
+          <tr>
+            <td class="what">Bold text <span class="note">(<code class="mono">&lt;strong&gt;</code>)</span></td>
+            <td><span class="sw"><i style="background:#101828"></i>#101828 <span class="note">gray-900</span></span></td>
+            <td><span class="sw"><i style="background:#2a2520"></i>--text-default</span></td>
+            <td><span class="verdict bad">cold</span></td>
+          </tr>
+          <tr>
+            <td class="what">Headings <span class="note">(h3 / h4)</span></td>
+            <td><span class="sw"><i style="background:#101828"></i>#101828 <span class="note">gray-900</span></span></td>
+            <td><span class="sw"><i style="background:#2a2520"></i>--text-default</span></td>
+            <td><span class="verdict bad">cold</span></td>
+          </tr>
+          <tr>
+            <td class="what">Rules &amp; table hairlines</td>
+            <td><span class="sw"><i style="background:#e5e7eb"></i>#e5e7eb <span class="note">gray-200</span></span></td>
+            <td><span class="sw"><i style="background:#e8e1d2"></i>--border-subtle</span></td>
+            <td><span class="verdict bad">cold</span></td>
+          </tr>
+          <tr>
+            <td class="what">Markdown links</td>
+            <td><span class="sw"><i style="background:#101828"></i>#101828 <span class="note">gray-900</span></span></td>
+            <td><span class="sw"><i style="background:#b85a32"></i>--text-accent</span></td>
+            <td><span class="verdict bad">not accent</span></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <p class="foot"><b>How to read this.</b> This is a faithful static sketch built on the real tokens, meant to be replicated 1:1 in <span class="mono" style="font-size:12px">AppSidebar.tsx</span>, <span class="mono" style="font-size:12px">BaseChat.tsx</span> and <span class="mono" style="font-size:12px">ArtifactViewer.tsx</span>. Nothing is committed to the app yet. Tell me which of A–G to keep, drop, or tweak — the leading glyph (D) in particular deliberately overrides the current "no leading icon" rule, so it's the first call I'd want from you.</p>
+    <p class="intro" style="margin-top:16px">Those greys sit at hue&nbsp;264 — <b>blue</b>. The tokens sit at hue&nbsp;≈30 — warm. So in every assistant answer, <b>a bold word is a different hue than the sentence around it</b>, and every rule is a cold line on a warm page. <span class="mono" style="font-size:12.5px">#e5e7eb</span> is, word for word, one of the hexes design.md's anti-patterns list names as a <em>"foreign body"</em> — and the chat paints it on every table.</p>
+
+    <p class="intro"><b>The glyphs disagree too.</b> One screen carries three stroke weights where the system mandates 1.5 everywhere: the sidebar nav at 1.5, the Recent-Chats glyphs at 1px — visibly lighter, immediately beside them — and a <span class="mono" style="font-size:12.5px">lucide-gauge</span> at 1.75 from a direct import that bypasses the icon wrapper. Two sizes (16 and 18) coexist as well.</p>
+
+    <div class="stroke-demo">
+      <span class="sd"><svg viewBox="0 0 24 24" style="stroke-width:1"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span>Recents glyph <span class="lab">stroke 1</span></span></span>
+      <span class="sd"><svg viewBox="0 0 24 24" style="stroke-width:1.5"><path d="M3 10.5 12 4l9 6.5M5 9.5V20h14V9.5"/></svg><span>Nav icon <span class="lab">stroke 1.5 ✓</span></span></span>
+      <span class="sd"><svg viewBox="0 0 24 24" style="stroke-width:1.75"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/></svg><span>Gauge <span class="lab">stroke 1.75</span></span></span>
+      <span class="sd note" style="color:var(--page-mut);font-size:12.5px">← all three render side by side today</span>
+    </div>
+  </section>
+
+  <!-- =====================================================
+       SECTION · MARKDOWN
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">02</span>
+      <h2>The markdown layer, rebuilt</h2>
+      <span class="why">the app's most-read surface</span>
+    </div>
+    <p class="intro">Same content, both panes. The left is what ships today — <b>rendered with the real values measured from the build</b>, not a caricature. The right is the redesign: warm ink throughout, a table that obeys §4.17, math set flush with its prose, and a heading scale where h3 and h4 are actually different.</p>
+
+    <div class="spec2">
+      <div class="paper">
+        <div class="paper__cap"><span class="pin bad"></span>Today · as measured</div>
+        <div class="paper__body">
+          <div class="md md--now">
+            <h3>Disease-modifying therapies</h3>
+            <p>SPOKE links <strong>142 compounds</strong> to MS via <code>TREATS_CtD</code>. See the <a href="#">edge documentation</a> for scoring.</p>
+            <h4>Ranked by confidence</h4>
+            <table>
+              <thead><tr><th>Compound</th><th class="num">Edges</th><th class="num">Conf.</th></tr></thead>
+              <tbody>
+                <tr><td>Fingolimod</td><td class="num">318</td><td class="num">0.94</td></tr>
+                <tr><td>Dimethyl fumarate</td><td class="num">274</td><td class="num">0.91</td></tr>
+                <tr><td>Natalizumab</td><td class="num">96</td><td class="num">0.87</td></tr>
+              </tbody>
+            </table>
+            <span class="math"><span class="k">P(y=1 &nbsp;|&nbsp; x) = <span class="frac"><span class="n">1</span><span class="d">1 + e<sup>−(β<sub>0</sub> + β<sub>1</sub>x)</sup></span></span></span></span>
+            <blockquote><p>Confidence is an edge attribute, not a p-value.</p></blockquote>
+            <hr>
+            <p>Prevalence spans <strong>178</strong> locations.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="paper">
+        <div class="paper__cap"><span class="pin good"></span>Redesigned</div>
+        <div class="paper__body">
+          <div class="md">
+            <h3>Disease-modifying therapies</h3>
+            <p>SPOKE links <strong>142 compounds</strong> to MS via <code>TREATS_CtD</code>. See the <a href="#">edge documentation</a> for scoring.</p>
+            <h4>Ranked by confidence</h4>
+            <table>
+              <thead><tr><th>Compound</th><th class="num">Edges</th><th class="num">Conf.</th></tr></thead>
+              <tbody>
+                <tr><td>Fingolimod</td><td class="num">318</td><td class="num">0.94</td></tr>
+                <tr><td>Dimethyl fumarate</td><td class="num">274</td><td class="num">0.91</td></tr>
+                <tr><td>Natalizumab</td><td class="num">96</td><td class="num">0.87</td></tr>
+              </tbody>
+            </table>
+            <span class="math"><span class="k">P(y=1 &nbsp;|&nbsp; x) = <span class="frac"><span class="n">1</span><span class="d">1 + e<sup>−(β<sub>0</sub> + β<sub>1</sub>x)</sup></span></span></span></span>
+            <blockquote><p>Confidence is an edge attribute, not a p-value.</p></blockquote>
+            <hr>
+            <p>Prevalence spans <strong>178</strong> locations.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag fix">K</span>
+        <h3>Remap the prose variables</h3>
+        <p>One block of <span class="mono" style="font-size:12px">--tw-prose-*</span> overrides retires the entire cold-grey ramp: body, bold, headings, links, hr, and both table hairline vars. This is the highest-leverage fix in the whole pass — nothing else changes as much for as little.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">Tailwind gray-200/700/900</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">Parchment tokens, both themes</span></div>
+        </div>
+        <div class="ref">§3.1 · anti-pattern "cold neutrals"</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">L</span>
+        <h3>Tables stop being grids</h3>
+        <p>Today every cell carries a 1px box on four sides, the header takes a solid fill, and numbers sit left-aligned with no tabular figures. §4.17 asks for the opposite: hairline rows only, no vertical rules, an 11px caps header, numerics right-aligned.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">full grid + header fill + 12px</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">row hairlines, caps header, tabular-nums</span></div>
+        </div>
+        <div class="ref">§4.17 · 11 violations found</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">M</span>
+        <h3>Math sits in the text, not on it</h3>
+        <p>KaTeX's 1.21em is already overridden to 1em — but the shorthand also carries <span class="mono" style="font-size:12px">line-height:1.2</span> and a Times-ish serif, neither of which is reset, and display math is centred and margined <em>twice</em> by two different files. Set the leading, keep the math serif deliberately (it's a formula, not prose), and centre it once.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">lh 1.2, double-centred, double-margined</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">lh 1.45, centred once, one margin</span></div>
+        </div>
+        <div class="ref">main.css KaTeX block</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">N</span>
+        <h3>A heading scale that steps</h3>
+        <p>h3 and h4 are both 14px/600 today — the same object twice, so a four-level answer reads as three. h4 becomes a 13px muted label, and the blockquote stops injecting curly quotes the plugin adds and nothing suppresses.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">h3 = h4 = 14/600; “quotes” injected</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">18 / 15 / 13 steps; no injected quotes</span></div>
+        </div>
+        <div class="ref">§3.2 type scale</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================
+       SECTION · PANELS
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">03</span>
+      <h2>Unboxing the preview and the terminal</h2>
+      <span class="why">after otty.sh, and Claude Code's own review pane</span>
+    </div>
+    <p class="intro">Both panels wrap their content in a card that adds nothing. The preview goes <em>panel → padding → bordered rounded card → header → code</em>; the terminal goes <em>dock → gutter → bordered rounded box</em> where <b>the box and its gutter are the same colour</b> — a hairline drawn between a surface and itself. Claude Code's review pane, and otty, both do the opposite: the content <em>is</em> the surface. Toggle <b>Current</b> above to see the boxes reappear.</p>
+
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag">G</span>
+        <h3>Tabs become tabs, not chips</h3>
+        <p>The preview's boxed 8px chips with a drop shadow become text tabs with a 2px accent underline — which is what D-07 already chose for horizontal navigation, and what the panel quietly ignored. Labels set in mono, the way otty sets its UI labels.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">8px chip + border + shadow</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">underline tab, mono 12px label</span></div>
+        </div>
+        <div class="ref">design.md D-07</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">H</span>
+        <h3>One status strip, no card</h3>
+        <p>The inner card, its border, its 8px radius and its popover shadow all come out. What's left is a mono status strip — language, path, Preview/Raw — over code that sits directly on the panel ground, exactly like the review pane in your screenshot. Three nested boxes become none.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">panel → p-3 → card → head → code</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">panel → strip → code</span></div>
+        </div>
+        <div class="ref">P1 surfaces-not-elevation</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">I</span>
+        <h3>The terminal loses its frame</h3>
+        <p>Today the xterm host is a <span class="mono" style="font-size:12px">rounded-md</span> bordered box painted <span class="mono" style="font-size:12px">bg-background-muted</span> — sitting inside a gutter painted the same <span class="mono" style="font-size:12px">bg-background-muted</span>. The border separates a colour from itself. Drop the box; let the terminal bleed to the dock edges, with its horizontal tabs underlined like every other horizontal tab.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">bordered box inside same-colour gutter</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">full-bleed terminal, one top hairline</span></div>
+        </div>
+        <div class="ref">D-07 · D-11 terminal ground</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">J</span>
+        <h3>One glyph contract</h3>
+        <p>Every icon in the shell renders at stroke 1.5 and one of two sizes (16 dense, 20 default), <span class="mono" style="font-size:12px">currentColor</span> always. The direct <span class="mono" style="font-size:12px">lucide-react</span> imports that bypass the wrapper get routed through it, so a glyph can never again be heavier than its neighbour.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">strokes 1 / 1.5 / 1.75; sizes 16 / 18</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">stroke 1.5 everywhere; 16 or 20</span></div>
+        </div>
+        <div class="ref">§3.9 iconography</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================
+       SECTION · REV 1 RECAP
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">04</span>
+      <h2>Carried over from rev 1</h2>
+      <span class="why">the sidebar pass, unchanged</span>
+    </div>
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag">A</span><h3>A brand band that anchors the top</h3>
+        <p>The wordmark floated 40px down with nothing tying it to the menu. It now sits in a 52px band with a bottom hairline — the same height as the chat and preview headers, so all three panel tops align on one line.</p>
+        <div class="ref">§4.11 · §3.3</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">B</span><h3>The menu is a labelled zone</h3>
+        <p>The nine destinations sit under a quiet <span class="mono" style="font-size:12px">MENU</span> caption, so built-in functions read as a group distinct from your conversations.</p>
+        <div class="ref">§4.11</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">C</span><h3>Menu and history are visibly separate</h3>
+        <p>A 32px hairline sliver becomes a full-width rule, and Recents gets its own inset well — one calm step deeper, the same two-tone device the sidebar uses against the canvas.</p>
+        <div class="ref">§3.1 · P2</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">D</span><h3>History rows carry a glyph</h3>
+        <p>A speech mark for chats, a branch mark for diverged sessions, a tile for apps — so history stops reading as a wall of identical text. <b>Still your call:</b> this overrides §4.11's "no leading icon".</p>
+        <div class="ref">your ask · revisits §4.11</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">E</span><h3>One type rhythm, sidebar ↔ chat</h3>
+        <p>Both already use the system stack, so the mismatch was rhythm, not family. One scale: 14/20 rows, 11px caps labels, 12px dates.</p>
+        <div class="ref">§3.2 · D-06</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">F</span><h3>Three headers, one bar</h3>
+        <p>Sidebar band, chat header and preview header all 52px on the same ground with the same hairline — a continuous top edge across the window.</p>
+        <div class="ref">§4.12 · P1</div>
+      </div>
+    </div>
+
+    <p class="foot"><b>One caveat you should know about.</b> While auditing, I found that <code>design.md</code>'s drift register is <b>stale</b> — it still lists the terminal as having a single hardcoded light theme (<code>DR-41</code>), a bronze tab (<code>DR-32</code>) and a font mismatch (<code>DR-07</code>). All three were fixed on main months ago; the register has no status column, so it reads as live. Everything in this spec was verified against the code and the running build, not the doc. The register itself needs a pass.<br><br>
+    <b>How to read this.</b> A faithful static sketch on the real tokens, meant to be replicated 1:1 in <code>AppSidebar.tsx</code>, <code>BaseChat.tsx</code>, <code>ArtifactViewer.tsx</code>, <code>InAppTerminalDock.tsx</code> and <code>MarkdownContent.tsx</code>. Nothing is committed to the app. Tell me which of A–N to keep, drop, or tweak.</p>
   </section>
 
 </div>
@@ -734,14 +903,7 @@
 <script>
   (function () {
     var root = document.documentElement;
-
-    function initTheme() {
-      var saved = null;
-      try { saved = localStorage.getItem('br-sketch-theme'); } catch (e) {}
-      var dark = saved ? saved === 'dark'
-        : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      setTheme(dark ? 'dark' : 'light');
-    }
+    function byId(id){ return document.getElementById(id); }
     function setTheme(mode) {
       root.setAttribute('data-theme', mode);
       byId('t-light').setAttribute('aria-pressed', String(mode === 'light'));
@@ -753,11 +915,9 @@
       byId('m-current').setAttribute('aria-pressed', String(mode === 'current'));
       byId('m-redesign').setAttribute('aria-pressed', String(mode === 'redesign'));
       byId('modenote').innerHTML = mode === 'current'
-        ? '● Showing the shell <b>as it ships today</b> — floating wordmark, hairline sliver between menu and history, no chat glyphs, 8px preview tabs.'
-        : '● Showing the <b>redesigned</b> shell — aligned 52px headers, labelled zones, chat glyphs, unified radii. Toggle Current to compare.';
+        ? '● Showing the shell <b>as it ships today</b> — floating wordmark, no chat glyphs, boxed preview chips over a bordered card, and a terminal framed inside a gutter of its own colour.'
+        : '● Showing the <b>redesigned</b> shell — aligned 52px headers, labelled zones, underline tabs, and preview/terminal content sitting directly on the panel ground.';
     }
-    function byId(id){ return document.getElementById(id); }
-
     byId('t-light').addEventListener('click', function(){ setTheme('light'); });
     byId('t-dark').addEventListener('click', function(){ setTheme('dark'); });
     byId('m-current').addEventListener('click', function(){ setMode('current'); });
@@ -767,10 +927,19 @@
       root.setAttribute('data-hl', on ? 'off' : 'on');
       this.setAttribute('aria-pressed', String(!on));
     });
+    byId('term').addEventListener('click', function(){
+      var on = root.getAttribute('data-term') === 'on';
+      root.setAttribute('data-term', on ? 'off' : 'on');
+      this.setAttribute('aria-pressed', String(!on));
+    });
 
-    initTheme();
+    var saved = null;
+    try { saved = localStorage.getItem('br-sketch-theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    setTheme(dark ? 'dark' : 'light');
     setMode('redesign');
     root.setAttribute('data-hl', 'off');
+    root.setAttribute('data-term', 'on');
   })();
 </script>
 </body>
