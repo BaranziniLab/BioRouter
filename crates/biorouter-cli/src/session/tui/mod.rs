@@ -1016,17 +1016,37 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     // Line 2: skills · extensions · knowledge bases, with the context meter
     // right-aligned.
-    let mut line2 = vec![
+    let full_counts = vec![
         Span::styled(pluralize(s.skills, "skill"), dim),
         sep(),
         Span::styled(pluralize(s.extensions, "extension"), dim),
         sep(),
         Span::styled(pluralize(s.knowledge_bases, "knowledge base"), dim),
     ];
-    let right = context_spans(app);
-    let pad = (area.width as usize).saturating_sub(line_width(&line2) + line_width(&right) + 1);
-    line2.push(Span::styled(" ".repeat(pad), dim));
-    line2.extend(right);
+    let compact_counts = vec![
+        Span::styled(format!("{} skills", s.skills), dim),
+        Span::styled(" · ", dim),
+        Span::styled(format!("{} ext", s.extensions), dim),
+        Span::styled(" · ", dim),
+        Span::styled(format!("{} KB", s.knowledge_bases), dim),
+    ];
+    let mut right = context_spans(app);
+    let mut line2 = if line_width(&full_counts) + line_width(&right) < area.width as usize {
+        full_counts
+    } else {
+        compact_counts
+    };
+    if line_width(&line2) + line_width(&right) >= area.width as usize {
+        right = context_summary_spans(app);
+    }
+    let occupied = line_width(&line2) + line_width(&right);
+    if !right.is_empty() && occupied < area.width as usize {
+        line2.push(Span::styled(
+            " ".repeat(area.width as usize - occupied),
+            dim,
+        ));
+        line2.extend(right);
+    }
 
     f.render_widget(Paragraph::new(vec![line1, Line::from(line2)]), area);
 }
@@ -1053,15 +1073,29 @@ fn context_spans(app: &App) -> Vec<Span<'static>> {
     ]
 }
 
+fn context_summary_spans(app: &App) -> Vec<Span<'static>> {
+    if app.status.context_limit == 0 {
+        return Vec::new();
+    }
+    let pct = (((app.status.used_tokens as f64 / app.status.context_limit as f64) * 100.0).round()
+        as usize)
+        .min(100);
+    vec![Span::styled(
+        format!("ctx {pct}%"),
+        Style::new().add_modifier(Modifier::DIM),
+    )]
+}
+
 fn draw_hints(f: &mut Frame, area: Rect) {
     let dim = Style::new().add_modifier(Modifier::DIM);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · type anytime",
-            dim,
-        ))),
-        area,
-    );
+    let full = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · type anytime";
+    let compact = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
+    let text = if UnicodeWidthStr::width(full) <= area.width as usize {
+        full
+    } else {
+        compact
+    };
+    f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), area);
 }
 
 /// The queued-messages preview: the lines the user typed while the agent was
@@ -1773,6 +1807,27 @@ mod tests {
         assert!(text.contains("extensions"));
         assert!(text.contains("knowledge bases"));
         assert!(text.contains("Send a message"));
+    }
+
+    #[test]
+    fn narrow_status_keeps_counts_and_context_separate() {
+        let mut app = App::new(StatusInfo {
+            provider: "openai".into(),
+            model: "gpt-4.1".into(),
+            skills: 8,
+            extensions: 1,
+            knowledge_bases: 0,
+            used_tokens: 1_000,
+            context_limit: 128_000,
+            ..Default::default()
+        });
+
+        let text = buffer_text(&mut app, 72, 24);
+        assert!(text.contains("8 skills · 1 ext · 0 KB"), "{text}");
+        assert!(text.contains("context"), "{text}");
+        assert!(text.contains("^C stop"), "{text}");
+        assert!(!text.contains("type a"), "{text}");
+        assert!(!text.contains("KBcontext"), "{text}");
     }
 
     #[test]

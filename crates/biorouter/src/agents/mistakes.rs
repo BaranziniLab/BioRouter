@@ -174,13 +174,17 @@ pub enum ProviderErrorAction {
 /// has its own progressive-compaction ladder for it (BR-13).
 pub fn is_recoverable(error: &ProviderError) -> bool {
     match error {
-        ProviderError::ServerError(_)
-        | ProviderError::ExecutionError(_)
-        | ProviderError::UsageError(_) => true,
+        ProviderError::ServerError(_) => true,
         ProviderError::RequestFailed(_) => matches!(
             error.kind(),
             crate::providers::errors::ProviderErrorKind::Server
                 | crate::providers::errors::ProviderErrorKind::Network
+        ),
+        ProviderError::ExecutionError(_) | ProviderError::UsageError(_) => matches!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Server
+                | crate::providers::errors::ProviderErrorKind::Network
+                | crate::providers::errors::ProviderErrorKind::Other
         ),
         ProviderError::Authentication(_)
         | ProviderError::RateLimitExceeded { .. }
@@ -670,6 +674,10 @@ mod tests {
 
         for error in [
             ProviderError::Authentication("bad key".to_string()),
+            ProviderError::ExecutionError(
+                "Authentication error: status 401 Unauthorized".to_string(),
+            ),
+            ProviderError::UsageError("provider returned insufficient_quota".to_string()),
             ProviderError::NotImplemented("no tools".to_string()),
             ProviderError::RateLimitExceeded {
                 details: "slow down".to_string(),

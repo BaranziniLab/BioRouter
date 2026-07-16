@@ -1,0 +1,81 @@
+# Terminal UI Reliability Review — July 2026
+
+## Scope
+
+This review checks whether the July 2026 desktop and provider hardening changes
+alter the terminal UI's stability or agent execution loop. It covers the shared
+provider, retry, persistence, and OpenAI transport paths used by both interfaces,
+the terminal UI's rendering and input loop, and a live tmux session against an
+isolated OpenAI-compatible test server.
+
+## Impact assessment
+
+The integrated desktop changes did not directly modify `biorouter-cli`, but four
+shared-core changes are visible to terminal sessions:
+
+| Shared area | Terminal UI effect | Audited result |
+| --- | --- | --- |
+| Provider error classification | Determines whether a failed turn is retried or returned inline. | Wrapped authentication and quota failures are now fatal at the agent-loop boundary; network and server failures retain the bounded retry. |
+| Reply-loop recovery | Controls the number and ordering of model calls within one turn. | Permanent failures issue one provider request and stop. The input loop remains active for the next command or message. |
+| OpenAI request routing | Selects Chat Completions or Responses and decides whether to send reasoning settings. | Ordinary `gpt-4.1` tool turns remain on Chat Completions without `reasoning_effort`; reasoning-and-tool combinations that require Responses use that transport. |
+| Conversation persistence | Supplies transcript ordering when a session is reopened or diverged. | Database insertion order preserves user/assistant role order when timestamps are equal. |
+
+No unbounded retry, recursive input-loop re-entry, duplicate submission, or
+terminal-mode leak was observed.
+
+## Findings and fixes
+
+### Wrapped permanent provider errors received an extra agent-loop attempt
+
+`ProviderError::ExecutionError` and `ProviderError::UsageError` were treated as
+recoverable solely because of their outer enum variant. The provider layer now
+recognizes embedded authentication and quota details, but the reply-loop policy
+did not consult that classification. A wrapped 401 or `insufficient_quota` could
+therefore consume the one-turn recovery budget before stopping.
+
+The reply loop now retries those variants only when their classified kind is
+server, network, or unknown. Authentication, quota, invalid-request, and other
+permanent kinds stop immediately. Unit coverage asserts that wrapped 401 and quota
+errors never spend the retry budget.
+
+### Narrow terminals could concatenate status regions
+
+At 72 columns, the resource counts and right-aligned context meter could occupy
+more cells than the available row. Saturating padding prevented an arithmetic
+failure but left no separator, producing text such as `knowledge basescontext`.
+The bottom hint could also clip midway through its final phrase.
+
+The status renderer now selects full or compact resource labels based on measured
+Unicode display width, falls back to a compact context percentage when necessary,
+and omits the right section if it cannot fit with separation. The hint renderer
+uses a complete compact variant at narrower widths. A 72-by-24 buffer regression
+test protects the layout.
+
+## Live tmux verification
+
+The current debug binary was launched in tmux at 72 by 24 cells with an isolated
+`BIOROUTER_PATH_ROOT` and a local OpenAI-compatible streaming server. The fake key
+and loopback endpoint prevented access to real credentials, sessions, or provider
+traffic.
+
+| Scenario | Result |
+| --- | --- |
+| Startup and alternate-screen entry | Header, transcript, status, composer, and hints rendered without panic. |
+| Slash-command completion | `/help` completed and executed; the UI remained responsive. |
+| Streaming response | Partial text appeared before the completed assistant response. |
+| Request shape | One `gpt-4.1` request reached `/v1/chat/completions`, included four tools, and omitted `reasoning_effort`. |
+| Controlled 401 | Exactly one request was issued; the failure remained inline and the composer stayed usable. |
+| Post-error command | `/help` worked after the failed turn, confirming the input loop continued. |
+| Narrow layout | Counts, context meter, and complete compact hint rendered without overlap. |
+| Exit | Ctrl-D returned exit status 0 and restored the shell, alternate screen, and terminal input mode. |
+
+## Automated verification
+
+- `cargo test -p biorouter-cli`: all 192 tests passed.
+- `cargo test -p biorouter --lib`: all 1,396 tests passed.
+- The CLI suite covers TUI rendering, resize-sensitive layout, streaming previews,
+  completion, input/history, queued messages, tool-result collapse, selection,
+  paste handling, markdown, and permission dialogs.
+- `cargo fmt --check`, `git diff --check`, and the complete
+  `scripts/clippy-lint.sh` workflow passed, including baseline-rule and banned-TLS
+  checks.
