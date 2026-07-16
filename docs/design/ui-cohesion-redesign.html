@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BioRouter · UI Cohesion Redesign</title>
+<style>*{margin:0;padding:0}img,svg{display:block;max-width:100%}</style>
+</head>
+<body>
+<style>
+  /* ============================================================
+     BioRouter · UI Cohesion Redesign — inspection sketch
+     Palette + radii + type pulled from design.md (Parchment theme,
+     signed off 2026-07-09) so this can be replicated 1:1 in-app.
+     ============================================================ */
+
+  :root {
+    /* --- Parchment · light (from design.md §3.1) --- */
+    --app:            #ffffff;
+    --card:           #ffffff;
+    --ground:         #faf8f3;   /* --background-muted : chat/page ground */
+    --medium:         #f4f0e6;   /* --background-medium : user bubble, hover, inline code */
+    --strong:         #e8e1d2;   /* --background-strong */
+    --focus-fill:     #e4dcc9;
+
+    --sidebar:        #f3ede1;
+    --sidebar-hover:  #ece4d4;
+    --sidebar-active: #e4d9c3;
+    --sidebar-border: #e9e1d0;
+
+    --accent-bar:     #cf6d47;   /* coral-500 : rails / dots — the ONLY coral in the rail */
+    --accent-fill:    #b85a32;   /* coral-600 : CTA fill (AA-safe on white) */
+    --on-accent:      #ffffff;
+
+    --text:           #2a2520;
+    --muted:          #635c54;
+    --subtle:         #6e6760;
+
+    --border:         #e8e1d2;   /* --border-subtle : the one hairline */
+    --border-strong:  #d4cab6;
+
+    --ok:             #1f7a3d;
+    --info:           #1e5fbf;
+    --danger:         #b3261e;
+
+    /* syntax (design.md §5.1, light on #faf8f3) */
+    --sx-plain: #2a2520; --sx-comment: #6f6659; --sx-kw: #a94f2a;
+    --sx-str: #22784f; --sx-num: #8a5a00; --sx-fn: #255fb5;
+    --sx-type: #7847b8; --sx-op: #6e6760;
+
+    /* geometry */
+    --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-full: 9999px;
+    --shadow-composer: 0 2px 6px -1px rgba(32,25,15,.09), 0 1px 2px rgba(32,25,15,.05);
+    --shadow-popover:  0 8px 24px rgba(32,25,15,.10), 0 0 1px rgba(32,25,15,.14);
+    --shadow-window:   0 30px 70px -30px rgba(32,25,15,.35), 0 8px 24px -18px rgba(32,25,15,.22);
+
+    /* the page's own (studio) chrome — warm, editorial, distinct from the app */
+    --page-bg:   #ede6d8;
+    --page-bg2:  #e4dccb;
+    --page-ink:  #302a22;
+    --page-mut:  #6a6152;
+    --page-line: #d3c8b3;
+    --page-card: #f6f1e7;
+
+    --ease: cubic-bezier(.2,0,0,1);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --app:#0d0a06; --card:#1e1810; --ground:#14110b; --medium:#2a2318; --strong:#362d1f;
+      --focus-fill:#4d4430;
+      --sidebar:#100d08; --sidebar-hover:#1c160d; --sidebar-active:#28200f; --sidebar-border:#2a2318;
+      --accent-bar:#e8895f; --accent-fill:#e8895f; --on-accent:#16120c;
+      --text:#f4f0e6; --muted:#b0a892; --subtle:#9c937b;
+      --border:#282217; --border-strong:#403928;
+      --ok:#7ac87c; --info:#7aabf5; --danger:#f07575;
+      --sx-plain:#e8e1d2; --sx-comment:#8d8266; --sx-kw:#e8895f; --sx-str:#7fbf6a;
+      --sx-num:#d9a441; --sx-fn:#8fb8e8; --sx-type:#b98ad6; --sx-op:#b0a892;
+      --shadow-composer: 0 2px 8px -1px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4);
+      --shadow-popover:  0 8px 24px rgba(0,0,0,.55), 0 0 1px rgba(255,255,255,.06);
+      --shadow-window:   0 30px 70px -28px rgba(0,0,0,.7);
+      --page-bg:#17130d; --page-bg2:#211a11; --page-ink:#efe8da; --page-mut:#a99e88;
+      --page-line:#332a1c; --page-card:#1d1710;
+    }
+  }
+  /* explicit toggle wins in both directions */
+  :root[data-theme="light"] { --app:#ffffff;--card:#ffffff;--ground:#faf8f3;--medium:#f4f0e6;--strong:#e8e1d2;--focus-fill:#e4dcc9;--sidebar:#f3ede1;--sidebar-hover:#ece4d4;--sidebar-active:#e4d9c3;--sidebar-border:#e9e1d0;--accent-bar:#cf6d47;--accent-fill:#b85a32;--on-accent:#fff;--text:#2a2520;--muted:#635c54;--subtle:#6e6760;--border:#e8e1d2;--border-strong:#d4cab6;--ok:#1f7a3d;--info:#1e5fbf;--danger:#b3261e;--sx-plain:#2a2520;--sx-comment:#6f6659;--sx-kw:#a94f2a;--sx-str:#22784f;--sx-num:#8a5a00;--sx-fn:#255fb5;--sx-type:#7847b8;--sx-op:#6e6760;--shadow-composer:0 2px 6px -1px rgba(32,25,15,.09),0 1px 2px rgba(32,25,15,.05);--shadow-popover:0 8px 24px rgba(32,25,15,.10),0 0 1px rgba(32,25,15,.14);--shadow-window:0 30px 70px -30px rgba(32,25,15,.35),0 8px 24px -18px rgba(32,25,15,.22);--page-bg:#ede6d8;--page-bg2:#e4dccb;--page-ink:#302a22;--page-mut:#6a6152;--page-line:#d3c8b3;--page-card:#f6f1e7; }
+  :root[data-theme="dark"]  { --app:#0d0a06;--card:#1e1810;--ground:#14110b;--medium:#2a2318;--strong:#362d1f;--focus-fill:#4d4430;--sidebar:#100d08;--sidebar-hover:#1c160d;--sidebar-active:#28200f;--sidebar-border:#2a2318;--accent-bar:#e8895f;--accent-fill:#e8895f;--on-accent:#16120c;--text:#f4f0e6;--muted:#b0a892;--subtle:#9c937b;--border:#282217;--border-strong:#403928;--ok:#7ac87c;--info:#7aabf5;--danger:#f07575;--sx-plain:#e8e1d2;--sx-comment:#8d8266;--sx-kw:#e8895f;--sx-str:#7fbf6a;--sx-num:#d9a441;--sx-fn:#8fb8e8;--sx-type:#b98ad6;--sx-op:#b0a892;--shadow-composer:0 2px 8px -1px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);--shadow-popover:0 8px 24px rgba(0,0,0,.55),0 0 1px rgba(255,255,255,.06);--shadow-window:0 30px 70px -28px rgba(0,0,0,.7);--page-bg:#17130d;--page-bg2:#211a11;--page-ink:#efe8da;--page-mut:#a99e88;--page-line:#332a1c;--page-card:#1d1710; }
+
+  * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background:
+      radial-gradient(120% 90% at 85% -10%, var(--page-bg2), transparent 60%),
+      var(--page-bg);
+    color: var(--page-ink);
+    line-height: 1.5;
+    transition: background .35s var(--ease), color .35s var(--ease);
+  }
+  .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 40px 32px 72px; }
+
+  /* ---------- studio masthead ---------- */
+  .mast { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px 32px; margin-bottom: 24px; }
+  .mast__id { flex: 1 1 420px; min-width: 300px; }
+  .kicker {
+    font-size: 11px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--page-mut); margin: 0 0 10px; display: flex; align-items: center; gap: 10px;
+  }
+  .kicker::before { content:""; width: 26px; height: 2px; background: var(--accent-bar); border-radius: 2px; }
+  .mast h1 {
+    font-size: clamp(28px, 4vw, 44px); line-height: 1.04; margin: 0; font-weight: 620;
+    letter-spacing: -.02em; text-wrap: balance; color: var(--page-ink);
+  }
+  .mast h1 em { font-style: normal; color: var(--accent-fill); }
+  .mast p.lede { margin: 12px 0 0; max-width: 60ch; color: var(--page-mut); font-size: 15px; }
+
+  /* ---------- control bar ---------- */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .seg {
+    display: inline-flex; background: var(--page-card); border: 1px solid var(--page-line);
+    border-radius: var(--r-full); padding: 3px; gap: 2px;
+  }
+  .seg button {
+    font: inherit; font-size: 13px; font-weight: 550; border: 0; background: transparent;
+    color: var(--page-mut); padding: 7px 15px; border-radius: var(--r-full); cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; transition: all .18s var(--ease); white-space: nowrap;
+  }
+  .seg button:hover { color: var(--page-ink); }
+  .seg button[aria-pressed="true"] { background: var(--accent-fill); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  :root[data-theme="dark"] .seg button[aria-pressed="true"] { color: var(--on-accent); }
+  .seg.solo button[aria-pressed="true"] { background: var(--page-ink); color: var(--page-bg); }
+  .seg .lbl { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--page-mut); padding: 0 10px 0 12px; align-self: center; font-weight: 600; }
+
+  /* =====================================================
+     THE APP WINDOW
+     ===================================================== */
+  .frame {
+    margin-top: 26px; border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--page-line); box-shadow: var(--shadow-window);
+    background: var(--app);
+  }
+  .titlebar {
+    height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    background: var(--sidebar); border-bottom: 1px solid var(--sidebar-border);
+  }
+  .tl { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); }
+  .titlebar .tl:nth-child(1){ background:#e0725d; } .titlebar .tl:nth-child(2){ background:#e6b04a; } .titlebar .tl:nth-child(3){ background:#7fb46b; }
+  .titlebar .caption { margin-left: 10px; font-size: 12px; color: var(--muted); }
+
+  .app {
+    display: grid; grid-template-columns: 240px minmax(0,1fr) 400px;
+    height: 748px; background: var(--ground);
+  }
+
+  /* ============ SIDEBAR ============ */
+  .side {
+    background: var(--sidebar); border-right: 1px solid var(--sidebar-border);
+    display: flex; flex-direction: column; min-height: 0; color: var(--text);
+    transition: background .35s var(--ease);
+  }
+
+  /* — brand band — */
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    height: 52px; padding: 0 16px; flex-shrink: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .brand__mark {
+    width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
+    display: grid; place-items: center; color: #fff;
+    background: linear-gradient(150deg, var(--accent-bar), var(--accent-fill));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+  }
+  .brand__mark svg { width: 13px; height: 13px; }
+  .brand__word { font-size: 14px; font-weight: 600; letter-spacing: -.01em; line-height: 1; }
+  .brand__env { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-left: auto; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+
+  .side__scroll { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+  .grouplabel {
+    font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--subtle); padding: 0 8px; height: 26px; display: flex; align-items: center;
+    justify-content: space-between;
+  }
+  .grouplabel a { color: var(--subtle); text-decoration: none; font-size: 11px; letter-spacing: .02em; text-transform: none; font-weight: 500; }
+  .grouplabel a:hover { color: var(--text); }
+
+  .navgroup { padding: 10px 10px 4px; }
+  .menuwrap .grouplabel { padding-left: 14px; }
+
+  .navrow {
+    position: relative; display: flex; align-items: center; gap: 10px;
+    height: 32px; padding: 0 12px; border-radius: var(--r-md);
+    color: var(--muted); font-size: 14px; line-height: 20px; cursor: pointer;
+    transition: background .12s var(--ease), color .12s var(--ease); text-decoration: none;
+  }
+  .navrow svg { width: 16px; height: 16px; flex-shrink: 0; stroke-width: 1.5; }
+  .navrow::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+    border-radius: 2px; background: transparent; transition: background .12s var(--ease);
+  }
+  .navrow:hover { background: var(--sidebar-hover); color: var(--text); }
+  .navrow.active { background: var(--sidebar-active); color: var(--text); font-weight: 500; }
+  .navrow.active::before { background: var(--accent-bar); }
+  .navrow.active svg { color: var(--text); }
+
+  /* — the zone divider between MENU and RECENTS — */
+  .zonediv { height: 1px; background: var(--sidebar-border); margin: 8px 14px; flex-shrink: 0; }
+
+  /* — RECENTS well — */
+  .recents { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; padding: 4px 10px 0; }
+  .recents .grouplabel { padding-left: 4px; padding-right: 4px; }
+  .recwell {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    border-radius: var(--r-lg) var(--r-lg) 0 0; padding: 4px; margin-top: 2px;
+    /* one calm step deeper than the rail — the same two-tone device the
+       sidebar uses against the canvas (design.md §3.1), not a card. */
+    background: var(--rec-well-bg, color-mix(in srgb, var(--sidebar-border) 42%, transparent));
+    scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+  }
+  .recwell::-webkit-scrollbar { width: 10px; }
+  .recwell::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .datelabel {
+    font-size: 12px; font-weight: 500; color: var(--subtle); padding: 0 8px;
+    height: 24px; display: flex; align-items: center; margin-top: 6px;
+  }
+  .recgroup:first-child .datelabel { margin-top: 0; }
+
+  .recrow {
+    position: relative; display: flex; align-items: center; gap: 9px;
+    height: 32px; padding: 0 10px; border-radius: var(--r-md);
+    color: var(--muted); font-size: 14px; line-height: 20px; cursor: pointer;
+    transition: background .12s var(--ease), color .12s var(--ease); text-decoration: none;
+  }
+  .recrow::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+    border-radius: 2px; background: transparent; transition: background .12s var(--ease);
+  }
+  .recrow:hover { background: var(--sidebar-hover); color: var(--text); }
+  .recrow.active { background: var(--sidebar-active); color: var(--text); font-weight: 500; }
+  .recrow.active::before { background: var(--accent-bar); }
+  .recrow .glyph { width: 14px; height: 14px; flex-shrink: 0; color: var(--subtle); stroke-width: 1.5; opacity: .85; }
+  .recrow.active .glyph { color: var(--accent-bar); opacity: 1; }
+  .recrow .title { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recrow .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-bar); flex-shrink: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-bar) 22%, transparent); }
+  /* redesigned: "See all" lives on the section label, so the foot row retires */
+  .viewall { display: none; }
+
+  .side__foot { flex-shrink: 0; border-top: 1px solid var(--sidebar-border); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .updatepill {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: var(--r-md);
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent-fill); border: 1px dashed color-mix(in srgb, var(--accent-fill) 45%, transparent);
+    cursor: pointer;
+  }
+  :root[data-theme="dark"] .updatepill { color: var(--accent-bar); }
+
+  /* ============ CHAT ============ */
+  .chat { display: flex; flex-direction: column; min-width: 0; background: var(--ground); }
+  .panelhead {
+    height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+    padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--ground);
+  }
+  .titlepill { font-size: 14px; font-weight: 500; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
+  .titlepill .dots { color: var(--muted); }
+  .headactions { margin-left: auto; display: flex; gap: 4px; }
+  .iconbtn {
+    width: 32px; height: 32px; border-radius: var(--r-md); border: 0; background: transparent;
+    color: var(--muted); display: grid; place-items: center; cursor: pointer; transition: all .12s var(--ease);
+  }
+  .iconbtn:hover { background: var(--medium); color: var(--text); }
+  .iconbtn svg { width: 16px; height: 16px; stroke-width: 1.5; }
+
+  .transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 24px 8px; }
+  .col { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; }
+
+  .u-turn { display: flex; justify-content: flex-end; margin-top: 4px; }
+  .bubble {
+    max-width: 85%; background: var(--medium); border: 1px solid var(--border);
+    border-radius: var(--r-lg); padding: 10px 16px; font-size: 14px; line-height: 1.5; color: var(--text);
+  }
+  .stamp { text-align: right; font-size: 13px; color: var(--muted); margin: 6px 2px 18px; }
+
+  .toolline {
+    display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px;
+    border-radius: var(--r-md); color: var(--muted); font-size: 14px; transition: background .12s var(--ease);
+  }
+  .toolline:hover { background: var(--ground); }
+  .toolline .st { width: 16px; height: 16px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--ok) 18%, transparent); display: grid; place-items: center; flex-shrink: 0; }
+  .toolline .st svg { width: 11px; height: 11px; color: var(--ok); stroke-width: 2; }
+  .toolline b { color: var(--text); font-weight: 600; }
+  .toolline .chev { margin-left: auto; color: var(--subtle); }
+
+  .a-turn { margin-top: 18px; }
+  .prose { font-size: 14px; line-height: 1.62; color: var(--text); max-width: 68ch; }
+  .prose h3 { font-size: 14px; font-weight: 600; margin: 18px 0 6px; }
+  .prose p { margin: 0 0 12px; }
+  .prose ul { margin: 0 0 12px; padding-left: 18px; }
+  .prose li { margin: 3px 0; }
+  .prose code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em;
+    background: var(--medium); border-radius: var(--r-sm); padding: 1px 5px; color: var(--text);
+  }
+  .prose .em { font-weight: 600; }
+  .a-actions { display: flex; gap: 18px; margin-top: 14px; color: var(--muted); font-size: 14px; }
+  .a-actions span { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .a-actions span:hover { color: var(--text); }
+  .a-actions svg { width: 14px; height: 14px; stroke-width: 1.5; }
+
+  .composer-bar { flex-shrink: 0; padding: 8px 24px 22px; background: var(--ground); }
+  .composer {
+    border: 1px solid var(--border); background: var(--card); border-radius: var(--r-xl);
+    box-shadow: var(--shadow-composer); padding: 14px 16px 12px;
+  }
+  .composer .ph { font-size: 14px; color: var(--muted); }
+  .composer .tools { display: flex; align-items: center; gap: 14px; margin-top: 14px; color: var(--subtle); font-size: 13px; }
+  .composer .tools .grp { display: inline-flex; align-items: center; gap: 6px; }
+  .composer .tools svg { width: 15px; height: 15px; stroke-width: 1.5; }
+  .composer .send {
+    margin-left: auto; width: 30px; height: 30px; border-radius: var(--r-md);
+    background: var(--accent-fill); color: var(--on-accent); display: grid; place-items: center; border: 0; cursor: pointer;
+  }
+  .composer .send svg { width: 15px; height: 15px; }
+
+  /* ============ ARTIFACT PANEL ============ */
+  .arti { display: flex; flex-direction: column; min-width: 0; background: var(--ground); border-left: 1px solid var(--border); }
+  .arti .panelhead { gap: 6px; padding: 0 10px; }
+  .tabs { display: flex; gap: 6px; flex: 1; min-width: 0; }
+  .tab {
+    display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
+    border-radius: var(--tab-radius, 12px); border: 1px solid transparent; min-width: 0; max-width: 200px; flex: 1;
+    font-size: var(--tab-fs, 13px); color: var(--muted); cursor: pointer; transition: all .12s var(--ease);
+  }
+  .tab.active { border-color: var(--border); background: var(--card); color: var(--text); box-shadow: var(--tab-shadow, none); }
+  .tab:not(.active):hover { background: var(--medium); color: var(--text); }
+  .tab svg { width: 14px; height: 14px; flex-shrink: 0; stroke-width: 1.5; }
+  .tab .tt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+  .tab .x { margin-left: auto; width: 18px; height: 18px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--subtle); }
+  .tab .x:hover { background: var(--strong); }
+
+  .artibody { flex: 1 1 auto; min-height: 0; padding: 12px; display: flex; }
+  .preview {
+    flex: 1; min-height: 0; display: flex; flex-direction: column;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--card-radius, 12px);
+    box-shadow: var(--shadow-popover); overflow: hidden;
+  }
+  .preview__head {
+    height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+    padding: 0 12px; border-bottom: 1px solid var(--border);
+  }
+  .preview__lang { font-size: var(--code-lang-fs, 11px); font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--subtle); }
+  .preview__meta { font-size: var(--code-meta-fs, 11px); color: var(--muted); }
+  .preview__toggle { margin-left: auto; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); padding: 2px; font-size: 11px; }
+  .preview__toggle span { padding: 3px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; }
+  .preview__toggle span.on { background: var(--medium); color: var(--text); font-weight: 500; }
+
+  .code { flex: 1; overflow: auto; padding: 12px 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; line-height: 20px; }
+  .code .ln { display: flex; }
+  .code .g { width: 40px; flex-shrink: 0; text-align: right; padding-right: 14px; color: var(--subtle); opacity: .6; user-select: none; }
+  .code .c { white-space: pre; padding-right: 16px; }
+  .kw{color:var(--sx-kw);} .st2{color:var(--sx-str);} .cm{color:var(--sx-comment);font-style:italic;}
+  .fn{color:var(--sx-fn);} .nu{color:var(--sx-num);} .ty{color:var(--sx-type);} .op{color:var(--sx-op);} .pl{color:var(--sx-plain);}
+
+  /* =====================================================
+     CURRENT (before) overrides — the quirks seen in-app
+     ===================================================== */
+  :root[data-mode="current"] .brand {
+    height: auto; border-bottom: none; padding: 40px 20px 0;
+  }
+  :root[data-mode="current"] .brand__mark { display: none; }
+  :root[data-mode="current"] .brand__word { line-height: 1; }
+  :root[data-mode="current"] .menuwrap > .grouplabel { display: none; }      /* app shows no MENU label */
+  :root[data-mode="current"] .navgroup { padding-top: 6px; }
+  :root[data-mode="current"] .zonediv { width: 32px; margin: 8px 0 8px 20px; } /* the tiny 32px hairline */
+  :root[data-mode="current"] .recwell { --rec-well-bg: transparent; border-radius: 0; padding: 0 0 0 0; }
+  :root[data-mode="current"] .recents { padding: 4px 8px 0; }
+  :root[data-mode="current"] .recrow { padding: 0 12px; gap: 0; }
+  :root[data-mode="current"] .recrow .glyph { display: none; }               /* app: no leading glyph */
+  :root[data-mode="current"] .datelabel { font-size: 12px; height: 20px; margin-top: 2px; }
+  :root[data-mode="current"] .recents > .grouplabel { padding-left: 14px; }
+  :root[data-mode="current"] .recents > .grouplabel a { display: none; }  /* today: "View all" is a row at the list foot */
+  :root[data-mode="current"] .viewall { display: flex; gap: 9px; }
+  :root[data-mode="current"] .viewall .glyph { display: block; }
+  /* artifact quirks: 8px tabs w/ shadow, one-off label sizes */
+  :root[data-mode="current"] .arti { --tab-radius: 8px; --tab-fs: 12px; --tab-shadow: 0 1px 2px rgba(32,25,15,.12); --card-radius: 8px; --code-lang-fs: 10.5px; --code-meta-fs: 9.5px; }
+
+  /* change-highlight outlines */
+  .halo { position: relative; }
+  :root[data-hl="on"] [data-change] { outline: 1.5px dashed color-mix(in srgb, var(--accent-bar) 70%, transparent); outline-offset: 2px; border-radius: 6px; }
+  :root[data-hl="on"] [data-change]::after {
+    content: attr(data-change); position: absolute; top: -9px; left: 8px; z-index: 5;
+    font-size: 10px; font-weight: 700; letter-spacing: .04em; background: var(--accent-fill); color: #fff;
+    padding: 1px 6px; border-radius: 9999px; line-height: 1.5;
+  }
+  :root[data-theme="dark"][data-hl="on"] [data-change]::after { color: var(--on-accent); }
+  :root:not([data-hl="on"]) [data-change]::after { display: none; }
+  :root[data-mode="current"][data-hl="on"] [data-change]::after { content: attr(data-change) " · now"; background: var(--page-mut); }
+
+  .modenote {
+    margin-top: 14px; font-size: 13px; color: var(--page-mut); display: flex; gap: 8px; align-items: center; min-height: 20px;
+  }
+  .modenote b { color: var(--page-ink); font-weight: 600; }
+
+  /* =====================================================
+     CHANGE LEGEND
+     ===================================================== */
+  .legend { margin-top: 44px; }
+  .legend h2 { font-size: 13px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--page-mut); margin: 0 0 4px; }
+  .legend .sub { margin: 0 0 22px; color: var(--page-mut); font-size: 14px; max-width: 64ch; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .cardx {
+    background: var(--page-card); border: 1px solid var(--page-line); border-radius: 14px; padding: 18px 18px 16px;
+  }
+  .cardx .tag { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 7px; background: var(--accent-fill); color: #fff; font-size: 12px; font-weight: 700; margin-bottom: 12px; }
+  :root[data-theme="dark"] .cardx .tag { color: var(--on-accent); }
+  .cardx h3 { margin: 0 0 8px; font-size: 15.5px; font-weight: 600; color: var(--page-ink); letter-spacing: -.005em; }
+  .cardx p { margin: 0 0 10px; font-size: 13.5px; color: var(--page-mut); line-height: 1.55; }
+  .cardx .ba { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+  .cardx .ba .row { display: flex; gap: 8px; align-items: baseline; }
+  .cardx .ba .k { flex-shrink: 0; width: 52px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px; padding-top: 1px; }
+  .cardx .ba .before .k { color: var(--page-mut); }
+  .cardx .ba .after .k { color: var(--accent-fill); }
+  :root[data-theme="dark"] .cardx .ba .after .k { color: var(--accent-bar); }
+  .cardx .ba .v { color: var(--page-ink); }
+  .cardx .ref { margin-top: 12px; font-size: 11px; color: var(--page-mut); font-family: ui-monospace, Menlo, monospace; }
+
+  .foot { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--page-line); font-size: 13px; color: var(--page-mut); max-width: 76ch; }
+  .foot b { color: var(--page-ink); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+  @media (max-width: 1120px) {
+    .app { grid-template-columns: 220px minmax(0,1fr); }
+    .arti { display: none; }
+  }
+  @media (max-width: 780px) {
+    .app { grid-template-columns: minmax(0,1fr); height: 620px; }
+    .side { display: none; }
+    .wrap { padding: 28px 16px 56px; }
+  }
+
+  /* load-in */
+  .frame, .legend { animation: rise .5s var(--ease) both; }
+  .legend { animation-delay: .08s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="mast__id">
+      <p class="kicker">BioRouter · Design studio</p>
+      <h1>Making the shell feel like <em>one instrument</em>.</h1>
+      <p class="lede">A cohesion pass on the sidebar, chat, and preview panel — same Parchment palette and tokens from <span class="mono" style="font-size:13px">design.md</span>, just organised so the three panels read as a single, calm surface. Toggle <b>Current&nbsp;⇄&nbsp;Redesigned</b> to see exactly what moves.</p>
+    </div>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Theme">
+        <span class="lbl">Theme</span>
+        <button id="t-light" aria-pressed="false">☀ Light</button>
+        <button id="t-dark" aria-pressed="false">☾ Dark</button>
+      </div>
+      <div class="seg solo" role="group" aria-label="View">
+        <span class="lbl">View</span>
+        <button id="m-current" aria-pressed="false">Current</button>
+        <button id="m-redesign" aria-pressed="true">Redesigned</button>
+      </div>
+      <div class="seg" role="group" aria-label="Annotate">
+        <button id="hl" aria-pressed="false">◇ Highlight changes</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="frame">
+    <div class="titlebar">
+      <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+      <span class="caption">BioRouter — Multiple sclerosis knowledge graph (branch 1)</span>
+    </div>
+
+    <div class="app">
+
+      <!-- ============ SIDEBAR ============ -->
+      <aside class="side">
+        <div class="brand halo" data-change="A">
+          <span class="brand__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 6H15.6M6 8.4v5.2a4 4 0 0 0 4 4h5.6"/></svg>
+          </span>
+          <span class="brand__word">Biorouter</span>
+          <span class="brand__env" title="dev build"></span>
+        </div>
+
+        <div class="side__scroll">
+          <div class="navgroup menuwrap halo" data-change="B">
+            <div class="grouplabel"><span>Menu</span></div>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg><span>New Session</span></a>
+            <a class="navrow active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 4l9 6.5M5 9.5V20h14V9.5"/></svg><span>Home</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="6" height="6" rx="1.5"/><rect x="15" y="14" width="6" height="6" rx="1.5"/><path d="M9 7h4a2 2 0 0 1 2 2v8"/></svg><span>Workflows</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Scheduler</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 4H6a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2 2 2 0 0 1 0 4H4v2a2 2 0 0 0 2 2h4"/><path d="M14 4h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2 2 2 0 0 0 0 4h2"/></svg><span>Extensions</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg><span>Skills</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="6" cy="12" r="2"/><circle cx="17" cy="6" r="2"/><circle cx="17" cy="18" r="2"/><path d="M8 11l7-4M8 13l7 4"/></svg><span>Knowledge</span></a>
+            <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg><span>Applications</span></a>
+          </div>
+
+          <div class="zonediv halo" data-change="C"></div>
+
+          <div class="recents">
+            <div class="grouplabel"><span>Recents</span><a>See all</a></div>
+            <div class="recwell halo" data-change="C">
+
+              <div class="recgroup">
+                <div class="datelabel">Today</div>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Apple Watch news</span></a>
+                <a class="recrow active" data-change="D"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="6" cy="3" r="0"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Multiple sclerosis knowledge graph (branch 1)</span><span class="live" title="running"></span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">hi 4</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Status check-in</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow plans inquiry</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 1)</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9h16"/></svg><span class="title">app:spec-002-cohort-fu…</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">Tomorrow weather search</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 3)</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="title">Greeting 2 (branch 2)</span></a>
+              </div>
+
+              <div class="recgroup">
+                <div class="datelabel">Jul 14</div>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">UCSF HPC file listing</span></a>
+                <a class="recrow"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="title">CLI session</span></a>
+              </div>
+
+              <a class="recrow viewall"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4M12 8v4l3 2"/></svg><span class="title">View all chat history</span></a>
+            </div>
+          </div>
+        </div>
+
+        <div class="side__foot">
+          <div class="updatepill">↑ Update · CLI 1.85</div>
+          <a class="navrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.3-2.5H9.4L9 6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.3 2.5h4.9l.3-2.5a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5a7 7 0 0 0 .1-1Z"/></svg><span>Settings</span></a>
+        </div>
+      </aside>
+
+      <!-- ============ CHAT ============ -->
+      <main class="chat">
+        <div class="panelhead halo" data-change="F">
+          <span class="titlepill">Multiple sclerosis knowledge graph (branch 1) <span class="dots">···</span></span>
+          <div class="headactions">
+            <button class="iconbtn" title="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 8 4 4-4 4M12 16h8"/></svg></button>
+            <button class="iconbtn" title="Review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
+          </div>
+        </div>
+
+        <div class="transcript">
+          <div class="col">
+            <div class="u-turn">
+              <div class="bubble">Tell me more about multiple sclerosis using the SPOKE Biomedical Knowledge Graph</div>
+            </div>
+            <div class="stamp tnum">07/09/2026 3:10 PM</div>
+
+            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Resolve Entity</b> · 1 result ready</div>
+            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Describe Node</b> · 1 result ready</div>
+            <div class="toolline"><span class="st"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Query SPOKE</b> · 1 result ready<span class="chev">›</span></div>
+
+            <div class="a-turn">
+              <div class="prose">
+                <p>Here's what the SPOKE graph holds for <span class="em">Multiple sclerosis</span> (resolved to the <code>Disease</code> node <code>DOID:2377</code>):</p>
+                <h3>Treatments</h3>
+                <ul>
+                  <li><span class="em">142 compounds</span> connect via <code>TREATS_CtD</code> — established DMTs (Fingolimod, Dimethyl fumarate) alongside immunomodulators and symptomatic-management drugs.</li>
+                  <li>Only <span class="em">1 compound</span> is flagged as a contraindication: <span class="em">L-Ascorbic Acid</span>.</li>
+                </ul>
+                <h3>Epidemiology <code>PREVALENCE_DpL</code></h3>
+                <p>Prevalence estimates link to <span class="em">178 Location</span> nodes, reflecting the documented north–south gradient.</p>
+              </div>
+              <div class="a-actions">
+                <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>Copy</span>
+                <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3v6a3 3 0 0 0 3 3h9"/><path d="m15 9 3 3-3 3"/></svg>Diverge</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-bar">
+          <div class="composer">
+            <div class="ph">⌘↑ / ⌘↓ to navigate messages</div>
+            <div class="tools">
+              <span class="grp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>Users/wanjun/</span>
+              <span class="grp tnum"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 4H6a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2 2 2 0 0 1 0 4H4"/></svg>4</span>
+              <span class="grp tnum"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 9 5-9 5-9-5Z"/></svg>8</span>
+              <span class="grp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3a4 4 0 0 1 4 4 4 4 0 0 1 0 8 4 4 0 0 1-8 0 4 4 0 0 1 0-8 4 4 0 0 1 4-4Z"/></svg>gpt-5.5</span>
+              <span class="grp tnum">$0.00</span>
+              <button class="send" title="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m4 12 16-8-6 16-3-6-7-2Z"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- ============ ARTIFACT PANEL ============ -->
+      <aside class="arti">
+        <div class="panelhead halo" data-change="G">
+          <div class="tabs">
+            <div class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m8 8-4 4 4 4M16 8l4 4-4 4"/></svg><span class="tt">query_spoke.py</span><span class="x">×</span></div>
+            <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2"/></svg><span class="tt">ms_prevalence.html</span><span class="x">×</span></div>
+          </div>
+          <button class="iconbtn" title="Expand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+          <button class="iconbtn" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+
+        <div class="artibody">
+          <div class="preview">
+            <div class="preview__head">
+              <span class="preview__lang">Python</span>
+              <span class="preview__meta tnum">14 lines</span>
+              <span class="preview__toggle"><span>Preview</span><span class="on">Raw</span></span>
+            </div>
+            <div class="code">
+              <div class="ln"><span class="g tnum">1</span><span class="c"><span class="cm"># Query SPOKE for MS drug associations</span></span></div>
+              <div class="ln"><span class="g tnum">2</span><span class="c"><span class="kw">from</span> <span class="pl">spoke</span> <span class="kw">import</span> <span class="ty">Graph</span></span></div>
+              <div class="ln"><span class="g tnum">3</span><span class="c"></span></div>
+              <div class="ln"><span class="g tnum">4</span><span class="c"><span class="pl">g</span> <span class="op">=</span> <span class="ty">Graph</span><span class="op">.</span><span class="fn">connect</span><span class="op">(</span><span class="pl">profile</span><span class="op">=</span><span class="st2">"ucsf"</span><span class="op">)</span></span></div>
+              <div class="ln"><span class="g tnum">5</span><span class="c"></span></div>
+              <div class="ln"><span class="g tnum">6</span><span class="c"><span class="pl">ms</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">resolve</span><span class="op">(</span><span class="st2">"Multiple sclerosis"</span><span class="op">,</span> <span class="pl">label</span><span class="op">=</span><span class="st2">"Disease"</span><span class="op">)</span></span></div>
+              <div class="ln"><span class="g tnum">7</span><span class="c"><span class="pl">edges</span> <span class="op">=</span> <span class="pl">g</span><span class="op">.</span><span class="fn">query</span><span class="op">(</span></span></div>
+              <div class="ln"><span class="g tnum">8</span><span class="c">    <span class="pl">source</span><span class="op">=</span><span class="pl">ms</span><span class="op">,</span></span></div>
+              <div class="ln"><span class="g tnum">9</span><span class="c">    <span class="pl">predicate</span><span class="op">=</span><span class="st2">"TREATS_CtD"</span><span class="op">,</span></span></div>
+              <div class="ln"><span class="g tnum">10</span><span class="c">    <span class="pl">limit</span><span class="op">=</span><span class="nu">200</span><span class="op">,</span></span></div>
+              <div class="ln"><span class="g tnum">11</span><span class="c"><span class="op">)</span></span></div>
+              <div class="ln"><span class="g tnum">12</span><span class="c"></span></div>
+              <div class="ln"><span class="g tnum">13</span><span class="c"><span class="pl">drugs</span> <span class="op">=</span> <span class="op">[</span><span class="pl">e</span><span class="op">.</span><span class="pl">target</span><span class="op">.</span><span class="pl">name</span> <span class="kw">for</span> <span class="pl">e</span> <span class="kw">in</span> <span class="pl">edges</span><span class="op">]</span></span></div>
+              <div class="ln"><span class="g tnum">14</span><span class="c"><span class="fn">print</span><span class="op">(</span><span class="kw">f</span><span class="st2">"{len(drugs)} compounds treat MS"</span><span class="op">)</span></span></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+
+  <p class="modenote" id="modenote"></p>
+
+  <!-- ============ CHANGE LEGEND ============ -->
+  <section class="legend">
+    <h2>What changed &amp; why</h2>
+    <p class="sub">Seven cohesion fixes. Every value is drawn from the existing Parchment tokens — nothing new is invented, it's re-organised so the panels align. Refs point at the signed-off system doc.</p>
+    <div class="cards">
+
+      <div class="cardx">
+        <span class="tag">A</span>
+        <h3>A brand band that anchors the top</h3>
+        <p>The wordmark floated 40px down with no connective tissue to the menu. It now sits in a 52px band with a bottom hairline — the <em>same height</em> as the chat and preview headers, so all three panel tops align across one line.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">bare text, 40px top gap, no mark</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">logo lockup + wordmark, 52px band, hairline</span></div>
+        </div>
+        <div class="ref">design.md §4.11 · §3.3 page-shell</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">B</span>
+        <h3>The menu is a labelled zone</h3>
+        <p>The nine destinations now sit under a quiet <span class="mono" style="font-size:12px">MENU</span> caption, so the built-in app functions read as a group distinct from your conversations below.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">unlabelled stack, blends into history</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">"Menu" section label, 11px caps</span></div>
+        </div>
+        <div class="ref">design.md §4.11 section-label</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">C</span>
+        <h3>Menu and history are visibly separate</h3>
+        <p>A 32px-wide hairline was the only divider between built-ins and chat history. It becomes a full-width rule, and the Recents list gets its own inset scroll-well — a clear boundary between "what the app does" and "what I've done".</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">tiny 32px hairline, flush list</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">full-width rule + inset Recents well</span></div>
+        </div>
+        <div class="ref">design.md P2 rows-not-cards</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">D</span>
+        <h3>History rows carry a glyph</h3>
+        <p>Chat rows were a wall of identical text. A subtle leading glyph now distinguishes them from menu items — a speech mark for chats, a branch mark for diverged sessions, an app tile for apps. Live sessions keep the pulsing coral dot.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">title only, no glyph (§4.11 as-built)</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">14px conversation / branch / app glyph</span></div>
+        </div>
+        <div class="ref">your ask · revisits §4.11 "no leading icon"</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">E</span>
+        <h3>One type rhythm, sidebar ↔ chat</h3>
+        <p>Both already use the system stack, so the mismatch was <em>rhythm</em>, not family: the wordmark was <span class="mono" style="font-size:12px">leading-none</span> while rows breathed. Everything now shares one scale — 14/20 rows, 11px caps labels, 12px date labels — so the rail and the transcript feel set by the same hand.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">mixed leading &amp; weights</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">shared 14/20 + 11px caps scale</span></div>
+        </div>
+        <div class="ref">design.md §3.2 type scale · D-06</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">F</span>
+        <h3>Three headers, one bar</h3>
+        <p>Sidebar band, chat header and preview header are now all 52px on the same ground with the same single hairline — a continuous top edge across the whole window instead of three headers at slightly different weights.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">headers match; sidebar top doesn't</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">all three top edges aligned</span></div>
+        </div>
+        <div class="ref">design.md §4.12 · P1 hairline</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">G</span>
+        <h3>The preview panel joins the system</h3>
+        <p>Preview tabs were 8px-radius with a drop shadow and a scatter of one-off label sizes (10.5 / 9.5 / 11px). They now match chat: 12px radii, flat tabs, and a single 11px caps label token — so the preview looks like part of the app, not a separate widget.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">8px tabs + shadow, 10.5/9.5px labels</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">12px radii, flat, one 11px caps label</span></div>
+        </div>
+        <div class="ref">design.md §3.4 radius · §5.1 code</div>
+      </div>
+
+    </div>
+
+    <p class="foot"><b>How to read this.</b> This is a faithful static sketch built on the real tokens, meant to be replicated 1:1 in <span class="mono" style="font-size:12px">AppSidebar.tsx</span>, <span class="mono" style="font-size:12px">BaseChat.tsx</span> and <span class="mono" style="font-size:12px">ArtifactViewer.tsx</span>. Nothing is committed to the app yet. Tell me which of A–G to keep, drop, or tweak — the leading glyph (D) in particular deliberately overrides the current "no leading icon" rule, so it's the first call I'd want from you.</p>
+  </section>
+
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+
+    function initTheme() {
+      var saved = null;
+      try { saved = localStorage.getItem('br-sketch-theme'); } catch (e) {}
+      var dark = saved ? saved === 'dark'
+        : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setTheme(dark ? 'dark' : 'light');
+    }
+    function setTheme(mode) {
+      root.setAttribute('data-theme', mode);
+      byId('t-light').setAttribute('aria-pressed', String(mode === 'light'));
+      byId('t-dark').setAttribute('aria-pressed', String(mode === 'dark'));
+      try { localStorage.setItem('br-sketch-theme', mode); } catch (e) {}
+    }
+    function setMode(mode) {
+      root.setAttribute('data-mode', mode);
+      byId('m-current').setAttribute('aria-pressed', String(mode === 'current'));
+      byId('m-redesign').setAttribute('aria-pressed', String(mode === 'redesign'));
+      byId('modenote').innerHTML = mode === 'current'
+        ? '● Showing the shell <b>as it ships today</b> — floating wordmark, hairline sliver between menu and history, no chat glyphs, 8px preview tabs.'
+        : '● Showing the <b>redesigned</b> shell — aligned 52px headers, labelled zones, chat glyphs, unified radii. Toggle Current to compare.';
+    }
+    function byId(id){ return document.getElementById(id); }
+
+    byId('t-light').addEventListener('click', function(){ setTheme('light'); });
+    byId('t-dark').addEventListener('click', function(){ setTheme('dark'); });
+    byId('m-current').addEventListener('click', function(){ setMode('current'); });
+    byId('m-redesign').addEventListener('click', function(){ setMode('redesign'); });
+    byId('hl').addEventListener('click', function(){
+      var on = root.getAttribute('data-hl') === 'on';
+      root.setAttribute('data-hl', on ? 'off' : 'on');
+      this.setAttribute('aria-pressed', String(!on));
+    });
+
+    initTheme();
+    setMode('redesign');
+    root.setAttribute('data-hl', 'off');
+  })();
+</script>
+</body>
+</html>
