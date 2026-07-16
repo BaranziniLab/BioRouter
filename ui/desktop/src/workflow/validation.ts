@@ -152,6 +152,6 @@ export function getWorkflowJsonSchema() {
     title: resolvedSchema.title || 'Workflow',
     description:
       resolvedSchema.description ||
-      'A Workflow represents a personalized, user-generated agent configuration that defines specific behaviors and capabilities within the BioRouter system.',
+      'A Workflow represents a personalized, user-generated agent configuration that defines specific behaviors and capabilities within the Biorouter system.',
   };
 }

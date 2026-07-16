@@ -711,7 +711,7 @@ export function WorkflowFormFields({
               {onExtensionsChange && (
                 <WorkflowResourcePicker
                   label="Extensions"
-                  description="Choose which extensions are active for this workflow. Empty means BioRouter uses the global default."
+                  description="Choose which extensions are active for this workflow. Empty means Biorouter uses the global default."
                   items={availableExtensions.map((ext) => ({
                     id: ext.name,
                     label: ext.name,

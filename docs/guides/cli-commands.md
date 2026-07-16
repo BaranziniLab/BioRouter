@@ -394,7 +394,7 @@ biorouter workflow help
 Automate workflows by running them on a [schedule](/docs/guides/workflows/session-workflows.md#schedule-workflow).
 
 **Commands:**
-- `add <OPTIONS>`: Create a new scheduled job. Copies the current version of the workflow to the `scheduled_workflows` directory in BioRouter's data directory
+- `add <OPTIONS>`: Create a new scheduled job. Copies the current version of the workflow to the `scheduled_workflows` directory in Biorouter's data directory
 - `list`: View all scheduled jobs
 - `remove`: Delete a scheduled job
 - `sessions`: List sessions created by a scheduled workflow

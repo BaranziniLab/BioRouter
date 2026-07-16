@@ -1,12 +1,12 @@
-# UCSF BioRouter — Data Privacy and Patient Data Guidelines
+# UCSF Biorouter — Data Privacy and Patient Data Guidelines
 
-This document outlines the data privacy considerations for using UCSF BioRouter, with specific guidance on handling patient data, clinical information, and other sensitive research data.
+This document outlines the data privacy considerations for using UCSF Biorouter, with specific guidance on handling patient data, clinical information, and other sensitive research data.
 
 ---
 
 ## Overview
 
-BioRouter routes your inputs and conversation context to an LLM provider for processing. The data privacy properties of any given session depend entirely on **which provider you are using**. Different providers have fundamentally different data handling policies:
+Biorouter routes your inputs and conversation context to an LLM provider for processing. The data privacy properties of any given session depend entirely on **which provider you are using**. Different providers have fundamentally different data handling policies:
 
 - **Commercial cloud APIs** (Anthropic, OpenAI, Google, etc.) — data is processed on the provider's cloud infrastructure. Review the provider's privacy policy and data processing terms before use.
 - **Institution-managed cloud services** (UCSF Azure OpenAI, UCSF Amazon Bedrock) — data is processed within infrastructure governed by UCSF's institutional agreements. These may offer stronger privacy protections than personal API accounts.
@@ -50,20 +50,20 @@ The following providers use personal/commercial API accounts and are generally *
 
 **Always verify with your institution before working with sensitive data.**
 
-Even institution-managed services (UCSF Azure OpenAI, UCSF Amazon Bedrock) may have specific terms of use, approved use cases, and restrictions that change over time. Before using BioRouter with any sensitive data:
+Even institution-managed services (UCSF Azure OpenAI, UCSF Amazon Bedrock) may have specific terms of use, approved use cases, and restrictions that change over time. Before using Biorouter with any sensitive data:
 
 1. Confirm that your intended use case is covered by the institutional data use agreement for that provider.
 2. Check with UCSF IT or your IRB/compliance office if you are unsure.
 3. Ensure that the data classification level of your data is compatible with the service tier you are using.
 
-UCSF policies around data handling, HIPAA compliance, and acceptable use of cloud services evolve. The BioRouter development team cannot advise on the current status of institutional agreements. Always check directly with UCSF compliance and IT.
+UCSF policies around data handling, HIPAA compliance, and acceptable use of cloud services evolve. The Biorouter development team cannot advise on the current status of institutional agreements. Always check directly with UCSF compliance and IT.
 
 ---
 
 ## Best Practices for Data Handling
 
-**De-identify before using BioRouter:**
-- Remove names, dates of birth, medical record numbers, addresses, and other direct identifiers before inputting clinical data into any BioRouter session, unless you have explicit authorization and a compliant data pathway to do so with identifiers present.
+**De-identify before using Biorouter:**
+- Remove names, dates of birth, medical record numbers, addresses, and other direct identifiers before inputting clinical data into any Biorouter session, unless you have explicit authorization and a compliant data pathway to do so with identifiers present.
 
 **Minimize data exposure:**
 - Provide only the data necessary for the task. Avoid pasting entire datasets into the chat when a representative sample or summary would suffice.
@@ -72,10 +72,10 @@ UCSF policies around data handling, HIPAA compliance, and acceptable use of clou
 - For exploratory work, algorithm development, or testing with real data, Ollama with a capable local model is the safest option.
 
 **Review session logs:**
-- BioRouter logs sessions locally. Be aware that session history stored in `~/.config/biorouter/` on your device may contain data you entered. Protect access to your device accordingly.
+- Biorouter logs sessions locally. Be aware that session history stored in `~/.config/biorouter/` on your device may contain data you entered. Protect access to your device accordingly.
 
 **Do not share sessions containing sensitive data:**
-- BioRouter supports sharing sessions and workflows. Do not share sessions that contain patient data or other sensitive information.
+- Biorouter supports sharing sessions and workflows. Do not share sessions that contain patient data or other sensitive information.
 
 ---
 
@@ -94,6 +94,6 @@ UCSF policies around data handling, HIPAA compliance, and acceptable use of clou
 
 ## Contact
 
-UCSF BioRouter is developed by Wanjun Gu (wanjun.gu@ucsf.edu) at the Baranzini Lab (https://baranzinilab.ucsf.edu/) at UCSF, with support from UCSF IT and Information Commons.
+UCSF Biorouter is developed by Wanjun Gu (wanjun.gu@ucsf.edu) at the Baranzini Lab (https://baranzinilab.ucsf.edu/) at UCSF, with support from UCSF IT and Information Commons.
 
 For questions about data governance, HIPAA compliance, and approved data use pathways, contact UCSF IT Security or your departmental compliance officer.

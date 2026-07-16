@@ -11,7 +11,7 @@ description: A brief description of what this skill does and when to use it.
 
 # Instructions
 
-Describe the step-by-step instructions for BioRouter to follow when this skill is activated.
+Describe the step-by-step instructions for Biorouter to follow when this skill is activated.
 
 ## Steps
 
@@ -51,7 +51,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
       await window.electron.ensureDirectory(destFolder);
       const ok = await window.electron.writeFile(`${destFolder}/SKILL.md`, content);
       if (ok) {
-        toastSuccess({ title: parsed.name, msg: 'Skill saved to BioRouter Skills' });
+        toastSuccess({ title: parsed.name, msg: 'Skill saved to Biorouter Skills' });
         onSaved();
         onClose();
       } else {
@@ -81,7 +81,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
           <p className="text-xs text-text-muted">
             Edit the YAML frontmatter (<code>name</code> and <code>description</code> required),
             then write your skill instructions below. A folder named after the skill will be created
-            in BioRouter Skills with a <code>SKILL.md</code> inside.
+            in Biorouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
             className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-sm rounded-lg p-3 resize-none"

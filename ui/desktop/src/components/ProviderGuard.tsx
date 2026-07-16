@@ -150,7 +150,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               <BioRouter className="size-8" />
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-text-default">
-              Welcome to BioRouter
+              Welcome to Biorouter
             </h1>
             <p className="text-sm text-text-muted mt-1.5 leading-relaxed">
               An integrated research environment that connects local, institution-hosted, and

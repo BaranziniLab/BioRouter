@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copy the macOS BioRouter Keychain secret blob into the Linux file-backed
+# Copy the macOS Biorouter Keychain secret blob into the Linux file-backed
 # secret store over SSH. Secret contents are passed on stdin and not printed.
 set -euo pipefail
 
@@ -13,7 +13,7 @@ die() { printf '\033[1;31m[headless-secrets] %s\033[0m\n' "$*" >&2; exit 1; }
 command -v security >/dev/null 2>&1 || die "macOS security CLI is required"
 security find-generic-password -s biorouter -a secrets -w >/dev/null
 
-log "syncing BioRouter secret blob to $REMOTE:$REMOTE_SECRETS"
+log "syncing Biorouter secret blob to $REMOTE:$REMOTE_SECRETS"
 security find-generic-password -s biorouter -a secrets -w | ssh \
   -i "$SSH_KEY" \
   -o BatchMode=yes \

@@ -3,7 +3,7 @@
 //!
 //! Before this module the confirmation card showed the tool's **name** and
 //! nothing else — not the shell command, not the edit. The user was asked
-//! "BioRouter wants to run this tool. Allow?" with no way to tell a `ls` from an
+//! "Biorouter wants to run this tool. Allow?" with no way to tell a `ls` from an
 //! `rm -rf`, which is exactly the pressure that makes people click
 //! "Always Allow" blindly.
 //!

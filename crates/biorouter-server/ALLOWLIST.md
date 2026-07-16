@@ -1,13 +1,13 @@
 IMPORTANT: currently BIOROUTER_ALLOWLIST is used in main.ts in ui/desktop, and not in biorouter-server. The following is for reference in case it is used on the server side for launch time enforcement.
 
-# BioRouter Extension Allowlist
+# Biorouter Extension Allowlist
 
-The allowlist feature provides a security mechanism for controlling which MCP commands can be used by BioRouter. 
-By default, BioRouter will let you run any MCP via any command, which isn't always desired.
+The allowlist feature provides a security mechanism for controlling which MCP commands can be used by Biorouter.
+By default, Biorouter will let you run any MCP via any command, which isn't always desired.
 
 ## How It Works
 
-1. When enabled, BioRouter will only allow execution of commands that match entries in the allowlist
+1. When enabled, Biorouter will only allow execution of commands that match entries in the allowlist
 2. Commands not in the allowlist will be rejected with an error message
 3. The allowlist is fetched from a URL specified by the `BIOROUTER_ALLOWLIST` environment variable and cached while running.
 
@@ -57,4 +57,4 @@ extensions:
     command: uvx mcp_jira
 ```
 
-Note that the command should be the full command to launch the MCP (environment variables are provided for context by BioRouter). Additional arguments will be rejected (to avoid injection attacks)
+Note that the command should be the full command to launch the MCP (environment variables are provided for context by Biorouter). Additional arguments will be rejected (to avoid injection attacks)

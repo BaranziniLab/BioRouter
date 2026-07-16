@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# BioRouter cross-platform release automation.
+# Biorouter cross-platform release automation.
 #
 # Encodes the full release pipeline so a human OR an agent can cut a signed,
 # notarized, multi-platform release reproducibly. Each phase is a separate
@@ -223,20 +223,20 @@ stage_bin() { # <src-dir> <ext>
 # ── mac packaging (sign + notarize, Node 24 via hermit) ───────────────────────
 cmd_mac-arm64() {
   local v="$1"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
-  ls /Volumes/BioRouter* >/dev/null 2>&1 && { umount /Volumes/BioRouter* 2>/dev/null || true; }
+  ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   stage_bin "$ROOT/target/release"
   log "building + notarizing macOS arm64 dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:default )
-  log "arm64 dmg: $DESK/out/make/BioRouter-$v-arm64.dmg"
+  log "arm64 dmg: $DESK/out/make/Biorouter-$v-arm64.dmg"
 }
 
 cmd_mac-intel() {
   local v="$1"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
-  ls /Volumes/BioRouter* >/dev/null 2>&1 && { umount /Volumes/BioRouter* 2>/dev/null || true; }
+  ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   stage_bin "$ROOT/target/x86_64-apple-darwin/release"
   log "building + notarizing macOS Intel dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:intel )
-  log "x64 dmg: $DESK/out/make/BioRouter-$v-x64.dmg"
+  log "x64 dmg: $DESK/out/make/Biorouter-$v-x64.dmg"
 }
 
 # ── windows packaging (host forge, Node 24) ───────────────────────────────────
@@ -248,7 +248,7 @@ cmd_windows() {
   cp -f "$WR/biorouterd.exe" "$WR/biorouter.exe" "$WR"/*.dll "$DESK/src/bin/"
   log "packaging Windows zip"
   ( cd "$DESK" && npm run bundle:windows )
-  log "windows zip: $DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip"
+  log "windows zip: $DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
@@ -260,7 +260,7 @@ cmd_linux() {
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
     node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh
   log "deb: $DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
-  log "rpm: $DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
+  log "rpm: $DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && rm -rf node_modules && npm install' before any further mac build."
 }
 
@@ -292,16 +292,17 @@ cmd_headless-linux() {
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
-  local arm="$DESK/out/make/BioRouter-$v-arm64.dmg"
-  local x64="$DESK/out/make/BioRouter-$v-x64.dmg"
-  local win="$DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip"
+  "$ROOT/scripts/check-brand-consistency.sh"
+  local arm="$DESK/out/make/Biorouter-$v-arm64.dmg"
+  local x64="$DESK/out/make/Biorouter-$v-x64.dmg"
+  local win="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
   local deb="$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
-  local rpm="$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
+  local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
   local headless="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
-  local armzip="$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip"
-  local x64zip="$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip"
+  local armzip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
+  local x64zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm" "$headless"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
@@ -310,16 +311,16 @@ cmd_verify() {
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"
   if [ -f "$yml" ]; then
-    grep -q "BioRouter-darwin-arm64-$v.zip" "$yml" && grep -q "BioRouter-darwin-x64-$v.zip" "$yml" \
+    grep -q "Biorouter-darwin-arm64-$v.zip" "$yml" && grep -q "Biorouter-darwin-x64-$v.zip" "$yml" \
       && log "latest-mac.yml references both arch zips ✓" || { echo "latest-mac.yml missing an arch zip"; ok=0; }
   fi
-  if [ -d "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" ]; then
-    log "arm64 gatekeeper: $(spctl --assess --type execute --verbose "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" 2>&1 | tr '\n' ' ')"
-    xcrun stapler validate "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" >/dev/null 2>&1 && log "arm64 app stapled ✓" || { echo "arm64 NOT stapled"; ok=0; }
+  if [ -d "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" ]; then
+    log "arm64 gatekeeper: $(spctl --assess --type execute --verbose "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" 2>&1 | tr '\n' ' ')"
+    xcrun stapler validate "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" >/dev/null 2>&1 && log "arm64 app stapled ✓" || { echo "arm64 NOT stapled"; ok=0; }
   fi
-  if [ -d "$DESK/out/BioRouter-darwin-x64/BioRouter.app" ]; then
-    file "$DESK/out/BioRouter-darwin-x64/BioRouter.app/Contents/Resources/bin/biorouterd" | grep -q x86_64 && log "intel bundled binary is x86_64 ✓" || { echo "intel binary WRONG ARCH"; ok=0; }
-    xcrun stapler validate "$DESK/out/BioRouter-darwin-x64/BioRouter.app" >/dev/null 2>&1 && log "intel app stapled ✓" || { echo "intel NOT stapled"; ok=0; }
+  if [ -d "$DESK/out/Biorouter-darwin-x64/Biorouter.app" ]; then
+    file "$DESK/out/Biorouter-darwin-x64/Biorouter.app/Contents/Resources/bin/biorouterd" | grep -q x86_64 && log "intel bundled binary is x86_64 ✓" || { echo "intel binary WRONG ARCH"; ok=0; }
+    xcrun stapler validate "$DESK/out/Biorouter-darwin-x64/Biorouter.app" >/dev/null 2>&1 && log "intel app stapled ✓" || { echo "intel NOT stapled"; ok=0; }
   fi
   "$ROOT/scripts/smoke-test-release-artifacts.sh" "$v" || ok=0
   [ "$ok" = 1 ] || die "verification failed"
@@ -336,8 +337,8 @@ ARM64_ZIP_REL="zip/darwin/arm64"
 X64_ZIP_REL="zip/darwin/x64"
 cmd_mac-manifest() {
   local v="$1"; activate_hermit
-  local armzip="$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip"
-  local x64zip="$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip"
+  local armzip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
+  local x64zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   [ -f "$armzip" ] || die "mac arm64 zip missing — run: scripts/release.sh mac-arm64 $v"
   [ -f "$x64zip" ] || die "mac x64 zip missing — run: scripts/release.sh mac-intel $v"
   log "generating latest-mac.yml for v$v"
@@ -350,14 +351,14 @@ cmd_mac-manifest() {
 release_assets() {
   local v="$1"
   printf '%s\n' \
-    "$DESK/out/make/BioRouter-$v-arm64.dmg" \
-    "$DESK/out/make/BioRouter-$v-x64.dmg" \
-    "$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip" \
-    "$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip" \
+    "$DESK/out/make/Biorouter-$v-arm64.dmg" \
+    "$DESK/out/make/Biorouter-$v-x64.dmg" \
+    "$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip" \
+    "$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip" \
     "$DESK/out/make/latest-mac.yml" \
-    "$DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip" \
+    "$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip" \
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
-    "$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm" \
+    "$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm" \
     "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
     "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm" \
     "$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
@@ -374,7 +375,7 @@ cmd_draft() {
     assets+=("$asset")
   done < <(release_assets "$v")
   log "creating draft GitHub release v$v"
-  gh release create "v$v" --draft --target main --title "BioRouter v$v" \
+  gh release create "v$v" --draft --target main --title "Biorouter v$v" \
     --notes-file "$notes" "${assets[@]}"
   log "draft ready: $(gh release view "v$v" --json url --jq .url)"
 }

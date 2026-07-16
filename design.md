@@ -1,4 +1,4 @@
-# BioRouter Design System
+# Biorouter Design System
 
 **Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
@@ -6,7 +6,7 @@
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile: 40px content rows and 32px sidebar navigation/session rows.**
 > The [drift register](#part-7--drift-register) is now the active work backlog.
 
-This is the single source of truth for how BioRouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
+This is the single source of truth for how Biorouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
 
 > **Companion artifact:** [`docs/design-system.html`](docs/design-system.html) — also hosted at
 > **<https://claude.ai/code/artifact/0726814d-a317-4dd2-bf34-a447e5c6ae6d>** — renders every token, element, and state
@@ -36,7 +36,7 @@ Where a genuine aesthetic trade-off exists, you'll see a **`Decision D-nn`** cal
 
 ### The thesis
 
-> **A quiet instrument.** BioRouter is a warm, low-chroma, flat-surface research console — paper-like rather than glassy, dense rather than airy, and confident enough to stay silent. Colour is evidence, not decoration.
+> **A quiet instrument.** Biorouter is a warm, low-chroma, flat-surface research console — paper-like rather than glassy, dense rather than airy, and confident enough to stay silent. Colour is evidence, not decoration.
 
 This is a tool that clinicians and computational biologists keep open for eight hours. It sits next to a terminal, a genome browser, and a stack of PDFs. It must never look like it is trying to sell them something.
 
@@ -50,7 +50,7 @@ This is a tool that clinicians and computational biologists keep open for eight 
 
 ### Lineage
 
-BioRouter sits between three named traditions, and borrows deliberately from each:
+Biorouter sits between three named traditions, and borrows deliberately from each:
 
 - **The scientific instrument panel** (Tektronix, LabVIEW, IGV) — dense readouts, monospace as a first-class citizen, colour reserved for signal.
 - **The editorial reading surface** (Readability, iA Writer) — warm paper ground, generous measure in prose, restrained typography.
@@ -58,7 +58,7 @@ BioRouter sits between three named traditions, and borrows deliberately from eac
 
 It is explicitly **not** a consumer chat app. The chat surface is an instrument readout that happens to accept prose.
 
-### Anti-patterns — what BioRouter must never look like
+### Anti-patterns — what Biorouter must never look like
 
 - **Glassmorphism.** No frosted panels floating over blurred wallpaper. (The one legitimate blur is the modal scrim.)
 - **Multi-layer drop shadows** used to fake depth on ordinary content. Elevation is reserved for things that genuinely float above the page.
@@ -134,7 +134,7 @@ Warm, paper-biased. Hue drifts from bone toward umber as it darkens — this is 
 
 #### The accent
 
-BioRouter has exactly one brand hue: a terracotta coral.
+Biorouter has exactly one brand hue: a terracotta coral.
 
 | Token | Hex | Contrast facts |
 |---|---|---|
@@ -480,7 +480,7 @@ site. All 68 such classes and all 54 focus-scoped ring utilities were removed; t
 | Property | Value |
 |---|---|
 | Library | `lucide-react` for everything with a Lucide equivalent |
-| Custom set | `components/icons/` only for domain marks (BioRouter logo, provider logos, SPOKE) |
+| Custom set | `components/icons/` only for domain marks (Biorouter logo, provider logos, SPOKE) |
 | Sizes | 16px (inline/dense), 20px (default), 24px (page-level) |
 | Stroke | 1.5px at all sizes |
 | Colour | `currentColor`, always. Never a hex. |
@@ -490,7 +490,7 @@ Inline `<svg>` literals in view components are forbidden; promote to `components
 
 #### The logo
 
-`components/icons/BioRouter.tsx` draws the wordmark with gradient stops at `#EC5D2A` (20×) and `#57B9AF` (20×) — an orange and a teal that **exist nowhere else in the system** and are not the token coral `#cf6d47`. `DR-19`. See **[Decision D-02](#d-02--brand-mark-palette)**.
+`components/icons/Biorouter.tsx` draws the wordmark with gradient stops at `#EC5D2A` (20×) and `#57B9AF` (20×) — an orange and a teal that **exist nowhere else in the system** and are not the token coral `#cf6d47`. `DR-19`. See **[Decision D-02](#d-02--brand-mark-palette)**.
 
 ---
 
@@ -876,7 +876,7 @@ Terminals, code, diffs and logs are where this app earns its trust. Today they a
 
 ### 5.1 · Code blocks
 
-> **Code in BioRouter does not render in a monospace font.**
+> **Code in Biorouter does not render in a monospace font.**
 >
 > `MarkdownContent.tsx` sets `fontFamily: 'var(--font-sans)'` on the fenced-code renderer ([line 110](ui/desktop/src/components/MarkdownContent.tsx#L110)), wraps it in `font-sans` ([125](ui/desktop/src/components/MarkdownContent.tsx#L125)), renders inline code with `font-sans` ([155](ui/desktop/src/components/MarkdownContent.tsx#L155)), and adds `prose-code:font-sans` ([209](ui/desktop/src/components/MarkdownContent.tsx#L209)). `.bg-inline-code` sets `font-family: var(--font-sans)` ([`main.css:872`](ui/desktop/src/styles/main.css#L872)).
 >
@@ -1006,7 +1006,7 @@ The wordmark's gradient uses `#EC5D2A` → `#57B9AF` (orange → teal). Neither 
 | B | Keep the mark; add `#57B9AF` as an official secondary | Introduces a second brand colour to a system built on one. |
 | C | Keep the mark as-is, unmanaged | Documented exception; logo drifts from the UI forever. |
 
-★ **A**. *Touches: `components/icons/BioRouter.tsx`.*
+★ **A**. *Touches: `components/icons/Biorouter.tsx`.*
 
 ---
 
@@ -1220,7 +1220,7 @@ The original backlog, as audited:
 | `DR-16` | High | Six competing focus treatments across 131 usages | app-wide |
 | `DR-17` | Low | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | `package.json` |
 | `DR-18` | Med | 96 inline `<svg>` literals in view components | app-wide |
-| `DR-19` | Med | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/BioRouter.tsx` |
+| `DR-19` | Med | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/Biorouter.tsx` |
 | `DR-20` | Med | Button `outline` variant has no border; identical to `secondary` | `button.tsx:15–18` |
 | `DR-21` | Low | `shape="pill"` renders `rounded-md`; `shape="round"` also renders `rounded-md` | `button.tsx:28–31` |
 | `DR-22` | **High** | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `button.tsx:14`, 8 call sites |

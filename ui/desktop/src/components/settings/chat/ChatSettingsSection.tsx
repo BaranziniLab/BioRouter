@@ -14,7 +14,7 @@ export default function ChatSettingsSection() {
             Mode
           </h2>
           <p className="text-xs text-text-muted">
-            Configure how BioRouter interacts with tools and extensions
+            Configure how Biorouter interacts with tools and extensions
           </p>
         </div>
         <div className="biorouter-settings-list">
@@ -28,7 +28,7 @@ export default function ChatSettingsSection() {
             Response Styles
           </h2>
           <p className="text-xs text-text-muted">
-            Choose how BioRouter should format and style its responses
+            Choose how Biorouter should format and style its responses
           </p>
         </div>
         <div className="biorouter-settings-list">

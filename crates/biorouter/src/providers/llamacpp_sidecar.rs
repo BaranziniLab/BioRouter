@@ -611,7 +611,7 @@ fn parse_memory_gib(text: &str) -> Option<u64> {
 /// A model's *trained* window (read later from `/props`) can be huge — Qwen3.6
 /// is 262k — but the KV cache for it scales with both the window and the model
 /// size, and allocating tens of GB at startup is slow-to-impossible on a
-/// laptop. BioRouter's agent bootstrap can also consume around 20k tokens
+/// laptop. Biorouter's agent bootstrap can also consume around 20k tokens
 /// before the first user turn, so machines with at least 16 GiB of
 /// GPU-addressable memory get a 64k context. On Apple Silicon, unified memory
 /// counts; on Intel Macs, Windows, and Linux this uses detected VRAM. 128k is

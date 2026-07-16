@@ -1,7 +1,7 @@
 /* Agent Drafter — auto-resize reporter.
  *
  * Injected into EVERY artifact (static and agentic). It reports the artifact's
- * content height to the BioRouter host so the preview iframe auto-grows instead
+ * content height to the Biorouter host so the preview iframe auto-grows instead
  * of clipping/scrolling. The host (@mcp-ui/client `autoResizeIframe`) listens
  * for `{ type: "ui-size-change", payload: { height } }`.
  *

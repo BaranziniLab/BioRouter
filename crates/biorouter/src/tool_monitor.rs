@@ -494,7 +494,7 @@ fn escalated_failure_nudge(
 /// claiming the user declined.
 fn failure_stop_reason(tool_name: &str, streak: u32) -> String {
     format!(
-        "BioRouter did not run this tool call: '{tool_name}' has already failed \
+        "Biorouter did not run this tool call: '{tool_name}' has already failed \
          {streak} times in a row with the same error, and the warnings changed nothing. \
          The user did NOT decline it — this is an automatic no-progress guard. Repeating \
          a call that keeps failing the same way cannot make progress. Fix the cause the \
@@ -892,7 +892,7 @@ impl RepetitionInspector {
     /// `DECLINED_RESPONSE`).
     fn hard_stop_reason(tool_name: &str, repeat_count: u32) -> String {
         format!(
-            "BioRouter stopped this tool call: '{tool_name}' has now been called \
+            "Biorouter stopped this tool call: '{tool_name}' has now been called \
              with identical arguments {repeat_count} times in this user turn. The user did \
              NOT decline it — this is an automatic repetition guard. Repeating the \
              same call will not produce a different result. Change approach: vary \
@@ -928,7 +928,7 @@ impl RepetitionInspector {
 
     fn near_dup_stop_reason(tool_name: &str, run: u32) -> String {
         format!(
-            "BioRouter stopped this tool call: '{tool_name}' has been called {run} \
+            "Biorouter stopped this tool call: '{tool_name}' has been called {run} \
              times in a row with near-identical arguments (only minor tweaks). The \
              user did NOT decline it — this is an automatic loop guard. Change \
              approach: use a different tool, re-read the last result, or explain \
@@ -950,7 +950,7 @@ impl RepetitionInspector {
 
     fn oscillation_stop_reason(tool_name: &str, run: u32) -> String {
         format!(
-            "BioRouter stopped this tool call: your last {run} tool calls alternate \
+            "Biorouter stopped this tool call: your last {run} tool calls alternate \
              between the same two calls (…the most recent being '{tool_name}'), each \
              with unchanged arguments. The user did NOT decline it — this is an \
              automatic loop guard. Break the cycle: try a different approach, or \

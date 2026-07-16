@@ -157,7 +157,7 @@ function titleCaseWords(value: string): string {
 
 // Inject the desktop app's resolved theme as `window.__BR_VIZ_HOST_THEME__` so an
 // Auto Visualiser figure/report rendered in a `srcdoc` iframe — which has no query
-// string — follows the BioRouter app theme instead of the OS `prefers-color-scheme`.
+// string — follows the Biorouter app theme instead of the OS `prefers-color-scheme`.
 // This is what keeps the side-panel preview identical to the expanded/opened view
 // (both then resolve the same theme). The script must run before the figure's own
 // runtime (`{{COMMON}}`), which sits right after `<head>`; a baked tool theme

@@ -1,7 +1,7 @@
 /**
  * Hub Component
  *
- * The Hub is the main landing page and entry point for the BioRouter Desktop application.
+ * The Hub is the main landing page and entry point for the Biorouter Desktop application.
  * It serves as the welcome screen where users can start new conversations.
  *
  * Key Responsibilities:

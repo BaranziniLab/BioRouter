@@ -1,10 +1,10 @@
-//! Agent Drafter — author interactive **BioRouter apps**: TypeScript front-ends
-//! wired to a *real* BioRouter agent backend.
+//! Agent Drafter — author interactive **Biorouter apps**: TypeScript front-ends
+//! wired to a *real* Biorouter agent backend.
 //!
 //! An Agent-Drafter app is a self-contained project the assistant builds for the
 //! user. The UI is authored in TypeScript (bundled with esbuild) and the app
-//! talks to BioRouter over a per-app WebSocket: when the user sends a message,
-//! the BioRouter backend runs the **full agent loop** — the app's own model,
+//! talks to Biorouter over a per-app WebSocket: when the user sends a message,
+//! the Biorouter backend runs the **full agent loop** — the app's own model,
 //! extensions, skills and knowledge base — and streams the answer (text /
 //! markdown / tool activity) straight back into the app. Apps are *launched in
 //! the browser* (GUI) or via a printed URL (CLI), not embedded in a chat iframe.
@@ -55,7 +55,7 @@ use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 
 /// Optional suggestions only. Apps are **provider-agnostic**: by default an app
 /// pins no model and inherits whatever provider/model the user has configured in
-/// BioRouter (any supported provider). A specific provider+model is stored only
+/// Biorouter (any supported provider). A specific provider+model is stored only
 /// when the caller explicitly chooses one. These constants are not auto-applied.
 pub const DEFAULT_APP_PROVIDER: &str = "xiaomi_mimo";
 pub const DEFAULT_APP_MODEL: &str = "mimo-v2.5";
@@ -133,10 +133,10 @@ pub struct CreateAppParams {
     /// state_schema). Only shapes agentic apps; static apps ignore it.
     #[serde(default)]
     pub archetype: Option<String>,
-    /// "agentic" (default — wired to a BioRouter agent) or "static".
+    /// "agentic" (default — wired to a Biorouter agent) or "static".
     #[serde(default)]
     pub kind: Option<String>,
-    /// Entry HTML (index.html). If omitted, a BioRouter-styled starter is used.
+    /// Entry HTML (index.html). If omitted, a Biorouter-styled starter is used.
     #[serde(default)]
     pub html: Option<String>,
     /// Additional files (TypeScript under `src/`, assets, etc.). Provide your own
@@ -149,7 +149,7 @@ pub struct CreateAppParams {
     /// Greeting shown when the chat panel mounts.
     #[serde(default)]
     pub greeting: Option<String>,
-    /// Provider+model the app's agent runs on (any BioRouter-supported provider).
+    /// Provider+model the app's agent runs on (any Biorouter-supported provider).
     /// Omit to inherit the user's configured provider/model (provider-agnostic).
     #[serde(default)]
     pub model: Option<ModelParam>,
@@ -1527,23 +1527,23 @@ impl AgentDrafterServer {
     #[allow(clippy::too_many_lines)]
     pub fn with_root(root: PathBuf) -> Self {
         let instructions = formatdoc! {r#"
-            Agent Drafter builds interactive **BioRouter apps** for the user:
-            TypeScript front-ends wired to a real BioRouter agent. Think "Claude
-            artifacts", but each app embeds a genuine BioRouter backend — when the
-            user sends a message, BioRouter runs the full agent loop (the app's own
+            Agent Drafter builds interactive **Biorouter apps** for the user:
+            TypeScript front-ends wired to a real Biorouter agent. Think "Claude
+            artifacts", but each app embeds a genuine Biorouter backend — when the
+            user sends a message, Biorouter runs the full agent loop (the app's own
             model, extensions, skills, knowledge base) and streams the answer back
             into the app. Apps open in the user's browser (GUI) or via a printed
             URL (CLI); they are NOT shown in a chat iframe.
 
             Two kinds:
-            - "agentic" (default): a UI plus a live BioRouter agent + chat. Use this
+            - "agentic" (default): a UI plus a live Biorouter agent + chat. Use this
               for assistants, dashboards that reason over results, search tools, etc.
             - "static": a plain interactive page with no agent.
 
             Project layout (kept consistent):
             - `index.html` — the UI shell you author.
             - `src/main.ts` — your app logic (TypeScript), `import`ing `./sdk`.
-            - `src/sdk.ts` — the BioRouter App SDK (provided): opens the agent
+            - `src/sdk.ts` — the Biorouter App SDK (provided): opens the agent
               WebSocket, streams markdown, handles multimodal (image) input, and can
               auto-mount a chat panel into any element with `data-br-chat`.
             - `dist/app.js` — the esbuild bundle (produced by `build_app`).
@@ -1640,7 +1640,7 @@ impl AgentDrafterServer {
 
             DESIGN CONTRACT — the user's requested product design is the source of
             truth. Do not force a pre-designed app pattern, dashboard structure, or
-            visual style when the user specified something else. BioRouter injects
+            visual style when the user specified something else. Biorouter injects
             a design system only as a dependable primitive set and fallback. Use
             its classes (`br-container`, `br-card`, `br-btn`, `br-input`,
             `br-textarea`, `br-label`, `br-field`, `br-row`, `br-badge`,
@@ -1654,7 +1654,7 @@ impl AgentDrafterServer {
             and keep borders faint unless the user explicitly asks for a technical
             schematic look. If the user has not specified a visual direction, ask
             only when it would materially change the result; otherwise use a calm,
-            readable BioRouter-native style and keep it easy to revise.
+            readable Biorouter-native style and keep it easy to revise.
 
             THEME TOKENS — colour every piece of text with the design tokens, never
             a hardcoded hex/rgb. Use `var(--br-text)` for primary text,
@@ -1668,7 +1668,7 @@ impl AgentDrafterServer {
             AGENT DESIGN CONTRACT — before or while authoring an agentic app,
             make the agent's operational choices explicit:
             - preferred provider/model and generation settings (`model.settings`);
-              omit the model only when the user wants to inherit BioRouter's global
+              omit the model only when the user wants to inherit Biorouter's global
               provider/model.
             - knowledge bases and data sources (`knowledge_base` and
               `capabilities.data.sources`, including `kind: "knowledge"`).
@@ -1694,7 +1694,7 @@ impl AgentDrafterServer {
               br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
 
             CONTROL PALETTE — the starter archetypes already wire a custom UI; when
-            you add or replace controls, use the themed, BioRouter-native ones and
+            you add or replace controls, use the themed, Biorouter-native ones and
             wire them to `br.call(...)` / `br.run(...)` — a mix that fits the task:
             - buttons / button grids: `br-btn`, `br-grid`
             - dropdowns: `<select class="br-select">`
@@ -1740,7 +1740,7 @@ impl AgentDrafterServer {
             `br.kb` is the CLIENT API your app calls at runtime, never an id.)
 
             WORKFLOW-STYLE APPS (multi-step agentic loops, not just chat): every
-            user message runs BioRouter's full agent loop — the agent can call
+            user message runs Biorouter's full agent loop — the agent can call
             many tools in sequence and reason over the results before replying, so
             an app can encode a real pipeline. Design one by: (a) giving it the
             extensions/skills/knowledge it needs, (b) writing a system_prompt that
@@ -1913,7 +1913,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "create_app",
-        description = "Create a new BioRouter app: a TypeScript UI wired to a live BioRouter agent (kind 'agentic', default) or a static page. Returns a preview card."
+        description = "Create a new Biorouter app: a TypeScript UI wired to a live Biorouter agent (kind 'agentic', default) or a static page. Returns a preview card."
     )]
     pub async fn create_app(
         &self,
@@ -1992,7 +1992,7 @@ impl AgentDrafterServer {
         }
         if let Some(m) = p.model {
             // Empty provider+model clears the pin → inherit the user's configured
-            // provider/model. Any BioRouter-supported provider may be pinned.
+            // provider/model. Any Biorouter-supported provider may be pinned.
             agent.model = Some(ModelSelection::from(m)).filter(|s| s.is_set());
         }
         if let Some(ext) = p.extensions {
@@ -2239,7 +2239,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "lint_app",
-        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (BioRouter classes/tokens), and — for SDK v2 apps — do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
+        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (Biorouter classes/tokens), and — for SDK v2 apps — do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
     )]
     pub async fn lint_app(
         &self,
@@ -2260,7 +2260,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "launch_app",
-        description = "Build (if needed) and launch a BioRouter app. Returns the URL to open in the browser (GUI auto-opens; CLI prints it)."
+        description = "Build (if needed) and launch a Biorouter app. Returns the URL to open in the browser (GUI auto-opens; CLI prints it)."
     )]
     pub async fn launch_app(
         &self,
@@ -2532,7 +2532,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "list_platform_catalog",
-        description = "List what this BioRouter install ACTUALLY has: installed knowledge bases, \
+        description = "List what this Biorouter install ACTUALLY has: installed knowledge bases, \
                        installed skills, and available extensions. Call this BEFORE configure_app \
                        whenever an app needs a knowledge base, a skill, or an extension. Only ids \
                        returned here may be configured — an id that does not exist is rejected, \
@@ -2549,7 +2549,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "list_apps",
-        description = "List all BioRouter apps (optionally filtered by kind)."
+        description = "List all Biorouter apps (optionally filtered by kind)."
     )]
     pub async fn list_apps(
         &self,
@@ -2649,7 +2649,7 @@ impl AgentDrafterServer {
         name = "export_app",
         description = "Export an app as a standalone folder the user can just run: double-click \
                        `run.command` (macOS) or `bash run.sh`. The launcher installs the app into \
-                       the local BioRouter store, starts or reuses a `biorouterd`, and opens it — \
+                       the local Biorouter store, starts or reuses a `biorouterd`, and opens it — \
                        no npm install and no build step (`dist/app.js` ships prebuilt). \
                        `npm start` additionally serves the folder and proxies the agent, for \
                        editing `src/`."
@@ -3970,7 +3970,7 @@ br.run("hello", "#missing");
             ("workbench", "Workbench", "open_row"),
             ("wizard", "Wizard", "go_to_step"),
             ("canvas", "Canvas", "move_avatar"),
-            ("chat", "BioRouter App", "createApp();"),
+            ("chat", "Biorouter App", "createApp();"),
         ];
         for (arch, badge, marker) in cases {
             let id = format!("app-{arch}");

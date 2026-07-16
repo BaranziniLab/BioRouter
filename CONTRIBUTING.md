@@ -1,6 +1,6 @@
 # Contribution Guide
 
-BioRouter is open source!
+Biorouter is open source!
 
 We welcome pull requests for general contributions! If you have a larger new feature or any questions on how to develop a fix, we recommend you open an issue before starting.
 
@@ -11,7 +11,7 @@ We welcome pull requests for general contributions! If you have a larger new fea
 
 ## 🤖 Quick Responsible AI Tips
 
-If you use BioRouter, Copilot, Claude, or other AI tools to help with your PRs:  
+If you use Biorouter, Copilot, Claude, or other AI tools to help with your PRs:
 
 **✅ Good Uses** 
 
@@ -31,7 +31,7 @@ If you use BioRouter, Copilot, Claude, or other AI tools to help with your PRs:
 
 - Understand every line of code you submit  
 - All tests pass locally  
-- Code follows BioRouter's patterns  
+- Code follows Biorouter's patterns
 - Document your changes  
 - Ask for review if security or core code is involved  
 
@@ -41,7 +41,7 @@ If you use BioRouter, Copilot, Claude, or other AI tools to help with your PRs:
 
 ## Prerequisites
 
-BioRouter includes rust binaries alongside an electron app for the GUI. To work
+Biorouter includes rust binaries alongside an electron app for the GUI. To work
 on the rust backend, you will need to [install rust and cargo][rustup]. To work
 on the App, you will also need to [install node and npm][nvm] - we recommend through nvm.
 
@@ -106,7 +106,7 @@ just run-ui
 ```
 
 This command builds a release build of Rust (equivalent to `cargo build -r`) and starts the Electron process.
-The app opens a window and displays first-time setup. After completing setup, BioRouter is ready for use.
+The app opens a window and displays first-time setup. After completing setup, Biorouter is ready for use.
 
 Make GUI changes in `ui/desktop`.
 
@@ -127,7 +127,7 @@ API changes should be made in the Rust source under `crates/biorouter-server/src
 
 ### Debugging
 
-To debug the BioRouter server, run it from an IDE. The configuration will depend on the IDE. The command to run is:
+To debug the Biorouter server, run it from an IDE. The configuration will depend on the IDE. The command to run is:
 
 ```
 export BIOROUTER_SERVER__SECRET_KEY=test
@@ -151,7 +151,7 @@ and stepping through the server code while interacting with the UI.
 To fork the repository:
 
 1. Go to https://github.com/BaranziniLab/biorouter and click "Fork" (top-right corner).
-2. This creates https://github.com/<your-username>/BioRouter under your GitHub account.
+2. This creates https://github.com/<your-username>/Biorouter under your GitHub account.
 3. Clone your fork (not the main repo):
 
 ```
@@ -245,7 +245,7 @@ your configuration.
 > At the moment, we are still updating some of the CLI configuration to make sure this is
 > respected.
 
-You can change the provider BioRouter points to via the `BIOROUTER_PROVIDER` env var. If you already
+You can change the provider Biorouter points to via the `BIOROUTER_PROVIDER` env var. If you already
 have a credential for that provider in your keychain from previously setting up, it should
 reuse it. For things like automations or to test without doing official setup, you can also
 set the relevant env vars for that provider. For example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
@@ -253,7 +253,7 @@ or `DATABRICKS_HOST`. Refer to the provider details for more info on required ke
 
 ### Isolating Test Environments
 
-When testing changes or running multiple BioRouter configurations, use `BIOROUTER_PATH_ROOT` to isolate your data:
+When testing changes or running multiple Biorouter configurations, use `BIOROUTER_PATH_ROOT` to isolate your data:
 
 ```bash
 # Test with a clean environment
@@ -264,12 +264,12 @@ export BIOROUTER_PATH_ROOT="/tmp/biorouter-test"
 BIOROUTER_PATH_ROOT="/tmp/biorouter-dev" cargo run -p biorouter-cli -- session
 ```
 
-This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main BioRouter installation. See the [environment variables guide](http://biorouter.ucsf.edu/docs/guides/environment-variables) for more details.
+This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main Biorouter installation. See the [environment variables guide](http://biorouter.ucsf.edu/docs/guides/environment-variables) for more details.
 
-## Enable traces in BioRouter with [locally hosted Langfuse](https://langfuse.com/docs/deployment/self-host)
+## Enable traces in Biorouter with [locally hosted Langfuse](https://langfuse.com/docs/deployment/self-host)
 
 - Start a local Langfuse using the docs [here](https://langfuse.com/self-hosting/docker-compose). Create an organization and project and create API credentials.
-- Set the environment variables so that BioRouter can connect to the langfuse server:
+- Set the environment variables so that Biorouter can connect to the langfuse server:
 
 ```
 export LANGFUSE_INIT_PROJECT_PUBLIC_KEY=publickey-local
@@ -297,7 +297,7 @@ git commit --signoff ...
 
 ## Contributing workflows
 
-Workflows are reusable, shareable YAML files that capture a BioRouter session so
+Workflows are reusable, shareable YAML files that capture a Biorouter session so
 others can run it. Documentation and examples live in
 [`docs/guides/workflows/`](docs/guides/workflows/). To share one with the
 community, open a submission using the
@@ -307,12 +307,12 @@ cookbook.
 
 ## Other Ways to Contribute
 
-There are numerous ways to be an open source contributor and contribute to BioRouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
+There are numerous ways to be an open source contributor and contribute to Biorouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
 
-- **Stars on GitHub:** If you resonate with our project and find it valuable, consider starring BioRouter on GitHub! 🌟
+- **Stars on GitHub:** If you resonate with our project and find it valuable, consider starring Biorouter on GitHub! 🌟
 - **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to ask it on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
-- **Give Feedback:** Have a feature you want to see or encounter an issue with BioRouter, [click here to open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
+- **Give Feedback:** Have a feature you want to see or encounter an issue with Biorouter, [click here to open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
 - **Improve Documentation:** Good documentation is key to the success of any project. You can help improve the quality of our existing docs or add new pages.
 - **Help Other Members:** See another community member stuck? Or a contributor blocked by a question you know the answer to? Reply to community threads or do a code review for others to help.
 - **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
-- **Spread the Word:** Help us reach more people by sharing BioRouter's project and website.
+- **Spread the Word:** Help us reach more people by sharing Biorouter's project and website.

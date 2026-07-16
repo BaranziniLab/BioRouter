@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Code-aligned reference for the BioRouter agentic loop and its execution harness.">
-  <title>BioRouter Agentic System</title>
+  <meta name="description" content="Code-aligned reference for the Biorouter agentic loop and its execution harness.">
+  <title>Biorouter Agentic System</title>
   <style>
     :root {
       --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -149,19 +149,19 @@
       <marker id="arrow" markerUnits="userSpaceOnUse" viewBox="0 0 7 7" refX="6.2" refY="3.5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="var(--subtle)"/></marker>
       <marker id="arrow-accent" markerUnits="userSpaceOnUse" viewBox="0 0 7 7" refX="6.2" refY="3.5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="var(--accent)"/></marker>
       <marker id="arrow-danger" markerUnits="userSpaceOnUse" viewBox="0 0 7 7" refX="6.2" refY="3.5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="var(--danger)"/></marker>
-      <symbol id="biorouter-mark" viewBox="-2 -2 343 304">
-        <path d="M -1 150 C -1 67.16 66.16 0 149 0 C 188.78 0 226.94 15.8 255.07 43.93 C 283.2 72.06 299 110.22 299 150 C 299 189.78 283.2 227.94 255.07 256.07 C 226.94 284.2 188.78 300 149 300 C 109.22 300 71.06 284.2 42.93 256.07 C 14.8 227.94 -1 189.78 -1 150 Z M 149 27.87 C 81.55 27.87 26.87 82.55 26.87 150 C 26.87 217.45 81.55 272.13 149 272.13 C 216.45 272.13 271.13 217.45 271.13 150 C 271.13 82.55 216.45 27.87 149 27.87 Z"/>
-        <path d="M 64 190 C 64 156.86 90.86 130 124 130 C 139.91 130 155.17 136.32 166.43 147.57 C 177.68 158.83 184 174.09 184 190 C 184 205.91 177.68 221.17 166.43 232.43 C 155.17 243.68 139.91 250 124 250 C 90.86 250 64 223.14 64 190 Z M 124 162.43 C 108.77 162.43 96.43 174.77 96.43 190 C 96.43 205.23 108.77 217.57 124 217.57 C 131.31 217.57 138.32 214.67 143.49 209.49 C 148.67 204.32 151.57 197.31 151.57 190 C 151.57 174.77 139.23 162.43 124 162.43 Z"/>
-        <path d="M 289 140 L 324 140 Q 339 140 339 155 Q 339 170 324 170 L 289 170 Z"/><path d="M 249 70 L 389 70 Q 399 70 399 80 Q 399 90 389 90 L 249 90 Z" transform="rotate(-90,324,80)"/><ellipse cx="184" cy="91" rx="25" ry="25" transform="rotate(45,184,91)"/><ellipse cx="233" cy="140" rx="25" ry="25" transform="rotate(45,233,140)"/><path d="M 171 87 Q 206 112 241 87 Q 206 112 241 137 Q 206 112 171 137 Q 206 112 171 87" transform="rotate(45,206,112)"/><path d="M 114 69.99 Q 149 83.24 184 69.99 Q 149 83.24 184 96.49 Q 149 83.24 114 96.49 Q 149 83.24 114 69.99"/><ellipse cx="119" cy="86" rx="20" ry="20"/><path d="M 304 120 L 329 120 Q 344 120 344 135 Q 344 150 329 150 L 304 150 Z" transform="rotate(-90,324,135)"/>
+      <symbol id="biorouter-mark" viewBox="110 55 380 330">
+        <path d="M 125 220 C 125 137.16 189.92 70 270 70 C 308.46 70 345.34 85.8 372.53 113.93 C 399.72 142.06 415 180.22 415 220 C 415 259.78 399.72 297.94 372.53 326.07 C 345.34 354.2 308.46 370 270 370 C 189.92 370 125 302.84 125 220 Z M 270 114 C 214.22 114 169 161.46 169 220 C 169 278.54 214.22 326 270 326 C 325.78 326 371 278.54 371 220 C 371 161.46 325.78 114 270 114 Z"/>
+        <path d="M 205 250 C 205 219.62 229.62 195 260 195 C 274.59 195 288.58 200.79 298.89 211.11 C 309.21 221.42 315 235.41 315 250 C 315 264.59 309.21 278.58 298.89 288.89 C 288.58 299.21 274.59 305 260 305 C 245.41 305 231.42 299.21 221.11 288.89 C 210.79 278.58 205 264.59 205 250 Z"/>
+        <path d="M 385 235 L 438 235 Q 453 235 453 250 Q 453 265 438 265 L 385 265 Z"/><path d="M 361.75 164.75 L 494.75 164.75 Q 507.25 164.75 507.25 177.25 Q 507.25 189.75 494.75 189.75 L 361.75 189.75 Z" transform="rotate(-90 434.5 177.25)"/><ellipse cx="291" cy="163" rx="25" ry="25" transform="rotate(45 291 163)"/><ellipse cx="340" cy="212" rx="25" ry="25" transform="rotate(45 340 212)"/><path d="M 278 159 Q 313 184 348 159 Q 313 184 348 209 Q 313 184 278 209 Q 313 184 278 159" transform="rotate(45 313 184)"/><path d="M 221 141.99 Q 256 155.24 291 141.99 Q 256 155.24 291 168.49 Q 256 155.24 221 168.49 Q 256 155.24 221 141.99"/><ellipse cx="226" cy="155.24" rx="20" ry="20"/><path d="M 414.88 211.88 L 436.76 211.88 Q 454.88 211.88 454.88 230.01 Q 454.88 248.13 436.76 248.13 L 414.88 248.13 Z" transform="rotate(-90 434.88 230.01)"/>
       </symbol>
     </defs>
   </svg>
 
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="#top" aria-label="BioRouter agentic system home">
-        <svg viewBox="-2 -2 343 304" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg>
-        <span><strong>BioRouter</strong><span>Agentic system</span></span>
+      <a class="brand" href="#top" aria-label="Biorouter agentic system home">
+        <svg viewBox="110 55 380 330" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg>
+        <span><strong>Biorouter</strong><span>Agentic system</span></span>
       </a>
       <div class="mode-control" aria-label="Parchment appearance">
         <button type="button" data-mode="light" aria-pressed="true">Light</button>
@@ -175,16 +175,16 @@
     <div class="wrap hero-grid">
       <div>
         <div class="eyebrow">Code-aligned architecture reference</div>
-        <h1>The BioRouter agentic system</h1>
+        <h1>The Biorouter agentic system</h1>
         <p class="lede">A top-to-bottom account of how a request becomes model context, inspected tool work, durable state, recovery, and a verified answer. This document defines the implemented runtime and its harness contracts.</p>
       </div>
       <div class="hero-map">
         <svg viewBox="0 0 394 304" role="img" aria-labelledby="hero-title hero-desc">
-          <title id="hero-title">BioRouter turn loop summary</title>
+          <title id="hero-title">Biorouter turn loop summary</title>
           <desc id="hero-desc">A user turn is assembled for the provider. Tool calls pass through inspection and execution, then persist and return to context assembly. A tool-free response moves to completion checks.</desc>
           <text class="t-label" x="18" y="24">[ TURN LOOP ]</text>
           <circle class="soft" cx="360" cy="24" r="17"/>
-          <svg x="348" y="12" width="24" height="24" viewBox="-2 -2 343 304" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg>
+          <svg x="348" y="12" width="24" height="24" viewBox="110 55 380 330" fill="currentColor" aria-hidden="true"><use href="#biorouter-mark"/></svg>
           <path class="edge-accent" d="M98 76 H122"/><path class="edge-accent" d="M214 76 H238"/><path class="edge" d="M284 100 V116"/>
           <path class="edge" d="M242 150 H216"/><path class="edge" d="M122 150 H98"/><path class="return" d="M58 174 V208 H108 V108 H168 V100"/>
           <path class="edge-accent" d="M284 184 V220"/>
@@ -209,10 +209,10 @@
 
     <main id="content">
       <section class="section" id="loop">
-        <div class="section-head"><div class="section-num">01 · Whole loop</div><div><h2>Turn lifecycle</h2><p class="section-intro">BioRouter admits the turn, prepares the provider request, runs approved tools, persists results, and applies completion checks. The provider supplies responses and tool requests; the runtime controls the loop.</p></div></div>
+        <div class="section-head"><div class="section-num">01 · Whole loop</div><div><h2>Turn lifecycle</h2><p class="section-intro">Biorouter admits the turn, prepares the provider request, runs approved tools, persists results, and applies completion checks. The provider supplies responses and tool requests; the runtime controls the loop.</p></div></div>
         <figure class="diagram">
           <svg viewBox="0 0 980 420" role="img" aria-labelledby="loop-title loop-desc">
-            <title id="loop-title">End-to-end BioRouter turn lifecycle</title><desc id="loop-desc">A user turn passes through entry processing, context assembly, and provider streaming. Tool calls branch through inspection, execution, and result persistence before returning to context assembly. Tool-free responses pass through completion checks and are emitted.</desc>
+            <title id="loop-title">End-to-end Biorouter turn lifecycle</title><desc id="loop-desc">A user turn passes through entry processing, context assembly, and provider streaming. Tool calls branch through inspection, execution, and result persistence before returning to context assembly. Tool-free responses pass through completion checks and are emitted.</desc>
             <text class="t-label" x="22" y="28">[ TURN LIFECYCLE ]</text>
             <path class="edge-accent" d="M135 88 H175"/><path class="edge-accent" d="M305 88 H345"/><path class="edge-accent" d="M475 88 H515"/><path class="edge-accent" d="M645 88 H655"/>
             <path class="edge-accent" d="M775 88 H810"/><path class="edge" d="M715 116 V180"/><path class="edge" d="M650 210 H610"/><path class="edge" d="M480 210 H440"/>
@@ -271,7 +271,7 @@
       </section>
 
       <section class="section" id="context">
-        <div class="section-head"><div class="section-num">03 · Context</div><div><h2>Provider request assembly</h2><p class="section-intro">System instructions, agent-visible messages, and tool schemas are prepared on separate paths. They join only when BioRouter builds the next provider request.</p></div></div>
+        <div class="section-head"><div class="section-num">03 · Context</div><div><h2>Provider request assembly</h2><p class="section-intro">System instructions, agent-visible messages, and tool schemas are prepared on separate paths. They join only when Biorouter builds the next provider request.</p></div></div>
         <figure class="diagram"><svg viewBox="0 0 980 490" role="img" aria-labelledby="context-title context-desc"><title id="context-title">Provider request assembly</title><desc id="context-desc">System foundation and project instructions form the system prompt. Selected resources, fresh MOIM, harness messages, and conversation history form an agent-visible clone which is normalized. Tool schemas are sorted separately. The three paths join in the turn request sent to the provider.</desc>
           <text class="t-label" x="22" y="28">[ REQUEST ASSEMBLY ]</text>
           <path class="edge" d="M280 116 H360"/><path class="edge" d="M280 285 H360"/><path class="edge" d="M280 428 H360"/>
@@ -289,7 +289,7 @@
           <rect class="blue-node" x="700" y="399" width="140" height="58" rx="9"/><text class="t-title" x="770" y="425" text-anchor="middle">TOOLS</text><text class="t-small" x="770" y="444" text-anchor="middle">sorted schemas</text>
           <rect class="accent-node" x="875" y="220" width="85" height="90" rx="10"/><text class="t-title" x="917" y="252" text-anchor="middle">PROVIDER</text><text class="t-small" x="917" y="274" text-anchor="middle">current</text><text class="t-small" x="917" y="291" text-anchor="middle">call</text>
         </svg><figcaption>System, messages, and tools join only at the provider boundary</figcaption></figure>
-        <div class="grid-3"><div class="card"><h3>Selected skills</h3><p>Explicit skill references are loaded before the call. Full bodies are capped and injected once per session; later turns receive a short pointer. Failed loads are not cached.</p></div><div class="card"><h3>Selected knowledge</h3><p>BioRouter searches the exact selected knowledge base with the user’s whole message and injects up to five primary results, or an explicit retrieval failure. Selected-resource material is wrapped in an agent-only <code>&lt;explicit-resource-context&gt;</code> message.</p></div><div class="card"><h3>MOIM</h3><p>The model-oriented information message is rebuilt on a conversation clone for every provider call. A stale standalone MOIM is removed, then the fresh one is placed after the last assistant message and any trailing tool results so tool pairs stay valid. It is never persisted.</p></div><div class="card"><h3>Selected extensions</h3><p>Aliases are canonicalized. A known built-in extension selected by the user can be enabled and persisted, then its mandatory guidance and tools join the stable prompt assembly.</p></div><div class="card"><h3>Live state awareness</h3><p>Platform extensions contribute current state through MOIM. Durable todos, goals, run state, enabled extensions, and related harness data live in the session’s <code>extension_data</code>.</p></div><div class="card"><h3>Project instructions</h3><p><code>.biorouterhints</code>, <code>AGENTS.md</code>, and supported imports join workflow/application instructions. Unicode control-like tags are sanitized before injection.</p></div></div>
+        <div class="grid-3"><div class="card"><h3>Selected skills</h3><p>Explicit skill references are loaded before the call. Full bodies are capped and injected once per session; later turns receive a short pointer. Failed loads are not cached.</p></div><div class="card"><h3>Selected knowledge</h3><p>Biorouter searches the exact selected knowledge base with the user’s whole message and injects up to five primary results, or an explicit retrieval failure. Selected-resource material is wrapped in an agent-only <code>&lt;explicit-resource-context&gt;</code> message.</p></div><div class="card"><h3>MOIM</h3><p>The model-oriented information message is rebuilt on a conversation clone for every provider call. A stale standalone MOIM is removed, then the fresh one is placed after the last assistant message and any trailing tool results so tool pairs stay valid. It is never persisted.</p></div><div class="card"><h3>Selected extensions</h3><p>Aliases are canonicalized. A known built-in extension selected by the user can be enabled and persisted, then its mandatory guidance and tools join the stable prompt assembly.</p></div><div class="card"><h3>Live state awareness</h3><p>Platform extensions contribute current state through MOIM. Durable todos, goals, run state, enabled extensions, and related harness data live in the session’s <code>extension_data</code>.</p></div><div class="card"><h3>Project instructions</h3><p><code>.biorouterhints</code>, <code>AGENTS.md</code>, and supported imports join workflow/application instructions. Unicode control-like tags are sanitized before injection.</p></div></div>
         <div class="callout"><b>↳</b><p><strong>Workspace context is bounded.</strong> The default workspace map respects <code>.gitignore</code> and <code>.biorouterignore</code>, scans at most 20,000 entries, reports at most 200 entries to depth three, targets about 2,000 tokens, and caches for 30 seconds. MOIM as a whole targets about 8,000 estimated tokens. Under aggregate prompt pressure, extension guidance is retained before project hints.</p></div>
         <p class="source">Primary implementation: <code>crates/biorouter/src/agents/prompt_manager.rs</code>, <code>reply_parts.rs</code>, <code>resource_refs.rs</code>, <code>moim.rs</code>, <code>workspace_summary.rs</code>, <code>crates/biorouter/src/context_budget.rs</code></p>
       </section>
@@ -360,14 +360,14 @@
           <text class="t-small" x="490" y="402" text-anchor="middle">approval is keyed by request ID; allow dispatches, deny returns an error, stale replies are ignored</text>
         </svg><figcaption>No permissive layer can override a stricter decision</figcaption></figure>
         <div class="table-wrap"><table><thead><tr><th>Mode</th><th>Default behavior</th><th>Still enforced</th></tr></thead><tbody><tr><td><code>Chat</code></td><td>No backend dispatch.</td><td>Conversation and model response only.</td></tr><tr><td><code>Auto</code></td><td>Baseline allow.</td><td>Managed policy, security, command policy, and hooks can escalate.</td></tr><tr><td><code>Approve</code></td><td>Prompt unless a trusted remembered or scoped rule applies.</td><td>All higher-order restrictions.</td></tr><tr><td><code>SmartApprove</code></td><td>Read-only / low-risk tools can auto-approve; higher risk asks.</td><td>Risk threshold, unknown-risk handling, security, policy, and hooks.</td></tr></tbody></table></div>
-        <div class="grid-2"><div class="card"><h3>Managed policy trust</h3><p>Administrator policy is read from the platform-managed BioRouter location: <code>/Library/Application Support/BioRouter/managed-policy.yaml</code> on macOS, <code>/etc/biorouter/managed-policy.yaml</code> on Linux, or <code>%ProgramData%\BioRouter\managed-policy.yaml</code> on Windows. Unix ownership and write permissions are verified before use.</p></div><div class="card"><h3>Approval identity</h3><p>The approval request is registered before the UI event and keyed by request ID. The card carries a risk grade plus a tool-specific preview, command, or diff. One-shot delivery prevents a late answer from approving another call.</p></div></div>
+        <div class="grid-2"><div class="card"><h3>Managed policy trust</h3><p>Administrator policy is read from the platform-managed Biorouter location: <code>/Library/Application Support/Biorouter/managed-policy.yaml</code> on macOS, <code>/etc/biorouter/managed-policy.yaml</code> on Linux, or <code>%ProgramData%\Biorouter\managed-policy.yaml</code> on Windows. Unix ownership and write permissions are verified before use.</p></div><div class="card"><h3>Approval identity</h3><p>The approval request is registered before the UI event and keyed by request ID. The card carries a risk grade plus a tool-specific preview, command, or diff. One-shot delivery prevents a late answer from approving another call.</p></div></div>
         <div class="callout"><b>!</b><p><strong>Secrets have a second boundary.</strong> The extension dispatcher’s <code>SecretGuard</code> rejects arguments that directly name known credential files such as <code>.env</code>, private keys, and cloud credential stores, regardless of extension.</p></div>
         <p class="source">Primary implementation: <code>crates/biorouter/src/tool_inspection.rs</code>, <code>crates/biorouter/src/permission/</code>, <code>crates/biorouter/src/security/</code>, <code>crates/biorouter/src/hooks/inspector.rs</code>, <code>crates/biorouter/src/tool_monitor.rs</code></p>
       </section>
 
       <section class="section" id="vault">
         <div class="section-head"><div class="section-num">07 · Vaults</div><div><h2>Vault substitution occurs at leaf MCP dispatch</h2><p class="section-intro">The model sees symbolic placeholders. Plaintext is attached only after inspection and only for an allow-listed Agent Drafter app’s leaf MCP arguments.</p></div></div>
-        <figure class="diagram"><svg viewBox="0 0 980 500" role="img" aria-labelledby="vault-title vault-desc"><title id="vault-title">BioRouter vault provisioning and turn-time substitution</title><desc id="vault-desc">Provisioning combines an application manifest allow-list, a per-application AES key in the operating-system keyring, and encrypted workspace files to build in-memory VaultRefs. During a turn, the model emits a symbolic placeholder. Inspectors see the placeholder. Only apply_vault at leaf MCP dispatch receives VaultRefs and substitutes plaintext.</desc>
+        <figure class="diagram"><svg viewBox="0 0 980 500" role="img" aria-labelledby="vault-title vault-desc"><title id="vault-title">Biorouter vault provisioning and turn-time substitution</title><desc id="vault-desc">Provisioning combines an application manifest allow-list, a per-application AES key in the operating-system keyring, and encrypted workspace files to build in-memory VaultRefs. During a turn, the model emits a symbolic placeholder. Inspectors see the placeholder. Only apply_vault at leaf MCP dispatch receives VaultRefs and substitutes plaintext.</desc>
           <text class="t-label" x="22" y="28">[ PROVISIONING ]</text>
           <path class="connector" d="M190 85 H220 V225 H190"/><path class="connector" d="M190 155 H220"/><path class="edge" d="M220 155 H250"/><path class="edge-accent" d="M445 155 H520"/>
           <rect class="node" x="22" y="55" width="168" height="60" rx="9"/><text class="t-title" x="106" y="79" text-anchor="middle">APP MANIFEST</text><text class="t-small" x="106" y="98" text-anchor="middle">vault.encrypted allow-list</text>
@@ -416,7 +416,7 @@
 
       <section class="section" id="hooks">
         <div class="section-head"><div class="section-num">09 · Hooks</div><div><h2>Hooks attach to defined lifecycle events</h2><p class="section-intro">User, project, and managed hooks attach to specific session, tool, compaction, notification, and child-session events. Returned context is marked untrusted before it becomes agent-visible.</p></div></div>
-        <figure class="diagram"><svg viewBox="0 0 980 500" role="img" aria-labelledby="hooks-title hooks-desc"><title id="hooks-title">Independent BioRouter hook event lanes</title><desc id="hooks-desc">Session hooks run from SessionStart through UserPromptSubmit, the agent loop, Stop, and SessionEnd. Tool hooks surround inspection, optional permission, and execution. Compaction hooks surround compaction. Subagent hooks surround a child session. Notification observes runtime notifications independently.</desc>
+        <figure class="diagram"><svg viewBox="0 0 980 500" role="img" aria-labelledby="hooks-title hooks-desc"><title id="hooks-title">Independent Biorouter hook event lanes</title><desc id="hooks-desc">Session hooks run from SessionStart through UserPromptSubmit, the agent loop, Stop, and SessionEnd. Tool hooks surround inspection, optional permission, and execution. Compaction hooks surround compaction. Subagent hooks surround a child session. Notification observes runtime notifications independently.</desc>
           <text class="t-label" x="22" y="28">[ SESSION LIFECYCLE ]</text>
           <path class="edge" d="M157 82 H205"/><path class="edge-accent" d="M375 82 H423"/><path class="edge" d="M573 82 H621"/><path class="edge" d="M761 82 H809"/>
           <rect class="node" x="22" y="52" width="135" height="60" rx="9"/><text class="t-title" x="89" y="76" text-anchor="middle">SESSIONSTART</text><text class="t-small" x="89" y="95" text-anchor="middle">observe · add context</text>
@@ -468,7 +468,7 @@
       </section>
 
       <section class="section" id="memory">
-        <div class="section-head"><div class="section-num">11 · Memory</div><div><h2>Session history, context, and large payloads</h2><p class="section-intro">BioRouter retains a complete user-facing session while bounding the provider’s working set. Compaction changes the agent-visible projection; large-result externalization is a separate storage path.</p></div></div>
+        <div class="section-head"><div class="section-num">11 · Memory</div><div><h2>Session history, context, and large payloads</h2><p class="section-intro">Biorouter retains a complete user-facing session while bounding the provider’s working set. Compaction changes the agent-visible projection; large-result externalization is a separate storage path.</p></div></div>
         <figure class="diagram"><svg viewBox="0 0 980 490" role="img" aria-labelledby="memory-title memory-desc"><title id="memory-title">Independent context compaction and large-payload paths</title><desc id="memory-desc">Durable session rows create a user-visible history and an agent-visible projection. The projected request is measured against the context threshold. If needed, compaction creates a summary projection while retaining original user-visible messages. Independently, large tool results move to a session blob or workspace file and leave a compact reference in the conversation.</desc>
           <text class="t-label" x="22" y="28">[ CONTEXT PATH ]</text>
           <path class="edge-accent" d="M180 94 H245"/><path class="edge" d="M405 94 H470"/><path class="edge" d="M640 94 H690"/><path class="edge" d="M760 139 V164 H630 V214 H610"/><path class="return" d="M440 214 H420 V154 H325 V136"/><path class="edge" d="M830 94 H870"/>
@@ -495,7 +495,7 @@
 
       <section class="section" id="recovery">
         <div class="section-head"><div class="section-num">12 · Recovery</div><div><h2>Checkpoint restore and session branching</h2><p class="section-intro">Shadow checkpoints capture filesystem state around tool work. Session branching creates a new conversation lineage. They are separate recovery paths, and neither writes to the project’s own Git database.</p></div></div>
-        <figure class="diagram"><svg viewBox="0 0 980 470" role="img" aria-labelledby="recovery-title recovery-desc"><title id="recovery-title">Separate checkpoint and session-branch recovery paths</title><desc id="recovery-desc">A user turn anchors PreStep, tool iteration, and PostStep snapshots in BioRouter's shadow object database. Restore first records a PreRestore baseline and can restore files, conversation, or both. Separately, session branching copies history through a selected message UID into a new session while leaving the original unchanged.</desc>
+        <figure class="diagram"><svg viewBox="0 0 980 470" role="img" aria-labelledby="recovery-title recovery-desc"><title id="recovery-title">Separate checkpoint and session-branch recovery paths</title><desc id="recovery-desc">A user turn anchors PreStep, tool iteration, and PostStep snapshots in Biorouter's shadow object database. Restore first records a PreRestore baseline and can restore files, conversation, or both. Separately, session branching copies history through a selected message UID into a new session while leaving the original unchanged.</desc>
           <text class="t-label" x="22" y="28">[ CHECKPOINT PATH ]</text>
           <path class="edge-accent" d="M155 90 H215"/><path class="edge" d="M365 90 H425"/><path class="edge" d="M585 90 H645"/><path class="edge" d="M720 126 V150 H595 V175"/><path class="edge" d="M390 215 H470"/><path class="edge" d="M595 255 V270 H505 V286"/>
           <rect class="accent-node" x="22" y="56" width="133" height="68" rx="9"/><text class="t-title" x="88" y="81" text-anchor="middle">USER TURN</text><text class="t-small" x="88" y="102" text-anchor="middle">stable anchor</text>
@@ -537,7 +537,7 @@
       </section>
 
       <section class="section" id="verification">
-        <div class="section-head"><div class="section-num">14 · Verification</div><div><h2>Completion checks and retry paths</h2><p class="section-intro">A tool-free response is only a completion candidate. BioRouter applies the checks enabled by the workflow or session, and failed checks return the turn to work.</p></div></div>
+        <div class="section-head"><div class="section-num">14 · Verification</div><div><h2>Completion checks and retry paths</h2><p class="section-intro">A tool-free response is only a completion candidate. Biorouter applies the checks enabled by the workflow or session, and failed checks return the turn to work.</p></div></div>
         <figure class="diagram"><svg viewBox="0 0 980 520" role="img" aria-labelledby="verify-title verify-desc"><title id="verify-title">Conditional completion checks and retry paths</title><desc id="verify-desc">A completion candidate checks whether a response schema is configured, then whether workflow checks and the done gate are enabled. Active goals use the goal judge and skip self-critique; sessions without a goal may use optional self-critique. Stop hooks run before final emission. Any failed check returns to the existing work loop, while workflow retry alone may restore the initial conversation.</desc>
           <text class="t-label" x="22" y="28">[ CONFIGURED CHECKS ]</text>
           <path class="edge-accent" d="M150 96 H175"/><path class="edge" d="M285 96 H315"/><path class="edge" d="M455 96 H485"/><path class="edge" d="M595 96 H625"/><path class="edge" d="M765 96 H795"/>
@@ -598,9 +598,9 @@
 
       <section class="section" id="defaults">
         <div class="section-head"><div class="section-num">16 · Defaults</div><div><h2>Default limits and feature gates</h2><p class="section-intro">These values are implementation defaults, not performance targets. Environment flags and workflow or session settings can narrow or extend them.</p></div></div>
-        <figure class="diagram"><svg viewBox="0 0 980 420" role="img" aria-labelledby="defaults-title defaults-desc"><title id="defaults-title">BioRouter default runtime limits and feature gates</title><desc id="defaults-desc">Six controls surround the BioRouter agent harness: context compaction at 80 percent while retaining four user turns, hard caps of 100 turns and 200 tool calls, eight concurrent tools, twelve truncation continuations, stall review at 30 actions and every 10 thereafter, and four features disabled by default.</desc>
+        <figure class="diagram"><svg viewBox="0 0 980 420" role="img" aria-labelledby="defaults-title defaults-desc"><title id="defaults-title">Biorouter default runtime limits and feature gates</title><desc id="defaults-desc">Six controls surround the Biorouter agent harness: context compaction at 80 percent while retaining four user turns, hard caps of 100 turns and 200 tool calls, eight concurrent tools, twelve truncation continuations, stall review at 30 actions and every 10 thereafter, and four features disabled by default.</desc>
           <text class="t-label" x="22" y="28">[ DEFAULT RUNTIME ENVELOPE ]</text>
-          <circle cx="490" cy="216" r="74" fill="var(--bg-inverse)"/><svg x="451" y="182" width="78" height="69" viewBox="-2 -2 343 304" fill="var(--inverse)" aria-hidden="true"><use href="#biorouter-mark"/></svg>
+          <circle cx="490" cy="216" r="74" fill="var(--bg-inverse)"/><svg x="451" y="182" width="78" height="69" viewBox="110 55 380 330" fill="var(--inverse)" aria-hidden="true"><use href="#biorouter-mark"/></svg>
           <path class="connector" d="M416 216 H260"/><path class="connector" d="M564 216 H720"/><path class="connector" d="M450 158 L355 93"/><path class="connector" d="M530 158 L625 93"/><path class="connector" d="M450 274 L355 337"/><path class="connector" d="M530 274 L625 337"/>
           <rect class="accent-node" x="70" y="181" width="190" height="70" rx="10"/><text class="t-title" x="165" y="206" text-anchor="middle">CONTEXT THRESHOLD</text><text class="t-accent" x="165" y="232" text-anchor="middle">80% · keep 4 user turns</text>
           <rect class="warn-node" x="720" y="181" width="190" height="70" rx="10"/><text class="t-title" x="815" y="206" text-anchor="middle">HARD LOOP CAPS</text><text class="t-accent" x="815" y="232" text-anchor="middle">100 turns · 200 tools</text>
@@ -618,7 +618,7 @@
     </main>
   </div>
 
-  <footer class="footer"><div class="wrap footer-inner"><span><strong style="color:var(--ink)">BioRouter Agentic System</strong><br>Runtime architecture in the Parchment theme</span><span><a href="design-system.html">Design system</a> · <a href="theme-system.html">Theme system</a> · <a href="#top">Back to top</a></span></div></footer>
+  <footer class="footer"><div class="wrap footer-inner"><span><strong style="color:var(--ink)">Biorouter Agentic System</strong><br>Runtime architecture in the Parchment theme</span><span><a href="design-system.html">Design system</a> · <a href="theme-system.html">Theme system</a> · <a href="#top">Back to top</a></span></div></footer>
 
   <script>
     (() => {

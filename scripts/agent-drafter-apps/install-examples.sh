@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copy the agent-driven-UI example apps into the local BioRouter store, wiring in
+# Copy the agent-driven-UI example apps into the local Biorouter store, wiring in
 # the current App SDK so they run against this checkout.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

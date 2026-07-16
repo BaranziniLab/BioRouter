@@ -1,7 +1,7 @@
-# BioRouter Scripts
+# Biorouter Scripts
 
 This directory contains scripts for building, testing, deploying, and analyzing
-BioRouter.
+Biorouter.
 
 ## Headless Linux app build
 
@@ -31,11 +31,11 @@ See `docs/headless-linux.md` for the full runbook.
 
 ## run-benchmarks.sh
 
-This script runs BioRouter benchmarks across multiple provider:model pairs and analyzes the results.
+This script runs Biorouter benchmarks across multiple provider:model pairs and analyzes the results.
 
 ### Prerequisites
 
-- BioRouter CLI must be built or installed
+- Biorouter CLI must be built or installed
 - `jq` command-line tool for JSON processing (optional, but recommended for result analysis)
 
 ### Usage

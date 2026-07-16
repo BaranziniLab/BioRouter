@@ -197,7 +197,7 @@ You can turn your current biorouter session into a reusable workflow that includ
      **Manual URL Entry:**
 
          1. Paste a workflow link into your browser's address bar 
-         2. Press `Enter` and click the `Open BioRouter.app` prompt
+         2. Press `Enter` and click the `Open Biorouter.app` prompt
        
      **Workflow Library:**
 

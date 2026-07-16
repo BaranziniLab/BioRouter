@@ -21,7 +21,7 @@ use super::manifest::{
 pub enum ArtifactKind {
     /// A plain interactive artifact (HTML/CSS/JS), no agent.
     Static,
-    /// An artifact wired to a BioRouter agent (ACP / MCP-App bridge).
+    /// An artifact wired to a Biorouter agent (ACP / MCP-App bridge).
     Agentic,
 }
 
@@ -36,7 +36,7 @@ impl ArtifactKind {
 }
 
 /// The provider + model an app's agent should run on. When absent, the app
-/// falls back to BioRouter's globally-configured provider/model.
+/// falls back to Biorouter's globally-configured provider/model.
 // Note: not `Eq` — `settings` carries `f32` fields (temperature/top_p).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelSelection {
@@ -59,7 +59,7 @@ impl ModelSelection {
 }
 
 /// Per-app agent configuration (present for `Agentic` apps). Captures everything
-/// that distinguishes one app's BioRouter backend from another: the system
+/// that distinguishes one app's Biorouter backend from another: the system
 /// prompt/persona, which model runs it, and which extensions / skills /
 /// knowledge base the agent may use.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
     /// Provider + model the app's agent should run on. Defaults to the global
-    /// BioRouter model when unset (the GUI/CLI seeds this with the default).
+    /// Biorouter model when unset (the GUI/CLI seeds this with the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSelection>,
     /// Builtin / platform extension names the app's agent should load

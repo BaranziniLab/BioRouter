@@ -99,7 +99,7 @@ async function fetchJson<T>(url: string, timeoutMs = 15000): Promise<T> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'BioRouter-ExtensionUpdater/1.0' },
+      headers: { 'User-Agent': 'Biorouter-ExtensionUpdater/1.0' },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
     return (await res.json()) as T;
@@ -115,7 +115,7 @@ async function downloadFile(
   onProgress: (percent: number) => void
 ): Promise<void> {
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'BioRouter-ExtensionUpdater/1.0' },
+    headers: { 'User-Agent': 'Biorouter-ExtensionUpdater/1.0' },
   });
   if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
 

@@ -15,7 +15,7 @@ body:
         - Paste it into the field and submit the issue — we'll review and add it to the cookbook!
 
         🪄 **What Happens After?**
-        - If accepted, we'll publish your workflow to the BioRouter cookbook
+        - If accepted, we'll publish your workflow to the Biorouter cookbook
         - Your GitHub handle will be displayed and linked on the workflow card
         - If the YAML has any issues, biorouter will comment with validation errors so you can fix and resubmit.
 

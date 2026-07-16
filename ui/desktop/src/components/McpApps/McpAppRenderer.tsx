@@ -1,7 +1,7 @@
 /**
  * MCP Apps Renderer
  *
- * Temporary BioRouter implementation while waiting for official SDK components.
+ * Temporary Biorouter implementation while waiting for official SDK components.
  *
  * @see SEP-1865 https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx
  */

@@ -33,7 +33,7 @@ beforeEach(() => {
         {
           id: 'test-extension',
           name: 'Test Extension',
-          organization: 'BioRouter',
+          organization: 'Biorouter',
           version: '1.0.0',
           description: 'Test extension',
           tags: [],

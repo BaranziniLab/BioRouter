@@ -190,7 +190,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
     } catch (error) {
       console.error('Failed to reset app data:', error);
       const message =
-        error instanceof Error ? error.message : 'BioRouter could not reset the selected data.';
+        error instanceof Error ? error.message : 'Biorouter could not reset the selected data.';
       setStatus(message);
       toastService.error({ title: 'Reset failed', msg: message });
     } finally {
@@ -348,7 +348,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           <DialogHeader>
             <DialogTitle>{isEverything ? 'Reset everything?' : 'Reset selected data?'}</DialogTitle>
             <DialogDescription>
-              This cannot be undone. BioRouter will restore built-in content after removing:
+              This cannot be undone. Biorouter will restore built-in content after removing:
             </DialogDescription>
           </DialogHeader>
 

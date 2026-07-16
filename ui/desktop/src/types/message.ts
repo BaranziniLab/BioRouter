@@ -73,8 +73,8 @@ export function createArtifactRenderRepairMessage({
   href?: string;
 }): Message {
   const text = [
-    '[BioRouter artifact render guardrail]',
-    'A system-generated artifact failed to render in the BioRouter preview.',
+    '[Biorouter artifact render guardrail]',
+    'A system-generated artifact failed to render in the Biorouter preview.',
     `Artifact: ${artifactTitle}`,
     `Runtime error: ${message}`,
     detail ? `Details:\n${detail}` : null,

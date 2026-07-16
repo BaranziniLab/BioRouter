@@ -9,7 +9,7 @@ assignees: ''
 **Describe the bug**
 
 💡 Before filing, please check common issues:  
-[BioRouter Troubleshooting Guide](http://biorouter.ucsf.edu/docs)
+[Biorouter Troubleshooting Guide](http://biorouter.ucsf.edu/docs)
 
 📦 To help us debug faster, please describe your setup and attach any relevant logs from `~/.config/biorouter/logs/`.  
 👉 [Full troubleshooting guide](http://biorouter.ucsf.edu/docs)

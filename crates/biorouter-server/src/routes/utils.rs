@@ -62,7 +62,7 @@ pub fn check_provider_configured(metadata: &ProviderMetadata, provider_type: Pro
         .cloned()
         .collect();
 
-    // If there are no non-default keys, check ONLY BioRouter's stored config (not env vars).
+    // If there are no non-default keys, check ONLY Biorouter's stored config (not env vars).
     // Config::get_param() checks env vars first by design, so we use all_values()/all_secrets()
     // which read directly from the config file and keychain. This prevents a false "Configured"
     // state after Remove: providers like Bedrock set AWS_ env vars during initialization via

@@ -620,7 +620,7 @@ impl CliSession {
     }
 
     /// Branch the current conversation into a brand-new session (full history
-    /// preserved, original untouched) and open it in a fresh BioRouter desktop
+    /// preserved, original untouched) and open it in a fresh Biorouter desktop
     /// window via the `biorouter://diverge` deeplink. Used by the classic CLI.
     async fn handle_diverge(&self, name: Option<String>) -> Result<()> {
         let outcome = self.diverge_and_open(|url| open::that(url), name).await?;
@@ -787,7 +787,7 @@ impl CliSession {
             }
         };
         config.set_biorouter_mode(mode)?;
-        output::biorouter_mode_message(&format!("BioRouter mode set to '{:?}'", mode));
+        output::biorouter_mode_message(&format!("Biorouter mode set to '{:?}'", mode));
         Ok(())
     }
 
@@ -1526,7 +1526,7 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
         println!("\n{}", security_message);
         "Do you allow this tool call?".to_string()
     } else {
-        "BioRouter would like to call the above tool, do you allow?".to_string()
+        "Biorouter would like to call the above tool, do you allow?".to_string()
     };
 
     let permission_result = if security_prompt.is_none() {

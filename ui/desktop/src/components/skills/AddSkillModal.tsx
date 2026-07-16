@@ -145,7 +145,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
 
       if (allOk) {
         const displayName = preview.isBundle ? preview.bundleName : preview.name;
-        toastSuccess({ title: displayName, msg: 'Installed to BioRouter Skills' });
+        toastSuccess({ title: displayName, msg: 'Installed to Biorouter Skills' });
         onSaved();
         onClose();
       } else {

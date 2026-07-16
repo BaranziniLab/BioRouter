@@ -1,6 +1,6 @@
 //! Progress-stall detection for ordinary chat (BR-32).
 //!
-//! BioRouter already had genuinely good local-minimum detection — fuzzy
+//! Biorouter already had genuinely good local-minimum detection — fuzzy
 //! similarity of an LLM judge's feedback across attempts, a stall counter that
 //! does **not** reset when tools run, and a graceful give-up — but it lived
 //! entirely inside the `/goal` Stop-hook loop ([`super::goal`]) and therefore

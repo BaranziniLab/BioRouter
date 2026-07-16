@@ -1,4 +1,4 @@
-# BioRouter baseline command policy (embedded, always-on).
+# Biorouter baseline command policy (embedded, always-on).
 #
 # This is the auditable, self-tested replacement for the inline THREAT_PATTERNS
 # `const` — the catastrophic subset, ported as first-class `deny` rules. It is

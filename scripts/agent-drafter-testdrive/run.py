@@ -2,7 +2,7 @@
 """Drive Agent Drafter through the locked 100-app Apps SDK v2 corpus.
 
 The script never authors app files. It sends complete specs and review findings
-to BioRouter's Agent Drafter, which must use create_app/update_app/configure_app/
+to Biorouter's Agent Drafter, which must use create_app/update_app/configure_app/
 build_app. All persistent runtime state is rooted under .br-testdrive/.
 """
 
@@ -118,12 +118,12 @@ def env() -> dict[str, str]:
     return result
 
 
-BUILD_ORDER = """Build one BioRouter Apps SDK v2 application to the exact specification below.
+BUILD_ORDER = """Build one Biorouter Apps SDK v2 application to the exact specification below.
 
 NON-NEGOTIABLE AUTHORING RULES:
 - Use the exact app id: {id}
 - The app must be kind=agentic and must use a non-chat archetype fitting the spec.
-- You, BioRouter Agent Drafter, must author every app file through create_app,
+- You, Biorouter Agent Drafter, must author every app file through create_app,
   update_app, configure_app, and build_app. Do not use shell/file tools and do
   not merely explain how to build it.
 - Preserve the complete ambitious specification. Do not simplify it.
@@ -447,7 +447,7 @@ def write_preliminary_result(spec: dict[str, Any], review: dict[str, Any], round
     text = f"""# Spec {spec['number']:03d} — {spec['title']}
 - **App id:** {ident}
 - **Authoring rounds:** {rounds}   **Reached acceptance:** pending browser verification
-- **Channel:** CLI (named resumable BioRouter session)
+- **Channel:** CLI (named resumable Biorouter session)
 - **Provider/model:** `{PROVIDER}/{MODEL}` (UCSF Azure OpenAI)
 
 ## Functional verdict: {status} (static; browser pending)

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { ActivityWindow, DailyActivity } from '../../api';
 
 /**
- * A GitHub-style contribution graph for BioRouter usage.
+ * A GitHub-style contribution graph for Biorouter usage.
  *
  * Shading is computed server-side (see `build_activity_window`) from the
  * quartiles of the active days in the window, so a single 1.8M-token day cannot

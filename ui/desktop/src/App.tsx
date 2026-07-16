@@ -673,7 +673,7 @@ export function AppInner() {
 }
 
 export function ImmediateHashRouter({ children }: { children: ReactNode }) {
-  return <HashRouter>{children}</HashRouter>;
+  return <HashRouter useTransitions={false}>{children}</HashRouter>;
 }
 
 export default function App() {

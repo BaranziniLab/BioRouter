@@ -91,7 +91,7 @@ If a tool call produces an error (invalid JSON, missing tool, etc.), Biorouter c
 | `~/.config/biorouter/sessions/` | Session history (SQLite) |
 | `~/.config/biorouter/workflows/` | Saved workflows |
 | `~/.config/biorouter/skills/` | Biorouter-specific global skills |
-| `~/Library/Application Support/BioRouter/` | Electron app state (macOS) |
+| `~/Library/Application Support/Biorouter/` | Electron app state (macOS) |
 
 The config file is shared between the Desktop UI and the CLI — changes in either interface are reflected in both.
 

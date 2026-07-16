@@ -31,7 +31,7 @@ export function ErrorUI({ error }: { error: string }) {
 
         {window?.appConfig?.get('BIOROUTER_VERSION') !== undefined ? (
           <p className="text-base text-text-muted mb-2">
-            An error occurred in BioRouter v{window?.appConfig?.get('BIOROUTER_VERSION') as string}.
+            An error occurred in Biorouter v{window?.appConfig?.get('BIOROUTER_VERSION') as string}.
           </p>
         ) : (
           <p className="text-base text-text-muted mb-2">An error occurred.</p>

@@ -113,7 +113,7 @@ impl AgenticToolDispatch {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .user_agent("BioRouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
+                .user_agent("Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("reqwest client"),

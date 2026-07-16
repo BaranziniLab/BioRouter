@@ -136,7 +136,7 @@ pub async fn handle_term_init(
             let session = session_manager
                 .create_session(
                     working_dir,
-                    "BioRouter Term Session".to_string(),
+                    "Biorouter Term Session".to_string(),
                     SessionType::Terminal,
                 )
                 .await?;

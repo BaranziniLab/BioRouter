@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        💡 Before posting, please attach your **diagnostics zip** — it helps the BioRouter team debug faster and saves everyone time.  
-        [How to troubleshoot BioRouter](http://biorouter.ucsf.edu/docs)
+        💡 Before posting, please attach your **diagnostics zip** — it helps the Biorouter team debug faster and saves everyone time.
+        [How to troubleshoot Biorouter](http://biorouter.ucsf.edu/docs)
   - type: textarea
     id: problem
     attributes:
@@ -22,5 +22,5 @@ body:
   - type: textarea
     id: version
     attributes:
-      label: BioRouter version and environment
-      description: Include your BioRouter version and operating system if known.
+      label: Biorouter version and environment
+      description: Include your Biorouter version and operating system if known.

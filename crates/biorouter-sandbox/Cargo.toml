@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Capability-scoped sandboxed execution for BioRouter agents (leaf crate; no engine deps)"
+description = "Capability-scoped sandboxed execution for Biorouter agents (leaf crate; no engine deps)"
 
 [lints]
 workspace = true

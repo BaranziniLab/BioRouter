@@ -80,11 +80,11 @@ Native installers for all major platforms are available in every release:
 
 | Platform | Package |
 |----------|---------|
-| **macOS** (Apple Silicon) | `BioRouter-*-arm64.dmg` — open and drag to `/Applications` |
-| **macOS** (Intel) | `BioRouter-*-x64.dmg` — open and drag to `/Applications` |
-| **Windows** (x64) | `BioRouter-win32-x64-*.zip` — unzip and run `BioRouter.exe` |
+| **macOS** (Apple Silicon) | `Biorouter-*-arm64.dmg` — open and drag to `/Applications` |
+| **macOS** (Intel) | `Biorouter-*-x64.dmg` — open and drag to `/Applications` |
+| **Windows** (x64) | `Biorouter-win32-x64-*.zip` — unzip and run `Biorouter.exe` |
 | **Linux** Ubuntu / Pop!_OS (x64) | `biorouter_*_amd64.deb` — `sudo dpkg -i biorouter_*.deb` |
-| **Linux** Fedora / RHEL (x64) | `BioRouter-*-1.x86_64.rpm` — `sudo rpm -i BioRouter-*.rpm` |
+| **Linux** Fedora / RHEL (x64) | `Biorouter-*-1.x86_64.rpm` — `sudo rpm -i Biorouter-*.rpm` |
 | **Linux — CLI only** Debian/Ubuntu (x64) | `biorouter-cli_*_amd64.deb` — `sudo apt install ./biorouter-cli_*.deb` |
 | **Linux — CLI only** Fedora/RHEL (x64) | `biorouter-cli-*-1.x86_64.rpm` — `sudo dnf install ./biorouter-cli-*.rpm` |
 

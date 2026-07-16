@@ -66,7 +66,7 @@ pub fn handle_project_default() -> Result<()> {
     };
 
     // Ask the user what they want to do
-    let _ = intro("BioRouter Project Manager");
+    let _ = intro("Biorouter Project Manager");
 
     let current_dir = std::env::current_dir()?;
     let current_dir_display = current_dir.display();
@@ -215,7 +215,7 @@ pub fn handle_projects_interactive() -> Result<()> {
         .collect();
 
     // Let the user select a project
-    let _ = intro("BioRouter Project Manager");
+    let _ = intro("Biorouter Project Manager");
     let mut select = cliclack::select("Select a project:");
 
     // Add each project as an option

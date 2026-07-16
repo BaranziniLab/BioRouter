@@ -913,7 +913,7 @@ impl ExtensionManager {
 
         let version_before = self.tools_cache_version.load(Ordering::SeqCst);
         // Deterministic tool order so the serialized tool-definitions block (which
-        // BioRouter caches via Anthropic `cache_control`) is byte-stable across
+        // Biorouter caches via Anthropic `cache_control`) is byte-stable across
         // process restarts. The source `extensions` HashMap iterates in a
         // per-process-randomized order, so a session resumed in a fresh process
         // would otherwise get a different tool order and miss the provider prompt

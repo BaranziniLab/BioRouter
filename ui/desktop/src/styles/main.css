@@ -1325,7 +1325,7 @@ em > code.bg-inline-code {
   contain: layout style paint;
 }
 
-/* BioRouter icon animation to replace framer-motion */
+/* Biorouter icon animation to replace framer-motion */
 @keyframes biorouter-icon-entrance {
   from {
     opacity: 0;

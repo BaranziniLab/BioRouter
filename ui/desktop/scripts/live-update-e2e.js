@@ -59,7 +59,7 @@ app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'br-live-'));
-  const zipName = `BioRouter-darwin-arm64-${VERSION}.zip`;
+  const zipName = `Biorouter-darwin-arm64-${VERSION}.zip`;
   const zipPath = path.join(tmp, zipName);
 
   // ~6 MB of deterministic bytes so multiple download-progress events fire.

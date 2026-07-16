@@ -1,7 +1,7 @@
 #!/bin/bash
-# Test script for BioRouter Web Interface
+# Test script for Biorouter Web Interface
 
-echo "Testing BioRouter Web Interface..."
+echo "Testing Biorouter Web Interface..."
 echo "================================"
 
 # Start the web server in the background

@@ -816,7 +816,7 @@ pub const THEME_PACKS: &[&str] = &[
     "midnight",
 ];
 
-/// The base pack — the historical BioRouter light/dark look.
+/// The base pack — the historical Biorouter light/dark look.
 pub const DEFAULT_THEME_PACK: &str = "biorouter";
 
 fn default_pack() -> String {

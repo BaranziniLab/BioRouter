@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Contrast guard for the BioRouter design system.
+ * Contrast guard for the Biorouter design system.
  *
  * Parses the real token declarations out of src/styles/main.css, resolves the
  * var() chains, and asserts the WCAG 2.x contrast ratios that design.md promises.

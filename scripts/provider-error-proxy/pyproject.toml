@@ -1,7 +1,7 @@
 [project]
 name = "provider-error-proxy"
 version = "0.1.0"
-description = "HTTP proxy for simulating provider errors in BioRouter"
+description = "HTTP proxy for simulating provider errors in Biorouter"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9.0",

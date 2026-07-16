@@ -45,7 +45,7 @@ pub fn check_knowledge_base(kb: &str, catalog: &Catalog) -> Result<(), String> {
 
     if !catalog.has_kb(kb) {
         return Err(format!(
-            "knowledge base '{kb}' is not installed on this BioRouter. Installed: {}. \
+            "knowledge base '{kb}' is not installed on this Biorouter. Installed: {}. \
              Do not invent an id — an app configured with a knowledge base that does not \
              exist arms KB tools scoped to nothing and fails on its first turn. Leave \
              `knowledge_base` unset and record the need in `requires` instead.",
@@ -69,7 +69,7 @@ pub fn check_skills(skills: &[String], catalog: &Catalog) -> Result<(), String> 
     }
 
     Err(format!(
-        "these skills are not installed on this BioRouter: {}. Installed skills: {}. \
+        "these skills are not installed on this Biorouter: {}. Installed skills: {}. \
          Configuring a skill that does not exist makes the agent's first turn fail \
          (it is told to load a skill that cannot load). Leave it out and record the \
          need in `requires` instead — an app may legitimately want a skill this \
@@ -92,7 +92,7 @@ pub fn check_extensions(extensions: &[String], catalog: &Catalog) -> Result<(), 
     }
 
     Err(format!(
-        "these extensions are not available on this BioRouter: {}. Available: {}. \
+        "these extensions are not available on this Biorouter: {}. Available: {}. \
          Record an unavailable extension in `requires` instead of configuring it.",
         missing.join(", "),
         Catalog::render_list(&catalog.extension_names())
@@ -230,7 +230,7 @@ mod tests {
         );
         assert!(
             !err.contains(
-                "these skills are not installed on this BioRouter: pathway-analysis, r-scripting"
+                "these skills are not installed on this Biorouter: pathway-analysis, r-scripting"
             ),
             "must not name the installed one as missing: {err}"
         );

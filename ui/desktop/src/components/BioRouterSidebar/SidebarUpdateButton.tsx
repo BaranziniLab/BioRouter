@@ -59,8 +59,8 @@ export default function SidebarUpdateButton() {
     <button
       type="button"
       data-testid="sidebar-update-button"
-      aria-label={`Update BioRouter${versionLabel}`}
-      title={`Update BioRouter${versionLabel}`}
+      aria-label={`Update Biorouter${versionLabel}`}
+      title={`Update Biorouter${versionLabel}`}
       onClick={() => requestUpdateModal(state)}
       className="flex h-8 w-full items-center justify-center gap-2 rounded-lg bg-background-accent px-3 text-[11px] font-semibold tracking-[0.12em] text-text-on-accent transition-colors duration-150 hover:bg-background-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
     >

@@ -117,7 +117,7 @@ export type AuthorRequest = {
 };
 
 /**
- * A BioRouter App combining MCP resource data with BioRouter-specific metadata
+ * A Biorouter App combining MCP resource data with Biorouter-specific metadata
  */
 export type BioRouterApp = McpAppResource & (WindowProps | null) & {
     mcpServer?: string | null;

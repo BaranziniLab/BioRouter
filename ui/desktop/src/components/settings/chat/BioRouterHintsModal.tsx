@@ -12,7 +12,7 @@ import {
 
 const HelpText = () => (
   <div className="text-xs text-text-muted leading-relaxed p-3 rounded-lg bg-background-muted border border-border-subtle">
-    <span className="font-medium text-text-default">.biorouterhints</span> gives BioRouter
+    <span className="font-medium text-text-default">.biorouterhints</span> gives Biorouter
     additional context about your project. The{' '}
     <span className="font-medium text-text-default">Developer</span> extension must be enabled
     (Extensions page), and sessions must be restarted for changes to take effect.
@@ -94,7 +94,7 @@ export const BioRouterHintsModal = ({
         <DialogHeader>
           <DialogTitle>Project Hints</DialogTitle>
           <DialogDescription>
-            Configure <code className="font-mono text-xs">.biorouterhints</code> to give BioRouter
+            Configure <code className="font-mono text-xs">.biorouterhints</code> to give Biorouter
             additional context about your project
           </DialogDescription>
         </DialogHeader>
@@ -111,7 +111,7 @@ export const BioRouterHintsModal = ({
                 value={biorouterHintsFile}
                 className="w-full h-72 border border-border-subtle rounded-lg p-3 text-sm font-mono resize-none bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
                 onChange={(event) => setBioRouterHintsFile(event.target.value)}
-                placeholder="# Project context for BioRouter&#10;# e.g. language, frameworks, coding style, important files..."
+                placeholder="# Project context for Biorouter&#10;# e.g. language, frameworks, coding style, important files..."
               />
             </div>
           )}

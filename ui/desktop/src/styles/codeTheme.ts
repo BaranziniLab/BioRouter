@@ -1,5 +1,5 @@
 /**
- * The BioRouter syntax palette (design.md §5.1, decision D-10).
+ * The Biorouter syntax palette (design.md §5.1, decision D-10).
  *
  * Derived from the warm neutral ramp rather than imported from a stock theme, so
  * code sits on the same ground as the rest of the app instead of reading as a

@@ -71,7 +71,7 @@ pub fn get_system_info() -> SystemInfo {
 }
 
 /// Token accounting for one session plus month-to-date totals, so a future
-/// "my dashboard says N but BioRouter shows M" report is self-diagnosing.
+/// "my dashboard says N but Biorouter shows M" report is self-diagnosing.
 ///
 /// The crux of issue #1: the chat headline used to show the LAST TURN's
 /// `total_tokens` (context-window occupancy) while the vendor bills the

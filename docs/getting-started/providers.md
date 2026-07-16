@@ -1,6 +1,6 @@
-# UCSF BioRouter — LLM Providers and Models
+# UCSF Biorouter — LLM Providers and Models
 
-BioRouter connects to a wide range of LLM providers — commercial cloud APIs, institution-hosted services, and local models. You select and configure providers through the Provider Settings panel in the app (Settings > Models > Providers).
+Biorouter connects to a wide range of LLM providers — commercial cloud APIs, institution-hosted services, and local models. You select and configure providers through the Provider Settings panel in the app (Settings > Models > Providers).
 
 **UCSF users:** For institution-managed access, start with **Azure OpenAI** (UCSF ChatGPT) or **Amazon Bedrock** (UCSF-hosted Anthropic). For fully local, air-gapped inference, use **Ollama**.
 
@@ -149,7 +149,7 @@ Available models include:
 - qwen3, qwen3-coder variants
 - Any model available in the Ollama library
 
-To use: install Ollama (https://ollama.com), pull a model (`ollama pull qwen3`), then configure BioRouter to use the Ollama provider. The endpoint defaults to `http://localhost:11434`.
+To use: install Ollama (https://ollama.com), pull a model (`ollama pull qwen3`), then configure Biorouter to use the Ollama provider. The endpoint defaults to `http://localhost:11434`.
 
 ---
 
@@ -246,7 +246,7 @@ You can also specify provider and model on a per-session or per-workflow basis w
 
 ## Multi-Model Orchestration
 
-BioRouter supports routing tasks across multiple models:
+Biorouter supports routing tasks across multiple models:
 
 - **Lead/Worker pattern** — A lead model orchestrates tasks and delegates sub-tasks to worker models (potentially different providers).
 - **Per-workflow model override** — A workflow can specify `settings.biorouter_provider` and `settings.biorouter_model` to use a different model for that workflow without changing your default.

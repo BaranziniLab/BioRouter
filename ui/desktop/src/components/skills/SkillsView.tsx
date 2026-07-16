@@ -187,7 +187,7 @@ export default function SkillsView() {
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
             <p className="text-sm text-text-muted mb-0">
-              Reusable instruction sets that guide BioRouter's behavior. {getSearchShortcutText()}{' '}
+              Reusable instruction sets that guide Biorouter's behavior. {getSearchShortcutText()}{' '}
               to search.
             </p>
           </div>
@@ -229,7 +229,7 @@ export default function SkillsView() {
               <>
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-info flex-shrink-0" />
-                  BioRouter Skills ({totalBR})
+                  Biorouter Skills ({totalBR})
                 </h2>
                 <div className="biorouter-list-shell">
                   {filteredBRBundles.map((bundle) => (

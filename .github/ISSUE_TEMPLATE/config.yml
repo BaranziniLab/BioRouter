@@ -1,6 +1,6 @@
 blank_issues_enabled: false
 contact_links:
-  - name: BioRouter Discussions
+  - name: Biorouter Discussions
     url: https://github.com/BaranziniLab/biorouter/discussions
     about: Please ask and answer questions here.
   - name: Report a security vulnerability

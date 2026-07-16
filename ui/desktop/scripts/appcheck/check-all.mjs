@@ -1,4 +1,4 @@
-// check-all: live health check of every BioRouter app in the local store.
+// check-all: live health check of every Biorouter app in the local store.
 // Store-driven + repo-relative — enumerates app ids from the store dir directly
 // (no external round.sh scripts). For each app it verifies the daemon serves the
 // index + bundle, that the served page carries the injected biorouter-theme, and

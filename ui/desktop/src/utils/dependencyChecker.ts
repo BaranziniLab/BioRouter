@@ -76,9 +76,9 @@ function buildAugmentedPath(): string {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     extra.push(
-      // BioRouter's own bundled shims (uv.exe, uvx.exe, npx.cmd, git shim if added)
+      // Biorouter's own bundled shims (uv.exe, uvx.exe, npx.cmd, git shim if added)
       // — must be first so bundled tools take priority over stale system installs
-      path.join(localAppData, 'BioRouter', 'bin'),
+      path.join(localAppData, 'Biorouter', 'bin'),
       // rustup ahead of system tooling so source builds prefer it (see darwin note)
       path.join(home, '.cargo', 'bin'),
       path.join(programFiles, 'Git', 'bin'),
@@ -90,7 +90,7 @@ function buildAugmentedPath(): string {
       path.join(localAppData, 'Programs', 'nodejs'),
       path.join(localAppData, 'uv', 'bin'),
       // Bundled git fallback — appended last so system git always takes priority
-      path.join(localAppData, 'BioRouter', 'git', 'cmd')
+      path.join(localAppData, 'Biorouter', 'git', 'cmd')
     );
   } else {
     // Linux

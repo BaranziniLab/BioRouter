@@ -6,7 +6,7 @@
  * one-click, in-place macOS auto-update from a GitHub release.
  *
  * Background: our releases ship signed + notarized `.dmg` installers plus the
- * `maker-zip` app archives (`BioRouter-darwin-<arch>-<ver>.zip`). electron-
+ * `maker-zip` app archives (`Biorouter-darwin-<arch>-<ver>.zip`). electron-
  * updater's macOS path (Squirrel.Mac) installs from the ZIP, but only if the
  * release also carries a `latest-mac.yml` listing each ZIP with its base64
  * SHA-512 and byte size. Without it, `autoUpdater.checkForUpdates()` 404s and
@@ -24,8 +24,8 @@
  * Usage:
  *   node scripts/generate-update-manifests.js \
  *     --version 1.85.5 \
- *     --arm64-zip out/make/zip/darwin/arm64/BioRouter-darwin-arm64-1.85.5.zip \
- *     --x64-zip   out/make/zip/darwin/x64/BioRouter-darwin-x64-1.85.5.zip \
+ *     --arm64-zip out/make/zip/darwin/arm64/Biorouter-darwin-arm64-1.85.5.zip \
+ *     --x64-zip   out/make/zip/darwin/x64/Biorouter-darwin-x64-1.85.5.zip \
  *     --out out/make \
  *     [--release-date 2026-06-20T00:00:00.000Z]
  *

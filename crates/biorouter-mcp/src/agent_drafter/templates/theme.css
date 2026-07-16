@@ -1,13 +1,13 @@
-/* Agent Drafter — BioRouter native design system.
+/* Agent Drafter — Biorouter native design system.
  *
- * Mirrors BioRouter's own tokens (ui/desktop/src/styles/main.css) so generated
- * artifacts look like first-class BioRouter surfaces, not generic AI output:
+ * Mirrors Biorouter's own tokens (ui/desktop/src/styles/main.css) so generated
+ * artifacts look like first-class Biorouter surfaces, not generic AI output:
  * warm cream-gray neutrals, white surfaces, a restrained near-black accent with
  * a coral spark, whisper-thin borders, flat soft shadows, modest radii (6px
  * controls / 12px cards), and a plain system typeface. Light + dark aware. */
 
 :root {
-  /* warm neutral scale (verbatim from BioRouter) */
+  /* warm neutral scale (verbatim from Biorouter) */
   --br-n50: #faf8f3;
   --br-n100: #f4f0e6;
   --br-n200: #e8e1d2;

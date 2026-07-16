@@ -15,18 +15,18 @@ describe('permissionPolicy', () => {
 
   it('keeps packaged artifact files outside the renderer directory', () => {
     const appUrl = new URL(
-      'file:///Applications/BioRouter.app/Contents/Resources/renderer/index.html'
+      'file:///Applications/Biorouter.app/Contents/Resources/renderer/index.html'
     );
     expect(
       isAppOrigin(
-        'file:///Applications/BioRouter.app/Contents/Resources/renderer/assets/app.js',
+        'file:///Applications/Biorouter.app/Contents/Resources/renderer/assets/app.js',
         appUrl
       )
     ).toBe(true);
     expect(isAppOrigin('file:///tmp/biorouter-artifacts/artifact-1.html', appUrl)).toBe(false);
   });
 
-  it('never hands BioRouter itself to the external browser', () => {
+  it('never hands Biorouter itself to the external browser', () => {
     const appUrl = new URL('http://localhost:5174/');
     expect(shouldOpenExternalNavigation('http://localhost:5174/', appUrl)).toBe(false);
     expect(shouldOpenExternalNavigation('http://localhost:5174/pair', appUrl)).toBe(false);
@@ -35,7 +35,7 @@ describe('permissionPolicy', () => {
     expect(shouldOpenExternalNavigation('not a URL', appUrl)).toBe(false);
   });
 
-  it('allows only audio capture requested by BioRouter itself', () => {
+  it('allows only audio capture requested by Biorouter itself', () => {
     const appUrl = new URL('http://localhost:5173/');
     expect(
       isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['audio'])

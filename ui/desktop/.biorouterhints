@@ -1,6 +1,6 @@
 ## Project Overview
 
-The BioRouter Desktop App is an Electron application built with TypeScript, React, and modern web technologies. It's a chat interface application that connects to various AI providers and allows users to interact with AI models.
+The Biorouter Desktop App is an Electron application built with TypeScript, React, and modern web technologies. It's a chat interface application that connects to various AI providers and allows users to interact with AI models.
 
 ## Key Technologies
 

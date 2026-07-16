@@ -59,7 +59,7 @@ const settingsItem: NavigationItem = {
   path: '/settings',
   label: 'Settings',
   icon: Settings,
-  tooltip: 'Configure BioRouter settings',
+  tooltip: 'Configure Biorouter settings',
 };
 
 const menuItems: NavigationItem[] = [
@@ -117,7 +117,7 @@ const menuItems: NavigationItem[] = [
     path: '/applications',
     label: 'Applications',
     icon: AppWindow,
-    tooltip: 'BioRouter apps you built with Agent Drafter',
+    tooltip: 'Biorouter apps you built with Agent Drafter',
   },
   {
     type: 'item',

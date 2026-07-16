@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# verify-and-checkpoint.sh — an opt-in BioRouter **Stop hook**.
+# verify-and-checkpoint.sh — an opt-in Biorouter **Stop hook**.
 #
 # When the agent is about to finish a turn inside a git repository, this hook:
 #   1. (cheap, always) checks the work is committed — a result that builds "in my
@@ -11,7 +11,7 @@
 #      a broken build or red tests.
 #
 # If either check fails it prints a `{"decision":"block","reason":...}` document
-# on stdout, which BioRouter feeds back to the agent so it fixes/commits before
+# on stdout, which Biorouter feeds back to the agent so it fixes/commits before
 # stopping. The runtime caps consecutive Stop-hook blocks, so this cannot loop
 # forever. The hook is FAILURE-OPEN: outside a git repo, or on any internal
 # error, it allows the stop.

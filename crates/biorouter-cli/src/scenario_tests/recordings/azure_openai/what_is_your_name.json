@@ -281,7 +281,7 @@
         "content": [
           {
             "type": "text",
-            "text": "My name is BioRouter. I'm an AI agent created by Wanjun Gu from the Baranzini lab at UCSF. How can I assist you today?"
+            "text": "My name is Biorouter. I'm an AI agent created by Wanjun Gu from the Baranzini lab at UCSF. How can I assist you today?"
           }
         ],
         "metadata": {

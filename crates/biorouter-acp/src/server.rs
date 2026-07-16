@@ -403,7 +403,7 @@ impl BioRouterAcpAgent {
                     user_message = user_message.with_text(&text.text);
                 }
                 ContentBlock::Image(image) => {
-                    // BioRouter supports images via base64 encoded data
+                    // Biorouter supports images via base64 encoded data
                     // The ACP ImageContent has data as a String directly
                     user_message = user_message.with_image(&image.data, &image.mime_type);
                 }
@@ -723,7 +723,7 @@ impl BioRouterAcpAgent {
     ) -> Result<InitializeResponse, sacp::Error> {
         debug!(?args, "initialize request");
 
-        // Advertise BioRouter's capabilities
+        // Advertise Biorouter's capabilities
         let capabilities = AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(

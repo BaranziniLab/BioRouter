@@ -5,7 +5,7 @@ use rmcp::model::{
     Content, CreateElicitationRequestParams, CreateElicitationResult, ElicitationAction, ErrorCode,
     Extensions, JsonObject, Meta, NumberOrString, ProgressToken,
 };
-/// MCP client implementation for BioRouter
+/// MCP client implementation for Biorouter
 use rmcp::{
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
@@ -973,7 +973,7 @@ mod tests {
             extensions.insert(
                 from_value::<Meta>(json!({
                     "BIOROUTER-SESSION-ID": "old-session-1",
-                    "BioRouter-Session-Id": "old-session-2",
+                    "Biorouter-Session-Id": "old-session-2",
                     "other-key": "preserve-me"
                 }))
                 .unwrap(),

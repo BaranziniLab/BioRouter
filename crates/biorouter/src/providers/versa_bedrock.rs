@@ -65,7 +65,7 @@ impl VersaBedrockProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Required UCSF-issued credentials. Stored as secrets in BioRouter config.
+        // Required UCSF-issued credentials. Stored as secrets in Biorouter config.
         let access_key_id: String = config
             .get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID")
             .map_err(|_| {
@@ -119,7 +119,7 @@ impl VersaBedrockProvider {
 
         // Build credentials explicitly. This bypasses the AWS default credential
         // chain (profile files, IMDS, env vars), so users who only set the
-        // access key + secret in BioRouter — and have nothing in ~/.aws — still
+        // access key + secret in Biorouter — and have nothing in ~/.aws — still
         // get a working setup.
         let credentials =
             Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");

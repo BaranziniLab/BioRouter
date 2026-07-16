@@ -176,7 +176,7 @@ export default function ApplicationsView() {
             <div className="flex flex-col page-transition">
               <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
               <p className="text-sm text-text-muted mb-0">
-                Apps you built with Agent Drafter. Each one runs a full BioRouter agent with its own
+                Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
                 model, extensions, skills, and knowledge, and opens in your browser.{' '}
                 {getSearchShortcutText()} to search.
               </p>
@@ -211,7 +211,7 @@ export default function ApplicationsView() {
                 <p className="text-sm text-text-muted">
                   {searchTerm
                     ? 'No applications match your search.'
-                    : 'Ask BioRouter to build one. For example: "Use Agent Drafter to build a SPOKE dashboard app." It will show up here, ready to launch.'}
+                    : 'Ask Biorouter to build one. For example: "Use Agent Drafter to build a SPOKE dashboard app." It will show up here, ready to launch.'}
                 </p>
               </div>
             ) : (

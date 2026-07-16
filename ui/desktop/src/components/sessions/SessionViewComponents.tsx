@@ -120,7 +120,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                     >
                       <div className="flex justify-between items-center mb-2">
                         <span className="font-medium text-text-default">
-                          {message.role === 'user' ? 'You' : 'BioRouter'}
+                          {message.role === 'user' ? 'You' : 'Biorouter'}
                         </span>
                         <span className="text-xs text-text-muted">
                           {formatMessageTimestamp(message.created)}

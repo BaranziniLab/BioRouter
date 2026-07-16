@@ -148,7 +148,7 @@ export default function ConfigSettings() {
           Configuration
         </h2>
         <p className="text-xs text-text-muted">
-          Edit your BioRouter configuration settings
+          Edit your Biorouter configuration settings
           {currentProvider && ` (current settings for ${currentProvider})`}
         </p>
       </div>

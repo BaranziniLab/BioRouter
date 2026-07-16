@@ -1,4 +1,4 @@
-# BioRouter Windows command-policy tier (BR-68).
+# Biorouter Windows command-policy tier (BR-68).
 #
 # The Windows *floor* (non-bypassable, `deny`, mode-independent) lives in
 # security/patterns.rs as CatastrophicRules; this file is the auditable BR-21

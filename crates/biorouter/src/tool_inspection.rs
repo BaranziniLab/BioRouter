@@ -312,7 +312,7 @@ pub fn collect_warning_reasons(inspection_results: &[InspectionResult]) -> Vec<S
 
 /// Frame soft-stage warnings as a single system-authored guidance block. Unlike
 /// hook output (untrusted, third-party text), these strings are authored by
-/// BioRouter itself, so they are presented as first-party guidance.
+/// Biorouter itself, so they are presented as first-party guidance.
 pub fn frame_loop_warnings(reasons: &[String]) -> String {
     format!(
         "<biorouter-loop-guard>\n{}\n</biorouter-loop-guard>",

@@ -28,7 +28,7 @@ interface UpdateCheckResult {
 
 export class GitHubUpdater {
   private readonly owner = 'BaranziniLab';
-  private readonly repo = 'BioRouter';
+  private readonly repo = 'biorouter';
   private readonly apiUrl = `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
 
   async checkForUpdates(): Promise<UpdateCheckResult> {
@@ -49,7 +49,7 @@ export class GitHubUpdater {
       const response = await fetch(this.apiUrl, {
         headers: {
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': `BioRouter-Desktop/${app.getVersion()}`,
+          'User-Agent': `Biorouter-Desktop/${app.getVersion()}`,
         },
         signal: controller.signal,
       });
@@ -100,18 +100,18 @@ export class GitHubUpdater {
       log.info(`GitHubUpdater: Looking for asset for platform: ${platform}, arch: ${arch}`);
 
       // Real published release asset names (see CLAUDE.md "Release assets"):
-      //   BioRouter-{ver}-arm64.dmg, BioRouter-{ver}-x64.dmg,
-      //   BioRouter-win32-x64-{ver}.zip, biorouter_{ver}_amd64.deb,
-      //   BioRouter-{ver}-1.x86_64.rpm
+      //   Biorouter-{ver}-arm64.dmg, Biorouter-{ver}-x64.dmg,
+      //   Biorouter-win32-x64-{ver}.zip, biorouter_{ver}_amd64.deb,
+      //   Biorouter-{ver}-1.x86_64.rpm
       const v = latestVersion;
       let candidates: string[];
       if (platform === 'darwin') {
-        candidates = arch === 'arm64' ? [`BioRouter-${v}-arm64.dmg`] : [`BioRouter-${v}-x64.dmg`];
+        candidates = arch === 'arm64' ? [`Biorouter-${v}-arm64.dmg`] : [`Biorouter-${v}-x64.dmg`];
       } else if (platform === 'win32') {
-        candidates = [`BioRouter-win32-x64-${v}.zip`];
+        candidates = [`Biorouter-win32-x64-${v}.zip`];
       } else {
         // Linux: prefer .deb, then .rpm.
-        candidates = [`biorouter_${v}_amd64.deb`, `BioRouter-${v}-1.x86_64.rpm`];
+        candidates = [`biorouter_${v}_amd64.deb`, `Biorouter-${v}-1.x86_64.rpm`];
       }
 
       log.info(`GitHubUpdater: Candidate assets: ${candidates.join(', ')}`);
@@ -271,7 +271,7 @@ export class GitHubUpdater {
       // the file the user double-clicks is the actual installer.
       const urlName = downloadUrl.split('/').pop() || '';
       const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
-      const fileName = `BioRouter-${latestVersion}.${ext}`;
+      const fileName = `Biorouter-${latestVersion}.${ext}`;
       const downloadPath = path.join(downloadsDir, fileName);
 
       log.info(`GitHubUpdater: Writing file to ${downloadPath}...`);

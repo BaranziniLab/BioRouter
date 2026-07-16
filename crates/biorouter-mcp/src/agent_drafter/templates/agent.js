@@ -5,13 +5,13 @@
  *
  *   - transport "acp-ws":  the artifact is standalone (e.g. a Tauri export or a
  *       web page). It speaks the Agent Client Protocol (ACP) as a JSON-RPC client
- *       over a WebSocket to a BioRouter agent (a `biorouter acp` sidecar bridged
+ *       over a WebSocket to a Biorouter agent (a `biorouter acp` sidecar bridged
  *       to a socket, or a hosted biorouterd). This is the full conversational mode.
  *
- *   - transport "bridge":  the artifact is previewed *inside* BioRouter in the
+ *   - transport "bridge":  the artifact is previewed *inside* Biorouter in the
  *       sandboxed MCP-App iframe. It talks to the host over postMessage JSON-RPC
  *       (ui/message, tools/call). Full streaming back into the iframe requires the
- *       host bridge extension; until then prompts are routed into the BioRouter
+ *       host bridge extension; until then prompts are routed into the Biorouter
  *       chat and the artifact is notified.
  *
  * Configure via `window.BIOROUTER_AGENT_CONFIG = { transport, endpoint,
@@ -83,7 +83,7 @@
     });
   }
 
-  // --- MCP-App bridge transport (in-BioRouter preview) ------------------------
+  // --- MCP-App bridge transport (in-Biorouter preview) ------------------------
   // Speaks the MCP-UI host protocol (NOT JSON-RPC): post a UI action
   // `{ type, payload, messageId }` to the host and await its
   // `{ type: "ui-message-response", messageId, payload: { response } }` reply.
@@ -118,11 +118,11 @@
   }
 
   function bridgePrompt(text) {
-    // Route the prompt into the BioRouter conversation (the host appends it to
+    // Route the prompt into the Biorouter conversation (the host appends it to
     // chat). Full in-iframe streaming is a host-bridge capability tracked
     // separately; here we confirm the hand-off and notify the panel.
     return bridgeRequest("prompt", { prompt: text }).then(function () {
-      emit("message", { delta: "", note: "Sent to BioRouter. The agent's reply appears in the chat." });
+      emit("message", { delta: "", note: "Sent to Biorouter. The agent's reply appears in the chat." });
       return { routed: true };
     });
   }
@@ -141,7 +141,7 @@
   };
   window.BioRouterAgent = Agent;
 
-  // --- Auto-resize: trigger a height report to the BioRouter host iframe -------
+  // --- Auto-resize: trigger a height report to the Biorouter host iframe -------
   // The ResizeObserver + listeners live in resize.js (injected into every
   // artifact); here we just nudge a fresh measurement after DOM mutations.
   function reportSize() {

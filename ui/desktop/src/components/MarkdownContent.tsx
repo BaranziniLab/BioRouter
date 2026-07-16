@@ -347,7 +347,7 @@ const MarkdownContent = memo(function MarkdownContent({
                 </ArtifactLinkButton>
               );
             }
-            // Loopback/app URLs (the daemon serves BioRouter apps on 127.0.0.1)
+            // Loopback/app URLs (the daemon serves Biorouter apps on 127.0.0.1)
             // can be framed, so preview them inline in the side panel. Public
             // websites almost always send X-Frame-Options / frame-ancestors and
             // would render as a BLANK iframe, so those open in the real browser

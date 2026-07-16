@@ -4,15 +4,15 @@ import os from 'node:os';
 import log from './logger';
 
 /**
- * Ensures Windows shims are available in %LOCALAPPDATA%\BioRouter\bin
- * This allows the bundled executables to be found via PATH regardless of where BioRouter is installed
+ * Ensures Windows shims are available in %LOCALAPPDATA%\Biorouter\bin
+ * This allows the bundled executables to be found via PATH regardless of where Biorouter is installed
  */
 export async function ensureWinShims(): Promise<void> {
   if (process.platform !== 'win32') return;
 
   const srcDir = path.join(process.resourcesPath, 'bin');
   const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
-  const tgtDir = path.join(localAppData, 'BioRouter', 'bin');
+  const tgtDir = path.join(localAppData, 'Biorouter', 'bin');
 
   try {
     await fs.promises.mkdir(tgtDir, { recursive: true });
@@ -39,19 +39,19 @@ export async function ensureWinShims(): Promise<void> {
     const currentPath = process.env.PATH ?? '';
     if (!currentPath.toLowerCase().includes(tgtDir.toLowerCase())) {
       process.env.PATH = `${tgtDir}${path.delimiter}${currentPath}`;
-      log.info(`Added ${tgtDir} to PATH for BioRouter processes only`);
+      log.info(`Added ${tgtDir} to PATH for Biorouter processes only`);
     } else {
       const pathParts = currentPath.split(path.delimiter);
       const binDirIndex = pathParts.findIndex((p) => p.toLowerCase() === tgtDir.toLowerCase());
       if (binDirIndex > 0) {
         pathParts.splice(binDirIndex, 1);
         process.env.PATH = `${tgtDir}${path.delimiter}${pathParts.join(path.delimiter)}`;
-        log.info(`Moved ${tgtDir} to beginning of PATH for BioRouter processes only`);
+        log.info(`Moved ${tgtDir} to beginning of PATH for Biorouter processes only`);
       }
     }
 
     // Bundle portable git as a fallback for users without git installed.
-    // Copied to BioRouter\git\ (separate from BioRouter\bin\) and appended to PATH
+    // Copied to Biorouter\git\ (separate from Biorouter\bin\) and appended to PATH
     // AFTER all standard locations so system git always wins if present.
     await ensureBundledGit(srcDir, localAppData);
   } catch (error) {
@@ -61,7 +61,7 @@ export async function ensureWinShims(): Promise<void> {
 
 async function ensureBundledGit(srcBinDir: string, localAppData: string): Promise<void> {
   const srcGitDir = path.join(srcBinDir, 'git');
-  const dstGitDir = path.join(localAppData, 'BioRouter', 'git');
+  const dstGitDir = path.join(localAppData, 'Biorouter', 'git');
   const gitExe = path.join(dstGitDir, 'cmd', 'git.exe');
 
   try {
@@ -71,7 +71,7 @@ async function ensureBundledGit(srcBinDir: string, localAppData: string): Promis
     return;
   }
 
-  // Only copy once per install; BioRouter updates overwrite by deleting and re-copying.
+  // Only copy once per install; Biorouter updates overwrite by deleting and re-copying.
   if (!fs.existsSync(gitExe)) {
     log.info('Installing bundled git fallback...');
     fs.cpSync(srcGitDir, dstGitDir, { recursive: true, force: true });

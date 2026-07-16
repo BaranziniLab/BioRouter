@@ -28,7 +28,7 @@ impl SystemAutomation for MacOSAutomation {
         if !trimmed_err.is_empty() {
             msg.push_str(&format!(": {trimmed_err}"));
         }
-        // The dominant, actionable cause on macOS: BioRouter has not been
+        // The dominant, actionable cause on macOS: Biorouter has not been
         // granted Accessibility / Automation permission for the target app.
         // Surfacing this lets the agent stop and ask the user instead of looping.
         if trimmed_err.contains("not allowed")
@@ -38,7 +38,7 @@ impl SystemAutomation for MacOSAutomation {
         // can't get ... (often UI scripting blocked)
         {
             msg.push_str(
-                "\n\nThis is a macOS permission error, not a scripting mistake. BioRouter must be \
+                "\n\nThis is a macOS permission error, not a scripting mistake. Biorouter must be \
                  granted access under System Settings > Privacy & Security > Accessibility (and \
                  Automation for the target app). Ask the user to grant it; do NOT retry the same \
                  script until they have.",

@@ -995,7 +995,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "agent_drafter",
             "Agent Drafter",
-            "Build interactive artifacts (static, or with an embedded BioRouter agent) and export them",
+            "Build interactive artifacts (static, or with an embedded Biorouter agent) and export them",
         ),
     ];
 

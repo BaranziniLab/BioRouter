@@ -1,4 +1,4 @@
-//! `biorouter apps` subcommands — list, open, and serve the BioRouter apps
+//! `biorouter apps` subcommands — list, open, and serve the Biorouter apps
 //! authored by Agent Drafter (design §7, Apps SDK v2 Phase 6 "CLI parity").
 //!
 //! Apps live on disk under `~/.config/biorouter/agent_drafter/<id>/`, each a
@@ -214,7 +214,7 @@ fn configured_port() -> u16 {
         .unwrap_or(3000)
 }
 
-/// True if a BioRouter daemon answers `GET /status` on `host:port`. `/status` is
+/// True if a Biorouter daemon answers `GET /status` on `host:port`. `/status` is
 /// auth-exempt, so this needs no secret key. Implemented with a raw socket to
 /// avoid pulling in an HTTP client dependency.
 async fn daemon_ok(host: &str, port: u16) -> bool {
@@ -296,7 +296,7 @@ async fn ensure_daemon(port: u16) -> Result<Daemon> {
         })?;
 
     // Poll for readiness, but bail early if the child dies (e.g. the port is
-    // already taken by a non-BioRouter process).
+    // already taken by a non-Biorouter process).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     loop {
         if let Ok(Some(status)) = child.try_wait() {

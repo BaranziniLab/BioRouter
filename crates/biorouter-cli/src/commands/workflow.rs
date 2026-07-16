@@ -96,7 +96,7 @@ where
             Ok(_) => {
                 writeln!(
                     out,
-                    "{} Opened workflow '{}' in BioRouter Desktop",
+                    "{} Opened workflow '{}' in Biorouter Desktop",
                     style("✓").green().bold(),
                     workflow.title
                 )?;
@@ -105,12 +105,12 @@ where
             Err(err) => {
                 writeln!(
                     out,
-                    "{} Failed to open workflow in BioRouter Desktop: {}",
+                    "{} Failed to open workflow in Biorouter Desktop: {}",
                     style("✗").red().bold(),
                     err
                 )?;
                 writeln!(out, "Generated deeplink: {}", deeplink_url)?;
-                writeln!(out, "You can manually copy and open the URL above, or ensure BioRouter Desktop is installed.")?;
+                writeln!(out, "You can manually copy and open the URL above, or ensure Biorouter Desktop is installed.")?;
                 Err(anyhow::anyhow!("Failed to open workflow: {}", err))
             }
         },
@@ -354,7 +354,7 @@ instructions: "Test instructions"
         let (result, _, output) = run_handle_open(&workflow_path, &[], Err(opener_err));
 
         assert!(result.is_err());
-        assert!(output.contains("Failed to open workflow in BioRouter Desktop"));
+        assert!(output.contains("Failed to open workflow in Biorouter Desktop"));
         assert!(output.contains("desktop not found"));
         assert!(output.contains(&expected_url));
     }

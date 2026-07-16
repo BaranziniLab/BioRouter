@@ -1,4 +1,4 @@
-BioRouter’s permissions determine how much autonomy it has when modifying files, using extensions, and performing automated actions. By selecting a permission mode, you have full control over how biorouter interacts with your development environment.
+Biorouter’s permissions determine how much autonomy it has when modifying files, using extensions, and performing automated actions. By selecting a permission mode, you have full control over how biorouter interacts with your development environment.
 
 **Permission Modes Video Walkthrough**
 

@@ -8,7 +8,7 @@ pub const INGEST_PROCEDURE: &str = concat!(
     "   the source touches.\n",
     "3. For each candidate page: read existing knowledge/entities/ or knowledge/concepts/ pages if they exist.\n",
     "   Prefer updating the canonical page instead of creating aliases or duplicates.\n",
-    "   If the source says 'BAAM' and an existing page already represents 'BioRouter AI Agent Marketplace',\n",
+    "   If the source says 'BAAM' and an existing page already represents 'Biorouter AI Agent Marketplace',\n",
     "   update that page instead of inventing a second one.\n",
     "4. Write or update knowledge/sources/<source-id>.md with: a 2-3 sentence overview, key claims as bullets,\n",
     "   methods if applicable, limitations, and outbound [[knowledge-link]] references.\n",

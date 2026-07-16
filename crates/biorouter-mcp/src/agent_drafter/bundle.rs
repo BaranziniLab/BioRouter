@@ -23,10 +23,10 @@ use crate::agent_drafter::store::Manifest;
 // Rather than only handing the model UI templates, we wrap app authoring in a
 // harness that *validates whatever the model generates* and feeds actionable
 // findings back so it can self-correct. The harness enforces three things on
-// the LLM's free-form output: (1) it reaches the BioRouter backend through the
+// the LLM's free-form output: (1) it reaches the Biorouter backend through the
 // App SDK / agent protocol, (2) it is self-contained (no external/CDN assets
 // that break portability), and (3) it stays aesthetically aligned with the
-// BioRouter design system (uses `br-*` classes + tokens, not ad-hoc CSS).
+// Biorouter design system (uses `br-*` classes + tokens, not ad-hoc CSS).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintLevel {
@@ -82,10 +82,10 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (2) Self-contained — no external/CDN assets.
     if il.contains("src=\"http") || il.contains("src='http") {
-        error(&mut out, "index.html loads an external <script src=\"http…\">. Apps must be self-contained — remove it and use the BioRouter App SDK instead.");
+        error(&mut out, "index.html loads an external <script src=\"http…\">. Apps must be self-contained — remove it and use the Biorouter App SDK instead.");
     }
     if il.contains("<link") && (il.contains("href=\"http") || il.contains("href='http")) {
-        error(&mut out, "index.html links an external stylesheet. Remove it; the BioRouter design system is injected automatically.");
+        error(&mut out, "index.html links an external stylesheet. Remove it; the Biorouter design system is injected automatically.");
     }
     for cdn in ["cdn.", "unpkg.com", "jsdelivr", "googleapis", "cdnjs"] {
         if il.contains(cdn) {
@@ -144,7 +144,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (1) Backend wiring through the App SDK / agent protocol.
     if !main.contains("./sdk") {
-        error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the BioRouter backend.");
+        error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the Biorouter backend.");
     }
     for line in main.lines() {
         let t = line.trim_start();
@@ -230,10 +230,10 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         warning(&mut out, "index.html contains a <style> block — prefer the design-system classes/CSS variables over custom CSS for a native look.");
     }
     if il.contains("color:#") || il.contains("color: #") || il.contains("background:#") {
-        warning(&mut out, "index.html uses raw hex colors — use var(--br-text)/var(--br-accent)/… tokens so the app matches BioRouter's theme.");
+        warning(&mut out, "index.html uses raw hex colors — use var(--br-text)/var(--br-accent)/… tokens so the app matches Biorouter's theme.");
     }
     if !il.contains("br-") {
-        warning(&mut out, "index.html uses no BioRouter design-system classes (br-*). The UI will look off-theme; compose with br-card/br-btn/br-select/etc.");
+        warning(&mut out, "index.html uses no Biorouter design-system classes (br-*). The UI will look off-theme; compose with br-card/br-btn/br-select/etc.");
     }
     if !il.contains("br-output") && !il.contains("data-br-chat") {
         warning(&mut out, "No result surface found. Add a <div class=\"br-output\" id=\"out\"></div> (target for br.run) or a [data-br-chat] panel.");
@@ -1528,7 +1528,7 @@ mod tests {
         let report = build_app(dir.path()).unwrap();
         assert!(report.ok, "build failed: {}", report.log);
         let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
-        assert!(js.contains("BioRouter") || js.contains("createApp"));
+        assert!(js.contains("Biorouter") || js.contains("createApp"));
     }
 
     #[test]

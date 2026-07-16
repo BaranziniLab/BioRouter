@@ -2030,7 +2030,7 @@ impl SessionStorage {
 
     async fn reconcile_usage_schema(pool: &Pool<Sqlite>) -> Result<()> {
         // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
-        // concurrently running BioRouter processes. A deferred transaction lets
+        // concurrently running Biorouter processes. A deferred transaction lets
         // two readers both observe a missing column before either ALTERs it.
         let mut connection = pool.acquire().await?;
         sqlx::query("BEGIN IMMEDIATE")

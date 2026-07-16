@@ -19,7 +19,7 @@ interface MessageDivergeLinkProps {
  *
  * - In the Dashboard (canvas) view, the branch opens as a new chat box inline.
  * - Everywhere else (single chat / pair window), the branch opens in a new
- *   BioRouter desktop window.
+ *   Biorouter desktop window.
  */
 export default function MessageDivergeLink({
   sessionId,

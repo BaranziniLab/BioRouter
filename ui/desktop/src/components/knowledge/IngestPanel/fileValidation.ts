@@ -174,7 +174,7 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'warning',
           'Staging as plain text',
-          `${label} is not one of the common first-class ingest formats, so BioRouter will treat it as readable text if possible during digestion.`
+          `${label} is not one of the common first-class ingest formats, so Biorouter will treat it as readable text if possible during digestion.`
         )
       );
     }

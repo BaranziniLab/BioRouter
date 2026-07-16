@@ -6,8 +6,8 @@
 # relaunch when the app calls quitAndInstall.
 #
 # Setup (built beforehand by the caller):
-#   $NEW_ZIP  — signed+notarized BioRouter.app zip at the NEW version (payload)
-#   $OLD_APP  — signed+notarized BioRouter.app at the OLD version (under test)
+#   $NEW_ZIP  — signed+notarized Biorouter.app zip at the NEW version (payload)
+#   $OLD_APP  — signed+notarized Biorouter.app at the OLD version (under test)
 #
 # Flow: serve NEW + latest-mac.yml over local HTTP → run a copy of OLD pointed at
 # that feed with BIOROUTER_UPDATE_AUTO_INSTALL=1 → poll OLD's on-disk version
@@ -20,8 +20,8 @@ set -uo pipefail
 DESK="$(cd "$(dirname "$0")/.." && pwd)"
 NEW_VER="${NEW_VER:-1.86.0}"
 OLD_VER="${OLD_VER:-1.85.5}"
-NEW_ZIP="${NEW_ZIP:-$DESK/out/make/zip/darwin/arm64/BioRouter-darwin-arm64-$NEW_VER.zip}"
-OLD_APP="${OLD_APP:-$DESK/test-builds/old/BioRouter.app}"
+NEW_ZIP="${NEW_ZIP:-$DESK/out/make/zip/darwin/arm64/Biorouter-darwin-arm64-$NEW_VER.zip}"
+OLD_APP="${OLD_APP:-$DESK/test-builds/old/Biorouter.app}"
 PORT="${PORT:-8799}"
 
 WORK="$(mktemp -d /tmp/br-swap.XXXXXX)"
@@ -40,7 +40,7 @@ done
 cleanup() {
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null
   [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
-  pkill -f "$RUNDIR/BioRouter.app" 2>/dev/null
+  pkill -f "$RUNDIR/Biorouter.app" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -55,7 +55,7 @@ echo "    manifest:"; sed 's/^/      /' "$SERVE/latest-mac.yml"
 echo "==> staging OLD app ($OLD_VER) into writable run dir"
 [ -d "$OLD_APP" ] || { echo "FAIL: OLD_APP missing: $OLD_APP"; exit 1; }
 cp -R "$OLD_APP" "$RUNDIR/"
-APP="$RUNDIR/BioRouter.app"
+APP="$RUNDIR/Biorouter.app"
 PLIST="$APP/Contents/Info.plist"
 BEFORE="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST")"
 echo "    staged version before update: $BEFORE"
@@ -68,11 +68,11 @@ sleep 1
 curl -fsS "http://127.0.0.1:$PORT/latest-mac.yml" >/dev/null || { echo "FAIL: server not serving"; exit 1; }
 
 echo "==> launching OLD app pointed at local feed (auto-install on download)"
-BIN="$APP/Contents/MacOS/BioRouter"
+BIN="$APP/Contents/MacOS/Biorouter"
 USERDATA="$WORK/userdata"; mkdir -p "$USERDATA"
 APPLOG="$USERDATA/logs/main.log"   # electron-log writes here (packaged builds)
 # --user-data-dir isolates this test instance's state (logs, updater cache,
-# window state) from the user's running BioRouter — no shared-state collisions.
+# window state) from the user's running Biorouter — no shared-state collisions.
 XDG_CONFIG_HOME="$CFG" \
 BIOROUTER_DISABLE_KEYRING=true \
 BIOROUTER_UPDATE_FEED_URL="http://127.0.0.1:$PORT" \

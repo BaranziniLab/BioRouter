@@ -10,7 +10,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "1.88.1"
+    "version": "1.88.2"
   },
   "paths": {
     "/action-required/tool-confirmation": {
@@ -4719,7 +4719,7 @@
             }
           }
         ],
-        "description": "A BioRouter App combining MCP resource data with BioRouter-specific metadata"
+        "description": "A Biorouter App combining MCP resource data with Biorouter-specific metadata"
       },
       "CallToolRequest": {
         "type": "object",

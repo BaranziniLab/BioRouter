@@ -1,6 +1,6 @@
-# UCSF BioRouter — Installation and Setup
+# UCSF Biorouter — Installation and Setup
 
-This guide covers how to install BioRouter, connect an LLM provider, and optionally configure MCP extensions and agents.
+This guide covers how to install Biorouter, connect an LLM provider, and optionally configure MCP extensions and agents.
 
 **GitHub:** https://github.com/BaranziniLab/biorouter
 **Latest releases:** https://github.com/BaranziniLab/biorouter/releases
@@ -9,15 +9,15 @@ Always install the newest release for the latest features and bug fixes.
 
 ---
 
-## Step 1 — Install BioRouter
+## Step 1 — Install Biorouter
 
 ### macOS (Desktop App — Recommended)
 
 1. Go to https://github.com/BaranziniLab/biorouter/releases and download the latest macOS release (`.dmg` or `.zip`).
-2. Open the downloaded file and move BioRouter to your Applications folder.
-3. Launch BioRouter from Applications.
+2. Open the downloaded file and move Biorouter to your Applications folder.
+3. Launch Biorouter from Applications.
 
-**Note:** If you see a security warning on an Apple Silicon Mac, ensure `~/.config` has read and write permissions. BioRouter uses this directory for its configuration and log files.
+**Note:** If you see a security warning on an Apple Silicon Mac, ensure `~/.config` has read and write permissions. Biorouter uses this directory for its configuration and log files.
 
 ### macOS (CLI)
 
@@ -48,7 +48,7 @@ https://github.com/BaranziniLab/biorouter/releases
 
 ## Step 2 — Configure an LLM Provider
 
-BioRouter needs an LLM provider to function. On first launch, you will be prompted to configure one.
+Biorouter needs an LLM provider to function. On first launch, you will be prompted to configure one.
 
 ### UCSF Users — Recommended Options
 
@@ -59,13 +59,13 @@ BioRouter needs an LLM provider to function. On first launch, you will be prompt
 
 **Option B: Amazon Bedrock (UCSF-hosted Anthropic)**
 - Uses AWS SSO with your UCSF AWS account.
-- Run `aws sso login --profile <your-profile>` before launching BioRouter.
+- Run `aws sso login --profile <your-profile>` before launching Biorouter.
 - Select "Amazon Bedrock" and configure `AWS_PROFILE` and `AWS_REGION`.
 
 **Option C: Local / Air-gapped (Ollama)**
 - Install Ollama: https://ollama.com
 - Pull a model: `ollama pull qwen3`
-- Select "Ollama" in BioRouter — no API key needed.
+- Select "Ollama" in Biorouter — no API key needed.
 - Data stays entirely on your device.
 
 ### Commercial Cloud Providers
@@ -83,7 +83,7 @@ For direct access using your own API key:
 
 **Desktop setup:**
 1. On the welcome screen, enter your API key in the Quick Setup panel.
-2. BioRouter will test the key and prompt you to choose a model.
+2. Biorouter will test the key and prompt you to choose a model.
 3. You're ready to start a session.
 
 **CLI setup:**
@@ -117,13 +117,13 @@ biorouter session
 > Hello, can you confirm you're working?
 ```
 
-If BioRouter responds, the setup is complete.
+If Biorouter responds, the setup is complete.
 
 ---
 
 ## Step 4 (Optional) — Enable or Add Extensions
 
-Extensions give BioRouter access to tools like file operations, web search, databases, and more.
+Extensions give Biorouter access to tools like file operations, web search, databases, and more.
 
 The **Developer** extension is enabled by default and provides core capabilities (reading/writing files, running shell commands, etc.).
 
@@ -172,7 +172,7 @@ extensions:
 
 ## Step 5 (Optional) — Set Up MCP Agents for Specialized Tasks
 
-BioRouter can connect to remote MCP agents that provide specialized research capabilities (database access, literature retrieval, bioinformatics tools, etc.).
+Biorouter can connect to remote MCP agents that provide specialized research capabilities (database access, literature retrieval, bioinformatics tools, etc.).
 
 To connect a remote MCP agent over HTTP:
 ```yaml
@@ -205,14 +205,14 @@ This file stores provider settings, API keys (encrypted), extension configuratio
 
 **Electron app state** (Desktop only) is stored at:
 ```
-~/Library/Application Support/BioRouter/     (macOS)
+~/Library/Application Support/Biorouter/     (macOS)
 ```
 
 ---
 
-## Updating BioRouter
+## Updating Biorouter
 
-**Desktop:** BioRouter checks for updates automatically. You can also manually download the latest release from https://github.com/BaranziniLab/biorouter/releases.
+**Desktop:** Biorouter checks for updates automatically. You can also manually download the latest release from https://github.com/BaranziniLab/biorouter/releases.
 
 **CLI:** The `biorouter` CLI is bundled with the desktop app. To upgrade it on macOS or Windows, re-download the latest app from https://github.com/BaranziniLab/biorouter/releases and run `biorouter setup-path` to point your `PATH` at the new binary. On Linux, upgrade the headless `biorouter-cli` package instead (`sudo apt install ./biorouter-cli_*.deb` or `sudo dnf install ./biorouter-cli-*.rpm`).
 

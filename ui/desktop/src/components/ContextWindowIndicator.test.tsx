@@ -35,7 +35,7 @@ describe('ContextWindowGauge compaction control', () => {
     mocks.upsertConfig.mockResolvedValue({ data: null });
   });
 
-  it('uses an inward compression icon and a BioRouter tooltip when disabled', async () => {
+  it('uses an inward compression icon and a Biorouter tooltip when disabled', async () => {
     const user = userEvent.setup();
     render(
       <ContextWindowGauge

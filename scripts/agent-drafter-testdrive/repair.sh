@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repair a test-drive app IN BioRouter, using the fixed platform's own agent.
+# Repair a test-drive app IN Biorouter, using the fixed platform's own agent.
 #
 # This is the end-to-end proof of the remediation: the same Agent Drafter that
 # produced these broken apps is pointed at one of them and asked to fix it — with
@@ -44,7 +44,7 @@ export BIOROUTER_DISABLE_KEYRING=true
 export BIOROUTER_ESBUILD_BIN="$ROOT/ui/desktop/node_modules/.bin/esbuild"
 
 read -r -d '' PROMPT <<EOF || true
-Repair the BioRouter app "$APP". It was authored against an older SDK and has
+Repair the Biorouter app "$APP". It was authored against an older SDK and has
 four defects. Fix all of them, then rebuild.
 
 1. It configures a knowledge base that does not exist on this machine. Call
@@ -68,7 +68,7 @@ four defects. Fix all of them, then rebuild.
 4. Finally call \`build_app\` and then \`lint_app\`. Report the remaining findings.
 
 Work only on this app. Do not create a new one. Use ONLY the agent_drafter tools —
-do not shell out, do not read BioRouter's source, do not create symlinks. If a tool
+do not shell out, do not read Biorouter's source, do not create symlinks. If a tool
 rejects something, read the rejection: it names what is actually installed and what
 to do instead.
 EOF

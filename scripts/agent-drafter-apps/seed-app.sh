@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministically seed a BioRouter app into the store so biorouterd can serve
+# Deterministically seed a Biorouter app into the store so biorouterd can serve
 # it. The SDK is copied from the worktree templates so the served bundle is the
 # real runtime. Model defaults to xiaomi_mimo / mimo-v2.5.
 #

@@ -103,7 +103,7 @@ vi.mock('./components/ProviderGuard', () => ({
     // For this test, we'll simulate that behavior
     const hasProvider = window.electron?.getConfig()?.BIOROUTER_DEFAULT_PROVIDER;
     if (!hasProvider) {
-      return <div>Welcome to BioRouter!</div>;
+      return <div>Welcome to Biorouter!</div>;
     }
     return <>{children}</>;
   },
@@ -297,7 +297,7 @@ describe('App Component - Brand New State', () => {
       expect(mockElectron.reactReady).toHaveBeenCalled();
     });
 
-    expect(screen.getByText('Welcome to BioRouter!')).toBeInTheDocument();
+    expect(screen.getByText('Welcome to Biorouter!')).toBeInTheDocument();
   });
 
   it('should not redirect to /welcome when provider is configured', async () => {

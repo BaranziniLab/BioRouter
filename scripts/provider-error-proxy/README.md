@@ -1,11 +1,11 @@
 # Provider Error Proxy
 
-A network-level HTTP proxy for simulating provider errors when testing BioRouter's error handling and retry logic.
+A network-level HTTP proxy for simulating provider errors when testing Biorouter's error handling and retry logic.
 
 ## Features
 
 - **Interactive error injection**: Manually trigger different error types via stdin commands
-- **Network-level interception**: No changes to BioRouter's Rust code required
+- **Network-level interception**: No changes to Biorouter's Rust code required
 - **Multi-provider support**: Works with OpenAI, Anthropic, Google, OpenRouter, Tetrate, and Databricks
 - **Streaming support**: Handles both regular HTTP responses and streaming responses (SSE/chunked)
 - **Provider-specific errors**: Returns appropriate error codes and formats for each provider
@@ -17,7 +17,7 @@ A network-level HTTP proxy for simulating provider errors when testing BioRouter
 # 1. Start the proxy (from scripts/provider-error-proxy directory)
 uv run proxy.py
 
-# 2. In another terminal, configure BioRouter to use the proxy
+# 2. In another terminal, configure Biorouter to use the proxy
 export OPENAI_HOST=http://localhost:8888
 export ANTHROPIC_HOST=http://localhost:8888
 export GOOGLE_HOST=http://localhost:8888
@@ -28,7 +28,7 @@ export DATABRICKS_HOST=http://localhost:8888
 # For Databricks with OAuth, also set the real host:
 export DATABRICKS_REAL_HOST=https://your-workspace.databricks.com
 
-# 3. Run BioRouter normally
+# 3. Run Biorouter normally
 biorouter session start "tell me a joke"
 
 # 4. In the proxy terminal, use interactive commands:
@@ -113,7 +113,7 @@ Once the proxy is running, you can control error injection interactively:
 
 The proxy will display the current mode and request count after each command.
 
-### Configuring BioRouter
+### Configuring Biorouter
 
 Set environment variables to redirect provider traffic through the proxy:
 
@@ -132,7 +132,7 @@ For providers that require authentication or metadata endpoints (like Databricks
 export DATABRICKS_REAL_HOST=https://your-workspace.databricks.com
 ```
 
-Then run BioRouter normally. The proxy will intercept API requests and you can manually trigger errors as needed, while authentication and metadata requests are forwarded to the real provider.
+Then run Biorouter normally. The proxy will intercept API requests and you can manually trigger errors as needed, while authentication and metadata requests are forwarded to the real provider.
 
 ## How It Works
 
@@ -189,7 +189,7 @@ $ uv run proxy.py
 ============================================================
 Port: 8888
 
-To use with BioRouter, set these environment variables:
+To use with Biorouter, set these environment variables:
   export OPENAI_HOST=http://localhost:8888
   export ANTHROPIC_HOST=http://localhost:8888
   ...
@@ -245,8 +245,8 @@ The proxy is built with `aiohttp` for async HTTP handling. Key components:
 To test the proxy:
 
 1. Start the proxy: `uv run proxy.py`
-2. Configure BioRouter to use the proxy (set environment variables)
-3. Run BioRouter in another terminal
+2. Configure Biorouter to use the proxy (set environment variables)
+3. Run Biorouter in another terminal
 4. Use interactive commands to trigger different error types
-5. Observe how BioRouter handles each error type
+5. Observe how Biorouter handles each error type
 6. Check proxy logs to see which requests were forwarded vs. errored

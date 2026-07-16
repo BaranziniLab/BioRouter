@@ -131,7 +131,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
 
       const { installDir } = result;
 
-      // Store secrets in BioRouter's keyring; track which ones succeeded
+      // Store secrets in Biorouter's keyring; track which ones succeeded
       const secretEnvKeys: string[] = [];
       for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
         const res = await upsertConfig({
@@ -201,7 +201,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
         {step === 'drop' && (
           <div className="py-4 space-y-4">
             <p className="text-sm text-text-muted">
-              Install a BioRouter extension bundle (.brxt file).
+              Install a Biorouter extension bundle (.brxt file).
             </p>
 
             {/* Drop zone */}

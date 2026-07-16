@@ -431,7 +431,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       );
     } else if (entry && memory == null) {
       warnings.push(
-        `BioRouter could not detect VRAM. ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
+        `Biorouter could not detect VRAM. ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
       );
     }
 

@@ -39,7 +39,7 @@ pub enum KbIdError {
 /// It now shares the crate resolver (`Block/Block/biorouter`, matching
 /// `biorouter::config::Paths`). The two tuples resolve identically on XDG and on
 /// macOS; they differ only on Windows, where the old path was never the one the
-/// rest of BioRouter used anyway.
+/// rest of Biorouter used anyway.
 pub fn knowledge_root() -> anyhow::Result<PathBuf> {
     Ok(crate::paths::in_config_dir("knowledge"))
 }

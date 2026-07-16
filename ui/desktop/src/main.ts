@@ -94,6 +94,16 @@ function shouldSetupUpdater(): boolean {
 // Define temp directory for pasted images
 const biorouterTempDir = path.join(app.getPath('temp'), 'biorouter-pasted-images');
 
+function resolveImagePath(filename: string): string | undefined {
+  return [
+    path.join(process.resourcesPath, 'images', filename),
+    path.join(process.cwd(), 'src', 'images', filename),
+    path.join(__dirname, '..', 'images', filename),
+    path.join(__dirname, 'images', filename),
+    path.join(process.cwd(), 'images', filename),
+  ].find((candidate) => fsSync.existsSync(candidate));
+}
+
 function expandBiorouterPath(filePath: string): string {
   const expandedPath = expandTilde(filePath);
   const pathRoot = process.env.BIOROUTER_PATH_ROOT;
@@ -342,7 +352,7 @@ if (started) app.quit();
 // Global safety net: turn uncaught exceptions / unhandled rejections in the
 // main process into logged diagnostics instead of bare brk #0 aborts. The
 // default Node behavior tears the process down with no readable cause line
-// in the crash report, which is what every recent BioRouter crash report
+// in the crash report, which is what every recent Biorouter crash report
 // has looked like. Logging here doesn't *prevent* the crash, but it
 // guarantees the next .ips will have actionable context.
 process.on('uncaughtException', (err, origin) => {
@@ -495,7 +505,7 @@ let pendingBrxtFilePath: string | null = null;
  * A window-owning deep link claims the launch, so appMain() will not open its
  * own window. If the link then fails to produce one — a malformed URL, a
  * backend that won't start — the app would sit running with nothing on screen,
- * which is indistinguishable from "clicking the link quit BioRouter". Always
+ * which is indistinguishable from "clicking the link quit Biorouter". Always
  * leave the user with a window.
  */
 async function ensureWindowAfterDeepLink(openDir?: string | null) {
@@ -699,7 +709,7 @@ app.on('open-url', async (_event, url) => {
 app.on('will-finish-launching', () => {
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
-      applicationName: 'BioRouter',
+      applicationName: 'Biorouter',
       applicationVersion: app.getVersion(),
     });
   }
@@ -762,7 +772,7 @@ async function handleFileOpen(filePath: string) {
 
     // Show user-friendly error notification
     new Notification({
-      title: 'BioRouter',
+      title: 'Biorouter',
       body: `Could not open directory: ${path.basename(filePath)}`,
     }).show();
   }
@@ -949,7 +959,13 @@ const createChat = async (
     resizable: true,
     useContentSize: true,
     show: windowOptions?.show ?? true,
-    icon: path.join(__dirname, '../images/icon.icns'),
+    icon: resolveImagePath(
+      process.platform === 'win32'
+        ? 'icon.ico'
+        : process.platform === 'darwin'
+          ? 'icon.icns'
+          : 'icon.png'
+    ),
     webPreferences: {
       spellcheck: settings.spellcheckEnabled ?? true,
       preload: path.join(__dirname, 'preload.js'),
@@ -1040,7 +1056,7 @@ const createChat = async (
     } else {
       dialog.showMessageBoxSync({
         type: 'error',
-        title: 'BioRouter Failed to Start',
+        title: 'Biorouter Failed to Start',
         message: 'The backend server failed to start.',
         detail: errorLog.join('\n'),
         buttons: ['OK'],
@@ -1202,7 +1218,7 @@ const createChat = async (
     }
   }
 
-  // BioRouter's react app uses HashRouter, so the path + search params follow a #/
+  // Biorouter's react app uses HashRouter, so the path + search params follow a #/
   url.hash = `${appPath}?${searchParams.toString()}`;
   let formattedUrl = formatUrl(url);
   log.info('Opening URL: ', formattedUrl);
@@ -2677,7 +2693,7 @@ function isAllowedRegistryUrl(rawUrl: string): URL | null {
 ipcMain.handle('registry:fetch', async () => {
   try {
     const response = await fetch(REGISTRY_URL, {
-      headers: { 'User-Agent': 'BioRouter', Accept: 'application/json' },
+      headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
     });
     if (!response.ok) return { error: `HTTP ${response.status}` };
     const json = await response.json();
@@ -2700,7 +2716,7 @@ ipcMain.handle('registry:download', async (_event, { url }: { url: string }) => 
 
   try {
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'BioRouter' },
+      headers: { 'User-Agent': 'Biorouter' },
       redirect: 'follow',
     });
     if (!response.ok) return { error: `Download failed: HTTP ${response.status}` };
@@ -2730,8 +2746,8 @@ ipcMain.handle('brxt:open-file-dialog', async (event) => {
   }
   const win = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(win!, {
-    title: 'Select BioRouter Extension Bundle',
-    filters: [{ name: 'BioRouter Extension Bundle', extensions: ['brxt'] }],
+    title: 'Select Biorouter Extension Bundle',
+    filters: [{ name: 'Biorouter Extension Bundle', extensions: ['brxt'] }],
     properties: ['openFile'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -3584,11 +3600,11 @@ function buildApplicationMenu() {
   ];
 
   const template: MenuItemConstructorOptions[] = [
-    // ── BioRouter app menu (macOS only) ──────────────────────────────────
+    // ── Biorouter app menu (macOS only) ──────────────────────────────────
     ...(isMac
       ? [
           {
-            label: 'BioRouter',
+            label: 'Biorouter',
             submenu: [
               { role: 'about' as const },
               { type: 'separator' as const },
@@ -3617,7 +3633,7 @@ function buildApplicationMenu() {
                 },
               },
               { type: 'separator' as const },
-              { role: 'quit' as const, label: 'Quit BioRouter' },
+              { role: 'quit' as const, label: 'Quit Biorouter' },
             ],
           } as MenuItemConstructorOptions,
         ]
@@ -3713,7 +3729,7 @@ function buildApplicationMenu() {
         { type: 'separator' as const },
         { role: 'close' as const },
         {
-          label: 'Focus BioRouter Window',
+          label: 'Focus Biorouter Window',
           accelerator: 'CmdOrCtrl+Alt+G',
           click() {
             focusWindow();
@@ -4268,7 +4284,7 @@ async function appMain() {
         response = await fetch(target.href, {
           redirect: 'manual',
           headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; BioRouter/1.0)',
+            'User-Agent': 'Mozilla/5.0 (compatible; Biorouter/1.0)',
           },
         });
         const location = response.headers.get('location');
@@ -4518,7 +4534,7 @@ async function appMain() {
 
       const isDark = payload.theme === 'dark';
       const win = new BrowserWindow({
-        title: payload.title || 'BioRouter Artifact',
+        title: payload.title || 'Biorouter Artifact',
         width: Math.min(Math.max(payload.width || 1000, 480), 1600),
         height: Math.min(Math.max(payload.height || 760, 360), 1200),
         resizable: true,
@@ -4655,9 +4671,13 @@ async function appMain() {
 
 app.whenReady().then(async () => {
   try {
+    if (process.platform === 'darwin') {
+      const dockIconPath = resolveImagePath('icon.png');
+      if (dockIconPath) app.dock?.setIcon(dockIconPath);
+    }
     await appMain();
   } catch (error) {
-    dialog.showErrorBox('BioRouter Error', `Failed to create main window: ${error}`);
+    dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
     app.quit();
   }
 });

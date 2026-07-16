@@ -32,13 +32,13 @@ Let's begin 🚀
 
   
     
-Linux builds are available. Install the desktop app with the `biorouter_*_amd64.deb` (Debian/Ubuntu) or `BioRouter-*-1.x86_64.rpm` (Fedora/RHEL) package, or install the standalone CLI with the `biorouter-cli_*_amd64.deb` / `biorouter-cli-*-1.x86_64.rpm` package. Grab them from the [download page](http://biorouter.ucsf.edu/download).
+Linux builds are available. Install the desktop app with the `biorouter_*_amd64.deb` (Debian/Ubuntu) or `Biorouter-*-1.x86_64.rpm` (Fedora/RHEL) package, or install the standalone CLI with the `biorouter-cli_*_amd64.deb` / `biorouter-cli-*-1.x86_64.rpm` package. Grab them from the [download page](http://biorouter.ucsf.edu/download).
 
   
 
   
     
-Windows builds are available. Download `BioRouter-win32-x64-*.zip` from the [download page](http://biorouter.ucsf.edu/download), unzip it, and run `BioRouter.exe`. The `biorouter` CLI is bundled inside the app — run `biorouter setup-path` to add it to your `PATH`.
+Windows builds are available. Download `Biorouter-win32-x64-*.zip` from the [download page](http://biorouter.ucsf.edu/download), unzip it, and run `Biorouter.exe`. The `biorouter` CLI is bundled inside the app — run `biorouter setup-path` to add it to your `PATH`.
 
   
 

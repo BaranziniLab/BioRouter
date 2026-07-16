@@ -776,7 +776,7 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
                         outcome.new_session_id
                     )),
                     Some(err) => app.push_note(&format!(
-                        "Created diverged session {} but couldn't open a window ({}). Open BioRouter and run: {}",
+                        "Created diverged session {} but couldn't open a window ({}). Open Biorouter and run: {}",
                         outcome.new_session_id, err, outcome.url
                     )),
                 },

@@ -152,7 +152,7 @@ export default function UpdateAvailableModal() {
           {downloaded && (
             <p className="text-sm text-text-default">
               The update has been downloaded. Click <strong>Restart &amp; Update</strong> and
-              BioRouter will reopen on the new version automatically. Your settings, sessions, and
+              Biorouter will reopen on the new version automatically. Your settings, sessions, and
               extensions are preserved.
             </p>
           )}

@@ -9,7 +9,7 @@ const API_BASE: &str = "https://api.openalex.org";
 
 pub async fn classify(doi: &str) -> Result<Option<Credibility>> {
     let client = reqwest::Client::builder()
-        .user_agent("BioRouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
+        .user_agent("Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
     classify_with(&client, API_BASE, doi).await

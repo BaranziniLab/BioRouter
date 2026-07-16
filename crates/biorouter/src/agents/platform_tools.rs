@@ -15,7 +15,7 @@ pub fn read_session_blob_tool() -> Tool {
             Read back the full output of an earlier tool call that was too large
             to keep in the conversation.
 
-            When a tool returns a very large result, BioRouter stores it with the
+            When a tool returns a very large result, Biorouter stores it with the
             session and leaves a stub in its place — a size summary, a head/tail
             preview, and a blob id. Use this tool with that blob id to get the
             rest, instead of re-running the original tool.
@@ -52,7 +52,7 @@ pub fn ingest_conversation_tool() -> Tool {
     Tool::new(
         PLATFORM_INGEST_CONVERSATION_TOOL_NAME.to_string(),
         indoc! {r#"
-            Digest BioRouter conversation/chat history into a knowledge base.
+            Digest Biorouter conversation/chat history into a knowledge base.
 
             Use this when the user asks to "save", "remember", "ingest", or
             "add this conversation to my knowledge base". It captures the full

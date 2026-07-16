@@ -429,7 +429,7 @@ export default function MCPUIResourceRenderer({
         <UIResourceRenderer
           resource={content.resource}
           onUIAction={handleUIAction}
-          supportedContentTypes={['rawHtml', 'externalUrl']} // BioRouter does not support remoteDom content
+          supportedContentTypes={['rawHtml', 'externalUrl']} // Biorouter does not support remoteDom content
           htmlProps={{
             autoResizeIframe: {
               height: true,

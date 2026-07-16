@@ -1,4 +1,4 @@
-// Verify one BioRouter app's **agent-driven UI**: does the agent actually change
+// Verify one Biorouter app's **agent-driven UI**: does the agent actually change
 // the page, not just talk into it?
 //
 //   node check-ui-app.mjs <base> <id> "<prompt>" [--expect panel,chart,highlight]

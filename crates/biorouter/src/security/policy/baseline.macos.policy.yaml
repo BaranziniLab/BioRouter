@@ -1,4 +1,4 @@
-# BioRouter macOS command-policy tier (BR-68).
+# Biorouter macOS command-policy tier (BR-68).
 #
 # Cheap additions, since the machinery is identical: the destructive macOS-native
 # tools that the POSIX baseline does not name. `platforms: [macos]`.

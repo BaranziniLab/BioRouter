@@ -1,7 +1,7 @@
 ---
 format: 1920x1080
 fps: 30
-project: BioRouter motion design system
+project: Biorouter motion design system
 message: "One integrated research environment for biomedical discovery."
 tone: "warm, confident, scientific — calm motion, never frantic; editorial not flashy"
 palette:
@@ -12,7 +12,7 @@ palette:
   ink: "#2a2520"       # warm near-black — primary text
   ink_2: "#7a736c"     # muted secondary text
   ink_3: "#b6ae93"     # light tertiary text
-  accent: "#cf6d47"    # coral — the BioRouter brand accent
+  accent: "#cf6d47"    # coral — the Biorouter brand accent
   accent_hover: "#ba6240"
   accent_soft: "rgba(207,109,71,0.10)"
   accent_soft2: "rgba(207,109,71,0.18)"
@@ -33,9 +33,9 @@ shadow:
   lg: "0 8px 24px rgba(32,25,15,0.10), 0 0 1px rgba(0,0,0,0.15)"
 ---
 
-# BioRouter Motion Design Spec
+# Biorouter Motion Design Spec
 
-This file is the **single source of visual truth** for every BioRouter video.
+This file is the **single source of visual truth** for every Biorouter video.
 It mirrors the landing site's design system (`shared.css` `:root`) so motion
 assets feel native to the site rather than bolted on. Read this before
 authoring or editing any composition under `video/`. Do **not** invent colors,
@@ -100,7 +100,7 @@ robustness. Each scene follows the same grammar:
 
 - **Eyebrow** (accent, uppercase) → **scene title** (ink) → one supporting line.
 - A **device card** (`.device`) = white panel, `radius.xl`, `shadow.lg`,
-  optional 38px window bar with three macOS dots. This is the BioRouter window.
+  optional 38px window bar with three macOS dots. This is the Biorouter window.
 - **Chips** (`.chip`) for extensions/skills/models: `bg_3`, `radius.lg`,
   `ink_2`; active chip = `accent_soft` bg + accent text.
 - **The composable formula** is the signature motif:
@@ -121,7 +121,7 @@ Used by the hero (#1) and the chaptered tour (#3), in this order:
 
 | File              | Deliverable | Length | Purpose                                   |
 |-------------------|-------------|--------|-------------------------------------------|
-| `index.html`      | #1 Hero     | ~32s   | "BioRouter in motion" overview montage    |
+| `index.html`      | #1 Hero     | ~32s   | "Biorouter in motion" overview montage    |
 | `tour.html`       | #3 Tour     | ~48s   | Chaptered product walkthrough (6 pillars) |
 | `baam.html`       | #4 BAAM     | ~14s   | Composable-agent formula motion graphic   |
 | `release.html`    | #2 Release  | ~18s   | Variable-driven "What's new" generator    |
