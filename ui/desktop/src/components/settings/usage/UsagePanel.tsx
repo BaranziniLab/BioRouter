@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import type { UsageReportRow, UsageSummaryResponse, UsageTotals } from '../../../api';
 import {
   billedTokens,
@@ -6,8 +6,15 @@ import {
   knownBilledTokens,
 } from '../../../utils/usageAccounting';
 import { Button } from '../../ui/button';
-
-const COLLAPSED_DAY_COUNT = 3;
+import { Badge } from '../../ui/badge';
+import { Activity, Calendar, Clock, Database, Info, Layers } from '../../icons/app-icons';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 
 function emptyDayRow(date: string): UsageReportRow {
   return {
@@ -97,6 +104,22 @@ export function formatBilledTokens(row: UsageReportRow | UsageTotals): string {
   return knownSubtotal > 0 ? formatTokens(knownSubtotal) : 'Unavailable';
 }
 
+export function formatCompactTokens(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return 'Not recorded';
+  if (n < 10_000) return formatTokens(n);
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function billedTokenValue(row: UsageReportRow | UsageTotals): number | null {
+  const exact = billedTokens(row);
+  if (exact !== null) return exact;
+  const knownSubtotal = knownBilledTokens(row);
+  return knownSubtotal > 0 ? knownSubtotal : null;
+}
+
 function costIsPartial(row: Pick<UsageReportRow, 'hasUnpriced' | 'costExcludesCache'>) {
   return row.hasUnpriced || row.costExcludesCache;
 }
@@ -132,26 +155,200 @@ function serverPercent(percent: number | null | undefined): number | null {
   return typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 ? percent : null;
 }
 
-function UsageTableColumns({
-  detailColumns,
-  showCost,
+function SummaryMetric({
+  icon,
+  label,
+  value,
+  detail,
 }: {
-  detailColumns: number;
-  showCost: boolean;
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail: string;
 }) {
   return (
-    <colgroup>
-      <col className={showCost ? 'w-[38%]' : 'w-[40%]'} />
-      <col className="w-[10%]" />
-      <col span={detailColumns} />
-      <col className={showCost ? 'w-[16%]' : 'w-[18%]'} />
-      {showCost && <col className="w-[14%]" />}
-    </colgroup>
+    <div className="flex min-w-0 items-start gap-3 rounded-lg border border-border-subtle bg-background-default p-3">
+      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-heat-0 text-text-accent">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-text-subtle">{label}</p>
+        <p className="mt-0.5 truncate text-lg font-semibold leading-tight text-text-default tabular-nums">
+          {value}
+        </p>
+        <p className="mt-1 text-[11px] leading-tight text-text-muted">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function SectionCard({
+  icon,
+  title,
+  description,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-border-subtle bg-background-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-background-default text-text-accent">
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-sm font-medium text-text-default">{title}</h3>
+            <p className="mt-0.5 text-[11px] text-text-muted">{description}</p>
+          </div>
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function CompactTokenValue({
+  value,
+  fallback = 'Not recorded',
+}: {
+  value: number | null | undefined;
+  fallback?: string;
+}) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return <>{fallback}</>;
+  }
+  const compact = formatCompactTokens(value);
+  const exact = formatTokens(value);
+  return <span title={compact === exact ? undefined : exact}>{compact}</span>;
+}
+
+function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boolean }) {
+  const items = [
+    { label: 'Fresh in', value: row.inputTokens },
+    ...(showCache
+      ? [
+          { label: 'Cache read', value: row.cacheReadTokens },
+          { label: 'Cache write', value: row.cacheCreationTokens },
+        ]
+      : []),
+    { label: 'Out', value: row.outputTokens },
+  ];
+
+  return (
+    <div
+      className={`grid overflow-hidden rounded-md border border-border-subtle bg-background-muted/30 ${showCache ? 'grid-cols-4' : 'grid-cols-2'}`}
+      data-testid="usage-model-token-flow"
+    >
+      {items.map((item, index) => (
+        <div
+          key={item.label}
+          className={`min-w-0 px-2 py-1.5 ${index > 0 ? 'border-l border-border-subtle' : ''}`}
+        >
+          <p className="whitespace-nowrap text-[8px] font-medium uppercase tracking-[0.04em] text-text-subtle">
+            {item.label}
+          </p>
+          <p className="mt-0.5 truncate text-[11px] font-medium text-text-default tabular-nums">
+            <CompactTokenValue value={item.value} />
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyTableState({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-xs text-text-muted">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-background-muted text-text-subtle">
+        {icon}
+      </span>
+      <p>{children}</p>
+    </div>
   );
 }
 
 export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
-  const [showAllDays, setShowAllDays] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const month = summary.monthToDate;
+  const monthTokens = billedTokenValue(month);
+
+  return (
+    <div data-testid="usage-panel">
+      <div className="flex flex-col gap-3 rounded-xl border border-border-subtle bg-background-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <Badge tone="accent" className="px-2 py-1 tabular-nums">
+            {summary.month}
+          </Badge>
+          <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            <div className="flex items-baseline gap-1.5">
+              <dt className="text-text-muted">Tokens</dt>
+              <dd
+                className="font-medium text-text-default tabular-nums"
+                title={formatBilledTokens(month)}
+              >
+                {monthTokens === null
+                  ? formatBilledTokens(month)
+                  : formatCompactTokens(monthTokens)}
+              </dd>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <dt className="text-text-muted">Est. cost</dt>
+              <dd className="font-medium text-text-default tabular-nums">
+                {formatCostEstimate(month.cost)}
+              </dd>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <dt className="text-text-muted">Turns</dt>
+              <dd className="font-medium text-text-default tabular-nums">
+                {month.turns.toLocaleString('en-US')}
+              </dd>
+            </div>
+          </dl>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() => setReportOpen(true)}
+          aria-label="Open detailed usage report"
+        >
+          View report
+        </Button>
+      </div>
+
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent
+          className="grid max-h-[min(820px,calc(100vh-2rem))] w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[1040px]"
+          data-testid="usage-report-dialog"
+        >
+          <DialogHeader className="mb-0 border-b border-border-subtle bg-background-muted/40 px-6 py-5">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle bg-background-default text-text-accent">
+                <Activity className="h-4 w-4" />
+              </span>
+              <Badge tone="accent" className="px-2 py-1 tabular-nums">
+                {summary.month}
+              </Badge>
+            </div>
+            <DialogTitle>Usage report</DialogTitle>
+            <DialogDescription>
+              Billed token activity, estimated cost, and model attribution for this month.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-y-auto px-6 py-5">
+            <UsageReport summary={summary} dayRows={dayRows} modelRows={modelRows} />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
   const mtd = summary.monthToDate;
   const anyUnpriced =
     rowHasUnknownCost(mtd) || dayRows.some(rowHasUnknownCost) || modelRows.some(rowHasUnknownCost);
@@ -159,11 +356,6 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
   const showModelCache = modelRows.some(hasRecordedCacheUsage);
   const showDayCost = dayRows.some((row) => hasUsage(row) && hasKnownCost(row));
   const showModelCost = modelRows.some(hasKnownCost);
-  const showSharedCost = showDayCost || showModelCost;
-  const detailColumnCount = showModelCache ? 4 : 2;
-  const alignedTableClass = showModelCache
-    ? 'w-full min-w-[960px] table-fixed border-collapse text-xs'
-    : 'w-full min-w-[640px] table-fixed border-collapse text-xs';
   const anyIncompleteTokens =
     hasIncompleteTokens(mtd) ||
     dayRows.some(hasIncompleteTokens) ||
@@ -178,9 +370,6 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
   const tokenPercent = serverPercent(summary.tokenPercent);
   const dollarPercent = serverPercent(summary.dollarPercent);
   const orderedDayRows = [...dayRows].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
-  const visibleDayRows = showAllDays
-    ? orderedDayRows
-    : orderedDayRows.slice(0, COLLAPSED_DAY_COUNT);
   const tokenUnavailableReason =
     tokenPercent !== null
       ? null
@@ -201,104 +390,139 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             : 'Budget percentage unavailable.';
 
   return (
-    <div className="flex flex-col gap-4" data-testid="usage-panel">
-      <div>
-        <div className="flex items-baseline justify-between">
-          <p className="text-[11px] font-normal tracking-wide text-text-subtle">Month to date</p>
-          <p className="text-xs text-text-muted">{summary.month}</p>
+    <div className="flex flex-col gap-5" data-testid="usage-report">
+      <section
+        className="overflow-hidden rounded-xl border border-border-subtle bg-background-card"
+        data-testid="usage-summary-card"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
+          <div>
+            <h3 className="text-sm font-medium text-text-default">Month to date</h3>
+            <p className="mt-0.5 text-[11px] text-text-muted">
+              Billed usage recorded across all conversations
+            </p>
+          </div>
+          <Badge tone="accent" className="px-2 py-1 tabular-nums">
+            {summary.month}
+          </Badge>
         </div>
-        <p className="mt-0.5 text-xs text-text-muted">
-          {formatBilledTokens(mtd)} billed tokens
-          {' · '}
-          {formatCostEstimate(mtd.cost)}
-          {' · '}
-          {mtd.turns.toLocaleString('en-US')} turns
-        </p>
+
+        <div className="grid grid-cols-1 gap-2.5 p-3 sm:grid-cols-3">
+          <SummaryMetric
+            icon={<Database className="h-4 w-4" />}
+            label="Billed tokens"
+            value={formatBilledTokens(mtd)}
+            detail={
+              hasIncompleteTokens(mtd) ? 'Known conservative subtotal' : 'Recorded this month'
+            }
+          />
+          <SummaryMetric
+            icon={<Activity className="h-4 w-4" />}
+            label="Estimated cost"
+            value={formatCostEstimate(mtd.cost)}
+            detail={mtdCostPartial ? 'Known conservative subtotal' : 'Based on stored pricing'}
+          />
+          <SummaryMetric
+            icon={<Clock className="h-4 w-4" />}
+            label="Turns"
+            value={mtd.turns.toLocaleString('en-US')}
+            detail="Completed model turns"
+          />
+        </div>
+
         {showMtdCache && (
-          <p className="mt-0.5 text-xs text-text-muted" data-testid="usage-mtd-cache">
-            {formatTokens(mtd.cacheReadTokens)} cache read
-            {' · '}
-            {formatTokens(mtd.cacheCreationTokens)} cache write
-          </p>
+          <div
+            className="flex flex-wrap gap-2 border-t border-border-subtle px-3 py-2.5"
+            data-testid="usage-mtd-cache"
+          >
+            <Badge tone="neutral" className="gap-1.5 px-2 py-1 font-normal tabular-nums">
+              <span className="text-text-subtle">Cache read</span>
+              <span className="text-text-default">{formatTokens(mtd.cacheReadTokens)}</span>
+            </Badge>
+            <Badge tone="neutral" className="gap-1.5 px-2 py-1 font-normal tabular-nums">
+              <span className="text-text-subtle">Cache write</span>
+              <span className="text-text-default">{formatTokens(mtd.cacheCreationTokens)}</span>
+            </Badge>
+          </div>
         )}
 
-        {summary.monthlyTokenLimit != null && (
-          <UsageGauge
-            testid="usage-gauge-tokens"
-            label="Token budget"
-            used={formatBilledTokens(mtd)}
-            limit={formatTokens(summary.monthlyTokenLimit)}
-            percent={tokenPercent}
-            unavailableReason={tokenUnavailableReason}
-          />
+        {(summary.monthlyTokenLimit != null || summary.monthlyDollarLimit != null) && (
+          <div className="grid grid-cols-1 gap-2.5 border-t border-border-subtle bg-background-muted/20 p-3 md:grid-cols-2">
+            {summary.monthlyTokenLimit != null && (
+              <UsageGauge
+                testid="usage-gauge-tokens"
+                label="Token budget"
+                used={formatBilledTokens(mtd)}
+                limit={formatTokens(summary.monthlyTokenLimit)}
+                percent={tokenPercent}
+                unavailableReason={tokenUnavailableReason}
+              />
+            )}
+            {summary.monthlyDollarLimit != null && (
+              <UsageGauge
+                testid="usage-gauge-dollars"
+                label="Dollar budget"
+                used={formatCostEstimate(mtd.cost)}
+                limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
+                percent={dollarPercent}
+                unavailableReason={dollarUnavailableReason}
+              />
+            )}
+          </div>
         )}
-        {summary.monthlyDollarLimit != null && (
-          <UsageGauge
-            testid="usage-gauge-dollars"
-            label="Dollar budget"
-            used={formatCostEstimate(mtd.cost)}
-            limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
-            percent={dollarPercent}
-            unavailableReason={dollarUnavailableReason}
-          />
-        )}
-      </div>
+      </section>
 
-      <div>
-        <div className="mb-2 flex w-full max-w-[680px] items-center justify-between gap-3">
-          <p className="text-[11px] font-normal tracking-wide text-text-subtle">By day</p>
-          {orderedDayRows.length > COLLAPSED_DAY_COUNT && (
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              aria-expanded={showAllDays}
-              aria-label={
-                showAllDays
-                  ? 'Show recent 3 calendar days'
-                  : `Show all ${orderedDayRows.length} calendar days this month`
-              }
-              onClick={() => setShowAllDays((expanded) => !expanded)}
-            >
-              {showAllDays ? 'Show recent 3 days' : 'Show month'}
-            </Button>
-          )}
-        </div>
+      <SectionCard
+        icon={<Calendar className="h-4 w-4" />}
+        title="By day"
+        description="Calendar activity for the current month"
+      >
         {dayRows.length === 0 ? (
-          <p className="text-xs text-text-muted">No usage this month.</p>
+          <EmptyTableState icon={<Calendar className="h-4 w-4" />}>
+            No usage this month.
+          </EmptyTableState>
         ) : (
-          <div className="w-full max-w-[680px] overflow-x-auto" data-testid="usage-day-table-wrap">
-            <table className={alignedTableClass} data-testid="usage-day-table">
-              <UsageTableColumns detailColumns={detailColumnCount} showCost={showSharedCost} />
-              <thead>
-                <tr className="h-8 border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-text-muted">
-                  <th className="pr-3 font-medium">Day</th>
-                  <th className="px-3 text-right font-medium">Turns</th>
-                  <th colSpan={detailColumnCount} aria-hidden="true" />
-                  <th className="px-3 text-right font-medium">Billed</th>
-                  {showSharedCost && <th className="pl-3 text-right font-medium">Cost</th>}
+          <div className="w-full overflow-x-auto" data-testid="usage-day-table-wrap">
+            <table
+              className="w-full min-w-[520px] border-collapse text-xs"
+              data-testid="usage-day-table"
+            >
+              <colgroup>
+                <col className="w-[36%]" />
+                <col className="w-[18%]" />
+                <col className={showDayCost ? 'w-[26%]' : 'w-[46%]'} />
+                {showDayCost && <col className="w-[20%]" />}
+              </colgroup>
+              <thead className="bg-background-muted/60">
+                <tr className="text-left text-[10px] uppercase tracking-wider text-text-subtle">
+                  <th className="px-4 py-2.5 font-medium">Day</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Turns</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Billed</th>
+                  {showDayCost && <th className="px-4 py-2.5 text-right font-medium">Cost</th>}
                 </tr>
               </thead>
               <tbody>
-                {visibleDayRows.map((row) => (
+                {orderedDayRows.map((row) => (
                   <tr
                     key={row.date}
-                    className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
+                    className={`transition-colors hover:bg-background-muted/50 ${hasUsage(row) ? 'text-text-default' : 'text-text-subtle'}`}
                   >
-                    <td className="pr-3 text-text-muted">
+                    <td className="border-t border-border-subtle px-4 py-3 font-medium">
                       <time dateTime={row.date ?? undefined} title={row.date ?? undefined}>
                         {formatUsageDate(row.date)}
                       </time>
                     </td>
-                    <td className="px-3 text-right text-text-muted tabular-nums">
+                    <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td colSpan={detailColumnCount} aria-hidden="true" />
-                    <td className="px-3 text-right font-medium tabular-nums">
-                      {formatBilledTokens(row)}
+                    <td className="border-t border-border-subtle px-4 py-3 text-right font-medium tabular-nums">
+                      <CompactTokenValue
+                        value={billedTokenValue(row)}
+                        fallback={formatBilledTokens(row)}
+                      />
                     </td>
-                    {showSharedCost && (
-                      <td className="pl-3 text-right text-text-muted tabular-nums">
+                    {showDayCost && (
+                      <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -308,64 +532,69 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             </table>
           </div>
         )}
-      </div>
+      </SectionCard>
 
-      <div>
-        <p className="mb-2 text-[11px] font-normal tracking-wide text-text-subtle">By model</p>
+      <SectionCard
+        icon={<Layers className="h-4 w-4" />}
+        title="By model"
+        description="Provider attribution and the token flow behind each billed total"
+      >
         {modelRows.length === 0 ? (
-          <p className="text-xs text-text-muted">No usage this month.</p>
+          <EmptyTableState icon={<Layers className="h-4 w-4" />}>
+            No usage this month.
+          </EmptyTableState>
         ) : (
-          <div
-            className="w-full max-w-[680px] overflow-x-auto"
-            data-testid="usage-model-table-wrap"
-          >
-            <table className={alignedTableClass} data-testid="usage-model-table">
-              <UsageTableColumns detailColumns={detailColumnCount} showCost={showSharedCost} />
-              <thead>
-                <tr className="h-8 border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-text-muted">
-                  <th className="pr-3 font-medium">Model</th>
-                  <th className="px-3 text-right font-medium">Turns</th>
-                  <th className="px-3 text-right font-medium">Fresh in</th>
-                  {showModelCache && <th className="px-3 text-right font-medium">Cache read</th>}
-                  {showModelCache && <th className="px-3 text-right font-medium">Cache write</th>}
-                  <th className="px-3 text-right font-medium">Out</th>
-                  <th className="px-3 text-right font-medium">Billed</th>
-                  {showSharedCost && <th className="pl-3 text-right font-medium">Cost</th>}
+          <div className="w-full overflow-x-auto" data-testid="usage-model-table-wrap">
+            <table
+              className={`w-full border-collapse text-xs ${showModelCache ? 'min-w-[900px]' : 'min-w-[720px]'}`}
+              data-testid="usage-model-table"
+            >
+              <colgroup>
+                <col className="w-[27%]" />
+                <col className="w-[9%]" />
+                <col className={showModelCache ? 'w-[40%]' : 'w-[36%]'} />
+                <col className={showModelCost ? 'w-[13%]' : 'w-[22%]'} />
+                {showModelCost && <col className="w-[11%]" />}
+              </colgroup>
+              <thead className="bg-background-muted/60">
+                <tr className="text-left text-[10px] uppercase tracking-wider text-text-subtle">
+                  <th className="px-4 py-2.5 font-medium">Model</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Turns</th>
+                  <th className="px-4 py-2.5 font-medium">Token flow</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Billed</th>
+                  {showModelCost && <th className="px-4 py-2.5 text-right font-medium">Cost</th>}
                 </tr>
               </thead>
               <tbody>
                 {modelRows.map((row, index) => (
                   <tr
                     key={`${modelLabel(row)}-${index}`}
-                    className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
+                    className="text-text-default transition-colors hover:bg-background-muted/50"
                   >
-                    <td className="pr-3 font-mono">
-                      <span className="block truncate" title={modelLabel(row)}>
-                        {modelLabel(row)}
-                      </span>
+                    <td className="border-t border-border-subtle px-4 py-3">
+                      <div className="min-w-0" title={modelLabel(row)}>
+                        <p className="truncate font-mono text-[12px] font-medium">
+                          {row.modelId ?? 'unknown'}
+                        </p>
+                        <p className="mt-1 truncate text-[9px] font-medium uppercase tracking-wider text-text-subtle">
+                          {row.provider ?? 'Unattributed provider'}
+                        </p>
+                      </div>
                     </td>
-                    <td className="px-3 text-right tabular-nums">
+                    <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="px-3 text-right tabular-nums">
-                      {formatTokens(row.inputTokens)}
+                    <td className="border-t border-border-subtle px-4 py-3">
+                      <TokenFlowCell row={row} showCache={showModelCache} />
                     </td>
-                    {showModelCache && (
-                      <td className="px-3 text-right tabular-nums">
-                        {formatTokens(row.cacheReadTokens)}
-                      </td>
-                    )}
-                    {showModelCache && (
-                      <td className="px-3 text-right tabular-nums">
-                        {formatTokens(row.cacheCreationTokens)}
-                      </td>
-                    )}
-                    <td className="px-3 text-right tabular-nums">
-                      {formatTokens(row.outputTokens)}
+                    <td className="border-t border-border-subtle px-4 py-3 text-right font-medium tabular-nums">
+                      <CompactTokenValue
+                        value={billedTokenValue(row)}
+                        fallback={formatBilledTokens(row)}
+                      />
                     </td>
-                    <td className="px-3 text-right tabular-nums">{formatBilledTokens(row)}</td>
-                    {showSharedCost && (
-                      <td className="pl-3 text-right tabular-nums">
+                    {showModelCost && (
+                      <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -375,27 +604,41 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
             </table>
           </div>
         )}
-      </div>
+      </SectionCard>
 
-      {anyIncompleteTokens && (
-        <p className="text-xs text-text-muted" data-testid="usage-incomplete-note" role="status">
-          Some historical token details were not recorded. Displayed totals are conservative
-          estimates; cache and cost columns are hidden when they contain no usable data.
-        </p>
-      )}
-
-      {anyUnpriced && (
-        <p className="text-xs text-text-muted" data-testid="usage-unpriced-note">
-          Some historical usage has no stored model or pricing attribution, so its cost cannot be
-          recovered. Available cost estimates are conservative.
-        </p>
-      )}
-
-      {anyCostExcludesCache && (
-        <p className="text-xs text-text-muted" data-testid="usage-cache-excluded-note">
-          Some cache cost is unavailable because a model has no cache rate or historical cache
-          accounting is incomplete. The shown cost is conservative.
-        </p>
+      {(anyIncompleteTokens || anyUnpriced || anyCostExcludesCache) && (
+        <aside
+          className="flex items-start gap-3 rounded-xl border border-border-subtle bg-background-muted/40 px-4 py-3"
+          aria-label="Usage data notes"
+          data-testid="usage-data-notes"
+        >
+          <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-background-default text-text-muted">
+            <Info className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-text-default">About these totals</p>
+            <ul className="mt-1.5 space-y-1 text-[11px] leading-relaxed text-text-muted">
+              {anyIncompleteTokens && (
+                <li data-testid="usage-incomplete-note" role="status">
+                  Some historical token details were not recorded. Totals are conservative, and
+                  empty cache or cost fields stay hidden.
+                </li>
+              )}
+              {anyUnpriced && (
+                <li data-testid="usage-unpriced-note">
+                  Some historical usage has no stored model or pricing attribution, so its cost
+                  cannot be recovered.
+                </li>
+              )}
+              {anyCostExcludesCache && (
+                <li data-testid="usage-cache-excluded-note">
+                  Some cache cost is unavailable because cache pricing or historical accounting is
+                  incomplete.
+                </li>
+              )}
+            </ul>
+          </div>
+        </aside>
       )}
     </div>
   );
@@ -415,7 +658,10 @@ function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: 
   const clamped = Math.max(0, Math.min(100, pct));
   const over = percent != null && percent > 100;
   return (
-    <div className="mt-2" data-testid={testid}>
+    <div
+      className="rounded-lg border border-border-subtle bg-background-default p-3"
+      data-testid={testid}
+    >
       <div className="flex items-baseline justify-between text-xs">
         <span className="text-text-muted">{label}</span>
         <span className="text-text-default tabular-nums">

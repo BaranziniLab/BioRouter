@@ -3,8 +3,10 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   UsagePanel,
+  UsageReport,
   fillCalendarDays,
   formatBilledTokens,
+  formatCompactTokens,
   formatCost,
   formatCostEstimate,
   formatTokens,
@@ -113,6 +115,9 @@ describe('formatters', () => {
     expect(formatTokens(13_300_000)).toBe('13,300,000');
     expect(formatTokens(0)).toBe('0');
     expect(formatTokens(null)).toBe('Not recorded');
+    expect(formatCompactTokens(9_999)).toBe('9,999');
+    expect(formatCompactTokens(12_345)).toBe('12.35K');
+    expect(formatCompactTokens(3_000_000)).toBe('3M');
   });
 
   it('distinguishes exact totals, known subtotals, and wholly unknown totals', () => {
@@ -161,9 +166,9 @@ describe('formatters', () => {
   });
 });
 
-describe('UsagePanel', () => {
+describe('UsageReport', () => {
   it('renders a reverse-chronological day table, the model table and MTD figures', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
 
     const dayTable = screen.getByTestId('usage-day-table');
     const dayTableRows = within(dayTable).getAllByRole('row');
@@ -172,45 +177,38 @@ describe('UsagePanel', () => {
       within(dayTableRows[1])
         .getAllByRole('cell')
         .map((cell) => cell.textContent)
-    ).toEqual(['Sat, Jul 11', '3', '3,000,000', '$7.20']);
+    ).toEqual(['Sat, Jul 11', '3', '3M', '$7.20']);
     expect(
       within(dayTableRows[2])
         .getAllByRole('cell')
         .map((cell) => cell.textContent)
-    ).toEqual(['Fri, Jul 10', '7', '1,000,100', '$1.40']);
+    ).toEqual(['Fri, Jul 10', '7', '1M', '$1.40']);
 
-    // Model table: glm row with hand-checked cells + unknown null-cost row.
+    // Model identity and token details are grouped instead of compressed into
+    // a long run of narrow numeric columns.
     const table = screen.getByTestId('usage-model-table');
-    const glmRow = within(table).getByText('zai/glm-5.2').closest('tr')!;
+    const glmRow = within(table).getByText('glm-5.2').closest('tr')!;
     expect(table).toHaveClass('border-collapse');
-    expect(within(table).getAllByRole('row')[0]).toHaveClass(
-      'h-8',
-      'border-b',
-      'border-border-subtle'
-    );
-    expect(glmRow).toHaveClass('h-10', 'border-b', 'border-border-subtle');
-    expect(within(glmRow).getAllByRole('cell')[0]).toHaveClass('font-mono');
-    for (const cell of within(glmRow).getAllByRole('cell').slice(1)) {
-      expect(cell).toHaveClass('tabular-nums');
-    }
-    expect(
-      within(glmRow)
-        .getAllByRole('cell')
-        .map((c) => c.textContent)
-    ).toEqual(['zai/glm-5.2', '8', '3,000,000', '1,000,000', '4,000,000', '$8.60']);
+    expect(within(glmRow).getByText('zai')).toHaveClass('uppercase');
+    const glmCells = within(glmRow).getAllByRole('cell');
+    expect(glmCells).toHaveLength(5);
+    expect(glmCells[1]).toHaveTextContent('8');
+    expect(glmCells[2]).toHaveTextContent('Fresh in3MOut1M');
+    expect(glmCells[3]).toHaveTextContent('4M');
+    expect(glmCells[4]).toHaveTextContent('$8.60');
     const unknownRow = within(table).getByText('unknown').closest('tr')!;
     // Unknown pricing is explicit and is never presented as $0.
-    expect(within(unknownRow).getAllByRole('cell')[5].textContent).toBe('Unavailable');
+    expect(within(unknownRow).getAllByRole('cell')[4].textContent).toBe('Unavailable');
   });
 
   it('shows the unpriced note when any row lacks pricing', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
     expect(screen.getByTestId('usage-unpriced-note')).toBeTruthy();
   });
 
   it('shows the unpriced note when a used row has null cost even if its flag is stale', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             ...summary().monthToDate,
@@ -229,19 +227,19 @@ describe('UsagePanel', () => {
   it('hides the unpriced note when everything is priced', () => {
     const pricedDays = dayRows.map((r) => ({ ...r, hasUnpriced: false }));
     const pricedModels = [modelRows[0]];
-    render(<UsagePanel summary={summary()} dayRows={pricedDays} modelRows={pricedModels} />);
+    render(<UsageReport summary={summary()} dayRows={pricedDays} modelRows={pricedModels} />);
     expect(screen.queryByTestId('usage-unpriced-note')).toBeNull();
   });
 
   it('hides both gauges when no limit is configured', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
     expect(screen.queryByTestId('usage-gauge-tokens')).toBeNull();
     expect(screen.queryByTestId('usage-gauge-dollars')).toBeNull();
   });
 
   it('renders the server-provided token and dollar percentages without recomputing them', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthlyTokenLimit: 66_000_000,
           monthlyDollarLimit: 250,
@@ -266,7 +264,7 @@ describe('UsagePanel', () => {
 
   it('uses semantic danger styling and clamps an over-budget gauge', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthlyTokenLimit: 30_000_000,
           tokenPercent: 110,
@@ -283,38 +281,26 @@ describe('UsagePanel', () => {
     expect(fill.style.width).toBe('100%');
   });
 
-  it('uses the same quiet table grammar for daily and model usage', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+  it('uses a simple daily ledger and a grouped model token-flow table', () => {
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
 
-    expect(screen.queryByTestId('usage-day-bar-fill')).toBeNull();
     const dayTable = screen.getByTestId('usage-day-table');
     const modelTable = screen.getByTestId('usage-model-table');
-    expect(screen.getByText('By day').parentElement).toHaveClass('max-w-[680px]', 'w-full');
-    expect(screen.getByTestId('usage-day-table-wrap')).toHaveClass('max-w-[680px]', 'w-full');
-    expect(screen.getByTestId('usage-model-table-wrap')).toHaveClass('max-w-[680px]', 'w-full');
-    expect(dayTable).toHaveClass('table-fixed', 'min-w-[640px]', 'border-collapse');
-    expect(modelTable).toHaveClass('table-fixed', 'min-w-[640px]', 'border-collapse');
-    const columnGeometry = (table: HTMLElement) =>
-      Array.from(table.querySelectorAll('col')).map((column) => ({
-        className: column.getAttribute('class'),
-        span: column.getAttribute('span'),
-      }));
-    expect(columnGeometry(dayTable)).toEqual(columnGeometry(modelTable));
-    expect(within(dayTable).getAllByRole('row')[0]).toHaveClass(
-      'h-8',
-      'border-b',
-      'border-border-subtle'
-    );
-    expect(within(dayTable).getAllByRole('row')[1]).toHaveClass(
-      'h-10',
-      'border-b',
-      'border-border-subtle'
-    );
+    expect(screen.getByTestId('usage-day-table-wrap')).toHaveClass('w-full', 'overflow-x-auto');
+    expect(screen.getByTestId('usage-model-table-wrap')).toHaveClass('w-full', 'overflow-x-auto');
+    expect(dayTable).toHaveClass('min-w-[520px]', 'border-collapse');
+    expect(modelTable).toHaveClass('min-w-[720px]', 'border-collapse');
+    expect(within(dayTable).queryByRole('columnheader', { name: 'Activity' })).toBeNull();
+    expect(within(dayTable).queryByRole('progressbar')).toBeNull();
+    expect(within(modelTable).getByRole('columnheader', { name: 'Token flow' })).toBeTruthy();
+    expect(screen.getAllByTestId('usage-model-token-flow')).toHaveLength(2);
+    expect(dayTable.closest('section')).toHaveClass('rounded-xl', 'border-border-subtle');
+    expect(modelTable.closest('section')).toHaveClass('rounded-xl', 'border-border-subtle');
   });
 
   it('marks the dollar gauge unavailable when MTD cost is unknown', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             inputTokens: 500,
@@ -342,7 +328,7 @@ describe('UsagePanel', () => {
   });
 
   it('renders empty-state copy when the current month has no usage', () => {
-    render(<UsagePanel summary={summary()} dayRows={[]} modelRows={[]} />);
+    render(<UsageReport summary={summary()} dayRows={[]} modelRows={[]} />);
     expect(screen.getAllByText('No usage this month.').length).toBe(2);
   });
 
@@ -364,7 +350,7 @@ describe('UsagePanel', () => {
       },
     ];
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             inputTokens: 1_000,
@@ -382,30 +368,29 @@ describe('UsagePanel', () => {
         modelRows={cachedModels}
       />
     );
-    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/500 cache read/)).toBeTruthy();
-    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/100 cache write/)).toBeTruthy();
-    // Model table exposes both cache buckets and the cache-aware billed total.
+    const monthCache = within(screen.getByTestId('usage-mtd-cache'));
+    expect(monthCache.getByText('Cache read')).toBeTruthy();
+    expect(monthCache.getByText('500')).toBeTruthy();
+    expect(monthCache.getByText('Cache write')).toBeTruthy();
+    expect(monthCache.getByText('100')).toBeTruthy();
+    // Model token flow exposes both cache buckets and the cache-aware billed total.
     const table = screen.getByTestId('usage-model-table');
-    const row = within(table).getByText('anthropic/claude-sonnet-4').closest('tr')!;
-    const cells = within(row)
-      .getAllByRole('cell')
-      .map((c) => c.textContent);
-    expect(cells).toEqual([
-      'anthropic/claude-sonnet-4',
-      '1',
-      '1,000',
-      '500',
-      '100',
-      '200',
-      '1,800',
-      '$0.01',
-    ]);
+    const row = within(table).getByText('claude-sonnet-4').closest('tr')!;
+    expect(within(row).getByText('anthropic')).toBeTruthy();
+    const flow = within(row).getByTestId('usage-model-token-flow');
+    for (const label of ['Fresh in', 'Cache read', 'Cache write', 'Out']) {
+      expect(within(flow).getByText(label)).toBeTruthy();
+    }
+    expect(within(flow).getByText('Cache write')).toHaveClass('whitespace-nowrap', 'text-[8px]');
+    expect(within(row).getAllByRole('cell')).toHaveLength(5);
+    expect(within(row).getAllByRole('cell')[3]).toHaveTextContent('1,800');
+    expect(within(row).getAllByRole('cell')[4]).toHaveTextContent('$0.01');
     // The cost-excludes-cache note appears.
     expect(screen.getByTestId('usage-cache-excluded-note')).toBeTruthy();
   });
 
   it('omits the Cache column when no row has cache tokens', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
     const table = screen.getByTestId('usage-model-table');
     // No Cache header cell.
     expect(within(table).queryByText('Cache')).toBeNull();
@@ -415,7 +400,7 @@ describe('UsagePanel', () => {
 
   it('does not draw a dollar gauge for a known but partial subtotal', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             ...summary().monthToDate,
@@ -442,7 +427,7 @@ describe('UsagePanel', () => {
 
   it('shows incomplete billed history as a conservative estimate and leaves the gauge unavailable', () => {
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             ...summary().monthToDate,
@@ -487,19 +472,20 @@ describe('UsagePanel', () => {
       costExcludesCache: true,
     };
 
-    render(<UsagePanel summary={summary()} dayRows={[]} modelRows={[incompleteModel]} />);
+    render(<UsageReport summary={summary()} dayRows={[]} modelRows={[incompleteModel]} />);
 
-    const row = screen.getByText('anthropic/legacy-model').closest('tr')!;
-    expect(
-      within(row)
-        .getAllByRole('cell')
-        .map((cell) => cell.textContent)
-    ).toEqual(['anthropic/legacy-model', '2', '100', 'Not recorded', '5', '20', '125', '$1.25']);
+    const row = screen.getByText('legacy-model').closest('tr')!;
+    expect(within(row).getByText('anthropic')).toBeTruthy();
+    const flow = within(row).getByTestId('usage-model-token-flow');
+    expect(within(flow).getByText('Not recorded')).toBeTruthy();
+    const cells = within(row).getAllByRole('cell');
+    expect(cells).toHaveLength(5);
+    expect(cells[3]).toHaveTextContent('125');
+    expect(cells[4]).toHaveTextContent('$1.25');
     expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
   });
 
-  it('shows three adjacent calendar days newest-first until the user expands the month', async () => {
-    const user = userEvent.setup();
+  it('shows the complete calendar month newest-first in the detailed report', () => {
     const sparseRows = [7, 11, 14].map((day, index): UsageReportRow => {
       const tokens = (index + 1) * 100;
       return {
@@ -512,13 +498,15 @@ describe('UsagePanel', () => {
     });
     const calendarRows = fillCalendarDays(sparseRows, new Date(2026, 6, 14, 12));
 
-    render(<UsagePanel summary={summary()} dayRows={calendarRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={calendarRows} modelRows={modelRows} />);
 
     const table = screen.getByTestId('usage-day-table');
     const visibleDates = Array.from(table.querySelectorAll('time')).map((time) =>
       time.getAttribute('datetime')
     );
-    expect(visibleDates).toEqual(['2026-07-14', '2026-07-13', '2026-07-12']);
+    expect(visibleDates).toHaveLength(14);
+    expect(visibleDates.slice(0, 3)).toEqual(['2026-07-14', '2026-07-13', '2026-07-12']);
+    expect(visibleDates[visibleDates.length - 1]).toBe('2026-07-01');
     const emptyDay = within(table).getByText('Mon, Jul 13').closest('tr')!;
     expect(
       within(emptyDay)
@@ -526,19 +514,9 @@ describe('UsagePanel', () => {
         .slice(1)
         .map((cell) => cell.textContent)
     ).toEqual(['0', '0', '$0.00']);
-
-    const expand = screen.getByRole('button', {
-      name: 'Show all 14 calendar days this month',
-    });
-    expect(expand).toHaveAttribute('aria-expanded', 'false');
-    await user.click(expand);
-
     expect(within(table).getAllByRole('row')).toHaveLength(15);
     expect(table.querySelector('time[datetime="2026-07-07"]')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Show recent 3 calendar days' })).toHaveAttribute(
-      'aria-expanded',
-      'true'
-    );
+    expect(screen.queryByRole('button', { name: /calendar days/i })).toBeNull();
   });
 
   it('hides empty cache and cost columns instead of repeating unavailable values', () => {
@@ -556,7 +534,7 @@ describe('UsagePanel', () => {
     };
 
     render(
-      <UsagePanel
+      <UsageReport
         summary={summary({
           monthToDate: {
             ...summary().monthToDate,
@@ -580,15 +558,38 @@ describe('UsagePanel', () => {
       expect(within(table).queryByRole('columnheader', { name: 'Cost' })).toBeNull();
     }
     expect(screen.queryByTestId('usage-mtd-cache')).toBeNull();
-    expect(screen.getByTestId('usage-panel').textContent).not.toContain('N/A');
+    expect(screen.getByTestId('usage-report').textContent).not.toContain('N/A');
   });
 
   it('keeps internal labels subordinate to the settings section title', () => {
-    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
 
     for (const label of ['Month to date', 'By day', 'By model']) {
-      expect(screen.getByText(label)).toHaveClass('text-[11px]', 'font-normal', 'text-text-subtle');
-      expect(screen.getByText(label)).not.toHaveClass('text-sm', 'font-medium');
+      expect(screen.getByText(label).tagName).toBe('H3');
+      expect(screen.getByText(label)).toHaveClass('text-sm', 'font-medium');
     }
+  });
+});
+
+describe('UsagePanel', () => {
+  it('keeps the settings surface concise until the user opens the report', async () => {
+    const user = userEvent.setup();
+    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+
+    const panel = screen.getByTestId('usage-panel');
+    expect(within(panel).getByText('2026-07')).toBeTruthy();
+    expect(within(panel).getByText('33M')).toHaveAttribute('title', '33,000,000');
+    expect(within(panel).getByText('$125.00')).toBeTruthy();
+    expect(within(panel).getByText('42')).toBeTruthy();
+    expect(screen.queryByTestId('usage-day-table')).toBeNull();
+    expect(screen.queryByTestId('usage-model-table')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Open detailed usage report' }));
+
+    expect(screen.getByTestId('usage-report-dialog')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Usage report' })).toBeTruthy();
+    expect(screen.getByTestId('usage-day-table')).toBeTruthy();
+    expect(screen.getByTestId('usage-model-table')).toBeTruthy();
+    expect(screen.queryByRole('columnheader', { name: 'Activity' })).toBeNull();
   });
 });
