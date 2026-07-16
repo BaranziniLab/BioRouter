@@ -59,6 +59,7 @@ import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
+import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
@@ -567,11 +568,10 @@ function BaseChatContent({
   const isCompactSidebarOverlayOpen = isSidebarCompact && !isMobile && sidebarState !== 'collapsed';
   const reserveTitlebarControls =
     isMacOS && (isMobile || isSidebarCompact || sidebarState === 'collapsed');
-  const sessionPillWrapperCls = isCompactSidebarOverlayOpen
-    ? 'pl-[224px]'
-    : reserveTitlebarControls
-      ? `${isMacOS ? 'pl-[184px]' : 'pl-[104px]'}`
-      : 'pl-4';
+  const sessionPillPaddingLeft = getSessionTitlePadding(
+    isCompactSidebarOverlayOpen,
+    reserveTitlebarControls
+  );
   const setView = useNavigation();
 
   useEffect(() => {
@@ -1598,8 +1598,13 @@ function BaseChatContent({
                   // beside this one; a translucent, blurred fill made the two
                   // bottom hairlines read at different weights so they never
                   // visually aligned (D-18).
-                  className={`relative z-[var(--z-sticky)] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4 ${sessionPillWrapperCls}`}
-                  style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+                  className="relative z-[var(--z-sticky)] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4"
+                  style={
+                    {
+                      WebkitAppRegion: 'drag',
+                      paddingLeft: sessionPillPaddingLeft,
+                    } as React.CSSProperties
+                  }
                 >
                   <div className="min-w-0 flex-1">
                     <SessionNamePill

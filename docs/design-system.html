@@ -192,7 +192,7 @@
     .app-shell { display: grid; grid-template-columns: var(--rail-width) minmax(0,1fr); min-height: 100vh; }
     .rail {
       position: sticky; top: 0; height: 100vh; overflow: auto;
-      display: flex; flex-direction: column; gap: 22px;
+      display: flex; flex-direction: column; gap: 18px;
       padding: 24px 20px; background: var(--sidebar); border-right: 1px solid var(--sidebar-border);
     }
     .brand-lockup { display: flex; align-items: center; gap: 11px; color: var(--text-default); text-decoration: none; }
@@ -200,13 +200,13 @@
     .brand-lockup strong { display: block; font-size: 14px; line-height: 18px; letter-spacing: -.01em; }
     .brand-lockup span { display: block; margin-top: 1px; color: var(--text-muted); font: 500 10px/14px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 
-    .nav { display: grid; gap: 2px; }
+    .nav { display: grid; gap: 0; }
     .nav-label {
       margin: 13px 8px 5px; color: var(--text-subtle);
       font: 500 10px/14px var(--font-sans); letter-spacing: .09em; text-transform: uppercase;
     }
     .nav a {
-      display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 6px 9px;
+      display: flex; align-items: center; gap: 9px; min-height: 32px; padding: 5px 9px;
       border-radius: var(--radius-md); color: var(--text-muted); text-decoration: none;
       transition: background-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
     }
@@ -760,7 +760,10 @@
                 <tr><td>Content maximum</td><td><code>1120px</code></td><td>Readable prose</td><td><code>68ch</code></td></tr>
                 <tr><td>Page gutter</td><td><code>32px</code></td><td>Page top space</td><td><code>48px</code></td></tr>
                 <tr><td>Expanded sidebar</td><td><code>240px</code></td><td>Collapsed sidebar</td><td><code>60px</code></td></tr>
-                <tr><td>List row rhythm</td><td><code>40px</code></td><td>Input / default button</td><td><code>36px</code></td></tr>
+                <tr><td>Responsive sidebar overlay</td><td><code>240px fixed</code></td><td>Long recent title</td><td>Single-line ellipsis + full hover summary</td></tr>
+                <tr><td>Content list / table row</td><td><code>40px</code></td><td>Input / default button</td><td><code>36px</code></td></tr>
+                <tr><td>Sidebar navigation / recent session</td><td><code>32px</code></td><td>New Session action</td><td><code>32px</code>, standard navigation treatment</td></tr>
+                <tr><td>Compact titlebar controls</td><td>Three <code>32px</code> non-drag buttons</td><td>Title clearance</td><td><code>8px</code> after controls or expanded sidebar edge</td></tr>
               </tbody>
             </table>
           </div>

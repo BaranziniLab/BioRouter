@@ -1,0 +1,110 @@
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionSummary } from '../../api';
+import useSidebarSessions, {
+  appendSessionPage,
+  SIDEBAR_SESSION_PAGE_SIZE,
+} from './useSidebarSessions';
+
+const mocks = vi.hoisted(() => ({
+  listSidebarSessions: vi.fn(),
+}));
+
+vi.mock('../../api', () => ({
+  listSidebarSessions: mocks.listSidebarSessions,
+}));
+
+function makeSummary(index: number): SessionSummary {
+  const timestamp = new Date(Date.parse('2026-07-15T12:00:00.000Z') - index * 60_000).toISOString();
+  return {
+    id: `session-${index}`,
+    name: `Chat ${index}`,
+    working_dir: `/workspace/project-${index}`,
+    created_at: timestamp,
+    updated_at: timestamp,
+    message_count: index,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('appendSessionPage', () => {
+  it('appends new summaries while replacing duplicate session ids in place', () => {
+    const updated = { ...makeSummary(0), name: 'Renamed chat' };
+
+    expect(appendSessionPage([makeSummary(0)], [updated, makeSummary(1)])).toEqual([
+      updated,
+      makeSummary(1),
+    ]);
+  });
+});
+
+describe('useSidebarSessions', () => {
+  it('loads lightweight session summaries one page at a time', async () => {
+    const firstPage = Array.from({ length: SIDEBAR_SESSION_PAGE_SIZE }, (_, index) =>
+      makeSummary(index)
+    );
+    const secondPage = [makeSummary(10), makeSummary(11)];
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: firstPage, has_more: true, next_offset: 10 },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: secondPage, has_more: false, next_offset: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions());
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+    expect(result.current.hasMore).toBe(true);
+    expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(1, {
+      query: { limit: 10, offset: 0 },
+      throwOnError: true,
+    });
+
+    act(() => result.current.loadMore());
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(12));
+    expect(result.current.hasMore).toBe(false);
+    expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(2, {
+      query: { limit: 10, offset: 10 },
+      throwOnError: true,
+    });
+  });
+
+  it('refreshes recent activity without discarding pages already loaded by scrolling', async () => {
+    const firstPage = Array.from({ length: 10 }, (_, index) => makeSummary(index));
+    const secondPage = Array.from({ length: 10 }, (_, index) => makeSummary(index + 10));
+    const refreshedFirstPage = [{ ...makeSummary(0), name: 'Refreshed chat' }, ...firstPage.slice(1)];
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: firstPage, has_more: true, next_offset: 10 },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: secondPage, has_more: true, next_offset: 20 },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: refreshedFirstPage, has_more: true, next_offset: 10 },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.sessions).toHaveLength(20));
+
+    act(() => window.dispatchEvent(new Event('message-stream-finished')));
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3), {
+      timeout: 1_000,
+    });
+    await waitFor(() => expect(result.current.sessions[0].name).toBe('Refreshed chat'));
+
+    expect(result.current.sessions).toHaveLength(20);
+    expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(3, {
+      query: { limit: 10, offset: 0 },
+      throwOnError: true,
+    });
+  });
+});
