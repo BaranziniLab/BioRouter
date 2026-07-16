@@ -1,7 +1,36 @@
 import React, { useState } from 'react';
-import { X, Send, Zap, GripVertical, ChevronDown, ChevronUp } from './icons/app-icons';
+import {
+  X,
+  Send,
+  StopSquare,
+  MessageSquarePlus,
+  GripVertical,
+  ChevronDown,
+  ChevronUp,
+} from './icons/app-icons';
 import { Button } from './ui/button';
 import type { UserAttachment } from '../types/message';
+
+const STEER_TITLE = 'Add to current turn without stopping';
+const STOP_AND_SEND_TITLE = 'Stop current turn, then send as a new turn';
+
+const SteerActionContent = () => (
+  <>
+    <MessageSquarePlus className="w-3 h-3" aria-hidden="true" />
+    <span className="text-[11px] leading-none">Add now</span>
+  </>
+);
+
+const StopAndSendActionContent = () => (
+  <>
+    <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+      <StopSquare className="w-3 h-3" />
+      <span className="text-[10px] leading-none">→</span>
+      <Send className="w-3 h-3" />
+    </span>
+    <span className="text-[11px] leading-none">Stop &amp; send</span>
+  </>
+);
 
 interface QueuedMessage {
   id: string;
@@ -53,8 +82,6 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
   // wait for the turn to end (or stop it).
   const canSteerMessage = (message: QueuedMessage) =>
     Boolean(onSteerMessage) && !message.attachments?.length;
-
-  const STEER_TITLE = 'Send now without stopping. The agent picks it up on its next step';
 
   const handleDragStart = (e: React.DragEvent, messageId: string) => {
     setDraggedItem(messageId);
@@ -167,11 +194,11 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                 e.stopPropagation();
                 onSteerMessage?.(nextMessage.id);
               }}
-              className="h-6 w-6 p-0 flex-shrink-0 text-text-muted hover:text-text-default"
+              className="h-6 px-1.5 gap-1 flex-shrink-0 text-text-muted hover:text-text-default"
               title={STEER_TITLE}
-              aria-label="Steer the running turn with this message"
+              aria-label="Add this message to the current turn"
             >
-              <Zap className="w-3 h-3" />
+              <SteerActionContent />
             </Button>
           )}
 
@@ -183,10 +210,11 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                 e.stopPropagation();
                 onStopAndSend(nextMessage.id);
               }}
-              className="h-6 w-6 p-0 flex-shrink-0 text-text-muted hover:text-text-default"
-              title="Stop current processing and send this message now"
+              className="h-6 px-1.5 gap-1 flex-shrink-0 text-text-muted hover:text-text-default"
+              title={STOP_AND_SEND_TITLE}
+              aria-label="Stop the current turn and send this message as a new turn"
             >
-              <Send className="w-3 h-3" />
+              <StopAndSendActionContent />
             </Button>
           )}
 
@@ -349,11 +377,11 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                   size="sm"
                   onClick={() => onSteerMessage?.(message.id)}
                   disabled={editingMessage === message.id}
-                  className={`h-6 w-6 p-0 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  className={`h-6 px-1.5 gap-1 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
                   title={editingMessage === message.id ? 'Cannot send while editing' : STEER_TITLE}
-                  aria-label="Steer the running turn with this message"
+                  aria-label="Add this message to the current turn"
                 >
-                  <Zap className="w-3 h-3" />
+                  <SteerActionContent />
                 </Button>
               )}
 
@@ -363,14 +391,15 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                   size="sm"
                   onClick={() => onStopAndSend(message.id)}
                   disabled={editingMessage === message.id}
-                  className={`h-6 w-6 p-0 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  className={`h-6 px-1.5 gap-1 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
                   title={
                     editingMessage === message.id
                       ? 'Cannot send while editing'
-                      : 'Stop current processing and send this message now'
+                      : STOP_AND_SEND_TITLE
                   }
+                  aria-label="Stop the current turn and send this message as a new turn"
                 >
-                  <Send className="w-3 h-3" />
+                  <StopAndSendActionContent />
                 </Button>
               )}
 

@@ -56,6 +56,7 @@ import {
   Maximize2 as _Maximize2,
   Minimize2 as _Minimize2,
   MessageSquare as _MessageSquare,
+  MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
   Minus as _Minus,
   Monitor as _Monitor,
@@ -84,6 +85,7 @@ import {
   Sliders as _Sliders,
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
+  Square as _Square,
   StopCircle as _StopCircle,
   Sun as _Sun,
   Target as _Target,
@@ -189,6 +191,7 @@ export const Lock = light(_Lock);
 export const Maximize2 = light(_Maximize2);
 export const Minimize2 = light(_Minimize2);
 export const MessageSquare = light(_MessageSquare);
+export const MessageSquarePlus = light(_MessageSquarePlus);
 export const MessageSquareText = light(_MessageSquareText);
 export const Minus = light(_Minus);
 export const Monitor = light(_Monitor);
@@ -222,6 +225,7 @@ export const Sparkles = light(_Sparkles);
 // which corresponds to lucide's StopCircle. Keep both names pointing to it.
 export const Square = light(_StopCircle);
 export const StopCircle = Square;
+export const StopSquare = light(_Square);
 export const Sun = light(_Sun);
 export const Target = light(_Target);
 export const Terminal = light(_Terminal);
