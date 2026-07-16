@@ -29,8 +29,23 @@ export type ArtifactSource =
 export type ArtifactFileEntry = {
   name: string;
   path: string;
+  relativePath: string;
+  parentPath: string;
   isDirectory: boolean;
   size?: number;
+};
+
+export type ArtifactDocumentFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx';
+
+export type ArtifactGitStatus = 'untracked' | 'modified' | 'staged' | 'committed' | 'pushed';
+
+export type ArtifactGitEntry = {
+  name: string;
+  path: string;
+  relativePath: string;
+  parentPath: string;
+  isDirectory: boolean;
+  status: ArtifactGitStatus;
 };
 
 export type ArtifactFilePreview =
@@ -58,10 +73,28 @@ export type ArtifactFilePreview =
       found: true;
     }
   | {
+      kind: 'document';
+      format: ArtifactDocumentFormat;
+      title: string;
+      path: string;
+      mimeType: string;
+      data: ArrayBuffer;
+      size: number;
+      found: true;
+    }
+  | {
       kind: 'directory';
       title: string;
       path: string;
       entries: ArtifactFileEntry[];
+      found: true;
+    }
+  | {
+      kind: 'gitDirectory';
+      title: string;
+      path: string;
+      branch: string;
+      entries: ArtifactGitEntry[];
       found: true;
     }
   | {

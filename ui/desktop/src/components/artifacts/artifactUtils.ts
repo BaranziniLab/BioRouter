@@ -39,6 +39,7 @@ const TEXT_EXTENSIONS = new Set([
 
 const IMAGE_EXTENSIONS = new Set(['gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
 const HTML_EXTENSIONS = new Set(['htm', 'html']);
+const DOCUMENT_EXTENSIONS = new Set(['docx', 'ipynb', 'pdf', 'pptx', 'xlsx']);
 const GENERIC_UI_TITLE_PARTS = new Set([
   'chart',
   'diagram',
@@ -263,25 +264,43 @@ export function parseDelimitedTable(text: string, delimiter: string): string[][]
 export function looksLikePreviewableFile(value: string): boolean {
   const href = value.trim();
   if (!href || /^(https?|mailto|tel):/i.test(href)) return false;
-  if (href.startsWith('file://')) return true;
+  const localPath = /^file:\/\//i.test(href) ? pathFromArtifactHref(href) : href.split(/[?#]/)[0];
+  const trimmedPath = localPath.replace(/[/\\]+$/, '');
+  const basename = basenameFromPath(trimmedPath).toLowerCase();
   if (
-    href.startsWith('/') ||
-    href.startsWith('~/') ||
-    href.startsWith('./') ||
-    href.startsWith('../')
+    !trimmedPath ||
+    /^[/\\]+$/.test(localPath) ||
+    /^(?:~|\.{1,2}|[a-z]:)$/i.test(trimmedPath) ||
+    ['.git', '.hg', '.svn', '.ds_store'].includes(basename)
+  ) {
+    return false;
+  }
+  if (/^file:\/\//i.test(href)) return true;
+  if (
+    localPath.startsWith('/') ||
+    localPath.startsWith('~/') ||
+    localPath.startsWith('./') ||
+    localPath.startsWith('../') ||
+    /^[a-z]:[\\/]/i.test(localPath) ||
+    localPath.startsWith('\\\\')
   ) {
     return true;
   }
-  const ext = extensionFromPath(href);
-  return TEXT_EXTENSIONS.has(ext) || IMAGE_EXTENSIONS.has(ext) || HTML_EXTENSIONS.has(ext);
+  const ext = extensionFromPath(localPath);
+  return (
+    TEXT_EXTENSIONS.has(ext) ||
+    IMAGE_EXTENSIONS.has(ext) ||
+    HTML_EXTENSIONS.has(ext) ||
+    DOCUMENT_EXTENSIONS.has(ext)
+  );
 }
 
 export function pathFromArtifactHref(href: string): string {
-  if (href.startsWith('file://')) {
+  if (/^file:\/\//i.test(href)) {
     try {
       return decodeURIComponent(new URL(href).pathname);
     } catch {
-      return href.replace(/^file:\/\//, '');
+      return href.replace(/^file:\/\//i, '');
     }
   }
   return href;

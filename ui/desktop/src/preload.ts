@@ -64,8 +64,23 @@ interface SaveDataUrlResponse {
 type ArtifactFileEntry = {
   name: string;
   path: string;
+  relativePath: string;
+  parentPath: string;
   isDirectory: boolean;
   size?: number;
+};
+
+type ArtifactDocumentFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx';
+
+type ArtifactGitStatus = 'untracked' | 'modified' | 'staged' | 'committed' | 'pushed';
+
+type ArtifactGitEntry = {
+  name: string;
+  path: string;
+  relativePath: string;
+  parentPath: string;
+  isDirectory: boolean;
+  status: ArtifactGitStatus;
 };
 
 type ArtifactFilePreview =
@@ -88,10 +103,28 @@ type ArtifactFilePreview =
       found: true;
     }
   | {
+      kind: 'document';
+      format: ArtifactDocumentFormat;
+      title: string;
+      path: string;
+      mimeType: string;
+      data: ArrayBuffer;
+      size: number;
+      found: true;
+    }
+  | {
       kind: 'directory';
       title: string;
       path: string;
       entries: ArtifactFileEntry[];
+      found: true;
+    }
+  | {
+      kind: 'gitDirectory';
+      title: string;
+      path: string;
+      branch: string;
+      entries: ArtifactGitEntry[];
       found: true;
     }
   | {

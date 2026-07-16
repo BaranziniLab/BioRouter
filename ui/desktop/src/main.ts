@@ -73,8 +73,14 @@ import {
   SPAWN_ENV,
 } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
-import { isAllowedRendererPermission, isAppOrigin } from './utils/permissionPolicy';
+import {
+  isAllowedRendererPermission,
+  isAppOrigin,
+  shouldOpenExternalNavigation,
+} from './utils/permissionPolicy';
 import { injectArtifactBrowserCsp, injectArtifactHostTheme } from './utils/artifactSecurity';
+import { readGitArtifactTree } from './utils/artifactGit';
+import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -194,8 +200,13 @@ function mimeTypeForArtifactPath(filePath: string): string {
     '.jpg': 'image/jpeg',
     '.js': 'text/javascript',
     '.json': 'application/json',
+    '.ipynb': 'application/x-ipynb+json',
     '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
     '.png': 'image/png',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.py': 'text/x-python',
     '.r': 'text/x-r',
     '.rs': 'text/rust',
@@ -212,6 +223,16 @@ function mimeTypeForArtifactPath(filePath: string): string {
     '.yml': 'application/yaml',
   };
   return mimeTypes[ext] || 'application/octet-stream';
+}
+
+function documentFormatForArtifactPath(filePath: string) {
+  const formats = {
+    '.pdf': 'pdf',
+    '.docx': 'docx',
+    '.xlsx': 'xlsx',
+    '.pptx': 'pptx',
+  } as const;
+  return formats[path.extname(filePath).toLowerCase() as keyof typeof formats] ?? null;
 }
 
 function isTextArtifact(mimeType: string, buffer: Buffer): boolean {
@@ -1102,7 +1123,7 @@ const createChat = async (
   // CSP is injected by onHeadersReceived. Agent-authored artifact HTML must
   // never reach such a window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isExternallyOpenableUrl(url)) {
+    if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
       shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -1115,7 +1136,7 @@ const createChat = async (
     event.preventDefault();
     // Unlike setWindowOpenHandler above, this legacy path used to hand any
     // scheme -- including file:// and custom protocols -- to the OS opener.
-    if (isExternallyOpenableUrl(url)) {
+    if (shouldOpenExternalNavigation(url, rendererEntryUrl())) {
       shell.openExternal(url);
     }
   });
@@ -2406,37 +2427,23 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
 
     const stats = await fs.stat(resolvedPath);
     if (stats.isDirectory()) {
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const gitTree = await readGitArtifactTree(resolvedPath);
+      if (gitTree) {
+        return {
+          kind: 'gitDirectory',
+          title,
+          path: resolvedPath,
+          branch: gitTree.branch,
+          entries: gitTree.entries,
+          found: true,
+        };
+      }
       return {
         kind: 'directory',
         title,
         path: resolvedPath,
         found: true,
-        entries: await Promise.all(
-          entries
-            .filter((entry) => !entry.name.startsWith('.'))
-            .sort((a, b) => {
-              if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map(async (entry) => {
-              const entryPath = path.join(resolvedPath, entry.name);
-              let size: number | undefined;
-              if (entry.isFile()) {
-                try {
-                  size = (await fs.stat(entryPath)).size;
-                } catch {
-                  size = undefined;
-                }
-              }
-              return {
-                name: entry.name,
-                path: entryPath,
-                isDirectory: entry.isDirectory(),
-                size,
-              };
-            })
-        ),
+        entries: await readArtifactDirectoryTree(resolvedPath),
       };
     }
 
@@ -2462,6 +2469,20 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
     }
 
     const buffer = await fs.readFile(resolvedPath);
+    const documentFormat = documentFormatForArtifactPath(resolvedPath);
+    if (documentFormat) {
+      return {
+        kind: 'document',
+        format: documentFormat,
+        title,
+        path: resolvedPath,
+        mimeType,
+        data: Uint8Array.from(buffer).buffer,
+        size: stats.size,
+        found: true,
+      };
+    }
+
     if (mimeType.startsWith('image/')) {
       return {
         kind: 'image',
@@ -3990,10 +4011,10 @@ async function appMain() {
       : "default-src 'self';" +
         "style-src 'self' 'unsafe-inline';" +
         "script-src 'self';" +
-        "img-src 'self' data: https:;" +
+        "img-src 'self' data: blob: https:;" +
         `connect-src ${buildConnectSrc()};` +
         "object-src 'none';" +
-        "frame-src 'self' https: http:;" +
+        "frame-src 'self' blob: https: http:;" +
         "font-src 'self' data: https:;" +
         "media-src 'self' mediastream:;" +
         "form-action 'none';" +

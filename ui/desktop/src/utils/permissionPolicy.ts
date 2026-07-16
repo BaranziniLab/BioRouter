@@ -22,6 +22,16 @@ export function isAppOrigin(candidate: string, appUrl: URL): boolean {
   }
 }
 
+export function shouldOpenExternalNavigation(candidate: string, appUrl: URL): boolean {
+  if (isAppOrigin(candidate, appUrl)) return false;
+  try {
+    const { protocol } = new URL(candidate);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function isAllowedRendererPermission(
   permission: string,
   requestingUrl: string,

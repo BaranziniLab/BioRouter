@@ -1526,6 +1526,16 @@ code [class~='token'] {
   display: inline;
 }
 
+.artifact-docx-preview .docx-wrapper {
+  box-sizing: border-box;
+  min-width: 100%;
+  padding: 16px 12px 0;
+}
+
+.artifact-docx-preview .docx-wrapper > section.docx {
+  transform-origin: top center;
+}
+
 @keyframes biorouter-heatmap-loading {
   0%,
   100% {
