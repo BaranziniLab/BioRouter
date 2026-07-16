@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
-import { cancelTurn, editMessage, interrupt, reply, resumeAgent } from '../api';
+import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
 
 vi.mock('../api', async () => {
   return {
@@ -96,10 +96,12 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(resumeAgent).mockReset();
   vi.mocked(reply).mockReset();
+  vi.mocked(getSession).mockReset();
   vi.mocked(interrupt).mockReset();
   vi.mocked(cancelTurn).mockReset();
   vi.mocked(editMessage).mockReset();
   vi.mocked(cancelTurn).mockResolvedValue({ data: { cancelled: true } } as never);
+  vi.mocked(getSession).mockResolvedValue({ data: null } as never);
   Object.assign(window, {
     electron: {
       openExternal: vi.fn(async () => undefined),
@@ -111,6 +113,55 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
+  it('synchronizes a generated title and refreshes history after a tool-first turn', async () => {
+    const registry = new ChatStreamRegistry();
+    const initialSession = { ...session('20260716_27'), name: 'New Session' };
+    const generatedSession = { ...initialSession, name: 'Apple Watch News' };
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: initialSession } } as never);
+    vi.mocked(getSession).mockResolvedValue({ data: generatedSession } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Message',
+          message: {
+            id: 'tool-first',
+            role: 'assistant',
+            created: 2,
+            content: [
+              {
+                type: 'toolRequest',
+                id: 'tool-1',
+                toolCall: {
+                  status: 'success',
+                  value: { name: 'developer__text_editor', arguments: { command: 'view' } },
+                },
+              },
+            ],
+            metadata: { userVisible: true, agentVisible: true },
+          },
+          token_state: tokenState,
+        } as MessageEvent;
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const onFinished = vi.fn();
+    window.addEventListener('message-stream-finished', onFinished);
+    const controller = registry.getController('20260716_27');
+    await controller.handleSubmit('summarize the latest Apple Watch news');
+
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(800);
+    await flush();
+
+    expect(getSession).toHaveBeenCalledWith({
+      path: { session_id: '20260716_27' },
+      throwOnError: true,
+    });
+    expect(controller.getSnapshot().session?.name).toBe('Apple Watch News');
+    window.removeEventListener('message-stream-finished', onFinished);
+  });
+
   it('routes structured provider failures inline without failing the session', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);

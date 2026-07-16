@@ -437,58 +437,61 @@ class ChatStreamController {
       });
     }
 
-    const isNewSession = this.sessionId && this.sessionId.match(/^\d{8}_\d{6}$/);
-    if (isNewSession) {
+    // Every completed turn can change the session's recency or generated name.
+    // Session ids use a variable-width daily counter (for example
+    // `20260716_1` and `20260716_27`), so gating this refresh behind a fixed
+    // id shape leaves History and Recents stale for real sessions.
+    if (this.sessionId) {
       window.dispatchEvent(new CustomEvent('message-stream-finished'));
     }
 
-    if (!error && this.sessionId) {
-      const userMessageCount = this.messagesRef.filter(
-        (m) => m.role === 'user' && m.metadata?.userVisible !== false
-      ).length;
-      if (userMessageCount <= 3) {
-        const pollDelays = [800, 1200, 2000, 3000, 4000, 6000, 8000, 10000];
-        void (async () => {
-          for (const delay of pollDelays) {
-            await new Promise((r) => setTimeout(r, delay));
-            try {
-              const response = await getSession({
-                path: { session_id: this.sessionId },
-                throwOnError: true,
-              });
-              const data = response.data;
-              if (!data) continue;
-              const proposedName = data.name;
-              if (data.user_set_name) break;
-              if (proposedName && !isDefaultSessionName(proposedName)) {
-                const uniqueName = await disambiguateSessionName(proposedName, this.sessionId);
-                if (uniqueName !== proposedName) {
-                  try {
-                    await renameSession(this.sessionId, uniqueName, 'llm');
-                  } catch (renameError) {
-                    console.warn('Failed to persist disambiguated session name:', renameError);
-                  }
-                } else {
-                  announceSessionName({
-                    sessionId: this.sessionId,
-                    name: uniqueName,
-                    userSetName: false,
-                    origin: 'llm',
-                  });
+    if (
+      this.sessionId &&
+      this.snapshot.session &&
+      !this.snapshot.session.user_set_name &&
+      isDefaultSessionName(this.snapshot.session.name)
+    ) {
+      const pollDelays = [800, 1200, 2000, 3000, 4000, 6000, 8000, 10000];
+      void (async () => {
+        for (const delay of pollDelays) {
+          await new Promise((r) => setTimeout(r, delay));
+          try {
+            const response = await getSession({
+              path: { session_id: this.sessionId },
+              throwOnError: true,
+            });
+            const data = response.data;
+            if (!data) continue;
+            const proposedName = data.name;
+            if (data.user_set_name) break;
+            if (proposedName && !isDefaultSessionName(proposedName)) {
+              const uniqueName = await disambiguateSessionName(proposedName, this.sessionId);
+              if (uniqueName !== proposedName) {
+                try {
+                  await renameSession(this.sessionId, uniqueName, 'llm');
+                } catch (renameError) {
+                  console.warn('Failed to persist disambiguated session name:', renameError);
                 }
-                this.updateSnapshot((prev) =>
-                  prev.session && prev.session.name !== uniqueName
-                    ? { ...prev, session: { ...prev.session, name: uniqueName } }
-                    : prev
-                );
-                break;
+              } else {
+                announceSessionName({
+                  sessionId: this.sessionId,
+                  name: uniqueName,
+                  userSetName: false,
+                  origin: 'llm',
+                });
               }
-            } catch (refreshError) {
-              console.warn('Failed to refresh session name:', refreshError);
+              this.updateSnapshot((prev) =>
+                prev.session && prev.session.name !== uniqueName
+                  ? { ...prev, session: { ...prev.session, name: uniqueName } }
+                  : prev
+              );
+              break;
             }
+          } catch (refreshError) {
+            console.warn('Failed to refresh session name:', refreshError);
           }
-        })();
-      }
+        }
+      })();
     }
 
     this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));

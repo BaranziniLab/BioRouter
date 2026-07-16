@@ -55,6 +55,14 @@ Detection is complete only when the API key is persisted under the provider's
 declared configuration key, the provider catalog is refreshed, and the matching
 model is selected on the next screen. A successful key probe alone is insufficient.
 
+### A generated session title is renderer-wide state
+
+The backend may generate a title after any completed turn, including a tool-first or
+failed turn. Once persisted, that title must replace the default placeholder in the
+conversation header, desktop window title, sidebar Recents, Home recent chats, and
+full History. Session identifiers use a variable-width daily counter such as
+`20260716_1`; renderer refresh logic must not assume a fixed-width suffix.
+
 ### Notification geometry is shared
 
 All desktop notifications use the same status chip, text baseline, close affordance,
@@ -71,6 +79,7 @@ content and severity, not custom toast layout.
 | Reasoning behavior changes for models that already worked | Endpoint selection is capability-driven; ordinary chat and known-compatible tool calls keep their prior format. |
 | Toast text wrapping into close controls | Shared right padding and width constraints reserve the close-button area at every supported severity. |
 | Branching from the latest or failed message | Tests cover message-level and title-menu divergence with user, assistant, and error turns. |
+| Backend title persists while renderer views remain stale | Every completed turn refreshes session lists, while default-name sessions poll for the backend rename and broadcast the resolved name to all renderer consumers. |
 
 ## Verification record
 
@@ -125,3 +134,18 @@ traffic. No real provider credential or existing user session was used.
 
 All automated and application checks above were run against the follow-up tree before
 its final push.
+
+### Session-title synchronization follow-up
+
+- Reproduced a completed tool-using conversation whose database row was already
+  named while the header and sidebar still displayed `New Session`.
+- Added a tool-first controller regression covering the real variable-width session
+  identifier format and the History/Recents completion event.
+- Repeated the conversation against an isolated local provider. The generated,
+  duplicate-safe title `Apple Watch News 2` appeared identically in the desktop
+  window title, conversation header, sidebar Recents, Home recent chats, and full
+  History without reopening the session.
+- The focused title/sidebar suite passed 39 tests. The full desktop suite passed 988
+  of 989 tests in one single-worker run; the only timeout, an unrelated extension
+  modal test, passed immediately when rerun alone. Typecheck, ESLint, Prettier, and
+  all 128 contrast assertions passed.
