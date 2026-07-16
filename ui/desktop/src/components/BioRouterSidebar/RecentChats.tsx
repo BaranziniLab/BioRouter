@@ -237,11 +237,7 @@ export default function RecentChats({
           </p>
         ) : (
           groups.map((group) => (
-            <section
-              key={group.label}
-              aria-label={group.label}
-              className="mb-2 min-w-0 last:mb-0"
-            >
+            <section key={group.label} aria-label={group.label} className="mb-2 min-w-0 last:mb-0">
               <p className="px-3 pb-0.5 text-xs font-normal leading-4 text-text-subtle">
                 {group.label}
               </p>

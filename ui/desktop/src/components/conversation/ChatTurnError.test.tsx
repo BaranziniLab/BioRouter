@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { ChatTurnError, presentChatTurnError } from './ChatTurnError';
+import { ChatTurnError, hasVisibleTurnErrorMessage, presentChatTurnError } from './ChatTurnError';
+import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 
 const QUOTA_ERROR =
@@ -87,5 +88,24 @@ describe('ChatTurnError', () => {
       message: expect.stringContaining('Check your connection and provider settings'),
       details: 'Submit error: Failed to fetch',
     });
+  });
+
+  it('does not duplicate a backend error message that is already in the transcript', () => {
+    const turnError = error({ message: 'Authentication failed. Status: 401 Unauthorized' });
+    const messages = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'Ran into this error: Authentication failed. Status: 401 Unauthorized.',
+          },
+        ],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+    ] as Message[];
+
+    expect(hasVisibleTurnErrorMessage(turnError, messages)).toBe(true);
+    expect(hasVisibleTurnErrorMessage(error({ message: 'Failed to fetch' }), messages)).toBe(false);
   });
 });

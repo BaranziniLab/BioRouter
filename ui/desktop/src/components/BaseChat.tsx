@@ -67,7 +67,7 @@ import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import InAppTerminalDock from './InAppTerminalDock';
-import { ChatTurnError } from './conversation/ChatTurnError';
+import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
@@ -1690,7 +1690,9 @@ function BaseChatContent({
                               onOpenArtifact={handleOpenArtifact}
                               workingDir={sessionWorkingDir}
                             />
-                            {turnError && <ChatTurnError error={turnError} />}
+                            {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
+                              <ChatTurnError error={turnError} />
+                            )}
                           </>
                         </SearchView>
 

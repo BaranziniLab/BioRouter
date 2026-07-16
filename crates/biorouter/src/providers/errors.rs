@@ -92,6 +92,75 @@ impl ProviderErrorKind {
     }
 }
 
+fn classify_provider_details(details: &str) -> ProviderErrorKind {
+    let details = details.to_ascii_lowercase();
+    if details.contains("401")
+        || details.contains("403")
+        || details.contains("unauthorized")
+        || details.contains("authentication failed")
+        || details.contains("authentication error")
+        || details.contains("invalid api key")
+        || details.contains("incorrect api key")
+    {
+        ProviderErrorKind::Auth
+    } else if details.contains("insufficient_quota")
+        || details.contains("quota_exceeded")
+        || details.contains("billing_hard_limit")
+        || details.contains("payment required")
+        || details.contains("credit balance")
+    {
+        ProviderErrorKind::Quota
+    } else if details.contains("429") || details.contains("rate_limit") {
+        ProviderErrorKind::RateLimit
+    } else if details.contains("context_length")
+        || details.contains("context window")
+        || details.contains("maximum context")
+        || details.contains("too many tokens")
+    {
+        ProviderErrorKind::ContextLength
+    } else if details.contains("content_policy")
+        || details.contains("safety policy")
+        || details.contains("safety filter")
+        || details.contains("content blocked")
+    {
+        ProviderErrorKind::Policy
+    } else if details.contains("404")
+        || details.contains("model_not_found")
+        || details.contains("model not found")
+        || details.contains("resource not found")
+        || details.contains("deployment not found")
+    {
+        ProviderErrorKind::ModelUnavailable
+    } else if details.contains("400")
+        || details.contains("422")
+        || details.contains("bad request")
+        || details.contains("invalid_request")
+        || details.contains("invalid argument")
+        || details.contains("invalid_argument")
+        || details.contains("unsupported parameter")
+        || details.contains("not supported")
+    {
+        ProviderErrorKind::InvalidRequest
+    } else if details.contains("500")
+        || details.contains("502")
+        || details.contains("503")
+        || details.contains("504")
+    {
+        ProviderErrorKind::Server
+    } else if details.contains("timeout")
+        || details.contains("timed out")
+        || details.contains("connection")
+        || details.contains("dns")
+        || details.contains("network")
+        || details.contains("failed to fetch")
+        || details.contains("error sending request")
+    {
+        ProviderErrorKind::Network
+    } else {
+        ProviderErrorKind::Other
+    }
+}
+
 impl ProviderError {
     /// Classify this error. Used to decide the CLI exit code and the wire frame
     /// for [`crate::agents::turn_abort::TurnAbortCode::ProviderFailure`].
@@ -106,70 +175,9 @@ impl ProviderError {
             // also carries HTTP status text for some providers. Sniff the status
             // so a 401/403 surfaced this way is still classified as auth rather
             // than as a retryable network blip.
-            ProviderError::RequestFailed(details) => {
-                let d = details.to_ascii_lowercase();
-                if d.contains("401") || d.contains("403") || d.contains("unauthorized") {
-                    ProviderErrorKind::Auth
-                } else if d.contains("insufficient_quota")
-                    || d.contains("quota_exceeded")
-                    || d.contains("billing_hard_limit")
-                    || d.contains("payment required")
-                    || d.contains("credit balance")
-                {
-                    ProviderErrorKind::Quota
-                } else if d.contains("429") || d.contains("rate_limit") {
-                    ProviderErrorKind::RateLimit
-                } else if d.contains("context_length")
-                    || d.contains("context window")
-                    || d.contains("maximum context")
-                    || d.contains("too many tokens")
-                {
-                    ProviderErrorKind::ContextLength
-                } else if d.contains("content_policy")
-                    || d.contains("safety policy")
-                    || d.contains("safety filter")
-                    || d.contains("content blocked")
-                {
-                    ProviderErrorKind::Policy
-                } else if d.contains("404")
-                    || d.contains("model_not_found")
-                    || d.contains("model not found")
-                    || d.contains("resource not found")
-                    || d.contains("deployment not found")
-                {
-                    ProviderErrorKind::ModelUnavailable
-                } else if d.contains("400")
-                    || d.contains("422")
-                    || d.contains("bad request")
-                    || d.contains("invalid_request")
-                    || d.contains("invalid argument")
-                    || d.contains("invalid_argument")
-                    || d.contains("unsupported parameter")
-                    || d.contains("not supported")
-                {
-                    ProviderErrorKind::InvalidRequest
-                } else if d.contains("500")
-                    || d.contains("502")
-                    || d.contains("503")
-                    || d.contains("504")
-                {
-                    ProviderErrorKind::Server
-                } else if d.contains("timeout")
-                    || d.contains("timed out")
-                    || d.contains("connection")
-                    || d.contains("dns")
-                    || d.contains("network")
-                    || d.contains("failed to fetch")
-                    || d.contains("error sending request")
-                {
-                    ProviderErrorKind::Network
-                } else {
-                    ProviderErrorKind::Other
-                }
-            }
-            ProviderError::ExecutionError(_) | ProviderError::UsageError(_) => {
-                ProviderErrorKind::Other
-            }
+            ProviderError::RequestFailed(details)
+            | ProviderError::ExecutionError(details)
+            | ProviderError::UsageError(details) => classify_provider_details(details),
             ProviderError::NotImplemented(_) => ProviderErrorKind::InvalidRequest,
         }
     }
@@ -304,5 +312,20 @@ mod tests {
         assert_eq!(kind, ProviderErrorKind::Other);
         assert_eq!(kind.wire_code(), "unknown");
         assert!(!kind.is_transient());
+    }
+
+    #[test]
+    fn classifies_wrapped_provider_errors_from_their_preserved_details() {
+        assert_eq!(
+            ProviderError::ExecutionError(
+                "Authentication error: Authentication failed. Status: 401 Unauthorized".into()
+            )
+            .kind(),
+            ProviderErrorKind::Auth
+        );
+        assert_eq!(
+            ProviderError::UsageError("provider returned insufficient_quota".into()).kind(),
+            ProviderErrorKind::Quota
+        );
     }
 }

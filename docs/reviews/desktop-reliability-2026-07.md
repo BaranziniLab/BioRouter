@@ -13,7 +13,7 @@ checks required before and after publishing the integrated `main` branch.
 | --- | --- | --- | --- |
 | Conversation startup | A new conversation replaced the whole app with `z is not a function`. | React's external-store subscription received an unstable or incorrectly shaped callback across chat-store lifecycles. | Added a stable subscription adapter and regression tests, and hardened the chat boundary so a malformed store update cannot take down the application shell. |
 | Diverge | A branch could swap the user's prompt with the assistant response. The message action and title-menu action behaved differently. | The two entry points inferred the branch point and message role independently, and one path selected the adjacent message rather than the requested turn. | Centralized branch-point selection in `useDiverge`, made both entry points use the same turn semantics, and added role/order assertions. |
-| Stream/provider errors | Quota, connection, and decode failures replaced the conversation with a full-page “Failed to Load Session” error. | A turn-local stream failure was persisted and rethrown as a session-loading failure. | Store structured turn errors beside the affected user turn and render `ChatTurnError` inline while keeping earlier messages and the composer available. |
+| Stream/provider errors | Quota, connection, and decode failures replaced the conversation with a full-page “Failed to Load Session” error. | A turn-local stream failure was persisted and rethrown as a session-loading failure. The integrated UI also rendered both the persisted assistant failure and the structured turn card. | Store structured turn errors beside the affected user turn, keep the transcript and composer available, classify wrapped provider failures from their preserved details, and suppress the structured card when the same failure is already visible in the transcript. |
 | Tool-call expansion | Expanding an unsuccessful or partial tool call crashed while reading `undefined.length`. | The renderer assumed every response contained the complete content-array shape. | Normalize absent and legacy tool responses, provide readable fallbacks for malformed payloads, and test missing content, errors, and empty outputs. |
 | Reasoning plus tools | Some OpenAI reasoning models received unsupported `/v1/chat/completions` requests with `reasoning_effort` and tools. | Model capability metadata did not participate in transport selection, so compatible reasoning settings could still use an incompatible endpoint. | Route reasoning-and-tool requests that require it through the Responses format, preserve Chat Completions for compatible models, and test the transport/capability combinations. |
 | Provider auto-detection | A key was detected on onboarding, but the next model-selection screen did not retain the provider/model. | The UI reused a stale provider catalog, guessed the provider's key-storage field, and did not wait for persistence before advancing. | Return the authoritative `api_key_config_key`, trim and await key persistence, force one catalog refresh, and preselect the detected model. Coverage includes all configured commercial providers. |
@@ -42,11 +42,12 @@ content, and must not disable retry, copy, diverge, or subsequent prompts.
 
 ### Divergence preserves role and ordering
 
-For a user message, the new branch ends immediately before that prompt so it can be
-edited or resent. For an assistant message, the branch includes the triggering user
-prompt and excludes the selected assistant response. Both divergence entry points
-must calculate the same boundary and may never reinterpret assistant text as user
-input.
+Message-level Diverge is available on a completed assistant answer and includes that
+answer in the new branch. Title-menu Diverge uses the same inclusive boundary at the
+most recent completed assistant answer. Editing a user message is a separate
+edit-diverge path that truncates immediately before the edited prompt. Every path
+must preserve message ordering and roles; assistant text may never be reinterpreted
+as user input.
 
 ### Provider detection is an end-to-end transaction
 
@@ -73,30 +74,54 @@ content and severity, not custom toast layout.
 
 ## Verification record
 
-### Pre-integration automated checks
+### Automated checks
 
-- Focused desktop regression suite: 41 tests passed.
-- Provider auto-detection: 9 core tests and the server route test passed.
-- TypeScript typecheck and ESLint passed.
-- Notification contrast suite: 128 assertions passed.
-- Rust formatting check and `scripts/clippy-lint.sh` passed.
-- Full desktop suite: 970 of 971 tests passed. The remaining failure is the existing,
-  date-sensitive `RecentChats.test.tsx` fixture, which currently resolves to
-  “Yesterday” while the assertion expects “Today”; it also fails in isolation and is
-  unrelated to this batch.
+- Focused desktop reliability suite: 12 files and 114 tests passed.
+- Full desktop suite: 131 files and all 978 tests passed. The run initially exposed
+  a fixed-date `RecentChats` fixture and load-sensitive timeouts; the date fixture is
+  now relative to the test runtime, and the timeout cases passed both alone and in
+  the clean full rerun.
+- Provider auto-detection: 9 core tests passed; onboarding, provider-guard, model
+  context, and model-switcher coverage also passed in the desktop suite.
+- OpenAI/Azure reasoning capability matrix: 9 tests passed, including o4-mini tool
+  calls through the Responses API.
+- Wrapped provider-error classification: 3 tests passed.
+- Server configuration routes: 3 tests passed.
+- TypeScript typecheck, ESLint, Prettier, and all 128 notification contrast
+  assertions passed.
+- Full `biorouter` library suite: all 1,396 tests passed. Two timing-sensitive test
+  harnesses were made deterministic: the GCP token test now asserts the stable
+  error variant, and the hook history cap is tested directly without subprocess
+  scheduling assumptions.
+- `cargo fmt --check` and the complete `scripts/clippy-lint.sh` workflow passed,
+  including the baseline rule and banned-TLS checks.
 
 ### Post-integration application checks
 
-The integrated desktop application is tested after the initial `main` push, as
-requested. Results, screenshots inspected, and any follow-up corrections are added
-to this section in a subsequent documentation commit.
+The integrated desktop application was launched with an isolated BioRouter data root
+and inspected through its accessibility tree, screenshots, renderer events, and API
+traffic. No real provider credential or existing user session was used.
 
-The manual/visual matrix is:
+- A new conversation opened without the `z is not a function` error boundary.
+- A detected OpenAI key was persisted under `OPENAI_API_KEY`, the provider catalog
+  refreshed exactly once, `gpt-4.1` was preselected in the model dialog, and the home
+  composer retained it after selection.
+- A controlled provider 401 kept the transcript and composer visible. It exposed a
+  duplicate persisted/structured error and a generic error classification; both were
+  corrected during this pass. The resulting view contains one inline failure and no
+  full-page “Failed to Load Session” or “Honk!” state.
+- The final provider 401 check was repeated after rebuilding and restarting the real
+  development backend. The new turn again produced exactly one inline authentication
+  failure, left the composer enabled, and reported no renderer or console errors.
+- Message-level and title-menu Diverge both included the selected/latest completed
+  assistant answer and preserved the user and assistant roles.
+- An imported failed-tool fixture expanded to its error detail without crashing;
+  the long diagnostic wrapped inside the tool card.
+- Success, information, warning, error, and loading notifications were inspected as
+  a five-toast stack. Measured icon/text center deltas were `0px` for all severities,
+  and no notification text intersected its close control.
+- Renderer monitoring reported no uncaught page errors or console errors throughout
+  the provider, divergence, tool, and notification checks.
 
-1. Launch and initiate a new conversation without crossing the application error boundary.
-2. Diverge from a user turn, an assistant turn, and the conversation-title menu; verify text and roles.
-3. Produce a recoverable provider failure and verify the error remains inline.
-4. Expand successful, failed, empty, and malformed tool-call responses.
-5. Configure a detected provider key through model selection without re-entering it.
-6. Exercise success, info, warning, error, and loading notifications at narrow and normal widths.
-7. Re-run focused and broad automated suites against the exact integrated tree.
+All automated and application checks above were run against the follow-up tree before
+its final push.

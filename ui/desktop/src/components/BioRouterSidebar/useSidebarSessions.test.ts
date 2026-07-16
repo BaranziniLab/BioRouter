@@ -77,7 +77,10 @@ describe('useSidebarSessions', () => {
   it('refreshes recent activity without discarding pages already loaded by scrolling', async () => {
     const firstPage = Array.from({ length: 10 }, (_, index) => makeSummary(index));
     const secondPage = Array.from({ length: 10 }, (_, index) => makeSummary(index + 10));
-    const refreshedFirstPage = [{ ...makeSummary(0), name: 'Refreshed chat' }, ...firstPage.slice(1)];
+    const refreshedFirstPage = [
+      { ...makeSummary(0), name: 'Refreshed chat' },
+      ...firstPage.slice(1),
+    ];
     mocks.listSidebarSessions
       .mockResolvedValueOnce({
         data: { sessions: firstPage, has_more: true, next_offset: 10 },

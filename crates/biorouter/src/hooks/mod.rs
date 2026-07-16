@@ -1254,26 +1254,19 @@ Notification:
     }
 
     /// A session that never settles must not grow the buffer without bound.
-    #[tokio::test]
-    async fn fired_outcome_buffer_is_bounded() {
-        let manager = manager_with_yaml_commands(
-            r#"
-Notification:
-  - hooks:
-      - type: command
-        command: $MESSAGE
-"#,
-            &[("$MESSAGE", stdout_command(r#"{"systemMessage":"x"}"#))],
-        );
+    #[test]
+    fn fired_outcome_buffer_is_bounded() {
+        let manager = manager_with_yaml("{}");
         for _ in 0..(MAX_FIRED_OUTCOMES + 8) {
-            manager.fire(
-                HookEvent::Notification,
-                None,
-                notification_payload("orphan"),
-                test_cwd().to_path_buf(),
-            );
+            manager.record_fired(FiredHookOutcome {
+                event: HookEvent::Notification,
+                session_id: "orphan".to_string(),
+                aggregate: HookAggregate {
+                    system_messages: vec!["x".to_string()],
+                    ..HookAggregate::default()
+                },
+            });
         }
-        manager.join_fired(FIRE_JOIN_BUDGET_SHUTDOWN).await;
         assert_eq!(manager.drain_fired("orphan").len(), MAX_FIRED_OUTCOMES);
     }
 

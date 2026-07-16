@@ -28,8 +28,8 @@ beforeAll(() => {
   });
 });
 
-function makeSession(index: number): SessionSummary {
-  const updatedAt = new Date(now - index * 60_000).toISOString();
+function makeSession(index: number, referenceTime = now): SessionSummary {
+  const updatedAt = new Date(referenceTime - index * 60_000).toISOString();
   return {
     id: `session-${index}`,
     name: `Chat ${index}`,
@@ -41,10 +41,15 @@ function makeSession(index: number): SessionSummary {
 }
 
 function renderRecentChats(props: Partial<ComponentProps<typeof RecentChats>> = {}) {
+  const currentTime = Date.now();
   return render(
     <SidebarProvider>
       <RecentChats
-        sessions={[makeSession(2), makeSession(0), makeSession(1)]}
+        sessions={[
+          makeSession(2, currentTime),
+          makeSession(0, currentTime),
+          makeSession(1, currentTime),
+        ]}
         runningSessionIds={new Set(['session-1'])}
         hasMore={false}
         isLoadingMore={false}
@@ -100,6 +105,10 @@ describe('formatTimeSinceLastWorked', () => {
 describe('RecentChats', () => {
   it('opens individual chats, marks an ongoing chat, and exposes a compact summary on focus', async () => {
     const onOpen = vi.fn();
+    const currentDateLabel = new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+    }).format(Date.now());
     renderRecentChats({ onOpen, activeSessionId: 'session-0' });
 
     const currentChat = screen.getByTestId('recent-chat-session-0');
@@ -128,7 +137,7 @@ describe('RecentChats', () => {
     expect(summary).toHaveTextContent('/workspace/project-0');
     expect(summary).toHaveTextContent('Last worked');
     expect(summary).toHaveTextContent('0 messages');
-    expect(summary).toHaveTextContent('Jul 15');
+    expect(summary).toHaveTextContent(currentDateLabel);
   });
 
   it('truncates an overlong row title while preserving the full hover summary', async () => {

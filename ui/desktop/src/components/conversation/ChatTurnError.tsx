@@ -1,4 +1,5 @@
 import { NotificationSurface } from '../alerts/NotificationSurface';
+import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
 
@@ -69,6 +70,19 @@ export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPre
     message,
     details: details && details !== message ? details : undefined,
   };
+}
+
+export function hasVisibleTurnErrorMessage(error: ChatTurnErrorData, messages: Message[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
+
+    return message.content.some(
+      (content) => content.type === 'text' && content.text.includes(error.message)
+    );
+  }
+
+  return false;
 }
 
 export function ChatTurnError({ error }: { error: ChatTurnErrorData }) {

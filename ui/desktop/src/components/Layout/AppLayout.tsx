@@ -105,9 +105,7 @@ const AppLayoutContent: React.FC = () => {
         isMacOS={safeIsMacOS}
         isDashboard={location.pathname === '/dashboard'}
         onNewWindow={handleNewWindow}
-        onToggleDashboard={() =>
-          navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')
-        }
+        onToggleDashboard={() => navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')}
       />
       <Sidebar variant="inset" collapsible="offcanvas">
         <AppSidebar
