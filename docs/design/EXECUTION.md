@@ -496,6 +496,50 @@ Interactive tuning tools, self-contained, published as artifacts:
 
 ---
 
+## Brand rollout — the BR mark + BioRouter wordmark ship (2026-07-17)
+
+The abstract circle glyph is retired (D-40). The new identity flies everywhere
+the old glyph did.
+
+**Assets (D-38 mark, D-39 wordmark, all committed).**
+- App icon (`icon.icns`/`.ico`/`.png` + light variants) → the BR mark on the
+  cream plate, **inset to the macOS icon safe-area** — the plate is 78.9% of the
+  tile (~100px transparent margin), not the 97.6% full-bleed that read
+  *oversized* next to native icons like Chrome (the user caught this). Menu-bar
+  template → a **monochrome BR**. Rasters are built by resizing a
+  **browser-rendered** PNG master, because `sips` flattens font-weight — a heavy
+  800 mark comes out medium through the SVG-text path.
+- In-app: `<BioRouterWordmark>` (sidebar brand row, replacing the mono glyph +
+  the plain "Biorouter" text in one element) and `<BioRouterMark>` (welcome,
+  provider setup, suspense loader). Both are **runtime-measured** (getBBox), so
+  the underline stays right in any font, and both flip navy → UCSF teal on a dark
+  surface (but stay navy on the cream plate).
+
+**Verified on screen, not by unit test** (jsdom has no getBBox):
+- the two components rendered in isolation (esbuild + real browser), light and
+  dark, transparent and plated — all correct;
+- the packaged **arm64 `.app`** launches and the sidebar flies the wordmark;
+- the bundled `electron.icns`, extracted, is the BR mark with the safe-area
+  margin.
+
+**The bug this surfaced, and why it mattered.** The marks first measured in a
+dependency-less `useLayoutEffect`, so they re-measured every render; getBBox
+jitters sub-pixel, so the stringify guard never matched and setGeo looped
+("Maximum update depth exceeded"). Because these marks mount at the top of the
+tree (sidebar, provider guard, suspense fallback), the loop **crashed the whole
+app to a blank screen** — which first looked like a dev-server problem. jsdom has
+no getBBox at all, so the 1266 unit tests were blind to it; only rendering in a
+real engine showed it. Fixed: measure once on mount + on `fonts.ready`. **This
+is the fourth time on this branch a renderer "passed" while being wrong until
+someone looked** (logo mask, ⌃Tab, traffic-light reserve, now this).
+
+The old wrappers (`BioRouterLogo`, `WelcomeBioRouterLogo`, `BioRouterIcon`, the
+`BioRouter` glyph mask) are unrendered by any live site — kept as dead code for
+this pass rather than deleted; `glyph.svg` is itself now the BR mark, so even an
+overlooked mask render shows BR, not the old circle.
+
+---
+
 ## Decisions the user overrode (recorded, not argued)
 
 - **D-31 — tab labels: mono → sans.** I borrowed otty.sh's mono-for-UI-labels
