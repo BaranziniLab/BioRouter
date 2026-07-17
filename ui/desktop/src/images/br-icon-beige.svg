@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024" role="img" aria-label="BioRouter BR app icon">
+  <!--
+    FINALIZED BioRouter "BR" app icon - BEIGE PLATE variant.
+    Approved spec (studio: docs/design/logo-icon-studio.html):
+      mark size 70%   vertical offset -20px   underline gap 2%
+    Verified geometry (canvas 512x512, plate x6 y6 w500 h500 rx115):
+      union center (256, 236); union 357 tall (y 57.7 -> 414.3);
+      cap height 305; underline 46 thick; footprint 69.66% (~70%).
+    Colors: B #052049 (UCSF navy) | R #b85a32 (coral),
+      split underline navy(left)/coral(right) at the B|R seam; plate #faf8f3.
+    Letters "B" and "R", both CAPITALS, heavy weight 800, baseline-aligned,
+      R cap height = 0.74 x B.
+
+    CAVEAT - RASTERIZE VIA A BROWSER, NOT `sips`. sips renders SVG <text> but
+    FLATTENS font-weight: a weight-800 heavy B comes out medium. The heavy
+    weight is essential to this design. The shipped PNG (br-icon-beige.png)
+    was rendered through Chromium (-apple-system = SF Pro, honoring weight 800),
+    and IS the deterministic shippable raster. This <text> SVG is the editable,
+    browser-faithful source; do NOT push it through prepare.sh / sips.
+  -->
+  <rect x="6" y="6" width="500" height="500" rx="115" fill="#faf8f3"/>
+  <g transform="translate(106.12 307.75)"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, sans-serif"
+     font-weight="800">
+    <text x="0" y="0" font-size="258.7606895444359" fill="#052049">B</text>
+    <text x="174.55491638183594" y="0" font-size="191.48291026288254" fill="#b85a32">R</text>
+    <rect x="0" y="60.84809692382812" width="171.55491638183594" height="45.72485504150391" fill="#052049"/>
+    <rect x="171.55491638183594" y="60.84809692382812" width="128.20230865478516" height="45.72485504150391" fill="#b85a32"/>
+  </g>
+</svg>
