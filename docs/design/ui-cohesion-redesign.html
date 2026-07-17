@@ -209,7 +209,7 @@
   #group2{display:none}
   :root[data-split="on"] #group2{display:flex}
   /* the SAME underline tab as the preview panel and the terminal */
-  .ctabs{height:52px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--ground)}
+  .ctabs{height:52px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
   .ctabs .utab{max-width:190px;flex:0 1 auto}
   .ctabs .utab .live{width:6px;height:6px;border-radius:50%;background:var(--accent-bar);flex-shrink:0}
   .utab.preview .tt{font-style:italic}
@@ -267,18 +267,44 @@
   /* ============ PREVIEW PANEL ============ */
   .arti{display:flex;flex-direction:column;min-width:0;background:var(--ground);border-left:1px solid var(--border)}
 
-  /* redesigned: text tabs + 2px underline (design.md D-07), mono label */
-  .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--ground)}
-  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 10px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;background:none;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;transition:color .12s var(--ease)}
-  .utab::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:2px 2px 0 0;background:transparent;transition:background .18s var(--ease)}
-  .utab:hover{color:var(--text)}
-  .utab.active{color:var(--text);font-weight:500}
+  /* ---- THE TAB · one component, three surfaces, fills not outlines ----
+     A three-step fill ladder does the work, so no tab ever needs an outline:
+       strip ground  (deepest)  — the gaps between tabs read as separators
+       inactive tab  (mid)      — every tab is a discrete block
+       active tab    (= body)   — merges into the content it owns
+     The accent bar only confirms what the fill already said. */
+  .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
+  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 10px;height:38px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;border-radius:var(--r-md) var(--r-md) 0 0;background:var(--tab-rest);transition:background .12s var(--ease),color .12s var(--ease)}
+  .utab::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:transparent;transition:background .18s var(--ease)}
+  .utab:hover{background:var(--tab-hover);color:var(--text)}
+  .utab.active{background:var(--tab-active);color:var(--text);font-weight:500}
   .utab.active::after{background:var(--accent-bar)}
   .utab svg{width:13px;height:13px;flex-shrink:0}
   .utab .tt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .utab .x{width:16px;height:16px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);opacity:0;transition:opacity .12s var(--ease)}
   .utab:hover .x,.utab.active .x{opacity:1}
+  .utab .x:hover{background:var(--strong)}
   .arti__acts{margin-left:auto;display:flex;align-items:center;gap:2px}
+
+  /* The fill ladder — and it needs NO new colours. It falls straight out of
+     the ramp the app already ships, which is why it replicates 1:1:
+       strip  = --background-strong   the deep ground; the gaps separate tabs
+       rest   = --background-medium   every tab is a discrete block on it
+       hover  = --background-muted    hover previews the selected surface
+       active = --background-muted    the BODY's own colour, so the tab
+                                      merges into the content it owns
+     active is then separated from hover by the accent bar + weight 500 +
+     text-default, which is exactly what an indicator is for. */
+  :root{--tabstrip:var(--strong);--tab-rest:var(--medium);--tab-hover:var(--ground);--tab-active:var(--ground)}
+
+  /* dragging: the tab lifts and follows the cursor — never invisible */
+  .utab[data-dragging]{opacity:.35}
+  .dragghost{position:absolute;z-index:400;pointer-events:none;display:flex;align-items:center;gap:7px;height:34px;padding:0 10px;border-radius:var(--r-md);background:var(--card);color:var(--text);font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:500;box-shadow:var(--shadow-popover);transform:rotate(-2deg) scale(1.02);opacity:0;transition:opacity .12s var(--ease)}
+  .dragghost svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.5}
+  :root[data-drag="on"] .dragghost{opacity:1}
+  /* the landing zone lights up while the tab is still in the air */
+  .dropzone{position:absolute;inset:52px 0 0 50%;z-index:300;pointer-events:none;background:color-mix(in srgb,var(--accent-bar) 16%,transparent);outline:2px dashed color-mix(in srgb,var(--accent-bar) 55%,transparent);outline-offset:-4px;border-radius:var(--r-md);opacity:0;transition:opacity .12s var(--ease)}
+  :root[data-drag="on"] .dropzone{opacity:1}
 
   /* the status strip — Claude Code's "Last Turn · +4 -0" row */
   .strip{height:34px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)}
@@ -318,8 +344,8 @@
   /* ============ TERMINAL DOCK ============ */
   .dock{flex-shrink:0;border-top:1px solid var(--border);background:var(--ground);display:none;flex-direction:column;height:236px}
   :root[data-term="on"] .dock{display:flex}
-  .dock__bar{height:40px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border)}
-  .dock__bar .utab{max-width:150px}
+  .dock__bar{height:40px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
+  .dock__bar .utab{max-width:150px;height:30px}
   .dock__cwd{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--subtle)}
   .term{flex:1;min-height:0;overflow:auto;background:var(--term-bg);color:var(--term-fg);font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:20px;padding:10px 14px}
   .term .p1{color:var(--term-green)}
@@ -480,9 +506,31 @@
   :root[data-mode="current"] .metric .lab{font-family:inherit;font-weight:400;letter-spacing:.04em}
   :root[data-mode="current"] .metric .val{font-family:inherit;font-size:14px;line-height:20px;font-weight:500;letter-spacing:0}
   .pop__ft{display:flex;gap:8px;border-top:1px solid var(--border);padding:12px}
-  .btn{flex:1;min-width:0;height:32px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:var(--r-md);border:1px solid var(--border-strong);background:transparent;color:var(--text);font:inherit;font-size:13px;cursor:pointer;transition:background .12s var(--ease)}
-  .btn:hover{background:var(--medium)}
+  /* secondary = a FILL, no border. §4.1 already says so; the popover just
+     never used it. An outline on a surface whose focus, tool calls and
+     hairlines are all fills is the odd one out. */
+  .btn{flex:1;min-width:0;height:32px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:var(--r-md);border:0;background:var(--medium);color:var(--text);font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:background .12s var(--ease)}
+  .btn:hover{background:var(--strong)}
+  .btn:active{transform:translateY(1px)}
   .btn svg{width:14px;height:14px;stroke-width:1.5;stroke:currentColor;fill:none}
+  /* today: outline variant — a 1px --border-strong box on a white ground */
+  :root[data-mode="current"] .btn{background:transparent;border:1px solid var(--border-strong);font-weight:400}
+  :root[data-mode="current"] .btn:hover{background:var(--medium)}
+
+  /* button ladder specimen */
+  .btnrow{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:18px;border:1px solid var(--page-line);border-radius:12px;background:var(--card);margin-top:14px}
+  .b{height:32px;display:inline-flex;align-items:center;gap:7px;padding:0 14px;border-radius:var(--r-md);border:0;font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:background .12s var(--ease)}
+  .b svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .b--pri{background:var(--accent-fill);color:var(--on-accent)}
+  .b--pri:hover{filter:brightness(.94)}
+  .b--sec{background:var(--medium);color:var(--text)}
+  .b--sec:hover{background:var(--strong)}
+  .b--ghost{background:transparent;color:var(--text)}
+  .b--ghost:hover{background:var(--medium)}
+  .b--dan{background:var(--danger);color:#fff}
+  :root[data-theme="dark"] .b--dan{color:var(--app)}
+  .b--old{background:transparent;color:var(--text);border:1px solid var(--border-strong);font-weight:400}
+  .btnrow .cap2{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);width:100%}
 
   /* menu */
   .menu{padding:4px}
@@ -501,16 +549,21 @@
   :root[data-mode="current"] .menu__lab a{display:none}
   :root[data-mode="current"] .msep{background:var(--medium)}
 
-  /* toast */
-  .toast{display:flex;align-items:flex-start;gap:10px;padding:10px 40px 10px 12px;position:relative;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-popover);width:100%;max-width:320px}
+  /* toast — one geometry, two densities.
+     The chip and the close both stay optically centred on the FIRST line,
+     so a one-line toast is a tidy 48px bar and a two-line one grows
+     downward from the same top edge. Nothing re-centres, nothing jumps. */
+  .toast{display:flex;align-items:flex-start;gap:10px;padding:10px 40px 10px 10px;position:relative;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-popover);width:100%;max-width:320px}
   .toast .chip{width:28px;height:28px;border-radius:var(--r-md);display:grid;place-items:center;flex-shrink:0;background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
   .toast .chip svg{width:16px;height:16px;stroke-width:1.5;stroke:currentColor;fill:none}
-  .toast .tt2{font-size:13px;line-height:18px;font-weight:600;color:var(--text)}
-  .toast .tb{font-size:13px;line-height:18px;color:var(--muted)}
-  .toast .tx{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);cursor:pointer}
+  .toast .body{min-width:0;padding-top:1px}
+  .toast .tt2{font-size:13px;line-height:26px;font-weight:600;color:var(--text);display:block}
+  .toast--two .tt2{line-height:18px}
+  .toast .tb{font-size:13px;line-height:18px;color:var(--muted);display:block}
+  .toast .tx{position:absolute;right:10px;top:14px;width:20px;height:20px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);cursor:pointer}
   .toast .tx:hover{background:var(--medium)}
   .toast .tx svg{width:12px;height:12px;stroke-width:1.5;stroke:currentColor;fill:none}
-  :root[data-mode="current"] .toast .tx{top:14px;transform:none}
+  .toast--danger .chip{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
 
   /* tooltip */
   .ttip{background:var(--text);color:var(--card);font-size:12px;line-height:16px;padding:6px 8px;border-radius:var(--r-sm)}
@@ -587,7 +640,8 @@
       </div>
       <div class="seg" role="group" aria-label="Options">
         <button id="side" aria-pressed="true">⇤ Sidebar</button>
-        <button id="split" aria-pressed="false">⫿ Split chat</button>
+        <button id="split" aria-pressed="false">⫿ Show split</button>
+        <button id="drag" aria-pressed="false">✥ Mid-drag</button>
         <button id="term" aria-pressed="true">▤ Terminal</button>
         <button id="hl" aria-pressed="false">◇ Highlight</button>
       </div>
@@ -671,13 +725,16 @@
 
       <!-- ============ CHAT AREA + TERMINAL ============ -->
       <main class="chat">
-       <div class="cgroups">
+       <div class="cgroups" style="position:relative">
+        <div class="dropzone"></div>
+        <div class="dragghost" style="left:52%;top:96px">
+          <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg>Apple Watch news
+        </div>
         <section class="cgroup active">
         <div class="ctabs halo" data-change="Y">
           <button class="utab active"><svg viewBox="0 0 24 24"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="tt">MS knowledge graph</span><span class="live" title="running"></span></button>
-          <button class="utab preview"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="tt">Apple Watch news</span><span class="x">×</span></button>
+          <button class="utab preview" id="dragsrc"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="tt">Apple Watch news</span><span class="x">×</span></button>
           <div class="ctabs__acts">
-            <button class="iconbtn" title="Split chat right"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></button>
             <button class="iconbtn on" title="Terminal"><svg viewBox="0 0 24 24"><path d="m4 8 4 4-4 4M12 16h8"/></svg></button>
             <button class="iconbtn" title="Session review"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
           </div>
@@ -1116,12 +1173,32 @@
       <div class="cardx">
         <span class="tag">Z</span>
         <h3>One tab, three places</h3>
-        <p>This is why the underline tab matters beyond looks: <b>the chat strip, the preview panel and the terminal dock now run the same component</b>. Build it once, and a third tabbed surface costs nothing. Had the preview kept its boxed chips and the terminal its left-bar, we'd be shipping three tab languages in one window.</p>
+        <p>This is why the tab matters beyond looks: <b>the chat strip, the preview panel and the terminal dock all run the same component</b>. Build it once, and a fourth tabbed surface costs nothing. Had the preview kept its boxed chips and the terminal its left-bar, we'd be shipping three tab languages in one window.</p>
         <div class="ba">
           <div class="row before"><span class="k">Now</span><span class="v">boxed chips · left-bar · (no chat tabs)</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">one underline tab, three surfaces</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">one fill-ladder tab, three surfaces</span></div>
         </div>
         <div class="ref">D-07 · G · I</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">Ω</span>
+        <h3>Tabs got legible — a fill ladder</h3>
+        <p><b>Revised in rev 4.</b> A bare underline was too quiet: you couldn't tell what was selected, or where one tab ended. Three fills now carry it — the strip sits deepest, an inactive tab is a discrete block on it, and the <b>active tab is painted the body's own colour</b>, so it visibly merges into the content it owns. The gaps between blocks separate them, so <b>no tab needs an outline</b>. The accent bar only confirms what the fill already said.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Rev 3</span><span class="v">underline only, no fill — too quiet</span></div>
+          <div class="row after"><span class="k">Rev 4</span><span class="v">strip → inactive → active = body</span></div>
+        </div>
+        <div class="ref">your call · P1 surfaces</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">∇</span>
+        <h3>The split button goes; the drag shows itself</h3>
+        <p>Dragging a tab <em>is</em> the split gesture, so the button was a second way to do one thing — cut. And the drag can't be invisible until you let go: hit <b>✥ Mid-drag</b> above. The tab lifts under the cursor at 2° with a popover shadow, the one it left dims to 35%, and the landing half tints in the accent <em>while the tab is still in the air</em>. You aim, then commit — never commit, then discover.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Rev 3</span><span class="v">split button; drop lands only on release</span></div>
+          <div class="row after"><span class="k">Rev 4</span><span class="v">drag ghost + live drop zone, no button</span></div>
+        </div>
+        <div class="ref">your call · §3.6 motion</div>
       </div>
       <div class="cardx">
         <span class="tag">Æ</span>
@@ -1195,17 +1272,39 @@
       </div>
 
       <div class="stage">
-        <span class="stage__cap">Toast &amp; tooltip</span>
-        <div class="toast">
+        <span class="stage__cap">Toast — with helper text</span>
+        <div class="toast toast--two">
           <span class="chip"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>
-          <span>
+          <span class="body">
             <span class="tt2">primekgagent</span>
-            <span class="tb" style="display:block">Extension removed</span>
+            <span class="tb">Extension removed</span>
           </span>
           <span class="tx"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></span>
         </div>
-        <span class="ttip">Open terminal · ⌘J</span>
+        <span class="stage__cap" style="margin-top:6px">Toast — title only</span>
+        <div class="toast">
+          <span class="chip"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>
+          <span class="body"><span class="tt2">Extension removed</span></span>
+          <span class="tx"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></span>
+        </div>
+        <div class="toast toast--danger">
+          <span class="chip"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.01"/><circle cx="12" cy="12" r="9"/></svg></span>
+          <span class="body"><span class="tt2">Couldn't reach SPOKE</span></span>
+          <span class="tx"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></span>
+        </div>
+        <span class="ttip" style="align-self:flex-start;margin-top:6px">Open terminal · ⌘J</span>
       </div>
+    </div>
+
+    <div class="btnrow">
+      <span class="cap2">Buttons — fills, not outlines</span>
+      <button class="b b--pri"><svg viewBox="0 0 24 24"><path d="m4 12 16-8-6 16-3-6-7-2Z"/></svg>Primary</button>
+      <button class="b b--sec"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="6" height="6" rx="1.5"/><rect x="15" y="14" width="6" height="6" rx="1.5"/><path d="M9 7h4a2 2 0 0 1 2 2v8"/></svg>Make workflow</button>
+      <button class="b b--ghost"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Ghost</button>
+      <button class="b b--dan">Delete app</button>
+      <span style="width:1px;height:26px;background:var(--border)"></span>
+      <button class="b b--old">Outline — today</button>
+      <span style="font-size:12.5px;color:var(--muted)">← the only one wearing a box</span>
     </div>
 
     <div class="cards">
@@ -1258,6 +1357,26 @@
           <div class="row after"><span class="k">New</span><span class="v">tinted chip (as shipped), radius 12px</span></div>
         </div>
         <div class="ref">§4.3 — spec yields to code</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">Θ</span>
+        <h3>Buttons take off the box</h3>
+        <p><b>Revised in rev 4.</b> Make workflow and Diagnostics wear a 1px <span class="mono" style="font-size:12px">--border-strong</span> box on a white popover — the heaviest lines in the panel, drawn around its quietest actions. They become <b>secondary</b>: a <span class="mono" style="font-size:12px">--background-medium</span> fill, no border, hover one step to <span class="mono" style="font-size:12px">--background-strong</span>. §4.1 already specified exactly that; the popover just reached for <em>outline</em> instead. Outline survives only for a secondary action on an already-tinted ground.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">outline — 1px --border-strong box</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">secondary — fill, no border</span></div>
+        </div>
+        <div class="ref">§4.1 buttons · the fills-not-outlines rule</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">Σ</span>
+        <h3>Toast: one geometry, two densities</h3>
+        <p>A toast is sometimes <em>"primekgagent / Extension removed"</em> and sometimes just <em>"Extension removed"</em>. Both are the same object: the icon chip and the close stay optically centred on the <b>first line</b>, so the title-only toast is a tidy 48px bar and the two-line one grows downward from the same top edge. Nothing re-centres, nothing jumps between the two.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">close pinned top-4; single-line sits off-centre</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">both densities, one top edge</span></div>
+        </div>
+        <div class="ref">§4.3 toasts</div>
       </div>
       <div class="cardx">
         <span class="tag fix">X</span>
@@ -1395,6 +1514,13 @@
       root.setAttribute('data-split', on ? 'off' : 'on');
       this.setAttribute('aria-pressed', String(!on));
     });
+    byId('drag').addEventListener('click', function(){
+      var on = root.getAttribute('data-drag') === 'on';
+      root.setAttribute('data-drag', on ? 'off' : 'on');
+      this.setAttribute('aria-pressed', String(!on));
+      var src = byId('dragsrc');
+      if (on) src.removeAttribute('data-dragging'); else src.setAttribute('data-dragging', '');
+    });
     byId('rec-toggle').addEventListener('click', function(){
       var on = root.getAttribute('data-rec') !== 'off';
       root.setAttribute('data-rec', on ? 'off' : 'on');
@@ -1411,6 +1537,7 @@
     root.setAttribute('data-side', 'on');
     root.setAttribute('data-rec', 'on');
     root.setAttribute('data-split', 'off');
+    root.setAttribute('data-drag', 'off');
   })();
 </script>
 </body>
