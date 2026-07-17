@@ -72,7 +72,7 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
     renderAt('/pair?resumeSessionId=sA', onOpen);
 
     expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sA', preview: false }));
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sA' }));
   });
 
   it('SETTLES: activating a tab writes the URL once and does NOT re-dispatch onOpen', () => {
@@ -132,7 +132,7 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
     expect(onOpen.mock.calls.filter((c) => c[0].sessionId === 'sA').length).toBeLessThanOrEqual(2);
   });
 
-  it('carries preview and initialMessage off location.state', () => {
+  it('carries initialMessage off location.state', () => {
     const onOpen = vi.fn();
     render(
       <MemoryRouter
@@ -140,7 +140,7 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
           {
             pathname: '/pair',
             search: '?resumeSessionId=sP',
-            state: { preview: true, initialMessage: 'hi' },
+            state: { initialMessage: 'hi' },
           },
         ]}
       >
@@ -151,7 +151,7 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
     );
 
     expect(onOpen).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'sP', preview: true, initialMessage: 'hi' })
+      expect.objectContaining({ sessionId: 'sP', initialMessage: 'hi' })
     );
   });
 

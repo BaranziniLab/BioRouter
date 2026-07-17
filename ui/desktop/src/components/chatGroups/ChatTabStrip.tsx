@@ -22,8 +22,6 @@ export interface ChatTabStripProps {
   /** Session ids with a live turn — from useRunningChats(). */
   runningSessionIds: readonly string[];
   onSelect: (tabId: ChatTabId) => void;
-  /** Double-click pins a preview tab, exactly as VS Code does. */
-  onPin: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
   /**
@@ -42,7 +40,6 @@ export function ChatTabStrip({
   groupActive = true,
   runningSessionIds,
   onSelect,
-  onPin,
   onClose,
   onReorder,
   reserveTitlebar,
@@ -109,8 +106,7 @@ export function ChatTabStrip({
             data-active={isActive ? 'true' : undefined}
             data-dragging={draggedTabId === tab.tabId ? 'true' : undefined}
             data-dropbefore={dragOverTabId === tab.tabId ? 'true' : undefined}
-            data-preview={tab.preview ? 'true' : undefined}
-            className={cn('br-tab group', tab.preview && 'br-tab--preview')}
+            className={cn('br-tab group')}
             style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           >
             <button
@@ -129,9 +125,8 @@ export function ChatTabStrip({
                 if (guardClick()) return;
                 onSelect(tab.tabId);
               }}
-              onDoubleClick={() => onPin(tab.tabId)}
             >
-              <MessageSquare className="h-[13px] w-[13px] flex-none" />
+              <MessageSquare className="h-4 w-4 flex-none" />
               <span className="br-tab__label">{tab.title}</span>
             </button>
 
@@ -156,7 +151,7 @@ export function ChatTabStrip({
                     onClose(tab.tabId);
                   }}
                 >
-                  <X className="h-3 w-3" />
+                  <X className="h-4 w-4" />
                 </button>
               </>
             ) : (
@@ -171,7 +166,7 @@ export function ChatTabStrip({
                   onClose(tab.tabId);
                 }}
               >
-                <X className="h-3 w-3" />
+                <X className="h-4 w-4" />
               </button>
             )}
           </div>

@@ -13,10 +13,15 @@ export interface ChatTab {
   /** Mirror for the strip; kept fresh by utils/sessionNameSync.ts. */
   title: string;
   userSetName: boolean;
-  /** VS Code enablePreview. Italic label (.br-tab--preview, main.css — its first
-   *  consumer). The next preview-open in this group REUSES this tab in place,
-   *  keeping tabId. At most one per group; reducer invariant. */
-  preview: boolean;
+  /* There is no `preview` field. Tabs used to carry one (VS Code enablePreview:
+   * an italic tab the next single click recycled in place). The user rejected
+   * that behaviour outright — every open is now a real, permanent tab — so the
+   * field, its reducer branches and its `pinTab` action are gone rather than
+   * left inert. `.br-tab--preview` survives in main.css with zero consumers.
+   *
+   * Removing it is storage-safe: chatGroupsStorage's isValid() never inspected
+   * `preview`, so a blob persisted by the old build still loads — the stale key
+   * is simply ignored and drops out on the next write. */
   /** Route-state cargo, consumed exactly once by BaseChat on mount. NEVER
    *  persisted — a queued message that re-sends after a reload is a data bug.
    *  chatGroupsStorage strips both fields on write; chatGroupsStorage.test.ts

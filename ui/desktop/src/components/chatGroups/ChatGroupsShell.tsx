@@ -84,10 +84,6 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     (tabId: string) => dispatch?.({ type: 'activateTab', tabId }),
     [dispatch]
   );
-  const handlePin = useCallback(
-    (tabId: string) => dispatch?.({ type: 'pinTab', tabId }),
-    [dispatch]
-  );
   const handleClose = useCallback(
     (tabId: string) => dispatch?.({ type: 'closeTab', tabId }),
     [dispatch]
@@ -165,7 +161,6 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupActive={isActiveGroup}
         runningSessionIds={groups.runningSessionIds}
         onSelect={handleSelect}
-        onPin={handlePin}
         onClose={handleClose}
         onReorder={handleReorder}
         reserveTitlebar={reserveTitlebarControls && groupId === reservedGroupId}

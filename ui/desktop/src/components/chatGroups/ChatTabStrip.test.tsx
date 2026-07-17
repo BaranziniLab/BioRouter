@@ -9,7 +9,6 @@ function tab(over: Partial<ChatTab> = {}): ChatTab {
     sessionId: 's1',
     title: 'Cohort query',
     userSetName: false,
-    preview: false,
     ...over,
   };
 }
@@ -20,7 +19,6 @@ function renderStrip(over: Partial<ChatTabStripProps> = {}) {
     activeTabId: 'tab-1',
     runningSessionIds: [],
     onSelect: vi.fn(),
-    onPin: vi.fn(),
     onClose: vi.fn(),
     onReorder: vi.fn(),
     reserveTitlebar: false,
@@ -56,16 +54,19 @@ describe('ChatTabStrip — the .br-tab contract', () => {
     expect((active[0] as HTMLElement).dataset.tabId).toBe('tab-2');
   });
 
-  it('a preview tab is italic via .br-tab--preview (its first consumer)', () => {
-    const { container } = renderStrip({ tabs: [tab({ preview: true })] });
-    const node = tabNode(container, 'tab-1');
-    expect(node.classList.contains('br-tab--preview')).toBe(true);
-    expect(node.querySelector('.br-tab__label')).toBeTruthy();
-  });
-
-  it('a pinned tab is NOT italic', () => {
-    const { container } = renderStrip({ tabs: [tab({ preview: false })] });
-    expect(tabNode(container, 'tab-1').classList.contains('br-tab--preview')).toBe(false);
+  it('NO tab is ever italic — preview tabs are retired, every tab is upright', () => {
+    // .br-tab--preview still exists in main.css but has zero consumers. If this
+    // fails, the preview concept has crept back into the strip.
+    const { container } = renderStrip({
+      tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2' })],
+      activeTabId: 'tab-2',
+    });
+    for (const tabId of ['tab-1', 'tab-2']) {
+      const node = tabNode(container, tabId);
+      expect(node.classList.contains('br-tab--preview')).toBe(false);
+      expect(node.dataset.preview).toBeUndefined();
+      expect(node.querySelector('.br-tab__label')).toBeTruthy();
+    }
   });
 
   it('every tab declares WebkitAppRegion no-drag (it sits inside a drag header)', () => {
@@ -124,15 +125,17 @@ describe('ChatTabStrip — the running pulse replaces the close control', () => 
 });
 
 describe('ChatTabStrip — interaction', () => {
-  it('clicking selects; double-clicking pins', () => {
-    const { container, props } = renderStrip({ tabs: [tab({ preview: true })] });
+  it('clicking selects; double-clicking does nothing extra (pin is retired)', () => {
+    const { container, props } = renderStrip();
     const button = within(tabNode(container, 'tab-1')).getByRole('tab');
 
     fireEvent.click(button);
     expect(props.onSelect).toHaveBeenCalledWith('tab-1');
 
+    // A double click is just two clicks now — it must not throw, and it must not
+    // mean anything special.
     fireEvent.doubleClick(button);
-    expect(props.onPin).toHaveBeenCalledWith('tab-1');
+    expect(props.onSelect).toHaveBeenCalledTimes(1);
   });
 
   it('the close control closes without also selecting', () => {
@@ -173,5 +176,57 @@ describe('ChatTabStrip — accessibility', () => {
     expect(getByTestId('chat-tab-close-tab-1').getAttribute('aria-label')).toBe(
       'Close Cohort query'
     );
+  });
+});
+
+/**
+ * design.md §3.9 fixes the icon scale at 16 (inline/dense) / 20 (default) /
+ * 24 (page-level). The strip had drifted to 13px (the tab glyph) and 12px (the
+ * close ×) — both off-scale inventions, measured in the running app.
+ *
+ * Tailwind size classes are real DOM, so jsdom CAN hold this line: the classes
+ * are the single source of the rendered px. (The rendered geometry itself was
+ * verified by driving Electron — 13/12 -> 16/16 at stroke 1.5.)
+ */
+describe('ChatTabStrip — icons stay on the design.md §3.9 scale', () => {
+  const ON_SCALE = ['h-4 w-4', 'h-5 w-5', 'h-6 w-6'];
+
+  function iconClassNames(container: HTMLElement) {
+    return [...container.querySelectorAll('svg')].map((s) => s.getAttribute('class') ?? '');
+  }
+
+  it('renders every strip icon at an on-scale size, never a bespoke px value', () => {
+    const { container } = renderStrip({
+      tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Second' })],
+    });
+    const classes = iconClassNames(container);
+    expect(classes.length).toBeGreaterThan(0);
+    for (const cls of classes) {
+      // No arbitrary-value sizing: h-[13px] and friends are exactly the drift.
+      expect(cls).not.toMatch(/[hw]-\[/);
+      expect(ON_SCALE.some((size) => cls.includes(size))).toBe(true);
+    }
+  });
+
+  it('sizes the running-tab close control on-scale too', () => {
+    // The running branch renders its own X; it must not drift from the idle one.
+    const { container } = renderStrip({ tabs: [tab()], runningSessionIds: ['s1'] });
+    const classes = iconClassNames(container);
+    expect(classes.length).toBeGreaterThan(0);
+    for (const cls of classes) {
+      expect(cls).not.toMatch(/[hw]-\[/);
+      expect(ON_SCALE.some((size) => cls.includes(size))).toBe(true);
+    }
+  });
+
+  it('draws every glyph at stroke 1.5, which is what app-icons guarantees', () => {
+    // Provenance check: a raw `lucide-react` import would default to stroke 2.
+    // Asserting the rendered stroke is what actually catches that swap.
+    const { container } = renderStrip({ tabs: [tab()], runningSessionIds: ['s1'] });
+    const svgs = [...container.querySelectorAll('svg')];
+    expect(svgs.length).toBeGreaterThan(0);
+    for (const svg of svgs) {
+      expect(svg.getAttribute('stroke-width')).toBe('1.5');
+    }
   });
 });

@@ -19,7 +19,6 @@ const TAB: ChatTab = {
   sessionId: 's1',
   title: 'Cohort',
   userSetName: false,
-  preview: false,
 };
 
 function renderStrip(reserveTitlebar: boolean, isCompactSidebarOverlayOpen = false) {
@@ -29,7 +28,6 @@ function renderStrip(reserveTitlebar: boolean, isCompactSidebarOverlayOpen = fal
       activeTabId="tab-1"
       runningSessionIds={[]}
       onSelect={vi.fn()}
-      onPin={vi.fn()}
       onClose={vi.fn()}
       onReorder={vi.fn()}
       reserveTitlebar={reserveTitlebar}
