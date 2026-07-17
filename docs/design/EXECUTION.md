@@ -16,7 +16,7 @@ read one document, read this one. It links out to the others.
 
 ---
 
-## Where we stand: 19 of 20 steps done
+## Where we stand: 20 of 20 steps done — the branch is complete
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -47,13 +47,17 @@ not quietly better.
 | 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | ✅ done — **measured; no refactor shipped, because nothing measured indicted app code** |
 | 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | ✅ done — **2667ms → 738ms to read** |
 | 19 | **D-32** the yield ladder — responsive collapse at every window size | ✅ done (+ D-36, D-37) |
-| 20 | Final gate + full visual QA sweep (**lag is now an acceptance criterion, not a nice-to-have**) | ⬜ not started |
+| 20 | Final gate + full visual QA sweep (**lag is an acceptance criterion, not a nice-to-have**) | ✅ done — 6/6 on screen, 1 real bug found + fixed |
 
 ---
 
 ## Commits (every step reversible)
 
 ```
+94125bbc  refactor      1120 had three homes; give it one (+ correct D-32's rationale)
+0c329018  fix(sidebar)  the Recents hidden-count badge is sans, not mono (D-31)
+0e75258f  fix(tabs)     move the titlebar reserve OUT of the strip's scroll box
+4621d654  test(harness) a git-repository fixture — D-33's split was unverifiable without it
 8bcfcbe5  feat(preview) rung 3 for the preview's strip, through the SHARED rule
 85fe794c  feat(groups)  rung 4's trigger — the split's width watcher
 c611c154  feat(groups)  rung 4's state half — merge to one, and give it back
@@ -94,7 +98,7 @@ c6f7551e  docs         record the cohesion pass; drift register status column
 | `tsc --noEmit` | ✅ clean |
 | `lint:check` | ✅ clean (tsc + eslint 0 warnings + contrast). **Use `npm run lint:check`, not a bare `npx eslint .`** — the latter lints `.vite/build/main.js`, a build artifact, and reports thousands of phantom errors |
 | `check-contrast.mjs` | ✅ 140/140 (was 128 — +12 guard the code ground) |
-| `vitest run` | ✅ **1181/1181 (147 files), 0 failures** — no timeout flags. **Run it on an idle machine; see below** |
+| `vitest run` | ✅ **1266/1266 (151 files), 0 failures** — no timeout flags. **Run it on an idle machine; see below** |
 
 ---
 
@@ -347,6 +351,64 @@ branch by mutating rather than trusting a green tick.
 box — a ResizeObserver-driven ladder was exactly the kind of thing that could
 have regressed typing, and it didn't.
 
+### Step 20 — the visual sweep: 6/6 on screen, and one real bug
+
+Driven in the real Electron app (Playwright, real userData) plus the artifact
+harness in Chrome. **Observed values, not impressions.** 144 screenshots.
+
+| # | Item | Verdict | The evidence |
+|---|---|---|---|
+| 1 | **Fonts** (D-31/D-33) | **PASS** | `.br-tab__label`, **both** strips: `ui-sans-serif, -apple-system, "system-ui", …` @ **13px**, tracking `normal`. The D-33 split, checked item by item: chip "TypeScript" **sans**; path + `app.ts` + "1 line" **mono** (+`tabular-nums`); git ref **mono**; all 5 legend labels incl. "Modified" **sans**. App-wide: **5 of 136** visible text leaves are mono — 4 file paths and the live `$1.97`. Every one earned |
+| 2 | **No "New Session" flash** (D-34) | **PASS** | 3 runs, **402 frames sampled**, tab already named at first paint. **0 placeholder frames.** The sampler was proven live by catching each transition |
+| 3 | **Artifact panel / code view** | **PASS** | 15 types. The documented Prism/Tailwind collision reproduced: **26 `token table` spans, every one `display: inline`** — the `main.css` guard beats Tailwind. Long line **763ch** (added: the shipped fixtures max 70ch, so they proved nothing): `scrollWidth 6038 vs clientWidth 1179`, `white-space: pre`, line numbers aligned, **0 flex lines** |
+| 4 | **Light + dark × parchment + alma-mater** | **PASS** | All four via the real persistence path + reload, 11 tabs mounted each |
+| 5 | **Yield ladder 1400→800** | **PASS** | 11 tabs: never wraps (single `tabTops [9]`), nothing clipped, ▾ reachable at every rung, menu lists all 11 |
+| 6 | **Collapsed sidebar + traffic lights** | **BUG → FIXED** | below |
+
+#### The bug: the reserve was *inside the thing that moves*
+
+The 172px traffic-light reserve was `padding-left` **on the scrolling element**.
+Padding is scrollable content — so any scroll carried the reserve away with it.
+And selecting a tab scrolls it into view, so **this was the ordinary path, not an
+edge case.** Measured clip-aware at 800px, sidebar collapsed, 11 tabs,
+`scrollLeft: 428` *as found*:
+
+- **before** — the scroll box clips `0..674`: tabs visibly rendered at **x=0**,
+  **40..128**, **131..219** — under the traffic lights (which end at 72) and under
+  the controls (100–164), each hit-testing to itself
+- **after** — clips `172..674`: 6 visible tabs, all ≥172, **zero violations**
+
+A/B'd by stashing the fix and re-running the identical probe.
+**`getBoundingClientRect` alone is not evidence here — it ignores clipping**, and
+the sweep's first probe was wrong for exactly that reason.
+
+**The unit tests asserted the padding property was SET. It was set. It just could
+not hold.** This is the third time on this branch that a green test guarded a
+property instead of the behaviour — the logo's `mask-image`, the preview panel's
+`window`-dispatched ⌃Tab, and now this. The tests now assert the *structural*
+invariant (the reserve lives on an ancestor of the scroll box; the scroll box
+carries no left inset), which is the strongest claim jsdom can honestly make.
+
+The spec called this one in advance: *"a reserve that fails silently is worse
+than no reserve."*
+
+### One last thing the sweep flagged, and it was worse than reported
+
+`BaseChat` re-declared `SIDEBAR_COMPACT_TITLE_WIDTH = 1120` instead of importing
+it. In fact **1120 was declared three times** — `AppLayout` (rung 1's threshold),
+`TitlebarControls` (the titlebar reserve), and that third copy. All three agreed,
+so nothing was broken. **That is exactly why it was worth fixing before it broke:**
+rung 1 fires on this width and rungs 2–4 inherit the room it frees, so a drifted
+copy would desynchronise the ladder from the chrome *with nothing failing*.
+
+The guard is a **source-text assertion**, deliberately — the defect is textual (a
+duplicate literal), and no runtime assertion can see a constant that was never
+imported. Mutation-checked: re-introducing a fourth copy fails exactly that test.
+
+The same commit corrected `CHAT_MIN_WIDTH`'s comment, which still carried the
+68ch rationale D-36 records as false. **A comment repeating a justification we
+have formally documented as wrong is worse than no comment.**
+
 ### Still to verify by driving
 
 - **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
@@ -363,12 +425,19 @@ have regressed typing, and it didn't.
 - **4-group scroll shows a 442.9ms worst frame** (3/117 dropped). Real but
   narrow — and **unverified**: the probe's scroller selector was wrong, so this
   is a lead, not a finding.
-- **D-31 / D-33 (the fonts) and D-34 (the flash) are committed and unit-tested,
-  but have NOT yet been confirmed in the running app.** jsdom applies no CSS, so
-  the font change in particular is exactly the class of thing that "passes" in a
-  test and is wrong on screen — the logo-square bug below was precisely that.
-  Two agents are holding the Electron single-instance lock; this gets checked in
-  the step-19 sweep, and until then it is unproven, not done.
+- ✅ **Resolved.** D-31 / D-33 / D-34 are now confirmed on screen — see the
+  step-20 sweep above. The caution was warranted: the sweep found a real bug
+  (the traffic-light reserve) that every unit test passed straight through.
+- **A live agent turn was never exercised** — no provider is configured in this
+  environment (`XIAOMI_MIMO_API_KEY` missing; the composer reads "Unavailable").
+  The sweep worked around it with saved transcripts, real file links and the
+  harness, so **no artifact was produced by a live turn**.
+- **Split / multi-group layouts were not screen-verified** — the sweep drove the
+  single-group case only. The `firstLeaf` reserve aiming is unit-tested, not
+  seen.
+- **Widths below 800px are unreachable** (`main.ts` sets `minWidth: 800`). Not
+  faked.
+- macOS only.
 
 ---
 
