@@ -23,6 +23,8 @@ import { ChatType } from './types/chat';
 import Hub from './components/Hub';
 import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
+import { closeActiveTab } from './components/chatGroups/closeActiveTabRegistry';
+import { requestNewTab } from './components/chatGroups/newTabRegistry';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
@@ -518,6 +520,46 @@ export function AppInner() {
 
     return window.electron.on('set-view', handleSetView);
   }, [navigate]);
+
+  // Cmd+W (Ctrl+W off mac). Sent by the File menu's "Close Tab" item — see
+  // main.ts, where the accelerator had to be taken off `role: 'close'` so it
+  // stops closing the whole window.
+  //
+  // This listener lives at the ROOT, not in ChatGroupsProvider, because it must
+  // answer everywhere: the provider is mounted only under /pair, and Cmd+W on
+  // Settings must still close the window like any other macOS app. The provider
+  // registers a claim while it is mounted; if it claims nothing (not on /pair,
+  // or the last tab is already gone) the window closes.
+  //
+  // No text-input guard: Cmd+W has no native editing behaviour to steal, and the
+  // key never reaches the DOM anyway — the menu consumes it.
+  useEffect(
+    () =>
+      window.electron.on('close-active-tab', () => {
+        if (closeActiveTab()) return;
+        window.electron.closeWindow();
+      }),
+    []
+  );
+
+  // Cmd+T / Ctrl+T — a new tab, which here means a new chat. Sent by the Go
+  // menu's "New Chat" item; like Cmd+W it can only be a menu item, because the
+  // menu already owned the key and would have eaten any renderer listener.
+  //
+  // The same root-level reasoning as Cmd+W: the tab surface is mounted only
+  // under /pair, so off that route requestNewTab() finds no handler. It then
+  // REMEMBERS the request and we navigate — the mounting provider consumes it
+  // and opens the tab. Cmd+T on Settings therefore lands you on a fresh chat,
+  // not merely on /pair looking at whatever tab you left behind, which is what
+  // the key does in a browser from any page.
+  useEffect(
+    () =>
+      window.electron.on('new-chat-tab', () => {
+        if (requestNewTab()) return;
+        navigate('/pair');
+      }),
+    [navigate]
+  );
 
   useEffect(() => {
     const handleFocusInput = (_event: IpcRendererEvent, ..._args: unknown[]) => {

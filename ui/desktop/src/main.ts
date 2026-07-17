@@ -3560,6 +3560,37 @@ const focusWindow = () => {
   }
 };
 
+/**
+ * "New Chat" — Cmd+T, the browser's new-tab key.
+ *
+ * It must be a menu item, not a renderer keydown listener, and this is not a
+ * style preference: an Electron menu accelerator is consumed by the menu before
+ * the web contents ever sees the key, so a listener in the renderer could never
+ * have won. Cmd+T was already claimed here (it sent `set-view ''`, which merely
+ * navigated Home), which is exactly the trap `role: 'close'` set for Cmd+W —
+ * a key silently owned by the menu, with the renderer helpless.
+ *
+ * The renderer decides what "new tab" means (chatGroups' newTabRegistry); if it
+ * has no tab surface mounted it navigates to /pair and opens one there, so
+ * Cmd+T works from Settings exactly as it does in a browser from any page.
+ *
+ * Prefer the window Electron hands the click over getFocusedWindow(), for the
+ * reason the Close Tab item documents: the accelerator fires FOR a window, and
+ * getFocusedWindow() returns null often enough (e.g. under an automation
+ * driver) that relying on it alone makes the key silently do nothing.
+ */
+function newChatTabItem(label: string, accelerator?: string): MenuItemConstructorOptions {
+  return {
+    label,
+    ...(accelerator ? { accelerator } : {}),
+    click(_item, browserWindow) {
+      const target =
+        browserWindow instanceof BrowserWindow ? browserWindow : BrowserWindow.getFocusedWindow();
+      target?.webContents.send('new-chat-tab');
+    },
+  };
+}
+
 function buildApplicationMenu() {
   const isMac = process.platform === 'darwin';
 
@@ -3650,13 +3681,7 @@ function buildApplicationMenu() {
             BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
           },
         },
-        {
-          label: 'New Chat',
-          accelerator: 'CmdOrCtrl+T',
-          click() {
-            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
-          },
-        },
+        newChatTabItem('New Chat', 'CmdOrCtrl+T'),
         {
           label: 'History',
           accelerator: 'CmdOrCtrl+2',
@@ -3701,12 +3726,9 @@ function buildApplicationMenu() {
     {
       label: 'File',
       submenu: [
-        {
-          label: 'New Chat',
-          click() {
-            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
-          },
-        },
+        // Same item, no accelerator — Go owns the key, File carries the
+        // discoverable duplicate. Both must do the same thing or the menu lies.
+        newChatTabItem('New Chat'),
         {
           label: 'New Window',
           accelerator: isMac ? 'Cmd+N' : 'Ctrl+N',
@@ -3727,7 +3749,33 @@ function buildApplicationMenu() {
             : [];
         })(),
         { type: 'separator' as const },
-        { role: 'close' as const },
+        // Cmd+W closes the TAB, Shift+Cmd+W closes the window — Safari/Chrome's
+        // split, and now ours, because /pair is a tabbed surface.
+        //
+        // This item must exist. `role: 'close'` silently claims CmdOrCtrl+W as
+        // its default accelerator, and a menu accelerator is consumed before the
+        // renderer sees the keydown — so no amount of renderer-side key handling
+        // could have closed a tab instead. It would have closed the window and
+        // every tab in it. The renderer decides what to do (chatGroups'
+        // closeActiveTabRegistry); if it has no tab to close it calls
+        // 'close-window' itself, so a tabless route still closes on Cmd+W.
+        {
+          label: 'Close Tab',
+          accelerator: 'CmdOrCtrl+W',
+          // Prefer the window Electron hands the click over getFocusedWindow():
+          // the accelerator fires FOR a window, and that window is the honest
+          // target. getFocusedWindow() is only the fallback (and it returns null
+          // often enough — e.g. under an automation driver — that relying on it
+          // alone makes Cmd+W silently do nothing).
+          click(_item, browserWindow) {
+            const target =
+              browserWindow instanceof BrowserWindow
+                ? browserWindow
+                : BrowserWindow.getFocusedWindow();
+            target?.webContents.send('close-active-tab');
+          },
+        },
+        { role: 'close' as const, label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
         {
           label: 'Focus Biorouter Window',
           accelerator: 'CmdOrCtrl+Alt+G',

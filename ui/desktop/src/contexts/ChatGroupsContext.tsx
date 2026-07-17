@@ -24,6 +24,13 @@ import {
   UrlOpenRequest,
 } from '../components/chatGroups/useChatGroupsUrlSync';
 import { registerCloseActiveTab } from '../components/chatGroups/closeActiveTabRegistry';
+import { registerNewTab, consumePendingNewTab } from '../components/chatGroups/newTabRegistry';
+import {
+  isTabCycleEvent,
+  tabCycleOffset,
+  nextTabIndex,
+  isWithinArtifactPanel,
+} from '../utils/tabCycle';
 import { ChatGroupsState, ChatGroup, ChatTab } from '../components/chatGroups/chatGroupsTypes';
 import { useRunningChats } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
@@ -127,6 +134,68 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
       }),
     []
   );
+
+  // Cmd+T / Ctrl+T. Arrives as IPC from the Go menu's "New Chat" item, for the
+  // same reason Cmd+W does — the menu owns the accelerator and the renderer
+  // never sees the keydown.
+  //
+  // A new tab is a tab with no session: sessionId '' is what BaseChat renders
+  // as its centered empty composer. The reducer's dedupe is gated on a truthy
+  // sessionId, so an empty tab never collapses onto an existing one — Cmd+T
+  // twice gives two blank tabs, exactly as a browser does. `title` is left
+  // undefined so DEFAULT_TAB_TITLE applies; a Cmd+T tab has no name yet and
+  // inventing a placeholder here would put the naming rule in two places.
+  const openNewTab = useCallback(() => {
+    dispatch({ type: 'openTab', payload: { sessionId: '' } });
+  }, []);
+
+  useEffect(() => registerNewTab(openNewTab), [openNewTab]);
+
+  // A Cmd+T that arrived while we were on another route (Settings, the Hub) was
+  // remembered rather than dropped; App.tsx navigated here for us and this is
+  // where the request is cashed in. consumePendingNewTab is consume-once, so
+  // StrictMode's double mount opens one tab, not two.
+  useEffect(() => {
+    if (consumePendingNewTab()) openNewTab();
+  }, [openNewTab]);
+
+  // Ctrl+Tab / Ctrl+Shift+Tab — cycle the focused group's strip, left to right,
+  // wrapping. Unlike Cmd+T and Cmd+W this really is a DOM keydown: a dump of
+  // the built application menu shows nothing claiming Ctrl+Tab, so the key
+  // reaches the renderer and a listener is the honest mechanism.
+  //
+  // The preview panel cycles its OWN stack on the same key, so focus arbitrates
+  // — see isWithinArtifactPanel, which both sides consult so their answers
+  // cannot disagree. We return early on the panel's keystrokes unconditionally,
+  // rather than only when we have nothing to cycle: both listeners are on
+  // window in the capture phase, and "whoever runs first wins" would make the
+  // behaviour depend on mount order.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isTabCycleEvent(event)) return;
+      if (isWithinArtifactPanel(event.target)) return;
+
+      const current = stateRef.current;
+      const group = activeGroupOf(current);
+      if (!group) return;
+
+      const activeIndex = group.tabs.findIndex((t) => t.tabId === group.activeTabId);
+      const next = nextTabIndex(group.tabs.length, activeIndex, tabCycleOffset(event));
+      // Null for 0 or 1 tabs. Do NOT preventDefault in that case — with nothing
+      // to cycle, swallowing the key would only rob Tab of its focus behaviour.
+      if (next === null) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      dispatch({ type: 'activateTab', tabId: group.tabs[next].tabId });
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, []);
 
   const activeSessionId = activeSessionIdOf(state);
   useChatGroupsUrlSync({ activeSessionId, onOpen: handleUrlOpen });
