@@ -5,7 +5,9 @@ import {
   ChatTab,
   ChatTabId,
   ChatGroupId,
+  GroupLayout,
   firstLeaf,
+  leafGroupIds,
 } from './chatGroupsTypes';
 import {
   MAX_GROUPS,
@@ -44,9 +46,186 @@ export type ChatGroupsAction =
    * the cursor at that moment is the whole difference.
    */
   | { type: 'moveTabToGroup'; tabId: ChatTabId; targetGroupId: ChatGroupId; zone: DropZone }
-  | { type: 'resizeBranch'; path: readonly number[]; sizes: readonly number[] };
+  | { type: 'resizeBranch'; path: readonly number[]; sizes: readonly number[] }
+  /**
+   * Rung 4 of the yield ladder (D-32): the window got too narrow to give every
+   * group a chat, so the split merges back to one rather than render two useless
+   * slivers. Dispatched ONLY by the shell's width watcher, and only on a width
+   * CROSSING — see yieldLadder.splitYieldAction.
+   */
+  | { type: 'mergeAllGroups' }
+  /** …and the crossing back up, which gives the user their layout back. */
+  | { type: 'restoreLayout'; snapshot: GroupLayoutSnapshot };
 
 export const DEFAULT_TAB_TITLE = 'New Session';
+
+/**
+ * What rung 4 has to hand back when the window grows again.
+ *
+ * Deliberately NOT a copy of the state. It records the SHAPE the user built —
+ * the tree, and which tabs lived where — and nothing about the tabs themselves,
+ * because by the time it is restored the tab set has moved on: chats were
+ * closed, new ones opened, sessions bound. Storing whole ChatTab objects would
+ * resurrect a closed chat and stale a renamed one. The restore re-homes whatever
+ * still exists and lets the rest go.
+ *
+ * In-memory only, held by the shell for the life of a merge. It is never
+ * persisted: a split that survives a quit-and-relaunch by way of a rule the user
+ * cannot see would be a layout arriving from nowhere.
+ */
+export interface GroupLayoutSnapshot {
+  layout: GroupLayout;
+  /** groupId → the tabs it held, in strip order. */
+  tabIdsByGroup: Record<ChatGroupId, ChatTabId[]>;
+  activeTabIdByGroup: Record<ChatGroupId, ChatTabId | null>;
+  activeGroupId: ChatGroupId;
+}
+
+export function snapshotGroupLayout(state: ChatGroupsState): GroupLayoutSnapshot {
+  const tabIdsByGroup: Record<ChatGroupId, ChatTabId[]> = {};
+  const activeTabIdByGroup: Record<ChatGroupId, ChatTabId | null> = {};
+  for (const groupId of leafGroupIds(state.layout)) {
+    const group = state.groups[groupId];
+    if (!group) continue;
+    tabIdsByGroup[groupId] = group.tabs.map((t) => t.tabId);
+    activeTabIdByGroup[groupId] = group.activeTabId;
+  }
+  return {
+    layout: state.layout,
+    tabIdsByGroup,
+    activeTabIdByGroup,
+    activeGroupId: state.activeGroupId,
+  };
+}
+
+/**
+ * Rung 4, the shrink half: every group's tabs into ONE group.
+ *
+ * The ACTIVE group survives, so the chat you are reading is still the chat you
+ * are reading — the window got narrower, it did not change the subject. The tabs
+ * arrive in LEAF ORDER (the tree walk, left-to-right / top-to-bottom), so the
+ * merged strip reads the way the layout you just lost looked.
+ *
+ * Exported for its tests: this is a state transition, not geometry, and it is
+ * provable without a browser.
+ */
+export function mergeAllGroups(state: ChatGroupsState): ChatGroupsState {
+  const leaves = leafGroupIds(state.layout);
+  if (leaves.length <= 1) return state;
+
+  const survivorId = state.groups[state.activeGroupId]
+    ? state.activeGroupId
+    : firstLeaf(state.layout);
+  const survivor = state.groups[survivorId];
+  if (!survivor) return state;
+
+  const tabs = leaves.flatMap((groupId) => state.groups[groupId]?.tabs ?? []);
+  return {
+    ...state,
+    layout: { kind: 'leaf', groupId: survivorId },
+    groups: {
+      [survivorId]: {
+        groupId: survivorId,
+        tabs,
+        // The tab you were looking at stays the tab you are looking at.
+        activeTabId: survivor.activeTabId ?? tabs[0]?.tabId ?? null,
+      },
+    },
+    activeGroupId: survivorId,
+  };
+}
+
+/**
+ * Rung 4, the grow half: give the layout back.
+ *
+ * Reconciles rather than replays. Between the merge and now the user has kept
+ * working in the one group they had, so:
+ *
+ *   - a tab named by the snapshot that no longer exists is simply dropped;
+ *   - a tab that was opened WHILE merged is named by no group, and goes to the
+ *     group the user is actually in — a new chat must not be teleported into a
+ *     background pane the moment the window widens;
+ *   - a leaf that ends up with nothing is collapsed out of the tree rather than
+ *     restored as an empty pane;
+ *   - focus follows the tab the user is on, wherever it lands.
+ *
+ * Exported for its tests.
+ */
+export function restoreGroupLayout(
+  state: ChatGroupsState,
+  snapshot: GroupLayoutSnapshot
+): ChatGroupsState {
+  const living = new Map<ChatTabId, ChatTab>();
+  for (const group of Object.values(state.groups)) {
+    for (const tab of group.tabs) living.set(tab.tabId, tab);
+  }
+  const focusedTabId = state.groups[state.activeGroupId]?.activeTabId ?? null;
+
+  const snapshotLeaves = leafGroupIds(snapshot.layout);
+  if (snapshotLeaves.length === 0) return state;
+
+  const claimed = new Set<ChatTabId>();
+  const groups: Record<ChatGroupId, ChatGroup> = {};
+  for (const groupId of snapshotLeaves) {
+    const tabs = (snapshot.tabIdsByGroup[groupId] ?? [])
+      .map((tabId) => living.get(tabId))
+      .filter((tab): tab is ChatTab => Boolean(tab));
+    tabs.forEach((tab) => claimed.add(tab.tabId));
+    groups[groupId] = { groupId, tabs, activeTabId: null };
+  }
+
+  // Tabs opened while merged belong to the group the user has been working in —
+  // which, after a merge, IS the survivor and is therefore a leaf of the
+  // snapshot. Falling back keeps a hand-edited state renderable rather than
+  // dropping tabs on the floor.
+  const homeGroupId = groups[state.activeGroupId]
+    ? state.activeGroupId
+    : groups[snapshot.activeGroupId]
+      ? snapshot.activeGroupId
+      : snapshotLeaves[0];
+  for (const group of Object.values(state.groups)) {
+    for (const tab of group.tabs) {
+      if (claimed.has(tab.tabId)) continue;
+      claimed.add(tab.tabId);
+      groups[homeGroupId] = { ...groups[homeGroupId], tabs: [...groups[homeGroupId].tabs, tab] };
+    }
+  }
+
+  for (const groupId of snapshotLeaves) {
+    const group = groups[groupId];
+    const remembered = snapshot.activeTabIdByGroup[groupId];
+    const active =
+      remembered && group.tabs.some((t) => t.tabId === remembered)
+        ? remembered
+        : (group.tabs[0]?.tabId ?? null);
+    groups[groupId] = { ...group, activeTabId: active };
+  }
+
+  // Drop leaves that lost everything. A restored empty pane is a pane the user
+  // has to close by hand for a split they never asked to get back.
+  let layout: GroupLayout | null = snapshot.layout;
+  for (const groupId of snapshotLeaves) {
+    if (groups[groupId].tabs.length > 0) continue;
+    if (!layout) break;
+    layout = removeLeaf(layout, groupId);
+    delete groups[groupId];
+  }
+  if (!layout || Object.keys(groups).length === 0) return state;
+
+  // The tab the user is on keeps focus, and its group is the focused group. The
+  // window widening must not move the cursor.
+  const focusedGroupId =
+    (focusedTabId &&
+      leafGroupIds(layout).find((groupId) =>
+        groups[groupId]?.tabs.some((t) => t.tabId === focusedTabId)
+      )) ||
+    (groups[snapshot.activeGroupId] ? snapshot.activeGroupId : firstLeaf(layout));
+  if (focusedTabId && groups[focusedGroupId]?.tabs.some((t) => t.tabId === focusedTabId)) {
+    groups[focusedGroupId] = { ...groups[focusedGroupId], activeTabId: focusedTabId };
+  }
+
+  return { ...state, layout, groups, activeGroupId: focusedGroupId };
+}
 
 export function createInitialChatGroupsState(): ChatGroupsState {
   const groupId = 'grp-1';
@@ -403,6 +582,12 @@ export function chatGroupsReducer(
       const layout = setSizesAtPath(state.layout, action.path, action.sizes);
       return layout === state.layout ? state : { ...state, layout };
     }
+
+    case 'mergeAllGroups':
+      return mergeAllGroups(state);
+
+    case 'restoreLayout':
+      return restoreGroupLayout(state, action.snapshot);
 
     default:
       return state;
