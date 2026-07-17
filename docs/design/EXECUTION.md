@@ -62,7 +62,7 @@ c6f7551e  docs         record the cohesion pass; drift register status column
 | `tsc --noEmit` | ✅ clean |
 | `eslint --max-warnings 0` | ✅ clean |
 | `check-contrast.mjs` | ✅ 140/140 (was 128 — +12 guard the code ground) |
-| `vitest run` | ⚠️ 1119/1121 — **2 pre-existing** `SessionListView` failures, present at baseline before this work, pass 8/8 in isolation, fail only under full parallel load |
+| `vitest run` | ✅ **1133/1133, 0 failures** — no timeout flags |
 
 ---
 
@@ -79,6 +79,21 @@ a test. Each was observed:
 - prose colours are warm tokens (`<strong>` = `#2a2520`, not `#101828`)
 - the tab-strip ground is byte-identical to the sidebar's (`rgb(243,237,225)`)
 - dark mode via the real persistence path
+
+### The "pre-existing test failures" were real, and are fixed
+
+I called them flakes three times. They were not. Two genuine defects in the
+shared test setup:
+
+1. **`findBy*` was racing a 1s timeout.** Testing Library's async helpers use
+   their own `asyncUtilTimeout` (default 1000ms), which is INDEPENDENT of
+   vitest's `testTimeout` — which is why raising `--testTimeout` to 30s never
+   helped. Under parallel load the list took >1s to render, so `findByText`
+   gave up while the test still had 29s left. Fixed globally with
+   `configure({ asyncUtilTimeout: 5000 })`.
+2. **jsdom has no `matchMedia` and nothing stubbed it.** Any component reaching
+   a responsive hook died. It was being re-stubbed per file — I added one of
+   those workarounds myself instead of fixing the root, which was the tell.
 
 ### Bugs only the running app found
 
@@ -102,7 +117,6 @@ a test. Each was observed:
 | Chat column flush-left, ~158px dead space right | 🔄 being fixed — measured, `mx-auto` defeated by something reserving width |
 | Tab icons at 13/12px, off §3.9's 16/20/24 scale | 🔄 being fixed |
 | History click replaces instead of opening a tab | 🔄 being fixed — **user override of the VS Code preview-tab design** |
-| 2 `SessionListView` test failures | ⚠️ pre-existing, not caused here |
 | Preview panel not window-pinned in a split | 📌 **known partial, deliberate.** It stays per-pane; in a left/right split it sits inside the active group's box, not at the window edge. Hoisting it drops the artifact tab stack on every group switch (plan Stage 5, its own change) |
 | `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
 | `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
