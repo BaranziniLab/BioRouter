@@ -142,6 +142,7 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     'sample.xml',
     'analysis.R',
     'summarize.py',
+    'notebook.ipynb',
     'query.sql',
     'page.html',
     'theme.css',
