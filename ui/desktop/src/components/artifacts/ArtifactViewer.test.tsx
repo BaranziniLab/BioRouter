@@ -1148,7 +1148,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Jupyter notebook')).toBeInTheDocument();
+    expect(await screen.findByText('Notebook')).toBeInTheDocument();
+    expect(screen.getByText('1 cell')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notebook result' })).toBeInTheDocument();
   });
 });

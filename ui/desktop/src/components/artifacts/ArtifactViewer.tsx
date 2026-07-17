@@ -62,6 +62,10 @@ import {
   languageFromPath,
   languageLabel,
   parseDelimitedTable,
+  splitPathForStrip,
+  STRIP_IDENT_CLASS,
+  STRIP_LABEL_CLASS,
+  STRIP_META_CLASS,
   withHostTheme,
 } from './artifactUtils';
 
@@ -86,40 +90,15 @@ function countLines(text: string): number {
 /** The one mono stack (design.md §3.2), shared with chat code blocks and the terminal. */
 const CODE_FONT = CODE_FONT_FAMILY;
 
-// Three label tokens for the whole panel, replacing the one-off 9.5 / 10.5 / 11 /
-// xs sizes that used to be sprinkled across each preview's own sub-header.
-//
-// D-31 draws the line these three sit on: MONO FOR DATA, SANS FOR CHROME. The
-// panel had all of its strip text in mono, which made the preview's chrome read
-// in a different voice from the chat beside it — the same drift D-31 fixed on
-// the tab labels. Mono is not decoration here; it is a claim that the glyphs
-// matter (you will read this character by character, or the digits must not
-// jitter). A word like "Modified" makes no such claim.
-
-/** 11px caps SANS — the language chip and legend labels. Chrome: names a thing. */
-const STRIP_LABEL_CLASS = 'text-[11px] font-semibold uppercase tracking-[0.09em] text-text-subtle';
-/**
- * 11px MONO — paths, git refs, and tabular counts.
- *
- * These earn it, which is exactly why D-31 left them alone: a path is read
- * character by character (l vs 1 vs I), and a count carrying `tabular-nums`
- * wants stable digit widths so it does not jitter as it changes.
- */
-const STRIP_IDENT_CLASS = 'font-mono text-[11px] text-text-muted';
-/** 11px SANS — everything the strip states in prose (statuses, notes). */
-const STRIP_META_CLASS = 'text-[11px] text-text-muted';
+// The panel's status-strip typography (STRIP_LABEL/IDENT/META_CLASS) and
+// splitPathForStrip now live in artifactUtils so every preview — including
+// NotebookPreview — shares the one status-strip voice and can never drift.
 
 // Geometry mirrored from BaseChat's HEADER_ACTION_BUTTON_CLASS so the panel's
 // expand/close read as the same control as the chat header's actions. That file
 // is owned elsewhere; these values are kept in sync by hand.
 const HEADER_ACTION_BUTTON_CLASS =
   'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
-
-/** Splits a path so the strip can dim the directory and keep the filename legible. */
-function splitPathForStrip(path: string) {
-  const name = basenameFromPath(path);
-  return { directory: path.slice(0, path.length - name.length), name };
-}
 
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;

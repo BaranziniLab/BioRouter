@@ -145,6 +145,37 @@ export function languageLabel(value: string, mimeType?: string): string {
   return LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
 }
 
+// Three label tokens for the whole artifact panel — the "one status strip"
+// typography (design.md §3.2 / D-31), shared by every preview (code, tables,
+// markdown, git, notebook) so the strip reads in one voice instead of each
+// preview inventing its own sub-header.
+//
+// D-31 draws the line these three sit on: MONO FOR DATA, SANS FOR CHROME. The
+// panel had all of its strip text in mono, which made the preview's chrome read
+// in a different voice from the chat beside it. Mono is not decoration here; it
+// is a claim that the glyphs matter (you will read this character by character,
+// or the digits must not jitter). A word like "Modified" makes no such claim.
+
+/** 11px caps SANS — the language chip and legend labels. Chrome: names a thing. */
+export const STRIP_LABEL_CLASS =
+  'text-[11px] font-semibold uppercase tracking-[0.09em] text-text-subtle';
+/**
+ * 11px MONO — paths, git refs, and tabular counts.
+ *
+ * These earn it, which is exactly why D-31 left them alone: a path is read
+ * character by character (l vs 1 vs I), and a count carrying `tabular-nums`
+ * wants stable digit widths so it does not jitter as it changes.
+ */
+export const STRIP_IDENT_CLASS = 'font-mono text-[11px] text-text-muted';
+/** 11px SANS — everything the strip states in prose (statuses, notes). */
+export const STRIP_META_CLASS = 'text-[11px] text-text-muted';
+
+/** Splits a path so the strip can dim the directory and keep the filename legible. */
+export function splitPathForStrip(path: string) {
+  const name = basenameFromPath(path);
+  return { directory: path.slice(0, path.length - name.length), name };
+}
+
 function titleCaseWords(value: string): string {
   return value
     .replace(/([a-z])([A-Z])/g, '$1 $2')
