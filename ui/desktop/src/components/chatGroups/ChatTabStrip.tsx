@@ -118,7 +118,22 @@ export function ChatTabStrip({
     // shouldShowTabOverflowMenu.
     <div
       className="br-tabstrip-wrap flex h-full min-w-0 flex-1 items-center"
-      style={{ WebkitAppRegion: 'drag' } as CSSProperties}
+      data-testid="chat-tab-strip-reserve"
+      // THE RESERVE LIVES HERE, OUTSIDE THE SCROLL BOX — and that is the whole
+      // point. It was padding-left on the strip itself, which is the scrolling
+      // element: padding is part of the scrollable content, so the moment the
+      // strip scrolled (selecting any tab scrolls it into view — see
+      // handleSelect) the reserve travelled left with it and the tabs rode up
+      // under the traffic lights and the floating controls. Measured at 800px
+      // with 11 tabs: scrollLeft 428 put a tab at x=17, beneath lights that end
+      // at x=72 and controls that span 100–164.
+      //
+      // The unit test passed throughout, because it asserted the property was
+      // SET. It was set. It just could not hold: a reserve inside the thing that
+      // moves is not a reserve. On the wrap it is a fixed gutter — the scroll
+      // box now BEGINS at 172px and its overflow clips there, so no scroll
+      // offset can ever carry a tab across it.
+      style={{ paddingLeft, WebkitAppRegion: 'drag' } as CSSProperties}
     >
       <div
         role="tablist"
@@ -137,7 +152,12 @@ export function ChatTabStrip({
         // no-drag child inside that drag region DOES reach the DOM and the window
         // does not move. So the strip may live here — but every tab must still
         // declare no-drag itself, or the OS eats the gesture before React sees it.
-        style={{ paddingLeft, WebkitAppRegion: 'drag' } as CSSProperties}
+        //
+        // paddingLeft: 0 cancels `.br-tabstrip`'s `padding: 0 8px` on the left
+        // only, so the reserve on the wrap is the whole left inset and the first
+        // tab still lands exactly on it (172px, or 16px unreserved) rather than
+        // 8px further right. The right half of the shorthand is untouched.
+        style={{ paddingLeft: 0, WebkitAppRegion: 'drag' } as CSSProperties}
       >
         {tabs.map((tab, index) => {
           const isActive = tab.tabId === activeTabId;

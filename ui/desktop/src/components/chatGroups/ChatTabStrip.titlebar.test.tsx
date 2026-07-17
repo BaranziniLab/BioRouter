@@ -12,6 +12,17 @@ import { getTitlebarControlReserve, TITLEBAR_CONTROL_RESERVE_PROPERTY } from '..
  * SILENTLY: no error, no crash, just tabs the user cannot click because the OS
  * owns those 100px. It has failed silently once already, which is why the card
  * exists and why this file does.
+ *
+ * It then failed silently a SECOND time, underneath these very tests: the
+ * padding was on the strip, which is the scrolling element, so scrolling any
+ * tab into view carried the reserve away with the content and the tabs rode up
+ * under the lights. Every assertion below still passed, because asserting that
+ * a property is SET says nothing about whether it can HOLD.
+ *
+ * So the invariant here is structural, and it is the one jsdom can actually
+ * check: the reserve belongs to the wrap, and the scroll box must carry no left
+ * inset of its own. Geometry under a real scroll offset is browser work — see
+ * the D-32 width sweep.
  */
 
 const TAB: ChatTab = {
@@ -39,23 +50,49 @@ function renderStrip(reserveTitlebar: boolean, isCompactSidebarOverlayOpen = fal
 describe('ChatTabStrip — the 172px titlebar reserve', () => {
   it('macOS + sidebar collapsed: the strip reserves the control strip width', () => {
     const { getByTestId } = renderStrip(true);
-    const strip = getByTestId('chat-tab-strip');
 
     // 100 (traffic lights) + 64 (two 32px controls) + 8 (gap) = 172.
     expect(getTitlebarControlReserve(true)).toBe(172);
     // Derived from the same function AppLayout sets the property from, never a
     // literal — that is exactly how a hardcoded 172 drifted before.
-    expect(strip.style.paddingLeft).toBe(`var(${TITLEBAR_CONTROL_RESERVE_PROPERTY}, 172px)`);
+    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe(
+      `var(${TITLEBAR_CONTROL_RESERVE_PROPERTY}, 172px)`
+    );
   });
 
   it('no reserve: the strip falls back to the plain 16px inset', () => {
     const { getByTestId } = renderStrip(false);
-    expect(getByTestId('chat-tab-strip').style.paddingLeft).toBe('16px');
+    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe('16px');
   });
 
   it('the compact sidebar overlay wins over the titlebar reserve', () => {
     const { getByTestId } = renderStrip(true, true);
-    expect(getByTestId('chat-tab-strip').style.paddingLeft).toBe('calc(var(--sidebar-width) + 8px)');
+    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe(
+      'calc(var(--sidebar-width) + 8px)'
+    );
+  });
+
+  // The regression guard. The reserve is only a reserve while it sits OUTSIDE
+  // the element that scrolls: padding on the scroll box is scrollable content,
+  // and scrollLeft drags it (and every tab) out from under the lights. jsdom
+  // computes no layout and cannot scroll, so this asserts the STRUCTURE that
+  // makes the geometry impossible rather than the geometry itself.
+  it.each([
+    ['reserved', true, false],
+    ['unreserved', false, false],
+    ['compact overlay', true, true],
+  ])('the scroll box itself never carries the inset (%s)', (_label, reserve, overlay) => {
+    const { getByTestId } = renderStrip(reserve, overlay);
+    const scrollBox = getByTestId('chat-tab-strip');
+    const reserveEl = getByTestId('chat-tab-strip-reserve');
+
+    // The scroll box is a DESCENDANT of the element holding the reserve, so the
+    // gutter is laid out before the overflow begins and cannot scroll away.
+    expect(reserveEl.contains(scrollBox)).toBe(true);
+    expect(reserveEl).not.toBe(scrollBox);
+    // …and it adds no left inset of its own, so the wrap's reserve is the whole
+    // left edge and the first tab lands exactly on it.
+    expect(scrollBox.style.paddingLeft).toBe('0px');
   });
 });
 
@@ -146,10 +183,10 @@ describe('firstLeaf — the reserve is aimed by a TREE WALK, never an index', ()
     const reserved = firstLeaf(layout);
 
     const top = renderStrip(reserved === 'top');
-    expect(top.getByTestId('chat-tab-strip').style.paddingLeft).toContain('172px');
+    expect(top.getByTestId('chat-tab-strip-reserve').style.paddingLeft).toContain('172px');
     top.unmount();
 
     const bottom = renderStrip(reserved === 'bottom');
-    expect(bottom.getByTestId('chat-tab-strip').style.paddingLeft).toBe('16px');
+    expect(bottom.getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe('16px');
   });
 });
