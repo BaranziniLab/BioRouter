@@ -16,7 +16,7 @@ read one document, read this one. It links out to the others.
 
 ---
 
-## Where we stand: 16 of 20 steps done
+## Where we stand: 17 of 20 steps done
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -44,8 +44,8 @@ not quietly better.
 | 14 | **D-33** the other half of D-31: the preview's chrome → sans | ✅ done |
 | 15 | **D-34** kill the "New Session" flash — a tab opens already named | ✅ done |
 | 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | ✅ done (D-35) — 13/13 driven; preview-side ⌃Tab jsdom-only |
-| 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | 🔄 in flight |
-| 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | 🔄 in flight — **premise is being measured before anything is rebuilt** |
+| 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | ✅ done — **measured; no refactor shipped, because nothing measured indicted app code** |
+| 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | 🔄 in flight — **premise MEASURED AND CONFIRMED**: the transcript waits ~4.6s on extensions worth 359 bytes |
 | 19 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
 | 20 | Final gate + full visual QA sweep (**lag is now an acceptance criterion, not a nice-to-have**) | ⬜ not started |
 
@@ -185,6 +185,61 @@ you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 win
 2. **Empty-tab adoption filled the *leftmost* blank tab.** ⌘T makes two blanks a
    keystroke away, so your first message landed in the wrong one.
 
+### Lag — measured, and the honest outcome was "don't refactor"
+
+**The tabs/split architecture is not a lag source.** Typing latency
+(keydown→paint) with the split at full stretch, on a quiet machine, mount
+verified (`groups=4 tabs=4 composers=4 messagesInDom=1211`):
+
+| | p50 | p95 | long tasks |
+|---|---|---|---|
+| 1 group (355 msgs) | 25.7ms | 33.5ms | **0** |
+| 4 groups (1211 msgs) | 35.4ms | 38.7ms | **0** |
+
+**Ratio 1.16×.** That was the headline risk of this branch — mounting N chats —
+and it is answered.
+
+**No perf refactor was shipped, deliberately.** Nothing measured indicts app
+code. A refactor with no measured delta is a risk, not a fix.
+
+**Two traps invalidated the first round of numbers**, and both generalise:
+
+1. **Machine load.** Same probe, same build: **load 93 → p95 70ms + 41 long
+   tasks; load 11 → p95 25.7ms + 0 long tasks.** Contention was nearly reported
+   as an app bug — the same trap that produced my phantom "17 failures". The
+   probe now asserts load and prints it next to every number.
+2. **The dev build is not the app.** A CPU profile indicted `jsxDEV` /
+   `logComponentRender` / owner stacks — **~646ms of a ~1650ms typing burst is
+   React dev-only work that does not exist in the packaged app.** Every
+   absolute number here is dev-inflated; the *ratio* is what's trustworthy.
+
+The probe **refuses to emit a number until it has proved the thing under test
+is on screen**, and that caught four real voids (including a "production"
+number that was silently measured against the dev bundle). This is the direct
+answer to the earlier N-mount probe that reported "affordable" while measuring
+an empty page.
+
+**The standing gate:** `cd ui/desktop && node scripts/perf/chat-perf-probe.mjs`
+(needs vite on :5173, non-zero exit on breach, docs in `scripts/perf/README.md`).
+Load-bearing budgets are the **ratio (1.6×)** and **long tasks (2)** — both
+near-immune to dev overhead. Absolutes are coarse on purpose.
+
+### The premise behind progressive loading is confirmed, with numbers
+
+Measured against the real backend on a 355-message session:
+
+| `/agent/resume` | Time |
+|---|---|
+| `load_model_and_extensions: false` (transcript only) | **0.50s** (warm 0.067s) |
+| `load_model_and_extensions: true` (what the app calls) | **5.07s** |
+| a *different* session, `true` — i.e. chat #2 | **2.64s** |
+
+The conversation is fetched **first** and then held ~4.6s behind 9 extensions
+that contribute **359 bytes**. And extensions are **per-session, not global**,
+so every new tab re-pays ~2.5s — a cost tabs and splits multiply.
+
+The user called this from the outside, hedged it ("perhaps"), and was right.
+
 ### Still to verify by driving
 
 - **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
@@ -195,6 +250,12 @@ you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 win
 - **Inherent, not a bug to fix:** with focus inside a preview's *sandboxed
   iframe*, ⌃Tab does nothing — the keydown never reaches the parent document.
   Clicking the panel's chrome restores it. Documented in `tabCycle.ts`.
+- **Production-bundle timing numbers were never obtained** — every absolute
+  above is dev-inflated. The ratio and long-task counts are the trustworthy
+  parts.
+- **4-group scroll shows a 442.9ms worst frame** (3/117 dropped). Real but
+  narrow — and **unverified**: the probe's scroller selector was wrong, so this
+  is a lead, not a finding.
 - **D-31 / D-33 (the fonts) and D-34 (the flash) are committed and unit-tested,
   but have NOT yet been confirmed in the running app.** jsdom applies no CSS, so
   the font change in particular is exactly the class of thing that "passes" in a
@@ -215,6 +276,7 @@ you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 win
 | ⌘W closed the **window**, not the tab | ✅ **fixed, and it was a landmine.** `{ role: 'close' }` in `main.ts` silently claimed `CmdOrCtrl+W` with no `accelerator:` line to grep for. A renderer keydown listener could **never** have won — a menu accelerator is consumed before the web contents sees the key, so the window would have closed regardless, taking every tab with it. ⌘W = Close Tab (via IPC), ⇧⌘W = Close Window, per Safari/Chrome. Verified by dumping the built menu |
 | Preview panel not window-pinned in a split | 📌 **known partial, deliberate.** It stays per-pane; in a left/right split it sits inside the active group's box, not at the window edge. Hoisting it drops the artifact tab stack on every group switch (plan Stage 5, its own change) |
 | `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
+| **No virtualization in the transcript** | 📋 **count-proven, left alone deliberately.** 4 tabs mount **1211** message components at once and never unmount them (`ProgressiveMessageList` batches 20 at a time until *all* are mounted). It does not hurt typing today — 0 long tasks at 4 groups — so fixing it now would be a refactor with no measured delta. **This is the scaling cliff**: the number that grows is messages × tabs, and nothing currently bounds it. File it before someone opens a 5000-message chat in four tabs |
 | `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
 | `WorkflowsView.tsx:167` still routes to `/dashboard` | 📋 removing the titlebar control did not remove the last entry point |
 
