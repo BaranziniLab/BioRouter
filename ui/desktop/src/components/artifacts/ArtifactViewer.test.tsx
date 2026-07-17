@@ -899,13 +899,24 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       'true'
     );
 
-    const nextShortcut = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    window.dispatchEvent(nextShortcut);
+    // Dispatch from INSIDE the panel. Ctrl+Tab is answered by whichever strip
+    // has focus, so the event's target is the whole question — the panel's own
+    // tab is a truthful stand-in for "the user is in the preview". This used to
+    // fire at `window`, which asserted nothing about focus and would keep
+    // passing even if the panel hijacked the key from the composer.
+    const fromPanel = (over: KeyboardEventInit = {}) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+        ...over,
+      });
+      screen.getByRole('tab', { name: 'three.txt' }).dispatchEvent(event);
+      return event;
+    };
+
+    const nextShortcut = fromPanel();
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'one.txt' })).toHaveAttribute('aria-selected', 'true')
     );
@@ -918,7 +929,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       bubbles: true,
       cancelable: true,
     });
-    window.dispatchEvent(previousShortcut);
+    screen.getByRole('tab', { name: 'one.txt' }).dispatchEvent(previousShortcut);
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'three.txt' })).toHaveAttribute(
         'aria-selected',
@@ -936,6 +947,48 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       title: 'three.txt',
       path: '/work/three.txt',
     });
+  });
+
+  it('leaves Ctrl+Tab alone when focus is OUTSIDE the panel — the chat strip owns it there', async () => {
+    // The arbitration, from the preview's side. The panel's listener is on
+    // window, so before focus scoping it cycled previews from anywhere the
+    // panel happened to be open — including with the cursor in the composer,
+    // where Ctrl+Tab means "my other chat". The chat strip consults the same
+    // predicate and takes the other branch, so exactly one strip answers.
+    installElectronMock();
+    const renderViewer = (title: string) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title, path: `/work/${title}` }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(renderViewer('one.txt'));
+    rerender(renderViewer('two.txt'));
+    expect(await screen.findByRole('tab', { name: 'two.txt' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+
+    // A composer-ish element that is emphatically not in the panel.
+    const outside = document.createElement('textarea');
+    document.body.appendChild(outside);
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    outside.dispatchEvent(event);
+
+    // Unchanged, and — just as important — NOT swallowed: the panel must leave
+    // the key for the chat strip rather than preventDefault-ing it into a hole.
+    expect(screen.getByRole('tab', { name: 'two.txt' })).toHaveAttribute('aria-selected', 'true');
+    expect(event.defaultPrevented).toBe(false);
+    outside.remove();
   });
 
   it('reorders tabs with a pointer drag without changing the active file', async () => {

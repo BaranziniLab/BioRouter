@@ -14,6 +14,13 @@ import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import {
+  isTabCycleEvent,
+  tabCycleOffset,
+  nextTabIndex,
+  isWithinArtifactPanel,
+  ARTIFACT_PANEL_ATTR,
+} from '../../utils/tabCycle';
+import {
   ChevronDown,
   ChevronRight,
   Code,
@@ -359,21 +366,21 @@ export default function ArtifactViewer({
         return;
       }
 
-      if (
-        event.key !== 'Tab' ||
-        !event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        tabState.tabs.length < 2
-      ) {
-        return;
-      }
+      if (!isTabCycleEvent(event)) return;
+
+      // Ctrl+Tab belongs to whichever strip has focus. Without this the panel
+      // cycled previews from ANYWHERE the moment it was open — including with
+      // the cursor in the composer, where the user means their chat tabs. The
+      // chat strip consults the same predicate and takes the other branch, so
+      // the two cannot both answer regardless of listener order.
+      if (!isWithinArtifactPanel(event.target)) return;
+
+      const activeIndex = tabState.tabs.findIndex((tab) => tab.id === tabState.activeTabId);
+      const nextIndex = nextTabIndex(tabState.tabs.length, activeIndex, tabCycleOffset(event));
+      if (nextIndex === null) return;
 
       event.preventDefault();
       event.stopPropagation();
-      const activeIndex = tabState.tabs.findIndex((tab) => tab.id === tabState.activeTabId);
-      const offset = event.shiftKey ? -1 : 1;
-      const nextIndex = (activeIndex + offset + tabState.tabs.length) % tabState.tabs.length;
       const nextTab = tabState.tabs[nextIndex];
       pendingNavigationKeyRef.current = artifactSourceKey(nextTab.artifact);
       dispatchTabAction({ type: 'activate', tabId: nextTab.id });
@@ -630,6 +637,11 @@ export default function ArtifactViewer({
   return (
     <aside
       data-testid="artifact-viewer"
+      // The anchor Ctrl+Tab arbitrates on: a keystroke landing inside this
+      // subtree is aimed at the preview's tabs, anything else at the chat's.
+      // Deliberately not the testid above — behaviour must not hang off a
+      // promise we only made to tests.
+      {...{ [ARTIFACT_PANEL_ATTR]: '' }}
       style={{
         ...style,
         contain: 'layout paint',
