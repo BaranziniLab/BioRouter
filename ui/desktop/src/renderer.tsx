@@ -183,6 +183,18 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         );
         return selected ? { canceled: false, filePath: selected } : { canceled: true };
       },
+      saveDiagnosticsBundle: async (sessionId: string, archive: ArrayBuffer) => {
+        const filename = `diagnostics_${sessionId}.zip`;
+        const url = window.URL.createObjectURL(new Blob([archive], { type: 'application/zip' }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.URL.revokeObjectURL(url);
+        return { canceled: false, filePath: filename };
+      },
       showOpenDialog: async () => {
         const selected = promptForRemotePath('Enter a file or folder path on the Ubuntu server');
         return selected

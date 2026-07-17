@@ -228,16 +228,28 @@ pub async fn generate_diagnostics(
         let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        let mut log_files: Vec<_> = fs::read_dir(&logs_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
-            .collect();
+        let mut log_files: Vec<_> = match fs::read_dir(&logs_dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "jsonl")
+                })
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
 
         log_files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
 
         for entry in log_files.iter().rev().take(LOGS_TO_KEEP) {
             let path = entry.path();
-            let name = path.file_name().unwrap().to_str().unwrap();
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_default();
             zip.start_file(format!("logs/{}", name), options)?;
             zip.write_all(&fs::read(&path)?)?;
         }
@@ -273,7 +285,10 @@ pub async fn generate_diagnostics(
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path.file_name().unwrap().to_str().unwrap();
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy())
+                        .unwrap_or_default();
                     zip.start_file(format!("scheduled_workflows/{}", name), options)?;
                     zip.write_all(&fs::read(&path)?)?;
                 }
@@ -291,6 +306,29 @@ mod tests {
     use super::*;
     use crate::session::session_manager::{SessionType, UsageLedgerEntry};
     use tempfile::TempDir;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diagnostics_bundle_succeeds_before_any_logs_exist() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let bundle = generate_diagnostics(&sm, &session.id).await.unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bundle)).unwrap();
+
+        assert!(archive.by_name("session.json").is_ok());
+        assert!(archive.by_name("system.txt").is_ok());
+        assert!(archive.by_name("usage.txt").is_ok());
+    }
 
     #[tokio::test]
     async fn usage_diagnostics_records_cache_and_distinguishes_last_turn_from_accumulated() {

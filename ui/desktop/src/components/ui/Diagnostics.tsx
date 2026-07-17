@@ -1,9 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useState } from 'react';
 import { AlertTriangle, Download, Github, Loader2 } from '../icons/app-icons';
 import { Button } from './button';
-import { toastError } from '../../toasts';
+import { toastError, toastSuccess } from '../../toasts';
 import { diagnostics, systemInfo } from '../../api';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './dialog';
 
 interface DiagnosticsModalProps {
   isOpen: boolean;
@@ -28,21 +35,27 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
         throwOnError: true,
       });
 
-      const blob = new Blob([response.data], { type: 'application/zip' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `diagnostics_${sessionId}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      const archive = await response.data.arrayBuffer();
+      const result = await window.electron.saveDiagnosticsBundle(sessionId, archive);
 
+      if (result.error) {
+        throw new Error(result.error);
+      }
+      if (result.canceled) {
+        return;
+      }
+
+      toastSuccess({
+        title: 'Diagnostics saved',
+        msg: result.filePath
+          ? `The diagnostics bundle was saved to ${result.filePath}.`
+          : 'The diagnostics bundle was saved successfully.',
+      });
       onClose();
-    } catch {
+    } catch (error) {
       toastError({
         title: 'Diagnostics Error',
-        msg: 'Failed to download diagnostics',
+        msg: error instanceof Error ? error.message : 'Failed to generate diagnostics.',
       });
     } finally {
       setIsDownloading(false);
@@ -131,92 +144,68 @@ Add any other context about the problem here.
     }
   };
 
-  // ESC-to-close keeps this dismissible even when the host chat window
-  // is too small to surface the Cancel button.
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+  const isBusy = isDownloading || isFilingBug;
 
-  if (!isOpen) return null;
-
-  // Portal to body so `fixed` is anchored to the viewport even when the
-  // modal is rendered inside the dashboard's transformed world layer.
-  return createPortal(
-    <div
-      className="biorouter-diagnostics-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="biorouter-diagnostics-surface w-full max-w-md p-6">
-        <div className="flex items-start gap-3 mb-4">
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-background-warning/40 text-text-warning border border-border-subtle">
-            <AlertTriangle size={20} />
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !isBusy && onClose()}>
+      <DialogContent dismissible={!isBusy} className="sm:max-w-lg">
+        <DialogHeader className="mb-0">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-background-warning/40 text-text-warning">
+              <AlertTriangle size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <DialogTitle>Report a Problem</DialogTitle>
+              <DialogDescription className="mt-2">
+                You can download a diagnostics zip file to share with the team, or file a bug
+                directly on GitHub with your system details pre-filled. A diagnostics report
+                contains the following:
+              </DialogDescription>
+            </div>
           </div>
-          <div>
-            <h3 className="text-lg font-semibold text-text-default mb-2">Report a Problem</h3>
-            <p className="text-sm text-text-muted mb-3">
-              You can download a diagnostics zip file to share with the team, or file a bug directly
-              on GitHub with your system details pre-filled. A diagnostics report contains the
-              following:
-            </p>
-            <ul className="text-sm text-text-muted list-disc list-inside space-y-1 mb-3">
-              <li>Basic system info</li>
-              <li>Your current session messages</li>
-              <li>Recent log files</li>
-              <li>Configuration settings</li>
-            </ul>
-            <p className="text-sm text-text-muted">
-              <strong>Warning:</strong> If your session contains sensitive information, do not share
-              the diagnostics file publicly.
-            </p>
-            <p className="text-sm text-text-muted">
-              If you file a bug, consider attaching the diagnostics report to it.
-            </p>
-          </div>
+        </DialogHeader>
+        <div className="space-y-3 text-sm text-text-muted">
+          <ul className="list-inside list-disc space-y-1">
+            <li>Basic system info</li>
+            <li>Your current session messages</li>
+            <li>Recent log files</li>
+            <li>Configuration settings</li>
+          </ul>
+          <p>
+            <strong className="text-text-default">Warning:</strong> If your session contains
+            sensitive information, do not share the diagnostics file publicly.
+          </p>
+          <p>If you file a bug, consider attaching the diagnostics report to it.</p>
         </div>
         {isDownloading && (
-          <div className="mb-4 flex items-center gap-3 rounded-xl bg-background-muted px-3 py-2.5 text-sm text-text-muted border border-border-subtle">
-            <Loader2 className="h-4 w-4 animate-spin" />
+          <div
+            className="flex items-center gap-3 rounded-xl border border-border-subtle bg-background-muted px-3 py-2.5 text-sm text-text-muted"
+            role="status"
+          >
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
             Preparing diagnostics bundle...
           </div>
         )}
-        <div className="flex gap-2 justify-end">
-          <Button
-            onClick={onClose}
-            variant="outline"
-            size="sm"
-            disabled={isDownloading || isFilingBug}
-          >
+        <DialogFooter className="sm:flex-wrap">
+          <Button onClick={onClose} variant="outline" size="sm" disabled={isBusy}>
             Cancel
           </Button>
-          <Button
-            onClick={handleDownload}
-            variant="outline"
-            size="sm"
-            disabled={isDownloading || isFilingBug}
-          >
+          <Button onClick={handleDownload} variant="outline" size="sm" disabled={isBusy}>
             <Download size={16} className="mr-1" />
-            {isDownloading ? 'Downloading...' : 'Download'}
+            {isDownloading ? 'Generating...' : 'Generate diagnostics'}
           </Button>
           <Button
             onClick={handleFileGitHubIssue}
             variant="outline"
             size="sm"
-            disabled={isDownloading || isFilingBug}
+            disabled={isBusy}
             className="bg-background-accent text-text-on-accent hover:bg-background-accent/90"
           >
             <Github size={16} className="mr-1" />
             {isFilingBug ? 'Opening...' : 'File Bug on GitHub'}
           </Button>
-        </div>
-      </div>
-    </div>,
-    document.body
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };

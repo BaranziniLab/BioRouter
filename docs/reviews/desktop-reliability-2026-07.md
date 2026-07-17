@@ -19,6 +19,7 @@ checks required before and after publishing the integrated `main` branch.
 | Provider auto-detection | A key was detected on onboarding, but the next model-selection screen did not retain the provider/model. | The UI reused a stale provider catalog, guessed the provider's key-storage field, and did not wait for persistence before advancing. | Return the authoritative `api_key_config_key`, trim and await key persistence, force one catalog refresh, and preselect the detected model. Coverage includes all configured commercial providers. |
 | Session notifications | Delete/update notifications used different spacing and could overlap page controls. | Session views had bespoke toast markup and positioning outside the shared notification surface. | Migrate session and remaining raw notifications to `NotificationSurface` and the shared toast helpers. |
 | Toast alignment | Notification text sat a few pixels above its status icon and close button. | The 28 px status chip, text line-height, and 20 px close affordance used different alignment origins. | Standardize notification geometry, including text padding and close-button offset, across success, info, warning, error, and loading states. |
+| Diagnostics bundle | Opening diagnostics could leave a blurred, pointer-blocking chat surface, and generating the archive produced no file. | Diagnostics used a one-off overlay outside the shared modal stacking contract, then relied on a synthetic browser download from an Electron `file://` renderer. Fresh installs also failed server-side when the optional logs directory did not exist. | Use the shared dialog surface, generate the ZIP with visible progress, validate it, and save it through a parented native save sheet. Missing logs are now treated as an empty optional input. |
 
 ## Integration notes
 
@@ -69,6 +70,14 @@ All desktop notifications use the same status chip, text baseline, close afforda
 width constraints, stacking region, and progress treatment. Feature views supply
 content and severity, not custom toast layout.
 
+### Diagnostics export is explicit and recoverable
+
+Generating diagnostics must never navigate, replace, or permanently cover the chat.
+The renderer owns progress and cancellation state, while the Electron main process
+owns the native destination picker and binary write. A canceled save keeps the modal
+usable; a generation or write failure is reported through the shared toast surface.
+The bundle remains valid on a fresh installation before any request logs exist.
+
 ## Regression risk review
 
 | Risk | Mitigation |
@@ -80,6 +89,7 @@ content and severity, not custom toast layout.
 | Toast text wrapping into close controls | Shared right padding and width constraints reserve the close-button area at every supported severity. |
 | Branching from the latest or failed message | Tests cover message-level and title-menu divergence with user, assistant, and error turns. |
 | Backend title persists while renderer views remain stale | Every completed turn refreshes session lists, while default-name sessions poll for the backend rename and broadcast the resolved name to all renderer consumers. |
+| Native diagnostics sheet appears detached or behind the chat | The sheet is parented to the requesting `BrowserWindow`, and the diagnostics modal uses the same z-index contract as other desktop dialogs. |
 
 ## Verification record
 
@@ -149,3 +159,23 @@ its final push.
   of 989 tests in one single-worker run; the only timeout, an unrelated extension
   modal test, passed immediately when rerun alone. Typecheck, ESLint, Prettier, and
   all 128 contrast assertions passed.
+
+### Diagnostics bundle follow-up
+
+- Reproduced the pointer-blocking diagnostics overlay and the synthetic download
+  path that completed without creating a file.
+- Replaced the one-off overlay with the shared dialog surface and verified its
+  layout at a compact desktop width. The action row wrapped without text or control
+  overlap, and the modal remained visible above the chat at the shared dialog
+  z-index.
+- Exercised both native sheet outcomes in an isolated development application. A
+  canceled save returned to an enabled `Generate diagnostics` action; a completed
+  save closed the modal and used the shared success notification.
+- Inspected the saved 29 KB archive with `unzip -t`: all 16 entries were valid,
+  including session, configuration, system, usage, schedule, workflow, and request
+  log data.
+- The focused diagnostics suite passed six desktop tests and two Rust tests. The
+  clean staged desktop suite passed all 133 files and 985 tests; TypeScript
+  typecheck, ESLint, Prettier, all 128 contrast assertions, and `cargo fmt --check`
+  also passed. The complete `scripts/clippy-lint.sh` workflow passed for all targets,
+  including the baseline-rule and banned-TLS checks.

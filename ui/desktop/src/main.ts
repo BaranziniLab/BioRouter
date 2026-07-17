@@ -81,6 +81,11 @@ import {
 import { injectArtifactBrowserCsp, injectArtifactHostTheme } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
+import {
+  diagnosticsArchiveBytes,
+  diagnosticsArchiveFilename,
+  type DiagnosticsArchivePayload,
+} from './utils/diagnosticsExport';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -2646,6 +2651,41 @@ ipcMain.handle('show-message-box', async (_event, options) => {
 ipcMain.handle('show-save-dialog', async (_event, options) => {
   return dialog.showSaveDialog(options);
 });
+
+ipcMain.handle(
+  'save-diagnostics-bundle',
+  async (event, sessionId: string, archive: DiagnosticsArchivePayload) => {
+    try {
+      if (!sessionId || typeof sessionId !== 'string') {
+        throw new Error('A session is required to generate diagnostics.');
+      }
+
+      const bytes = diagnosticsArchiveBytes(archive);
+      const parent = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        title: 'Save Diagnostics Bundle',
+        defaultPath: path.join(app.getPath('downloads'), diagnosticsArchiveFilename(sessionId)),
+        buttonLabel: 'Save',
+        filters: [{ name: 'ZIP Archives', extensions: ['zip'] }],
+      };
+      const result = parent
+        ? await dialog.showSaveDialog(parent, options)
+        : await dialog.showSaveDialog(options);
+
+      if (result.canceled || !result.filePath) {
+        return { canceled: true };
+      }
+
+      await fs.writeFile(result.filePath, bytes);
+      return { canceled: false, filePath: result.filePath };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to save the diagnostics bundle.';
+      log.error('Failed to save diagnostics bundle:', error);
+      return { canceled: false, error: message };
+    }
+  }
+);
 
 ipcMain.handle('get-allowed-extensions', async () => {
   return await getAllowList();

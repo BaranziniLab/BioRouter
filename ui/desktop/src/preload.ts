@@ -48,6 +48,10 @@ interface SaveDialogResponse {
   filePath?: string;
 }
 
+interface SaveDiagnosticsResponse extends SaveDialogResponse {
+  error?: string;
+}
+
 interface FileResponse {
   file: string;
   filePath: string;
@@ -197,6 +201,10 @@ type ElectronAPI = {
   showNotification: (data: NotificationData) => void;
   showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxResponse>;
   showSaveDialog: (options: SaveDialogOptions) => Promise<SaveDialogResponse>;
+  saveDiagnosticsBundle: (
+    sessionId: string,
+    archive: ArrayBuffer
+  ) => Promise<SaveDiagnosticsResponse>;
   openInChrome: (url: string) => void;
   fetchMetadata: (url: string) => Promise<string>;
   reloadApp: () => void;
@@ -419,6 +427,8 @@ const electronAPI: ElectronAPI = {
   showNotification: (data: NotificationData) => ipcRenderer.send('notify', data),
   showMessageBox: (options: MessageBoxOptions) => ipcRenderer.invoke('show-message-box', options),
   showSaveDialog: (options: SaveDialogOptions) => ipcRenderer.invoke('show-save-dialog', options),
+  saveDiagnosticsBundle: (sessionId: string, archive: ArrayBuffer) =>
+    ipcRenderer.invoke('save-diagnostics-bundle', sessionId, archive),
   openInChrome: (url: string) => ipcRenderer.send('open-in-chrome', url),
   fetchMetadata: (url: string) => ipcRenderer.invoke('fetch-metadata', url),
   reloadApp: () => ipcRenderer.send('reload-app'),
