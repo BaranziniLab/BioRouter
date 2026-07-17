@@ -121,19 +121,42 @@
      APP WINDOW
      ===================================================== */
   .frame{margin-top:24px;border-radius:14px;overflow:hidden;border:1px solid var(--page-line);box-shadow:var(--shadow-window);background:var(--app)}
-  .titlebar{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--sidebar);border-bottom:1px solid var(--sidebar-border)}
-  .tl{width:11px;height:11px;border-radius:50%}
-  .titlebar .tl:nth-child(1){background:#e0725d}.titlebar .tl:nth-child(2){background:#e6b04a}.titlebar .tl:nth-child(3){background:#7fb46b}
-  .titlebar .caption{margin-left:10px;font-size:12px;color:var(--muted)}
-  .app{display:grid;grid-template-columns:240px minmax(0,1fr) 420px;height:756px;background:var(--ground)}
+  /* the app is frameless (titleBarStyle: hiddenInset) — the traffic lights and the
+     control strip float OVER the sidebar's top band; there is no separate title row. */
+  .app{position:relative;display:grid;grid-template-columns:240px minmax(0,1fr) 420px;height:756px;background:var(--ground);transition:grid-template-columns .26s var(--ease)}
+  :root[data-side="off"] .app{grid-template-columns:0px minmax(0,1fr) 420px}
+
+  .tlights{position:absolute;left:20px;top:20px;z-index:200;display:flex;gap:8px}
+  .tlights i{width:12px;height:12px;border-radius:50%}
+  .tlights i:nth-child(1){background:#e0725d}.tlights i:nth-child(2){background:#e6b04a}.tlights i:nth-child(3){background:#7fb46b}
+  /* TitlebarControls.tsx: absolute, left = 100px macOS traffic-light reserve, z-190.
+     Lives OUTSIDE the sidebar on purpose — inside it, collapsing would take the
+     un-collapse button with it. */
+  /* specificity (0,2,0): must beat .halo{position:relative}, which is declared
+     later — otherwise this becomes a grid item and blows out the columns. */
+  .app > .tbarctl{position:absolute;left:100px;top:10px;z-index:190;display:flex;gap:0;align-items:center}
+  .tbarctl .iconbtn{width:32px;height:32px}
+  #ctl-dash{display:none}
+  :root[data-mode="current"] #ctl-dash{display:grid}
 
   /* ============ SIDEBAR ============ */
-  .side{background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;min-height:0;color:var(--text);transition:background .35s var(--ease)}
-  .brand{display:flex;align-items:center;gap:10px;height:52px;padding:0 16px;flex-shrink:0;border-bottom:1px solid var(--sidebar-border)}
-  .brand__mark{width:22px;height:22px;border-radius:6px;flex-shrink:0;display:grid;place-items:center;color:#fff;background:linear-gradient(150deg,var(--accent-bar),var(--accent-fill));box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
-  .brand__mark svg{width:13px;height:13px}
-  .brand__word{font-size:14px;font-weight:600;letter-spacing:-.01em;line-height:1}
-  .brand__env{width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:auto;box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  .side{background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;min-height:0;color:var(--text);transition:background .35s var(--ease);overflow:hidden}
+  :root[data-side="off"] .side{border-right:0}
+  /* the 52px drag band the controls float over — its hairline continues the
+     chat + preview header hairline across the whole window */
+  .tbar{height:52px;flex-shrink:0;border-bottom:1px solid var(--sidebar-border)}
+  :root[data-mode="current"] .tbar{border-bottom:0}
+  .brandwrap{padding:10px 10px 0;flex-shrink:0}
+  .brand{display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;border-radius:var(--r-md)}
+  .brand__mark{width:16px;height:16px;border-radius:5px;flex-shrink:0;display:grid;place-items:center;color:#fff;background:linear-gradient(150deg,var(--accent-bar),var(--accent-fill));box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+  .brand__mark svg{width:10px;height:10px}
+  .brand__word{font-size:14px;font-weight:600;letter-spacing:-.01em;line-height:20px}
+  .brand__env{width:7px;height:7px;border-radius:50%;background:var(--ok);margin-left:auto;box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  /* today: no band hairline, wordmark floats at pt-10 with 40px of dead air above */
+  :root[data-mode="current"] .brandwrap{padding:40px 20px 0}
+  :root[data-mode="current"] .brand{padding:0;height:32px}
+  :root[data-mode="current"] .brand__mark{display:none}
+  :root[data-mode="current"] .brand__word{line-height:1}
   .side__scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
   .grouplabel{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--subtle);padding:0 8px;height:26px;display:flex;align-items:center;justify-content:space-between}
   .grouplabel a{color:var(--subtle);text-decoration:none;font-size:11px;letter-spacing:.02em;text-transform:none;font-weight:500;cursor:pointer}
@@ -149,6 +172,18 @@
   .zonediv{height:1px;background:var(--sidebar-border);margin:8px 14px;flex-shrink:0}
   .recents{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;padding:4px 10px 0}
   .recents .grouplabel{padding-left:4px;padding-right:4px}
+  /* Recents disclosure — retract the history and the rail goes quiet */
+  .reclabel{display:inline-flex;align-items:center;gap:6px;background:none;border:0;padding:0;margin:0;cursor:pointer;font:inherit;font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--subtle);border-radius:var(--r-sm)}
+  .reclabel:hover{color:var(--text)}
+  .reclabel .disc{width:11px;height:11px;flex-shrink:0;transition:transform .18s var(--ease)}
+  :root[data-rec="off"] .reclabel .disc{transform:rotate(-90deg)}
+  :root[data-rec="off"] .recwell{display:none}
+  :root[data-rec="off"] .recents{flex:0 0 auto}
+  .reccount{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:600;letter-spacing:0;color:var(--subtle);background:var(--sidebar-active);border-radius:9999px;padding:1px 6px;display:none}
+  :root[data-rec="off"] .reccount{display:inline-block}
+  :root[data-rec="off"] .recents .grouplabel a{display:none}
+  :root[data-mode="current"] .reclabel{pointer-events:none}
+  :root[data-mode="current"] .reclabel .disc{display:none}   /* no disclosure exists today */
   .recwell{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-radius:var(--r-lg) var(--r-lg) 0 0;padding:4px;margin-top:2px;background:var(--rec-well-bg,color-mix(in srgb,var(--sidebar-border) 42%,transparent));scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
   .recwell::-webkit-scrollbar{width:10px}
   .recwell::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:9999px;border:3px solid transparent;background-clip:padding-box}
@@ -166,9 +201,30 @@
   .viewall{display:none}
   .side__foot{flex-shrink:0;border-top:1px solid var(--sidebar-border);padding:8px 10px;display:flex;flex-direction:column;gap:2px}
 
-  /* ============ CHAT ============ */
+  /* ============ CHAT AREA · groups ============ */
   .chat{display:flex;flex-direction:column;min-width:0;background:var(--ground)}
+  .cgroups{flex:1 1 auto;min-height:0;display:flex}
+  .cgroup{flex:1;min-width:0;display:flex;flex-direction:column;border-left:1px solid var(--border)}
+  .cgroup:first-child{border-left:0}
+  #group2{display:none}
+  :root[data-split="on"] #group2{display:flex}
+  /* the SAME underline tab as the preview panel and the terminal */
+  .ctabs{height:52px;flex-shrink:0;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--ground)}
+  .ctabs .utab{max-width:190px;flex:0 1 auto}
+  .ctabs .utab .live{width:6px;height:6px;border-radius:50%;background:var(--accent-bar);flex-shrink:0}
+  .utab.preview .tt{font-style:italic}
+  .ctabs__acts{margin-left:auto;display:flex;align-items:center;gap:2px}
+  /* group focus: the accent underline belongs to the ACTIVE group only —
+     an inactive group's active tab keeps a neutral rule. No extra chrome. */
+  .cgroup:not(.active) .utab.active{color:var(--muted);font-weight:400}
+  .cgroup:not(.active) .utab.active::after{background:var(--border-strong)}
+  :root[data-side="off"] .cgroup:first-child .ctabs{padding-left:172px;transition:padding-left .26s var(--ease)}
   .panelhead{height:52px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--ground)}
+  /* getSessionTitlePadding(): with the sidebar collapsed the control strip
+     overlays the canvas, so the title clears it. Dropping the dashboard
+     control shrinks the reserve from 204px to 172px. */
+  :root[data-side="off"] .chat .panelhead{padding-left:172px;transition:padding-left .26s var(--ease)}
+  :root[data-side="off"][data-mode="current"] .chat .panelhead{padding-left:204px}
   .titlepill{font-size:14px;font-weight:500;color:var(--text);display:inline-flex;align-items:center;gap:6px}
   .titlepill .dots{color:var(--muted)}
   .headactions{margin-left:auto;display:flex;gap:4px}
@@ -378,6 +434,89 @@
   .md--now .math{margin:12px 0;padding:8px 0}
 
   /* =====================================================
+     GROUPS / DROP ZONES
+     ===================================================== */
+  .zones{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin-top:20px}
+  .zonebox{border:1px solid var(--page-line);border-radius:14px;background:var(--ground);overflow:hidden}
+  .zonebox__cap{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--subtle);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card)}
+  .zonebox__body{padding:16px;display:flex;flex-direction:column;gap:10px}
+  .zgrid{position:relative;height:150px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--card);overflow:hidden;display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr}
+  .zgrid .zcell{border:0;display:grid;place-items:center;font-family:ui-monospace,Menlo,monospace;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--subtle)}
+  .zgrid .zhot{background:color-mix(in srgb,var(--accent-bar) 18%,transparent);outline:1.5px dashed color-mix(in srgb,var(--accent-bar) 60%,transparent);outline-offset:-3px;color:var(--accent-fill);font-weight:700}
+  :root[data-theme="dark"] .zgrid .zhot{color:var(--accent-bar)}
+  .zgrid .zc-left{grid-column:1;grid-row:1/4}
+  .zgrid .zc-right{grid-column:3;grid-row:1/4}
+  .zgrid .zc-top{grid-column:2;grid-row:1}
+  .zgrid .zc-mid{grid-column:2;grid-row:2}
+  .zgrid .zc-bot{grid-column:2;grid-row:3}
+  .zlist{font-size:12.5px;color:var(--muted);line-height:1.6}
+  .zlist b{color:var(--text)}
+  .ztab{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:6px;background:var(--medium);border:1px solid var(--border);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--text);box-shadow:var(--shadow-popover);transform:rotate(-2deg)}
+
+  /* =====================================================
+     POP-UP SPECIMENS
+     ===================================================== */
+  .popstage{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;align-items:start;margin-top:20px}
+  .stage{border:1px solid var(--page-line);border-radius:14px;background:var(--ground);padding:26px 22px 30px;display:flex;flex-direction:column;align-items:center;gap:14px;min-height:230px;justify-content:center}
+  .stage__cap{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--subtle);align-self:flex-start}
+
+  /* ONE floating surface: 12px, full-strength hairline, one shadow token */
+  .pop{background:var(--card);border:1px solid var(--border);border-radius:var(--pop-r,12px);box-shadow:var(--shadow-popover);width:100%;max-width:320px}
+  :root[data-mode="current"] .pop{--pop-r:16px;border-color:color-mix(in srgb,var(--border) 44%,transparent);box-shadow:0 14px 38px -18px rgba(32,25,15,.22),0 0 0 1px rgba(32,25,15,.035)}
+  :root[data-theme="dark"][data-mode="current"] .pop{box-shadow:0 14px 42px -16px rgba(0,0,0,.58),0 0 0 1px rgba(255,255,255,.055)}
+
+  /* review popover */
+  .pop__hd{padding:12px 12px 8px}
+  .pop__t{font-size:14px;font-weight:600;color:var(--text);line-height:20px}
+  .pop__s{font-size:12px;color:var(--muted);line-height:16px}
+  .metrics{display:grid;grid-template-columns:1fr 1fr;gap:2px 0;padding:4px 12px 12px}
+  .metric{padding:8px 0}
+  .metric .lab{font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .metric .val{margin-top:2px;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:30px;line-height:34px;font-weight:300;letter-spacing:-.02em;color:var(--text);font-variant-numeric:tabular-nums}
+  .metric .val .add{color:var(--ok)}.metric .val .del{color:var(--danger)}
+  /* today: filled tiles, 14px semibold sans values — §4.13 says 30px mono-light */
+  :root[data-mode="current"] .metrics{gap:8px;padding:0 12px 12px}
+  :root[data-mode="current"] .metric{background:color-mix(in srgb,var(--medium) 60%,transparent);border-radius:var(--r-md);padding:8px 10px}
+  :root[data-mode="current"] .metric .lab{font-family:inherit;font-weight:400;letter-spacing:.04em}
+  :root[data-mode="current"] .metric .val{font-family:inherit;font-size:14px;line-height:20px;font-weight:500;letter-spacing:0}
+  .pop__ft{display:flex;gap:8px;border-top:1px solid var(--border);padding:12px}
+  .btn{flex:1;min-width:0;height:32px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:var(--r-md);border:1px solid var(--border-strong);background:transparent;color:var(--text);font:inherit;font-size:13px;cursor:pointer;transition:background .12s var(--ease)}
+  .btn:hover{background:var(--medium)}
+  .btn svg{width:14px;height:14px;stroke-width:1.5;stroke:currentColor;fill:none}
+
+  /* menu */
+  .menu{padding:4px}
+  .menu__search{margin:4px 4px 6px;height:32px;display:flex;align-items:center;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-md);font-size:13px;color:var(--muted);background:var(--ground)}
+  .menu__lab{font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:6px 12px 4px;display:flex;justify-content:space-between;align-items:center}
+  .menu__lab a{color:var(--subtle);text-transform:none;letter-spacing:0;font-weight:500;font-size:11px;text-decoration:none;cursor:pointer}
+  .mi{height:32px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:var(--r-md);font-size:13px;line-height:18px;color:var(--text);cursor:pointer}
+  .mi:hover{background:var(--medium)}
+  .mi .sw2{margin-left:auto;width:28px;height:16px;border-radius:9999px;background:var(--strong);position:relative;transition:background .12s var(--ease);flex-shrink:0}
+  .mi .sw2::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--card);transition:transform .12s var(--ease)}
+  .mi.on .sw2{background:var(--accent-fill)}
+  .mi.on .sw2::after{transform:translateX(12px)}
+  .msep{height:1px;background:var(--border);margin:4px 0}
+  :root[data-mode="current"] .mi{height:auto;padding:8px;border-radius:0;font-size:14px}
+  :root[data-mode="current"] .menu__lab{font-family:inherit;font-size:12px;text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);text-decoration:underline;text-underline-offset:2px}
+  :root[data-mode="current"] .menu__lab a{display:none}
+  :root[data-mode="current"] .msep{background:var(--medium)}
+
+  /* toast */
+  .toast{display:flex;align-items:flex-start;gap:10px;padding:10px 40px 10px 12px;position:relative;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-popover);width:100%;max-width:320px}
+  .toast .chip{width:28px;height:28px;border-radius:var(--r-md);display:grid;place-items:center;flex-shrink:0;background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
+  .toast .chip svg{width:16px;height:16px;stroke-width:1.5;stroke:currentColor;fill:none}
+  .toast .tt2{font-size:13px;line-height:18px;font-weight:600;color:var(--text)}
+  .toast .tb{font-size:13px;line-height:18px;color:var(--muted)}
+  .toast .tx{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);cursor:pointer}
+  .toast .tx:hover{background:var(--medium)}
+  .toast .tx svg{width:12px;height:12px;stroke-width:1.5;stroke:currentColor;fill:none}
+  :root[data-mode="current"] .toast .tx{top:14px;transform:none}
+
+  /* tooltip */
+  .ttip{background:var(--text);color:var(--card);font-size:12px;line-height:16px;padding:6px 8px;border-radius:var(--r-sm)}
+  :root[data-theme="dark"] .ttip{background:var(--text);color:var(--app)}
+
+  /* =====================================================
      FORENSICS
      ===================================================== */
   .eviz{margin-top:18px;border:1px solid var(--page-line);border-radius:14px;overflow:hidden;background:var(--page-card)}
@@ -447,6 +586,8 @@
         <button id="m-redesign" aria-pressed="true">Redesigned</button>
       </div>
       <div class="seg" role="group" aria-label="Options">
+        <button id="side" aria-pressed="true">⇤ Sidebar</button>
+        <button id="split" aria-pressed="false">⫿ Split chat</button>
         <button id="term" aria-pressed="true">▤ Terminal</button>
         <button id="hl" aria-pressed="false">◇ Highlight</button>
       </div>
@@ -454,24 +595,30 @@
   </header>
 
   <div class="frame">
-    <div class="titlebar">
-      <span class="tl"></span><span class="tl"></span><span class="tl"></span>
-      <span class="caption">BioRouter — Multiple sclerosis knowledge graph (branch 1)</span>
-    </div>
-
     <div class="app">
+
+      <!-- traffic lights + the floating control strip (TitlebarControls.tsx) -->
+      <span class="tlights" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div class="tbarctl halo" data-change="O">
+        <button class="iconbtn" id="ctl-collapse" title="Collapse sidebar"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg></button>
+        <button class="iconbtn" title="New window"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="12" height="12" rx="2"/><path d="M17 9h4v10a2 2 0 0 1-2 2H9v-4"/></svg></button>
+        <button class="iconbtn" id="ctl-dash" title="Dashboard (being retired)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button>
+      </div>
 
       <!-- ============ SIDEBAR ============ -->
       <aside class="side">
-        <div class="brand halo" data-change="A">
-          <span class="brand__mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 6H15.6M6 8.4v5.2a4 4 0 0 0 4 4h5.6"/></svg>
-          </span>
-          <span class="brand__word">Biorouter</span>
-          <span class="brand__env" title="dev build"></span>
-        </div>
+        <div class="tbar halo" data-change="F"></div>
 
         <div class="side__scroll">
+          <div class="brandwrap halo" data-change="A">
+            <div class="brand">
+              <span class="brand__mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 6H15.6M6 8.4v5.2a4 4 0 0 0 4 4h5.6"/></svg>
+              </span>
+              <span class="brand__word">Biorouter</span>
+              <span class="brand__env" title="dev build"></span>
+            </div>
+          </div>
           <div class="navgroup menuwrap halo" data-change="B">
             <div class="grouplabel"><span>Menu</span></div>
             <a class="navrow"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New Session</span></a>
@@ -487,7 +634,14 @@
           <div class="zonediv halo" data-change="C"></div>
 
           <div class="recents">
-            <div class="grouplabel"><span>Recents</span><a>See all</a></div>
+            <div class="grouplabel halo" data-change="R">
+              <button class="reclabel" id="rec-toggle" aria-expanded="true">
+                <svg class="disc" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+                <span>Recents</span>
+                <span class="reccount tnum">12</span>
+              </button>
+              <a>See all</a>
+            </div>
             <div class="recwell halo" data-change="C">
               <div class="recgroup">
                 <div class="datelabel">Today</div>
@@ -515,13 +669,17 @@
         </div>
       </aside>
 
-      <!-- ============ CHAT + TERMINAL ============ -->
+      <!-- ============ CHAT AREA + TERMINAL ============ -->
       <main class="chat">
-        <div class="panelhead halo" data-change="F">
-          <span class="titlepill">Multiple sclerosis knowledge graph (branch 1) <span class="dots">···</span></span>
-          <div class="headactions">
+       <div class="cgroups">
+        <section class="cgroup active">
+        <div class="ctabs halo" data-change="Y">
+          <button class="utab active"><svg viewBox="0 0 24 24"><path d="M6 3v10a3 3 0 0 0 3 3h6"/><circle cx="18" cy="16" r="2.4"/><circle cx="6" cy="4" r="2.4"/></svg><span class="tt">MS knowledge graph</span><span class="live" title="running"></span></button>
+          <button class="utab preview"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="tt">Apple Watch news</span><span class="x">×</span></button>
+          <div class="ctabs__acts">
+            <button class="iconbtn" title="Split chat right"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></button>
             <button class="iconbtn on" title="Terminal"><svg viewBox="0 0 24 24"><path d="m4 8 4 4-4 4M12 16h8"/></svg></button>
-            <button class="iconbtn" title="Review"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
+            <button class="iconbtn" title="Session review"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/></svg></button>
           </div>
         </div>
 
@@ -563,6 +721,39 @@
             </div>
           </div>
         </div>
+        </section>
+
+        <!-- second chat group — each group owns its tabs, transcript AND composer -->
+        <section class="cgroup" id="group2">
+          <div class="ctabs">
+            <button class="utab active"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg><span class="tt">Cohort funnel</span><span class="x">×</span></button>
+            <div class="ctabs__acts">
+              <button class="iconbtn" title="Close group"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div>
+          </div>
+          <div class="transcript">
+            <div class="col">
+              <div class="u-turn"><div class="bubble">How many patients pass the 2020 cohort filter?</div></div>
+              <div class="stamp tnum">07/09/2026 3:22 PM</div>
+              <div class="toolline"><span class="st"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>Ran <b>Query OMOP</b> · 1 result ready</div>
+              <div class="a-turn">
+                <div class="md" style="max-width:none">
+                  <p><strong>4,182</strong> patients meet all three criteria.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="composer-bar">
+            <div class="composer">
+              <div class="ph">Ask a follow-up…</div>
+              <div class="tools">
+                <span class="grp tnum">$0.04</span>
+                <button class="send" title="Send"><svg viewBox="0 0 24 24"><path d="m4 12 16-8-6 16-3-6-7-2Z"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </section>
+       </div>
 
         <!-- TERMINAL DOCK -->
         <div class="dock halo" data-change="I">
@@ -853,18 +1044,251 @@
   </section>
 
   <!-- =====================================================
-       SECTION · REV 1 RECAP
+       SECTION · TABBED CHAT GROUPS
        ===================================================== -->
   <section class="sec">
     <div class="sec__head">
       <span class="sec__n">04</span>
+      <h2>The chat becomes tabbed — and splittable</h2>
+      <span class="why">future-proofing · the VS Code editor-group model</span>
+    </div>
+    <p class="intro">Press <b>⫿ Split chat</b> above to see it. The good news is that this doesn't need a new visual language — <b>BioRouter's layout already <em>is</em> VS Code's layout</b>, and naming that makes the rest fall out:</p>
+
+    <div class="eviz" style="margin-bottom:20px">
+      <table class="etable">
+        <thead><tr><th>VS Code</th><th>BioRouter</th><th>Consequence</th></tr></thead>
+        <tbody>
+          <tr><td class="what">Primary sidebar</td><td>The rail — menu + recents</td><td class="note">already collapsible, offcanvas</td></tr>
+          <tr><td class="what">Editor group</td><td><b>Chat group</b> — tabs + transcript + composer</td><td class="note">splittable into a grid</td></tr>
+          <tr><td class="what">Tab</td><td>One chat session</td><td class="note">drag to reorder, move, or split</td></tr>
+          <tr><td class="what">Panel (bottom)</td><td>The terminal dock</td><td class="note">stays global, spans all groups</td></tr>
+          <tr><td class="what">Secondary side bar</td><td>The preview panel</td><td class="note">follows the <b>active</b> group</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="zones">
+      <div class="zonebox">
+        <div class="zonebox__cap">Drop zones — where a dragged tab lands</div>
+        <div class="zonebox__body">
+          <div class="zgrid">
+            <div class="zcell zhot zc-left">split left</div>
+            <div class="zcell zc-top">split up</div>
+            <div class="zcell zc-mid">move here</div>
+            <div class="zcell zc-bot">split down</div>
+            <div class="zcell zhot zc-right">split right</div>
+          </div>
+          <p class="zlist">Hovering a group's edge with a tab in hand tints that half in the accent at 18% with a dashed edge — the same overlay VS Code shows. Drop in the <b>centre</b> to move the chat into that group; drop on an <b>edge</b> to split. Hold <span class="mono">⌥</span> to duplicate instead of move.</p>
+        </div>
+      </div>
+
+      <div class="zonebox">
+        <div class="zonebox__cap">Tab states — all four earn their look</div>
+        <div class="zonebox__body">
+          <p class="zlist"><b>Preview (italic).</b> Single-clicking a chat in Recents opens it <em>italic</em> and reuses that one tab — so browsing history never leaves twelve tabs behind. Typing in it, or double-clicking, pins it upright. Straight from VS Code's <span class="mono">enablePreview</span>, and it's the exact answer to a sidebar full of one-off chats.</p>
+          <p class="zlist"><b>Running.</b> VS Code swaps the close × for a dirty dot. We already own that vocabulary: a live chat shows the coral pulse where its × would be, and the × returns on hover. One glyph, one meaning.</p>
+          <p class="zlist"><b>Active group.</b> Only the focused group's tab carries the coral underline; an unfocused group's active tab keeps a neutral rule. Focus costs zero extra chrome.</p>
+          <p class="zlist"><b>Overflow.</b> Tabs shrink to a floor, then scroll, then collapse into a ▾ menu — never wrap. A wrapped second row moves every tab under the cursor.</p>
+        </div>
+      </div>
+
+      <div class="zonebox">
+        <div class="zonebox__cap">What this buys the researcher</div>
+        <div class="zonebox__body">
+          <p class="zlist">The real use case isn't tab hoarding — it's <b>two chats side by side</b>: a SPOKE query next to the cohort it feeds, each with its own composer, both live at once. That's why each group keeps its own composer rather than sharing one at the bottom.</p>
+          <p class="zlist"><span class="ztab"><svg viewBox="0 0 24 24" style="width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:1.5"><path d="M21 12a8 8 0 0 1-11.3 7.3L3 21l1.7-6.7A8 8 0 1 1 21 12Z"/></svg> Apple Watch news</span></p>
+          <p class="zlist">A tab in hand is the chat's own glyph plus its title — the same speech/branch/app marks the sidebar uses, so a row dragged out of Recents and the tab it becomes are visibly the same object.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag">Y</span>
+        <h3>The header becomes the tab strip</h3>
+        <p>Today's 52px header carries one session title and a <span class="mono" style="font-size:12px">···</span> menu. With tabs, <b>the tab is the title</b> — so the title row retires and the per-session menu moves to the tab's context menu. The strip is the same 52px on the same hairline, so the top edge still reads as one bar across sidebar, chat and preview.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">one session title + ··· menu</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">tab strip + per-group actions</span></div>
+        </div>
+        <div class="ref">§4.12 · replaces SessionNamePill</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">Z</span>
+        <h3>One tab, three places</h3>
+        <p>This is why the underline tab matters beyond looks: <b>the chat strip, the preview panel and the terminal dock now run the same component</b>. Build it once, and a third tabbed surface costs nothing. Had the preview kept its boxed chips and the terminal its left-bar, we'd be shipping three tab languages in one window.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">boxed chips · left-bar · (no chat tabs)</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">one underline tab, three surfaces</span></div>
+        </div>
+        <div class="ref">D-07 · G · I</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">Æ</span>
+        <h3>The preview follows the active group</h3>
+        <p>With two chats live, "which chat does the preview belong to?" has to have an answer. It follows the <b>active group</b> — focus a group and the panel shows that chat's artifacts, exactly as VS Code's secondary side bar tracks the focused editor. The terminal, by contrast, stays global: it's a machine, not a conversation.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">one chat, question doesn't arise</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">preview = active group; terminal = global</span></div>
+        </div>
+        <div class="ref">new — needs your call</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">Ø</span>
+        <h3>What the titlebar strip owes the tabs</h3>
+        <p>One real constraint falls out of <b>O</b>: with the sidebar collapsed, the control strip floats over the canvas — so the <em>first</em> group's tab strip has to clear the same 172px reserve the session title does today. Collapse the sidebar with Split on to check it holds.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">title clears 204px</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">first tab clears 172px</span></div>
+        </div>
+        <div class="ref">TitlebarControls.tsx</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================
+       SECTION · POP-UPS
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">05</span>
+      <h2>Every floating thing, one surface</h2>
+      <span class="why">popovers · menus · toasts · tooltips</span>
+    </div>
+    <p class="intro">There are <b>four different elevation recipes</b> in the app for the same idea. The shared <span class="mono" style="font-size:12.5px">.biorouter-popover-surface</span> hand-rolls a two-layer shadow and a <b>44%-diluted border</b> — while a proper <span class="mono" style="font-size:12.5px">--shadow-popover</span> token already exists, correctly authored for all three themes. The hand-rolled one needed its own bespoke Alma Mater override <em>precisely because</em> it bypasses the token. Meanwhile the diluted border breaks D-18, which says hairlines are one value at full strength. Toggle <b>Current</b> to compare.</p>
+
+    <div class="popstage">
+      <div class="stage">
+        <span class="stage__cap">Session review · popover</span>
+        <div class="pop">
+          <div class="pop__hd">
+            <div class="pop__t">Session review</div>
+            <div class="pop__s">Multiple sclerosis knowledge graph</div>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="lab">Tool calls</div><div class="val">5</div></div>
+            <div class="metric"><div class="lab">Billed tokens</div><div class="val">38k</div></div>
+            <div class="metric"><div class="lab">Artifacts</div><div class="val">2</div></div>
+            <div class="metric"><div class="lab">Code</div><div class="val"><span class="add">+4</span> <span class="del">−0</span></div></div>
+          </div>
+          <div class="pop__ft">
+            <button class="btn"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="6" height="6" rx="1.5"/><rect x="15" y="14" width="6" height="6" rx="1.5"/><path d="M9 7h4a2 2 0 0 1 2 2v8"/></svg>Make workflow</button>
+            <button class="btn"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Diagnostics</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <span class="stage__cap">Extensions · menu</span>
+        <div class="pop">
+          <div class="menu">
+            <div class="menu__search">search extensions…</div>
+            <div class="menu__lab"><span>Enabled</span><a>Disable all (2)</a></div>
+            <div class="mi on"><span>Spokeagent</span><span class="sw2"></span></div>
+            <div class="mi on"><span>Ucsfomopagent</span><span class="sw2"></span></div>
+            <div class="msep"></div>
+            <div class="menu__lab"><span>Disabled</span></div>
+            <div class="mi"><span>Cdwagent</span><span class="sw2"></span></div>
+            <div class="mi"><span>Primekgagent</span><span class="sw2"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stage">
+        <span class="stage__cap">Toast &amp; tooltip</span>
+        <div class="toast">
+          <span class="chip"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-11"/></svg></span>
+          <span>
+            <span class="tt2">primekgagent</span>
+            <span class="tb" style="display:block">Extension removed</span>
+          </span>
+          <span class="tx"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></span>
+        </div>
+        <span class="ttip">Open terminal · ⌘J</span>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag fix">S</span>
+        <h3>One surface recipe, one shadow</h3>
+        <p>Every floating thing — popover, dropdown, select, mention picker, toast, tooltip — gets the same recipe: <span class="mono" style="font-size:12px">--background-default</span>, a <b>full-strength</b> 1px <span class="mono" style="font-size:12px">--border-subtle</span>, 12px radius, and the <span class="mono" style="font-size:12px">--shadow-popover</span> token. Collapsing the hand-rolled shadow onto the token deletes a whole bespoke Alma Mater override for free.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">4 recipes; 16px radius; 44% border</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">1 recipe; 12px; full hairline</span></div>
+        </div>
+        <div class="ref">§4.5 · D-18 hairlines</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">T</span>
+        <h3>Metric tiles stop being tiles</h3>
+        <p>The review popover puts four filled, rounded boxes inside an already-rounded box — boxes in a box again — and sets the values at 14px semibold sans. §4.13 asks for a <b>30px mono-light readout</b> over an 11px caps label. Drop the fills, let the numbers do the work, and the panel reads like an instrument rather than a form. (The CODE tile is also a copy-paste of the metric component instead of a use of it.)</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">filled tiles, 14px semibold sans</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">no fill, 30/34 mono 300, tabular</span></div>
+        </div>
+        <div class="ref">§4.13 metric tiles</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">U</span>
+        <h3>Menu rows become rows</h3>
+        <p>The extensions rows are plain <span class="mono" style="font-size:12px">&lt;div&gt;</span>s — no radius, no keyboard semantics, no focus state — at 14px with ad-hoc padding. They become real 32px/13px menu items on <span class="mono" style="font-size:12px">--radius-md</span>, hovering to <span class="mono" style="font-size:12px">--background-medium</span>, grouped under 11px caps labels instead of an underlined text link.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">divs, 14px, no focus ring</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">32px items, 13/18, caps group labels</span></div>
+        </div>
+        <div class="ref">§4.5 · P4 one-control-one-look</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">V</span>
+        <h3>Put the z-scale to work</h3>
+        <p>The six-stop scale exists and is almost entirely unused. <span class="mono" style="font-size:12px">--z-dropdown</span> (200) is referenced by <b>nothing</b> — every Radix surface sits at 500 — while <span class="mono" style="font-size:12px">--z-toast</span> (600) is used by a heatmap tooltip and the actual toasts sit at <b>9999</b>, outside the scale entirely. Alongside them: <span class="mono" style="font-size:12px">z-[1210]</span>, <span class="mono" style="font-size:12px">z-[190]</span>, <span class="mono" style="font-size:12px">z-[100]</span>, <span class="mono" style="font-size:12px">z-50</span>…</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">11 raw values; scale unused</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">dropdown 200 · modal 400 · toast 600</span></div>
+        </div>
+        <div class="ref">§3.7 z-index</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">W</span>
+        <h3>The toast already won — update the doc</h3>
+        <p>§4.3 asks for a 3px left status bar. The shipped toast instead carries a <b>tinted icon chip</b> and a neutral surface, and it's the better answer: it reads at a glance, survives both themes, and doesn't paint a coloured stripe on a calm surface. Here the <em>code</em> should win and the spec should change — the only real fix is the radius (12px, matching every other floating surface) and one close-button geometry.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Spec</span><span class="v">3px left status bar, radius 8px</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">tinted chip (as shipped), radius 12px</span></div>
+        </div>
+        <div class="ref">§4.3 — spec yields to code</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">X</span>
+        <h3>One close button</h3>
+        <p>Three geometries in play: the sheet complies with §4.2 (32px, <span class="mono" style="font-size:12px">right-4 top-4</span>), the dialog doesn't (<span class="mono" style="font-size:12px">p-2</span>, no fixed size), and the toast invents a third (<span class="mono" style="font-size:12px">right-2.5 top-4</span>, 20px). Two contexts, two sizes, no exceptions: 32px on modals, 20px optically centred on toasts.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">3 geometries across 3 components</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">32px modal · 20px compact</span></div>
+        </div>
+        <div class="ref">§4.2 close affordance</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================
+       SECTION · REV 1 RECAP
+       ===================================================== -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">06</span>
       <h2>Carried over from rev 1</h2>
       <span class="why">the sidebar pass, unchanged</span>
     </div>
     <div class="cards">
       <div class="cardx">
-        <span class="tag">A</span><h3>A brand band that anchors the top</h3>
-        <p>The wordmark floated 40px down with nothing tying it to the menu. It now sits in a 52px band with a bottom hairline — the same height as the chat and preview headers, so all three panel tops align on one line.</p>
+        <span class="tag">A</span><h3>The wordmark gets a row of its own</h3>
+        <p><b>Revised in rev 3.</b> Rev 1 put the wordmark in a 52px band — wrong: that space belongs to the traffic lights and the control strip. Instead the band stays the titlebar, and the wordmark drops into a proper 32px row whose mark and text align to the <em>same 48px text edge as every nav label below it</em>. The 40px of dead air above it goes.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">floats at pt-10, 40px above / 0 below</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">32px row under the band, on the nav grid</span></div>
+        </div>
         <div class="ref">§4.11 · §3.3</div>
       </div>
       <div class="cardx">
@@ -878,6 +1302,15 @@
         <div class="ref">§3.1 · P2</div>
       </div>
       <div class="cardx">
+        <span class="tag">R</span><h3>Recents retracts</h3>
+        <p>The section label becomes a disclosure: one click folds the whole history away and the rail is just your menu — with a small count so you know what's behind it. For anyone who lives in the built-ins and doesn't want twelve conversations staring back, the sidebar goes quiet. State persists like the sidebar's own collapse does.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">history is always open, no way to fold</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">▾ Recents disclosure + count badge</span></div>
+        </div>
+        <div class="ref">your ask · §4.11</div>
+      </div>
+      <div class="cardx">
         <span class="tag">D</span><h3>History rows carry a glyph</h3>
         <p>A speech mark for chats, a branch mark for diverged sessions, a tile for apps — so history stops reading as a wall of identical text. <b>Still your call:</b> this overrides §4.11's "no leading icon".</p>
         <div class="ref">your ask · revisits §4.11</div>
@@ -889,8 +1322,26 @@
       </div>
       <div class="cardx">
         <span class="tag">F</span><h3>Three headers, one bar</h3>
-        <p>Sidebar band, chat header and preview header all 52px on the same ground with the same hairline — a continuous top edge across the window.</p>
+        <p>The sidebar's titlebar band, the chat header and the preview header are all 52px, each closed by the same hairline — so the window has one continuous top edge instead of three that nearly line up. Today the sidebar band has no hairline at all.</p>
         <div class="ref">§4.12 · P1</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">O</span><h3>The titlebar controls keep their strip</h3>
+        <p>Collapse and New window stay exactly where they are — a floating <span class="mono" style="font-size:12px">no-drag</span> strip at <span class="mono" style="font-size:12px">left:100px</span>, clear of the traffic lights. They must live outside the sidebar: inside it, collapsing would take the un-collapse button with it. Dashboard comes out, so the strip narrows 96→64px and the session-title reserve 204→172px — the title moves 32px left. Hit <b>⇤ Sidebar</b> above to watch it hold up collapsed.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">collapse · new window · dashboard</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">collapse · new window</span></div>
+        </div>
+        <div class="ref">TitlebarControls.tsx · §4.11</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">P</span><h3>One glyph, one meaning</h3>
+        <p>The titlebar's <em>New window</em> button and the sidebar's <em>New Session</em> row both draw the same <span class="mono" style="font-size:12px">Plus</span> icon for two different actions — the same glyph promising two things. New window takes a distinct window-with-arrow mark; Plus stays with New Session.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">Plus = new session AND new window</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">Plus = new session; ⧉ = new window</span></div>
+        </div>
+        <div class="ref">§3.9 · found while mapping the strip</div>
       </div>
     </div>
 
@@ -932,6 +1383,23 @@
       root.setAttribute('data-term', on ? 'off' : 'on');
       this.setAttribute('aria-pressed', String(!on));
     });
+    function toggleSide() {
+      var on = root.getAttribute('data-side') !== 'off';
+      root.setAttribute('data-side', on ? 'off' : 'on');
+      byId('side').setAttribute('aria-pressed', String(!on));
+    }
+    byId('side').addEventListener('click', toggleSide);
+    byId('ctl-collapse').addEventListener('click', toggleSide);
+    byId('split').addEventListener('click', function(){
+      var on = root.getAttribute('data-split') === 'on';
+      root.setAttribute('data-split', on ? 'off' : 'on');
+      this.setAttribute('aria-pressed', String(!on));
+    });
+    byId('rec-toggle').addEventListener('click', function(){
+      var on = root.getAttribute('data-rec') !== 'off';
+      root.setAttribute('data-rec', on ? 'off' : 'on');
+      this.setAttribute('aria-expanded', String(!on));
+    });
 
     var saved = null;
     try { saved = localStorage.getItem('br-sketch-theme'); } catch (e) {}
@@ -940,6 +1408,9 @@
     setMode('redesign');
     root.setAttribute('data-hl', 'off');
     root.setAttribute('data-term', 'on');
+    root.setAttribute('data-side', 'on');
+    root.setAttribute('data-rec', 'on');
+    root.setAttribute('data-split', 'off');
   })();
 </script>
 </body>
