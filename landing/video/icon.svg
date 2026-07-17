@@ -1,17 +1,30 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Biorouter logo">
-  <title>Biorouter logo</title>
-  <rect width="1024" height="1024" rx="205" fill="#faf8f3"/>
-  <g transform="translate(-155 6) scale(2.3)" fill="#000000">
-    <path d="M 125 220 C 125 137.16 189.92 70 270 70 C 308.46 70 345.34 85.8 372.53 113.93 C 399.72 142.06 415 180.22 415 220 C 415 259.78 399.72 297.94 372.53 326.07 C 345.34 354.2 308.46 370 270 370 C 189.92 370 125 302.84 125 220 Z M 270 114 C 214.22 114 169 161.46 169 220 C 169 278.54 214.22 326 270 326 C 325.78 326 371 278.54 371 220 C 371 161.46 325.78 114 270 114 Z"/>
-    <path d="M 205 250 C 205 219.62 229.62 195 260 195 C 274.59 195 288.58 200.79 298.89 211.11 C 309.21 221.42 315 235.41 315 250 C 315 264.59 309.21 278.58 298.89 288.89 C 288.58 299.21 274.59 305 260 305 C 245.41 305 231.42 299.21 221.11 288.89 C 210.79 278.58 205 264.59 205 250 Z"/>
-    <path d="M 385 235 L 438 235 Q 453 235 453 250 Q 453 265 438 265 L 385 265 Z"/>
-    <path d="M 361.75 164.75 L 494.75 164.75 Q 507.25 164.75 507.25 177.25 Q 507.25 189.75 494.75 189.75 L 361.75 189.75 Z" transform="rotate(-90 434.5 177.25)"/>
-    <ellipse cx="291" cy="163" rx="25" ry="25" transform="rotate(45 291 163)"/>
-    <ellipse cx="340" cy="212" rx="25" ry="25" transform="rotate(45 340 212)"/>
-    <path d="M 278 159 Q 313 184 348 159 Q 313 184 348 209 Q 313 184 278 209 Q 313 184 278 159" transform="rotate(45 313 184)"/>
-    <path d="M 221 141.99 Q 256 155.24 291 141.99 Q 256 155.24 291 168.49 Q 256 155.24 221 168.49 Q 256 155.24 221 141.99"/>
-    <ellipse cx="226" cy="155.24" rx="20" ry="20"/>
-    <path d="M 414.88 211.88 L 436.76 211.88 Q 454.88 211.88 454.88 230.01 Q 454.88 248.13 436.76 248.13 L 414.88 248.13 Z" transform="rotate(-90 434.88 230.01)"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024" role="img" aria-label="BioRouter BR app icon">
+  <!--
+    ============================================================================
+    HOW THE SHIPPED RASTERS ARE BUILT (read before touching prepare.sh):
+      The rasters (icon.png / icon@2x.png / icon.icns / icon.ico) are built by
+      sips-/magick-resizing br-icon-beige.png (the 1024x1024 browser-rendered
+      master), NOT by rasterizing THIS svg via sips. sips renders SVG <text>
+      but FLATTENS font-weight — a weight-800 heavy B comes out medium — and
+      the heavy weight is essential to this design. br-icon-beige.png was
+      rendered through Chromium (-apple-system = SF Pro, honoring weight 800)
+      and is the deterministic shippable master. This svg is the editable,
+      browser-faithful source-of-truth for the mark; do NOT feed it to sips.
+    ============================================================================
+    FINALIZED BioRouter "BR" app icon - BEIGE PLATE variant.
+    Approved spec (studio: docs/design/logo-icon-studio.html):
+      mark size 70%   vertical offset -20px   underline gap 2%
+    Colors: B #052049 (UCSF navy) | R #b85a32 (coral),
+      split underline navy(left)/coral(right) at the B|R seam; plate #faf8f3.
+    Letters "B" and "R", both CAPITALS, heavy weight 800, baseline-aligned.
+  -->
+  <rect x="6" y="6" width="500" height="500" rx="115" fill="#faf8f3"/>
+  <g transform="translate(106.12 307.75)"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, sans-serif"
+     font-weight="800">
+    <text x="0" y="0" font-size="258.7606895444359" fill="#052049">B</text>
+    <text x="174.55491638183594" y="0" font-size="191.48291026288254" fill="#b85a32">R</text>
+    <rect x="0" y="60.84809692382812" width="171.55491638183594" height="45.72485504150391" fill="#052049"/>
+    <rect x="171.55491638183594" y="60.84809692382812" width="128.20230865478516" height="45.72485504150391" fill="#b85a32"/>
   </g>
 </svg>
