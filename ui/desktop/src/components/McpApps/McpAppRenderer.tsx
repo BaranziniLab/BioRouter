@@ -142,7 +142,9 @@ export default function McpAppRenderer({
           // MCP Apps can send other content block types, but we only append text blocks for now
 
           append(textContent.text);
-          window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom'));
+          // Scope to the chat this app is rendered inside, so appending here
+          // doesn't scroll every other mounted chat.
+          window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } }));
           return {} satisfies McpMethodResponse['ui/message'];
         }
 

@@ -826,6 +826,11 @@ class ChatStreamController {
       if (editType === 'diverge') {
         const event = new CustomEvent('session-diverged', {
           detail: {
+            // The session diverged FROM. 'session-diverged' is a window
+            // broadcast, and newSessionId names a session that doesn't exist in
+            // the UI yet — so listeners identify the one chat that should
+            // navigate by the ORIGIN session, which is this controller's own.
+            sessionId: this.sessionId,
             newSessionId: targetSessionId,
             shouldStartAgent: true,
             editedMessage: newContent,

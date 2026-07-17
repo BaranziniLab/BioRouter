@@ -485,6 +485,11 @@ describe('ChatStreamRegistry', () => {
     });
     expect(onDiverged).toHaveBeenCalledTimes(1);
     expect((onDiverged.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      // The ORIGIN session. 'session-diverged' is a window broadcast heard by
+      // every mounted chat, and newSessionId names a session that doesn't exist
+      // in the UI yet — so listeners identify the single chat that should
+      // navigate by the session the user diverged FROM.
+      sessionId: sourceSessionId,
       newSessionId: 's2',
       shouldStartAgent: true,
       editedMessage: 'updated prompt',

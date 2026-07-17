@@ -150,6 +150,117 @@ export function shouldAutoRepairArtifact(
   return now - lastAgentActiveAt < ARTIFACT_REPAIR_ACTIVE_GRACE_MS;
 }
 
+/**
+ * Session filter for BROADCAST window events.
+ *
+ * Several chat events are dispatched on `window`, which every mounted BaseChat
+ * hears. That is latent on /pair today (one BaseChat) but the Dashboard already
+ * mounts N of them (Dashboard/ChatWindow.tsx), and tabbed chat will mount N on
+ * /pair — at which point an unfiltered listener lets chat A drive chat B.
+ *
+ * The predicate is deliberately LENIENT, verbatim from the established idiom at
+ * ChatInput.tsx:379-382 ('focus-chat-input'): an event that carries no sessionId
+ * is treated as a true broadcast and handled by everyone. That keeps any
+ * dispatcher we haven't updated (or one outside this repo) working exactly as it
+ * does today. Every in-app dispatcher of these events now sets `sessionId`, so
+ * the lenient branch is a back-compat path, not the normal one.
+ *
+ * @param detail the CustomEvent detail, if any
+ * @param sessionId the listening BaseChat's own session
+ */
+export function isEventForSession(
+  detail: { sessionId?: string | null } | null | undefined,
+  sessionId: string
+): boolean {
+  if (detail?.sessionId && detail.sessionId !== sessionId) return false;
+  return true;
+}
+
+/** Delay before scrolling, so appended content has rendered first. */
+export const SCROLL_TO_BOTTOM_DELAY_MS = 200;
+
+/**
+ * The OS-window content width this chat needs to fit its artifact panel, or
+ * null if it must not resize the window at all.
+ *
+ * Resizing the window is app-scoped, but BaseChat is session-scoped. When more
+ * than one chat is mounted (the Dashboard does this today), only the focused one
+ * may resize — otherwise a background chat opening an artifact yanks the window
+ * out from under the chat the user is actually looking at.
+ */
+export function artifactPanelTargetContentWidth(opts: {
+  isMobile: boolean;
+  allowWindowResize: boolean;
+  windowWidth: number;
+  splitPaneWidth: number;
+}): number | null {
+  if (opts.isMobile) return null;
+  if (!opts.allowWindowResize) return null;
+  return getArtifactPanelExpansionContentWidth(opts.windowWidth, opts.splitPaneWidth) || null;
+}
+
+/**
+ * Builds the 'scroll-chat-to-bottom' listener for one chat. Extracted from the
+ * effect so two of them can be registered on a real window in a test without
+ * mounting two whole BaseChats — the exported factory IS what the effect uses,
+ * so the guard under test cannot drift from the guard that ships.
+ */
+export function createScrollToBottomHandler(deps: {
+  sessionId: string;
+  scrollToBottom: () => void;
+}): (event: Event) => void {
+  return (event: Event) => {
+    const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+    if (!isEventForSession(detail, deps.sessionId)) return;
+    setTimeout(() => deps.scrollToBottom(), SCROLL_TO_BOTTOM_DELAY_MS);
+  };
+}
+
+export interface SessionDivergedDetail {
+  /** The session diverged FROM — see createSessionDivergedHandler. */
+  sessionId?: string | null;
+  newSessionId: string;
+  shouldStartAgent?: boolean;
+  editedMessage?: string;
+}
+
+/**
+ * Builds the 'session-diverged' listener for one chat.
+ *
+ * The predicate matches on the ORIGIN session (detail.sessionId), NOT on
+ * detail.newSessionId: diverging mints a brand-new session, so newSessionId
+ * belongs to no currently-mounted BaseChat and matching on it would select
+ * nobody. The chat that should navigate is the one the user diverged from,
+ * which is the dispatching ChatStreamController's own session
+ * (chatStreamStore.tsx, ChatStreamController.onMessageUpdate).
+ *
+ * Without the guard, every mounted BaseChat calls navigate() to the same URL —
+ * N racing navigations once more than one chat is on screen.
+ */
+export function createSessionDivergedHandler(deps: {
+  sessionId: string;
+  navigate: (to: string, options: { state: Record<string, unknown> }) => void;
+}): (event: Event) => void {
+  return (event: Event) => {
+    const detail = (event as CustomEvent<SessionDivergedDetail>).detail;
+    if (!isEventForSession(detail, deps.sessionId)) return;
+    const { newSessionId, shouldStartAgent, editedMessage } = detail;
+
+    const params = new URLSearchParams();
+    params.set('resumeSessionId', newSessionId);
+    if (shouldStartAgent) {
+      params.set('shouldStartAgent', 'true');
+    }
+
+    deps.navigate(`/pair?${params.toString()}`, {
+      state: {
+        disableAnimation: true,
+        initialMessage: editedMessage,
+      },
+    });
+  };
+}
+
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
   return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
 }
@@ -511,6 +622,13 @@ interface BaseChatProps {
    * ChatWindow on unfold, because BaseChat stays mounted while folded so
    * mount-time autofocus / auto-scroll never re-fire on visibility change. */
   focusTrigger?: number;
+  /** Whether this chat may resize the OS window to fit its artifact panel
+   * (default true). A BaseChat is a session-scoped component, but
+   * ensureArtifactPanelFits reaches for an app-scoped effect: with N chats
+   * mounted, a BACKGROUND chat opening an artifact would resize the whole
+   * Electron window out from under the focused one. Callers that mount more
+   * than one BaseChat pass false for every chat that isn't focused. */
+  allowWindowResize?: boolean;
 }
 
 function BaseChatContent({
@@ -530,6 +648,7 @@ function BaseChatContent({
   onBusyChange,
   onLatestMessage,
   focusTrigger,
+  allowWindowResize = true,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -651,14 +770,16 @@ function BaseChatContent({
   }, []);
 
   const ensureArtifactPanelFits = useCallback(async () => {
-    if (isMobile) return;
-
-    const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    const targetWidth = getArtifactPanelExpansionContentWidth(window.innerWidth, splitPaneWidth);
+    const targetWidth = artifactPanelTargetContentWidth({
+      isMobile,
+      allowWindowResize,
+      windowWidth: window.innerWidth,
+      splitPaneWidth: splitPaneRef.current?.clientWidth ?? window.innerWidth,
+    });
     if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
 
     await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
-  }, [isMobile]);
+  }, [isMobile, allowWindowResize]);
 
   const handleOpenArtifact = useCallback(
     async (artifact: ArtifactSource) => {
@@ -1173,20 +1294,19 @@ function BaseChatContent({
     }
   }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
 
-  // Listen for global scroll-to-bottom requests (e.g., from MCP UI prompt actions)
+  // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
+  // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render
+  // INSIDE a chat — so match by sessionId, or an artifact in chat A scrolls
+  // chat B.
   useEffect(() => {
-    const handleGlobalScrollRequest = () => {
-      // Add a small delay to ensure content has been rendered
-      setTimeout(() => {
-        if (scrollRef.current?.scrollToBottom) {
-          scrollRef.current.scrollToBottom();
-        }
-      }, 200);
-    };
+    const handleGlobalScrollRequest = createScrollToBottomHandler({
+      sessionId,
+      scrollToBottom: () => scrollRef.current?.scrollToBottom?.(),
+    });
 
     window.addEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
     return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
-  }, []);
+  }, [sessionId]);
 
   // When the parent bumps focusTrigger (e.g. dashboard card unfolded), wait
   // one animation frame for the display:none→display:flex transition to
@@ -1204,44 +1324,37 @@ function BaseChatContent({
     return () => cancelAnimationFrame(raf);
   }, [focusTrigger, sessionId]);
 
+  // NOTE: as of this writing 'make-agent-from-chat' has NO dispatcher anywhere in
+  // ui/desktop (only this listener and the one in hooks/useWorkflowManager.ts:284)
+  // — it appears to be dead code. It is session-scoped here for consistency with
+  // the other two broadcast listeners rather than deleted, because removing it is
+  // out of scope; without a dispatcher the filter is inert either way.
   useEffect(() => {
-    const handleMakeAgent = () => {
+    const handleMakeAgent = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+      if (!isEventForSession(detail, sessionId)) return;
       setIsCreateWorkflowModalOpen(true);
     };
 
     window.addEventListener('make-agent-from-chat', handleMakeAgent);
     return () => window.removeEventListener('make-agent-from-chat', handleMakeAgent);
-  }, []);
+  }, [sessionId]);
 
+  // Match on the ORIGIN session, not detail.newSessionId. Diverging creates a
+  // brand-new session, so newSessionId belongs to no mounted BaseChat — filtering
+  // on it would match nobody. detail.sessionId is the session the user actually
+  // diverged FROM (ChatStreamController.sessionId, chatStreamStore.tsx), i.e. the
+  // one chat that should navigate. Without this every mounted BaseChat fires its
+  // own navigate() to the same URL: N racing navigations.
   useEffect(() => {
-    const handleSessionDiverged = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        newSessionId: string;
-        shouldStartAgent?: boolean;
-        editedMessage?: string;
-      }>;
-      const { newSessionId, shouldStartAgent, editedMessage } = customEvent.detail;
-
-      const params = new URLSearchParams();
-      params.set('resumeSessionId', newSessionId);
-      if (shouldStartAgent) {
-        params.set('shouldStartAgent', 'true');
-      }
-
-      navigate(`/pair?${params.toString()}`, {
-        state: {
-          disableAnimation: true,
-          initialMessage: editedMessage,
-        },
-      });
-    };
+    const handleSessionDiverged = createSessionDivergedHandler({ sessionId, navigate });
 
     window.addEventListener('session-diverged', handleSessionDiverged);
 
     return () => {
       window.removeEventListener('session-diverged', handleSessionDiverged);
     };
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, sessionId]);
 
   const handleWorkflowCreated = (workflow: Workflow) => {
     toastSuccess({
