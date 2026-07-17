@@ -191,8 +191,15 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     navigateWithViewTransition(navigate, path);
   };
 
-  const handleOpenChat = (sessionId: string) => {
-    navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
+  // Single click opens a PREVIEW tab (italic, reused in place); double click
+  // pins it. VS Code's enablePreview, and the reason browsing history no longer
+  // leaves twelve tabs behind. This is a cross-route entry, so it keeps today's
+  // PUSH navigation — only in-strip tab clicks use replace, which is what keeps
+  // Back returning you to wherever you came from INTO /pair.
+  const handleOpenChat = (sessionId: string, options?: { preview?: boolean }) => {
+    navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`, {
+      preview: options?.preview ?? false,
+    });
   };
 
   const renderMenuItem = (entry: NavigationItem) => {

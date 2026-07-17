@@ -15,6 +15,14 @@ const NON_MACOS_TITLEBAR_INSET = 16;
 const TITLEBAR_CONTROL_STRIP_WIDTH = 64;
 const TITLEBAR_CONTROL_GAP = 8;
 
+/**
+ * Below this width the sidebar overlays rather than pushes, so the session
+ * title / tab strip must reserve room for the floating control strip. Lives
+ * here with the rest of the titlebar geometry because BaseChat and the chat tab
+ * strip both derive their left padding from it and must not drift apart.
+ */
+export const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+
 export const TITLEBAR_CONTROL_RESERVE_PROPERTY = '--biorouter-titlebar-control-reserve';
 
 export function getTitlebarControlInset(isMacOS: boolean): number {

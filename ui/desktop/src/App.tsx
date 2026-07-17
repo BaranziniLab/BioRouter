@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState, useRef } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
@@ -21,8 +21,9 @@ import { createSession } from './sessions';
 
 import { ChatType } from './types/chat';
 import Hub from './components/Hub';
-import Pair, { PairRouteState } from './components/Pair';
-import type { UserAttachment } from './types/message';
+import { PairRouteState } from './components/Pair';
+import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
+import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
 import SessionsView from './components/sessions/SessionsView';
 import SharedSessionView from './components/sessions/SharedSessionView';
@@ -62,27 +63,32 @@ const HubRouteWrapper = () => {
   return <Hub setView={setView} />;
 };
 
-const PairRouteWrapper = ({
-  chat,
-  setChat,
-}: {
-  chat: ChatType;
-  setChat: (chat: ChatType) => void;
-}) => {
+const PairRouteWrapper = ({ setChat }: { setChat: (chat: ChatType) => void }) => (
+  <ChatGroupsProvider>
+    <PairRouteContent setChat={setChat} />
+  </ChatGroupsProvider>
+);
+
+/**
+ * The URL adapter, and nothing else.
+ *
+ * This used to own /pair's session identity (and mirror it into the URL from an
+ * effect of its own). ChatGroupsProvider is now the ONLY writer of
+ * ?resumeSessionId= — two writers is precisely the mutual recursion R2 warns
+ * about — so the old sync effect here is deleted. What remains are the entry
+ * points that must create a session BEFORE anything can be opened: the Hub
+ * composer's initialMessage, a workflow deeplink, and the sidebar's new-chat.
+ * Each of them lands back here as a normal ?resumeSessionId= navigation, which
+ * the provider consumes exactly once.
+ */
+const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) => {
   const { extensionsList } = useConfig();
   const location = useLocation();
   const navigate = useNavigate();
+  const groups = useChatGroups();
   const routeState = (location.state as PairRouteState) || {};
   const [searchParams] = useSearchParams();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
-
-  // Capture initialMessage in local state to survive route state being cleared
-  const [capturedInitialMessage, setCapturedInitialMessage] = useState<string | undefined>(
-    undefined
-  );
-  const [capturedInitialAttachments, setCapturedInitialAttachments] = useState<
-    UserAttachment[] | undefined
-  >(undefined);
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
   const workflowId = searchParams.get('workflowId') ?? undefined;
@@ -91,44 +97,29 @@ const PairRouteWrapper = ({
     | undefined;
   const isNewChat = routeState.newChat === true;
 
-  // Session ID and initialMessage come from route state (Hub, diverge) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
-  const sessionId = isNewChat
-    ? undefined
-    : sessionIdFromState || resumeSessionId || chat.sessionId || undefined;
+  // Identity comes from the URL and the route state only. The old
+  // `|| chat.sessionId` fallback reached into the App-level singleton, which is
+  // no longer /pair's identity: the focused tab is.
+  const sessionId = isNewChat ? undefined : sessionIdFromState || resumeSessionId || undefined;
+  const initialMessage = isNewChat ? undefined : routeState.initialMessage;
+  const initialAttachments = isNewChat ? undefined : routeState.initialAttachments;
 
-  // Use route state if available, otherwise use captured state
-  const initialMessage = isNewChat
-    ? undefined
-    : routeState.initialMessage || capturedInitialMessage;
-  const initialAttachments = isNewChat
-    ? undefined
-    : routeState.initialAttachments || capturedInitialAttachments;
+  const dispatch = groups?.dispatch;
 
-  // Capture initialMessage when it comes from route state
+  // The sidebar's new-chat button: open ONE empty tab per navigation. The tab
+  // carries sessionId '' until BaseChat's pre-session submit creates a real
+  // session; that navigation then ADOPTS this tab in place (see the reducer's
+  // empty-tab branch) rather than orphaning it beside a second one.
+  const newChatKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (isNewChat) {
-      setCapturedInitialMessage(undefined);
-      setCapturedInitialAttachments(undefined);
-      return;
-    }
+    if (!isNewChat || !dispatch) return;
+    if (newChatKeyRef.current === location.key) return;
+    newChatKeyRef.current = location.key;
+    dispatch({ type: 'openTab', payload: { sessionId: '' } });
+  }, [isNewChat, location.key, dispatch]);
 
-    console.log(
-      '[PairRouteWrapper] capture effect:',
-      JSON.stringify({
-        routeStateInitialMessage: routeState.initialMessage,
-        routeStateInitialAttachmentsCount: routeState.initialAttachments?.length,
-      })
-    );
-    if (routeState.initialMessage) {
-      setCapturedInitialMessage(routeState.initialMessage);
-    }
-    if (routeState.initialAttachments) {
-      setCapturedInitialAttachments(routeState.initialAttachments);
-    }
-  }, [isNewChat, routeState.initialMessage, routeState.initialAttachments]);
-
-  // Create session if we have an initialMessage, workflowId, or workflowDeeplink but no sessionId
+  // Create a session when we have something to say but nothing to say it in.
   useEffect(() => {
     if (
       !isNewChat &&
@@ -168,43 +159,7 @@ const PairRouteWrapper = ({
     navigate,
   ]);
 
-  // Sync URL with session ID for refresh support (only if not already in URL)
-  useEffect(() => {
-    if (sessionId && sessionId !== resumeSessionId) {
-      navigate(`/pair?resumeSessionId=${sessionId}`, {
-        replace: true,
-        state: { resumeSessionId: sessionIdFromState, initialMessage, initialAttachments },
-      });
-    }
-  }, [
-    sessionId,
-    resumeSessionId,
-    navigate,
-    sessionIdFromState,
-    initialMessage,
-    initialAttachments,
-  ]);
-
-  // Clear captured initialMessage when session changes (to prevent re-sending on navigation)
-  useEffect(() => {
-    if (sessionId && capturedInitialMessage && sessionIdFromState) {
-      const timer = setTimeout(() => {
-        setCapturedInitialMessage(undefined);
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
-  }, [sessionId, capturedInitialMessage, sessionIdFromState]);
-
-  return (
-    <Pair
-      key={isNewChat ? location.key : sessionId}
-      setChat={setChat}
-      sessionId={sessionId ?? ''}
-      initialMessage={initialMessage}
-      initialAttachments={initialAttachments}
-    />
-  );
+  return <ChatGroupsShell onChatChange={setChat} />;
 };
 
 const SettingsRoute = () => {
@@ -628,7 +583,7 @@ export function AppInner() {
                   }
                 >
                   <Route index element={<HubRouteWrapper />} />
-                  <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
+                  <Route path="pair" element={<PairRouteWrapper setChat={setChat} />} />
                   <Route path="settings" element={<SettingsRoute />} />
                   <Route
                     path="extensions"

@@ -39,10 +39,10 @@ describe('broadcast window events are scoped to their own chat', () => {
   let scrollB: ReturnType<typeof vi.fn<ScrollFn>>;
   let navigateA: ReturnType<typeof vi.fn<NavigateFn>>;
   let navigateB: ReturnType<typeof vi.fn<NavigateFn>>;
-  let listeners: Array<[string, EventListener]>;
+  let listeners: Array<[string, globalThis.EventListener]>;
 
   const mountTwoChats = () => {
-    const handlers: Array<[string, EventListener]> = [
+    const handlers: Array<[string, globalThis.EventListener]> = [
       ['scroll-chat-to-bottom', createScrollToBottomHandler({ sessionId: SESSION_A, scrollToBottom: scrollA })],
       ['scroll-chat-to-bottom', createScrollToBottomHandler({ sessionId: SESSION_B, scrollToBottom: scrollB })],
       ['session-diverged', createSessionDivergedHandler({ sessionId: SESSION_A, navigate: navigateA })],

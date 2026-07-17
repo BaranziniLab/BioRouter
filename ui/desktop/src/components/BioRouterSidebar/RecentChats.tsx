@@ -167,7 +167,7 @@ interface RecentChatRowProps {
   session: SessionSummary;
   isActive: boolean;
   isRunning: boolean;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionId: string, options?: { preview?: boolean }) => void;
 }
 
 function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowProps) {
@@ -184,7 +184,8 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
         <button
           type="button"
           data-testid={`recent-chat-${session.id}`}
-          onClick={() => onOpen(session.id)}
+          onClick={() => onOpen(session.id, { preview: true })}
+          onDoubleClick={() => onOpen(session.id, { preview: false })}
           aria-label={accessibleLabel}
           aria-current={isActive ? 'page' : undefined}
           className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
@@ -237,7 +238,7 @@ interface RecentChatsProps {
   hasMore: boolean;
   isLoadingMore: boolean;
   onLoadMore: () => void;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionId: string, options?: { preview?: boolean }) => void;
   onViewAll: () => void;
 }
 

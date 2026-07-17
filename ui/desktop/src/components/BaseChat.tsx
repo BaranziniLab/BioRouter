@@ -629,6 +629,22 @@ interface BaseChatProps {
    * Electron window out from under the focused one. Callers that mount more
    * than one BaseChat pass false for every chat that isn't focused. */
   allowWindowResize?: boolean;
+  /**
+   * Renders the left-hand content of the existing 52px session header in place
+   * of the SessionNamePill. The chat tab strip comes through HERE rather than
+   * being mounted above BaseChat, and that is deliberate:
+   *
+   * renderSessionHeaderActions() (below, in this same header row) closes over
+   * isTerminalDockOpen / reviewOpen / session — BaseChat-local state — and
+   * cannot be hoisted cheaply. Threading the strip through the seam means the
+   * actions never have to move. Mount a strip ABOVE BaseChat instead and you
+   * get a strip row AND an actions row: two 52px bars.
+   *
+   * The header is WebkitAppRegion:'drag'; anything interactive rendered here
+   * must declare no-drag on itself (R1, measured 2026-07-16 — the gesture does
+   * reach the DOM, but only for no-drag children).
+   */
+  renderSessionTitle?: () => React.ReactNode;
 }
 
 function BaseChatContent({
@@ -649,6 +665,7 @@ function BaseChatContent({
   onLatestMessage,
   focusTrigger,
   allowWindowResize = true,
+  renderSessionTitle,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -1740,20 +1757,31 @@ function BaseChatContent({
                   style={
                     {
                       WebkitAppRegion: 'drag',
-                      paddingLeft: sessionPillPaddingLeft,
+                      // The tab strip owns its own left reserve (it is the only
+                      // consumer of getSessionTitlePadding once it renders), so
+                      // the header must not apply the reserve twice.
+                      paddingLeft: renderSessionTitle ? 0 : sessionPillPaddingLeft,
                     } as React.CSSProperties
                   }
                 >
-                  <div className="min-w-0 flex-1">
-                    <SessionNamePill
-                      name={session?.name || 'New Session'}
-                      onRename={handleRename}
-                      onDiverge={handleTitleDiverge}
-                      canDiverge={canDivergeSession}
-                      accentColor={accentColor}
-                      className="w-fit max-w-[min(520px,calc(100%-16px))]"
-                    />
-                  </div>
+                  {/* The strip renders HERE, in place of the pill. Do not move
+                      renderSessionHeaderActions() out of this row — it closes
+                      over BaseChat-local state, and hoisting the strip above
+                      BaseChat instead would produce two 52px bars. */}
+                  {renderSessionTitle ? (
+                    renderSessionTitle()
+                  ) : (
+                    <div className="min-w-0 flex-1">
+                      <SessionNamePill
+                        name={session?.name || 'New Session'}
+                        onRename={handleRename}
+                        onDiverge={handleTitleDiverge}
+                        canDiverge={canDivergeSession}
+                        accentColor={accentColor}
+                        className="w-fit max-w-[min(520px,calc(100%-16px))]"
+                      />
+                    </div>
+                  )}
                   {renderSessionHeaderActions()}
                 </div>
               )}

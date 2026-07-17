@@ -1,0 +1,295 @@
+import { UserAttachment } from '../../types/message';
+import { ChatGroupsState, ChatGroup, ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
+
+export interface OpenTabPayload {
+  sessionId: string;
+  title?: string;
+  userSetName?: boolean;
+  /** VS Code enablePreview. Reuses the group's existing preview tab in place. */
+  preview?: boolean;
+  pendingInitialMessage?: string;
+  pendingInitialAttachments?: UserAttachment[];
+  workflowId?: string;
+  cwd?: string;
+  /** Target group; defaults to activeGroupId. */
+  groupId?: ChatGroupId;
+}
+
+export type ChatGroupsAction =
+  | { type: 'openTab'; payload: OpenTabPayload; runningSessionIds?: readonly string[] }
+  | { type: 'activateTab'; tabId: ChatTabId }
+  | { type: 'pinTab'; tabId: ChatTabId }
+  | { type: 'closeTab'; tabId: ChatTabId }
+  | { type: 'reorderTab'; draggedTabId: ChatTabId; targetTabId: ChatTabId }
+  | { type: 'renameTab'; sessionId: string; title: string; userSetName?: boolean }
+  | { type: 'bindSession'; tabId: ChatTabId; sessionId: string }
+  | { type: 'consumePending'; tabId: ChatTabId }
+  | { type: 'setActiveGroup'; groupId: ChatGroupId };
+
+export const DEFAULT_TAB_TITLE = 'New Session';
+
+export function createInitialChatGroupsState(): ChatGroupsState {
+  const groupId = 'grp-1';
+  return {
+    version: 1,
+    layout: { kind: 'leaf', groupId },
+    groups: { [groupId]: { groupId, tabs: [], activeTabId: null } },
+    activeGroupId: groupId,
+    seq: 1,
+  };
+}
+
+function findTabGroup(
+  state: ChatGroupsState,
+  predicate: (tab: ChatTab) => boolean
+): { group: ChatGroup; tab: ChatTab } | null {
+  for (const group of Object.values(state.groups)) {
+    const tab = group.tabs.find(predicate);
+    if (tab) return { group, tab };
+  }
+  return null;
+}
+
+function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup): ChatGroupsState {
+  return { ...state, groups: { ...state.groups, [groupId]: next } };
+}
+
+function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'openTab' }) {
+  const { payload } = action;
+  const running = action.runningSessionIds ?? [];
+
+  // Dedupe: a sessionId already open ANYWHERE activates its tab and its group
+  // rather than duplicating. Generalizes the artifactSourceKey dedupe in
+  // ArtifactViewer, so the two surfaces cannot drift.
+  if (payload.sessionId) {
+    const hit = findTabGroup(state, (tab) => tab.sessionId === payload.sessionId);
+    if (hit) {
+      // An explicit non-preview open PINS an existing preview tab: this is the
+      // "submitting a message pins it" path arriving as a re-open.
+      const pinned = payload.preview === false && hit.tab.preview;
+      const tabs = pinned
+        ? hit.group.tabs.map((t) => (t.tabId === hit.tab.tabId ? { ...t, preview: false } : t))
+        : hit.group.tabs;
+      return {
+        ...withGroup(state, hit.group.groupId, {
+          ...hit.group,
+          tabs,
+          activeTabId: hit.tab.tabId,
+        }),
+        activeGroupId: hit.group.groupId,
+      };
+    }
+  }
+
+  const groupId = payload.groupId ?? state.activeGroupId;
+  const group = state.groups[groupId];
+  if (!group) return state;
+
+  const nextTab = (tabId: ChatTabId): ChatTab => ({
+    tabId,
+    sessionId: payload.sessionId,
+    title: payload.title ?? DEFAULT_TAB_TITLE,
+    userSetName: payload.userSetName ?? false,
+    preview: payload.preview === true,
+    pendingInitialMessage: payload.pendingInitialMessage,
+    pendingInitialAttachments: payload.pendingInitialAttachments,
+    workflowId: payload.workflowId,
+    cwd: payload.cwd,
+  });
+
+  // The new-chat path: an empty tab (sessionId '') is a tab the user opened and
+  // has not yet bound to a session. When BaseChat's pre-session submit finally
+  // creates one and navigates, that arrives here as an openTab — and it must
+  // ADOPT the empty tab in place, keeping its tabId, rather than opening a
+  // second tab beside it and orphaning the one the user is looking at.
+  if (payload.sessionId && !payload.preview) {
+    const empty = group.tabs.find((t) => !t.sessionId);
+    if (empty) {
+      return {
+        ...withGroup(state, groupId, {
+          ...group,
+          tabs: group.tabs.map((t) => (t.tabId === empty.tabId ? nextTab(empty.tabId) : t)),
+          activeTabId: empty.tabId,
+        }),
+        activeGroupId: groupId,
+      };
+    }
+  }
+
+  if (payload.preview) {
+    // Replace the group's existing preview tab IN PLACE, keeping its tabId —
+    // this is what stops browsing Recents from leaving twelve tabs behind.
+    //
+    // Pin-on-run: a preview tab whose session is RUNNING is never replaced. A
+    // live turn is committed-to; recycling it would rip a streaming chat out
+    // from under the user. The stale preview is pinned and a fresh tab opens.
+    const existing = group.tabs.find((t) => t.preview);
+    if (existing) {
+      if (running.includes(existing.sessionId)) {
+        const tabId = `tab-${state.seq + 1}`;
+        return {
+          ...withGroup(state, groupId, {
+            ...group,
+            tabs: [
+              ...group.tabs.map((t) => (t.tabId === existing.tabId ? { ...t, preview: false } : t)),
+              nextTab(tabId),
+            ],
+            activeTabId: tabId,
+          }),
+          activeGroupId: groupId,
+          seq: state.seq + 1,
+        };
+      }
+      return {
+        ...withGroup(state, groupId, {
+          ...group,
+          tabs: group.tabs.map((t) => (t.tabId === existing.tabId ? nextTab(existing.tabId) : t)),
+          activeTabId: existing.tabId,
+        }),
+        activeGroupId: groupId,
+      };
+    }
+  }
+
+  const tabId = `tab-${state.seq + 1}`;
+  return {
+    ...withGroup(state, groupId, {
+      ...group,
+      tabs: [...group.tabs, nextTab(tabId)],
+      activeTabId: tabId,
+    }),
+    activeGroupId: groupId,
+    seq: state.seq + 1,
+  };
+}
+
+function closeTab(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
+  const hit = findTabGroup(state, (t) => t.tabId === tabId);
+  if (!hit) return state;
+  const { group } = hit;
+
+  const closingIndex = group.tabs.findIndex((t) => t.tabId === tabId);
+  const tabs = group.tabs.filter((t) => t.tabId !== tabId);
+
+  // Successor = Math.min(closingIndex, remaining.length - 1) — identical to
+  // ArtifactViewer's, so the two tab surfaces cannot drift.
+  if (group.activeTabId !== tabId) {
+    return withGroup(state, group.groupId, { ...group, tabs });
+  }
+  const successor = tabs[Math.min(closingIndex, tabs.length - 1)] ?? null;
+  // Closing the last tab of the last group leaves an EMPTY group. It renders
+  // BaseChat's existing empty state. It does NOT navigate away, and it does NOT
+  // delete the session — there is no createdHere here, by construction.
+  return withGroup(state, group.groupId, { ...group, tabs, activeTabId: successor?.tabId ?? null });
+}
+
+export function chatGroupsReducer(
+  state: ChatGroupsState,
+  action: ChatGroupsAction
+): ChatGroupsState {
+  switch (action.type) {
+    case 'openTab':
+      return openTab(state, action);
+
+    case 'activateTab': {
+      const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
+      if (!hit) return state;
+      if (hit.group.activeTabId === action.tabId && state.activeGroupId === hit.group.groupId) {
+        return state;
+      }
+      return {
+        ...withGroup(state, hit.group.groupId, { ...hit.group, activeTabId: action.tabId }),
+        activeGroupId: hit.group.groupId,
+      };
+    }
+
+    case 'pinTab': {
+      const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
+      if (!hit || !hit.tab.preview) return state;
+      return withGroup(state, hit.group.groupId, {
+        ...hit.group,
+        tabs: hit.group.tabs.map((t) => (t.tabId === action.tabId ? { ...t, preview: false } : t)),
+      });
+    }
+
+    case 'closeTab':
+      return closeTab(state, action.tabId);
+
+    case 'reorderTab': {
+      const hit = findTabGroup(state, (t) => t.tabId === action.draggedTabId);
+      if (!hit) return state;
+      const { group } = hit;
+      const draggedIndex = group.tabs.findIndex((t) => t.tabId === action.draggedTabId);
+      const targetIndex = group.tabs.findIndex((t) => t.tabId === action.targetTabId);
+      if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return state;
+      const tabs = [...group.tabs];
+      const [dragged] = tabs.splice(draggedIndex, 1);
+      tabs.splice(targetIndex, 0, dragged);
+      return withGroup(state, group.groupId, { ...group, tabs });
+    }
+
+    case 'renameTab': {
+      // Mirrors a session rename into every tab bound to that session.
+      let changed = false;
+      const groups: Record<ChatGroupId, ChatGroup> = {};
+      for (const [groupId, group] of Object.entries(state.groups)) {
+        const tabs = group.tabs.map((t) => {
+          if (t.sessionId !== action.sessionId || t.title === action.title) return t;
+          changed = true;
+          return { ...t, title: action.title, userSetName: action.userSetName ?? t.userSetName };
+        });
+        groups[groupId] = changed ? { ...group, tabs } : group;
+      }
+      return changed ? { ...state, groups } : state;
+    }
+
+    case 'bindSession': {
+      const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
+      if (!hit) return state;
+      return withGroup(state, hit.group.groupId, {
+        ...hit.group,
+        tabs: hit.group.tabs.map((t) =>
+          t.tabId === action.tabId ? { ...t, sessionId: action.sessionId } : t
+        ),
+      });
+    }
+
+    case 'consumePending': {
+      // Route-state cargo is consumed exactly once, by BaseChat on mount.
+      const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
+      if (!hit) return state;
+      if (!hit.tab.pendingInitialMessage && !hit.tab.pendingInitialAttachments) return state;
+      return withGroup(state, hit.group.groupId, {
+        ...hit.group,
+        tabs: hit.group.tabs.map((t) =>
+          t.tabId === action.tabId
+            ? { ...t, pendingInitialMessage: undefined, pendingInitialAttachments: undefined }
+            : t
+        ),
+      });
+    }
+
+    case 'setActiveGroup':
+      // activeGroupId must ALWAYS name a live leaf.
+      if (!state.groups[action.groupId]) return state;
+      return { ...state, activeGroupId: action.groupId };
+
+    default:
+      return state;
+  }
+}
+
+export function activeGroupOf(state: ChatGroupsState): ChatGroup | undefined {
+  return state.groups[state.activeGroupId];
+}
+
+export function activeTabOf(state: ChatGroupsState): ChatTab | undefined {
+  const group = activeGroupOf(state);
+  if (!group || !group.activeTabId) return undefined;
+  return group.tabs.find((t) => t.tabId === group.activeTabId);
+}
+
+/** The focused session id, or '' when the active group is empty. */
+export function activeSessionIdOf(state: ChatGroupsState): string {
+  return activeTabOf(state)?.sessionId ?? '';
+}

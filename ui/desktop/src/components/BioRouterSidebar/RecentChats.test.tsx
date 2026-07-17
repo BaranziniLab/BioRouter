@@ -153,7 +153,13 @@ describe('RecentChats', () => {
     expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
 
     fireEvent.click(currentChat);
-    expect(onOpen).toHaveBeenCalledWith('session-0');
+    // A single click opens a PREVIEW tab (italic, reused in place); a double
+    // click pins it. VS Code's enablePreview — this is what stops browsing
+    // history from leaving a tab behind per click.
+    expect(onOpen).toHaveBeenCalledWith('session-0', { preview: true });
+
+    fireEvent.doubleClick(currentChat);
+    expect(onOpen).toHaveBeenCalledWith('session-0', { preview: false });
 
     fireEvent.focus(currentChat);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
