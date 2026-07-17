@@ -11,7 +11,9 @@ import { ChatTabDragProvider } from './ChatTabDragContext';
 import { useTabDragReorder } from './useTabDragReorder';
 import { DropTarget } from './dropZones';
 import { groupCountOf } from './chatGroupsLayout';
+import { GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
 import { firstLeaf, GroupLayout, ChatGroupId } from './chatGroupsTypes';
+import { splitSnapshotIsStale, splitYieldAction, splitYieldSample } from '../Layout/yieldLadder';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
 import { SIDEBAR_COMPACT_TITLE_WIDTH } from '../Layout/TitlebarControls';
@@ -146,6 +148,95 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const layout = groups?.state.layout;
   const groupCount = useMemo(() => (layout ? groupCountOf(layout) : 1), [layout]);
 
+  /**
+   * Rung 4 of the yield ladder (D-32): a split merges back to one group rather
+   * than render two useless slivers.
+   *
+   * Modelled on AppLayout's sidebar watcher, down to the shape of the rule,
+   * because it is the same effect and would fail the same way. Three things make
+   * it safe to let it move a layout the user built by hand:
+   *
+   *   1. it fires ONLY on a width CROSSING. `state` is read through a ref and is
+   *      NOT a dep — a layout change must never re-run this, or splitting a
+   *      narrow window by hand would be undone inside the same tick as the drop.
+   *      That is the exact bug that made the sidebar's un-collapse button dead.
+   *   2. it is REVERSIBLE, and only reverses what WE did: the snapshot is what
+   *      we owe the user, and it is taken at the moment we take the split away.
+   *   3. the user can always overrule it. Split again while merged and the
+   *      snapshot is forfeit (splitSnapshotIsStale) — their layout is theirs, and
+   *      growing the window will not throw it away to restore ours.
+   *
+   * Observed on the shell's own box, not the window: the sidebar collapsing
+   * changes the room available to the groups without the window moving at all.
+   * No feedback loop is possible — merging changes the TREE INSIDE this box, and
+   * the box is sized by SidebarInset above it, so the callback cannot retrigger
+   * itself. Hence no hysteresis: none is needed, and adding it on spec would only
+   * make the crossing harder to reason about.
+   */
+  const treeRef = useRef<HTMLDivElement | null>(null);
+  const stateRef = useRef(groups?.state);
+  stateRef.current = groups?.state;
+  const mergeSnapshotRef = useRef<GroupLayoutSnapshot | null>(null);
+  const lastShellWidthRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const tree = treeRef.current;
+    if (!tree || !dispatch) return;
+
+    const sample = () => {
+      const state = stateRef.current;
+      if (!state) return;
+      const width = tree.clientWidth;
+      // An unmeasured box is not a narrow one. Without this, a 0-width sample —
+      // first paint, a hidden window, a display change — reads as "everything
+      // fits" and hands the split back at zero pixels.
+      if (!(width > 0)) return;
+      const groupCountNow = groupCountOf(state.layout);
+
+      // Did the user build their own layout while we had theirs merged away? Then
+      // ours is forfeit — checked BEFORE the fit, so the rest of this sample
+      // judges the layout the user actually has.
+      if (mergeSnapshotRef.current && splitSnapshotIsStale({ groupCount: groupCountNow })) {
+        mergeSnapshotRef.current = null;
+      }
+
+      const { wasFitting, isFitting } = splitYieldSample({
+        layout: state.layout,
+        snapshotLayout: mergeSnapshotRef.current?.layout ?? null,
+        lastWidth: lastShellWidthRef.current,
+        width,
+      });
+      const action = splitYieldAction({
+        wasFitting,
+        isFitting,
+        groupCount: groupCountNow,
+        autoMerged: mergeSnapshotRef.current !== null,
+      });
+      // Recorded before the dispatch, exactly as the sidebar records wasCompact:
+      // the re-render that follows must not read a stale previous side.
+      lastShellWidthRef.current = width;
+
+      if (action === 'merge') {
+        mergeSnapshotRef.current = snapshotGroupLayout(state);
+        dispatch({ type: 'mergeAllGroups' });
+      } else if (action === 'restore') {
+        const snapshot = mergeSnapshotRef.current;
+        mergeSnapshotRef.current = null;
+        if (snapshot) dispatch({ type: 'restoreLayout', snapshot });
+      }
+    };
+
+    sample();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', sample);
+      return () => window.removeEventListener('resize', sample);
+    }
+    const observer = new ResizeObserver(sample);
+    observer.observe(tree);
+    return () => observer.disconnect();
+  }, [dispatch]);
+
   if (!groups || !layout) return null;
 
   const renderGroup = ({ groupId }: RenderGroupArgs) => {
@@ -204,7 +295,11 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   return (
     <ChatTabDragProvider value={drag}>
       <div className="flex h-full min-h-0 w-full flex-col">
-        <div className="flex min-h-0 flex-1">{tree}</div>
+        {/* treeRef: rung 4 measures the room the GROUPS have, which the sidebar
+            can change without the window moving. */}
+        <div ref={treeRef} className="flex min-h-0 flex-1">
+          {tree}
+        </div>
         {/* The dock is GLOBAL: one, below every group, spanning them all — not
             one per pane. It reads its open state and its frozen cwd from the
             context; see TerminalDockContext for why the cwd must not track the
