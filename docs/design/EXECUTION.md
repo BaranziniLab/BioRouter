@@ -16,7 +16,14 @@ read one document, read this one. It links out to the others.
 
 ---
 
-## Where we stand: 11 of 15 steps done
+## Where we stand: 15 of 19 steps done
+
+The list grew from 15 steps to 19: the user added the browser-tab keyboard model
+(⌘T / ⌘N / ⌃Tab) and made **lag a first-class acceptance criterion**, and D-31
+turned out to have a second half (the preview's chrome, D-33). New work is added
+as new rows rather than folded silently into existing ones, so the denominator
+stays honest — the fraction should get *worse* when scope grows, not quietly
+better.
 
 | # | Step | Status |
 |---|---|---|
@@ -31,16 +38,26 @@ read one document, read this one. It links out to the others.
 | 9 | Stages 1–2 — tabs in one group | ✅ done |
 | 10 | Stage 3 — split, drag, drop zones, global dock | ✅ done |
 | 11 | Theme default → auto | ✅ done |
-| 12 | **User-reported bugs** (tab-per-click + Cmd+W, sidebar collapse, centering, icon parity) | 🔄 in flight |
-| 13 | **D-31** tab labels → sans (spec ✅ committed; code pending — agents hold the files) | 🔄 in flight |
-| 14 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
-| 15 | Final gate + full visual QA sweep | ⬜ not started |
+| 12 | **User-reported bugs** (tab-per-click + Cmd+W, sidebar collapse, centering, icon parity) | ✅ done |
+| 13 | **D-31** tab labels → sans — spec + code | ✅ done |
+| 14 | **D-33** the other half of D-31: the preview's chrome → sans | ✅ done |
+| 15 | **D-34** kill the "New Session" flash — a tab opens already named | ✅ done |
+| 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | 🔄 in flight |
+| 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | 🔄 in flight |
+| 18 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
+| 19 | Final gate + full visual QA sweep | ⬜ not started |
 
 ---
 
 ## Commits (every step reversible)
 
 ```
+2e5c9262  design       the other half of D-31 — the preview's chrome → sans (D-33)
+c9cff940  fix(tabs)    open a history chat already named, not "New Session" (D-34)
+d0257a6a  design(tabs) set tab labels in the app's own sans — the D-31 code
+427ea3d4  docs         EXECUTION.md — the suite is 1133/1133
+621326ac  test         fix the suite's two real root causes, no timeout crutch
+c22710f2  docs         add EXECUTION.md — the single status doc
 609849b2  fix(chat)    session-scope the broadcast events so N chats can coexist
 751f06db  feat(chat)   tabs — one group, on the shared .br-tab classes
 191fbc28  feat(chat)   split the chat area into groups — drag a tab to an edge
@@ -106,6 +123,20 @@ shared test setup:
    parser accepts what Chrome rejects. Green test, broken feature.
 2. **The tab read "New Session"** for a loaded chat while `document.title` had
    the real name: nothing announces a session name on *load*, only on rename.
+   Fixed twice over — first by listening for the load (which corrected the name
+   but only *after* a visible second), then properly, by handing the name over
+   at open time (D-34). The first fix was treating the symptom: I made the
+   correction arrive reliably instead of asking why a correction was needed for
+   a string the sidebar was already rendering.
+
+### Still to verify by driving
+
+- **D-31 / D-33 (the fonts) and D-34 (the flash) are committed and unit-tested,
+  but have NOT yet been confirmed in the running app.** jsdom applies no CSS, so
+  the font change in particular is exactly the class of thing that "passes" in a
+  test and is wrong on screen — the logo-square bug below was precisely that.
+  Two agents are holding the Electron single-instance lock; this gets checked in
+  the step-19 sweep, and until then it is unproven, not done.
 
 ---
 
@@ -113,10 +144,11 @@ shared test setup:
 
 | Item | State |
 |---|---|
-| Sidebar collapse can't recover | 🔄 being fixed (step 12) — worst of the reported bugs |
-| Chat column flush-left, ~158px dead space right | 🔄 being fixed — measured, `mx-auto` defeated by something reserving width |
-| Tab icons at 13/12px, off §3.9's 16/20/24 scale | 🔄 being fixed |
-| History click replaces instead of opening a tab | 🔄 being fixed — **user override of the VS Code preview-tab design** |
+| Sidebar collapse can't recover | ✅ **fixed.** Not the cause I guessed. The rail translated correctly at every width and the toggle always hit-tested itself — it needed a *resize* to reproduce: `AppLayout`'s auto-collapse effect listed `open` in its deps, so the user's own click re-triggered it and set `open` straight back to `false` in the same tick. Now gated on a width-bucket **crossing**. Pure `sidebarAutoCollapseAction` + 8 tests, because the bug was **state, not geometry** — so it is genuinely provable in jsdom |
+| Chat column flush-left, ~158px dead space right | ✅ **fixed, measured 250/250, delta 0** (was 24/158). Two causes: BaseChat's root had no `flex-1` (it used to mount only in a flex *column*, where stretch gave it full width for free; a chat *group* mounts it in a flex **row**, where width is the main axis — so it hugged its content and `mx-auto` centred inside *that*), and `contentClassName` opened with `pr-1`, a right-only 4px inset. **No jsdom test**, deliberately: jsdom computes no layout, so a centering assertion there would pass with the bug present. Verified by measurement in the real app |
+| Tab icons at 13/12px, off §3.9's 16/20/24 scale | ✅ **fixed** — both 16px. Glyphs already came from `app-icons` (stroke 1.5 confirmed *rendered*, which catches a raw `lucide-react` swap) |
+| History click replaces instead of opening a tab | ✅ **fixed** — tab per click, deduped across groups, closable via × / ⌘W. **User override of the VS Code preview-tab design**; the whole preview-tab concept (`preview` field, `pinTab`, pin-on-run, double-click-to-pin) is retired, with a test that fails if it creeps back |
+| ⌘W closed the **window**, not the tab | ✅ **fixed, and it was a landmine.** `{ role: 'close' }` in `main.ts` silently claimed `CmdOrCtrl+W` with no `accelerator:` line to grep for. A renderer keydown listener could **never** have won — a menu accelerator is consumed before the web contents sees the key, so the window would have closed regardless, taking every tab with it. ⌘W = Close Tab (via IPC), ⇧⌘W = Close Window, per Safari/Chrome. Verified by dumping the built menu |
 | Preview panel not window-pinned in a split | 📌 **known partial, deliberate.** It stays per-pane; in a left/right split it sits inside the active group's box, not at the window edge. Hoisting it drops the artifact tab stack on every group switch (plan Stage 5, its own change) |
 | `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
 | `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
@@ -137,6 +169,21 @@ shared test setup:
 - **D-32 — the yield ladder.** The active chat always wins; everything else
   yields in a fixed order: sidebar → preview panel → tab labels → the split
   itself.
+- **D-33 — mono for data, sans for chrome.** D-31 was only half the answer: the
+  user said the font was still wrong in the chat *and the preview*. The tab
+  strips were already fixed (one line covered both — the preview shares chat's
+  `.br-tabstrip`), but the preview's status strip still set *everything* in
+  mono. The test, applied per-usage: **mono is a claim that the glyphs matter.**
+  Paths, git refs and `tabular-nums` counts keep it; the language chip and the
+  status legend don't.
+- **D-34 — a tab opens already named.** The "New Session" flash was a
+  round-trip to the server for a string that was already on screen. The name
+  now travels with the click. The late rename stays — deep links, reloads and
+  fresh chats carry no name, and only the load knows `user_set_name`.
+- **The browser model.** ⌘T = new tab (a new chat), ⌘N = new window, ⌘W =
+  close tab, ⌃Tab = next tab — in the preview's tab stack as well as chat's.
+  ⌃Tab and not ⌘Tab because the OS owns ⌘Tab and will not give it up; this is
+  also what Safari and Chrome do on macOS.
 
 ---
 
