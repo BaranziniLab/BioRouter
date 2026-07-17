@@ -278,7 +278,7 @@
      colour. Inactive tabs are plain text, divided by a Safari hairline that
      retracts around whatever you are pointing at. Nothing is outlined. */
   .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
-  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 11px;height:34px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;border-radius:var(--r-md);background:transparent;transition:background .12s var(--ease),color .12s var(--ease)}
+  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 11px;height:34px;min-width:0;max-width:190px;color:var(--muted);font-size:13px;cursor:pointer;border:0;font-family:inherit;letter-spacing:normal;border-radius:var(--r-md);background:transparent;transition:background .12s var(--ease),color .12s var(--ease)}
   /* Safari's divider: a hairline in the GAP, never a border on the tab */
   .utab + .utab::before{content:"";position:absolute;left:-2px;top:9px;bottom:9px;width:1px;background:var(--border-strong);opacity:.5;transition:opacity .12s var(--ease)}
   .utab:hover::before,.utab.active::before,.utab:hover + .utab::before,.utab.active + .utab::before{opacity:0}
@@ -1001,6 +1001,17 @@
 
     <div class="cards">
       <div class="cardx">
+        <span class="tag fix">Θ₂</span>
+        <h3>Tab labels are sans, not mono</h3>
+        <p><b>Overridden by the user, 2026-07-16 — and rightly.</b> I set tab labels in the mono face, borrowing otty.sh’s trick of using a monospace for UI labels, and argued it was on-thesis because design.md calls monospace “a first-class citizen”. In the real app it reads as a <em>special thin font</em> that belongs to nothing else on screen: the sidebar, the nav, the chat and the session title are all <span class="mono" style="font-size:12px">--font-sans</span>, so the tab strip — sitting on the same 52px bar as all of them — was the only place speaking a different language. That is the exact fault this whole pass exists to remove.</p>
+        <p>Mono keeps the jobs it earns: code, the terminal, paths, and figures where columns must align. A tab label is none of those — it is a name.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Was</span><span class="v">--font-mono 12px, tracking -.01em</span></div>
+          <div class="row after"><span class="k">Now</span><span class="v">--font-sans 13px (§3.2 metadata), normal tracking</span></div>
+        </div>
+        <div class="ref">user override · supersedes the otty mono-label idea</div>
+      </div>
+      <div class="cardx">
         <span class="tag fix">K</span>
         <h3>Remap the prose variables</h3>
         <p>One block of <span class="mono" style="font-size:12px">--tw-prose-*</span> overrides retires the entire cold-grey ramp: body, bold, headings, links, hr, and both table hairline vars. This is the highest-leverage fix in the whole pass — nothing else changes as much for as little.</p>
@@ -1058,10 +1069,10 @@
       <div class="cardx">
         <span class="tag">G</span>
         <h3>Tabs become tabs, not chips</h3>
-        <p>The preview's boxed 8px chips with a drop shadow become text tabs with a 2px accent underline — which is what D-07 already chose for horizontal navigation, and what the panel quietly ignored. Labels set in mono, the way otty sets its UI labels.</p>
+        <p>The preview's boxed 8px chips with a drop shadow become text tabs with a 2px accent underline — which is what D-07 already chose for horizontal navigation, and what the panel quietly ignored. Labels are set in the app’s own sans — the same face as every other label in BioRouter.</p>
         <div class="ba">
           <div class="row before"><span class="k">Now</span><span class="v">8px chip + border + shadow</span></div>
-          <div class="row after"><span class="k">New</span><span class="v">underline tab, mono 12px label</span></div>
+          <div class="row after"><span class="k">New</span><span class="v">underline tab, sans 13px label</span></div>
         </div>
         <div class="ref">design.md D-07</div>
       </div>
