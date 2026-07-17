@@ -4,9 +4,23 @@ import { UserAttachment } from '../../types/message';
 
 export interface UrlOpenRequest {
   sessionId: string;
-  preview: boolean;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
+  /**
+   * The session's name, when the OPENER already knows it.
+   *
+   * A Recents click is the case that matters: the sidebar is rendering the name
+   * on the row you just clicked, so the name is in hand at nav time. Without
+   * this the tab was born with the placeholder and only got its real name once
+   * BaseChat had fetched the session and fired onSessionUpdate — a visible
+   * "New Session" flash on every history click, for a name we already had.
+   *
+   * Optional, and NOT a replacement for the late rename: a deep link, a fresh
+   * chat, or an external nav has no name to pass, and a session renamed later
+   * still has to propagate. This just removes the round-trip when it's avoidable.
+   */
+  title?: string;
+  userSetName?: boolean;
 }
 
 interface UrlSyncArgs {
@@ -26,9 +40,10 @@ interface UrlSyncArgs {
  *
  *   IN  is gated by `lastAppliedParamRef` + `lastAppliedKeyRef` — a given
  *       (param, location.key) pair is consumed exactly once. The key is part of
- *       the gate so that two DELIBERATE navigations to the same session (single
- *       click, then double click to pin) are both seen, while a re-render with
- *       an unchanged location is not.
+ *       the gate so that two DELIBERATE navigations to the same session are both
+ *       seen, while a re-render with an unchanged location is not. The second one
+ *       is harmless: the reducer dedupes by sessionId and merely re-activates the
+ *       tab that is already open.
  *
  *   OUT is gated by `replace: true` plus a `!==` check against the CURRENT
  *       param, so a focus mirror that already matches the URL writes nothing.
@@ -78,16 +93,18 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
     lastAppliedKeyRef.current = locationKey;
 
     const state = (location.state ?? {}) as {
-      preview?: boolean;
       initialMessage?: string;
       initialAttachments?: UserAttachment[];
+      title?: string;
+      userSetName?: boolean;
     };
 
     onOpenRef.current({
       sessionId: param,
-      preview: state.preview === true,
       initialMessage: state.initialMessage,
       initialAttachments: state.initialAttachments,
+      title: state.title,
+      userSetName: state.userSetName,
     });
     // location.state is read, not depended on: a nav is identified by its key.
     // eslint-disable-next-line react-hooks/exhaustive-deps

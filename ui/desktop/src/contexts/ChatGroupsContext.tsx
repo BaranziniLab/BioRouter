@@ -23,6 +23,7 @@ import {
   useChatGroupsUrlSync,
   UrlOpenRequest,
 } from '../components/chatGroups/useChatGroupsUrlSync';
+import { registerCloseActiveTab } from '../components/chatGroups/closeActiveTabRegistry';
 import { ChatGroupsState, ChatGroup, ChatTab } from '../components/chatGroups/chatGroupsTypes';
 import { useRunningChats } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
@@ -57,15 +58,12 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // `completedAt` must be filtered out, exactly as AppSidebar:139 does: the
   // registry keeps finished entries in the snapshot for ~1.6s so the sidebar can
   // play its completion flourish. Without this filter a chat that just finished
-  // would keep pulsing in the strip AND would refuse to give up its preview tab
-  // (pin-on-run) for that window — and the strip would disagree with the sidebar
-  // about which chats are live.
+  // would keep pulsing in the strip, and the strip would disagree with the
+  // sidebar about which chats are live.
   const runningSessionIds = useMemo(
     () => running.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId),
     [running]
   );
-  const runningRef = useRef(runningSessionIds);
-  runningRef.current = runningSessionIds;
 
   // Persist. The transient route cargo is stripped inside saveChatGroups, not
   // here, so no caller can forget.
@@ -87,33 +85,48 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     []
   );
 
-  // "Submitting a message pins it." A preview tab whose session starts a turn is
-  // committed-to, exactly as double-clicking commits to it. useRunningChats is
-  // already the authority on which sessions have a live turn, so this needs no
-  // new signal from the composer and no backend work.
-  useEffect(() => {
-    for (const group of Object.values(state.groups)) {
-      for (const tab of group.tabs) {
-        if (tab.preview && tab.sessionId && runningSessionIds.includes(tab.sessionId)) {
-          dispatch({ type: 'pinTab', tabId: tab.tabId });
-        }
-      }
-    }
-  }, [runningSessionIds, state.groups]);
-
   const handleUrlOpen = useCallback((request: UrlOpenRequest) => {
     dispatch({
       type: 'openTab',
       payload: {
         sessionId: request.sessionId,
-        preview: request.preview,
+        // Born with the right name when the opener knew it (a Recents click),
+        // rather than showing the placeholder until BaseChat finishes loading.
+        // Undefined for a deep link / fresh chat — the reducer falls back to
+        // DEFAULT_TAB_TITLE and the late rename still corrects it.
+        title: request.title,
+        userSetName: request.userSetName,
         pendingInitialMessage: request.initialMessage,
         pendingInitialAttachments: request.initialAttachments,
       },
-      // Pin-on-run: never recycle a preview tab mid-turn.
-      runningSessionIds: runningRef.current,
     });
   }, []);
+
+  // Cmd+W / Ctrl+W. The keystroke arrives as an IPC message from the File menu's
+  // "Close Tab" item, NOT as a renderer keydown — see main.ts. That is deliberate
+  // and it is the only safe arrangement: an Electron menu accelerator is consumed
+  // by the menu before the web contents ever sees the key, so a renderer keydown
+  // listener could not have won the race against the `role: 'close'` item that
+  // used to hold Cmd+W. The window would have closed regardless of what we did
+  // here, taking every other tab with it.
+  //
+  // Returning `true` claims the keystroke. Returning false (no tabs left to
+  // close) lets App.tsx fall through to closing the window, which is what a
+  // macOS user expects from Cmd+W on a tabless window.
+  const activeTabId = activeGroupOf(state)?.activeTabId ?? null;
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+
+  useEffect(
+    () =>
+      registerCloseActiveTab(() => {
+        const tabId = activeTabIdRef.current;
+        if (!tabId) return false;
+        dispatch({ type: 'closeTab', tabId });
+        return true;
+      }),
+    []
+  );
 
   const activeSessionId = activeSessionIdOf(state);
   useChatGroupsUrlSync({ activeSessionId, onOpen: handleUrlOpen });

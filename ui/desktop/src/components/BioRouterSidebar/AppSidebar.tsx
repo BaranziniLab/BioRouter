@@ -191,15 +191,24 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     navigateWithViewTransition(navigate, path);
   };
 
-  // Single click opens a PREVIEW tab (italic, reused in place); double click
-  // pins it. VS Code's enablePreview, and the reason browsing history no longer
-  // leaves twelve tabs behind. This is a cross-route entry, so it keeps today's
-  // PUSH navigation — only in-strip tab clicks use replace, which is what keeps
-  // Back returning you to wherever you came from INTO /pair.
-  const handleOpenChat = (sessionId: string, options?: { preview?: boolean }) => {
-    navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`, {
-      preview: options?.preview ?? false,
-    });
+  // A click opens the chat as its own tab; if it is already open anywhere the
+  // reducer dedupes and just activates it. This is a cross-route entry, so it
+  // keeps today's PUSH navigation — only in-strip tab clicks use replace, which
+  // is what keeps Back returning you to wherever you came from INTO /pair.
+  // `title` rides along in route state so the tab opens already named. It is
+  // only ever a HINT: the URL alone still opens the chat (a deep link, a
+  // reload, an external nav carry no state), and BaseChat's load still renames
+  // the tab authoritatively — including the `userSetName` flag, which the
+  // session LIST does not carry. This removes the flash, not the correction.
+  const handleOpenChat = (sessionId: string, title?: string) => {
+    // NB: the 3rd arg of navigateWithViewTransition IS the route state itself,
+    // not an options bag — `{ state: … }` here would nest it one level deep and
+    // silently do nothing.
+    navigateWithViewTransition(
+      navigate,
+      `/pair?resumeSessionId=${sessionId}`,
+      title ? { title } : undefined
+    );
   };
 
   const renderMenuItem = (entry: NavigationItem) => {

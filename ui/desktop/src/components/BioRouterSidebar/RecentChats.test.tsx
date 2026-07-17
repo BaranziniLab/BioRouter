@@ -153,13 +153,19 @@ describe('RecentChats', () => {
     expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
 
     fireEvent.click(currentChat);
-    // A single click opens a PREVIEW tab (italic, reused in place); a double
-    // click pins it. VS Code's enablePreview — this is what stops browsing
-    // history from leaving a tab behind per click.
-    expect(onOpen).toHaveBeenCalledWith('session-0', { preview: true });
+    // One click, one real tab — no preview slot, no options object. Whether the
+    // chat is already open is the reducer's business (it dedupes), not the row's.
+    //
+    // The row hands over the NAME it is already rendering, so the tab opens
+    // titled instead of showing "New Session" until BaseChat has fetched the
+    // session. The row is the only place that knows this without a round-trip.
+    expect(onOpen).toHaveBeenCalledWith('session-0', 'Chat 0');
 
+    // Double click is not a distinct gesture any more: it is two opens of the
+    // same chat, which the reducer collapses to an activate.
+    onOpen.mockClear();
     fireEvent.doubleClick(currentChat);
-    expect(onOpen).toHaveBeenCalledWith('session-0', { preview: false });
+    expect(onOpen.mock.calls.every((call) => call[0] === 'session-0')).toBe(true);
 
     fireEvent.focus(currentChat);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');

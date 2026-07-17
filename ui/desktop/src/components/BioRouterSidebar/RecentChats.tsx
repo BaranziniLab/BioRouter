@@ -167,7 +167,12 @@ interface RecentChatRowProps {
   session: SessionSummary;
   isActive: boolean;
   isRunning: boolean;
-  onOpen: (sessionId: string, options?: { preview?: boolean }) => void;
+  /**
+   * `title` is the name this row is ALREADY rendering, handed to the opener so
+   * the new tab is born with it. Omitted when the session is unnamed — then the
+   * tab's own placeholder is the honest answer, not this row's "Untitled chat".
+   */
+  onOpen: (sessionId: string, title?: string) => void;
 }
 
 function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowProps) {
@@ -184,8 +189,13 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
         <button
           type="button"
           data-testid={`recent-chat-${session.id}`}
-          onClick={() => onOpen(session.id, { preview: true })}
-          onDoubleClick={() => onOpen(session.id, { preview: false })}
+          // One click, one real tab. There is no preview/double-click-to-pin
+          // gesture: an already-open chat is deduped by the reducer, so clicking
+          // around Recents can never replace the chat you are reading.
+          // The name goes WITH the click. We are rendering it right here, so
+          // there is no reason for the tab to open on a placeholder and wait
+          // for BaseChat to fetch a session we already listed.
+          onClick={() => onOpen(session.id, session.name.trim() || undefined)}
           aria-label={accessibleLabel}
           aria-current={isActive ? 'page' : undefined}
           className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
@@ -238,7 +248,7 @@ interface RecentChatsProps {
   hasMore: boolean;
   isLoadingMore: boolean;
   onLoadMore: () => void;
-  onOpen: (sessionId: string, options?: { preview?: boolean }) => void;
+  onOpen: (sessionId: string) => void;
   onViewAll: () => void;
 }
 
