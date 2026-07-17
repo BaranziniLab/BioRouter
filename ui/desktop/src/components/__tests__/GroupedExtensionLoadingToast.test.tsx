@@ -38,7 +38,7 @@ describe('GroupedExtensionLoadingToast', () => {
     expect(screen.queryByText('Show details')).not.toBeInTheDocument();
   });
 
-  it('renders failure with how-many AND which extensions failed', () => {
+  it('renders partial failure as "N of M loaded" AND names which failed', () => {
     const extensions = [
       { name: 'developer', status: 'success' as const },
       { name: 'memory', status: 'error' as const, error: 'Failed to connect' },
@@ -48,8 +48,8 @@ describe('GroupedExtensionLoadingToast', () => {
       <GroupedExtensionLoadingToast extensions={extensions} totalCount={2} isComplete={true} />
     );
 
-    // how many failed
-    expect(screen.getByText('1 extension failed to load')).toBeInTheDocument();
+    // how much still works — leading with the survivors, not the casualties
+    expect(screen.getByText('1 of 2 extensions loaded')).toBeInTheDocument();
     // which failed (friendly name)
     expect(screen.getByText('Failed: Memory')).toBeInTheDocument();
     expect(screen.getByText('Show details')).toBeInTheDocument();
@@ -65,8 +65,25 @@ describe('GroupedExtensionLoadingToast', () => {
       <GroupedExtensionLoadingToast extensions={extensions} totalCount={2} isComplete={true} />
     );
 
-    expect(screen.getByText('2 extensions failed to load')).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 extensions loaded')).toBeInTheDocument();
     expect(screen.getByText('Failed: Developer, Memory')).toBeInTheDocument();
+  });
+
+  it('reports the partial ratio the user was promised — "3 of 4 extensions loaded"', () => {
+    const extensions = [
+      { name: 'developer', status: 'success' as const },
+      { name: 'memory', status: 'success' as const },
+      { name: 'computercontroller', status: 'success' as const },
+      { name: 'memory-broken', status: 'error' as const, error: 'spawn ENOENT' },
+    ];
+
+    renderWithRouter(
+      <GroupedExtensionLoadingToast extensions={extensions} totalCount={4} isComplete={true} />
+    );
+
+    expect(screen.getByText('3 of 4 extensions loaded')).toBeInTheDocument();
+    // A partial failure must never read as a clean success.
+    expect(screen.queryByText('All extensions loaded')).not.toBeInTheDocument();
   });
 
   it('renders a single successful extension as "All extensions loaded"', () => {

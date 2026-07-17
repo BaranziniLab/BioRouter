@@ -14,6 +14,14 @@ export interface ToastServiceOptions {
   shouldThrow?: boolean;
 }
 
+/**
+ * One id for the grouped extension toast, deliberately shared across chats: with
+ * tabs and splits, four chats can finish loading at once, and four separate
+ * toasts reporting the same broken extension would bury the transcript. One id
+ * coalesces them into a single, updating report.
+ */
+const EXTENSION_TOAST_ID = 'extension-loading';
+
 class ToastService {
   private silent: boolean = false;
   private shouldThrow: boolean = false;
@@ -70,6 +78,18 @@ class ToastService {
   }
 
   /**
+   * Whether the grouped extension toast is still on screen. Lets a caller avoid
+   * overwriting a live failure report with a later success — see
+   * `showExtensionLoadResults`.
+   */
+  isExtensionToastActive(): boolean {
+    if (this.silent) {
+      return false;
+    }
+    return toast.isActive(EXTENSION_TOAST_ID);
+  }
+
+  /**
    * Create a grouped extension loading toast that can be updated as extensions load
    */
   extensionLoading(
@@ -81,7 +101,7 @@ class ToastService {
       return 'silent';
     }
 
-    const toastId = 'extension-loading';
+    const toastId = EXTENSION_TOAST_ID;
 
     // Drive react-toastify's own icon + theme (same as toastSuccess/toastError,
     // i.e. the model-change toast) so this toast looks consistent: a spinner
