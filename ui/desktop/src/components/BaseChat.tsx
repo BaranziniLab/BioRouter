@@ -780,7 +780,12 @@ function BaseChatContent({
   }, []);
 
   const contentClassName = cn(
-    'pr-1 pb-10',
+    // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
+    // scrollbar, but as a right-only inset it made the scroll viewport 4px
+    // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
+    // true centre. Padding the gutter symmetrically costs 4px of width and buys
+    // an actually centred column. Measured in Electron: 198/202 -> 200/200.
+    'px-1 pb-10',
     (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
   );
 
@@ -1771,7 +1776,16 @@ function BaseChatContent({
   }
 
   return (
-    <div className="relative z-[60] h-full flex flex-col min-h-0">
+    // `w-full min-w-0 flex-1` is load-bearing, not decoration. BaseChat used to
+    // mount only inside AppLayout's flex COLUMN, where align-items:stretch gave
+    // it the full width for free. The chat-groups shell mounts it inside a flex
+    // ROW (ChatGroupPane), where width is the MAIN axis: without flex-grow the
+    // root defaulted to `flex: 0 1 auto` and hugged its content — 808px (the
+    // 760px readable column + 48px of px-6) — then sat at the group's left edge.
+    // The transcript's `mx-auto` centred inside THAT 808px box, not the group,
+    // so the column read ~134px left-of-centre in a 942px group. min-w-0 is what
+    // lets it shrink when the artifact panel takes its share of the row.
+    <div className="relative z-[60] h-full flex flex-col min-h-0 w-full min-w-0 flex-1">
       <MainPanelLayout
         backgroundColor={'bg-background-muted'}
         removeTopPadding={true}
