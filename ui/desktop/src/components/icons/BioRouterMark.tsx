@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type SVGProps } from 'react';
 import { useResolvedTheme } from '../../contexts/ThemeContext';
 
 /**
@@ -41,9 +41,7 @@ type Geo = {
   thick: number;
 };
 
-interface BioRouterMarkProps {
-  className?: string;
-  style?: CSSProperties;
+interface BioRouterMarkProps extends Omit<SVGProps<SVGSVGElement>, 'ref' | 'title'> {
   dark?: boolean;
   plate?: boolean;
   title?: string;
@@ -55,6 +53,7 @@ export function BioRouterMark({
   dark: darkProp,
   plate = false,
   title = 'BioRouter',
+  ...rest
 }: BioRouterMarkProps) {
   const bRef = useRef<SVGTextElement>(null);
   const rRef = useRef<SVGTextElement>(null);
@@ -66,7 +65,8 @@ export function BioRouterMark({
   const measure = () => {
     const b = bRef.current;
     const r = rRef.current;
-    if (!b || !r) return;
+    // jsdom has no getBBox (see BioRouterWordmark) — stay unmeasured under tests.
+    if (!b || !r || typeof b.getBBox !== 'function' || typeof r.getBBox !== 'function') return;
     const bb = b.getBBox();
     if (bb.width === 0 || bb.height === 0) return;
     const rb = r.getBBox();
@@ -128,6 +128,7 @@ export function BioRouterMark({
 
   return (
     <svg
+      {...rest}
       className={className}
       style={style}
       viewBox={geo ? geo.vb : `0 -${WORK_SIZE} ${WORK_SIZE * 1.2} ${WORK_SIZE * 1.2}`}

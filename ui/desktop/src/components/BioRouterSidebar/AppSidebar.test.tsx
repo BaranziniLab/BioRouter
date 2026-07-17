@@ -108,7 +108,10 @@ describe('AppSidebar chat navigation', () => {
       'bg-background-default/55',
       'font-semibold'
     );
-    expect(wordmark).toHaveTextContent('Biorouter');
+    // The brand row is the wordmark SVG now (D-39): "Bio" + "Router" live as the
+    // SVG's own text nodes, so the accessible name is still there without a
+    // separate <span>.
+    expect(wordmark).toHaveTextContent('BioRouter');
     expect(wordmark).toHaveClass('h-8');
     // The 40px of dead air is gone: the titlebar band now reserves that space
     // explicitly and closes it with the hairline the chat/preview headers share.
@@ -125,13 +128,15 @@ describe('AppSidebar chat navigation', () => {
     // `gap-2`, so 8 + 12 + 16 + 8 = 44px on each side.
     expect(wordmark.parentElement).toHaveClass('px-2');
     expect(wordmark).toHaveClass('flex', 'items-center', 'gap-2', 'px-3');
-    expect(screen.getByTestId('sidebar-biorouter-mark')).toHaveClass('h-4', 'w-4');
+    // The mark is the wordmark SVG, carrying the accessible name and sized to sit
+    // on the row (its own viewBox keeps the underline in proportion).
+    const brandMark = screen.getByTestId('sidebar-biorouter-mark');
+    expect(brandMark.tagName.toLowerCase()).toBe('svg');
+    expect(brandMark).toHaveAttribute('aria-label', 'BioRouter');
+    expect(brandMark).toHaveClass('h-[17px]', 'w-auto');
     expect(homeButton.closest('[data-sidebar="group"]')).toHaveClass('px-2');
     expect(homeButton).toHaveClass('gap-2', 'px-3');
     expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');
-    // The wordmark sits on the text baseline grid, not on `leading-none`.
-    expect(screen.getByText('Biorouter')).toHaveClass('text-sm', 'font-semibold', 'leading-5');
-    expect(screen.getByText('Biorouter')).not.toHaveClass('leading-none');
 
     expect(wordmark.compareDocumentPosition(newSessionButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING

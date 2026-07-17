@@ -20,7 +20,7 @@ import {
   SidebarGroup,
   SidebarGroupContent,
 } from '../ui/sidebar';
-import { BioRouterIcon } from '../icons/BioRouterIcon';
+import { BioRouterWordmark } from '../icons/BioRouterWordmark';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
@@ -257,19 +257,20 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         />
 
         <div className="shrink-0">
-          {/* Brand row. Insets are deliberately identical to a nav row
-              (px-2 group + px-3 row + 16px mark + gap-2), so the wordmark's left
-              edge lands on exactly the same 44px text edge as every nav label. */}
+          {/* Brand row. The wordmark IS the lockup now — "Bio" navy + "Router"
+              coral over the split underline (D-39), replacing the old mono glyph
+              + plain "Biorouter" text. Its left edge lands on the same 44px text
+              edge as every nav label. The component recolours navy -> UCSF teal
+              on a dark surface on its own. */}
           <div className="px-2 pt-2">
             <div
               data-testid="sidebar-biorouter-wordmark"
               className="flex h-8 items-center gap-2 px-3"
             >
-              <BioRouterIcon
+              <BioRouterWordmark
                 data-testid="sidebar-biorouter-mark"
-                className="h-4 w-4 shrink-0 text-accent-bar"
+                className="h-[17px] w-auto shrink-0"
               />
-              <span className="text-sm font-semibold leading-5">Biorouter</span>
               <EnvironmentBadge />
             </div>
           </div>

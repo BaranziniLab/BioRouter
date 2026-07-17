@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
-import WelcomeBioRouterLogo from './WelcomeBioRouterLogo';
+import { BioRouterMark } from './icons/BioRouterMark';
 import { toastService } from '../toasts';
 import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
 import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
@@ -11,7 +11,6 @@ import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
 import { createNavigationHandler } from '../utils/navigationUtils';
 
-import { BioRouter } from './icons';
 
 interface ProviderGuardProps {
   didSelectProvider: boolean;
@@ -138,7 +137,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   if (isChecking) {
     return (
       <div className="h-screen w-full bg-background-muted flex items-center justify-center">
-        <WelcomeBioRouterLogo />
+        <BioRouterMark className="h-20 w-20" />
       </div>
     );
   }
@@ -150,7 +149,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-8 sm:pb-6 sm:pt-10">
           <div className="max-w-2xl mx-auto">
             <div className="mb-3 sm:mb-4 biorouter-icon-animation origin-bottom-left">
-              <BioRouter className="size-8" />
+              <BioRouterMark className="size-8" />
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-text-default">
               Welcome to Biorouter

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type SVGProps } from 'react';
 import { useResolvedTheme } from '../../contexts/ThemeContext';
 
 /**
@@ -48,9 +48,7 @@ type Geo = {
   thick: number;
 };
 
-interface BioRouterWordmarkProps {
-  className?: string;
-  style?: CSSProperties;
+interface BioRouterWordmarkProps extends Omit<SVGProps<SVGSVGElement>, 'ref' | 'title'> {
   /** Force the dark (teal) treatment; defaults to the resolved app theme. */
   dark?: boolean;
   title?: string;
@@ -61,6 +59,7 @@ export function BioRouterWordmark({
   style,
   dark: darkProp,
   title = 'BioRouter',
+  ...rest
 }: BioRouterWordmarkProps) {
   const textRef = useRef<SVGTextElement>(null);
   const [geo, setGeo] = useState<Geo | null>(null);
@@ -70,7 +69,10 @@ export function BioRouterWordmark({
 
   const measure = () => {
     const t = textRef.current;
-    if (!t) return;
+    // getBBox does not exist in jsdom (it throws, not returns 0), so under unit
+    // tests the mark stays unmeasured — invisible, but its accessible name and
+    // text nodes still render. Real browsers always have it.
+    if (!t || typeof t.getBBox !== 'function') return;
     const bb = t.getBBox();
     if (bb.width === 0 || bb.height === 0) return;
     const cap = bb.height;
@@ -145,6 +147,7 @@ export function BioRouterWordmark({
 
   return (
     <svg
+      {...rest}
       className={className}
       style={style}
       viewBox={viewBox}
