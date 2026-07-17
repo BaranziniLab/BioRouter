@@ -60,7 +60,10 @@ export function BioRouterMark({
   const [geo, setGeo] = useState<Geo | null>(null);
   const resolved = useResolvedTheme();
   const dark = darkProp ?? resolved === 'dark';
-  const navy = dark ? TEAL : NAVY;
+  // Teal only replaces navy when the mark drops onto a dark surface. On the
+  // cream `plate` the letters always sit on a light ground, so they stay navy
+  // regardless of the app theme.
+  const navy = dark && !plate ? TEAL : NAVY;
 
   const measure = () => {
     const b = bRef.current;
@@ -108,9 +111,12 @@ export function BioRouterMark({
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
+  // Measure on mount and when `plate` changes (it affects the viewBox padding),
+  // plus once webfonts settle — never every render (see BioRouterWordmark: an
+  // unguarded per-render getBBox loops on sub-pixel jitter).
   useLayoutEffect(() => {
     measureRef.current();
-  });
+  }, [plate]);
   useEffect(() => {
     if (!document.fonts?.ready) return;
     let alive = true;

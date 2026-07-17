@@ -125,11 +125,14 @@ export function BioRouterWordmark({
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
-  // Measure synchronously after every layout (guarded above), and again once
-  // webfonts settle.
+  // Measure once on mount, and again once webfonts settle. NOT on every render:
+  // getBBox returns sub-pixel-different values between calls, so measuring in a
+  // dependency-less effect re-set state forever ("Maximum update depth
+  // exceeded"). The geometry is in viewBox units, so it never needs a re-measure
+  // on resize — the SVG scales itself.
   useLayoutEffect(() => {
     measureRef.current();
-  });
+  }, []);
   useEffect(() => {
     if (!document.fonts?.ready) return;
     let alive = true;
