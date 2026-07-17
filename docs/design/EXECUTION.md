@@ -12,11 +12,11 @@ read one document, read this one. It links out to the others.
 | [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) | The approved visual spec. Interactive: Current ⇄ Redesigned, light/dark, Highlight |
 | [`chat-groups-plan.md`](chat-groups-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
 | [`chat-groups-r7-spike.md`](chat-groups-r7-spike.md) | Proof that two KnowledgeProviders clobber each other through the server |
-| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-34; Part 6b is this pass; Part 7 is the drift register |
+| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-35; Part 6b is this pass; Part 7 is the drift register |
 
 ---
 
-## Where we stand: 15 of 20 steps done
+## Where we stand: 16 of 20 steps done
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -43,7 +43,7 @@ not quietly better.
 | 13 | **D-31** tab labels → sans — spec + code | ✅ done |
 | 14 | **D-33** the other half of D-31: the preview's chrome → sans | ✅ done |
 | 15 | **D-34** kill the "New Session" flash — a tab opens already named | ✅ done |
-| 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | 🔄 in flight |
+| 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | ✅ done (D-35) — 13/13 driven; preview-side ⌃Tab jsdom-only |
 | 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | 🔄 in flight |
 | 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | 🔄 in flight — **premise is being measured before anything is rebuilt** |
 | 19 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
@@ -54,6 +54,11 @@ not quietly better.
 ## Commits (every step reversible)
 
 ```
+c5676eae  fix(build)   land closeActiveTabRegistry — HEAD imported a module not in the tree
+84b0c5a4  test(tabs)   the chat side of the Ctrl+Tab arbitration
+fa725c70  design       D-35 — the tab model is a browser's, and so is the keyboard
+acef5969  fix(chat)    a submit fills the blank tab you typed in, not the leftmost
+4fc34bb3  fix(preview) Ctrl+Tab in the panel is scoped to focus, not to "is it open"
 2e5c9262  design       the other half of D-31 — the preview's chrome → sans (D-33)
 c9cff940  fix(tabs)    open a history chat already named, not "New Session" (D-34)
 d0257a6a  design(tabs) set tab labels in the app's own sans — the D-31 code
@@ -79,9 +84,9 @@ c6f7551e  docs         record the cohesion pass; drift register status column
 | Gate | State |
 |---|---|
 | `tsc --noEmit` | ✅ clean |
-| `eslint --max-warnings 0` | ✅ clean |
+| `lint:check` | ✅ clean (tsc + eslint 0 warnings + contrast). **Use `npm run lint:check`, not a bare `npx eslint .`** — the latter lints `.vite/build/main.js`, a build artifact, and reports thousands of phantom errors |
 | `check-contrast.mjs` | ✅ 140/140 (was 128 — +12 guard the code ground) |
-| `vitest run` | ✅ **1133/1133, 0 failures** — no timeout flags |
+| `vitest run` | ✅ **1181/1181 (147 files), 0 failures** — no timeout flags. **Run it on an idle machine; see below** |
 
 ---
 
@@ -114,6 +119,30 @@ shared test setup:
    a responsive hook died. It was being re-stubbed per file — I added one of
    those workarounds myself instead of fixing the root, which was the tell.
 
+### The suite is load-sensitive, and it fooled me
+
+I saw 17 failures and diagnosed a global ⌃Tab keydown listener swallowing
+Escape across the app. The cluster looked damning: menu dismissal, modal
+dismissal, focus restore. **I was wrong, and the way it was disproved is the
+lesson.**
+
+The failing *sets differed between runs*, every failing file *passed in
+isolation*, `ChatGroupsProvider` only mounts under `/pair` so most of those
+components never had the listener at all — and `uptime` showed **load average
+112–166 on 8 cores**, because I had two heavy agents driving Electron while a
+third ran the suite. At load 7: **1181/1181**. Exactly one of the 17 was real
+(the ArtifactViewer ⌃Tab contract, since fixed).
+
+Two things follow, and they generalise:
+
+1. **A coherent-looking story is not evidence.** My hypothesis explained the
+   cluster beautifully. It was still wrong. The cheap discriminator —
+   *does it fail in isolation?* — costs seconds and would have killed it
+   immediately. Run that before theorising.
+2. **A green suite under heavy load is not a pass, and a red one is not a
+   fail.** `asyncUtilTimeout: 5000` bought headroom, not immunity; at load 166
+   nothing saves you. **Check `uptime` before believing a suite result.**
+
 ### Bugs only the running app found
 
 1. **The logo was a solid square.** Vite inlines `glyph.svg` as a `data:` URI
@@ -131,8 +160,41 @@ shared test setup:
    correction arrive reliably instead of asking why a correction was needed for
    a string the sidebar was already rendering.
 
+### The browser tab model — ⌘T / ⌘N / ⌘W / ⌃Tab (D-35)
+
+**⌘T was already claimed by the menu**, exactly as ⌘W had been: "Go → New Chat"
+held `CmdOrCtrl+T` and merely navigated Home. That is now the *second* time a
+menu accelerator silently owned a key we wanted — a renderer listener could
+never have won either. Both go through menu + IPC. Worth generalising: **before
+binding any key in the renderer, dump the built menu.** `scripts/debug/menu-dump.mjs`
+does it, and it confirmed ⌃Tab is claimed by nothing, so ⌃Tab is an honest DOM
+listener.
+
+**Verified by driving, 13/13** (`scripts/debug/tab-shortcuts-probe.mjs`): ⌘T
+0→1→2 blank tabs each with a composer; a real ⌃Tab keypress moving active 1→0;
+⌃⇧Tab back; wrap; ⌃Tab from *inside* the composer (a browser switches tabs while
+you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 windows.
+
+**Two bugs this work found, neither of them the feature:**
+1. **The preview panel was hijacking ⌃Tab app-wide.** Its listener was gated on
+   `isOpen`, not focus — with a panel open it cycled *previews* from anywhere,
+   including the composer. **Its test dispatched at `window`, so it passed while
+   the bug was live** — theatre, and rewritten to dispatch from inside the panel.
+   Both listeners now consult one predicate (`isWithinArtifactPanel`), because
+   both listen on `window` in capture and capture order is merely mount order.
+2. **Empty-tab adoption filled the *leftmost* blank tab.** ⌘T makes two blanks a
+   keystroke away, so your first message landed in the wrong one.
+
 ### Still to verify by driving
 
+- **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
+  agent turn to produce an artifact. The arbitration is a pure
+  `event.target`/`closest()` question, which jsdom models faithfully and two
+  mutations caught — but the two listeners have not been proven to coexist in
+  the real app.
+- **Inherent, not a bug to fix:** with focus inside a preview's *sandboxed
+  iframe*, ⌃Tab does nothing — the keydown never reaches the parent document.
+  Clicking the panel's chrome restores it. Documented in `tabCycle.ts`.
 - **D-31 / D-33 (the fonts) and D-34 (the flash) are committed and unit-tested,
   but have NOT yet been confirmed in the running app.** jsdom applies no CSS, so
   the font change in particular is exactly the class of thing that "passes" in a
