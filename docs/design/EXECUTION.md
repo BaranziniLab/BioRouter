@@ -409,6 +409,41 @@ The same commit corrected `CHAT_MIN_WIDTH`'s comment, which still carried the
 68ch rationale D-36 records as false. **A comment repeating a justification we
 have formally documented as wrong is worse than no comment.**
 
+### Post-sweep: the one preview type the sweep couldn't see
+
+The step-20 sweep verified the artifact panel across 15 types — but **not the
+Jupyter notebook**, because the harness had no `.ipynb` fixture. That gap was
+the tell: the user suspected the notebook design was "new and maybe not
+implemented," and they were right in the way that matters. A fixture was added
+(`preview_fixture_dump.rs` now dumps a real differential-expression notebook
+exercising every branch: markdown, highlighted code, stdout, an HTML DataFrame,
+text/json results, an `image/png` plot, an error traceback, a raw cell), and on
+screen the notebook **had drifted**: a bespoke sticky header (`background-muted`
+blur, no path) on a `background-medium` floor that was **lighter than the panel
+in dark mode** — a visible seam, a different visual language from the md/csv/code
+previews. Fixed to the shared status strip (`NOTEBOOK` chip · mono path · mono
+cell count · sans kernel), cells on the panel ground. To stop it drifting again,
+`STRIP_LABEL/IDENT/META_CLASS` + `splitPathForStrip` were promoted from
+`ArtifactViewer` into the shared `artifactUtils`, imported by both. Verified on
+screen in light and dark for every cell/output type. `8630796b` (fixture),
+`b4aeea44` (strip). This is the third time on this branch a renderer that
+"passed" was wrong until someone looked — the notebook simply had no fixture to
+look at.
+
+### Logo studios (separate deliverables, not part of the cohesion pass)
+
+Interactive tuning tools, self-contained, published as artifacts:
+- **`logo-icon-studio.html`** — the square `BR` app-icon mark (D-38: center the
+  union of letters + underline; size as a share of the plate). The user finalized
+  it (mark 70%, offset −20, gap 2%); the assets shipped as
+  `ui/desktop/src/images/br-icon-{beige,transparent}.{svg,png}` (`ff4635a7`) —
+  **new files, not the live `icon.*`**, which stays the abstract glyph until the
+  swap is approved. Note: `sips` flattens font-weight, so the rasters are
+  browser-rendered (weight-faithful), not `sips`-rendered.
+- **`logo-wordmark-studio.html`** — the horizontal `BioRouter` wordmark (navy Bio
+  + coral Router, a short split underline **between the o and the R**, UCSF-teal
+  `#18A3AC` navy on dark surfaces). Awaiting the user's finalized export.
+
 ### Still to verify by driving
 
 - **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
