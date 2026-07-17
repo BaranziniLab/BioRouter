@@ -995,6 +995,26 @@
   box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
 }
 
+/* Active group. Only the FOCUSED group's active tab is the painted pill; an
+   unfocused group's active tab keeps a neutral fill and drops the pill shadow.
+   Spec: "Focus costs zero extra chrome" — the unfocused group is not decorated
+   with a marker, it simply stops claiming the emphasis. Two lit pills in one
+   window would be two answers to "where am I typing?".
+
+   The attribute is only ever 'false' on a strip that knows it is unfocused;
+   default (absent) reads as active, so a bare strip — and every strip in the
+   single-group case — is unchanged. */
+.br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
+  background: color-mix(in srgb, var(--background-default) 45%, transparent);
+  color: var(--text-muted);
+  font-weight: 400;
+  box-shadow: none;
+}
+
+.dark .br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
+  box-shadow: none;
+}
+
 /* Safari's divider: a hairline in the gap, not a border on the tab. */
 .br-tab + .br-tab::before {
   content: '';
@@ -1034,12 +1054,38 @@
    which the artifact panel has been writing into the DOM with NO CSS reading
    them — its drag visuals were Tailwind at the call site.
 
-   The dragged tab stays IN FLOW at reduced opacity; there is no cursor-following
-   ghost. That is a CSS contract, not a taste call: `.br-tab`'s divider is
-   adjacent-sibling based (`.br-tab + .br-tab::before`), so pulling the tab out
-   of the DOM re-flows every divider mid-drag. */
+   The source tab STAYS IN FLOW at 35%. That much is a CSS contract, not a taste
+   call: `.br-tab`'s divider is adjacent-sibling based (`.br-tab + .br-tab::before`),
+   so pulling the real tab out of the DOM re-flows every divider mid-drag.
+
+   The lifted tab under the cursor is therefore a SEPARATE element (.br-tab-ghost,
+   below) rather than the tab itself moving — which is what lets the spec's "the
+   tab lifts under the cursor at 2deg… the one it left dims to 35%" (card ∇) and
+   the divider contract both hold at once. An earlier revision of this comment
+   said there was no ghost at all; that was the reorder-only scope, where the tab
+   never leaves its own strip and a ghost buys nothing. Once a tab can be carried
+   to another group, dimming-in-place alone leaves the user dragging an invisible
+   nothing across the window. */
 .br-tab[data-dragging='true'] {
   opacity: 0.35;
+}
+
+/* The tab in the air. POINTER-EVENTS:NONE IS LOAD-BEARING — the ghost sits
+   directly under the cursor by construction, so if it took events
+   document.elementFromPoint would return the ghost on every move, the drop
+   target would be null for the whole drag, and nothing would ever land. See
+   dropZones.ts. */
+.br-tab-ghost {
+  position: fixed;
+  z-index: 400;
+  pointer-events: none;
+  /* Offset from the cursor so the label is readable rather than sitting under
+     the pointer, and translated so the grab feels like it holds the tab's edge. */
+  transform: translate(-16px, -50%) rotate(2deg);
+  background: var(--background-default);
+  color: var(--text-default);
+  box-shadow: var(--shadow-popover);
+  opacity: 0.95;
 }
 
 /* The insertion hairline — where the tab will land. */
@@ -1082,6 +1128,74 @@
   .br-tab__dot {
     animation: none;
   }
+}
+
+/* ============================================================
+   CHAT GROUPS · the split
+   ============================================================ */
+
+/* The landing half, tinted WHILE THE TAB IS STILL IN THE AIR (spec card ∇:
+   "you aim, then commit — never commit, then discover"). The inset is set
+   inline per zone; this rule owns everything that does not vary.
+
+   POINTER-EVENTS:NONE IS LOAD-BEARING, NOT COSMETIC. The zone is resolved with
+   document.elementFromPoint, which returns the TOPMOST element at the cursor. An
+   overlay that accepted events would become that element the instant it
+   appeared — the hit test would resolve to the half that tinted first and the
+   zone would LATCH there, so you could never aim at the other half and never
+   leave the group. Same rule, same reason, in ChatDropOverlay.tsx. */
+.br-dropzone {
+  position: absolute;
+  z-index: 300;
+  pointer-events: none;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-bar) 16%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent-bar) 55%, transparent);
+  outline-offset: -4px;
+  /* No opacity/inset transition: the tint must track the cursor exactly. A
+     120ms fade on `inset` would smear the overlay between halves as you cross
+     the midline and report a zone you are no longer aiming at. */
+}
+
+/* The grab handle between two panes. The visible line is 1px on the shared
+   hairline value (D-18); the HIT AREA is widened to 9px by the ::after below,
+   because a 1px pointer target is a dexterity test. */
+.br-group-splitter {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 1px;
+  background: var(--border-subtle);
+  cursor: row-resize;
+  transition: background-color var(--motion-fast) var(--ease-out);
+}
+
+.br-group-splitter--row {
+  cursor: col-resize;
+}
+
+/* Widen the hit area ACROSS the line, never along it: a `col` branch's splitter
+   is a horizontal rule, so it grows vertically; a `row` branch's is vertical, so
+   it grows horizontally. Overhang 4px each side => a 9px target for a 1px line.
+   Sits above the panes via the parent's z-index, so the grab works right up to
+   the boundary. */
+.br-group-splitter::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 0;
+  right: 0;
+}
+
+.br-group-splitter--row::after {
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.br-group-splitter:hover {
+  background: var(--accent-bar);
 }
 
 /* One floating-surface recipe (design.md §4.5 + D-18).

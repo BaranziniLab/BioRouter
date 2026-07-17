@@ -23,6 +23,7 @@ import { ChatType } from './types/chat';
 import Hub from './components/Hub';
 import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
+import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
 import SessionsView from './components/sessions/SessionsView';
@@ -63,9 +64,22 @@ const HubRouteWrapper = () => {
   return <Hub setView={setView} />;
 };
 
+/**
+ * TerminalDockProvider wraps /pair ONLY.
+ *
+ * It is what makes the dock global across chat groups — one dock below all of
+ * them, per the spec's "the panel stays global, spans all groups". Its scope is
+ * deliberately this route and no wider: every other surface (the Dashboard's N
+ * chat windows, /extensions' mini-chat, the Hub) has no provider, so
+ * useTerminalDock() returns null there and BaseChat keeps its own per-chat dock
+ * exactly as it does today. Hoisting this to the app root would silently give
+ * the Dashboard one shared terminal across all its windows.
+ */
 const PairRouteWrapper = ({ setChat }: { setChat: (chat: ChatType) => void }) => (
   <ChatGroupsProvider>
-    <PairRouteContent setChat={setChat} />
+    <TerminalDockProvider>
+      <PairRouteContent setChat={setChat} />
+    </TerminalDockProvider>
   </ChatGroupsProvider>
 );
 

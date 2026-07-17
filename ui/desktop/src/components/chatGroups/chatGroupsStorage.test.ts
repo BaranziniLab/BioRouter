@@ -111,3 +111,95 @@ describe('chatGroupsStorage', () => {
     expect(getWindowId()).not.toBe(first);
   });
 });
+
+describe('chatGroupsStorage — a persisted SPLIT round-trips and is reconciled', () => {
+  const KEY = () => chatGroupsStorageKey(getWindowId());
+
+  /** grp-1[s1] | grp-2[s2] */
+  function splitState(): ChatGroupsState {
+    const two = chatGroupsReducer(
+      chatGroupsReducer(createInitialChatGroupsState(), {
+        type: 'openTab',
+        payload: { sessionId: 's1', title: 's1' },
+      }),
+      { type: 'openTab', payload: { sessionId: 's2', title: 's2' } }
+    );
+    return chatGroupsReducer(two, {
+      type: 'moveTabToGroup',
+      tabId: two.groups['grp-1'].tabs[1].tabId,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+  }
+
+  it('round-trips a branch layout', () => {
+    const state = splitState();
+    saveChatGroups(state, getWindowId());
+    const loaded = loadChatGroups(getWindowId());
+    expect(loaded?.layout).toEqual(state.layout);
+    expect(Object.keys(loaded!.groups).sort()).toEqual(Object.keys(state.groups).sort());
+    expect(loaded?.activeGroupId).toBe(state.activeGroupId);
+  });
+
+  it('drops a leaf whose group emptied on load, instead of restoring a dead pane', () => {
+    // Every tab in grp-2 was an unbound sessionId:'' tab, so the tab prune
+    // empties it. At depth 0 an empty group is fine (BaseChat's empty state); in
+    // a SPLIT it would be a half-pane with no tabs and no way to fill it.
+    const state = splitState();
+    const [, secondId] = Object.keys(state.groups);
+    const wounded = {
+      ...state,
+      groups: {
+        ...state.groups,
+        [secondId]: {
+          ...state.groups[secondId],
+          tabs: state.groups[secondId].tabs.map((t) => ({ ...t, sessionId: '' })),
+        },
+      },
+    };
+    localStorage.setItem(KEY(), JSON.stringify(wounded));
+
+    const loaded = loadChatGroups(getWindowId());
+    expect(loaded?.layout).toEqual({ kind: 'leaf', groupId: 'grp-1' });
+    expect(loaded?.groups[secondId]).toBeUndefined();
+    expect(loaded?.activeGroupId).toBe('grp-1');
+  });
+
+  it('drops a leaf naming a group that is not in `groups` at all', () => {
+    const state = splitState();
+    const groups = { ...state.groups };
+    const [, secondId] = Object.keys(groups);
+    delete groups[secondId];
+    localStorage.setItem(KEY(), JSON.stringify({ ...state, groups, activeGroupId: 'grp-1' }));
+
+    const loaded = loadChatGroups(getWindowId());
+    expect(loaded?.layout).toEqual({ kind: 'leaf', groupId: 'grp-1' });
+    expect(loaded?.groups['grp-1']).toBeDefined();
+  });
+
+  it('rejects a branch with no children rather than white-screening on firstLeaf', () => {
+    const state = splitState();
+    localStorage.setItem(
+      KEY(),
+      JSON.stringify({ ...state, layout: { kind: 'branch', dir: 'row', children: [], sizes: [] } })
+    );
+    expect(loadChatGroups(getWindowId())).toBeNull();
+    // ...and the caller cold-boots rather than throwing.
+    expect(loadChatGroupsOrInitial(getWindowId()).layout).toEqual({
+      kind: 'leaf',
+      groupId: 'grp-1',
+    });
+  });
+
+  it('rejects a branch with a bogus direction', () => {
+    const state = splitState();
+    localStorage.setItem(
+      KEY(),
+      JSON.stringify({
+        ...state,
+        layout: { kind: 'branch', dir: 'diagonal', children: [{ kind: 'leaf', groupId: 'grp-1' }], sizes: [1] },
+      })
+    );
+    expect(loadChatGroups(getWindowId())).toBeNull();
+  });
+});

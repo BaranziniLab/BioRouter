@@ -92,6 +92,47 @@ describe('firstLeaf — the reserve is aimed by a TREE WALK, never an index', ()
     expect(firstLeaf(layout)).not.toBe('bottom');
   });
 
+  it('a DEPTH-2 tree: the reserve follows children[0] all the way down', () => {
+    // col[ row[a, b], c ] — the layout you get by splitting right, then
+    // splitting the whole thing down. `a` is the only strip against the traffic
+    // lights: `b` is to its right, `c` is below both.
+    //
+    // This is the shape that kills every shortcut. leafGroupIds(layout)[0] would
+    // happen to be right here, so that is not what makes the test useful — what
+    // makes it useful is `c`: a predicate that looked at the ROOT's first child
+    // and stopped (or that reserved for every leaf at x=0) gets `c` wrong,
+    // because `c` is at x=0 too and must NOT reserve.
+    const layout: GroupLayout = {
+      kind: 'branch',
+      dir: 'col',
+      sizes: [0.5, 0.5],
+      children: [
+        {
+          kind: 'branch',
+          dir: 'row',
+          sizes: [0.5, 0.5],
+          children: [
+            { kind: 'leaf', groupId: 'a' },
+            { kind: 'leaf', groupId: 'b' },
+          ],
+        },
+        { kind: 'leaf', groupId: 'c' },
+      ],
+    };
+    expect(firstLeaf(layout)).toBe('a');
+    expect(firstLeaf(layout)).not.toBe('b');
+    // `c` sits at x=0, exactly like `a`. It must not reserve.
+    expect(firstLeaf(layout)).not.toBe('c');
+  });
+
+  it('a branch with no children throws rather than silently reserving nothing', () => {
+    // A corrupt or half-written persisted tree must be LOUD here. Returning a
+    // sentinel would mean no strip matches the reserved id and the reserve
+    // silently never applies — which is the exact failure mode card Pi is about.
+    const layout: GroupLayout = { kind: 'branch', dir: 'row', sizes: [], children: [] };
+    expect(() => firstLeaf(layout)).toThrow(/no children/);
+  });
+
   it('renders the reserve for the first leaf and NOT for its sibling', () => {
     // End-to-end through the component: the shell aims the reserve with
     // firstLeaf, so simulate both groups' strips and assert only one reserves.

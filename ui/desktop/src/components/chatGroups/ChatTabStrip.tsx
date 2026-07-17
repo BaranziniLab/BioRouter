@@ -2,12 +2,23 @@ import { CSSProperties, useEffect, useRef } from 'react';
 import { MessageSquare, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
-import { ChatTab, ChatTabId } from './chatGroupsTypes';
+import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { useTabDragReorder } from './useTabDragReorder';
+import { useChatTabDrag } from './ChatTabDragContext';
 
 export interface ChatTabStripProps {
   tabs: ChatTab[];
   activeTabId: ChatTabId | null;
+  /** The group this strip belongs to. Rides along with each drag gesture so the
+   *  shared hook can tell a same-strip reorder from a cross-group move. */
+  groupId?: ChatGroupId;
+  /**
+   * False when another group has focus. Only the FOCUSED group's active tab is
+   * the painted pill; an inactive group's active tab keeps a neutral fill and no
+   * pill shadow (spec: "Focus costs zero extra chrome"). Defaults to true so the
+   * single-group case — and the strip's own tests — are unchanged.
+   */
+  groupActive?: boolean;
   /** Session ids with a live turn — from useRunningChats(). */
   runningSessionIds: readonly string[];
   onSelect: (tabId: ChatTabId) => void;
@@ -27,6 +38,8 @@ export interface ChatTabStripProps {
 export function ChatTabStrip({
   tabs,
   activeTabId,
+  groupId,
+  groupActive = true,
   runningSessionIds,
   onSelect,
   onPin,
@@ -36,7 +49,13 @@ export function ChatTabStrip({
   isCompactSidebarOverlayOpen,
   endSlot,
 }: ChatTabStripProps) {
-  const { draggedTabId, dragOverTabId, beginDrag, guardClick } = useTabDragReorder({ onReorder });
+  // The shell provides ONE gesture for every strip, because a cross-group drag
+  // must tint a group this strip does not render. Bare (as in this component's
+  // own tests) the strip falls back to a private, reorder-only instance — which
+  // is exactly the Stage-2 behaviour, unchanged.
+  const sharedDrag = useChatTabDrag();
+  const ownDrag = useTabDragReorder({ onReorder });
+  const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
 
   // Keep the focused tab in view as the strip scrolls past its shrink floor.
@@ -66,6 +85,12 @@ export function ChatTabStrip({
       role="tablist"
       aria-label="Open chats"
       data-testid="chat-tab-strip"
+      // The drag hit-tests THIS before it hit-tests the group's zones: a strip
+      // sits entirely inside its group's `top` edge band, so routing it through
+      // zoneFromRect would read every in-strip drag as "split upward" and
+      // reorder would be unreachable. See useTabDragReorder's move handler.
+      data-tab-strip-group={groupId}
+      data-group-active={groupActive ? 'true' : 'false'}
       className="br-tabstrip br-tabstrip--inline h-full min-w-0 flex-1"
       // The strip lives INSIDE BaseChat's 52px WebkitAppRegion:'drag' header.
       // R1 was measured with real OS input through CDP: a pointer drag on a
@@ -96,7 +121,7 @@ export function ChatTabStrip({
               tabIndex={isActive ? 0 : -1}
               title={tab.title}
               className="flex min-w-0 flex-1 items-center gap-[7px] bg-transparent text-left"
-              onPointerDown={(event) => beginDrag(event, tab.tabId)}
+              onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
               onKeyDown={(event) => handleKeyDown(event, index)}
               onClick={() => {
                 // Swallow the synthetic click that ends a drag — otherwise

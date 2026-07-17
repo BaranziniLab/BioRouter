@@ -58,6 +58,7 @@ import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
+import { useTerminalDock } from '../contexts/TerminalDockContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
@@ -630,6 +631,22 @@ interface BaseChatProps {
    * than one BaseChat pass false for every chat that isn't focused. */
   allowWindowResize?: boolean;
   /**
+   * Whether this chat may render its artifact preview panel (default true).
+   *
+   * "The preview panel follows the ACTIVE group" (spec §4). With N groups
+   * mounted, every background group would otherwise render its own panel and the
+   * window would fill with previews of chats nobody is looking at. Callers that
+   * mount more than one BaseChat pass true for the focused chat only.
+   *
+   * This GATES THE RENDER, it does not clear the state: `presentedArtifact` and
+   * the panel's tab stack live on untouched while the group is in the
+   * background, so switching back restores the panel exactly as it was. That is
+   * the whole reason the panel stays per-pane instead of being hoisted to a
+   * window-level surface keyed by session — a hoist drops the artifact tab stack
+   * on every group switch, and that regression is not acceptable.
+   */
+  artifactPanelEnabled?: boolean;
+  /**
    * Renders the left-hand content of the existing 52px session header in place
    * of the SessionNamePill. The chat tab strip comes through HERE rather than
    * being mounted above BaseChat, and that is deliberate:
@@ -665,6 +682,7 @@ function BaseChatContent({
   onLatestMessage,
   focusTrigger,
   allowWindowResize = true,
+  artifactPanelEnabled = true,
   renderSessionTitle,
 }: BaseChatProps) {
   const location = useLocation();
@@ -693,8 +711,28 @@ function BaseChatContent({
   const [artifactPanelWidth, setArtifactPanelWidth] = useState<number | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
+
+  // ---- Terminal dock seam -------------------------------------------------
+  // With /pair's shell mounted there is ONE dock for every chat group, and this
+  // chat drives it through the context. Everywhere else (Dashboard, /extensions,
+  // the Hub) there is no provider, useTerminalDock() returns null, and BaseChat
+  // keeps its own local dock exactly as before — same state, same render site,
+  // byte-identical behaviour.
+  const terminalDock = useTerminalDock();
+  const [localTerminalDockOpen, setLocalTerminalDockOpen] = useState(false);
+  const isTerminalDockOpen = terminalDock ? terminalDock.isOpen : localTerminalDockOpen;
+  // sessionWorkingDir is computed far below (it needs `session`), but the setter
+  // must be stable and defined here. A ref, assigned at the definition site, is
+  // the seam: the dock only ever reads a cwd at the instant it opens.
+  const sessionWorkingDirRef = useRef<string | undefined>(undefined);
+  const setIsTerminalDockOpen = useCallback(
+    (next: boolean) => {
+      if (terminalDock) terminalDock.setOpen(next, sessionWorkingDirRef.current);
+      else setLocalTerminalDockOpen(next);
+    },
+    [terminalDock]
+  );
   const splitPaneRef = useRef<HTMLDivElement>(null);
   const artifactPanelCloseTimerRef = useRef<number | null>(null);
   const artifactPanelOpenFrameRef = useRef<number | null>(null);
@@ -765,7 +803,9 @@ function BaseChatContent({
     artifactPanelWidthUserSetRef.current = false;
     setDiagnosticsOpen(false);
     setReviewOpen(false);
-    setIsTerminalDockOpen(false);
+    // Only the LOCAL dock. The global dock is shared by every group, so one
+    // group changing session must not close the terminal another group is using.
+    setLocalTerminalDockOpen(false);
     setShowEditWorkflowModal(false);
     knownArtifactKeysRef.current.clear();
     artifactInitialScanDoneRef.current = false;
@@ -1275,6 +1315,9 @@ function BaseChatContent({
 
   const toolCount = useToolCount(sessionId);
   const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+  // Feed the terminal-dock seam declared at the top of this component. Assigned
+  // on every render; only ever READ at the instant the dock opens.
+  sessionWorkingDirRef.current = sessionWorkingDir;
   // The working dir anchors relative paths a tool call names (`results/plot.png`).
   const sessionArtifacts = useMemo(
     () => collectArtifactsFromMessages(messages, sessionWorkingDir),
@@ -1462,7 +1505,7 @@ function BaseChatContent({
   };
 
   const handleOpenTerminal = () => {
-    setIsTerminalDockOpen((open) => !open);
+    setIsTerminalDockOpen(!isTerminalDockOpen);
   };
 
   const handleWorkflowReviewAction = () => {
@@ -1882,7 +1925,7 @@ function BaseChatContent({
             )}
           </div>
 
-          {presentedArtifact && (
+          {presentedArtifact && artifactPanelEnabled && (
             <ArtifactViewer
               artifact={presentedArtifact}
               isOpen={isArtifactPanelOpen}
@@ -1907,11 +1950,17 @@ function BaseChatContent({
             />
           )}
         </div>
-        <InAppTerminalDock
-          open={isTerminalDockOpen}
-          workingDir={sessionWorkingDir}
-          onClose={() => setIsTerminalDockOpen(false)}
-        />
+        {/* The global dock renders ONCE in the shell, below all the groups. When
+            it exists this chat must not render a second one — N groups would
+            mean N docks stacked inside N panes, which is the opposite of "the
+            panel stays global, spans all groups". */}
+        {!terminalDock && (
+          <InAppTerminalDock
+            open={isTerminalDockOpen}
+            workingDir={sessionWorkingDir}
+            onClose={() => setIsTerminalDockOpen(false)}
+          />
+        )}
       </MainPanelLayout>
 
       {workflow && (

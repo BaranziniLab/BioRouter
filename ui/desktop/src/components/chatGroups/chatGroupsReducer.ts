@@ -1,5 +1,20 @@
 import { UserAttachment } from '../../types/message';
-import { ChatGroupsState, ChatGroup, ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
+import {
+  ChatGroupsState,
+  ChatGroup,
+  ChatTab,
+  ChatTabId,
+  ChatGroupId,
+  firstLeaf,
+} from './chatGroupsTypes';
+import {
+  MAX_GROUPS,
+  removeLeaf,
+  setSizesAtPath,
+  splitLeaf,
+  groupCountOf,
+} from './chatGroupsLayout';
+import { DropZone } from './dropZones';
 
 export interface OpenTabPayload {
   sessionId: string;
@@ -24,7 +39,15 @@ export type ChatGroupsAction =
   | { type: 'renameTab'; sessionId: string; title: string; userSetName?: boolean }
   | { type: 'bindSession'; tabId: ChatTabId; sessionId: string }
   | { type: 'consumePending'; tabId: ChatTabId }
-  | { type: 'setActiveGroup'; groupId: ChatGroupId };
+  | { type: 'setActiveGroup'; groupId: ChatGroupId }
+  /**
+   * The drop. `zone: 'center'` MOVES the tab into targetGroupId; an edge SPLITS
+   * targetGroupId and moves the tab into the new half. One action for both,
+   * because they are one gesture — the user aims and lets go, and the zone under
+   * the cursor at that moment is the whole difference.
+   */
+  | { type: 'moveTabToGroup'; tabId: ChatTabId; targetGroupId: ChatGroupId; zone: DropZone }
+  | { type: 'resizeBranch'; path: readonly number[]; sizes: readonly number[] };
 
 export const DEFAULT_TAB_TITLE = 'New Session';
 
@@ -163,6 +186,35 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
   };
 }
 
+/**
+ * Drop a group that has just lost its last tab — but ONLY when it is not the
+ * last group.
+ *
+ * The single-group case is a deliberate exception: closing the last tab of the
+ * last group leaves an EMPTY group that renders BaseChat's own empty state. It
+ * does not navigate away and it does not delete the session. That is the Stage-2
+ * invariant and it must survive the split unchanged, which is why this is gated
+ * on the group COUNT rather than on "is there a branch".
+ */
+function collapseEmptyGroup(state: ChatGroupsState, groupId: ChatGroupId): ChatGroupsState {
+  const group = state.groups[groupId];
+  if (!group || group.tabs.length > 0) return state;
+  if (groupCountOf(state.layout) <= 1) return state;
+
+  const layout = removeLeaf(state.layout, groupId);
+  // removeLeaf returning null means we just removed the only leaf, which the
+  // count guard above already excluded. Refuse rather than produce a null tree.
+  if (!layout) return state;
+
+  const groups = { ...state.groups };
+  delete groups[groupId];
+
+  // activeGroupId must ALWAYS name a live leaf. If the group that just died was
+  // the active one, focus falls to the first surviving leaf.
+  const activeGroupId = groups[state.activeGroupId] ? state.activeGroupId : firstLeaf(layout);
+  return { ...state, layout, groups, activeGroupId };
+}
+
 function closeTab(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
   const hit = findTabGroup(state, (t) => t.tabId === tabId);
   if (!hit) return state;
@@ -174,13 +226,98 @@ function closeTab(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
   // Successor = Math.min(closingIndex, remaining.length - 1) — identical to
   // ArtifactViewer's, so the two tab surfaces cannot drift.
   if (group.activeTabId !== tabId) {
-    return withGroup(state, group.groupId, { ...group, tabs });
+    return collapseEmptyGroup(withGroup(state, group.groupId, { ...group, tabs }), group.groupId);
   }
   const successor = tabs[Math.min(closingIndex, tabs.length - 1)] ?? null;
   // Closing the last tab of the last group leaves an EMPTY group. It renders
   // BaseChat's existing empty state. It does NOT navigate away, and it does NOT
   // delete the session — there is no createdHere here, by construction.
-  return withGroup(state, group.groupId, { ...group, tabs, activeTabId: successor?.tabId ?? null });
+  //
+  // In a SPLIT, closing the last tab of a non-last group collapses that group
+  // out of the tree instead: an empty half of a split is a dead pane the user
+  // has to close twice.
+  return collapseEmptyGroup(
+    withGroup(state, group.groupId, { ...group, tabs, activeTabId: successor?.tabId ?? null }),
+    group.groupId
+  );
+}
+
+function moveTabToGroup(
+  state: ChatGroupsState,
+  action: ChatGroupsAction & { type: 'moveTabToGroup' }
+): ChatGroupsState {
+  const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
+  if (!hit) return state;
+  const source = hit.group;
+  const target = state.groups[action.targetGroupId];
+  if (!target) return state;
+
+  // Narrowed once, here, rather than testing `zone !== 'center'` at each use:
+  // splitLeaf's parameter EXCLUDES 'center' (there is no such thing as a centre
+  // split), and a boolean flag does not carry that proof to the call site.
+  const splitZone = action.zone === 'center' ? null : action.zone;
+  const isSplit = splitZone !== null;
+
+  // Dropping a tab into the centre of its own group is a no-op, not a move — the
+  // reorder gesture owns that case. And splitting a group off a tab that is that
+  // group's ONLY tab would create a fresh group and leave an empty one behind,
+  // i.e. a lot of motion to arrive back where you started.
+  if (source.groupId === action.targetGroupId) {
+    if (!isSplit) return state;
+    if (source.tabs.length <= 1) return state;
+  }
+
+  if (isSplit && groupCountOf(state.layout) >= MAX_GROUPS) return state;
+
+  const remaining = source.tabs.filter((t) => t.tabId !== action.tabId);
+  const closingIndex = source.tabs.findIndex((t) => t.tabId === action.tabId);
+  const sourceActiveTabId =
+    source.activeTabId === action.tabId
+      ? (remaining[Math.min(closingIndex, remaining.length - 1)]?.tabId ?? null)
+      : source.activeTabId;
+
+  let next: ChatGroupsState = {
+    ...state,
+    groups: {
+      ...state.groups,
+      [source.groupId]: { ...source, tabs: remaining, activeTabId: sourceActiveTabId },
+    },
+  };
+
+  let landingGroupId = action.targetGroupId;
+
+  if (splitZone) {
+    landingGroupId = `grp-${state.seq + 1}`;
+    next = {
+      ...next,
+      seq: state.seq + 1,
+      layout: splitLeaf(next.layout, action.targetGroupId, landingGroupId, splitZone),
+      groups: {
+        ...next.groups,
+        [landingGroupId]: { groupId: landingGroupId, tabs: [], activeTabId: null },
+      },
+    };
+  }
+
+  // Re-read the landing group from `next`: when the target IS the source (a
+  // split off one's own group) the source's tab list has already been rewritten
+  // above, and appending to the stale `target` would resurrect the moved tab.
+  const landing = next.groups[landingGroupId];
+  next = {
+    ...next,
+    groups: {
+      ...next.groups,
+      [landingGroupId]: {
+        ...landing,
+        tabs: [...landing.tabs, hit.tab],
+        activeTabId: hit.tab.tabId,
+      },
+    },
+    // The group you dropped into is the one you are now looking at.
+    activeGroupId: landingGroupId,
+  };
+
+  return collapseEmptyGroup(next, source.groupId);
 }
 
 export function chatGroupsReducer(
@@ -272,7 +409,16 @@ export function chatGroupsReducer(
     case 'setActiveGroup':
       // activeGroupId must ALWAYS name a live leaf.
       if (!state.groups[action.groupId]) return state;
+      if (state.activeGroupId === action.groupId) return state;
       return { ...state, activeGroupId: action.groupId };
+
+    case 'moveTabToGroup':
+      return moveTabToGroup(state, action);
+
+    case 'resizeBranch': {
+      const layout = setSizesAtPath(state.layout, action.path, action.sizes);
+      return layout === state.layout ? state : { ...state, layout };
+    }
 
     default:
       return state;

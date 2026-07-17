@@ -1,5 +1,6 @@
-import { ChatGroupsState, ChatGroup } from './chatGroupsTypes';
+import { ChatGroupsState, ChatGroup, GroupLayout, firstLeaf, leafGroupIds } from './chatGroupsTypes';
 import { createInitialChatGroupsState } from './chatGroupsReducer';
+import { removeLeaf } from './chatGroupsLayout';
 
 export const CHAT_GROUPS_KEY_PREFIX = 'biorouter.chatgroups.v1';
 const WINDOW_ID_KEY = 'biorouter.chatgroups.windowId';
@@ -65,11 +66,33 @@ export function saveChatGroups(state: ChatGroupsState, windowId: string): void {
   }
 }
 
+/**
+ * Validate the layout TREE, not just "layout is an object".
+ *
+ * Stage 2 only ever persisted a depth-0 leaf, so a shallow check was honest
+ * then. A persisted branch is a recursive structure that arrives from
+ * localStorage — i.e. from a previous app version, a hand-edited blob, or a
+ * half-written record — and every one of those can produce a branch with no
+ * children, which firstLeaf() throws on. A load path that throws white-screens
+ * /pair with no way back except clearing storage by hand.
+ */
+function isValidLayout(value: unknown): value is GroupLayout {
+  if (!value || typeof value !== 'object') return false;
+  const node = value as Partial<GroupLayout>;
+  if (node.kind === 'leaf') return typeof (node as { groupId?: unknown }).groupId === 'string';
+  if (node.kind !== 'branch') return false;
+  const branch = node as Extract<GroupLayout, { kind: 'branch' }>;
+  if (branch.dir !== 'row' && branch.dir !== 'col') return false;
+  if (!Array.isArray(branch.children) || branch.children.length === 0) return false;
+  if (!Array.isArray(branch.sizes)) return false;
+  return branch.children.every(isValidLayout);
+}
+
 function isValid(value: unknown): value is ChatGroupsState {
   if (!value || typeof value !== 'object') return false;
   const state = value as Partial<ChatGroupsState>;
   if (state.version !== 1) return false;
-  if (!state.layout || typeof state.layout !== 'object') return false;
+  if (!isValidLayout(state.layout)) return false;
   if (!state.groups || typeof state.groups !== 'object') return false;
   if (typeof state.activeGroupId !== 'string') return false;
   if (typeof state.seq !== 'number') return false;
@@ -96,11 +119,55 @@ export function loadChatGroups(windowId: string): ChatGroupsState | null {
         : (tabs[0]?.tabId ?? null);
       groups[id] = { ...group, tabs, activeTabId };
     }
-    if (!groups[parsed.activeGroupId]) return null;
-    return { ...parsed, groups };
+    return reconcile({ ...parsed, groups });
   } catch {
     return null;
   }
+}
+
+/**
+ * Make a restored SPLIT consistent with the groups that actually survived load.
+ *
+ * The tab prune above can empty a group (every one of its tabs was an unbound
+ * `sessionId: ''`). At depth 0 that is fine and intended — one empty group
+ * renders BaseChat's empty state. In a split it is not: the layout would still
+ * hold a leaf for it and the user would reopen the app to a dead half-pane with
+ * no tabs and no way to fill it, next to their real chat.
+ *
+ * Symmetrically, a leaf naming a group that is not in `groups` at all (a
+ * truncated or hand-edited blob) would render nothing at all, and a group not
+ * named by any leaf is unreachable state that persists forever.
+ *
+ * Returns null — the cold-boot path — only if nothing survives.
+ */
+function reconcile(state: ChatGroupsState): ChatGroupsState | null {
+  let layout: GroupLayout | null = state.layout;
+
+  const dropIf = (predicate: (groupId: string) => boolean) => {
+    for (const groupId of leafGroupIds(layout as GroupLayout)) {
+      if (!predicate(groupId)) continue;
+      // Never remove the last leaf: one empty group is a valid, intended state.
+      if (leafGroupIds(layout as GroupLayout).length <= 1) break;
+      layout = removeLeaf(layout as GroupLayout, groupId);
+      if (!layout) return;
+    }
+  };
+
+  dropIf((groupId) => !state.groups[groupId]);
+  if (!layout) return null;
+  dropIf((groupId) => (state.groups[groupId]?.tabs.length ?? 0) === 0);
+  if (!layout) return null;
+
+  const liveLeaves = leafGroupIds(layout);
+  // A single surviving leaf whose group is missing entirely is unrecoverable.
+  if (!state.groups[liveLeaves[0]]) return null;
+
+  // Drop groups no leaf names — otherwise they accumulate in storage forever.
+  const groups: Record<string, ChatGroup> = {};
+  for (const groupId of liveLeaves) groups[groupId] = state.groups[groupId];
+
+  const activeGroupId = groups[state.activeGroupId] ? state.activeGroupId : firstLeaf(layout);
+  return { ...state, layout, groups, activeGroupId };
 }
 
 export function loadChatGroupsOrInitial(windowId: string): ChatGroupsState {

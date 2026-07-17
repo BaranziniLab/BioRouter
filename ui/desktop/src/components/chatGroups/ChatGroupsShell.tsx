@@ -1,8 +1,16 @@
-import { useCallback, useMemo, useState, useEffect, ReactElement } from 'react';
+import { useCallback, useMemo, useState, useEffect, useRef, Fragment, ReactElement } from 'react';
 import BaseChat from '../BaseChat';
+import InAppTerminalDock from '../InAppTerminalDock';
 import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
+import { useTerminalDock } from '../../contexts/TerminalDockContext';
 import { ChatTabStrip } from './ChatTabStrip';
+import { ChatGroupSplitter } from './ChatGroupSplitter';
+import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
+import { ChatTabDragProvider } from './ChatTabDragContext';
+import { useTabDragReorder } from './useTabDragReorder';
+import { DropTarget } from './dropZones';
+import { groupCountOf } from './chatGroupsLayout';
 import { firstLeaf, GroupLayout, ChatGroupId } from './chatGroupsTypes';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
@@ -14,29 +22,40 @@ interface ChatGroupsShellProps {
   onChatChange: (chat: ChatType) => void;
 }
 
+interface RenderGroupArgs {
+  groupId: ChatGroupId;
+}
+
 /**
- * Renders the layout tree. TODAY IT RENDERS ONLY `leaf`.
+ * Renders the layout TREE.
  *
- * The tree type is wider than this renderer on purpose: it ships now so the
- * split is not a state migration later. A `branch` node cannot be produced by
- * any action the reducer exposes today, so reaching this throw means someone
- * wired splitting without wiring its renderer — which must be loud, not a blank
- * pane.
+ * `path` addresses the branch being rendered, from the root: [] is the root,
+ * [1, 0] is the first child of the second child. The resize action is
+ * path-addressed for the same reason firstLeaf is a walk and not an index — a
+ * position in a flattened list means a different node the moment the tree
+ * reshapes, and a splitter that resizes the wrong branch is the kind of bug that
+ * only shows up at depth 2.
  */
-function renderLayout(layout: GroupLayout, renderGroup: (groupId: ChatGroupId) => ReactElement) {
-  if (layout.kind === 'leaf') return renderGroup(layout.groupId);
-  if (import.meta.env.DEV) {
-    throw new Error(
-      'ChatGroupsShell: branch layouts are not rendered yet. The split is Stage 3; ' +
-        'the layout tree exists in the state model but only `leaf` renders today.'
-    );
-  }
-  // Production degrades to the first leaf rather than white-screening.
-  return renderGroup(firstLeaf(layout));
+function renderLayout(
+  layout: GroupLayout,
+  path: readonly number[],
+  renderGroup: (args: RenderGroupArgs) => ReactElement,
+  renderBranch: (
+    layout: Extract<GroupLayout, { kind: 'branch' }>,
+    path: readonly number[],
+    children: ReactElement[]
+  ) => ReactElement
+): ReactElement {
+  if (layout.kind === 'leaf') return renderGroup({ groupId: layout.groupId });
+  const children = layout.children.map((child, index) =>
+    renderLayout(child, [...path, index], renderGroup, renderBranch)
+  );
+  return renderBranch(layout, path, children);
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
+  const terminalDock = useTerminalDock();
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -58,17 +77,17 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   // firstLeaf is a TREE WALK, never an array index. In a root `col` split both
   // strips sit at x=0 but only the TOP one collides with the traffic lights, so
   // an index would reserve the gap for the wrong strip — silently.
-  const reservedGroupId = useMemo(
-    () => (groups ? firstLeaf(groups.state.layout) : null),
-    [groups]
-  );
+  const reservedGroupId = useMemo(() => (groups ? firstLeaf(groups.state.layout) : null), [groups]);
 
   const dispatch = groups?.dispatch;
   const handleSelect = useCallback(
     (tabId: string) => dispatch?.({ type: 'activateTab', tabId }),
     [dispatch]
   );
-  const handlePin = useCallback((tabId: string) => dispatch?.({ type: 'pinTab', tabId }), [dispatch]);
+  const handlePin = useCallback(
+    (tabId: string) => dispatch?.({ type: 'pinTab', tabId }),
+    [dispatch]
+  );
   const handleClose = useCallback(
     (tabId: string) => dispatch?.({ type: 'closeTab', tabId }),
     [dispatch]
@@ -78,6 +97,22 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
       dispatch?.({ type: 'reorderTab', draggedTabId, targetTabId }),
     [dispatch]
   );
+  const handleDropToGroup = useCallback(
+    (tabId: string, target: DropTarget) =>
+      dispatch?.({
+        type: 'moveTabToGroup',
+        tabId,
+        targetGroupId: target.groupId,
+        zone: target.zone,
+      }),
+    [dispatch]
+  );
+
+  // ONE gesture for every strip: the tint has to appear over the TARGET group,
+  // which is a sibling of the source strip, so the drag cannot live inside a
+  // strip. Handed down through ChatTabDragProvider.
+  const drag = useTabDragReorder({ onReorder: handleReorder, onDropToGroup: handleDropToGroup });
+
   /**
    * Mirror the loaded session's real name onto its tab.
    *
@@ -102,17 +137,32 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     [dispatch]
   );
 
-  if (!groups) return null;
+  const activeGroupId = groups?.state.activeGroupId;
+  const handleFocusGroup = useCallback(
+    (groupId: ChatGroupId) => {
+      if (groupId === activeGroupId) return;
+      dispatch?.({ type: 'setActiveGroup', groupId });
+    },
+    [dispatch, activeGroupId]
+  );
 
-  const renderGroup = (groupId: ChatGroupId) => {
+  const layout = groups?.state.layout;
+  const groupCount = useMemo(() => (layout ? groupCountOf(layout) : 1), [layout]);
+
+  if (!groups || !layout) return null;
+
+  const renderGroup = ({ groupId }: RenderGroupArgs) => {
     const group = groups.state.groups[groupId];
     if (!group) return <div key={groupId} />;
     const activeTab = group.tabs.find((t) => t.tabId === group.activeTabId);
+    const isActiveGroup = groupId === groups.state.activeGroupId;
 
     const strip = (
       <ChatTabStrip
         tabs={group.tabs}
         activeTabId={group.activeTabId}
+        groupId={groupId}
+        groupActive={isActiveGroup}
         runningSessionIds={groups.runningSessionIds}
         onSelect={handleSelect}
         onPin={handlePin}
@@ -124,8 +174,13 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     );
 
     return (
-      <ChatTabHost
+      <ChatGroupPane
         key={groupId}
+        groupId={groupId}
+        isActiveGroup={isActiveGroup}
+        groupCount={groupCount}
+        dropZone={drag.dropTarget?.groupId === groupId ? drag.dropTarget.zone : null}
+        onFocusGroup={handleFocusGroup}
         // The tab is the chat's identity: keying on tabId (not sessionId) keeps
         // a tab's mount stable across a session bind.
         tabKey={activeTab?.tabId ?? `${groupId}-empty`}
@@ -139,10 +194,109 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     );
   };
 
-  return renderLayout(groups.state.layout, renderGroup);
+  const tree = renderLayout(layout, [], renderGroup, (branch, path, children) => (
+    <ChatGroupBranch
+      key={`branch-${path.join('-')}`}
+      branch={branch}
+      path={path}
+      onResize={(sizes) => dispatch?.({ type: 'resizeBranch', path, sizes })}
+    >
+      {children}
+    </ChatGroupBranch>
+  ));
+
+  return (
+    <ChatTabDragProvider value={drag}>
+      <div className="flex h-full min-h-0 w-full flex-col">
+        <div className="flex min-h-0 flex-1">{tree}</div>
+        {/* The dock is GLOBAL: one, below every group, spanning them all — not
+            one per pane. It reads its open state and its frozen cwd from the
+            context; see TerminalDockContext for why the cwd must not track the
+            active group. */}
+        {terminalDock && (
+          <InAppTerminalDock
+            open={terminalDock.isOpen}
+            workingDir={terminalDock.workingDir}
+            onClose={() => terminalDock.setOpen(false)}
+          />
+        )}
+      </div>
+      {/* The ghost renders at the SHELL, not in the source strip: it is fixed to
+          the viewport and must not be clipped by the strip's overflow-x:auto. */}
+      {drag.ghost && <ChatTabGhost ghost={drag.ghost} />}
+    </ChatTabDragProvider>
+  );
 }
 
-interface ChatTabHostProps {
+interface ChatGroupBranchProps {
+  branch: Extract<GroupLayout, { kind: 'branch' }>;
+  path: readonly number[];
+  onResize: (sizes: number[]) => void;
+  children: ReactElement[];
+}
+
+function ChatGroupBranch({ branch, onResize, children }: ChatGroupBranchProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Sizes are normalized on the branch by the reducer, but a persisted or
+  // mid-migration tree can arrive with a sizes array that disagrees with the
+  // children count. Falling back to an even split keeps a bad blob renderable
+  // instead of collapsing panes to flexBasis: undefined.
+  const sizes =
+    branch.sizes.length === children.length
+      ? branch.sizes
+      : children.map(() => 1 / children.length);
+
+  return (
+    <div
+      ref={containerRef}
+      data-testid="chat-group-branch"
+      data-dir={branch.dir}
+      className={
+        branch.dir === 'row'
+          ? 'flex min-h-0 min-w-0 flex-1'
+          : 'flex min-h-0 min-w-0 flex-1 flex-col'
+      }
+    >
+      {children.map((child, index) => (
+        <Fragment key={child.key ?? index}>
+          {/* Splitter i lives between pane i and pane i+1. */}
+          {index > 0 && (
+            <ChatGroupSplitter
+              dir={branch.dir}
+              index={index - 1}
+              sizes={sizes}
+              containerRef={containerRef}
+              onResize={onResize}
+            />
+          )}
+          <div
+            className="flex min-h-0 min-w-0"
+            // `<size> 1 0` — grow PROPORTIONAL to the fraction, from a zero
+            // basis. Not `0 0 <pct>%`: the splitters are flex siblings that
+            // occupy real pixels, so percentages of the container would sum past
+            // 100% and overflow. From a zero basis the panes divide exactly
+            // whatever is left after the handles, in the right ratio.
+            //
+            // min-w-0 / min-h-0 is what makes the ratio hold: flex items default
+            // to min-width:auto, so one long unbreakable transcript line would
+            // otherwise push its pane past its share and silently rewrite the
+            // split the user set.
+            style={{ flex: `${sizes[index]} 1 0` }}
+          >
+            {child}
+          </div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+interface ChatGroupPaneProps {
+  groupId: ChatGroupId;
+  isActiveGroup: boolean;
+  groupCount: number;
+  dropZone: import('./dropZones').DropZone | null;
+  onFocusGroup: (groupId: ChatGroupId) => void;
   tabKey: string;
   sessionId: string;
   initialMessage?: string;
@@ -153,10 +307,15 @@ interface ChatTabHostProps {
 }
 
 /**
- * Owns the chat state for one group's active tab (copied from ChatWindow's
- * pattern), so App's singleton stops being /pair's identity.
+ * One group: the drop hit-test target, the focus target, and the host for its
+ * active tab's chat.
  */
-function ChatTabHost({
+function ChatGroupPane({
+  groupId,
+  isActiveGroup,
+  groupCount,
+  dropZone,
+  onFocusGroup,
   tabKey,
   sessionId,
   initialMessage,
@@ -164,18 +323,43 @@ function ChatTabHost({
   renderSessionTitle,
   onChatChange,
   onSessionLoaded,
-}: ChatTabHostProps) {
+}: ChatGroupPaneProps) {
   return (
-    <BaseChat
-      key={tabKey}
-      setChat={onChatChange}
-      sessionId={sessionId}
-      initialMessage={initialMessage}
-      initialAttachments={initialAttachments}
-      suppressEmptyState={false}
-      renderSessionTitle={renderSessionTitle}
-      onSessionUpdate={onSessionLoaded}
-    />
+    <div
+      // The drag hit-test looks for exactly this attribute
+      // (dropZones.dropTargetAtPoint). It must sit on the element whose
+      // getBoundingClientRect IS the group's box, or the zones would be measured
+      // against the wrong rectangle and the tint would land off the group.
+      data-chat-group-id={groupId}
+      data-active-group={isActiveGroup ? 'true' : 'false'}
+      className="relative flex min-h-0 min-w-0 flex-1"
+      // CAPTURE phase, both: clicking anywhere in a group focuses it, including
+      // on controls that stopPropagation on the bubble (the composer's buttons,
+      // the strip's close ×). Focus must not depend on WHERE in the pane you
+      // clicked. focus-capture covers the keyboard path — tabbing into a pane
+      // focuses its group without any pointer at all.
+      onPointerDownCapture={() => onFocusGroup(groupId)}
+      onFocusCapture={() => onFocusGroup(groupId)}
+    >
+      <BaseChat
+        key={tabKey}
+        setChat={onChatChange}
+        sessionId={sessionId}
+        initialMessage={initialMessage}
+        initialAttachments={initialAttachments}
+        suppressEmptyState={false}
+        renderSessionTitle={renderSessionTitle}
+        onSessionUpdate={onSessionLoaded}
+        // The preview panel follows the ACTIVE group. State is kept, only the
+        // render is gated — see BaseChat's artifactPanelEnabled doc.
+        artifactPanelEnabled={isActiveGroup}
+        // A session-scoped chat must never resize the OS window once it is not
+        // the only one: a background group opening an artifact would resize the
+        // window out from under the group you are actually looking at.
+        allowWindowResize={groupCount === 1}
+      />
+      {dropZone && <ChatDropOverlay zone={dropZone} />}
+    </div>
   );
 }
 
