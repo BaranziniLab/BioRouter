@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
 import { BioRouterMark } from './icons/BioRouterMark';
+import { BioRouterWordmark } from './icons/BioRouterWordmark';
 import { toastService } from '../toasts';
 import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
 import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
@@ -148,8 +149,8 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         {/* Flat page header */}
         <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-8 sm:pb-6 sm:pt-10">
           <div className="max-w-2xl mx-auto">
-            <div className="mb-3 sm:mb-4 biorouter-icon-animation origin-bottom-left">
-              <BioRouterMark className="size-8" />
+            <div className="mb-4 sm:mb-5 biorouter-icon-animation origin-bottom-left">
+              <BioRouterWordmark className="h-9 w-auto" />
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-text-default">
               Welcome to Biorouter
