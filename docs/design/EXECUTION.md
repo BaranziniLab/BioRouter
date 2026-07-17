@@ -1,7 +1,7 @@
 # UI overhaul — execution status
 
 **Branch:** `worktree-redesign-ui-cohesion` · **Worktree:** `.claude/worktrees/redesign-ui-cohesion`
-**Started:** 2026-07-16 · **Last updated:** 2026-07-16
+**Started:** 2026-07-16 · **Last updated:** 2026-07-17
 
 **This file is the single source of truth for where the work stands.** If you
 read one document, read this one. It links out to the others.
@@ -12,18 +12,19 @@ read one document, read this one. It links out to the others.
 | [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) | The approved visual spec. Interactive: Current ⇄ Redesigned, light/dark, Highlight |
 | [`chat-groups-plan.md`](chat-groups-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
 | [`chat-groups-r7-spike.md`](chat-groups-r7-spike.md) | Proof that two KnowledgeProviders clobber each other through the server |
-| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-32; Part 6b is this pass; Part 7 is the drift register |
+| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-34; Part 6b is this pass; Part 7 is the drift register |
 
 ---
 
-## Where we stand: 15 of 19 steps done
+## Where we stand: 15 of 20 steps done
 
-The list grew from 15 steps to 19: the user added the browser-tab keyboard model
-(⌘T / ⌘N / ⌃Tab) and made **lag a first-class acceptance criterion**, and D-31
-turned out to have a second half (the preview's chrome, D-33). New work is added
-as new rows rather than folded silently into existing ones, so the denominator
-stays honest — the fraction should get *worse* when scope grows, not quietly
-better.
+The list grew from 15 steps to 20. The user added the browser-tab keyboard model
+(⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
+**progressive conversation loading** (paint the transcript first, let extensions
+finish behind it); D-31 turned out to have a second half (the preview's chrome,
+D-33). New work is added as new rows rather than folded into existing ones, so
+the denominator stays honest — the fraction should get *worse* when scope grows,
+not quietly better.
 
 | # | Step | Status |
 |---|---|---|
@@ -44,8 +45,9 @@ better.
 | 15 | **D-34** kill the "New Session" flash — a tab opens already named | ✅ done |
 | 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | 🔄 in flight |
 | 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | 🔄 in flight |
-| 18 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
-| 19 | Final gate + full visual QA sweep | ⬜ not started |
+| 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | 🔄 in flight — **premise is being measured before anything is rebuilt** |
+| 19 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
+| 20 | Final gate + full visual QA sweep (**lag is now an acceptance criterion, not a nice-to-have**) | ⬜ not started |
 
 ---
 
