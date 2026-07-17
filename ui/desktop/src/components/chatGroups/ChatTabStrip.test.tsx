@@ -230,3 +230,123 @@ describe('ChatTabStrip — icons stay on the design.md §3.9 scale', () => {
     }
   });
 });
+
+/**
+ * Rung 3 of the yield ladder (D-32) — the ▾ overflow menu.
+ *
+ * WHAT THESE TESTS ARE AND ARE NOT. jsdom computes no layout, so scrollWidth and
+ * clientWidth are 0 here and the real overflow can never occur: these stub the
+ * MEASUREMENT and test the WIRING — that the strip asks the rule, believes it,
+ * and that the menu can reach a scrolled-out tab. Whether the strip actually
+ * overflows at 640px is geometry, and geometry is verified by driving the real
+ * app and measuring. The rule itself is unit-tested in Layout/yieldLadder.test.ts.
+ */
+describe('ChatTabStrip — rung 3: the ▾ overflow menu', () => {
+  /** Pretend the strip's content is `content` px wide inside a `box` px box. */
+  function stubStripMetrics(content: number, box: number) {
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get');
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get');
+    scroll.mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'chat-tab-strip' ? content : 0;
+    });
+    client.mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'chat-tab-strip' ? box : 0;
+    });
+    return () => {
+      scroll.mockRestore();
+      client.mockRestore();
+    };
+  }
+
+  const manyTabs = Array.from({ length: 6 }, (_, i) =>
+    tab({ tabId: `tab-${i + 1}`, sessionId: `s${i + 1}`, title: `Chat ${i + 1}` })
+  );
+
+  it('stays away while the tabs fit', () => {
+    const restore = stubStripMetrics(300, 300);
+    try {
+      const { queryByTestId } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      expect(queryByTestId('chat-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('appears once tabs are scrolled out of sight', () => {
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { queryByTestId } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      expect(queryByTestId('chat-tab-overflow-trigger')).toBeTruthy();
+    } finally {
+      restore();
+    }
+  });
+
+  it('NEVER WRAPS: the strip stays a single nowrap scroll box even when it overflows', () => {
+    // The spec is explicit — a wrapped second row moves every tab under the
+    // cursor. The overflow answer must be the menu, never a taller strip.
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { getByTestId } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      const strip = getByTestId('chat-tab-strip');
+      // The nowrap itself lives in main.css (`.br-tabstrip`), which jsdom does
+      // not apply. What IS provable here: the strip never grows a second row's
+      // worth of markup, and it keeps the class that carries the rule.
+      expect(strip.className).toContain('br-tabstrip');
+      expect(strip.className).not.toMatch(/flex-wrap|wrap/);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the ▾ OUTSIDE the strip, or it would latch its own overflow alive', () => {
+    // The load-bearing structural claim of rung 3: a button inside the scroll box
+    // counts toward scrollWidth, so the overflow that summoned it could never
+    // clear. Outside, both directions are monotone. See shouldShowTabOverflowMenu.
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { getByTestId } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      const trigger = getByTestId('chat-tab-overflow-trigger');
+      const strip = getByTestId('chat-tab-strip');
+      expect(strip.contains(trigger)).toBe(false);
+      expect(trigger.closest('.br-tabstrip-wrap')).toBeTruthy();
+    } finally {
+      restore();
+    }
+  });
+
+  it('never offers a menu that could only list the tab you are already on', () => {
+    const restore = stubStripMetrics(900, 20);
+    try {
+      const { queryByTestId } = renderStrip({ tabs: [tab()], activeTabId: 'tab-1' });
+      expect(queryByTestId('chat-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('reaches a scrolled-out tab: selecting from the menu activates it', () => {
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { getByTestId, props } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      fireEvent.pointerDown(getByTestId('chat-tab-overflow-trigger'));
+      fireEvent.click(getByTestId('chat-tab-overflow-item-tab-6'));
+      expect(props.onSelect).toHaveBeenCalledWith('tab-6');
+    } finally {
+      restore();
+    }
+  });
+
+  it('lists every tab, so the menu is the whole strip and not just its tail', () => {
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { getByTestId } = renderStrip({ tabs: manyTabs, activeTabId: 'tab-1' });
+      fireEvent.pointerDown(getByTestId('chat-tab-overflow-trigger'));
+      for (const t of manyTabs) {
+        expect(getByTestId(`chat-tab-overflow-item-${t.tabId}`)).toBeTruthy();
+      }
+    } finally {
+      restore();
+    }
+  });
+});

@@ -936,6 +936,34 @@
   display: none;
 }
 
+/* Rung 3's last step (D-32): "…then collapse into a ▾ menu — never wrap."
+   The button is a SIBLING of the strip, not a child: inside the scroll box it
+   would count toward the strip's own scrollWidth and latch the overflow it was
+   summoned by. See ChatTabStrip's comment on the wrap. */
+.br-tabstrip__overflow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.br-tabstrip__overflow:hover,
+.br-tabstrip__overflow[data-state='open'] {
+  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  color: var(--text-default);
+}
+
 /* The chat strip is threaded THROUGH BaseChat's existing 52px header (which
    already paints the ground and draws the bottom hairline) rather than mounted
    above it. Painting a second ground and a second hairline inside that row
