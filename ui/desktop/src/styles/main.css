@@ -966,9 +966,20 @@
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: -0.01em;
+  /* D-31: sans, not mono. These labels shipped in --font-mono, borrowed from
+     otty.sh (which sets its UI labels in a monospace) and defended with P6
+     ("the monospace layer is part of the design system"). In the running app it
+     read as a special thin font that belonged to nothing else on screen — the
+     sidebar, the nav, the chat and the session title are all --font-sans, so
+     the strip, sitting on the SAME 52px bar as all of them, was the only
+     element speaking a different language. That is the exact incoherence this
+     pass exists to remove.
+     P6 stands: mono keeps the jobs it EARNS — code, the terminal, paths,
+     figures where columns must align. A tab label is none of those; it is a
+     name. Mono for data, sans for chrome. 13px = §3.2 "Secondary / metadata";
+     the -0.01em tracking was a mono-only correction and goes with it. */
+  font-family: var(--font-sans);
+  font-size: 13px;
   cursor: pointer;
   transition:
     background-color var(--motion-fast) var(--ease-out),
