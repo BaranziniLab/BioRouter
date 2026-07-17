@@ -65,12 +65,33 @@ describe('mergeAllGroups', () => {
     expect(merged.groups[RIGHT].activeTabId).toBe(TAB_S2);
   });
 
-  it('orders the merged strip the way the layout read: leaf order, not focus order', () => {
+  it('orders the merged strip the way the layout READ, left to right', () => {
     // RIGHT is FOCUSED but sits on the right. Its tab must land second, or the
     // strip would silently reorder itself around whichever pane you happened to
     // click last.
     const merged = mergeAllGroups(twoUp());
     expect(merged.groups[RIGHT].tabs.map((t) => t.tabId)).toEqual([TAB_S1, TAB_S2]);
+  });
+
+  it('walks the TREE for that order, not the groups object', () => {
+    // The above passes even if you iterate Object.values(state.groups), because
+    // in a `right` split the insertion order and the leaf order agree — a
+    // mutation test proved that test was decorative. A `left` split is where
+    // they disagree: the new group is inserted into the object LAST but renders
+    // FIRST. Iterating the object would put the left-hand pane's chat second and
+    // silently mirror the user's strip.
+    const state = run(createInitialChatGroupsState(), open('s1'), open('s2'));
+    const leftSplit = run(state, {
+      type: 'moveTabToGroup',
+      tabId: TAB_S2,
+      targetGroupId: LEFT,
+      zone: 'left',
+    });
+    expect(leafGroupIds(leftSplit.layout)).toEqual([RIGHT, LEFT]); // s2's group renders FIRST
+    expect(Object.keys(leftSplit.groups)).toEqual([LEFT, RIGHT]); // …but was inserted LAST
+
+    const merged = mergeAllGroups(leftSplit);
+    expect(merged.groups[merged.activeGroupId].tabs.map((t) => t.sessionId)).toEqual(['s2', 's1']);
   });
 
   it('is a no-op on a single group — there is nothing to merge', () => {
