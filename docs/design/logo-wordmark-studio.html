@@ -1,0 +1,322 @@
+<title>BioRouter wordmark - logo studio</title>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f4f1ea; --surface: #ffffff; --surface-2: #faf8f3; --ink: #2a2520;
+    --muted: #6f6558; --faint: #9a8f7e; --line: #e7dfd0; --line-strong: #d8cdb9;
+    --accent: #b85a32; --accent-ink: #ffffff; --navy: #052049; --coral: #b85a32;
+    --shadow: 0 18px 50px -22px rgba(42,37,32,.5), 0 3px 10px -4px rgba(42,37,32,.25);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17140f; --surface: #211d17; --surface-2: #1b1812; --ink: #efe8db;
+      --muted: #b3a996; --faint: #7d7364; --line: #322c22; --line-strong: #423a2c;
+      --accent: #d67e52; --accent-ink: #201810;
+      --shadow: 0 22px 60px -24px rgba(0,0,0,.8), 0 4px 14px -6px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17140f; --surface: #211d17; --surface-2: #1b1812; --ink: #efe8db;
+    --muted: #b3a996; --faint: #7d7364; --line: #322c22; --line-strong: #423a2c;
+    --accent: #d67e52; --accent-ink: #201810;
+    --shadow: 0 22px 60px -24px rgba(0,0,0,.8), 0 4px 14px -6px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f1ea; --surface: #ffffff; --surface-2: #faf8f3; --ink: #2a2520;
+    --muted: #6f6558; --faint: #9a8f7e; --line: #e7dfd0; --line-strong: #d8cdb9;
+    --accent: #b85a32; --accent-ink: #ffffff;
+    --shadow: 0 18px 50px -22px rgba(42,37,32,.5), 0 3px 10px -4px rgba(42,37,32,.25);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { margin-bottom: 28px; }
+  .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+  h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.1; margin: 0 0 12px; font-weight: 700; letter-spacing: -.02em; text-wrap: balance; }
+  h1 .mk-b { color: var(--navy); font-weight: 800; }
+  h1 .mk-r { color: var(--coral); font-weight: 800; }
+  .lede { font-size: 15px; color: var(--muted); max-width: 62ch; margin: 0; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .studio { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px); gap: 28px; margin-top: 32px; align-items: start; }
+  @media (max-width: 860px) { .studio { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  .panel + .panel { margin-top: 20px; }
+  .panel h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 0 0 16px; }
+
+  .stage { position: sticky; top: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  .canvasbox {
+    border-radius: 14px; padding: 34px 26px; display: grid; place-items: center; min-height: 200px;
+    transition: background .15s ease;
+  }
+  .canvasbox.on-light { background: var(--surface-2); }
+  .canvasbox.on-paper  { background: #faf8f3; }
+  .canvasbox.on-dark   { background: #14100b; }
+  .canvasbox.on-grid {
+    background:
+      linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
+      repeating-linear-gradient(45deg, var(--line) 0 1px, transparent 1px 11px);
+  }
+  svg#word { width: 100%; height: auto; display: block; overflow: visible; }
+  #wtext, #gtext { font-family: var(--sans); }
+  #guides line { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 4; opacity: .6; pointer-events: none; }
+
+  .bgrow { display: flex; gap: 7px; margin-top: 16px; flex-wrap: wrap; }
+  .chip { font-size: 12px; color: var(--muted); padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); cursor: pointer; user-select: none; }
+  .chip.on { color: var(--ink); border-color: var(--accent); }
+  .readout { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 16px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .readout b { color: var(--ink); font-weight: 600; }
+
+  .ctl { margin-bottom: 20px; }
+  .ctl:last-child { margin-bottom: 0; }
+  .ctl-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .ctl-head label { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .val { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  .hint { font-size: 12.5px; color: var(--faint); margin: 6px 0 0; }
+  input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; background: var(--line-strong); border-radius: 4px; outline: none; margin: 4px 0; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); border: 3px solid var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.25); cursor: pointer; }
+  input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); border: 3px solid var(--surface); cursor: pointer; }
+  .toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; font-size: 13px; color: var(--muted); padding: 7px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+  .toggle input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+  button { font-family: var(--sans); font-size: 13px; font-weight: 600; cursor: pointer; border-radius: 9px; padding: 9px 15px; border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--ink); transition: background .12s ease, border-color .12s ease; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 13px; resize: vertical; min-height: 150px; }
+  textarea[readonly] { color: var(--muted); }
+  .export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .copied { font-size: 12px; color: var(--accent); font-weight: 600; opacity: 0; transition: opacity .2s; }
+  .copied.on { opacity: 1; }
+  .sub { font-size: 12.5px; color: var(--faint); margin: 10px 0 0; }
+  footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--faint); }
+  footer code { font-family: var(--mono); color: var(--muted); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">BioRouter &middot; wordmark studio</p>
+    <h1>The <span class="mk-b">Bio</span><span class="mk-r">Router</span> wordmark &mdash; the horizontal logo, with the same split underline</h1>
+    <p class="lede">Same family as the square icon: <b>Bio</b> in UCSF navy, <b>Router</b> in coral, over a single underline that splits navy&rarr;coral at the seam between the two words. The dials tune the design ratios &mdash; weight, spacing, and the underline&rsquo;s gap and thickness &mdash; and the underline gap starts at the <b>2%</b> you picked for the square mark. Tune it, then <b>export your setup as text</b> and send it back.</p>
+  </header>
+
+  <div class="studio">
+    <div>
+      <div class="stage">
+        <div class="canvasbox on-grid" id="canvasbox">
+          <svg id="word" viewBox="0 0 1000 300" role="img" aria-label="BioRouter wordmark preview">
+            <g id="mark">
+              <text id="wtext" x="0" y="0" dominant-baseline="alphabetic"><tspan id="wbio" fill="#052049">Bio</tspan><tspan id="wrouter" fill="#b85a32">Router</tspan></text>
+              <rect id="ul-left" x="0" y="0" width="0" height="0" fill="#052049"/>
+              <rect id="ul-right" x="0" y="0" width="0" height="0" fill="#b85a32"/>
+            </g>
+            <g id="guides" style="display:none">
+              <line id="g-base" x1="0" y1="0" x2="1000" y2="0"/>
+            </g>
+          </svg>
+        </div>
+
+        <div class="bgrow" id="bgrow">
+          <span class="chip on" data-bg="on-grid">Transparent</span>
+          <span class="chip" data-bg="on-paper">Cream plate</span>
+          <span class="chip" data-bg="on-light">App light</span>
+          <span class="chip" data-bg="on-dark">App dark</span>
+        </div>
+        <div class="readout" id="readout"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Dials</h2>
+
+        <div class="ctl">
+          <div class="ctl-head"><label for="weight">Weight</label><span class="val" id="weight-val">700</span></div>
+          <input type="range" id="weight" min="400" max="900" step="50" value="700">
+          <p class="hint">The letterform weight. 800 matches the heavy square mark; 700 reads a touch lighter for a horizontal wordmark.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head"><label for="tracking">Letter spacing</label><span class="val" id="tracking-val">0.00em</span></div>
+          <input type="range" id="tracking" min="-4" max="8" step="1" value="0">
+          <p class="hint">Tightens or opens the whole word. Measured in em, so it holds at any size.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head"><label for="gap">Underline gap</label><span class="val" id="gap-val">2%</span></div>
+          <input type="range" id="gap" min="2" max="34" step="1" value="2">
+          <p class="hint">Space from the word to the underline, as a share of cap height &mdash; so it scales with the logo. Starts at the 2% you chose for the square mark.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head"><label for="thick">Underline thickness</label><span class="val" id="thick-val">15%</span></div>
+          <input type="range" id="thick" min="6" max="26" step="1" value="15">
+          <p class="hint">As a share of cap height. 15% matches the square mark&rsquo;s bar.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head"><label for="size">Preview size</label><span class="val" id="size-val">150 px</span></div>
+          <input type="range" id="size" min="90" max="230" step="2" value="150">
+          <p class="hint">Preview only &mdash; the wordmark is vector and scales freely. Not part of the exported design.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="btnrow">
+            <label class="toggle"><input type="checkbox" id="t-guides"> Baseline guide</label>
+            <button class="primary" id="reset">Reset to default</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="export-head"><h2 style="margin:0">Export your setup</h2><span class="copied" id="copied">copied &#10003;</span></div>
+        <textarea id="export" readonly rows="10" aria-label="Exported setup"></textarea>
+        <div class="btnrow" style="margin-top:12px"><button class="primary" id="copy">Copy</button></div>
+        <p class="sub">Paste this back to me and I&rsquo;ll cut the real wordmark SVG from it. You can also paste a setup below to load it here.</p>
+        <textarea id="import" rows="3" placeholder="Paste a setup here, then press Apply..." style="min-height:76px;margin-top:12px"></textarea>
+        <div class="btnrow" style="margin-top:10px"><button id="apply">Apply pasted setup</button></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <code>Bio #052049</code> UCSF Navy &middot; <code>Router #b85a32</code> coral &middot; underline split navy/coral at the seam. Geometry is measured live from the rendered text (<code>getBBox</code> / <code>getStartPositionOfChar</code>), so the seam and centering are exact. On a dark app surface the navy needs a lighter treatment &mdash; use the <b>App dark</b> swatch to check it holds before we finalize.
+  </footer>
+</div>
+
+<script>
+(function () {
+  const VW = 1000, VH = 300, CX = 500, CY = 150;
+  const BIO_LEN = 3; // "Bio" is the first 3 chars; "Router" follows
+  const DEFAULTS = { weight: 700, tracking: 0, gap: 2, thick: 15, size: 150 };
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    word: $("word"), text: $("wtext"), mark: $("mark"),
+    ulL: $("ul-left"), ulR: $("ul-right"),
+    gbase: $("g-base"), guides: $("guides"),
+    weight: $("weight"), tracking: $("tracking"), gap: $("gap"), thick: $("thick"), size: $("size"),
+    weightVal: $("weight-val"), trackingVal: $("tracking-val"), gapVal: $("gap-val"), thickVal: $("thick-val"), sizeVal: $("size-val"),
+    readout: $("readout"), exportBox: $("export"), importBox: $("import"),
+  };
+  let state = { ...DEFAULTS };
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+  function render() {
+    // Apply type styling. font-size here is a working unit; the whole group is
+    // scaled to the requested cap height afterwards, so this need only be large
+    // enough to measure precisely.
+    const workSize = 200;
+    els.text.setAttribute("font-size", workSize);
+    els.text.setAttribute("font-weight", state.weight);
+    els.text.setAttribute("letter-spacing", (state.tracking / 100) + "em");
+    els.text.setAttribute("x", 0);
+    els.text.setAttribute("y", 0);
+
+    const bb = els.text.getBBox();                 // ink box of the whole word
+    const capHeight = bb.height;                    // caps + descender of the 'p'-less word; good enough as the scale unit
+    // The seam between "Bio" and "Router": where char index 3 starts.
+    let seamX = bb.x + bb.width * 0.42;             // fallback
+    try { seamX = els.text.getStartPositionOfChar(BIO_LEN).x; } catch (e) { /* keep fallback */ }
+
+    const gap = capHeight * (state.gap / 100);
+    const thick = capHeight * (state.thick / 100);
+    const ulTop = (bb.y + bb.height) + gap;
+    const left = bb.x, right = bb.x + bb.width;
+
+    els.ulL.setAttribute("x", left); els.ulL.setAttribute("y", ulTop);
+    els.ulL.setAttribute("width", Math.max(0, seamX - left)); els.ulL.setAttribute("height", thick);
+    els.ulR.setAttribute("x", seamX); els.ulR.setAttribute("y", ulTop);
+    els.ulR.setAttribute("width", Math.max(0, right - seamX)); els.ulR.setAttribute("height", thick);
+
+    // Whole-mark union (word + underline), scaled so cap height == requested size,
+    // then centered in the canvas.
+    const unionTop = bb.y, unionBottom = ulTop + thick;
+    const unionH = unionBottom - unionTop, unionW = right - left;
+    const scale = state.size / capHeight;
+    const unionCX = (left + right) / 2, unionCY = (unionTop + unionBottom) / 2;
+    const tx = CX - unionCX * scale, ty = CY - unionCY * scale;
+    els.mark.setAttribute("transform", `translate(${tx.toFixed(2)} ${ty.toFixed(2)}) scale(${scale.toFixed(4)})`);
+
+    // baseline guide (in canvas space)
+    const baseY = (bb.y + bb.height) * scale + ty;
+    els.gbase.setAttribute("x1", 40); els.gbase.setAttribute("x2", VW - 40);
+    els.gbase.setAttribute("y1", baseY); els.gbase.setAttribute("y2", baseY);
+
+    els.weightVal.textContent = state.weight;
+    els.trackingVal.textContent = (state.tracking / 100).toFixed(2) + "em";
+    els.gapVal.textContent = state.gap + "%";
+    els.thickVal.textContent = state.thick + "%";
+    els.sizeVal.textContent = state.size + " px";
+    els.readout.innerHTML =
+      `word <b>${Math.round(unionW * scale)}</b> wide` +
+      `<span>cap <b>${Math.round(state.size)}</b></span>` +
+      `<span>underline <b>${Math.round(thick * scale)}</b> thick</span>` +
+      `<span>seam at <b>${Math.round((seamX - left) / unionW * 100)}%</b></span>`;
+
+    updateExport();
+  }
+
+  function updateExport() {
+    els.exportBox.value = [
+      "BioRouter wordmark - setup",
+      "",
+      "weight: " + state.weight,
+      "letter spacing: " + (state.tracking / 100).toFixed(2) + "em",
+      "underline gap: " + state.gap + "%   (of cap height, word -> underline)",
+      "underline thickness: " + state.thick + "%   (of cap height)",
+      "underline: single bar, split navy/coral at the Bio|Router seam",
+      "colors: Bio #052049 | Router #b85a32 | underline #052049/#b85a32",
+      "",
+      "(preview size " + state.size + "px is not part of the design - the wordmark is vector and scales freely)",
+    ].join("\n");
+  }
+
+  els.weight.addEventListener("input", (e) => { state.weight = +e.target.value; render(); });
+  els.tracking.addEventListener("input", (e) => { state.tracking = +e.target.value; render(); });
+  els.gap.addEventListener("input", (e) => { state.gap = +e.target.value; render(); });
+  els.thick.addEventListener("input", (e) => { state.thick = +e.target.value; render(); });
+  els.size.addEventListener("input", (e) => { state.size = +e.target.value; render(); });
+
+  $("t-guides").addEventListener("change", (e) => { els.guides.style.display = e.target.checked ? "" : "none"; });
+
+  document.getElementById("bgrow").addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip"); if (!chip) return;
+    document.querySelectorAll("#bgrow .chip").forEach((c) => c.classList.remove("on"));
+    chip.classList.add("on");
+    const box = document.getElementById("canvasbox");
+    box.className = "canvasbox " + chip.dataset.bg;
+  });
+
+  $("reset").addEventListener("click", () => {
+    state = { ...DEFAULTS };
+    els.weight.value = state.weight; els.tracking.value = state.tracking;
+    els.gap.value = state.gap; els.thick.value = state.thick; els.size.value = state.size;
+    render();
+  });
+
+  $("copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(els.exportBox.value); }
+    catch { els.exportBox.select(); document.execCommand("copy"); }
+    const c = $("copied"); c.classList.add("on"); setTimeout(() => c.classList.remove("on"), 1400);
+  });
+
+  $("apply").addEventListener("click", () => {
+    const t = els.importBox.value;
+    const m = (re) => { const x = t.match(re); return x ? +x[1] : null; };
+    const w = m(/weight:\s*(\d+)/i), tr = m(/letter spacing:\s*(-?\d*\.?\d+)/i);
+    const g = m(/underline gap:\s*(\d+)/i), th = m(/underline thickness:\s*(\d+)/i);
+    if (w != null) state.weight = clamp(Math.round(w / 50) * 50, 400, 900);
+    if (tr != null) state.tracking = clamp(Math.round(tr * 100), -4, 8);
+    if (g != null) state.gap = clamp(g, 2, 34);
+    if (th != null) state.thick = clamp(th, 6, 26);
+    els.weight.value = state.weight; els.tracking.value = state.tracking;
+    els.gap.value = state.gap; els.thick.value = state.thick;
+    render();
+  });
+
+  render();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+})();
+</script>
