@@ -209,7 +209,7 @@
   #group2{display:none}
   :root[data-split="on"] #group2{display:flex}
   /* the SAME underline tab as the preview panel and the terminal */
-  .ctabs{height:52px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
+  .ctabs{height:52px;flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
   .ctabs .utab{max-width:190px;flex:0 1 auto}
   .ctabs .utab .live{width:6px;height:6px;border-radius:50%;background:var(--accent-bar);flex-shrink:0}
   .utab.preview .tt{font-style:italic}
@@ -218,7 +218,10 @@
      an inactive group's active tab keeps a neutral rule. No extra chrome. */
   .cgroup:not(.active) .utab.active{color:var(--muted);font-weight:400}
   .cgroup:not(.active) .utab.active::after{background:var(--border-strong)}
-  :root[data-side="off"] .cgroup:first-child .ctabs{padding-left:172px;transition:padding-left .26s var(--ease)}
+  /* :first-of-type, NOT :first-child — .dropzone/.dragghost are the first
+     children of .cgroups, so :first-child matched nothing and the reserve
+     silently never applied, letting the traffic lights land on the tabs. */
+  :root[data-side="off"] .cgroup:first-of-type .ctabs{padding-left:172px;transition:padding-left .26s var(--ease)}
   .panelhead{height:52px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--ground)}
   /* getSessionTitlePadding(): with the sidebar collapsed the control strip
      overlays the canvas, so the title clears it. Dropping the dashboard
@@ -267,35 +270,30 @@
   /* ============ PREVIEW PANEL ============ */
   .arti{display:flex;flex-direction:column;min-width:0;background:var(--ground);border-left:1px solid var(--border)}
 
-  /* ---- THE TAB · one component, three surfaces, fills not outlines ----
-     A three-step fill ladder does the work, so no tab ever needs an outline:
-       strip ground  (deepest)  — the gaps between tabs read as separators
-       inactive tab  (mid)      — every tab is a discrete block
-       active tab    (= body)   — merges into the content it owns
-     The accent bar only confirms what the fill already said. */
-  .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
-  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 10px;height:38px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;border-radius:var(--r-md) var(--r-md) 0 0;background:var(--tab-rest);transition:background .12s var(--ease),color .12s var(--ease)}
-  .utab::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:transparent;transition:background .18s var(--ease)}
-  .utab:hover{background:var(--tab-hover);color:var(--text)}
-  .utab.active{background:var(--tab-active);color:var(--text);font-weight:500}
-  .utab.active::after{background:var(--accent-bar)}
+  /* ---- THE TAB · after Safari ----
+     The strip is NOT a darker slab. It is the SAME surface as the sidebar's
+     titlebar band, so the whole 52px top edge of the window is one continuous
+     ground and no part of the chrome reads heavier than another.
+     Only the ACTIVE tab is painted: a floating rounded pill in the card
+     colour. Inactive tabs are plain text, divided by a Safari hairline that
+     retracts around whatever you are pointing at. Nothing is outlined. */
+  .arti__tabs{height:52px;flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
+  .utab{position:relative;display:flex;align-items:center;gap:7px;padding:0 11px;height:34px;min-width:0;max-width:190px;color:var(--muted);font-size:12px;cursor:pointer;border:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:-.01em;border-radius:var(--r-md);background:transparent;transition:background .12s var(--ease),color .12s var(--ease)}
+  /* Safari's divider: a hairline in the GAP, never a border on the tab */
+  .utab + .utab::before{content:"";position:absolute;left:-2px;top:9px;bottom:9px;width:1px;background:var(--border-strong);opacity:.5;transition:opacity .12s var(--ease)}
+  .utab:hover::before,.utab.active::before,.utab:hover + .utab::before,.utab.active + .utab::before{opacity:0}
+  .utab:hover{background:color-mix(in srgb,var(--card) 62%,transparent);color:var(--text)}
+  .utab.active{background:var(--card);color:var(--text);font-weight:500;box-shadow:0 1px 2px rgba(32,25,15,.07)}
+  :root[data-theme="dark"] .utab.active{box-shadow:0 1px 3px rgba(0,0,0,.45)}
   .utab svg{width:13px;height:13px;flex-shrink:0}
   .utab .tt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .utab .x{width:16px;height:16px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--subtle);opacity:0;transition:opacity .12s var(--ease)}
   .utab:hover .x,.utab.active .x{opacity:1}
-  .utab .x:hover{background:var(--strong)}
+  .utab .x:hover{background:var(--medium)}
   .arti__acts{margin-left:auto;display:flex;align-items:center;gap:2px}
 
-  /* The fill ladder — and it needs NO new colours. It falls straight out of
-     the ramp the app already ships, which is why it replicates 1:1:
-       strip  = --background-strong   the deep ground; the gaps separate tabs
-       rest   = --background-medium   every tab is a discrete block on it
-       hover  = --background-muted    hover previews the selected surface
-       active = --background-muted    the BODY's own colour, so the tab
-                                      merges into the content it owns
-     active is then separated from hover by the accent bar + weight 500 +
-     text-default, which is exactly what an indicator is for. */
-  :root{--tabstrip:var(--strong);--tab-rest:var(--medium);--tab-hover:var(--ground);--tab-active:var(--ground)}
+  /* One value, and it is the sidebar's: the top band never goes dark. */
+  :root{--tabstrip:var(--sidebar)}
 
   /* dragging: the tab lifts and follows the cursor — never invisible */
   .utab[data-dragging]{opacity:.35}
@@ -344,8 +342,8 @@
   /* ============ TERMINAL DOCK ============ */
   .dock{flex-shrink:0;border-top:1px solid var(--border);background:var(--ground);display:none;flex-direction:column;height:236px}
   :root[data-term="on"] .dock{display:flex}
-  .dock__bar{height:40px;flex-shrink:0;display:flex;align-items:flex-end;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
-  .dock__bar .utab{max-width:150px;height:30px}
+  .dock__bar{height:40px;flex-shrink:0;display:flex;align-items:center;gap:3px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--tabstrip)}
+  .dock__bar .utab{max-width:150px;height:28px}
   .dock__cwd{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--subtle)}
   .term{flex:1;min-height:0;overflow:auto;background:var(--term-bg);color:var(--term-fg);font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:20px;padding:10px 14px}
   .term .p1{color:var(--term-green)}
@@ -1182,13 +1180,33 @@
       </div>
       <div class="cardx">
         <span class="tag fix">Ω</span>
-        <h3>Tabs got legible — a fill ladder</h3>
-        <p><b>Revised in rev 4.</b> A bare underline was too quiet: you couldn't tell what was selected, or where one tab ended. Three fills now carry it — the strip sits deepest, an inactive tab is a discrete block on it, and the <b>active tab is painted the body's own colour</b>, so it visibly merges into the content it owns. The gaps between blocks separate them, so <b>no tab needs an outline</b>. The accent bar only confirms what the fill already said.</p>
+        <h3>Tabs, after Safari</h3>
+        <p><b>Revised again in rev 5.</b> Rev 4 made the strip <em>darker</em> than the sidebar to float the tabs off it — which bought legibility by putting the heaviest slab in the window along its top edge. Safari does the opposite and it's the better trade: <b>the strip is the sidebar's own colour</b>, so the whole 52px top edge is one continuous ground, and only the <b>active tab is painted</b> — a floating white pill. One thing is emphasised instead of everything being separated.</p>
         <div class="ba">
-          <div class="row before"><span class="k">Rev 3</span><span class="v">underline only, no fill — too quiet</span></div>
-          <div class="row after"><span class="k">Rev 4</span><span class="v">strip → inactive → active = body</span></div>
+          <div class="row before"><span class="k">Rev 4</span><span class="v">dark strip + a block per tab</span></div>
+          <div class="row after"><span class="k">Rev 5</span><span class="v">strip = --sidebar; active = card pill</span></div>
         </div>
-        <div class="ref">your call · P1 surfaces</div>
+        <div class="ref">Safari · P1 surfaces</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">Ψ</span>
+        <h3>The divider lives in the gap</h3>
+        <p>With inactive tabs unpainted, a Safari hairline sits <em>between</em> them — in the gap, never as a border on the tab — and <b>retracts around whatever you point at</b>, so the thing under the cursor is never boxed in. Boundaries when you're scanning; nothing in the way when you're aiming.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Rev 4</span><span class="v">a fill per tab to imply edges</span></div>
+          <div class="row after"><span class="k">Rev 5</span><span class="v">1px in the gap, retracts on hover</span></div>
+        </div>
+        <div class="ref">Safari · D-18 hairlines</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">Π</span>
+        <h3>The collapse overlap — a real bug</h3>
+        <p>With the sidebar collapsed, the traffic lights landed <em>on top of</em> the first tab. Cause: <span class="mono" style="font-size:12px">.cgroup:first-child</span> stopped matching the moment the drop-zone layer became the first child of the group container, so the 172px reserve silently never applied. It's <span class="mono" style="font-size:12px">:first-of-type</span> now. Worth noting for the build: <b>a reserve that fails silently is worse than no reserve</b> — this one should carry a test that asserts the first tab's left edge clears the strip.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Bug</span><span class="v">:first-child matched nothing</span></div>
+          <div class="row after"><span class="k">Fix</span><span class="v">:first-of-type + assert the clearance</span></div>
+        </div>
+        <div class="ref">your catch · TitlebarControls.tsx</div>
       </div>
       <div class="cardx">
         <span class="tag fix">∇</span>
