@@ -30,18 +30,33 @@ function resolveTheme(preference: ThemePreference): ResolvedTheme {
   return preference;
 }
 
+/** Exported for tests only — the default-theme rules must stay pinned, and
+ *  must stay in lockstep with index.html's pre-hydration script. */
+export const loadThemePreferenceForTest = (): ThemePreference => loadThemePreference();
+
 function loadThemePreference(): ThemePreference {
   const useSystemTheme = localStorage.getItem('use_system_theme');
   if (useSystemTheme === 'true') {
     return 'system';
   }
-
+  // An explicit choice of light or dark. `saveThemePreference` writes both keys
+  // together, and older builds wrote `theme` alone — so a stored `theme` means
+  // the user picked one. Honour it; never drag someone back to auto on upgrade.
   const savedTheme = localStorage.getItem('theme');
-  if (savedTheme === 'dark') {
-    return 'dark';
+  if (savedTheme === 'dark' || savedTheme === 'light') {
+    return savedTheme;
   }
 
-  return 'light';
+  // Nothing stored: a fresh install. Follow the OS, so the app opens dark at
+  // night and light by day.
+  //
+  // This branch used to `return 'light'`, which ALSO made it a bug rather than
+  // just a default: index.html's pre-hydration script already resolves an
+  // unset preference to the system theme (`savedTheme ? … : systemPrefersDark`),
+  // so on a dark-mode machine the window painted DARK and then React hydrated
+  // and forced it LIGHT — a flash on every launch, because the two disagreed
+  // about the same question. This keeps them in lockstep; change them together.
+  return 'system';
 }
 
 function saveThemePreference(preference: ThemePreference): void {
