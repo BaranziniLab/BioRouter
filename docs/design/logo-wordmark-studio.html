@@ -98,7 +98,7 @@
   <header>
     <p class="eyebrow">BioRouter &middot; wordmark studio</p>
     <h1>The <span class="mk-b">Bio</span><span class="mk-r">Router</span> wordmark &mdash; the horizontal logo, with the same split underline</h1>
-    <p class="lede">Same family as the square icon: <b>Bio</b> in UCSF navy, <b>Router</b> in coral, over a single underline that splits navy&rarr;coral at the seam between the two words. The dials tune the design ratios &mdash; weight, spacing, and the underline&rsquo;s gap and thickness &mdash; and the underline gap starts at the <b>2%</b> you picked for the square mark. Tune it, then <b>export your setup as text</b> and send it back.</p>
+    <p class="lede">Same family as the square icon: <b>Bio</b> in UCSF navy, <b>Router</b> in coral. The underline is a short two-tone bar sitting <b>between the o and the R</b> &mdash; navy on the <b>Bio</b> side, coral on the <b>Router</b> side &mdash; not a rule under the whole word. The dials tune the design ratios; the gap starts at the <b>2%</b> you picked for the square mark. On a dark app surface the navy would vanish, so the <b>App dark</b> swatch swaps it for <b>UCSF teal #18A3AC</b>. Tune it, then <b>export your setup</b> and send it back.</p>
   </header>
 
   <div class="studio">
@@ -156,6 +156,12 @@
         </div>
 
         <div class="ctl">
+          <div class="ctl-head"><label for="ulwidth">Underline width</label><span class="val" id="ulwidth-val">100%</span></div>
+          <input type="range" id="ulwidth" min="40" max="220" step="5" value="100">
+          <p class="hint">How far the bar spans around the o&ndash;R seam. 100% underlines exactly the <b>oR</b> pair; lower tightens it toward the seam, higher reaches further under each word.</p>
+        </div>
+
+        <div class="ctl">
           <div class="ctl-head"><label for="size">Preview size</label><span class="val" id="size-val">150 px</span></div>
           <input type="range" id="size" min="90" max="230" step="2" value="150">
           <p class="hint">Preview only &mdash; the wordmark is vector and scales freely. Not part of the exported design.</p>
@@ -189,18 +195,20 @@
 (function () {
   const VW = 1000, VH = 300, CX = 500, CY = 150;
   const BIO_LEN = 3; // "Bio" is the first 3 chars; "Router" follows
-  const DEFAULTS = { weight: 700, tracking: 0, gap: 2, thick: 15, size: 150 };
+  const NAVY = "#052049", CORAL = "#b85a32", TEAL = "#18a3ac";
+  const DEFAULTS = { weight: 700, tracking: 0, gap: 2, thick: 15, ulwidth: 100, size: 150 };
 
   const $ = (id) => document.getElementById(id);
   const els = {
-    word: $("word"), text: $("wtext"), mark: $("mark"),
+    word: $("word"), text: $("wtext"), bio: $("wbio"), mark: $("mark"),
     ulL: $("ul-left"), ulR: $("ul-right"),
     gbase: $("g-base"), guides: $("guides"),
-    weight: $("weight"), tracking: $("tracking"), gap: $("gap"), thick: $("thick"), size: $("size"),
-    weightVal: $("weight-val"), trackingVal: $("tracking-val"), gapVal: $("gap-val"), thickVal: $("thick-val"), sizeVal: $("size-val"),
+    weight: $("weight"), tracking: $("tracking"), gap: $("gap"), thick: $("thick"), ulwidth: $("ulwidth"), size: $("size"),
+    weightVal: $("weight-val"), trackingVal: $("tracking-val"), gapVal: $("gap-val"), thickVal: $("thick-val"), ulwidthVal: $("ulwidth-val"), sizeVal: $("size-val"),
     readout: $("readout"), exportBox: $("export"), importBox: $("import"),
   };
   let state = { ...DEFAULTS };
+  let dark = false;  // driven by the "App dark" swatch: navy -> UCSF teal
   const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
   function render() {
@@ -215,25 +223,48 @@
     els.text.setAttribute("y", 0);
 
     const bb = els.text.getBBox();                 // ink box of the whole word
-    const capHeight = bb.height;                    // caps + descender of the 'p'-less word; good enough as the scale unit
-    // The seam between "Bio" and "Router": where char index 3 starts.
-    let seamX = bb.x + bb.width * 0.42;             // fallback
-    try { seamX = els.text.getStartPositionOfChar(BIO_LEN).x; } catch (e) { /* keep fallback */ }
+    const capHeight = bb.height;                    // scale unit
+    const left = bb.x, right = bb.x + bb.width;
+
+    // navy role -> UCSF teal on the dark surface, so it stays legible
+    const navy = dark ? TEAL : NAVY;
+    els.bio.setAttribute("fill", navy);
+    els.ulL.setAttribute("fill", navy);
+    els.ulR.setAttribute("fill", CORAL);
+
+    // The underline is a SHORT bar between the o and the R, not a rule under the
+    // whole word. Anchor it to the actual glyph positions: the 'o' is the last
+    // letter of "Bio" (index 2), the 'R' the first of "Router" (index 3). At
+    // 100% the bar underlines exactly the "oR" pair; the width dial grows/shrinks
+    // it around that pair's centre. The colour still splits at the o|R seam, so
+    // navy stays on the Bio side and coral on the Router side.
+    let seamX = bb.x + bb.width * 0.33;             // fallbacks if the text API is unavailable
+    let oStart = seamX - capHeight * 0.3, rEnd = seamX + capHeight * 0.3;
+    try {
+      seamX = els.text.getStartPositionOfChar(BIO_LEN).x;
+      oStart = els.text.getStartPositionOfChar(BIO_LEN - 1).x;
+      rEnd = els.text.getEndPositionOfChar(BIO_LEN).x;
+    } catch (e) { /* keep fallbacks */ }
+
+    const pairCenter = (oStart + rEnd) / 2;
+    const barW = (rEnd - oStart) * (state.ulwidth / 100);
+    const barLeft = pairCenter - barW / 2, barRight = pairCenter + barW / 2;
+    const splitX = clamp(seamX, barLeft, barRight);
 
     const gap = capHeight * (state.gap / 100);
     const thick = capHeight * (state.thick / 100);
     const ulTop = (bb.y + bb.height) + gap;
-    const left = bb.x, right = bb.x + bb.width;
 
-    els.ulL.setAttribute("x", left); els.ulL.setAttribute("y", ulTop);
-    els.ulL.setAttribute("width", Math.max(0, seamX - left)); els.ulL.setAttribute("height", thick);
-    els.ulR.setAttribute("x", seamX); els.ulR.setAttribute("y", ulTop);
-    els.ulR.setAttribute("width", Math.max(0, right - seamX)); els.ulR.setAttribute("height", thick);
+    els.ulL.setAttribute("x", barLeft); els.ulL.setAttribute("y", ulTop);
+    els.ulL.setAttribute("width", Math.max(0, splitX - barLeft)); els.ulL.setAttribute("height", thick);
+    els.ulR.setAttribute("x", splitX); els.ulR.setAttribute("y", ulTop);
+    els.ulR.setAttribute("width", Math.max(0, barRight - splitX)); els.ulR.setAttribute("height", thick);
 
-    // Whole-mark union (word + underline), scaled so cap height == requested size,
-    // then centered in the canvas.
+    // Whole-mark union (word + the short underline), scaled so cap height ==
+    // requested size, then centred. The word box dominates horizontally; the bar
+    // sits inside it, so the word's own centre is the right x-anchor.
     const unionTop = bb.y, unionBottom = ulTop + thick;
-    const unionH = unionBottom - unionTop, unionW = right - left;
+    const unionW = right - left;
     const scale = state.size / capHeight;
     const unionCX = (left + right) / 2, unionCY = (unionTop + unionBottom) / 2;
     const tx = CX - unionCX * scale, ty = CY - unionCY * scale;
@@ -248,12 +279,13 @@
     els.trackingVal.textContent = (state.tracking / 100).toFixed(2) + "em";
     els.gapVal.textContent = state.gap + "%";
     els.thickVal.textContent = state.thick + "%";
+    els.ulwidthVal.textContent = state.ulwidth + "%";
     els.sizeVal.textContent = state.size + " px";
     els.readout.innerHTML =
       `word <b>${Math.round(unionW * scale)}</b> wide` +
       `<span>cap <b>${Math.round(state.size)}</b></span>` +
-      `<span>underline <b>${Math.round(thick * scale)}</b> thick</span>` +
-      `<span>seam at <b>${Math.round((seamX - left) / unionW * 100)}%</b></span>`;
+      `<span>bar <b>${Math.round((barRight - barLeft) * scale)}</b> wide, <b>${Math.round(thick * scale)}</b> thick</span>` +
+      `<span>${dark ? "navy&rarr;<b style='color:#18a3ac'>teal</b>" : "navy + coral"}</span>`;
 
     updateExport();
   }
@@ -266,8 +298,10 @@
       "letter spacing: " + (state.tracking / 100).toFixed(2) + "em",
       "underline gap: " + state.gap + "%   (of cap height, word -> underline)",
       "underline thickness: " + state.thick + "%   (of cap height)",
-      "underline: single bar, split navy/coral at the Bio|Router seam",
+      "underline width: " + state.ulwidth + "%   (100% = underlines the oR pair; short bar between o and R)",
+      "underline: short bar between o and R, split navy/coral at the o|R seam",
       "colors: Bio #052049 | Router #b85a32 | underline #052049/#b85a32",
+      "on dark: Bio + navy underline -> UCSF teal #18A3AC (Router stays coral)",
       "",
       "(preview size " + state.size + "px is not part of the design - the wordmark is vector and scales freely)",
     ].join("\n");
@@ -277,6 +311,7 @@
   els.tracking.addEventListener("input", (e) => { state.tracking = +e.target.value; render(); });
   els.gap.addEventListener("input", (e) => { state.gap = +e.target.value; render(); });
   els.thick.addEventListener("input", (e) => { state.thick = +e.target.value; render(); });
+  els.ulwidth.addEventListener("input", (e) => { state.ulwidth = +e.target.value; render(); });
   els.size.addEventListener("input", (e) => { state.size = +e.target.value; render(); });
 
   $("t-guides").addEventListener("change", (e) => { els.guides.style.display = e.target.checked ? "" : "none"; });
@@ -287,12 +322,15 @@
     chip.classList.add("on");
     const box = document.getElementById("canvasbox");
     box.className = "canvasbox " + chip.dataset.bg;
+    dark = chip.dataset.bg === "on-dark";   // recolour navy -> teal on the dark surface
+    render();
   });
 
   $("reset").addEventListener("click", () => {
     state = { ...DEFAULTS };
     els.weight.value = state.weight; els.tracking.value = state.tracking;
-    els.gap.value = state.gap; els.thick.value = state.thick; els.size.value = state.size;
+    els.gap.value = state.gap; els.thick.value = state.thick;
+    els.ulwidth.value = state.ulwidth; els.size.value = state.size;
     render();
   });
 
@@ -307,12 +345,14 @@
     const m = (re) => { const x = t.match(re); return x ? +x[1] : null; };
     const w = m(/weight:\s*(\d+)/i), tr = m(/letter spacing:\s*(-?\d*\.?\d+)/i);
     const g = m(/underline gap:\s*(\d+)/i), th = m(/underline thickness:\s*(\d+)/i);
+    const uw = m(/underline width:\s*(\d+)/i);
     if (w != null) state.weight = clamp(Math.round(w / 50) * 50, 400, 900);
     if (tr != null) state.tracking = clamp(Math.round(tr * 100), -4, 8);
     if (g != null) state.gap = clamp(g, 2, 34);
     if (th != null) state.thick = clamp(th, 6, 26);
+    if (uw != null) state.ulwidth = clamp(uw, 40, 220);
     els.weight.value = state.weight; els.tracking.value = state.tracking;
-    els.gap.value = state.gap; els.thick.value = state.thick;
+    els.gap.value = state.gap; els.thick.value = state.thick; els.ulwidth.value = state.ulwidth;
     render();
   });
 
