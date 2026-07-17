@@ -72,13 +72,28 @@ function countLines(text: string): number {
 /** The one mono stack (design.md §3.2), shared with chat code blocks and the terminal. */
 const CODE_FONT = CODE_FONT_FAMILY;
 
-// Two label tokens for the whole panel, replacing the one-off 9.5 / 10.5 / 11 / xs
-// sizes that used to be sprinkled across each preview's own sub-header.
-/** 11px caps mono — the status strip's language chip and any legend label. */
-const STRIP_LABEL_CLASS =
-  'font-mono text-[11px] font-semibold uppercase tracking-[0.09em] text-text-subtle';
-/** 11px mono — paths, counts, and everything else the strip states in passing. */
-const STRIP_META_CLASS = 'font-mono text-[11px] text-text-muted';
+// Three label tokens for the whole panel, replacing the one-off 9.5 / 10.5 / 11 /
+// xs sizes that used to be sprinkled across each preview's own sub-header.
+//
+// D-31 draws the line these three sit on: MONO FOR DATA, SANS FOR CHROME. The
+// panel had all of its strip text in mono, which made the preview's chrome read
+// in a different voice from the chat beside it — the same drift D-31 fixed on
+// the tab labels. Mono is not decoration here; it is a claim that the glyphs
+// matter (you will read this character by character, or the digits must not
+// jitter). A word like "Modified" makes no such claim.
+
+/** 11px caps SANS — the language chip and legend labels. Chrome: names a thing. */
+const STRIP_LABEL_CLASS = 'text-[11px] font-semibold uppercase tracking-[0.09em] text-text-subtle';
+/**
+ * 11px MONO — paths, git refs, and tabular counts.
+ *
+ * These earn it, which is exactly why D-31 left them alone: a path is read
+ * character by character (l vs 1 vs I), and a count carrying `tabular-nums`
+ * wants stable digit widths so it does not jitter as it changes.
+ */
+const STRIP_IDENT_CLASS = 'font-mono text-[11px] text-text-muted';
+/** 11px SANS — everything the strip states in prose (statuses, notes). */
+const STRIP_META_CLASS = 'text-[11px] text-text-muted';
 
 // Geometry mirrored from BaseChat's HEADER_ACTION_BUTTON_CLASS so the panel's
 // expand/close read as the same control as the chat header's actions. That file
@@ -1061,7 +1076,7 @@ function DirectoryTreePreview({
               {directory.title}
             </span>
             {directory.kind === 'gitDirectory' && (
-              <span className={cn(STRIP_META_CLASS, 'max-w-24 truncate rounded-sm px-1.5 py-0.5')}>
+              <span className={cn(STRIP_IDENT_CLASS, 'max-w-24 truncate rounded-sm px-1.5 py-0.5')}>
                 {directory.branch}
               </span>
             )}
@@ -1341,12 +1356,12 @@ function TextFilePreview({
         <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
           {languageLabel(file.path, file.mimeType)}
         </span>
-        <span className={cn(STRIP_META_CLASS, 'min-w-0 truncate')} title={file.path}>
+        <span className={cn(STRIP_IDENT_CLASS, 'min-w-0 truncate')} title={file.path}>
           <span className="text-text-subtle">{directory}</span>
           <span className="text-text-default">{name}</span>
         </span>
         {showingCode && (
-          <span className={cn(STRIP_META_CLASS, 'shrink-0 tabular-nums')}>
+          <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
             {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
           </span>
         )}
