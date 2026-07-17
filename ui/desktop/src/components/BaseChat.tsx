@@ -80,7 +80,12 @@ import {
   resolveArtifactPath,
 } from './artifacts/artifactUtils';
 import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
-import { PREVIEW_MIN_WIDTH, PreviewPanelMode, previewPanelMode } from './Layout/yieldLadder';
+import {
+  PREVIEW_MIN_WIDTH,
+  PreviewPanelMode,
+  previewPanelMode,
+  SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
+} from './Layout/yieldLadder';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -103,7 +108,8 @@ const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
 // Matches the panel's close transition (--motion-fast); exit is a tier faster
 // than the --motion-base entrance so the panel unmounts as the slide completes.
 const ARTIFACT_PANEL_EXIT_MS = 120;
-const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+// Imported, not re-declared — see SIDEBAR_COMPACT_WIDTH. This file held the
+// third copy of 1120.
 // How long after the agent last worked a render failure is still treated as part
 // of the current exchange (and worth auto-fixing). A figure the agent just made
 // usually errors within a second or two of finishing; a failure that surfaces

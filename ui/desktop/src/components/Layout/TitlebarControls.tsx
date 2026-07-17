@@ -21,7 +21,7 @@ const TITLEBAR_CONTROL_GAP = 8;
  * here with the rest of the titlebar geometry because BaseChat and the chat tab
  * strip both derive their left padding from it and must not drift apart.
  */
-export const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+export { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './yieldLadder';
 
 export const TITLEBAR_CONTROL_RESERVE_PROPERTY = '--biorouter-titlebar-control-reserve';
 

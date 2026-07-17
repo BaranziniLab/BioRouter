@@ -11,8 +11,12 @@ import {
   TitlebarControls,
   TITLEBAR_CONTROL_RESERVE_PROPERTY,
 } from './TitlebarControls';
+import { SIDEBAR_COMPACT_WIDTH } from './yieldLadder';
 
-const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1120;
+// Rung 1's threshold. Imported, not re-declared: this is the same number the
+// titlebar reserve and the chat's compact title key off, and a local copy that
+// drifted would desynchronise the ladder from the chrome with nothing failing.
+const SIDEBAR_AUTO_COLLAPSE_WIDTH = SIDEBAR_COMPACT_WIDTH;
 
 /**
  * What the width watcher should do to the sidebar, given a width sample.

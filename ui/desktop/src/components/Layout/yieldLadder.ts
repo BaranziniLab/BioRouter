@@ -28,11 +28,33 @@ import { GroupLayout } from '../chatGroups/chatGroupsTypes';
 /**
  * The floor below which a chat pane stops being a chat.
  *
- * Not a guess: the transcript's readable measure is a 68ch column, and below
- * ~360px it cannot hold one — the text is a gutter, not a document. This is the
- * number every other rung yields to.
+ * D-36 — read this before trusting the number. D-32 justified 360 with "below
+ * this a pane cannot hold a 68ch measure". That rationale is FALSE and is
+ * recorded as such: a pane spends ~56px on chrome (a 400px pane measures a
+ * 344px column), and 68ch of the body face is ~500px anyway — so no floor near
+ * 360 was ever going to seat 68 characters. The number was reasoned backwards
+ * from one that felt right.
+ *
+ * 360 stays because it measures well and is what shipped, but it is defended
+ * honestly now: below ~360 a pane stops being USABLE — the text is a gutter,
+ * not a document. That is a weaker claim than the original and a true one.
+ *
+ * This is still the number every other rung yields to.
  */
 export const CHAT_MIN_WIDTH = 360;
+
+/**
+ * The width below which the sidebar stops holding a column of its own, so the
+ * chat's own title/controls must reserve room for the titlebar instead.
+ *
+ * ONE home, because this number had THREE (`AppLayout`, `TitlebarControls`,
+ * and a third copy re-declared inside `BaseChat`). Rung 1 of the ladder fires
+ * on it and rungs 2–4 inherit the room it frees, so a copy that drifted would
+ * desynchronise the ladder from the titlebar silently — the layout would simply
+ * be wrong at one width, with nothing failing. The titlebar reserve had already
+ * drifted once this way.
+ */
+export const SIDEBAR_COMPACT_WIDTH = 1120;
 
 /** The preview panel's own floor. Mirrors ARTIFACT_PANEL_MIN_WIDTH in BaseChat. */
 export const PREVIEW_MIN_WIDTH = 360;
