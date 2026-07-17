@@ -23,7 +23,44 @@ const MIME: Record<string, string> = {
 
 const extOf = (path: string) => path.split('.').pop()!.toLowerCase();
 
+// A git repository listing is the only place the panel renders the branch ref
+// and the status legend, and D-33 splits those two across the font boundary
+// (ref = mono, "Modified" = sans). Neither is reachable from a file fixture, so
+// the sweep could not see them at all without this. Shaped exactly like the main
+// process's `readArtifactFile` gitDirectory reply.
+const GIT_DIR_PATH = '/w/repo';
+
+// One file per git status so the legend has something to explain, plus a nested
+// directory so the tree's indent is exercised. `parentPath` is relative and ''
+// at the root, and a child's is its parent's RELATIVE path — the shape
+// artifactDirectory.ts's `visit('', …)` produces. An absolute parentPath here
+// renders "This folder is empty": the tree roots at appendChildren('').
+const GIT_ENTRIES: {
+  name: string;
+  relativePath: string;
+  parentPath: string;
+  isDirectory: boolean;
+  status: 'untracked' | 'modified' | 'staged' | 'committed' | 'pushed';
+}[] = [
+  { name: 'pipeline.R', relativePath: 'pipeline.R', parentPath: '', isDirectory: false, status: 'modified' },
+  { name: 'scratch.py', relativePath: 'scratch.py', parentPath: '', isDirectory: false, status: 'untracked' },
+  { name: 'manifest.json', relativePath: 'manifest.json', parentPath: '', isDirectory: false, status: 'staged' },
+  { name: 'R', relativePath: 'R', parentPath: '', isDirectory: true, status: 'committed' },
+  { name: 'statistics.R', relativePath: 'R/statistics.R', parentPath: 'R', isDirectory: false, status: 'committed' },
+  { name: 'README.md', relativePath: 'README.md', parentPath: '', isDirectory: false, status: 'pushed' },
+];
+
+const gitDirectoryFixture = () => ({
+  kind: 'gitDirectory' as const,
+  title: 'repo',
+  path: GIT_DIR_PATH,
+  branch: 'feat/redesign-ui-cohesion',
+  found: true as const,
+  entries: GIT_ENTRIES.map((entry) => ({ ...entry, path: `${GIT_DIR_PATH}/${entry.relativePath}` })),
+});
+
 async function readFixture(path: string) {
+  if (path === GIT_DIR_PATH) return gitDirectoryFixture();
   const name = path.split('/').pop()!;
   const response = await fetch(`/fixtures/${name}`);
   if (!response.ok) {
@@ -90,6 +127,10 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
       title: 'Agent Drafter Cohort Explorer',
       html: await (await fetch('/fixtures/agent-drafter-card.html')).text(),
     }),
+  },
+  {
+    label: 'git repository',
+    make: async (): Promise<ArtifactSource> => ({ kind: 'file', title: 'repo', path: GIT_DIR_PATH }),
   },
   // One entry per file kind the agent can create, so the whole preview surface can
   // be swept in a real browser (jsdom cannot see the Tailwind/Prism class clash).
