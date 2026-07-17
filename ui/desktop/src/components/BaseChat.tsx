@@ -1047,6 +1047,7 @@ function BaseChatContent({
     turnError,
     setWorkflowUserParams,
     tokenState,
+    agentReady,
     notifications: toolCallNotifications,
     onMessageUpdate,
   } = useChatStream({
@@ -1318,7 +1319,9 @@ function BaseChatContent({
     }
   }, [messages.length]);
 
-  const toolCount = useToolCount(sessionId);
+  // Gated on agentReady: tools do not exist until the extensions do, and this
+  // hook has no other reason to refetch.
+  const toolCount = useToolCount(sessionId, agentReady);
   const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
   // Feed the terminal-dock seam declared at the top of this component. Assigned
   // on every render; only ever READ at the instant the dock opens.

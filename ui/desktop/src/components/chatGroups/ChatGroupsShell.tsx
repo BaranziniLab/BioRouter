@@ -15,6 +15,7 @@ import { firstLeaf, GroupLayout, ChatGroupId } from './chatGroupsTypes';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
 import { SIDEBAR_COMPACT_TITLE_WIDTH } from '../Layout/TitlebarControls';
+import { setFocusedChatSession } from '../../utils/extensionErrorUtils';
 
 interface ChatGroupsShellProps {
   /** Mirrors the focused chat up to App's hubChat, so AppSidebar's recents
@@ -319,6 +320,17 @@ function ChatGroupPane({
   onChatChange,
   onSessionLoaded,
 }: ChatGroupPaneProps) {
+  // Extensions load per-session, so in a 4-way split four chats each finish
+  // their own load and each has something to report. Telling the toast layer
+  // which chat you are actually in lets a background group's clean load stay
+  // silent instead of stacking over the transcript you are reading. Failures
+  // still speak up from any group — see showExtensionLoadResults.
+  useEffect(() => {
+    if (isActiveGroup && sessionId) {
+      setFocusedChatSession(sessionId);
+    }
+  }, [isActiveGroup, sessionId]);
+
   return (
     <div
       // The drag hit-test looks for exactly this attribute
