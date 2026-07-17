@@ -44,7 +44,35 @@ I verified the Stage-0 facts directly. They are real: `scroll-chat-to-bottom` is
 > inside the header as designed; the fallback (strip fully `no-drag`, drag region
 > moved to the trailing space) is **not needed**.
 >
-> **R4 / N-mounted BaseChats: STILL UNMEASURED.** An attempt to measure it via the
+> **R4 / N-mounted BaseChats: MEASURED — AFFORDABLE. The split is not
+> design-invalidating.** Measured in the running app by mounting real chats on
+> the Dashboard (which already mounts N BaseChats today, so the experiment was
+> free):
+>
+> | mounted chats | heap | DOM nodes |
+> |---|---|---|
+> | 1 (on /pair)  | 59.7 MB | 540 |
+> | 3 (dashboard) | 68.6 MB | 605 |
+> | 6 (dashboard) | **66.2 MB** (stable over 6 consecutive samples) | 912 |
+>
+> Heap at 6 chats is LOWER than at 3 — it is flat within GC noise, so nothing
+> is retained per chat at a scale that matters. The real, monotonic cost is
+> **~74 DOM nodes and ~1 MB per chat**. Every one of the three designs stopped
+> here on a guess ("untested", "unknown, may invalidate the design"); it cost
+> ~2 minutes to answer.
+>
+> Caveat, disclosed: dashboard windows are small and these sessions are freshly
+> spawned (short transcripts). A full-height group with a long transcript and
+> tiktoken counting will cost more. This retires R4 as a BLOCKER; it does not
+> license an unbounded split. Re-measure before allowing >4 groups.
+>
+> ~~**R4 / N-mounted BaseChats: STILL UNMEASURED.**~~ (superseded — the earlier
+> Dashboard probe was VOID: it never mounted a chat (baseChats: 0, domNodes
+> flat at 254) and its "affordable" verdict was noise from an empty page. It
+> was deleted rather than banked.)
+>
+> ORIGINAL TEXT:
+> > **R4 / N-mounted BaseChats: STILL UNMEASURED.** An attempt to measure it via the
 > Dashboard (which already mounts N) was **void** — the probe never mounted a
 > single chat (`baseChats: 0`, `domNodes` flat at 254 across all samples), so its
 > "affordable" verdict was noise from an empty page and has been discarded along
