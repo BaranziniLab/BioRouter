@@ -16,7 +16,7 @@ read one document, read this one. It links out to the others.
 
 ---
 
-## Where we stand: 17 of 20 steps done
+## Where we stand: 18 of 20 steps done
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -45,8 +45,8 @@ not quietly better.
 | 15 | **D-34** kill the "New Session" flash — a tab opens already named | ✅ done |
 | 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | ✅ done (D-35) — 13/13 driven; preview-side ⌃Tab jsdom-only |
 | 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | ✅ done — **measured; no refactor shipped, because nothing measured indicted app code** |
-| 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | 🔄 in flight — **premise MEASURED AND CONFIRMED**: the transcript waits ~4.6s on extensions worth 359 bytes |
-| 19 | **D-32** the yield ladder — responsive collapse at every window size | ⬜ next |
+| 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | ✅ done — **2667ms → 738ms to read** |
+| 19 | **D-32** the yield ladder — responsive collapse at every window size | 🔄 in flight |
 | 20 | Final gate + full visual QA sweep (**lag is now an acceptance criterion, not a nice-to-have**) | ⬜ not started |
 
 ---
@@ -54,6 +54,8 @@ not quietly better.
 ## Commits (every step reversible)
 
 ```
+d9028330  feat(chat)   paint the conversation before the model and extensions load
+0a701721  feat(toasts) extension readiness: multi-chat aware, partials reported honestly
 c5676eae  fix(build)   land closeActiveTabRegistry — HEAD imported a module not in the tree
 84b0c5a4  test(tabs)   the chat side of the Ctrl+Tab arbitration
 fa725c70  design       D-35 — the tab model is a browser's, and so is the keyboard
@@ -240,6 +242,57 @@ so every new tab re-pays ~2.5s — a cost tabs and splits multiply.
 
 The user called this from the outside, hedged it ("perhaps"), and was right.
 
+### Progressive loading — built, and it was the user's call
+
+Split `/agent/resume` in two at the **existing** `load_model_and_extensions`
+seam: phase 1 (`false`) paints the transcript, phase 2 (`true`) loads the model
+and extensions behind it and toasts. No route change, no OpenAPI regen — the
+seam was already there; nobody had used it.
+
+**Observed, real app + real backend, n=3, load 8–12:**
+
+| | before | after |
+|---|---|---|
+| time to transcript | median **2667ms** | median **738ms** |
+| time to ready (toast) | median 2667ms | median 2651ms |
+
+**3.6× faster to read, ~1.9s earlier, and readiness arrives no later than
+before.** The BEFORE column is the proof of the coupling the user suspected:
+paint time **== ready time to the millisecond**. They were literally the same
+event.
+
+**The premise was confirmed but the numbers recalibrated.** Same setup (9
+extensions, 373 bytes, gating 355 messages), but cold full resume measures
+**1.25–1.42s here, not the 5.07s** the perf agent reported — that figure was
+most likely taken under machine load. Flagged rather than repeated: **a number
+you cannot reproduce is not a number.**
+
+**Submit-before-ready: HELD, not dropped and not blocked.** The message lands in
+the transcript, the chat shows Streaming with a live abortController, and Stop
+works throughout — so the user sees their message and sees it working. Observed:
+submitted at 962ms (2s *before* ready), sent at 3167ms, text intact. Both submit
+tests fail when the hold is removed.
+
+**Multi-tab toasts, two rules:** a clean load only toasts for the *focused* chat;
+a **failure always toasts and can never be overwritten by a later success**.
+Verified in a real 2×2 split: max 1 toast on screen, background successes
+silent, a background *failure* still spoke up.
+
+**Two pre-existing bugs found on the way, both fixed, both would have got worse:**
+- the transcript LRU cache (process-lifetime, no TTL) could reach a submit
+  having **never loaded the agent at all** — a live-looking chat over a backend
+  with no extensions;
+- `useToolCount` fetches on `sessionId` alone with nothing to re-trigger it. It
+  already raced; progressive loading would have made it *reliably* read zero
+  tools and cache that forever, silently killing the "too many tools" alert.
+
+**Regression:** a deliberately broken extension (isolated config root) still
+painted the transcript at 686ms and toasted *"8 of 9 extensions loaded — Failed:
+Ucsfomopagent"* on the correct popover surface. Navigating away mid-load leaves
+no unmount warnings, no orphaned stream. The artifact panel, KB chip and model
+selector never depended on the old ordering (they derive from the transcript or
+from global state) — checked, fine.
+
 ### Still to verify by driving
 
 - **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
@@ -276,6 +329,8 @@ The user called this from the outside, hedged it ("perhaps"), and was right.
 | ⌘W closed the **window**, not the tab | ✅ **fixed, and it was a landmine.** `{ role: 'close' }` in `main.ts` silently claimed `CmdOrCtrl+W` with no `accelerator:` line to grep for. A renderer keydown listener could **never** have won — a menu accelerator is consumed before the web contents sees the key, so the window would have closed regardless, taking every tab with it. ⌘W = Close Tab (via IPC), ⇧⌘W = Close Window, per Safari/Chrome. Verified by dumping the built menu |
 | Preview panel not window-pinned in a split | 📌 **known partial, deliberate.** It stays per-pane; in a left/right split it sits inside the active group's box, not at the window edge. Hoisting it drops the artifact tab stack on every group switch (plan Stage 5, its own change) |
 | `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
+| **The app's own `biorouterd` cannot read this machine's provider secrets** | 📋 **pre-existing, verified identical on old code** (by reverting). `provider_restore_failed: XIAOMI_MIMO_` → the route returns `extension_results: None` → extensions are never attempted → no readiness toast fires. All toast verification therefore ran against an **external** backend (`EXTERNAL=1`). This is not caused by progressive loading, but progressive loading is the first feature to *depend* on that field. Worth its own investigation |
+| **Extensions are per-session, not global** | 📌 **the deeper cost, and bigger than this branch.** 4 splits = 4 × ~1.0s of duplicate extension startup, spawning 4 copies of the same MCP servers. Proven, not inferred: a 4-split window fired **4 separate `resume(load_model_and_extensions=true)` calls**, and three cold sessions each paid independently. **Progressive loading hides this latency; it does not remove the work.** A shared/pooled extension manager is worth more than the reordering — and is a backend change of real size. Recommended, not built |
 | **No virtualization in the transcript** | 📋 **count-proven, left alone deliberately.** 4 tabs mount **1211** message components at once and never unmount them (`ProgressiveMessageList` batches 20 at a time until *all* are mounted). It does not hurt typing today — 0 long tasks at 4 groups — so fixing it now would be a refactor with no measured delta. **This is the scaling cliff**: the number that grows is messages × tabs, and nothing currently bounds it. File it before someone opens a 5000-message chat in four tabs |
 | `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
 | `WorkflowsView.tsx:167` still routes to `/dashboard` | 📋 removing the titlebar control did not remove the last entry point |
