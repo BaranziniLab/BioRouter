@@ -305,8 +305,16 @@
   :root[data-drag="on"] .dropzone{opacity:1}
 
   /* the status strip — Claude Code's "Last Turn · +4 -0" row */
-  .strip{height:34px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)}
-  .strip .path{color:var(--text)}
+  /* D-33 — mono for DATA, sans for CHROME. This rule used to set mono on the
+     CONTAINER, so every word in the strip inherited a face it had not earned
+     and the preview's chrome read in a different voice from the chat beside
+     it — the same drift D-31 fixed on the tab labels, one surface over.
+     Mono is a claim that the glyphs matter: you read this character by
+     character, or the digits must not jitter. The strip is sans; only .path
+     opts back in. */
+  .strip{height:34px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);font-family:inherit;font-size:11px;color:var(--muted)}
+  /* Earns mono: a path is read character by character (l vs 1 vs I). */
+  .strip .path{color:var(--text);font-family:ui-monospace,Menlo,monospace}
   .strip .path .dim{color:var(--subtle)}
   .strip .cap{font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--subtle)}
   .strip .seg2{margin-left:auto;display:inline-flex;gap:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
@@ -1010,6 +1018,17 @@
           <div class="row after"><span class="k">Now</span><span class="v">--font-sans 13px (§3.2 metadata), normal tracking</span></div>
         </div>
         <div class="ref">user override · supersedes the otty mono-label idea</div>
+      </div>
+      <div class="cardx">
+        <span class="tag fix">Θ₃</span>
+        <h3>Mono for data, sans for chrome</h3>
+        <p><b>The other half of Θ₂, 2026-07-17 — the user said the font was still wrong in the chat <em>and the preview</em>.</b> Both tab strips were already fixed by Θ₂ in one line, because the preview panel shares chat’s <span class="mono" style="font-size:12px">.br-tabstrip</span> contract. But the preview’s <em>status strip</em> still set mono on the container, so every word in it inherited a face it had not earned — the same drift, one surface over.</p>
+        <p>The rule that settles it, and it is a <em>per-usage</em> test, not a per-file one: <b>monospace is a claim that the glyphs matter.</b> Either you will read this character by character, or the digits must not jitter. Ask that of each item and the strip sorts itself.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Keeps mono</span><span class="v">the path (l vs 1 vs I) · the git ref · a tabular-nums count</span></div>
+          <div class="row after"><span class="k">Goes sans</span><span class="v">the language chip “TYPESCRIPT” · the status legend “Modified”</span></div>
+        </div>
+        <div class="ref">D-33 · generalises D-31 · P6 unchanged — this is what “the jobs it earns” means</div>
       </div>
       <div class="cardx">
         <span class="tag fix">K</span>
