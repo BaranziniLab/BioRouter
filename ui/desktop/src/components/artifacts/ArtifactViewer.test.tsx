@@ -793,7 +793,15 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(chartTab).toHaveAttribute('title', '/work/charts/chart-a.html');
     expect(summaryTab).toHaveAttribute('title', '/work/reports/summary.md');
     expect(summaryTab).toHaveAttribute('aria-selected', 'true');
+    // Rung 3 of the yield ladder (D-32): "shrink to a floor, then SCROLL, then
+    // collapse into a ▾ — never wrap." This asserted `overflow-hidden`, which is
+    // none of those: past the floor the panel's tabs were clipped and simply
+    // unreachable. The strip scrolls now, and `.br-tabstrip__scroll` keeps the
+    // scrollbar out of a 52px bar.
     expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).toHaveClass(
+      'overflow-x-auto'
+    );
+    expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).not.toHaveClass(
       'overflow-hidden'
     );
     // Tabs are painted by the shared `br-tab` class (styles/main.css), not by
@@ -1205,5 +1213,92 @@ describe('artifact render-error provenance', () => {
   it('does not grant the artifact frame popup capability', async () => {
     const frame = await renderHtmlArtifact(vi.fn());
     expect(frame.getAttribute('sandbox') ?? '').not.toContain('allow-popups');
+  });
+});
+
+/**
+ * Rung 3 of the yield ladder (D-32) for the PREVIEW panel's strip.
+ *
+ * The panel feels this rung first: it is the narrowest strip in the window, and
+ * rung 2 narrows it further. As with the chat strip, jsdom computes no layout —
+ * these stub the MEASUREMENT and test the wiring. The rule is unit-tested in
+ * Layout/yieldLadder.test.ts and the geometry is verified by driving the app.
+ */
+describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
+  function stubTabListMetrics(content: number, box: number) {
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get');
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get');
+    const isTabList = (el: HTMLElement) => el.getAttribute('role') === 'tablist';
+    scroll.mockImplementation(function (this: HTMLElement) {
+      return isTabList(this) ? content : 0;
+    });
+    client.mockImplementation(function (this: HTMLElement) {
+      return isTabList(this) ? box : 0;
+    });
+    return () => {
+      scroll.mockRestore();
+      client.mockRestore();
+    };
+  }
+
+  const viewer = (artifact: ArtifactSource) => (
+    <ThemeProvider>
+      <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
+    </ThemeProvider>
+  );
+  const file = (title: string): ArtifactSource => ({
+    kind: 'file',
+    title,
+    path: `/work/${title}`,
+  });
+
+  it('reaches a clipped preview tab: the ▾ lists them and selecting one activates it', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('chart-b.html')));
+      rerender(viewer(file('summary.md')));
+
+      const trigger = await screen.findByTestId('artifact-tab-overflow-trigger');
+      fireEvent.pointerDown(trigger);
+      const item = await screen.findByText('chart-a.html', {
+        selector: '[data-testid^="artifact-tab-overflow-item"] span',
+      });
+      fireEvent.click(item);
+      await waitFor(() => {
+        expect(screen.getByRole('tab', { name: 'chart-a.html' })).toHaveAttribute(
+          'aria-selected',
+          'true'
+        );
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('stays away while the tabs fit', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(300, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('summary.md')));
+      await screen.findByRole('tab', { name: 'summary.md' });
+      expect(screen.queryByTestId('artifact-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('never offers a menu for a single preview', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 20);
+    try {
+      render(viewer(file('chart-a.html')));
+      await screen.findByRole('tab', { name: 'chart-a.html' });
+      expect(screen.queryByTestId('artifact-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
   });
 });

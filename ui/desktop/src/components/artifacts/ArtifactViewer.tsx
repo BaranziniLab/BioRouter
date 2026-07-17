@@ -37,6 +37,13 @@ import {
   X,
 } from '../icons/app-icons';
 import MarkdownContent from '../MarkdownContent';
+import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import DocumentPreview from './DocumentPreview';
 import NotebookPreview from './NotebookPreview';
 import type {
@@ -310,6 +317,14 @@ export default function ArtifactViewer({
   const suppressTabClickRef = useRef(false);
   const suppressTabClickTimerRef = useRef<number | null>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement | null>(null);
+  const tabListRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Rung 3 (D-32) for the panel's strip, through the SAME rule the chat strip
+   * uses — card Z's "one tab, three surfaces" is only true if the rule is shared
+   * too. Called up here with the other hooks: the component early-returns below
+   * when there is no active artifact.
+   */
+  const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
   const activeSourceKey = activeArtifact ? artifactSourceKey(activeArtifact) : null;
@@ -681,10 +696,17 @@ export default function ArtifactViewer({
             own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
             only lands in the gap if the tabs are spaced the way the class expects. */}
         <div
+          ref={tabListRef}
           role="tablist"
           aria-label="Open artifact previews"
           aria-keyshortcuts="Meta+W Control+W Control+Tab Control+Shift+Tab"
-          className="flex min-w-0 flex-1 items-center gap-[3px] overflow-hidden"
+          // Rung 3 of the yield ladder (D-32): shrink to the floor, then SCROLL,
+          // then collapse into a ▾ — never wrap. This was `overflow-hidden`, so
+          // the panel's tabs did neither: past the floor they were clipped and
+          // simply unreachable, which is the failure the rung exists to prevent
+          // and which the panel feels first — it is the narrowest strip in the
+          // window, and rung 2 makes it narrower still.
+          className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
         >
           {tabState.tabs.map((tab) => {
             const TabIcon = iconForArtifact(tab.artifact);
@@ -740,6 +762,39 @@ export default function ArtifactViewer({
             );
           })}
         </div>
+        {showTabOverflowMenu && (
+          // Outside the scroll box, for the reason ChatTabStrip's wrap documents:
+          // inside it, the button's own width would keep alive the overflow that
+          // summoned it.
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Show all previews"
+                data-testid="artifact-tab-overflow-trigger"
+                className="br-tabstrip__overflow"
+              >
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
+              {tabState.tabs.map((tab) => {
+                const TabIcon = iconForArtifact(tab.artifact);
+                return (
+                  <DropdownMenuItem
+                    key={tab.id}
+                    data-testid={`artifact-tab-overflow-item-${tab.id}`}
+                    onSelect={() => activateTab(tab)}
+                    className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                  >
+                    <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         {activeArtifact.kind !== 'mcpResource' && (
           <button
             type="button"

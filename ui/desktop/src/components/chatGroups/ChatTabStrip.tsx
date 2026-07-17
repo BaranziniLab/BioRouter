@@ -1,8 +1,8 @@
-import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CSSProperties, useCallback, useEffect, useRef } from 'react';
 import { ChevronDown, MessageSquare, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
-import { shouldShowTabOverflowMenu } from '../Layout/yieldLadder';
+import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,7 +62,6 @@ export function ChatTabStrip({
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
-  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
 
   // Keep the focused tab in view as the strip scrolls past its shrink floor.
   useEffect(() => {
@@ -77,36 +76,11 @@ export function ChatTabStrip({
    *
    * The first two steps are pure CSS (`.br-tabstrip`: flex-wrap: nowrap;
    * overflow-x: auto) and already shipped. This is the last one: once tabs are
-   * scrolled out of sight, the ▾ is how you reach them without scrubbing.
+   * scrolled out of sight, the ▾ is how you reach them without scrubbing. The
+   * measurement is a SHARED hook because the preview panel runs the same tab
+   * language and must not have to re-derive the rule (card Z).
    */
-  const measureOverflow = useCallback(() => {
-    const strip = stripRef.current;
-    if (!strip) return;
-    setShowOverflowMenu(
-      shouldShowTabOverflowMenu({
-        scrollWidth: strip.scrollWidth,
-        clientWidth: strip.clientWidth,
-        tabCount: tabs.length,
-      })
-    );
-  }, [tabs.length]);
-
-  // Two triggers, because they are two different events and neither implies the
-  // other: the OBSERVER catches the strip's box changing (window resize, sidebar
-  // collapse, splitter drag), and the layout effect catches the CONTENT changing
-  // (a tab opened, closed or renamed) — which moves scrollWidth while leaving the
-  // observed box identical, so the observer never fires for it.
-  useLayoutEffect(() => {
-    measureOverflow();
-  }, [measureOverflow, tabs, activeTabId]);
-
-  useEffect(() => {
-    const strip = stripRef.current;
-    if (!strip || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measureOverflow);
-    observer.observe(strip);
-    return () => observer.disconnect();
-  }, [measureOverflow]);
+  const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length);
 
   const handleOverflowSelect = useCallback(
     (tabId: ChatTabId) => {

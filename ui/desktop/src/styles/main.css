@@ -936,6 +936,18 @@
   display: none;
 }
 
+/* The preview panel nests its tablist inside the strip for a11y, so the scroll
+   box is the tablist rather than `.br-tabstrip` itself. Same rule, same look:
+   scroll past the floor, never wrap, and never show a scrollbar in a 52px bar. */
+.br-tabstrip__scroll {
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+
+.br-tabstrip__scroll::-webkit-scrollbar {
+  display: none;
+}
+
 /* Rung 3's last step (D-32): "…then collapse into a ▾ menu — never wrap."
    The button is a SIBLING of the strip, not a child: inside the scroll box it
    would count toward the strip's own scrollWidth and latch the overflow it was
