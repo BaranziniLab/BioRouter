@@ -67,6 +67,10 @@ describe('ProviderGuard commercial onboarding', () => {
       </ProviderGuard>
     );
 
+    expect(await screen.findByRole('img', { name: 'Biorouter logo' })).toHaveAttribute(
+      'viewBox',
+      '110 55 380 330'
+    );
     fireEvent.click(await screen.findByRole('button', { name: 'Complete detection' }));
 
     await waitFor(() => {

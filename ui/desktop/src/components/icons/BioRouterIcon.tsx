@@ -1,6 +1,6 @@
-import type { HTMLAttributes } from 'react';
+import type { SVGProps } from 'react';
 import { BioRouter } from './BioRouter';
 
-export function BioRouterIcon(props: HTMLAttributes<HTMLSpanElement>) {
+export function BioRouterIcon(props: SVGProps<SVGSVGElement>) {
   return <BioRouter {...props} />;
 }
