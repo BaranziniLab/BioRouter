@@ -12,11 +12,11 @@ read one document, read this one. It links out to the others.
 | [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) | The approved visual spec. Interactive: Current ⇄ Redesigned, light/dark, Highlight |
 | [`chat-groups-plan.md`](chat-groups-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
 | [`chat-groups-r7-spike.md`](chat-groups-r7-spike.md) | Proof that two KnowledgeProviders clobber each other through the server |
-| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-35; Part 6b is this pass; Part 7 is the drift register |
+| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-37; Part 6b is this pass; Part 7 is the drift register |
 
 ---
 
-## Where we stand: 18 of 20 steps done
+## Where we stand: 19 of 20 steps done
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -46,7 +46,7 @@ not quietly better.
 | 16 | **Browser keys** — ⌘T new tab, ⌘N new window, ⌃Tab cycle (chat + preview) | ✅ done (D-35) — 13/13 driven; preview-side ⌃Tab jsdom-only |
 | 17 | **Lag** — measure first, then fix; leave a repeatable perf gate | ✅ done — **measured; no refactor shipped, because nothing measured indicted app code** |
 | 18 | **Progressive load** — paint the transcript first; extensions/model finish behind it; toast on ready (naming partial failures) | ✅ done — **2667ms → 738ms to read** |
-| 19 | **D-32** the yield ladder — responsive collapse at every window size | 🔄 in flight |
+| 19 | **D-32** the yield ladder — responsive collapse at every window size | ✅ done (+ D-36, D-37) |
 | 20 | Final gate + full visual QA sweep (**lag is now an acceptance criterion, not a nice-to-have**) | ⬜ not started |
 
 ---
@@ -54,6 +54,12 @@ not quietly better.
 ## Commits (every step reversible)
 
 ```
+8bcfcbe5  feat(preview) rung 3 for the preview's strip, through the SHARED rule
+85fe794c  feat(groups)  rung 4's trigger — the split's width watcher
+c611c154  feat(groups)  rung 4's state half — merge to one, and give it back
+3f71f504  feat(tabs)    rung 3 — tabs collapse into a ▾ once they scroll out of sight
+6158c6ae  feat(chat)    rung 2 — the preview panel yields its column to the transcript
+ea68495d  feat(layout)  the yield ladder, as pure rules (D-32)
 d9028330  feat(chat)   paint the conversation before the model and extensions load
 0a701721  feat(toasts) extension readiness: multi-chat aware, partials reported honestly
 c5676eae  fix(build)   land closeActiveTabRegistry — HEAD imported a module not in the tree
@@ -293,6 +299,54 @@ no unmount warnings, no orphaned stream. The artifact panel, KB chip and model
 selector never depended on the old ordering (they derive from the transcript or
 from global state) — checked, fine.
 
+### The yield ladder (D-32) — measured at every width
+
+Each rung is a **pure function of (width, state)** in `Layout/yieldLadder.ts`
+(34 unit tests), following `sidebarAutoCollapseAction`'s shape on purpose:
+these are **state bugs waiting to happen, not layout bugs**, and the sidebar
+taught us that the testable part is the rule, not the geometry.
+
+| window | sidebar | pane | chat col | preview | tabs | rows | ▾ |
+|---|---|---|---|---|---|---|---|
+| 1400 | expanded | 1160 | 584 | side, 520 | 5×88 | 1 | no |
+| 1120 | expanded | 880 | 464 | side, **360 floor** | 5×88 | 1 | **yes** |
+| 1000 | **compact** | 1000 | 584 | side, 360 | 5×88 | 1 | yes |
+| 860 | overlay | 860 | **760** | **overlay** | 5×98 | 1 | no |
+| 800 | overlay | 800 | 744 | overlay | 5×89 | 1 | no |
+
+**It reverses exactly** — the same numbers at every width on the way back up.
+**`rows = 1` in every run at every width: the strip never wrapped**, which was
+the one thing the spec forbade outright.
+
+640/760 are absent because they are **unreachable** — the OS window floors at
+800 (`main.ts`). Sweeping there would have been three identical rows dressed up
+as data.
+
+**Rung 4 composing with rung 1, which is the ladder actually working:** a 3-up
+split (needs 1082) at **1400** → 3 groups @289px; at **1300** (shell 1060) →
+**merged**, chat back to 760; at **1100** → the sidebar collapses, which hands
+the shell 1100 back → **the split is restored**. Rung 1 yielding buys back the
+room rung 4 needed, *while the window is still shrinking*.
+
+**A bug rung 3 exposed:** the preview panel's strip was `overflow-hidden` — its
+tabs never shrank-then-scrolled at all; past the floor they were **clipped and
+unreachable**. That is squarely what the user asked about ("if certain elements
+don't fit, then collapse the element"), so rung 3 covers both strips through a
+**shared hook** — the spec's claim that both strips behave alike is only true
+if the *rule* is shared, not merely similar. An existing test had pinned the
+clipping as if it were intended; it was flipped deliberately, not quietly.
+
+**Mutation: 9 run.** M4 (remove the crossing gate) killed 4 — including *"keeps
+a split the user made BY HAND"*. **M7 initially SURVIVED**: a "leaf order" test
+was decorative, because the fixture's object order accidentally matched leaf
+order. Rewritten with a `left`-split fixture where the two genuinely disagree;
+it kills the mutant now. That is the second decorative test found on this
+branch by mutating rather than trusting a green tick.
+
+**Perf gate: 1.19× against a 1.6× budget**, p95 33.8/40.3ms on a verified-quiet
+box — a ResizeObserver-driven ladder was exactly the kind of thing that could
+have regressed typing, and it didn't.
+
 ### Still to verify by driving
 
 - **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
@@ -331,6 +385,7 @@ from global state) — checked, fine.
 | `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
 | **The app's own `biorouterd` cannot read this machine's provider secrets** | 📋 **pre-existing, verified identical on old code** (by reverting). `provider_restore_failed: XIAOMI_MIMO_` → the route returns `extension_results: None` → extensions are never attempted → no readiness toast fires. All toast verification therefore ran against an **external** backend (`EXTERNAL=1`). This is not caused by progressive loading, but progressive loading is the first feature to *depend* on that field. Worth its own investigation |
 | **Extensions are per-session, not global** | 📌 **the deeper cost, and bigger than this branch.** 4 splits = 4 × ~1.0s of duplicate extension startup, spawning 4 copies of the same MCP servers. Proven, not inferred: a 4-split window fired **4 separate `resume(load_model_and_extensions=true)` calls**, and three cold sessions each paid independently. **Progressive loading hides this latency; it does not remove the work.** A shared/pooled extension manager is worth more than the reordering — and is a backend change of real size. Recommended, not built |
+| **A split created at a narrow width keeps its slivers** | 📌 **deliberate — D-37.** A 4-up dragged out at 1400px sits at 169px panes and stays. Rung 4 merges only on a *crossing*, because a watcher that dissolved a split the instant you made it would be fighting the drop that just happened. If slivers should never exist, the fix belongs in the **drop** (refuse it, where the user can see why), not in a watcher that undoes it afterwards. Needs a decision, not a patch |
 | **No virtualization in the transcript** | 📋 **count-proven, left alone deliberately.** 4 tabs mount **1211** message components at once and never unmount them (`ProgressiveMessageList` batches 20 at a time until *all* are mounted). It does not hurt typing today — 0 long tasks at 4 groups — so fixing it now would be a refactor with no measured delta. **This is the scaling cliff**: the number that grows is messages × tabs, and nothing currently bounds it. File it before someone opens a 5000-message chat in four tabs |
 | `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
 | `WorkflowsView.tsx:167` still routes to `/dashboard` | 📋 removing the titlebar control did not remove the last entry point |
