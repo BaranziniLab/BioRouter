@@ -159,4 +159,67 @@ describe('InAppTerminalDock', () => {
       'overflow-x-auto'
     );
   });
+
+  // The terminal used to be a rounded, bordered box painted bg-background-muted
+  // sitting inside a gutter also painted bg-background-muted — a hairline drawn
+  // between a surface and itself. The dock's own border-t is the only hairline
+  // the terminal needs (D-11), so the host must stay a plain, unpainted inset.
+  it('renders the terminal host without a nested bordered box', async () => {
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
+
+    const pane = await waitFor(() => {
+      const el = document.querySelector('[data-terminal-pane]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+
+    const host = pane.firstElementChild as HTMLElement;
+    // The host is still an inset — xterm needs room to breathe, just not a box.
+    expect(host).toHaveClass('px-2', 'py-1.5', 'overflow-hidden');
+    for (const boxClass of ['rounded-md', 'border', 'border-border-subtle']) {
+      expect(host).not.toHaveClass(boxClass);
+    }
+    // The ground is painted once, by the region above the host — never twice.
+    expect(host).not.toHaveClass('bg-background-muted');
+
+    const region = pane.parentElement as HTMLElement;
+    expect(region).toHaveClass('bg-background-muted');
+    expect(region).not.toHaveClass('p-2'); // no gutter: the terminal bleeds to the dock edges
+  });
+
+  // design.md D-07: the left accent bar is for VERTICAL lists only. These are
+  // horizontal tabs, so they use the shared Safari-style tab classes; the pill,
+  // the divider and the strip ground all come from main.css, never from here.
+  it('styles terminal tabs with the shared Safari tab classes', async () => {
+    const user = userEvent.setup();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
+
+    const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
+    const strip = tabList.closest('.br-tabstrip') as HTMLElement;
+    expect(strip).not.toBeNull();
+    expect(strip).toHaveClass('br-tabstrip--sm');
+    // The strip's ground, padding, gap and bottom hairline all come from the
+    // class. Overriding any of them locally is what this guards against.
+    expect(strip.className).not.toMatch(/bg-background|border-b|px-|gap-/);
+
+    await user.click(screen.getByRole('button', { name: /new terminal session/i }));
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+    });
+
+    const tabs = screen.getAllByRole('tab').map((tab) => tab.closest('.br-tab') as HTMLElement);
+    expect(tabs.every(Boolean)).toBe(true);
+    // Only the active tab is painted, and only via data-active.
+    expect(tabs.map((tab) => tab.dataset.active)).toEqual(['false', 'true']);
+
+    for (const tab of tabs) {
+      expect(tab.querySelector('.br-tab__label')).not.toBeNull();
+      // No local restyling: no left accent bar (D-07 reserves it for vertical
+      // lists), no chip, no separators, no width/padding overrides.
+      expect(tab.className).not.toMatch(
+        /before:|rounded|accent-bar|bg-background|max-w-|min-w-|px-|h-\d/
+      );
+    }
+  });
 });

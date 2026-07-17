@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronsDownUp } from 'lucide-react';
+import { ChevronsDownUp } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { readConfig, upsertConfig } from '../api';

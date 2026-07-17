@@ -4,6 +4,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
@@ -332,21 +333,27 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
           e.preventDefault();
         }}
       >
-        <div className="p-2">
+        <div className="p-1">
           <Input
             type="text"
-            placeholder="search extensions..."
+            placeholder="Search extensions..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 text-sm"
+            className="h-8 text-[13px]"
             autoFocus
           />
+        </div>
+        {/* §4.5 section label names the group; the bulk action shares its row as a
+            real ghost affordance (radius + hover fill + hit area) rather than the
+            bare underlined text link it used to be. */}
+        <div className="flex items-center justify-between gap-2">
+          <DropdownMenuLabel>Extensions</DropdownMenuLabel>
           {sortedExtensions.length > 0 && (
             <button
               type="button"
               onClick={handleBulkToggle}
               disabled={bulkInFlight || pendingExtensionNames.size > 0}
-              className="mt-1.5 text-xs text-text-default/70 hover:text-text-default underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="mr-2 shrink-0 cursor-pointer rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-medium hover:text-text-default disabled:cursor-not-allowed disabled:opacity-50"
             >
               {visibleEnabledCount === 0
                 ? `Enable all (${sortedExtensions.length})`
@@ -356,8 +363,8 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
         </div>
         <div className="max-h-[400px] overflow-y-auto">
           {sortedExtensions.length === 0 ? (
-            <div className="px-2 py-4 text-center text-sm text-text-default/70">
-              {searchQuery ? 'no extensions found' : 'no extensions available'}
+            <div className="px-3 py-4 text-center text-[13px] leading-[18px] text-text-muted">
+              {searchQuery ? 'No extensions found' : 'No extensions available'}
             </div>
           ) : (
             sortedExtensions.map((ext) => {
@@ -370,13 +377,16 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
                   disabled={rowDisabled}
                   onCheckedChange={(checked) => handleToggle(ext, checked)}
                   onSelect={(event) => event.preventDefault()}
-                  className={`flex items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium ${
+                  // Geometry comes from the shared §4.5 row (32px, 12px padding,
+                  // --radius-md, 13/18, --background-medium hover) — this call site
+                  // adds only the toggle layout and the in-flight cursor.
+                  className={`justify-between hover:bg-background-medium ${
                     rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
                   title={ext.description || ext.name}
                 >
                   <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                    <div className="text-sm font-medium text-text-default truncate">
+                    <div className="font-medium text-text-default truncate">
                       {formatExtensionName(ext.name)}
                     </div>
                     {isBuiltInExtension(ext) && <BuiltInBadge />}

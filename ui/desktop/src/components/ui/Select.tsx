@@ -22,7 +22,11 @@ import ReactSelect from 'react-select';
  * picker in SwitchModelModal is a typeahead combobox (onInputChange/inputValue)
  * which Radix Select cannot express without `cmdk`.
  */
-const MENU_Z = 500; // --z-modal-dropdown
+// --z-modal-dropdown, deliberately NOT --z-dropdown (200): react-select renders its
+// menu into a portal, so it is a SIBLING of any dialog content (--z-modal, 400) that
+// hosts it. LeadWorkerSettings and SwitchModelModal both put a Select inside a
+// DialogContent — this tier is exactly what stops the menu painting under them.
+const MENU_Z = 500;
 
 export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
   return (
@@ -51,8 +55,9 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         input: () => 'text-text-default',
         dropdownIndicator: () =>
           'text-text-muted transition-transform duration-[var(--motion-fast)]',
+        // --radius-xl (12px), matching every other floating surface (§4.5).
         menu: () =>
-          'biorouter-popover-surface mt-1.5 bg-background-default rounded-2xl text-sm select__menu absolute',
+          'biorouter-popover-surface mt-1.5 bg-background-default rounded-xl text-sm select__menu absolute',
         menuList: () => 'max-h-60 overflow-y-auto p-1',
         groupHeading: () =>
           'px-3 pt-2 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-text-muted',

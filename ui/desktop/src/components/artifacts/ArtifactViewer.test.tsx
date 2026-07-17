@@ -66,7 +66,11 @@ describe('artifact title helpers', () => {
   });
 });
 
-describe('ArtifactViewer', () => {
+// These specs drive the real panel through many sequential userEvent round trips
+// in jsdom, and several land within a few hundred ms of vitest's 5s default — so
+// which one trips the limit depends on machine load, not on the code. The suite
+// gets a timeout that reflects how long it honestly takes.
+describe('ArtifactViewer', { timeout: 20_000 }, () => {
   it('renders HTML artifacts in a side viewer frame with title-only header', async () => {
     installElectronMock();
 
@@ -479,6 +483,49 @@ describe('ArtifactViewer', () => {
     expect(
       screen.getByTestId('artifact-viewer').querySelectorAll('span.token').length
     ).toBeGreaterThan(0);
+
+    // One status strip carries the language, the path (dir dimmed, filename not)
+    // and the toggle — there is no second per-preview sub-header.
+    const strip = screen.getByTestId('artifact-status-strip');
+    expect(strip).toHaveTextContent('R');
+    expect(strip).toHaveTextContent('/work/');
+    expect(strip).toHaveTextContent('analysis.R');
+    expect(strip.querySelector('[title="/work/analysis.R"]')).toBeInTheDocument();
+  });
+
+  it('sits the preview directly on the panel ground: panel → strip → content', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'analysis.R',
+      path: '/work/analysis.R',
+      mimeType: 'text/x-r',
+      text: 'library(ggplot2)\n',
+      size: 20,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.R', path: '/work/analysis.R' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('artifact-status-strip')).toBeInTheDocument());
+
+    // The complaint was "a box inside a box inside a box": the content host must
+    // carry no gutter, no card fill, no border and no shadow of its own — the
+    // panel edge is the only edge.
+    const content = container.querySelector('#artifact-preview-content');
+    expect(content).not.toBeNull();
+    const boxy = ['p-3', 'border', 'rounded-lg', 'shadow-popover', 'bg-background-default'];
+    for (const className of boxy) {
+      expect(content!.classList.contains(className)).toBe(false);
+    }
   });
 
   it('does not lay code lines out as flex rows, which shreds long lines', async () => {
@@ -749,15 +796,21 @@ describe('ArtifactViewer', () => {
     expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).toHaveClass(
       'overflow-hidden'
     );
-    expect(chartTab.closest('[data-artifact-tab-id]')).toHaveClass(
-      'min-w-0',
-      'max-w-[220px]',
-      'flex-1',
-      'basis-[175px]'
-    );
+    // Tabs are painted by the shared `br-tab` class (styles/main.css), not by
+    // per-tab utilities: sizing, the active pill and the Safari divider all live
+    // there, so the panel can never drift from the sidebar's tabs.
+    const chartChip = chartTab.closest('[data-artifact-tab-id]');
+    const summaryChip = summaryTab.closest('[data-artifact-tab-id]');
+    expect(chartChip).toHaveClass('br-tab');
+    expect(summaryChip).toHaveClass('br-tab');
+    // Only the active tab is painted, and no tab carries a border of its own.
+    expect(summaryChip).toHaveAttribute('data-active', 'true');
+    expect(chartChip).not.toHaveAttribute('data-active');
+    expect(chartTab.querySelector('.br-tab__label')).toHaveTextContent('chart-a.html');
 
     await user.click(chartTab);
     expect(chartTab).toHaveAttribute('aria-selected', 'true');
+    expect(chartTab.closest('[data-artifact-tab-id]')).toHaveAttribute('data-active', 'true');
     expect(onOpenArtifact).toHaveBeenLastCalledWith({
       kind: 'file',
       title: 'chart-a.html',

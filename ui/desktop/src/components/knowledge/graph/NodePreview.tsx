@@ -1,6 +1,6 @@
 // ui/desktop/src/components/knowledge/graph/NodePreview.tsx
 import { useEffect, useMemo, useRef } from 'react';
-import { FileCode2, X } from 'lucide-react';
+import { FileCode2, X } from '../../icons/app-icons';
 import type { GraphNode } from '../../../api/types.gen';
 import MarkdownContent from '../../MarkdownContent';
 import { Button } from '../../ui/button';

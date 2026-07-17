@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Clipboard } from 'lucide-react';
+import { Clipboard } from '../../icons/app-icons';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { toastError, toastSuccess } from '../../../toasts';

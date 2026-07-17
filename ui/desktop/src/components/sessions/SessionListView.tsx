@@ -12,8 +12,8 @@ import {
   ExternalLink,
   Puzzle,
   LayoutDashboard,
+  GitBranch,
 } from '../icons/app-icons';
-import { GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { toastError, toastSuccess } from '../../toasts';

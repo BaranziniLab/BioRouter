@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { FileStack, FolderTree, Upload } from 'lucide-react';
+import { FileStack, FolderTree, Upload } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import {

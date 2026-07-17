@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, EyeOff, FolderInput, FolderPlus, Pencil, Search, Trash2 } from 'lucide-react';
+import { Download, EyeOff, FolderInput, FolderPlus, Pencil, Search, Trash2 } from '../../icons/app-icons';
 import type { Manifest } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';

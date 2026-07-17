@@ -83,6 +83,103 @@ describe('NotificationContent (shared layout primitive)', () => {
     );
   });
 
+  // (Σ) One geometry, two densities. A toast is sometimes title+body and sometimes
+  // title-only; both must be the SAME object, sharing a top edge and a first-line
+  // centre, with the two-line form growing downward. Nothing re-centres or jumps.
+  describe('one geometry, two densities', () => {
+    it('renders NO empty body node for a title-only notification', () => {
+      const { container } = render(<NotificationContent status="info" title="Extension removed" />);
+      const textColumn = container.querySelector('[data-notification-text]')!;
+
+      // Exactly the title — no stray empty <div> holding the absent message open,
+      // which would pad the "tidy 48px bar" out to a two-line height.
+      expect(textColumn.children).toHaveLength(1);
+      expect(textColumn.textContent).toBe('Extension removed');
+    });
+
+    it('adds the body as a sibling BELOW the title, leaving the first line untouched', () => {
+      const { container } = render(
+        <NotificationContent status="info" title="primekgagent" message="Extension removed" />
+      );
+      const textColumn = container.querySelector('[data-notification-text]')!;
+
+      expect(textColumn.children).toHaveLength(2);
+      expect(textColumn.children[0].textContent).toBe('primekgagent');
+      // The body grows downward (mt-0.5); it never re-centres what is above it.
+      expect(textColumn.children[1].className).toContain('mt-0.5');
+    });
+
+    it('keeps the chip and the text column top-anchored at BOTH densities, so the two share a top edge', () => {
+      for (const props of [
+        { status: 'info' as const, title: 'Extension removed' },
+        { status: 'info' as const, title: 'primekgagent', message: 'Extension removed' },
+      ]) {
+        const { container, unmount } = render(<NotificationContent {...props} />);
+
+        // `self-start` on the chip is what anchors it to the first line at ANY
+        // height. Were it centre-aligned, the one-line and two-line toasts would
+        // disagree about where the chip sits — the exact jump (Σ) forbids.
+        // (`items-center` on the chip centres the glyph INSIDE its 28px box — that
+        // is separate from, and does not affect, where the box itself sits.)
+        const chip = container.querySelector('[data-status="info"]')!;
+        expect(chip.className).toContain('self-start');
+        expect(chip.className).not.toContain('self-center');
+        // The toast wrapper top-aligns its row for the same reason.
+        expect(TOAST_SURFACE_CLASS_NAME.split(/\s+/)).toContain('items-start');
+        // 28px chip vs 13/18 text: pt-[5px] is what puts the first line's centre on
+        // the chip's centre (5 + 18/2 === 28/2).
+        expect(container.querySelector('[data-notification-text]')).toHaveClass('pt-[5px]');
+
+        unmount();
+      }
+    });
+
+    it('centres the dismiss control on the first line at both densities (never a tall banner’s midpoint)', () => {
+      for (const props of [
+        { status: 'info' as const, title: 'Extension removed' },
+        { status: 'info' as const, title: 'primekgagent', message: 'Extension removed' },
+      ]) {
+        const { container, unmount } = render(<NotificationSurface {...props} onClose={() => {}} />);
+        const dismiss = screen.getByRole('button', { name: /dismiss/i });
+
+        // §4.2 compact close: 20px ghost, rounded-sm, right-2.5, 14px icon.
+        expect(dismiss.className).toContain('h-5');
+        expect(dismiss.className).toContain('w-5');
+        expect(dismiss.className).toContain('rounded-sm');
+        expect(dismiss.className).toContain('right-2.5');
+        expect(dismiss.querySelector('svg')!.getAttribute('class')).toContain('h-3.5');
+
+        // The centring itself: container p-3 (12) + half the 28px chip = 26px, and a
+        // 20px button centres there at top-4 (16 + 10 === 26). `top-4` is arithmetic,
+        // not taste — if the surface padding ever changes, this must change with it.
+        expect(container.querySelector('[data-testid="notification-surface"]')!.className).toContain(
+          'p-3'
+        );
+        expect(dismiss.className).toContain('top-4');
+        // Not centred against the whole (possibly two-line) card.
+        expect(dismiss.className).not.toContain('top-1/2');
+        expect(dismiss.className).not.toContain('inset-y-0');
+
+        unmount();
+      }
+    });
+
+    it('keeps 12px radius and a neutral surface — the tinted chip carries status, not a left bar', () => {
+      const { container } = render(<NotificationSurface status="error" title="Extension removed" />);
+      const surface = container.querySelector('[data-testid="notification-surface"]')!;
+
+      // Deliberate deviation from §4.3's --radius-lg: 12px matches every other
+      // floating surface (popover / dropdown / select menu).
+      expect(surface.className).toContain('rounded-xl');
+      expect(TOAST_SURFACE_CLASS_NAME.split(/\s+/)).toContain('rounded-xl');
+
+      // §4.3's 3px left status bar is deliberately NOT adopted — the chip is the
+      // status signal. Guard against anyone reintroducing the stripe.
+      expect(surface.className).not.toMatch(/border-l-|before:/);
+      expect(container.querySelector('[data-status="error"]')).toBeInTheDocument();
+    });
+  });
+
   it('renders an actions region and an expanded children region', () => {
     render(
       <NotificationContent

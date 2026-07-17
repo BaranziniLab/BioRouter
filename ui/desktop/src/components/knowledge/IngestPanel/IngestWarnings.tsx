@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertCircle, ChevronDown, ChevronRight, Info, X } from 'lucide-react';
+import { AlertCircle, ChevronDown, ChevronRight, Info, X } from '../../icons/app-icons';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import type { FileDropWarning } from './fileValidation';
 

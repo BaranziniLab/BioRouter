@@ -12,14 +12,24 @@ export const PopoverPortal = PopoverPrimitive.Portal;
 export const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
->(({ className, align = 'center', sideOffset = 4, ...props }, ref) => (
+>(({ className, align = 'center', sideOffset = 6, ...props }, ref) => (
   <PopoverPrimitive.Portal>
     <PopoverPrimitive.Content
       ref={ref}
       align={align}
       sideOffset={sideOffset}
       className={cn(
-        'biorouter-popover-surface z-[var(--z-modal-dropdown)] w-60 rounded-2xl bg-background-default p-1 ',
+        // design.md §4.5: --radius-xl (12px), 4px padding, 6px trigger offset.
+        // `.biorouter-popover-surface` supplies the border + shadow ONLY (no radius,
+        // no background) — those two live here so every popover shares one geometry.
+        //
+        // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200):
+        // this primitive is portalled to <body>, so it becomes a SIBLING of any
+        // Radix dialog content (--z-modal, 400) it is rendered inside. It has no
+        // way to know its host, and a real call site nests it in a modal:
+        // WorkflowResourcePicker -> WorkflowFormFields -> CreateWorkflowFromSessionModal's
+        // DialogContent. At 200 that picker would paint under the dialog it belongs to.
+        'biorouter-popover-surface z-[var(--z-modal-dropdown)] w-60 rounded-xl bg-background-default p-1 ',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',

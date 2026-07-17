@@ -1,4 +1,4 @@
-import { ClipboardList, FileText, Globe, X } from 'lucide-react';
+import { ClipboardList, FileText, Globe, X } from '../../icons/app-icons';
 import type { StagedSource } from '../hooks/useStagedSources';
 
 interface Props {

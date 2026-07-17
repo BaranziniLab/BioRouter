@@ -15,9 +15,31 @@ import { CheckCircle, AlertCircle, AlertTriangle, Info, Loader2, X } from '../ic
  *      no `pr-*`, so text/actions can never slide under the ×.
  * Status is expressed only by the tinted icon chip; the surface stays neutral
  * ("colour is evidence; surfaces stay neutral").
+ *
+ * ONE GEOMETRY, TWO DENSITIES. A toast is sometimes title+body and sometimes
+ * title-only, and both are the same object: `items-start` + a `self-start` chip mean
+ * the two densities share a top edge and a first-line centre, and the two-line form
+ * simply grows downward. Nothing re-centres or jumps between them. The numbers:
+ *
+ *   toast (py-2.5 = 10px):  chip centre 10 + 28/2 = 24px; close (main.css) top 14 + 20/2 = 24px
+ *   title-only toast height: 10 + 28 + 10 = 48px — a tidy bar
+ *   banner (p-3 = 12px):    chip centre 12 + 14 = 26px; close top-4 16 + 10 = 26px;
+ *                           first text line 12 + 5 + 18/2 = 26px
+ *
+ * DEVIATIONS FROM design.md, both deliberate and approved:
+ *   · Radius is `rounded-xl` (12px), not §4.3's `--radius-lg` (8px). 12px is what
+ *     every other floating surface uses (popover, dropdown, select menu), and a
+ *     notification is a floating surface — matching them beats matching the table.
+ *   · §4.3 asks for a 3px left status bar. We keep the tinted icon chip instead: it
+ *     reads at a glance, survives both themes, and doesn't paint a coloured stripe
+ *     down an otherwise calm neutral surface. Code wins; the spec yields. Do NOT
+ *     add the bar.
  */
 export type NotificationStatus = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
+// `pr-12` reserves the close gutter ONCE (react-toastify always renders its ×, whose
+// 20px/right-2.5/top-14px geometry lives in main.css `.Toastify__close-button`), so no
+// caller adds padding and no content can slide under the ×. See §4.2's compact rule.
 export const TOAST_SURFACE_CLASS_NAME = `relative mb-3 pl-3 pr-12 py-2.5 rounded-xl w-full min-w-0
   flex items-start overflow-hidden cursor-pointer
   text-text-default bg-background-default
@@ -149,6 +171,15 @@ export function NotificationSurface({
           type="button"
           onClick={onClose}
           aria-label={dismissLabel}
+          // §4.2 compact close: 20px ghost, rounded-sm, right-2.5, 14px icon,
+          // optically centred on the FIRST LINE — never on a tall banner's midpoint.
+          // `top-4` is that centring, not a magic number: the container's p-3 (12px)
+          // plus half the 28px chip puts the first line's centre at 26px, and a 20px
+          // button centres there at top = 26 − 10 = 16px = top-4. It is the same
+          // control as the toast's ×, which sits at top-14px only because the toast
+          // pads 10px instead of 12px. Change the container padding and this must
+          // move with it — `dismiss control shares the chip's centre line` in the
+          // tests is what catches it.
           className="absolute right-2.5 top-4 inline-flex h-5 w-5 items-center justify-center rounded-sm text-text-subtle transition-colors hover:bg-background-medium hover:text-text-default"
         >
           <X className="h-3.5 w-3.5" />

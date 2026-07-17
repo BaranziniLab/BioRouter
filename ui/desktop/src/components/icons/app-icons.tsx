@@ -18,12 +18,16 @@ import {
   Calendar as _Calendar,
   Check as _Check,
   CheckCircle as _CheckCircle,
+  CheckCircle2 as _CheckCircle2,
   ChevronDown as _ChevronDown,
   ChevronLeft as _ChevronLeft,
   ChevronRight as _ChevronRight,
   ChevronUp as _ChevronUp,
+  ChevronsDownUp as _ChevronsDownUp,
   Circle as _Circle,
   CircleDotDashed as _CircleDotDashed,
+  Clipboard as _Clipboard,
+  ClipboardList as _ClipboardList,
   Clock as _Clock,
   Code as _Code,
   Copy as _Copy,
@@ -33,12 +37,21 @@ import {
   Edit2 as _Edit2,
   ExternalLink as _ExternalLink,
   Eye as _Eye,
+  EyeOff as _EyeOff,
   File as _File,
+  FileCode2 as _FileCode2,
+  FileStack as _FileStack,
   FileText as _FileText,
   FlaskConical as _FlaskConical,
   Folder as _Folder,
   FolderDot as _FolderDot,
+  FolderInput as _FolderInput,
   FolderKey as _FolderKey,
+  FolderOpen as _FolderOpen,
+  FolderPlus as _FolderPlus,
+  FolderTree as _FolderTree,
+  Gauge as _Gauge,
+  GitBranch as _GitBranch,
   Github as _Github,
   Globe as _Globe,
   GripVertical as _GripVertical,
@@ -67,6 +80,7 @@ import {
   PanelLeftIcon as _PanelLeftIcon,
   Pause as _Pause,
   PauseCircle as _PauseCircle,
+  Pencil as _Pencil,
   Pill as _Pill,
   Play as _Play,
   Plus as _Plus,
@@ -86,6 +100,7 @@ import {
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
   Square as _Square,
+  SquareArrowOutUpRight as _SquareArrowOutUpRight,
   StopCircle as _StopCircle,
   Sun as _Sun,
   Target as _Target,
@@ -151,14 +166,18 @@ export const Calendar = light(_Calendar);
 export const Check = light(_Check);
 export const CheckIcon = Check;
 export const CheckCircle = light(_CheckCircle);
+export const CheckCircle2 = light(_CheckCircle2);
 export const ChevronUp = light(_ChevronUp);
 export const ChevronDown = light(_ChevronDown);
 export const ChevronDownIcon = ChevronDown;
 export const ChevronRight = light(_ChevronRight);
 export const ChevronRightIcon = ChevronRight;
 export const ChevronLeft = light(_ChevronLeft);
+export const ChevronsDownUp = light(_ChevronsDownUp);
 export const CircleIcon = light(_Circle);
 export const CircleDotDashed = light(_CircleDotDashed);
+export const Clipboard = light(_Clipboard);
+export const ClipboardList = light(_ClipboardList);
 export const Clock = light(_Clock);
 export const Code = light(_Code);
 export const CodeAnalysis = light(_SearchCode);
@@ -169,12 +188,21 @@ export const Edit = light(_Edit);
 export const Edit2 = light(_Edit2);
 export const ExternalLink = light(_ExternalLink);
 export const Eye = light(_Eye);
+export const EyeOff = light(_EyeOff);
 export const File = light(_File);
+export const FileCode2 = light(_FileCode2);
+export const FileStack = light(_FileStack);
 export const FileText = light(_FileText);
 export const FlaskConical = light(_FlaskConical);
 export const Folder = light(_Folder);
 export const FolderDot = light(_FolderDot);
+export const FolderInput = light(_FolderInput);
 export const FolderKey = light(_FolderKey);
+export const FolderOpen = light(_FolderOpen);
+export const FolderPlus = light(_FolderPlus);
+export const FolderTree = light(_FolderTree);
+export const Gauge = light(_Gauge);
+export const GitBranch = light(_GitBranch);
 export const Github = light(_Github);
 export const Globe = light(_Globe);
 export const GripVertical = light(_GripVertical);
@@ -202,8 +230,11 @@ export const Palette = light(_Palette);
 export const PanelLeftIcon = light(_PanelLeftIcon);
 export const Pause = light(_Pause);
 export const PauseCircle = light(_PauseCircle);
+export const Pencil = light(_Pencil);
 export const Pill = light(_Pill);
 export const Play = light(_Play);
+// `Plus` means exactly one thing: *new session*. Anything else that "adds" or
+// "opens" needs its own mark — see `NewWindow` (DR-53: one glyph, one meaning).
 export const Plus = light(_Plus);
 export const PlusIcon = Plus;
 export const Puzzle = light(_Puzzle);
@@ -221,6 +252,10 @@ export const Share2 = light(_Share2);
 export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);
+// Opening a *new window*. Deliberately not `Plus` (that is New Session) and not
+// `AppWindow` (that is the Applications route) — a window with an arrow leaving
+// it reads as "pop this out into its own window" and is used nowhere else.
+export const NewWindow = light(_SquareArrowOutUpRight);
 // The original 'Square' icon was visually a circle-with-square (stop button),
 // which corresponds to lucide's StopCircle. Keep both names pointing to it.
 export const Square = light(_StopCircle);
@@ -268,4 +303,4 @@ export const KnowledgeIcon: React.FC<LucideProps> = ({ strokeWidth = 1.5, ...pro
 // ---------------------------------------------------------------------------
 // LucideIcon type re-export — kept for consumers that import the type.
 // ---------------------------------------------------------------------------
-export type { LucideIcon };
+export type { LucideIcon, LucideProps };

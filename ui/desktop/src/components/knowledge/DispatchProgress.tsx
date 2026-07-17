@@ -5,7 +5,7 @@ import {
   ChevronRight,
   LoaderCircle,
   StopCircle,
-} from 'lucide-react';
+} from '../icons/app-icons';
 import { useMemo, useState } from 'react';
 import type { StreamState, SubAgentEvent } from './hooks/useIngestStream';
 

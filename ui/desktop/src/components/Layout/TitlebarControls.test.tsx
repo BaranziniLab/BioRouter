@@ -32,17 +32,10 @@ function SidebarState() {
 describe('TitlebarControls', () => {
   it('keeps every control in a clickable non-drag layer and toggles the sidebar', () => {
     const onNewWindow = vi.fn();
-    const onToggleDashboard = vi.fn();
 
     render(
       <SidebarProvider defaultOpen={false}>
-        <TitlebarControls
-          hidden={false}
-          isMacOS
-          isDashboard={false}
-          onNewWindow={onNewWindow}
-          onToggleDashboard={onToggleDashboard}
-        />
+        <TitlebarControls hidden={false} isMacOS onNewWindow={onNewWindow} />
         <SidebarState />
       </SidebarProvider>
     );
@@ -50,34 +43,67 @@ describe('TitlebarControls', () => {
     const controls = screen.getByTestId('titlebar-controls');
     expect(controls).toHaveClass('no-drag', 'pointer-events-auto', 'z-[190]', 'isolate');
     expect(controls).toHaveStyle({ left: '100px' });
-    expect(getTitlebarControlReserve(true)).toBe(204);
-    expect(getTitlebarControlReserve(false)).toBe(120);
-    expect(TITLEBAR_CONTROL_RESERVE_PROPERTY).toBe('--biorouter-titlebar-control-reserve');
-    expect(getSessionTitlePadding(false, true)).toBe(
-      'var(--biorouter-titlebar-control-reserve, 204px)'
-    );
-    expect(getSessionTitlePadding(true, true)).toBe('calc(var(--sidebar-width) + 8px)');
-    expect(getSessionTitlePadding(false, false)).toBe('16px');
 
     fireEvent.click(screen.getByTestId('titlebar-sidebar-toggle'));
     expect(screen.getByTestId('sidebar-state')).toHaveTextContent('expanded');
 
     fireEvent.click(screen.getByTestId('titlebar-new-window'));
-    fireEvent.click(screen.getByTestId('titlebar-dashboard-toggle'));
     expect(onNewWindow).toHaveBeenCalledOnce();
-    expect(onToggleDashboard).toHaveBeenCalledOnce();
+  });
+
+  it('renders exactly the two controls the reserve is sized for', () => {
+    render(
+      <SidebarProvider defaultOpen={false}>
+        <TitlebarControls hidden={false} isMacOS onNewWindow={vi.fn()} />
+      </SidebarProvider>
+    );
+
+    // Dashboard mode is discontinued — its titlebar entry point is gone, and
+    // the strip width (and therefore the reserve) assumes it stays gone.
+    expect(screen.queryByTestId('titlebar-dashboard-toggle')).not.toBeInTheDocument();
+    expect(screen.getByTestId('titlebar-sidebar-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('titlebar-new-window')).toBeInTheDocument();
+    expect(screen.getByTestId('titlebar-new-window')).toHaveAttribute(
+      'title',
+      'Start a new session in a new window'
+    );
+  });
+
+  // A reserve that fails silently is worse than no reserve: the session title
+  // and tabs must clear the floating control strip when the sidebar is
+  // collapsed, or the macOS traffic lights land on top of them. So assert the
+  // actual arithmetic, not merely that some string comes back — a wrong number
+  // still returns a perfectly well-formed `var(...)` and looks fine in a test
+  // that only checks the shape.
+  it('reserves the exact width of the two-control strip', () => {
+    // macOS: 100 (traffic lights) + 64 (2 x 32px controls) + 8 (gap) = 172
+    expect(getTitlebarControlReserve(true)).toBe(172);
+    // Other platforms: 16 (inset) + 64 + 8 = 88
+    expect(getTitlebarControlReserve(false)).toBe(88);
+  });
+
+  it('feeds the reserve to the session title padding, with a matching fallback', () => {
+    expect(TITLEBAR_CONTROL_RESERVE_PROPERTY).toBe('--biorouter-titlebar-control-reserve');
+
+    // The fallback literal must track getTitlebarControlReserve(true); if the
+    // strip changes and this is not updated, the padding silently under-reserves
+    // on any surface that renders before AppLayout sets the custom property.
+    const padding = getSessionTitlePadding(false, true);
+    expect(padding).toContain('172px');
+    expect(padding).toBe('var(--biorouter-titlebar-control-reserve, 172px)');
+
+    // An open compact sidebar overlay wins over the control reserve.
+    expect(getSessionTitlePadding(true, true)).toBe('calc(var(--sidebar-width) + 8px)');
+    expect(getSessionTitlePadding(true, false)).toBe('calc(var(--sidebar-width) + 8px)');
+
+    // Nothing to clear -> plain inset.
+    expect(getSessionTitlePadding(false, false)).toBe('16px');
   });
 
   it('does not leave an invisible click layer over an open mobile sidebar', () => {
     render(
       <SidebarProvider>
-        <TitlebarControls
-          hidden
-          isMacOS
-          isDashboard={false}
-          onNewWindow={vi.fn()}
-          onToggleDashboard={vi.fn()}
-        />
+        <TitlebarControls hidden isMacOS onNewWindow={vi.fn()} />
       </SidebarProvider>
     );
 

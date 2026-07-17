@@ -103,9 +103,7 @@ const AppLayoutContent: React.FC = () => {
       <TitlebarControls
         hidden={shouldHideButtons}
         isMacOS={safeIsMacOS}
-        isDashboard={location.pathname === '/dashboard'}
         onNewWindow={handleNewWindow}
-        onToggleDashboard={() => navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')}
       />
       <Sidebar variant="inset" collapsible="offcanvas">
         <AppSidebar

@@ -19,8 +19,8 @@ import {
   SidebarMenuButton,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarSeparator,
 } from '../ui/sidebar';
+import { BioRouterIcon } from '../icons/BioRouterIcon';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
@@ -229,24 +229,54 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
   return (
     <>
-      <SidebarContent className="gap-0 overflow-hidden pt-10">
+      <SidebarContent className="gap-0 overflow-hidden">
+        {/* The 52px titlebar band: traffic lights and the floating TitlebarControls
+            strip live over this space, so the sidebar only reserves it. Its bottom
+            hairline continues the chat/preview header hairline, giving the window
+            one continuous top edge. */}
+        <div
+          data-testid="sidebar-titlebar-band"
+          aria-hidden="true"
+          className="h-13 shrink-0 border-b border-sidebar-border"
+        />
+
         <div className="shrink-0">
-          <div
-            data-testid="sidebar-biorouter-wordmark"
-            className="flex h-8 items-center gap-2 px-5"
-          >
-            <span className="text-sm font-semibold leading-none">Biorouter</span>
-            <EnvironmentBadge />
+          {/* Brand row. Insets are deliberately identical to a nav row
+              (px-2 group + px-3 row + 16px mark + gap-2), so the wordmark's left
+              edge lands on exactly the same 44px text edge as every nav label. */}
+          <div className="px-2 pt-2">
+            <div
+              data-testid="sidebar-biorouter-wordmark"
+              className="flex h-8 items-center gap-2 px-3"
+            >
+              <BioRouterIcon
+                data-testid="sidebar-biorouter-mark"
+                className="h-4 w-4 shrink-0 text-accent-bar"
+              />
+              <span className="text-sm font-semibold leading-5">Biorouter</span>
+              <EnvironmentBadge />
+            </div>
           </div>
 
           <SidebarGroup className="px-2 pb-1">
+            <div data-testid="sidebar-menu-label" className="flex h-8 shrink-0 items-center px-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle">
+                Menu
+              </span>
+            </div>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0">{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </div>
 
-        <SidebarSeparator data-testid="sidebar-nav-divider" className="shrink-0" />
+        {/* Full-width inset rule — the menu and the history are separate zones. */}
+        <div
+          data-testid="sidebar-nav-divider"
+          role="separator"
+          aria-orientation="horizontal"
+          className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
+        />
         <RecentChats
           sessions={sessions}
           activeSessionId={currentSessionId}
@@ -259,7 +289,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         />
       </SidebarContent>
 
-      <SidebarSeparator data-testid="sidebar-footer-divider" className="shrink-0" />
+      {/* Matches the menu/history divider above rather than SidebarSeparator's
+          32px sliver — two rules ~100px apart at different widths read as an
+          accident, not a system. */}
+      <div
+        data-testid="sidebar-footer-divider"
+        role="separator"
+        className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
+      />
       <SidebarFooter className="gap-1 p-2">
         <SidebarUpdateButton />
         <SidebarMenu className="gap-0">

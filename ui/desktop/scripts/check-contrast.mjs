@@ -154,6 +154,22 @@ for (const [theme, scope] of [
   assert(`${theme}: border-subtle vs app`, '--border-subtle', '--background-app', 1.25, scope);
   assert(`${theme}: border-strong vs subtle`, '--border-strong', '--border-subtle', 1.1, scope);
 
+  // The code ground (design.md §5.1, P6 "the monospace layer is part of the
+  // design system"). This guard previously never looked at it, which is how
+  // dark code blocks came to paint --background-muted (#282217) while their
+  // syntax palette was verified against #16120c: `comment` rendered at 4.15:1,
+  // under AA, and nothing failed. --background-code now names the ground the
+  // palette was measured on; these assertions keep the two from drifting apart
+  // again. The per-token syntax stops are asserted in codeTheme.test.ts.
+  // (No border-vs-code-ground assertion: a code block's hairline is perceived
+  // against the PAGE ground it sits on, which is already asserted above — not
+  // against its own fill. In dark, --border-subtle and --background-muted are
+  // both neutral-800, so the block is delimited by its ground change alone,
+  // exactly as P1 intends.)
+  assert(`${theme}: text-default on code ground`, '--text-default', '--background-code', 4.5, scope);
+  assert(`${theme}: text-muted on code ground`, '--text-muted', '--background-code', 4.5, scope);
+  assert(`${theme}: text-subtle on code ground`, '--text-subtle', '--background-code', 4.5, scope);
+
   // Focus (D-15) is a surface shift. Text must stay legible on the focused fill,
   // and the focused edge must be distinguishable from the resting one.
   assert(

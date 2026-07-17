@@ -110,7 +110,29 @@ describe('AppSidebar chat navigation', () => {
     );
     expect(wordmark).toHaveTextContent('Biorouter');
     expect(wordmark).toHaveClass('h-8');
-    expect(sidebarContent).toHaveClass('pt-10');
+    // The 40px of dead air is gone: the titlebar band now reserves that space
+    // explicitly and closes it with the hairline the chat/preview headers share.
+    expect(sidebarContent).not.toHaveClass('pt-10');
+    const titlebarBand = screen.getByTestId('sidebar-titlebar-band');
+    expect(titlebarBand).toHaveClass('h-13', 'border-b', 'border-sidebar-border');
+    expect(titlebarBand.compareDocumentPosition(wordmark)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    // The brand is a real row on the SAME text edge as every nav label. jsdom has
+    // no layout engine, so alignment is pinned here as the class contract that
+    // produces it; it was measured in a real browser against compiled Tailwind:
+    //   mark 20px / wordmark 44px  ==  nav icon 20px / nav label 44px
+    // Both rows are `px-3` inside a `px-2` parent and put a 16px mark before a
+    // `gap-2`, so 8 + 12 + 16 + 8 = 44px on each side.
+    expect(wordmark.parentElement).toHaveClass('px-2');
+    expect(wordmark).toHaveClass('flex', 'items-center', 'gap-2', 'px-3');
+    expect(screen.getByTestId('sidebar-biorouter-mark')).toHaveClass('h-4', 'w-4');
+    expect(homeButton.closest('[data-sidebar="group"]')).toHaveClass('px-2');
+    expect(homeButton).toHaveClass('gap-2', 'px-3');
+    expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');
+    // The wordmark sits on the text baseline grid, not on `leading-none`.
+    expect(screen.getByText('Biorouter')).toHaveClass('text-sm', 'font-semibold', 'leading-5');
+    expect(screen.getByText('Biorouter')).not.toHaveClass('leading-none');
+
     expect(wordmark.compareDocumentPosition(newSessionButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
@@ -124,9 +146,25 @@ describe('AppSidebar chat navigation', () => {
     expect(footer).toContainElement(settingsButton);
     expect(settingsButton).toHaveClass('h-8', 'w-full', 'px-3', 'py-2', 'text-sm');
     expect(settingsButton).not.toHaveClass('text-text-muted');
-    expect(screen.queryByTestId('sidebar-biorouter-mark')).not.toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-nav-divider')).toHaveClass('!w-8');
-    expect(screen.getByTestId('sidebar-footer-divider')).toHaveClass('!w-8');
+    expect(screen.getByTestId('sidebar-biorouter-mark')).toBeInTheDocument();
+    // A full-width inset rule, not the old 32px sliver, so the menu and the
+    // history read as two zones.
+    expect(screen.getByTestId('sidebar-nav-divider')).toHaveClass(
+      'h-px',
+      'bg-sidebar-border',
+      'mx-3.5'
+    );
+    expect(screen.getByTestId('sidebar-nav-divider')).not.toHaveClass('!w-8');
+    // The footer rule matches the nav rule exactly. It used to be the 32px
+    // sliver, which left two dividers ~100px apart at different widths —
+    // that reads as an accident rather than a system.
+    expect(screen.getByTestId('sidebar-footer-divider')).toHaveClass(
+      'h-px',
+      'bg-sidebar-border',
+      'mx-3.5'
+    );
+    expect(screen.getByTestId('sidebar-footer-divider')).not.toHaveClass('!w-8');
+    expect(screen.getByText('Menu')).toBeInTheDocument();
     expect(screen.getByText('Recents')).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
     expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();

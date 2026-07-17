@@ -1,9 +1,54 @@
-import { useCallback, useEffect, useMemo, useRef, type UIEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FC, type UIEvent } from 'react';
 import type { SessionSummary } from '../../api';
-import { Clock, Folder, History } from '../icons/app-icons';
+import {
+  AppWindow,
+  ChevronDown,
+  Clock,
+  Folder,
+  GitBranch,
+  MessageSquare,
+  type LucideProps,
+} from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 
 const LOAD_MORE_THRESHOLD_PX = 64;
+const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
+
+/** The scroll well is one calm step deeper than the rail — the same two-tone
+ *  device the sidebar itself uses against the canvas, not a card. */
+const RECENTS_WELL_BACKGROUND = 'color-mix(in srgb, var(--sidebar-border) 42%, transparent)';
+
+export type SessionKind = 'chat' | 'branch' | 'app';
+
+/**
+ * Classify a session for its leading glyph.
+ *
+ * NOTE: `SessionSummary` carries no session-kind field (only id / name /
+ * timestamps / working_dir / message_count), so both `app:` and `(branch N)`
+ * can currently only be read off the title. Replace this with the real field if
+ * the API ever exposes one.
+ */
+export function sessionKind(session: SessionSummary): SessionKind {
+  const name = session.name.trim();
+  if (name.startsWith('app:')) return 'app';
+  if (/\(branch \d+\)$/i.test(name)) return 'branch';
+  return 'chat';
+}
+
+const KIND_GLYPHS: Record<SessionKind, FC<LucideProps>> = {
+  chat: MessageSquare,
+  branch: GitBranch,
+  app: AppWindow,
+};
+
+function readStoredRecentsExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(RECENTS_EXPANDED_STORAGE_KEY) !== 'false';
+  } catch {
+    // Storage can be unavailable (private mode, sandboxed frame) — default open.
+    return true;
+  }
+}
 
 export interface RecentChatGroup {
   label: string;
@@ -130,6 +175,8 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
   const accessibleLabel = `${isRunning ? 'Open ongoing chat' : 'Open chat'}: ${title}`;
   const messageLabel = `${session.message_count} ${session.message_count === 1 ? 'message' : 'messages'}`;
   const sessionTimestamp = formatSessionTimestamp(session.updated_at);
+  const kind = sessionKind(session);
+  const KindGlyph = KIND_GLYPHS[kind];
 
   return (
     <Tooltip>
@@ -144,6 +191,12 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
             isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
           }`}
         >
+          <KindGlyph
+            data-testid={`recent-chat-glyph-${session.id}`}
+            data-kind={kind}
+            aria-hidden="true"
+            className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
+          />
           <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
           {isRunning && <ActiveChatIndicator sessionId={session.id} />}
         </button>
@@ -199,7 +252,21 @@ export default function RecentChats({
   onViewAll,
 }: RecentChatsProps) {
   const groups = useMemo(() => groupRecentChatsByDate(sessions), [sessions]);
+  const [isExpanded, setIsExpanded] = useState(readStoredRecentsExpanded);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const toggleExpanded = useCallback(() => {
+    setIsExpanded((wasExpanded) => {
+      const nextExpanded = !wasExpanded;
+      try {
+        window.localStorage.setItem(RECENTS_EXPANDED_STORAGE_KEY, String(nextExpanded));
+      } catch {
+        // Persisting is best-effort; the session still collapses.
+      }
+      return nextExpanded;
+    });
+  }, []);
+
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       if (!hasMore || isLoadingMore) return;
@@ -218,17 +285,52 @@ export default function RecentChats({
   }, [hasMore, isLoadingMore, onLoadMore, sessions.length]);
 
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col" data-testid="recent-chats">
-      <div className="flex h-8 shrink-0 items-center px-5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle">
-          Recents
-        </span>
+    <div
+      className={`flex min-h-0 w-full min-w-0 flex-col ${isExpanded ? 'flex-1' : 'shrink-0'}`}
+      data-testid="recent-chats"
+    >
+      <div className="flex h-8 shrink-0 items-center justify-between gap-2 px-5">
+        <button
+          type="button"
+          data-testid="recents-disclosure"
+          aria-expanded={isExpanded}
+          aria-controls="recent-chat-scroll"
+          onClick={toggleExpanded}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle transition-colors duration-150 hover:text-text-default"
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={`size-[11px] shrink-0 transition-transform duration-150 ${
+              isExpanded ? '' : '-rotate-90'
+            }`}
+          />
+          <span>Recents</span>
+          {!isExpanded && sessions.length > 0 && (
+            <span
+              data-testid="recents-hidden-count"
+              className="rounded-full bg-sidebar-active px-1.5 py-px font-mono text-[10.5px] font-semibold normal-case tracking-normal text-text-subtle"
+            >
+              {sessions.length}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          data-testid="view-all-chat-history"
+          onClick={onViewAll}
+          className="shrink-0 rounded-sm text-[11px] font-medium text-text-subtle transition-colors duration-150 hover:text-text-default"
+        >
+          See all
+        </button>
       </div>
 
       <div
         ref={scrollContainerRef}
+        id="recent-chat-scroll"
         data-testid="recent-chat-scroll"
-        className="min-h-0 w-full min-w-0 shrink overflow-y-auto overflow-x-hidden px-2 pb-1"
+        hidden={!isExpanded}
+        style={{ backgroundColor: RECENTS_WELL_BACKGROUND }}
+        className="mx-1 min-h-0 min-w-0 shrink overflow-y-auto overflow-x-hidden rounded-t-xl p-1"
         onScroll={handleScroll}
       >
         {groups.length === 0 ? (
@@ -264,18 +366,6 @@ export default function RecentChats({
             Loading more chats…
           </p>
         )}
-      </div>
-
-      <div className="shrink-0 px-2 pb-2 pt-1">
-        <button
-          type="button"
-          data-testid="view-all-chat-history"
-          onClick={onViewAll}
-          className="flex h-8 w-full min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-sidebar-hover"
-        >
-          <History className="h-4 w-4 shrink-0" />
-          <span>View all chat history</span>
-        </button>
       </div>
     </div>
   );

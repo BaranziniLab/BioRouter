@@ -1,16 +1,22 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
 import RecentChats, {
   formatSessionDateLabel,
   formatTimeSinceLastWorked,
   groupRecentChatsByDate,
+  sessionKind,
   sortRecentChats,
 } from './RecentChats';
 
 const now = Date.parse('2026-07-15T12:00:00.000Z');
+
+beforeEach(() => {
+  // The disclosure persists to localStorage, which survives between tests.
+  window.localStorage.clear();
+});
 
 beforeAll(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -91,6 +97,25 @@ describe('sortRecentChats', () => {
   });
 });
 
+describe('sessionKind', () => {
+  // `SessionSummary` exposes no kind/branch field, so the title is the only
+  // signal available — see the note on `sessionKind`.
+  it('reads the session kind off the title', () => {
+    const kindOf = (name: string) => sessionKind({ ...makeSession(0), name });
+
+    expect(kindOf('Status check-in')).toBe('chat');
+    expect(kindOf('Greeting 2 (branch 1)')).toBe('branch');
+    expect(kindOf('Multiple sclerosis knowledge graph (branch 12)')).toBe('branch');
+    expect(kindOf('app:spec-002-cohort-followup')).toBe('app');
+    expect(kindOf('  app:padded  ')).toBe('app');
+  });
+
+  it('does not mistake prose that merely mentions a branch for a real branch', () => {
+    expect(sessionKind({ ...makeSession(0), name: 'Which git branch 2 use?' })).toBe('chat');
+    expect(sessionKind({ ...makeSession(0), name: 'Refactor the app: rename it' })).toBe('chat');
+  });
+});
+
 describe('formatTimeSinceLastWorked', () => {
   it('renders concise elapsed time suitable for the sidebar summary', () => {
     expect(formatTimeSinceLastWorked(new Date(now - 36 * 60_000).toISOString(), now)).toBe(
@@ -121,11 +146,10 @@ describe('RecentChats', () => {
     expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
     expect(ongoingChat).toHaveTextContent('Chat 1');
     expect(ongoingChat).not.toHaveTextContent('1 message');
-    expect(currentChat.querySelector('svg')).toBeNull();
-    const recentsLabel = screen.getByText('Recents');
-    expect(recentsLabel.parentElement).toHaveClass('h-8', 'px-5');
+    expect(screen.getByText('Recents')).toBeInTheDocument();
     expect(screen.getByText('Today')).toHaveClass('text-xs', 'font-normal');
-    expect(screen.queryByText('3')).not.toBeInTheDocument();
+    // The count badge only stands in for the list while it is retracted.
+    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
     expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
 
     fireEvent.click(currentChat);
@@ -155,19 +179,27 @@ describe('RecentChats', () => {
     expect(summary).toHaveTextContent(longTitle);
   });
 
-  it('keeps a dedicated View all chat history action beneath the recent rows', () => {
+  it('keeps the full chat history one click away from the Recents label', () => {
     const onViewAll = vi.fn();
     renderRecentChats({ onViewAll });
 
     const viewAllButton = screen.getByTestId('view-all-chat-history');
-    expect(viewAllButton).toHaveClass('h-8', 'px-3', 'py-2', 'text-sm');
+    expect(viewAllButton).toHaveTextContent('See all');
     expect(viewAllButton).not.toHaveClass('text-text-muted');
 
     fireEvent.click(viewAllButton);
     expect(onViewAll).toHaveBeenCalledOnce();
   });
 
-  it('keeps View all chat history attached to Recents when the list is empty', () => {
+  it('keeps See all reachable while Recents is retracted, so history is never stranded', () => {
+    renderRecentChats();
+
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+
+    expect(screen.getByTestId('view-all-chat-history')).toBeVisible();
+  });
+
+  it('keeps See all attached to Recents when the list is empty', () => {
     renderRecentChats({ sessions: [] });
 
     const scrollContainer = screen.getByTestId('recent-chat-scroll');
@@ -175,6 +207,75 @@ describe('RecentChats', () => {
     expect(scrollContainer).not.toHaveClass('flex-1');
     expect(screen.getByText('No recent chats yet')).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
+    // Nothing is hidden, so the badge must not claim otherwise.
+    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
+  });
+
+  it('retracts the history behind the Recents label, standing a count in for the hidden rows', () => {
+    renderRecentChats();
+
+    const disclosure = screen.getByTestId('recents-disclosure');
+    const scrollWell = screen.getByTestId('recent-chat-scroll');
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(disclosure).toHaveAttribute('aria-controls', scrollWell.id);
+    expect(scrollWell).toBeVisible();
+    expect(screen.getByTestId('recent-chat-session-0')).toBeVisible();
+
+    fireEvent.click(disclosure);
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    expect(scrollWell).not.toBeVisible();
+    expect(screen.getByTestId('recent-chat-session-0')).not.toBeVisible();
+    expect(screen.getByTestId('recents-hidden-count')).toHaveTextContent('3');
+
+    fireEvent.click(disclosure);
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(scrollWell).toBeVisible();
+    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
+  });
+
+  it('restores the retracted state from storage on the next mount', () => {
+    const { unmount } = renderRecentChats();
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+    unmount();
+
+    renderRecentChats();
+
+    expect(screen.getByTestId('recents-disclosure')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('recent-chat-scroll')).not.toBeVisible();
+  });
+
+  it('leads each row with a glyph for the session kind and accents the active one', () => {
+    const sessions = [
+      { ...makeSession(0), name: 'Status check-in' },
+      { ...makeSession(1), name: 'Greeting 2 (branch 1)' },
+      { ...makeSession(2), name: 'app:spec-002-cohort-followup' },
+    ];
+    renderRecentChats({ sessions, activeSessionId: 'session-1' });
+
+    expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute('data-kind', 'chat');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveAttribute(
+      'data-kind',
+      'branch'
+    );
+    expect(screen.getByTestId('recent-chat-glyph-session-2')).toHaveAttribute('data-kind', 'app');
+
+    // 14px, subdued — and the accent only on the row the user is in.
+    expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveClass(
+      'h-3.5',
+      'w-3.5',
+      'text-text-subtle'
+    );
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveClass('text-accent-bar');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).not.toHaveClass('text-text-subtle');
+    // The icon library pins every glyph to one stroke weight (design.md §3.9).
+    expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute(
+      'stroke-width',
+      '1.5'
+    );
+    // Rows stay 32px — the glyph must not change sidebar density (D-12).
+    expect(screen.getByTestId('recent-chat-session-0')).toHaveClass('h-8');
   });
 
   it('requests another page when the user scrolls near the end of the loaded chats', () => {

@@ -123,9 +123,20 @@ const TERMINAL_THEMES = {
 
 /**
  * Alma Mater (UCSF) terminal palette — the same design as TERMINAL_THEMES but on
- * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted
- * (light #f2f3f4) and the navy card (dark #08213f); every colour clears WCAG AA
- * (4.5:1) on its own ground (D-11). See docs/design/alma-mater-theme.md.
+ * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted for
+ * the family: light #f2f3f4, dark #0d2a50.
+ *
+ * The dark ground used to be stated as #08213f. That is wrong twice over: it is
+ * --background-default (the navy *card*, two steps darker than --background-muted),
+ * and it is this palette's own `black`. The ratios were therefore measured against
+ * a surface the dock never paints. Corrected here, which forced two follow-ons:
+ * `black` was #0d2a50 — now the ground itself, i.e. invisible — so it moves to
+ * --background-strong, and `cursor` fell to 4.06:1 on the true ground so it lifts
+ * from the orchid accent to --background-accent-hover (5.29:1).
+ *
+ * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
+ * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
+ * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/alma-mater-theme.md.
  */
 const ALMA_TERMINAL_THEMES = {
   light: {
@@ -152,12 +163,12 @@ const ALMA_TERMINAL_THEMES = {
     brightWhite: '#052049',
   },
   dark: {
-    background: '#08213f',
-    foreground: '#e1e3e5',
-    cursor: '#c45ed8', // orchid accent
-    cursorAccent: '#08213f',
+    background: '#0d2a50', // --background-muted, alma-mater dark
+    foreground: '#e1e3e5', // 11.15:1
+    cursor: '#d07ee0', // --background-accent-hover orchid, 5.29:1
+    cursorAccent: '#0d2a50',
     selectionBackground: '#163864',
-    black: '#0d2a50',
+    black: '#1e477f', // --background-strong — the ANSI dim slot, 1.55:1
     red: '#f5768a',
     green: '#5fbf74',
     yellow: '#feb80a',
@@ -394,9 +405,16 @@ const TerminalPaneView: React.FC<{
           event.preventDefault();
           focusTerminal();
         }}
-        // xterm paints its own ground from TERMINAL_THEMES; the viewport must stay
-        // transparent so the theme — not a hardcoded cream — shows through.
-        className="h-full min-h-0 w-full flex-1 overflow-hidden rounded-md border border-border-subtle bg-background-muted px-2 py-2 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:bg-transparent!"
+        // The ground is painted ONCE, by the dock's terminal region (bg-background-muted).
+        // This host is transparent and contributes only the inset xterm needs to
+        // breathe, so the token — not a hex — is what actually reaches the screen;
+        // the theme `background` above is the forced mirror xterm needs internally
+        // (it cannot read a CSS var). The bg-transparent! overrides are what keep
+        // the token authoritative: without them xterm's own layers would repaint
+        // the ground and any drift between hex and token would show as a seam.
+        // No border and no radius here — the dock's border-t is the only hairline
+        // the terminal needs (D-11).
+        className="h-full min-h-0 w-full flex-1 overflow-hidden px-2 py-1.5 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:bg-transparent!"
       />
     </div>
   );
@@ -484,10 +502,16 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       )}
       style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
     >
-      <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-border-subtle bg-background-muted px-2">
+      {/* Safari-style tab strip (Ω/Ψ). .br-tabstrip owns the flex layout, the gap,
+          the padding, the sidebar-coloured ground and the bottom hairline;
+          .br-tab owns the tabs, the active pill and the divider between them.
+          Nothing here may restyle any of that — the only additions are h-10 (the
+          class leaves height to the host; the dock's strip is 40px) and
+          flex-shrink-0, so the strip holds its height in the dock's flex column. */}
+      <div className="br-tabstrip br-tabstrip--sm h-10 flex-shrink-0">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <div
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+            className="flex min-w-0 flex-1 items-center overflow-x-auto"
             role="tablist"
             aria-label="Terminal sessions"
           >
@@ -496,22 +520,21 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
               return (
                 <div
                   key={pane.id}
-                  className={cn(
-                    'relative flex h-7 w-32 min-w-28 max-w-[190px] flex-shrink-0 items-center overflow-hidden rounded-md text-xs transition-colors before:transition-[background-color] before:duration-[var(--motion-base)] before:ease-[var(--ease-out)]',
-                    active
-                      ? 'bg-background-default text-text-default before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent-bar'
-                      : 'text-text-muted hover:bg-background-default/70 hover:text-text-default'
-                  )}
+                  // .br-tab already caps at 190px and lets the label ellipsis;
+                  // flex-shrink-0 is the only addition, so a full strip scrolls
+                  // rather than crushing every tab.
+                  className="br-tab flex-shrink-0"
+                  data-active={active}
                 >
                   <button
                     type="button"
                     role="tab"
                     aria-selected={active}
                     onClick={() => setActivePaneId(pane.id)}
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
                   >
                     <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                    <span className="truncate">{pane.title}</span>
+                    <span className="br-tab__label">{pane.title}</span>
                   </button>
                   <button
                     type="button"
@@ -520,7 +543,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                       event.stopPropagation();
                       closePane(pane.id);
                     }}
-                    className="mr-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
                     aria-label={`Close terminal tab ${pane.title}`}
                     title={`Close ${pane.title}`}
                   >
@@ -564,7 +587,9 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background-muted p-2">
+      {/* The single painted terminal ground. No gutter padding: the terminal
+          bleeds to the dock edges, and the panes' own inset does the breathing. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background-muted">
         {panes.map((pane) => (
           <TerminalPaneView
             key={pane.id}

@@ -50,7 +50,12 @@ describe('ContextWindowGauge compaction control', () => {
     expect(button).toBeDisabled();
     expect(button).not.toHaveAttribute('title');
     expect(screen.getByTestId('compact-conversation-icon')).toHaveClass('size-4');
-    expect(screen.getByTestId('compact-conversation-icon')).toHaveAttribute('stroke-width', '1.75');
+    // 1.5, not 1.75: design.md §3.9 mandates a single stroke weight for every
+    // glyph. This used to assert 1.75 — lucide's native default, which leaked in
+    // because the icon was imported straight from `lucide-react` instead of the
+    // `light()` wrapper in app-icons. The test was pinning the drift (three
+    // stroke weights rendered on one screen), so it moved with the fix.
+    expect(screen.getByTestId('compact-conversation-icon')).toHaveAttribute('stroke-width', '1.5');
 
     await user.hover(button.parentElement!);
     const tooltip = await screen.findByRole('tooltip');

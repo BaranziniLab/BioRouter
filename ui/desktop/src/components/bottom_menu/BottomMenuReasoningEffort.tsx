@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { useState } from 'react';
-import { Check, Gauge } from 'lucide-react';
+import { Check, Gauge } from '../icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';

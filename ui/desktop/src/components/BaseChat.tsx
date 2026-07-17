@@ -445,11 +445,31 @@ function collectCodeDelta(messages: Message[]) {
   return { added, removed };
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+/**
+ * A metric readout, per design.md §4.13: a 30/34 mono-light value over an
+ * 11px caps label. It used to be a filled `rounded-md bg-background-medium/60`
+ * tile with a 14px semibold sans value — four boxes nested inside an already
+ * rounded popover, which is the "box inside a box" this pass exists to remove.
+ * The fill goes; the number does the work. `children` lets a caller compose a
+ * richer value (e.g. the +/- code diff) without duplicating this component.
+ */
+function SummaryMetric({
+  label,
+  value,
+  children,
+}: {
+  label: string;
+  value?: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-text-muted">{label}</div>
-      <div className="mt-1 truncate text-sm font-medium text-text-default">{value}</div>
+    <div className="min-w-0 py-2">
+      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
+        {label}
+      </div>
+      <div className="mt-0.5 truncate font-mono text-[30px] font-light leading-[34px] tracking-[-0.02em] text-text-default tabular-nums">
+        {children ?? value}
+      </div>
     </div>
   );
 }
@@ -1398,7 +1418,7 @@ function BaseChatContent({
                 {session?.name || 'Current conversation'}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-x-4">
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
               <SummaryMetric
                 label="Billed tokens"
@@ -1407,18 +1427,21 @@ function BaseChatContent({
                 }
               />
               <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
-              <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
-                <div className="text-[11px] uppercase tracking-wide text-text-muted">Code</div>
-                <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                  <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>
-                  <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
-                </div>
-              </div>
+              {/* Composed rather than copy-pasted: this used to duplicate
+                  SummaryMetric's markup, so the two diverged on every edit. */}
+              <SummaryMetric label="Code">
+                <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
+                <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
+              </SummaryMetric>
             </div>
+            {/* `secondary`, not `outline`: a 1px box drawn around the quietest
+                actions was the heaviest line in the panel. design.md §4.1
+                already specifies a fill here — outline is only for a secondary
+                action on an already-tinted ground. */}
             <div className="flex gap-2 border-t border-border-subtle pt-3">
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleWorkflowReviewAction}
@@ -1428,7 +1451,7 @@ function BaseChatContent({
               </Button>
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleDiagnosticsReviewAction}
