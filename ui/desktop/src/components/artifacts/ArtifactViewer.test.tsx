@@ -904,7 +904,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     // tab is a truthful stand-in for "the user is in the preview". This used to
     // fire at `window`, which asserted nothing about focus and would keep
     // passing even if the panel hijacked the key from the composer.
-    const fromPanel = (over: KeyboardEventInit = {}) => {
+    // The init type is spelled via the constructor rather than as a bare
+    // `KeyboardEventInit`: that name is type-only, so eslint's no-undef (which
+    // only knows runtime globals) flags it, while `KeyboardEvent` is a real
+    // global. Same type, no eslint-disable.
+    const fromPanel = (over: ConstructorParameters<typeof KeyboardEvent>[1] = {}) => {
       const event = new KeyboardEvent('keydown', {
         key: 'Tab',
         ctrlKey: true,
