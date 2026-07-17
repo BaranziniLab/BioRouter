@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "code_execution";
+const MAX_MODULE_SEARCH_RESULTS: usize = 12;
 
 type ToolCallRequest = (
     String,
@@ -248,18 +249,79 @@ impl ToolInfo {
     }
 
     fn to_signature(&self) -> String {
+        self.to_signature_with_module(&self.server_name)
+    }
+
+    fn to_signature_with_module(&self, module_name: &str) -> String {
         let params = self
             .params
             .iter()
             .map(|(name, ty, req)| format!("{name}{}: {ty}", if *req { "" } else { "?" }))
             .collect::<Vec<_>>()
             .join(", ");
-        let desc = self.description.lines().next().unwrap_or("");
+        let desc = self
+            .description
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("");
         format!(
             "{}[\"{}\"]({{{params}}}): {} - {desc}",
-            self.server_name, self.tool_name, self.return_type
+            module_name, self.tool_name, self.return_type
         )
     }
+}
+
+fn module_search_alias(server_name: &str) -> String {
+    let safe_name = server_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("module_{safe_name}")
+}
+
+fn render_module_search_results(
+    matching_tools: &[(usize, &ToolInfo)],
+    total_matches: usize,
+) -> String {
+    let mut output = String::from(
+        "## Matching Tools\n\
+         These results include complete imports and signatures. Use them directly in execute_code; do not call read_module for a listed tool.\n\n\
+         ### Imports\n",
+    );
+    let mut imported_servers = BTreeSet::new();
+    for (_, tool) in matching_tools {
+        if imported_servers.insert(tool.server_name.as_str()) {
+            output.push_str(&format!(
+                "import * as {} from \"{}\";\n",
+                module_search_alias(&tool.server_name),
+                tool.server_name
+            ));
+        }
+    }
+    output.push_str("\n### Signatures\n");
+    for (_, tool) in matching_tools {
+        let alias = module_search_alias(&tool.server_name);
+        output.push_str(&format!(
+            "- {}/{}\n  {}\n",
+            tool.server_name,
+            tool.tool_name,
+            tool.to_signature_with_module(&alias)
+        ));
+    }
+    if total_matches > matching_tools.len() {
+        output.push_str(&format!(
+            "\nShowing the {} best matches out of {total_matches}. Refine search_modules terms if the needed tool is not listed.\n",
+            matching_tools.len()
+        ));
+    }
+    output
 }
 
 thread_local! {
@@ -450,9 +512,12 @@ impl CodeExecutionClient {
                 IMPORTANT: All tool calls are SYNCHRONOUS. Do NOT use async/await.
 
                 Workflow:
-                    1. Use the read_module tool to discover tools and signatures
-                    2. Write ONE script that imports and calls ALL tools needed for the task
-                    3. Chain results: use output from one tool as input to the next
+                    1. If you do not know the tool, call search_modules once. Its results include complete imports and signatures.
+                    2. Use read_module only when you already know a module but need a tool that search_modules did not return.
+                    3. Write ONE script that imports and calls ALL tools needed for the task.
+                    4. Chain results: use output from one tool as input to the next.
+
+                Never call read_module for a tool whose complete signature was returned by search_modules.
             "#}.to_string()),
         };
 
@@ -576,7 +641,11 @@ impl CodeExecutionClient {
             }
         } else {
             return Err("Parameter 'terms' must be a string or array of strings".to_string());
-        };
+        }
+        .into_iter()
+        .map(|term| term.trim().to_string())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
 
         if terms_vec.is_empty() {
             return Err("Search terms cannot be empty".to_string());
@@ -614,56 +683,67 @@ impl CodeExecutionClient {
             Matcher::Plain(terms.iter().map(|t| t.to_lowercase()).collect())
         };
 
-        let matches_any = |text: &str| -> bool {
+        let match_score = |tool: &ToolInfo| -> usize {
             match &matcher {
-                Matcher::Regex(patterns) => patterns.iter().any(|p| p.is_match(text)),
+                Matcher::Regex(patterns) => patterns
+                    .iter()
+                    .map(|pattern| {
+                        usize::from(pattern.is_match(&tool.tool_name)) * 20
+                            + usize::from(pattern.is_match(&tool.server_name)) * 8
+                            + usize::from(pattern.is_match(&tool.description)) * 4
+                    })
+                    .sum(),
                 Matcher::Plain(terms) => {
-                    let lower = text.to_lowercase();
-                    terms.iter().any(|t| lower.contains(t))
+                    let tool_name = tool.tool_name.to_lowercase();
+                    let server_name = tool.server_name.to_lowercase();
+                    let description = tool.description.to_lowercase();
+                    terms
+                        .iter()
+                        .map(|term| {
+                            let tool_score = if tool_name == *term {
+                                40
+                            } else if tool_name.contains(term) {
+                                20
+                            } else {
+                                0
+                            };
+                            let server_score = if server_name == *term {
+                                16
+                            } else if server_name.contains(term) {
+                                8
+                            } else {
+                                0
+                            };
+                            let description_score = usize::from(description.contains(term)) * 4;
+                            tool_score + server_score + description_score
+                        })
+                        .sum()
                 }
             }
         };
 
-        let mut matching_servers: BTreeSet<&str> = BTreeSet::new();
-        let mut matching_tools: Vec<&ToolInfo> = Vec::new();
+        let mut matching_tools = tools
+            .iter()
+            .filter_map(|tool| {
+                let score = match_score(tool);
+                (score > 0).then_some((score, tool))
+            })
+            .collect::<Vec<_>>();
+        matching_tools.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.server_name.cmp(&right.server_name))
+                .then_with(|| left.tool_name.cmp(&right.tool_name))
+        });
 
-        for tool in tools {
-            if matches_any(&tool.server_name) {
-                matching_servers.insert(&tool.server_name);
-            }
-            if matches_any(&tool.tool_name) || matches_any(&tool.description) {
-                matching_tools.push(tool);
-            }
-        }
-
-        if matching_servers.is_empty() && matching_tools.is_empty() {
+        if matching_tools.is_empty() {
             return Err(format!("No matches found for: {}", terms.join(", ")));
         }
 
-        let mut output = String::new();
+        let total_matches = matching_tools.len();
+        matching_tools.truncate(MAX_MODULE_SEARCH_RESULTS);
 
-        if !matching_servers.is_empty() {
-            output.push_str("## Matching Servers\n");
-            for server in &matching_servers {
-                let count = tools.iter().filter(|t| t.server_name == *server).count();
-                output.push_str(&format!("- {server} ({count} tools)\n"));
-            }
-            output.push('\n');
-        }
-
-        if !matching_tools.is_empty() {
-            output.push_str("## Matching Tools\n");
-            output.push_str("Use the read_module tool for full signature and import syntax\n\n");
-            for tool in &matching_tools {
-                output.push_str(&format!(
-                    "- {}/{}: {}\n",
-                    tool.server_name,
-                    tool.tool_name,
-                    tool.description.lines().next().unwrap_or("")
-                ));
-            }
-        }
-
+        let output = render_module_search_results(&matching_tools, total_matches);
         Ok(vec![Content::text(output)])
     }
 
@@ -688,6 +768,7 @@ impl CodeExecutionClient {
                     {
                         Ok(dispatch_result) => match dispatch_result.result.await {
                             Ok(result) => {
+                                let is_error = result.is_error.unwrap_or(false);
                                 // Collect *binary/blob* resource content (e.g. autovisualiser
                                 // ui:// HTML blobs) so handle_execute_code can append them to its
                                 // result for inline UI rendering. These are not representable as JS
@@ -715,7 +796,7 @@ impl CodeExecutionClient {
                                     collected_resources.lock().await.extend(resources);
                                 }
 
-                                Ok(if let Some(sc) = &result.structured_content {
+                                let output = if let Some(sc) = &result.structured_content {
                                     serde_json::to_string(sc).unwrap_or_default()
                                 } else {
                                     // Surface exactly what the model itself would see: content
@@ -757,7 +838,12 @@ impl CodeExecutionClient {
                                     } else {
                                         text
                                     }
-                                })
+                                };
+                                if is_error {
+                                    Err(format!("Tool error: {output}"))
+                                } else {
+                                    Ok(output)
+                                }
                             }
                             Err(e) => Err(format!("Tool error: {}", e.message)),
                         },
@@ -819,6 +905,11 @@ impl McpClientTrait for CodeExecutionClient {
                         - Result: record_result(value) - call this to return a value from the script
                         - All calls are synchronous, return strings
 
+                        MULTILINE SCRIPT ARGUMENTS:
+                        - Use String.raw`...` when passing shell, Ruby, PowerShell, or other source text.
+                        - Prefer one scripting language. Avoid nesting another interpreter unless the task requires it.
+                        - String.raw preserves backslashes such as \n instead of turning them into accidental source-code newlines.
+
                         TOOL_GRAPH: Always provide tool_graph to describe the execution flow for the UI.
                         Each node has: tool (server/name), description (what it does), depends_on (indices of dependencies).
                         Example for chained operations:
@@ -828,7 +919,10 @@ impl McpClientTrait for CodeExecutionClient {
                           {"tool": "developer/text_editor", "description": "write output.txt", "depends_on": [0, 1]}
                         ]
 
-                        BEFORE CALLING: Use the read_module tool to check required parameters.
+                        DISCOVERY:
+                        - Unknown tool: call search_modules once; its result contains complete, ready-to-use imports and signatures.
+                        - Known module, missing tool: call read_module once for that module or tool.
+                        - Do not call read_module after search_modules already returned the signature you need.
                     "#}
                     .to_string(),
                     schema::<ExecuteCodeParams>(),
@@ -843,16 +937,18 @@ impl McpClientTrait for CodeExecutionClient {
                 McpTool::new(
                     "read_module".to_string(),
                     indoc! {r#"
-                        Read tool definitions to understand how to call them correctly.
+                        Read tool definitions for a module you already know.
 
                         PATHS:
                         - "serverName" → lists all tools with signatures (shows required vs optional params)
                         - "serverName/toolName" → full details for one tool including description
 
                         USE THIS BEFORE execute_code when:
-                        - You haven't used a tool before
-                        - You're unsure of parameter names or which are required
-                        - A previous call failed due to missing/wrong parameters
+                        - You know the module name but search_modules did not return the tool you need
+                        - You need to inspect other tools in the same module
+                        - A previous call failed because the signature itself was incomplete or misunderstood
+
+                        Do not call this for a tool whose full signature was already returned by search_modules.
 
                         The signature format is: toolName({ param1: type, param2?: type }): string
                         Parameters with ? are optional; others are required.
@@ -879,8 +975,9 @@ impl McpClientTrait for CodeExecutionClient {
 
                         IMPORTANT: Do NOT stringify arrays. Use terms=["a","b"] not terms="[\"a\",\"b\"]"
 
-                        Returns matching servers and tools with descriptions.
+                        Returns ranked tools with complete import syntax and parameter signatures, ready for execute_code.
                         Use this when you don't know which module contains the tool you need.
+                        Do not follow it with read_module unless the needed tool was not returned.
                     "#}
                     .to_string(),
                     schema::<SearchModulesParams>(),
@@ -943,7 +1040,8 @@ impl McpClientTrait for CodeExecutionClient {
             indoc::indoc! {r#"
                 Modules: {}
 
-                Use the read_module tool to see signatures before calling unfamiliar tools.
+                For an unfamiliar task, call search_modules once. Its results contain complete imports and signatures.
+                Use read_module only when you know the module but the needed tool was not in the search results.
             "#},
             server_list.join(", ")
         ))
@@ -1101,7 +1199,9 @@ mod tests {
             RawContent::Text(t) => &t.text,
             _ => panic!("Expected text"),
         };
-        assert!(text.contains("developer (2 tools)"));
+        assert!(text.contains("import * as module_developer from \"developer\""));
+        assert!(text.contains("developer/shell"));
+        assert!(text.contains("developer/text_editor"));
 
         // Search for "edit" - should match description
         let result =
@@ -1130,6 +1230,99 @@ mod tests {
         let result =
             CodeExecutionClient::handle_search(&tools, &["nonexistent".to_string()], false);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn web_news_search_returns_ranked_ready_to_execute_signatures() {
+        let tools = vec![
+            ToolInfo {
+                server_name: "computercontroller".to_string(),
+                tool_name: "web_scrape".to_string(),
+                full_name: "computercontroller__web_scrape".to_string(),
+                description:
+                    "Fetch web, RSS, and news search-result URLs and return content inline"
+                        .to_string(),
+                params: vec![
+                    ("save_as".to_string(), "string".to_string(), false),
+                    ("url".to_string(), "string".to_string(), true),
+                ],
+                return_type: "string".to_string(),
+            },
+            ToolInfo {
+                server_name: "computercontroller".to_string(),
+                tool_name: "automation_script".to_string(),
+                full_name: "computercontroller__automation_script".to_string(),
+                description: "Run network-aware scripts for web, RSS, or news searches".to_string(),
+                params: vec![("script".to_string(), "string".to_string(), true)],
+                return_type: "string".to_string(),
+            },
+            ToolInfo {
+                server_name: "cdwagent".to_string(),
+                tool_name: "CDW-search_notes".to_string(),
+                full_name: "cdwagent__CDW-search_notes".to_string(),
+                description: "Search clinical notes".to_string(),
+                params: vec![],
+                return_type: "string".to_string(),
+            },
+            ToolInfo {
+                server_name: "computercontroller".to_string(),
+                tool_name: "xlsx_tool".to_string(),
+                full_name: "computercontroller__xlsx_tool".to_string(),
+                description: "Read and write spreadsheets".to_string(),
+                params: vec![],
+                return_type: "string".to_string(),
+            },
+        ];
+
+        let result = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "web".to_string(),
+                "search".to_string(),
+                "browser".to_string(),
+                "news".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let text = match &result[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+
+        assert!(text.contains("complete imports and signatures"));
+        assert!(text.contains("do not call read_module"));
+        assert!(text.contains("import * as module_computercontroller from \"computercontroller\";"));
+        assert!(text.contains(
+            "module_computercontroller[\"web_scrape\"]({save_as?: string, url: string})"
+        ));
+        assert!(!text.contains("xlsx_tool"));
+        assert!(
+            text.find("computercontroller/web_scrape").unwrap()
+                < text.find("cdwagent/CDW-search_notes").unwrap()
+        );
+    }
+
+    #[test]
+    fn module_search_alias_is_valid_for_non_identifier_server_names() {
+        assert_eq!(module_search_alias("123-tools.dev"), "module_123_tools_dev");
+    }
+
+    #[test]
+    fn signatures_use_first_nonempty_description_line() {
+        let tool = ToolInfo {
+            server_name: "computercontroller".to_string(),
+            tool_name: "automation_script".to_string(),
+            full_name: "computercontroller__automation_script".to_string(),
+            description: "\n    Run scripts for web and API research.\n    More detail."
+                .to_string(),
+            params: vec![],
+            return_type: "string".to_string(),
+        };
+
+        assert!(tool
+            .to_signature()
+            .ends_with(" - Run scripts for web and API research."));
     }
 
     #[test]

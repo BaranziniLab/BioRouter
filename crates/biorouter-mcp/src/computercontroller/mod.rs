@@ -26,6 +26,25 @@ mod xlsx_tool;
 mod platform;
 use platform::{create_system_automation, SystemAutomation};
 
+const MAX_INLINE_WEB_CONTENT_BYTES: usize = 128 * 1024;
+
+fn bounded_web_content(content: &str) -> (&str, bool) {
+    if content.len() <= MAX_INLINE_WEB_CONTENT_BYTES {
+        return (content, false);
+    }
+
+    let mut end = MAX_INLINE_WEB_CONTENT_BYTES;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    (
+        content
+            .get(..end)
+            .expect("bounded web content must end on a character boundary"),
+        true,
+    )
+}
+
 /// Enum for save_as parameter in web_scrape tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, Default)]
 #[serde(rename_all = "lowercase")]
@@ -537,15 +556,17 @@ impl ComputerControllerServer {
         Ok(())
     }
 
-    /// Fetch and save content from a web page
+    /// Fetch content from a web page, API, or feed and save a cached copy
     #[tool(
         name = "web_scrape",
         description = "
-            Fetch and save content from a web page. The content can be saved as:
+            Fetch an HTTP(S) URL for simple web research, APIs, RSS/Atom feeds, and web or news search-result URLs.
+            Text and JSON content is returned inline so it can be used immediately, and a cached copy is also saved.
+            Prefer this over an automation script when the URL is already known. The content can be saved as:
             - text (for HTML pages)
             - json (for API responses)
             - binary (for images and other files)
-            Returns 'Content saved to: <path>'. Use cache to read the content.
+            Large responses are truncated inline but remain complete in the cached file.
         "
     )]
     pub async fn web_scrape(
@@ -581,7 +602,7 @@ impl ComputerControllerServer {
         }
 
         // Process based on save_as parameter
-        let (content, extension, mime_type) = match save_as {
+        let (content, extension, mime_type, inline_content) = match save_as {
             SaveAsFormat::Text => {
                 let text = response.text().await.map_err(|e| {
                     ErrorData::new(
@@ -590,7 +611,7 @@ impl ComputerControllerServer {
                         None,
                     )
                 })?;
-                (text.into_bytes(), "txt", "text/plain")
+                (text.as_bytes().to_vec(), "txt", "text/plain", Some(text))
             }
             SaveAsFormat::Json => {
                 let text = response.text().await.map_err(|e| {
@@ -608,7 +629,12 @@ impl ComputerControllerServer {
                         None,
                     )
                 })?;
-                (text.into_bytes(), "json", "application/json")
+                (
+                    text.as_bytes().to_vec(),
+                    "json",
+                    "application/json",
+                    Some(text),
+                )
             }
             SaveAsFormat::Binary => {
                 let bytes = response.bytes().await.map_err(|e| {
@@ -618,7 +644,7 @@ impl ComputerControllerServer {
                         None,
                     )
                 })?;
-                (bytes.to_vec(), "bin", "application/octet-stream")
+                (bytes.to_vec(), "bin", "application/octet-stream", None)
             }
         };
 
@@ -628,10 +654,17 @@ impl ComputerControllerServer {
         // Register as a resource
         self.register_as_resource(&cache_path, mime_type)?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Content saved to: {}",
-            cache_path.display()
-        ))]))
+        let mut result = format!("Content saved to: {}", cache_path.display());
+        if let Some(inline_content) = inline_content {
+            let (inline_content, truncated) = bounded_web_content(&inline_content);
+            result.push_str("\n\nFetched content:\n");
+            result.push_str(inline_content);
+            if truncated {
+                result.push_str("\n\n[Inline content truncated; use the cached file for the complete response.]");
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Create and run small scripts for automation tasks
@@ -641,6 +674,9 @@ impl ComputerControllerServer {
         description = "
             Create and run small PowerShell or Batch scripts for automation tasks.
             PowerShell is recommended for most tasks.
+
+            This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
+            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
 
             The script is saved to a temporary file and executed.
             Some examples:
@@ -663,6 +699,9 @@ impl ComputerControllerServer {
         description = "
             Create and run small scripts for automation tasks.
             Supports Shell and Ruby (on macOS).
+
+            This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
+            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
 
             The script is saved to a temporary file and executed.
             Consider using shell script (bash) for most simple tasks first.
@@ -803,7 +842,8 @@ impl ComputerControllerServer {
         let output_str = String::from_utf8_lossy(&output.stdout).into_owned();
         let error_str = String::from_utf8_lossy(&output.stderr).into_owned();
 
-        let mut result = if output.status.success() {
+        let succeeded = output.status.success();
+        let mut result = if succeeded {
             format!("Script completed successfully.\n\nOutput:\n{}", output_str)
         } else {
             format!(
@@ -823,7 +863,11 @@ impl ComputerControllerServer {
             self.register_as_resource(&cache_path, "text")?;
         }
 
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+        if succeeded {
+            Ok(CallToolResult::success(vec![Content::text(result)]))
+        } else {
+            Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, result, None))
+        }
     }
 
     /// Control the computer using system automation
@@ -1474,6 +1518,86 @@ impl ServerHandler for ComputerControllerServer {
         Ok(ReadResourceResult {
             contents: vec![resource.clone()],
         })
+    }
+}
+
+#[cfg(test)]
+mod web_and_script_tests {
+    use super::*;
+    use rmcp::model::RawContent;
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| match &content.raw {
+                RawContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn inline_web_content_respects_utf8_boundaries() {
+        let content = format!("{}é", "a".repeat(MAX_INLINE_WEB_CONTENT_BYTES - 1));
+        let (bounded, truncated) = bounded_web_content(&content);
+
+        assert!(truncated);
+        assert_eq!(bounded.len(), MAX_INLINE_WEB_CONTENT_BYTES - 1);
+        assert!(bounded.is_char_boundary(bounded.len()));
+    }
+
+    #[tokio::test]
+    async fn web_scrape_returns_text_inline_and_keeps_cached_copy() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "<rss><channel><item><title>Apple Watch update</title></item></channel></rss>",
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let result = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect("web fetch should succeed");
+        let text = text_of(&result);
+
+        assert!(text.contains("Fetched content:"));
+        assert!(text.contains("Apple Watch update"));
+        let saved_path = text
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("Content saved to: ")
+            .unwrap();
+        assert!(std::path::Path::new(saved_path).is_file());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn automation_script_nonzero_exit_is_a_tool_error() {
+        let server = ComputerControllerServer::new();
+        let error = server
+            .automation_script(Parameters(AutomationScriptParams {
+                language: ScriptLanguage::Shell,
+                script: "printf 'search failed' >&2\nexit 7".to_string(),
+                save_output: false,
+            }))
+            .await
+            .expect_err("a nonzero script must not be reported as a successful tool call");
+
+        let message = error.to_string();
+        assert!(message.contains("Script failed"));
+        assert!(message.contains("search failed"));
     }
 }
 

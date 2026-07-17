@@ -13,6 +13,7 @@ use rmcp::object;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
 use biorouter::agents::extension::ExtensionConfig;
 use biorouter::agents::extension_manager::ExtensionManager;
@@ -52,6 +53,22 @@ async fn manager() -> Arc<ExtensionManager> {
         .await
         .expect("add code_execution");
 
+    manager
+}
+
+async fn manager_with_computercontroller() -> Arc<ExtensionManager> {
+    let manager = manager().await;
+    manager
+        .add_extension(ExtensionConfig::Builtin {
+            name: "computercontroller".to_string(),
+            description: "Computer and web tools".to_string(),
+            display_name: Some("Computer Controller".to_string()),
+            timeout: Some(300),
+            bundled: Some(true),
+            available_tools: vec![],
+        })
+        .await
+        .expect("add computercontroller");
     manager
 }
 
@@ -490,6 +507,73 @@ async fn case19_search_modules_finds_shell() {
     let m = manager().await;
     let out = call_tool(&m, "search_modules", json!({ "terms": "shell" })).await;
     assert!(out.contains("developer/shell"), "got: {out}");
+    assert!(out.contains("import * as module_developer"), "got: {out}");
+    assert!(out.contains("command: string"), "got: {out}");
+    assert!(!out.contains("Use the read_module"), "got: {out}");
+}
+
+#[tokio::test]
+async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<rss><channel><item><title>Apple Watch update</title><link>https://example.test/watch</link></item></channel></rss>",
+        ))
+        .mount(&mock_server)
+        .await;
+    let manager = manager_with_computercontroller().await;
+
+    let discovery = call_tool(
+        &manager,
+        "search_modules",
+        json!({ "terms": ["web", "search", "browser", "news"] }),
+    )
+    .await;
+    assert!(discovery.contains("computercontroller/web_scrape"));
+    assert!(discovery.contains("module_computercontroller[\"web_scrape\"]"));
+    assert!(discovery.contains("do not call read_module"));
+
+    let result = exec(
+        &manager,
+        &format!(
+            r#"
+            import * as module_computercontroller from "computercontroller";
+            const feed = module_computercontroller["web_scrape"]({{ url: "{}" }});
+            record_result(feed);
+            "#,
+            mock_server.uri()
+        ),
+    )
+    .await;
+    assert!(result.contains("Apple Watch update"), "got: {result}");
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn failed_nested_search_script_is_an_execute_code_error() {
+    let manager = manager_with_computercontroller().await;
+    let (is_error, result) = exec_raw(
+        &manager,
+        r#"
+        import * as module_computercontroller from "computercontroller";
+        const script = String.raw`printf 'search failed\n' >&2
+exit 7`;
+        const output = module_computercontroller["automation_script"]({
+            language: "shell",
+            script,
+            save_output: false
+        });
+        record_result(output);
+        "#,
+    )
+    .await;
+
+    assert!(
+        is_error,
+        "failed inner script must fail execute_code: {result}"
+    );
+    assert!(result.contains("Script failed"), "got: {result}");
+    assert!(result.contains("search failed"), "got: {result}");
 }
 
 #[tokio::test]
