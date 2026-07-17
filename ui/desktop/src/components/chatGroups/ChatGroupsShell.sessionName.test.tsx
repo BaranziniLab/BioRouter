@@ -17,22 +17,6 @@ import { describe, expect, it, vi } from 'vitest';
  * renameTab was already correct and already tested.
  */
 
-// jsdom has no matchMedia and the shared setup does not stub it; use-mobile.ts
-// (reached via the sidebar hook) calls it during render.
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  }),
-});
-
 const dispatch = vi.fn();
 
 // Capture the props the shell hands to BaseChat without mounting the real
@@ -56,7 +40,7 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
           id: 'g1',
           activeTabId: 't1',
           tabs: [
-            { tabId: 't1', sessionId: 'sess-1', title: 'New Session', userSetName: false, preview: true },
+            { tabId: 't1', sessionId: 'sess-1', title: 'New Session', userSetName: false },
           ],
         },
       },
