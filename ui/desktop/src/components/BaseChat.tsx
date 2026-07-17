@@ -80,13 +80,21 @@ import {
   resolveArtifactPath,
 } from './artifacts/artifactUtils';
 import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
+import { PREVIEW_MIN_WIDTH, PreviewPanelMode, previewPanelMode } from './Layout/yieldLadder';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
 export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 
-const ARTIFACT_PANEL_MIN_WIDTH = 360;
+// Rung 2 of the yield ladder (D-32). The floor is shared with the ladder rather
+// than re-declared, so the number the rule reasons about and the number the
+// panel clamps to cannot drift apart.
+const ARTIFACT_PANEL_MIN_WIDTH = PREVIEW_MIN_WIDTH;
 const ARTIFACT_PANEL_MAX_WIDTH = 920;
+// The chat's PREFERRED width — what the panel gives up first. Below this the
+// panel keeps narrowing toward its own 360px floor (the clamp in
+// getMaxArtifactPanelWidth), and at ARTIFACT_PANEL_MIN_WIDTH + CHAT_MIN_WIDTH
+// there is nothing left to give and rung 2 fires. See previewPanelMode.
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
 const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.48;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
@@ -709,6 +717,11 @@ function BaseChatContent({
   const [isArtifactPanelOpen, setIsArtifactPanelOpen] = useState(false);
   const [isArtifactPanelResizing, setIsArtifactPanelResizing] = useState(false);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState<number | null>(null);
+  // Rung 2 of the yield ladder. Derived from the PANE's measured width through
+  // previewPanelMode — never stored as a raw width, so the state only changes on
+  // the 720px crossing and a splitter drag does not re-render the whole chat
+  // once per frame.
+  const [previewMode, setPreviewMode] = useState<PreviewPanelMode>('side');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
@@ -843,6 +856,23 @@ function BaseChatContent({
     await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
   }, [isMobile, allowWindowResize]);
 
+  /**
+   * Rung 2: ask the PANE, not the window, whether the preview panel can have a
+   * column.
+   *
+   * The shipped rule was `isMobile` — window < 930 — which is right for one group
+   * and blind the moment there are two: in a split the pane is decoupled from the
+   * window, so a 2-up split in a 1000px window left the panel's 360px floor
+   * sitting next to a 140px transcript. isMobile survives inside previewPanelMode
+   * as an override, so nothing between 720 and 930 changes.
+   */
+  const measurePreviewMode = useCallback(() => {
+    const paneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    // Same value → React bails out. This runs from a ResizeObserver, so it must
+    // be free at rest.
+    setPreviewMode(previewPanelMode({ isMobile, paneWidth }));
+  }, [isMobile]);
+
   const handleOpenArtifact = useCallback(
     async (artifact: ArtifactSource) => {
       if (artifactPanelCloseTimerRef.current) {
@@ -859,6 +889,11 @@ function BaseChatContent({
         await ensureArtifactPanelFits();
       }
 
+      // Prime the rung BEFORE the panel exists: the observer below only starts
+      // once presentedArtifact is set, so without this the first frame would
+      // paint the panel in whichever mode the last artifact left behind. Measured
+      // after ensureArtifactPanelFits, which may have grown the OS window.
+      measurePreviewMode();
       setPresentedArtifact(artifact);
 
       if (presentedArtifact) {
@@ -872,7 +907,7 @@ function BaseChatContent({
         setIsArtifactPanelOpen(true);
       });
     },
-    [ensureArtifactPanelFits, presentedArtifact]
+    [ensureArtifactPanelFits, measurePreviewMode, presentedArtifact]
   );
 
   const handleCloseArtifactPanel = useCallback(() => {
@@ -911,9 +946,16 @@ function BaseChatContent({
 
   useEffect(() => {
     const splitPane = splitPaneRef.current;
-    if (!splitPane || !presentedArtifact || isMobile) return;
+    // Gated on `presentedArtifact` only. `isMobile` used to gate this too, but
+    // rung 2 has to keep watching the PANE at every window width — a split can
+    // starve the transcript in a window the mobile rule calls roomy. The width
+    // bookkeeping below stays a no-op in overlay mode, where the panel takes no
+    // width from anything.
+    if (!splitPane || !presentedArtifact) return;
 
-    const updateArtifactPanelWidth = () => {
+    const sampleSplitPane = () => {
+      measurePreviewMode();
+      if (isMobile) return;
       setArtifactPanelWidth((currentWidth) => {
         const maxWidth = getMaxArtifactPanelWidth();
         if (currentWidth === null || !artifactPanelWidthUserSetRef.current) {
@@ -924,21 +966,34 @@ function BaseChatContent({
       });
     };
 
-    updateArtifactPanelWidth();
+    sampleSplitPane();
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateArtifactPanelWidth);
-      return () => window.removeEventListener('resize', updateArtifactPanelWidth);
+      window.addEventListener('resize', sampleSplitPane);
+      return () => window.removeEventListener('resize', sampleSplitPane);
     }
 
-    const resizeObserver = new ResizeObserver(updateArtifactPanelWidth);
+    // No feedback loop: this observes the split pane, which is sized by the
+    // GROUP above it, and rung 2 only ever moves the panel between a column and
+    // an overlay INSIDE that pane. Neither mode can change the observed box, so
+    // the callback cannot retrigger itself — no hysteresis needed, and none
+    // added on spec.
+    const resizeObserver = new ResizeObserver(sampleSplitPane);
     resizeObserver.observe(splitPane);
     return () => resizeObserver.disconnect();
-  }, [getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile, presentedArtifact]);
+  }, [
+    getInitialArtifactPanelWidth,
+    getMaxArtifactPanelWidth,
+    isMobile,
+    measurePreviewMode,
+    presentedArtifact,
+  ]);
 
   const handleArtifactPanelResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (isMobile) return;
+      // A yielded panel has no column to resize. The handle is already unwired at
+      // the render site; this is the second lock on the same door.
+      if (previewMode === 'overlay') return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -1030,7 +1085,7 @@ function BaseChatContent({
       window.addEventListener('blur', handleWindowBlur);
       resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
     },
-    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
+    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, previewMode]
   );
 
   const {
@@ -1949,10 +2004,19 @@ function BaseChatContent({
               isResizing={isArtifactPanelResizing}
               onClose={handleCloseArtifactPanel}
               onOpenArtifact={handleOpenArtifact}
-              onResizeStart={isMobile ? undefined : handleArtifactPanelResizeStart}
+              // Rung 2. 'overlay' means the panel has YIELDED ITS COLUMN: it is
+              // absolutely positioned inside the split pane, so it takes no width
+              // from the transcript at all and there is no edge to drag. The
+              // pane's full width stays the chat's, and closing the panel reveals
+              // it untouched. This is the treatment a mobile-width window has
+              // always got; rung 2 only changes WHEN it applies — a pane that
+              // cannot seat a 360px chat beside a 360px panel, at any window size.
+              onResizeStart={
+                previewMode === 'overlay' ? undefined : handleArtifactPanelResizeStart
+              }
               onRenderError={handleArtifactRenderError}
               style={
-                isMobile
+                previewMode === 'overlay'
                   ? undefined
                   : {
                       width: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
@@ -1960,7 +2024,7 @@ function BaseChatContent({
                     }
               }
               className={
-                isMobile
+                previewMode === 'overlay'
                   ? 'absolute inset-x-2 bottom-2 top-16 z-[70] rounded-lg border border-border-subtle'
                   : 'min-w-[360px] flex-shrink-0'
               }
