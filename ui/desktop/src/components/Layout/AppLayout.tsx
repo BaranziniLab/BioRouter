@@ -14,6 +14,35 @@ import {
 
 const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1120;
 
+/**
+ * What the width watcher should do to the sidebar, given a width sample.
+ *
+ * Pure and exported so the rule can be tested without geometry: the bug this
+ * encodes was a STATE bug (the effect fighting the user's own click), not a
+ * layout one, so it is provable in a unit test.
+ *
+ * `wasCompact` is the side of the threshold we were on last sample, or null if
+ * we have never sampled. Anything other than a CROSSING returns 'none' — that
+ * is the whole point: if the width did not change buckets, the sidebar is in
+ * the state the user asked for and we must not touch it.
+ */
+export type SidebarAutoCollapseAction = 'collapse' | 'restore' | 'none';
+
+export function sidebarAutoCollapseAction(opts: {
+  wasCompact: boolean | null;
+  isCompact: boolean;
+  open: boolean;
+  autoCollapsed: boolean;
+}): SidebarAutoCollapseAction {
+  const { wasCompact, isCompact, open, autoCollapsed } = opts;
+  // Not a crossing → the user's state stands.
+  if (wasCompact === isCompact) return 'none';
+  // Crossed INTO compact: only take the sidebar away if it is actually showing.
+  if (isCompact) return open ? 'collapse' : 'none';
+  // Crossed OUT of compact: only give it back if WE were the ones who took it.
+  return autoCollapsed ? 'restore' : 'none';
+}
+
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -21,6 +50,14 @@ const AppLayoutContent: React.FC = () => {
   const { isMobile, open, openMobile, setOpen } = useSidebar();
   const autoCollapsedSidebarRef = React.useRef(false);
   const resizeSettlingTimerRef = React.useRef<number | null>(null);
+  // `open` is read by the width watcher but must NOT be one of its deps — see
+  // the comment on that effect. A ref keeps the watcher's view of `open` fresh
+  // without re-running it every time the user toggles the sidebar.
+  const sidebarOpenRef = React.useRef(open);
+  sidebarOpenRef.current = open;
+  // Which side of SIDEBAR_AUTO_COLLAPSE_WIDTH we were on last time the watcher
+  // ran. `null` = never measured, so the first run counts as a crossing.
+  const wasCompactRef = React.useRef<boolean | null>(null);
 
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
@@ -31,18 +68,43 @@ const AppLayoutContent: React.FC = () => {
     return () => document.body.classList.remove('biorouter-chat-route-active');
   }, [location.pathname]);
 
+  /**
+   * Auto-collapse the sidebar when the window gets too narrow, and restore it
+   * when there is room again.
+   *
+   * This reacts ONLY to a WIDTH CROSSING — never to `open` itself. The previous
+   * version listed `open` in its deps, which turned it into a reconciliation
+   * that re-ran on every toggle, and that made the un-collapse button dead:
+   *
+   *   1. wide window, user collapses the sidebar by hand  → open=false, and the
+   *      auto-collapse branch never ran, so autoCollapsedSidebarRef stayed FALSE
+   *   2. user shrinks the window under the threshold → `shouldCollapse && open`
+   *      is false (it is already closed), so the ref STILL stays false
+   *   3. user clicks the toggle to bring it back → open=true re-runs this effect
+   *      → `shouldCollapse && open && !ref` is now true → setOpen(false)
+   *
+   * The sidebar snapped shut inside the same tick as the click, so the button
+   * looked broken and the rail was unrecoverable until you clicked a second
+   * time. Gating on a crossing means a user toggle can never re-arm this.
+   */
   React.useEffect(() => {
     const updateSidebarMode = () => {
       const shouldCollapse = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
       document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
 
-      if (shouldCollapse && open && !autoCollapsedSidebarRef.current) {
+      const action = sidebarAutoCollapseAction({
+        wasCompact: wasCompactRef.current,
+        isCompact: shouldCollapse,
+        open: sidebarOpenRef.current,
+        autoCollapsed: autoCollapsedSidebarRef.current,
+      });
+      wasCompactRef.current = shouldCollapse;
+
+      if (action === 'collapse') {
+        // Remember that WE took the sidebar away, so we know to give it back.
         autoCollapsedSidebarRef.current = true;
         setOpen(false);
-        return;
-      }
-
-      if (!shouldCollapse && autoCollapsedSidebarRef.current) {
+      } else if (action === 'restore') {
         autoCollapsedSidebarRef.current = false;
         setOpen(true);
       }
@@ -54,7 +116,7 @@ const AppLayoutContent: React.FC = () => {
       document.body.classList.remove('biorouter-sidebar-compact');
       window.removeEventListener('resize', updateSidebarMode);
     };
-  }, [isMobile, open, setOpen]);
+  }, [isMobile, setOpen]);
 
   React.useEffect(() => {
     const markWindowResizing = () => {
