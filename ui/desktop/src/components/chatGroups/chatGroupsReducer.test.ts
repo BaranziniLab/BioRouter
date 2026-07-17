@@ -12,73 +12,99 @@ function run(state: ChatGroupsState, ...actions: ChatGroupsAction[]): ChatGroups
   return actions.reduce(chatGroupsReducer, state);
 }
 
-const open = (sessionId: string, preview = false): ChatGroupsAction => ({
+const open = (sessionId: string): ChatGroupsAction => ({
   type: 'openTab',
-  payload: { sessionId, preview, title: sessionId },
+  payload: { sessionId, title: sessionId },
 });
 
-describe('chatGroupsReducer — preview tabs (VS Code enablePreview)', () => {
-  it('reuses the group preview tab IN PLACE, keeping the same tabId', () => {
-    const a = run(createInitialChatGroupsState(), open('s1', true));
+/** The pre-session submit path: an openTab carrying route-state cargo. */
+const submit = (sessionId: string, message = 'hello'): ChatGroupsAction => ({
+  type: 'openTab',
+  payload: { sessionId, title: sessionId, pendingInitialMessage: message },
+});
+
+/**
+ * Every open is a real tab. This replaces the old preview/enablePreview suite
+ * wholesale: that behaviour (single click = italic tab, recycled in place by the
+ * next click) shipped, the user used it, and rejected it. Clicking around
+ * Recents must never disturb the chat you were reading.
+ */
+describe('chatGroupsReducer — a click opens a real tab', () => {
+  it('opens a NEW tab per chat and never replaces the previous one', () => {
+    const a = run(createInitialChatGroupsState(), open('s1'));
     const firstTabId = a.groups['grp-1'].tabs[0].tabId;
 
-    const b = chatGroupsReducer(a, open('s2', true));
+    const b = run(a, open('s2'), open('s3'));
 
-    // The load-bearing invariant: one tab, same identity, new session.
-    expect(b.groups['grp-1'].tabs).toHaveLength(1);
+    expect(b.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['s1', 's2', 's3']);
+    // The tab you were reading keeps its identity and its place.
     expect(b.groups['grp-1'].tabs[0].tabId).toBe(firstTabId);
-    expect(b.groups['grp-1'].tabs[0].sessionId).toBe('s2');
-    expect(b.groups['grp-1'].activeTabId).toBe(firstTabId);
+    // The newest one takes focus.
+    expect(activeSessionIdOf(b)).toBe('s3');
   });
 
-  it('leaves twelve Recents clicks as exactly one tab', () => {
+  it('leaves twelve DISTINCT Recents clicks as twelve tabs', () => {
     let state = createInitialChatGroupsState();
-    for (let i = 0; i < 12; i++) state = chatGroupsReducer(state, open(`s${i}`, true));
-    expect(state.groups['grp-1'].tabs).toHaveLength(1);
-    expect(state.groups['grp-1'].tabs[0].sessionId).toBe('s11');
+    for (let i = 0; i < 12; i++) state = chatGroupsReducer(state, open(`s${i}`));
+    expect(state.groups['grp-1'].tabs).toHaveLength(12);
+    expect(activeSessionIdOf(state)).toBe('s11');
   });
 
-  it('a pinned tab is never recycled by the next preview open', () => {
-    const state = run(
-      createInitialChatGroupsState(),
-      open('s1', false), // pinned
-      open('s2', true) // preview
-    );
-    expect(state.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['s1', 's2']);
+  it('no tab carries a preview marker — the concept is gone, not hidden', () => {
+    const state = run(createInitialChatGroupsState(), open('s1'), open('s2'));
+    for (const tab of state.groups['grp-1'].tabs) {
+      expect(tab).not.toHaveProperty('preview');
+    }
   });
+});
 
-  it('pinTab makes the tab survive the next preview open', () => {
-    const a = run(createInitialChatGroupsState(), open('s1', true));
-    const tabId = a.groups['grp-1'].tabs[0].tabId;
-    const b = run(a, { type: 'pinTab', tabId }, open('s2', true));
+describe('chatGroupsReducer — empty-tab adoption is the submit path ONLY', () => {
+  it('a submit fills the blank tab the user is looking at, keeping its tabId', () => {
+    // A blank, unbound tab — what "New Chat" leaves behind.
+    const a = run(createInitialChatGroupsState(), { type: 'openTab', payload: { sessionId: '' } });
+    const blankTabId = a.groups['grp-1'].tabs[0].tabId;
 
-    expect(b.groups['grp-1'].tabs).toHaveLength(2);
-    expect(b.groups['grp-1'].tabs[0].preview).toBe(false);
-  });
-
-  it('PIN-ON-RUN: a preview tab whose session is running is pinned, not replaced', () => {
-    const a = run(createInitialChatGroupsState(), open('s1', true));
-    const b = chatGroupsReducer(a, {
-      type: 'openTab',
-      payload: { sessionId: 's2', preview: true },
-      runningSessionIds: ['s1'],
-    });
-
-    // A live turn is committed-to: s1 survives, pinned, and s2 gets a new tab.
-    expect(b.groups['grp-1'].tabs).toHaveLength(2);
-    expect(b.groups['grp-1'].tabs[0].sessionId).toBe('s1');
-    expect(b.groups['grp-1'].tabs[0].preview).toBe(false);
-    expect(b.groups['grp-1'].tabs[1].sessionId).toBe('s2');
-  });
-
-  it('re-opening a preview tab non-preview pins it in place (the submit path)', () => {
-    const a = run(createInitialChatGroupsState(), open('s1', true));
-    const tabId = a.groups['grp-1'].tabs[0].tabId;
-    const b = chatGroupsReducer(a, open('s1', false));
+    const b = chatGroupsReducer(a, submit('s1'));
 
     expect(b.groups['grp-1'].tabs).toHaveLength(1);
-    expect(b.groups['grp-1'].tabs[0].tabId).toBe(tabId);
-    expect(b.groups['grp-1'].tabs[0].preview).toBe(false);
+    expect(b.groups['grp-1'].tabs[0].tabId).toBe(blankTabId);
+    expect(b.groups['grp-1'].tabs[0].sessionId).toBe('s1');
+  });
+
+  it('with TWO blank tabs, the submit fills the ACTIVE one — not the leftmost', () => {
+    // Cmd+T twice is now an ordinary thing to do, so two blank tabs is an
+    // ordinary state, and "find the first blank tab" is no longer the same
+    // question as "find the tab the user is typing in". Before Cmd+T existed
+    // you could barely reach two blanks; now the user's first message would
+    // land in the OTHER blank tab and the tab they typed in would sit empty.
+    const a = run(
+      createInitialChatGroupsState(),
+      { type: 'openTab', payload: { sessionId: '' } },
+      { type: 'openTab', payload: { sessionId: '' } }
+    );
+    const [first, second] = a.groups['grp-1'].tabs;
+    expect(a.groups['grp-1'].activeTabId).toBe(second.tabId);
+
+    const b = chatGroupsReducer(a, submit('s1'));
+
+    expect(b.groups['grp-1'].tabs).toHaveLength(2);
+    expect(b.groups['grp-1'].tabs[1].tabId).toBe(second.tabId);
+    expect(b.groups['grp-1'].tabs[1].sessionId).toBe('s1');
+    // ...and the untouched blank is still blank.
+    expect(b.groups['grp-1'].tabs[0].tabId).toBe(first.tabId);
+    expect(b.groups['grp-1'].tabs[0].sessionId).toBe('');
+    expect(b.groups['grp-1'].activeTabId).toBe(second.tabId);
+  });
+
+  it('a Recents click NEVER consumes a blank tab — it opens its own', () => {
+    // The regression this gate exists for: without it, "open in a new tab"
+    // silently becomes "replace the blank tab".
+    const a = run(createInitialChatGroupsState(), { type: 'openTab', payload: { sessionId: '' } });
+    const b = chatGroupsReducer(a, open('s1'));
+
+    expect(b.groups['grp-1'].tabs).toHaveLength(2);
+    expect(b.groups['grp-1'].tabs[1].sessionId).toBe('s1');
+    expect(activeSessionIdOf(b)).toBe('s1');
   });
 });
 
@@ -91,6 +117,36 @@ describe('chatGroupsReducer — dedupe', () => {
     expect(b.groups['grp-1'].tabs).toHaveLength(2);
     expect(b.groups['grp-1'].activeTabId).toBe(s1Tab);
   });
+
+  it('clicking the same chat repeatedly never grows the strip', () => {
+    let state = run(createInitialChatGroupsState(), open('s1'));
+    for (let i = 0; i < 5; i++) state = chatGroupsReducer(state, open('s1'));
+    expect(state.groups['grp-1'].tabs).toHaveLength(1);
+  });
+
+  it('dedupe reaches ACROSS groups, and focuses the group that owns the tab', () => {
+    // The user's rule — "new chats that are not already launched as a tab will
+    // always launch as a tab" — is about the WINDOW, not one strip. A chat open
+    // in the other half of a split must not get a second tab over here.
+    const a = run(createInitialChatGroupsState(), open('s1'), open('s2'));
+    const s1Tab = a.groups['grp-1'].tabs[0].tabId;
+    const split = chatGroupsReducer(a, {
+      type: 'moveTabToGroup',
+      tabId: s1Tab,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    const otherGroupId = leafGroupIds(split.layout).find((id) => id !== 'grp-1')!;
+    expect(split.groups[otherGroupId].tabs.map((t) => t.sessionId)).toEqual(['s1']);
+
+    // Focus the group that does NOT hold s1, then open s1 from Recents.
+    const b = run(split, { type: 'setActiveGroup', groupId: 'grp-1' }, open('s1'));
+
+    expect(b.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['s2']);
+    expect(b.groups[otherGroupId].tabs.map((t) => t.sessionId)).toEqual(['s1']);
+    expect(b.activeGroupId).toBe(otherGroupId);
+    expect(activeSessionIdOf(b)).toBe('s1');
+  });
 });
 
 describe('chatGroupsReducer — close with successor', () => {
@@ -99,7 +155,11 @@ describe('chatGroupsReducer — close with successor', () => {
     const [, tabB] = a.groups['grp-1'].tabs;
 
     // Close the MIDDLE active tab -> index 1 of the remaining [a, c] is 'c'.
-    const b = run(a, { type: 'activateTab', tabId: tabB.tabId }, { type: 'closeTab', tabId: tabB.tabId });
+    const b = run(
+      a,
+      { type: 'activateTab', tabId: tabB.tabId },
+      { type: 'closeTab', tabId: tabB.tabId }
+    );
     expect(activeSessionIdOf(b)).toBe('c');
   });
 
@@ -146,7 +206,11 @@ describe('chatGroupsReducer — reorder', () => {
     const a = run(createInitialChatGroupsState(), open('a'), open('b'));
     const [tabA] = a.groups['grp-1'].tabs;
     expect(
-      chatGroupsReducer(a, { type: 'reorderTab', draggedTabId: tabA.tabId, targetTabId: tabA.tabId })
+      chatGroupsReducer(a, {
+        type: 'reorderTab',
+        draggedTabId: tabA.tabId,
+        targetTabId: tabA.tabId,
+      })
     ).toBe(a);
     expect(
       chatGroupsReducer(a, { type: 'reorderTab', draggedTabId: 'nope', targetTabId: tabA.tabId })

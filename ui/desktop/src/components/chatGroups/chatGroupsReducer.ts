@@ -20,8 +20,6 @@ export interface OpenTabPayload {
   sessionId: string;
   title?: string;
   userSetName?: boolean;
-  /** VS Code enablePreview. Reuses the group's existing preview tab in place. */
-  preview?: boolean;
   pendingInitialMessage?: string;
   pendingInitialAttachments?: UserAttachment[];
   workflowId?: string;
@@ -31,9 +29,8 @@ export interface OpenTabPayload {
 }
 
 export type ChatGroupsAction =
-  | { type: 'openTab'; payload: OpenTabPayload; runningSessionIds?: readonly string[] }
+  | { type: 'openTab'; payload: OpenTabPayload }
   | { type: 'activateTab'; tabId: ChatTabId }
-  | { type: 'pinTab'; tabId: ChatTabId }
   | { type: 'closeTab'; tabId: ChatTabId }
   | { type: 'reorderTab'; draggedTabId: ChatTabId; targetTabId: ChatTabId }
   | { type: 'renameTab'; sessionId: string; title: string; userSetName?: boolean }
@@ -77,9 +74,23 @@ function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup
   return { ...state, groups: { ...state.groups, [groupId]: next } };
 }
 
+/**
+ * Open a chat as a tab.
+ *
+ * Every open is a REAL tab. There is no preview/italic slot and nothing is ever
+ * recycled out from under the user: this reducer used to implement VS Code's
+ * enablePreview (single click = italic tab, reused in place), and the user
+ * rejected it after living with it — clicking a chat in Recents must leave the
+ * chat you were reading exactly where it was. Two rules, and only two:
+ *
+ *   DEDUPE  — a sessionId already open ANYWHERE activates that tab (and focuses
+ *             its group) instead of opening a second one. "New chats that are
+ *             not already launched as a tab will always launch as a tab."
+ *   ADOPT   — the pre-session submit path, and it alone, fills the empty tab the
+ *             user is already looking at. See below.
+ */
 function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'openTab' }) {
   const { payload } = action;
-  const running = action.runningSessionIds ?? [];
 
   // Dedupe: a sessionId already open ANYWHERE activates its tab and its group
   // rather than duplicating. Generalizes the artifactSourceKey dedupe in
@@ -87,16 +98,9 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
   if (payload.sessionId) {
     const hit = findTabGroup(state, (tab) => tab.sessionId === payload.sessionId);
     if (hit) {
-      // An explicit non-preview open PINS an existing preview tab: this is the
-      // "submitting a message pins it" path arriving as a re-open.
-      const pinned = payload.preview === false && hit.tab.preview;
-      const tabs = pinned
-        ? hit.group.tabs.map((t) => (t.tabId === hit.tab.tabId ? { ...t, preview: false } : t))
-        : hit.group.tabs;
       return {
         ...withGroup(state, hit.group.groupId, {
           ...hit.group,
-          tabs,
           activeTabId: hit.tab.tabId,
         }),
         activeGroupId: hit.group.groupId,
@@ -113,61 +117,50 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
     sessionId: payload.sessionId,
     title: payload.title ?? DEFAULT_TAB_TITLE,
     userSetName: payload.userSetName ?? false,
-    preview: payload.preview === true,
     pendingInitialMessage: payload.pendingInitialMessage,
     pendingInitialAttachments: payload.pendingInitialAttachments,
     workflowId: payload.workflowId,
     cwd: payload.cwd,
   });
 
-  // The new-chat path: an empty tab (sessionId '') is a tab the user opened and
-  // has not yet bound to a session. When BaseChat's pre-session submit finally
-  // creates one and navigates, that arrives here as an openTab — and it must
-  // ADOPT the empty tab in place, keeping its tabId, rather than opening a
-  // second tab beside it and orphaning the one the user is looking at.
-  if (payload.sessionId && !payload.preview) {
-    const empty = group.tabs.find((t) => !t.sessionId);
+  // ADOPT — the ONLY path that may fill an existing tab, and it is not an "open"
+  // in the user's sense at all.
+  //
+  // An empty tab (sessionId '') is a tab the user opened and has not yet bound to
+  // a session. When BaseChat's pre-session submit finally creates one and
+  // navigates, that arrives here as an openTab — and it must fill the empty tab
+  // in place, keeping its tabId, rather than opening a second tab beside it and
+  // orphaning the blank one the user is staring at.
+  //
+  // Gated on the route-state cargo (`pendingInitial*`) because that cargo is what
+  // makes this the submit path: only a submit carries the message that created
+  // the session. A Recents click carries none, so it can never land here and can
+  // never consume a blank tab — it always opens its own. That gate is the whole
+  // reason this branch is safe to keep; without it "open in a new tab" would
+  // silently become "replace the blank tab" and we would be back to the
+  // behaviour the user rejected.
+  const isPreSessionSubmit =
+    payload.pendingInitialMessage !== undefined || payload.pendingInitialAttachments !== undefined;
+  if (payload.sessionId && isPreSessionSubmit) {
+    // The ACTIVE blank tab first, and only then any blank tab.
+    //
+    // "The blank tab" and "the leftmost blank tab" were the same tab back when
+    // reaching two blanks took real effort. Cmd+T makes two blanks a keystroke
+    // away, and then the leftmost is the wrong answer: the submit came from the
+    // tab the user is typing in, so their first message would appear in a tab
+    // they were not looking at while the one they typed in stayed empty.
+    //
+    // The fallback survives because not every pre-session submit originates in
+    // the active tab — a launcher deep link carries its message in from outside
+    // the strip entirely, and filling a waiting blank is the right home for it.
+    const active = group.tabs.find((t) => t.tabId === group.activeTabId && !t.sessionId);
+    const empty = active ?? group.tabs.find((t) => !t.sessionId);
     if (empty) {
       return {
         ...withGroup(state, groupId, {
           ...group,
           tabs: group.tabs.map((t) => (t.tabId === empty.tabId ? nextTab(empty.tabId) : t)),
           activeTabId: empty.tabId,
-        }),
-        activeGroupId: groupId,
-      };
-    }
-  }
-
-  if (payload.preview) {
-    // Replace the group's existing preview tab IN PLACE, keeping its tabId —
-    // this is what stops browsing Recents from leaving twelve tabs behind.
-    //
-    // Pin-on-run: a preview tab whose session is RUNNING is never replaced. A
-    // live turn is committed-to; recycling it would rip a streaming chat out
-    // from under the user. The stale preview is pinned and a fresh tab opens.
-    const existing = group.tabs.find((t) => t.preview);
-    if (existing) {
-      if (running.includes(existing.sessionId)) {
-        const tabId = `tab-${state.seq + 1}`;
-        return {
-          ...withGroup(state, groupId, {
-            ...group,
-            tabs: [
-              ...group.tabs.map((t) => (t.tabId === existing.tabId ? { ...t, preview: false } : t)),
-              nextTab(tabId),
-            ],
-            activeTabId: tabId,
-          }),
-          activeGroupId: groupId,
-          seq: state.seq + 1,
-        };
-      }
-      return {
-        ...withGroup(state, groupId, {
-          ...group,
-          tabs: group.tabs.map((t) => (t.tabId === existing.tabId ? nextTab(existing.tabId) : t)),
-          activeTabId: existing.tabId,
         }),
         activeGroupId: groupId,
       };
@@ -338,15 +331,6 @@ export function chatGroupsReducer(
         ...withGroup(state, hit.group.groupId, { ...hit.group, activeTabId: action.tabId }),
         activeGroupId: hit.group.groupId,
       };
-    }
-
-    case 'pinTab': {
-      const hit = findTabGroup(state, (t) => t.tabId === action.tabId);
-      if (!hit || !hit.tab.preview) return state;
-      return withGroup(state, hit.group.groupId, {
-        ...hit.group,
-        tabs: hit.group.tabs.map((t) => (t.tabId === action.tabId ? { ...t, preview: false } : t)),
-      });
     }
 
     case 'closeTab':
