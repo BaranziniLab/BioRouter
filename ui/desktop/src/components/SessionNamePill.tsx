@@ -1,18 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { More } from '../icons';
+import { More } from './icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
+} from './ui/dropdown-menu';
 
 interface Props {
   name: string;
   onRename: (newName: string) => void;
   onDiverge?: () => void | Promise<void>;
   canDiverge?: boolean;
-  /** Optional accent color dot (dashboard windows pass theirs). */
+  /** Optional accent color dot. */
   accentColor?: string;
   className?: string;
 }
