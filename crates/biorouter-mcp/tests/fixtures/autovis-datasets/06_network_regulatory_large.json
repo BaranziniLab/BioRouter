@@ -1,0 +1,311 @@
+{
+  "nodes": [
+    {
+      "id": "GENE0",
+      "group": "kinase",
+      "value": 3
+    },
+    {
+      "id": "GENE1",
+      "group": "receptor",
+      "value": 1
+    },
+    {
+      "id": "GENE2",
+      "group": "tumor_suppressor",
+      "value": 9
+    },
+    {
+      "id": "GENE3",
+      "group": "tumor_suppressor",
+      "value": 6
+    },
+    {
+      "id": "GENE4",
+      "group": "tumor_suppressor",
+      "value": 9
+    },
+    {
+      "id": "GENE5",
+      "group": "oncogene",
+      "value": 1
+    },
+    {
+      "id": "GENE6",
+      "group": "tumor_suppressor",
+      "value": 7
+    },
+    {
+      "id": "GENE7",
+      "group": "receptor",
+      "value": 2
+    },
+    {
+      "id": "GENE8",
+      "group": "oncogene",
+      "value": 2
+    },
+    {
+      "id": "GENE9",
+      "group": "receptor",
+      "value": 1
+    },
+    {
+      "id": "GENE10",
+      "group": "tumor_suppressor",
+      "value": 4
+    },
+    {
+      "id": "GENE11",
+      "group": "tumor_suppressor",
+      "value": 10
+    },
+    {
+      "id": "GENE12",
+      "group": "receptor",
+      "value": 1
+    },
+    {
+      "id": "GENE13",
+      "group": "oncogene",
+      "value": 1
+    },
+    {
+      "id": "GENE14",
+      "group": "oncogene",
+      "value": 5
+    },
+    {
+      "id": "GENE15",
+      "group": "receptor",
+      "value": 3
+    },
+    {
+      "id": "GENE16",
+      "group": "tumor_suppressor",
+      "value": 10
+    },
+    {
+      "id": "GENE17",
+      "group": "kinase",
+      "value": 9
+    },
+    {
+      "id": "GENE18",
+      "group": "oncogene",
+      "value": 2
+    },
+    {
+      "id": "GENE19",
+      "group": "oncogene",
+      "value": 6
+    },
+    {
+      "id": "GENE20",
+      "group": "tumor_suppressor",
+      "value": 9
+    },
+    {
+      "id": "GENE21",
+      "group": "tumor_suppressor",
+      "value": 10
+    }
+  ],
+  "edges": [
+    {
+      "source": "GENE0",
+      "target": "GENE19",
+      "weight": 2
+    },
+    {
+      "source": "GENE1",
+      "target": "GENE21",
+      "weight": 5
+    },
+    {
+      "source": "GENE1",
+      "target": "GENE13",
+      "weight": 3
+    },
+    {
+      "source": "GENE2",
+      "target": "GENE18",
+      "weight": 4
+    },
+    {
+      "source": "GENE2",
+      "target": "GENE11",
+      "weight": 3
+    },
+    {
+      "source": "GENE3",
+      "target": "GENE5",
+      "weight": 2
+    },
+    {
+      "source": "GENE4",
+      "target": "GENE18",
+      "weight": 3
+    },
+    {
+      "source": "GENE5",
+      "target": "GENE15",
+      "weight": 3
+    },
+    {
+      "source": "GENE5",
+      "target": "GENE14",
+      "weight": 3
+    },
+    {
+      "source": "GENE5",
+      "target": "GENE19",
+      "weight": 1
+    },
+    {
+      "source": "GENE6",
+      "target": "GENE16",
+      "weight": 4
+    },
+    {
+      "source": "GENE7",
+      "target": "GENE10",
+      "weight": 2
+    },
+    {
+      "source": "GENE8",
+      "target": "GENE13",
+      "weight": 1
+    },
+    {
+      "source": "GENE8",
+      "target": "GENE21",
+      "weight": 1
+    },
+    {
+      "source": "GENE9",
+      "target": "GENE18",
+      "weight": 3
+    },
+    {
+      "source": "GENE9",
+      "target": "GENE10",
+      "weight": 3
+    },
+    {
+      "source": "GENE9",
+      "target": "GENE19",
+      "weight": 4
+    },
+    {
+      "source": "GENE10",
+      "target": "GENE14",
+      "weight": 1
+    },
+    {
+      "source": "GENE10",
+      "target": "GENE2",
+      "weight": 3
+    },
+    {
+      "source": "GENE10",
+      "target": "GENE15",
+      "weight": 1
+    },
+    {
+      "source": "GENE11",
+      "target": "GENE9",
+      "weight": 5
+    },
+    {
+      "source": "GENE12",
+      "target": "GENE14",
+      "weight": 3
+    },
+    {
+      "source": "GENE12",
+      "target": "GENE21",
+      "weight": 3
+    },
+    {
+      "source": "GENE13",
+      "target": "GENE14",
+      "weight": 3
+    },
+    {
+      "source": "GENE14",
+      "target": "GENE19",
+      "weight": 1
+    },
+    {
+      "source": "GENE15",
+      "target": "GENE1",
+      "weight": 2
+    },
+    {
+      "source": "GENE15",
+      "target": "GENE9",
+      "weight": 2
+    },
+    {
+      "source": "GENE16",
+      "target": "GENE7",
+      "weight": 4
+    },
+    {
+      "source": "GENE16",
+      "target": "GENE12",
+      "weight": 4
+    },
+    {
+      "source": "GENE16",
+      "target": "GENE2",
+      "weight": 2
+    },
+    {
+      "source": "GENE17",
+      "target": "GENE12",
+      "weight": 5
+    },
+    {
+      "source": "GENE17",
+      "target": "GENE8",
+      "weight": 2
+    },
+    {
+      "source": "GENE18",
+      "target": "GENE17",
+      "weight": 3
+    },
+    {
+      "source": "GENE18",
+      "target": "GENE13",
+      "weight": 3
+    },
+    {
+      "source": "GENE19",
+      "target": "GENE12",
+      "weight": 2
+    },
+    {
+      "source": "GENE19",
+      "target": "GENE4",
+      "weight": 1
+    },
+    {
+      "source": "GENE19",
+      "target": "GENE5",
+      "weight": 2
+    },
+    {
+      "source": "GENE20",
+      "target": "GENE21",
+      "weight": 2
+    },
+    {
+      "source": "GENE21",
+      "target": "GENE15",
+      "weight": 5
+    }
+  ]
+}
