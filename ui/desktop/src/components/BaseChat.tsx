@@ -676,6 +676,15 @@ interface BaseChatProps {
    * reach the DOM, but only for no-drag children).
    */
   renderSessionTitle?: () => React.ReactNode;
+  /**
+   * Scopes the in-app terminal to THIS chat tab. The /pair shell passes the
+   * tab's id, so each tab has its own terminal (its own open/hidden state and
+   * its own panes) and switching tabs switches which terminal you see. Falls
+   * back to sessionId for the surfaces that mount a single BaseChat with no
+   * TerminalDockProvider (Dashboard, /extensions, the Hub), where it is only
+   * ever compared against itself.
+   */
+  terminalKey?: string;
 }
 
 function BaseChatContent({
@@ -698,6 +707,7 @@ function BaseChatContent({
   allowWindowResize = true,
   artifactPanelEnabled = true,
   renderSessionTitle,
+  terminalKey,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -733,24 +743,29 @@ function BaseChatContent({
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
 
   // ---- Terminal dock seam -------------------------------------------------
-  // With /pair's shell mounted there is ONE dock for every chat group, and this
-  // chat drives it through the context. Everywhere else (Dashboard, /extensions,
-  // the Hub) there is no provider, useTerminalDock() returns null, and BaseChat
-  // keeps its own local dock exactly as before — same state, same render site,
-  // byte-identical behaviour.
+  // With /pair's shell mounted the terminal is PER CHAT TAB: this chat drives
+  // its own terminal through the context, keyed by its tab id (terminalKey), so
+  // opening it here never touches another tab's. Everywhere else (Dashboard,
+  // /extensions, the Hub) there is no provider, useTerminalDock() returns null,
+  // and BaseChat keeps its own local dock exactly as before.
   const terminalDock = useTerminalDock();
+  // Falls back to sessionId off /pair, where there is no shell to hand a tab id
+  // and the key is only ever compared against itself.
+  const terminalDockKey = terminalKey ?? sessionId;
   const [localTerminalDockOpen, setLocalTerminalDockOpen] = useState(false);
-  const isTerminalDockOpen = terminalDock ? terminalDock.isOpen : localTerminalDockOpen;
+  const isTerminalDockOpen = terminalDock
+    ? terminalDock.isOpenFor(terminalDockKey)
+    : localTerminalDockOpen;
   // sessionWorkingDir is computed far below (it needs `session`), but the setter
   // must be stable and defined here. A ref, assigned at the definition site, is
   // the seam: the dock only ever reads a cwd at the instant it opens.
   const sessionWorkingDirRef = useRef<string | undefined>(undefined);
   const setIsTerminalDockOpen = useCallback(
     (next: boolean) => {
-      if (terminalDock) terminalDock.setOpen(next, sessionWorkingDirRef.current);
+      if (terminalDock) terminalDock.setOpen(terminalDockKey, next, sessionWorkingDirRef.current);
       else setLocalTerminalDockOpen(next);
     },
-    [terminalDock]
+    [terminalDock, terminalDockKey]
   );
   const splitPaneRef = useRef<HTMLDivElement>(null);
   const artifactPanelCloseTimerRef = useRef<number | null>(null);
@@ -827,8 +842,9 @@ function BaseChatContent({
     artifactPanelWidthUserSetRef.current = false;
     setDiagnosticsOpen(false);
     setReviewOpen(false);
-    // Only the LOCAL dock. The global dock is shared by every group, so one
-    // group changing session must not close the terminal another group is using.
+    // Only the LOCAL dock. The /pair terminal is keyed by tab id in the context,
+    // not by session, so an empty tab binding a real session (its only in-place
+    // sessionId change) must NOT close the terminal that belongs to the tab.
     setLocalTerminalDockOpen(false);
     setShowEditWorkflowModal(false);
     knownArtifactKeysRef.current.clear();

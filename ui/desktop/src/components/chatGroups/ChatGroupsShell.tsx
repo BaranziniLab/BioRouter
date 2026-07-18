@@ -13,7 +13,7 @@ import { useTabDragReorder } from './useTabDragReorder';
 import { DropTarget } from './dropZones';
 import { groupCountOf } from './chatGroupsLayout';
 import { GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
-import { firstLeaf, GroupLayout, ChatGroupId } from './chatGroupsTypes';
+import { firstLeaf, leafGroupIds, GroupLayout, ChatGroupId } from './chatGroupsTypes';
 import { splitSnapshotIsStale, splitYieldAction, splitYieldSample } from '../Layout/yieldLadder';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
@@ -245,7 +245,31 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     return () => observer.disconnect();
   }, [dispatch]);
 
+  // Terminals are keyed by tab id and outlive the tab's BaseChat (which remounts
+  // on every tab switch). When a tab is CLOSED for good, nothing else disposes
+  // its hidden-but-live terminal, so the shell hands the dock the set of tab ids
+  // that still exist and it drops the rest — unmounting them, which disposes
+  // their pty. Idempotent: retain is a no-op when nothing needs dropping.
+  const allTabIds = useMemo(() => {
+    if (!groups) return [] as string[];
+    return leafGroupIds(groups.state.layout).flatMap(
+      (gid) => groups.state.groups[gid]?.tabs.map((t) => t.tabId) ?? []
+    );
+  }, [groups]);
+  const retainTerminals = terminalDock?.retain;
+  useEffect(() => {
+    retainTerminals?.(allTabIds);
+  }, [retainTerminals, allTabIds]);
+
   if (!groups || !layout) return null;
+
+  // The terminal you SEE belongs to the tab you are focused on: the active
+  // group's active tab. Computed to match ChatGroupPane's tabKey exactly, so the
+  // dock keyed by that id is the one this tab's BaseChat drives.
+  const activeGroup = groups.state.groups[groups.state.activeGroupId];
+  const activeTerminalKey = activeGroup
+    ? (activeGroup.activeTabId ?? `${groups.state.activeGroupId}-empty`)
+    : null;
 
   const renderGroup = ({ groupId }: RenderGroupArgs) => {
     const group = groups.state.groups[groupId];
@@ -289,7 +313,8 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         dropZone={drag.dropTarget?.groupId === groupId ? drag.dropTarget.zone : null}
         onFocusGroup={handleFocusGroup}
         // The tab is the chat's identity: keying on tabId (not sessionId) keeps
-        // a tab's mount stable across a session bind.
+        // a tab's mount stable across a session bind. The SAME id keys the tab's
+        // terminal, so it too survives the bind and switching tabs switches it.
         tabKey={activeTab?.tabId ?? `${groupId}-empty`}
         sessionId={activeTab?.sessionId ?? ''}
         initialMessage={activeTab?.pendingInitialMessage}
@@ -320,17 +345,21 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         <div ref={treeRef} className="flex min-h-0 flex-1">
           {tree}
         </div>
-        {/* The dock is GLOBAL: one, below every group, spanning them all — not
-            one per pane. It reads its open state and its frozen cwd from the
-            context; see TerminalDockContext for why the cwd must not track the
-            active group. */}
-        {terminalDock && (
+        {/* One dock PER chat tab that has a terminal open, mounted below the
+            groups. Every one stays mounted so its shell keeps running, but only
+            the ACTIVE tab's is visible (open) — switching tabs switches which
+            terminal you see. `onClose` HIDES a terminal (its panes live on);
+            `onEmptied`, fired when its last pane closes, DESTROYS it. Each reads
+            its own frozen cwd (its tab's session folder, captured on open). */}
+        {terminalDock?.terminals.map((terminal) => (
           <InAppTerminalDock
-            open={terminalDock.isOpen}
-            workingDir={terminalDock.workingDir}
-            onClose={() => terminalDock.setOpen(false)}
+            key={terminal.key}
+            open={terminal.showing && terminal.key === activeTerminalKey}
+            workingDir={terminal.workingDir}
+            onClose={() => terminalDock.setOpen(terminal.key, false)}
+            onEmptied={() => terminalDock.remove(terminal.key)}
           />
-        )}
+        ))}
       </div>
       {/* The ghost renders at the SHELL, not in the source strip: it is fixed to
           the viewport and must not be clipped by the strip's overflow-x:auto. */}
@@ -465,6 +494,9 @@ function ChatGroupPane({
     >
       <BaseChat
         key={tabKey}
+        // Scopes this tab's terminal. Same id as the React key, so the terminal
+        // is tied to the tab, not the (rebindable) session.
+        terminalKey={tabKey}
         setChat={onChatChange}
         sessionId={sessionId}
         initialMessage={initialMessage}

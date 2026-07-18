@@ -1,14 +1,37 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+
+/** One mounted terminal, identified by the chat tab it belongs to. */
+export interface TerminalDockEntry {
+  /** The chat tab's id — the terminal's scope. Stable across a session bind. */
+  key: string;
+  /** The cwd this terminal was opened in. Frozen for the terminal's lifetime. */
+  workingDir: string | undefined;
+  /** Whether the user wants this terminal shown (the toggle state). A hidden
+   *  terminal stays mounted with its panes alive — hide is not destroy. */
+  showing: boolean;
+}
 
 export interface TerminalDockContextValue {
-  isOpen: boolean;
-  /** The cwd the dock was opened with. Frozen for the lifetime of the open. */
-  workingDir: string | undefined;
+  /** Is the terminal for `key` currently toggled on (showing)? */
+  isOpenFor: (key: string) => boolean;
   /**
-   * Open or close the global dock. `workingDir` is a REQUEST, honoured only on
-   * the false -> true transition — see the capture site for why.
+   * Show or hide the terminal for `key`.
+   *
+   * `open === true` shows it, creating the terminal on first open and CAPTURING
+   * `workingDir` once at that moment (never overwriting a live terminal's frozen
+   * cwd — see below). `open === false` HIDES it: the entry and its live panes
+   * survive so a background tab's shell keeps running, exactly as hiding the
+   * panel in a terminal app does. Destroying a terminal (disposing its panes) is
+   * `remove`, reached only when the user closes its last pane.
    */
-  setOpen: (open: boolean, workingDir?: string) => void;
+  setOpen: (key: string, open: boolean, workingDir?: string) => void;
+  /** Destroy the terminal for `key` (its last pane was closed). */
+  remove: (key: string) => void;
+  /** Drop every terminal whose tab no longer exists, unmounting + disposing it. */
+  retain: (liveKeys: readonly string[]) => void;
+  /** Every mounted terminal, in the order it was first opened. The shell renders
+   *  one dock per entry and shows only the active tab's. */
+  terminals: readonly TerminalDockEntry[];
 }
 
 const TerminalDockContext = createContext<TerminalDockContextValue | null>(null);
@@ -25,43 +48,77 @@ export function useTerminalDock(): TerminalDockContextValue | null {
 }
 
 /**
- * ONE terminal dock for every chat group (spec: "the panel stays global, spans
- * all groups"). The shell renders the dock once, below the groups row; each
- * group's header toggle drives it through here.
+ * PER-CHAT-TAB terminals, keyed by tab id.
+ *
+ * Every chat tab has its OWN terminal — its own open/hidden state and its own
+ * panes — and switching tabs switches which one you see. The dock used to be one
+ * window-global panel shared by every tab, so opening it in one tab showed it in
+ * all of them and its cwd was frozen to whichever tab happened to open it first.
+ *
+ * The state lives HERE, above the tab switch, rather than inside BaseChat,
+ * because BaseChat is keyed by tab id and remounts on every tab switch — local
+ * state would tear the pty down the moment you clicked another tab. The shell
+ * renders one InAppTerminalDock per entry and toggles VISIBILITY (open) rather
+ * than mounting, so a hidden tab's shell keeps running.
+ *
+ * ## The frozen-cwd contract
+ *
+ * A pane captures its cwd at creation and never re-reads it; InAppTerminalDock
+ * recreates its panes when `workingDir` changes. So `workingDir` is captured
+ * ONCE, when a terminal is first opened, and never overwritten while it lives —
+ * a live terminal's shell must never be respawned under a running command. A
+ * fresh open (after the previous terminal was destroyed) picks up the tab's
+ * then-current session cwd, which is the moment the user actually asked for one.
  */
 export function TerminalDockProvider({ children }: { children: React.ReactNode }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [workingDir, setWorkingDir] = useState<string | undefined>(undefined);
-  const isOpenRef = useRef(false);
+  const [entries, setEntries] = useState<TerminalDockEntry[]>([]);
 
-  const setOpen = useCallback((open: boolean, requestedWorkingDir?: string) => {
-    // ===================================================================
-    // CAPTURE THE CWD ONCE, ON THE false -> true TRANSITION ONLY.
-    //
-    // InAppTerminalDock RECREATES ITS PANES when `workingDir` changes: its
-    // pane-factory useCallback lists workingDir in its deps
-    // (InAppTerminalDock.tsx:444) and the reset effect keys off it. So a dock
-    // whose workingDir live-tracked the ACTIVE GROUP would tear down and respawn
-    // every shell the moment the user clicked into the other pane — mid-command,
-    // with no warning and no way back. Someone's long-running job, killed by a
-    // click on a tab.
-    //
-    // Once the dock is open its cwd is therefore frozen: the panes already
-    // captured their cwd at creation and never re-read it, and this makes that
-    // existing contract explicit at the only place that could break it. The next
-    // OPEN picks up the then-active group's cwd, which is the moment the user
-    // actually asked for a terminal somewhere.
-    //
-    // Do not "improve" this by adding workingDir to a dep array.
-    // ===================================================================
-    if (open && !isOpenRef.current) setWorkingDir(requestedWorkingDir);
-    isOpenRef.current = open;
-    setIsOpen(open);
+  const setOpen = useCallback((key: string, open: boolean, requestedWorkingDir?: string) => {
+    setEntries((current) => {
+      const index = current.findIndex((entry) => entry.key === key);
+      if (open) {
+        // First open for this tab: create the terminal and capture its cwd once.
+        if (index === -1) {
+          return [...current, { key, workingDir: requestedWorkingDir, showing: true }];
+        }
+        // Already alive — just reveal it. NEVER touch the frozen cwd here (a
+        // running shell would be respawned under the user's command).
+        if (current[index].showing) return current;
+        const next = current.slice();
+        next[index] = { ...current[index], showing: true };
+        return next;
+      }
+      // Hide, keeping the entry and its live panes.
+      if (index === -1 || !current[index].showing) return current;
+      const next = current.slice();
+      next[index] = { ...current[index], showing: false };
+      return next;
+    });
   }, []);
 
+  const remove = useCallback((key: string) => {
+    setEntries((current) => {
+      if (!current.some((entry) => entry.key === key)) return current;
+      return current.filter((entry) => entry.key !== key);
+    });
+  }, []);
+
+  const retain = useCallback((liveKeys: readonly string[]) => {
+    setEntries((current) => {
+      const live = new Set(liveKeys);
+      const next = current.filter((entry) => live.has(entry.key));
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
+  const isOpenFor = useCallback(
+    (key: string) => entries.some((entry) => entry.key === key && entry.showing),
+    [entries]
+  );
+
   const value = useMemo<TerminalDockContextValue>(
-    () => ({ isOpen, workingDir, setOpen }),
-    [isOpen, workingDir, setOpen]
+    () => ({ isOpenFor, setOpen, remove, retain, terminals: entries }),
+    [isOpenFor, setOpen, remove, retain, entries]
   );
 
   return <TerminalDockContext.Provider value={value}>{children}</TerminalDockContext.Provider>;
