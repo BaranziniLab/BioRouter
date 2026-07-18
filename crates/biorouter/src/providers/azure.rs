@@ -5,11 +5,16 @@ use serde_json::Value;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
 use super::azureauth::{AuthError, AzureAuth};
-use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
 use super::retry::ProviderRetry;
-use super::utils::{get_model, handle_response_openai_compat, ImageFormat};
+use super::utils::{
+    get_model, handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
+    ImageFormat,
+};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
@@ -134,13 +139,17 @@ impl AzureProvider {
         })
     }
 
-    async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
-        // Build the path for Azure OpenAI
-        let path = format!(
+    /// The single source of truth for the Azure deployment path, shared by the
+    /// blocking and streaming paths so they cannot drift.
+    fn chat_completions_path(&self) -> String {
+        format!(
             "openai/deployments/{}/chat/completions?api-version={}",
             self.deployment_name, self.api_version
-        );
+        )
+    }
 
+    async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
+        let path = self.chat_completions_path();
         let response = self.api_client.response_post(&path, payload).await?;
         handle_response_openai_compat(response).await
     }
@@ -234,5 +243,41 @@ impl Provider for AzureProvider {
         let response_model = get_model(&response);
         log.write(&response, Some(&usage))?;
         Ok((message, ProviderUsage::new(response_model, usage)))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        // `for_streaming = true` also sets stream_options.include_usage, which
+        // is what makes Azure emit a final usage-bearing chunk.
+        let payload = create_request(
+            &self.model,
+            system,
+            messages,
+            tools,
+            &ImageFormat::OpenAi,
+            true,
+        )?;
+        let mut log = RequestLog::start(&self.model, &payload)?;
+
+        let path = self.chat_completions_path();
+        let response = self
+            .with_retry(|| async {
+                let resp = self.api_client.response_post(&path, &payload).await?;
+                handle_status_openai_compat(resp).await
+            })
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        stream_openai_compat(response, log)
     }
 }
