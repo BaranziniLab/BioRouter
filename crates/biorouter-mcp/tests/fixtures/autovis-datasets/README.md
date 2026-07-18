@@ -1,4 +1,17 @@
-# Auto Visualiser — tool-selection fixtures
+# Auto Visualiser tool-selection fixtures
+
+> **What this is.** Ten synthetic biomedical datasets and the recorded baseline for a
+> manual probe that checks whether a model picks the **right** Auto Visualiser tool from a
+> raw file, with **no tool named in the prompt**.
+> **Status:** Current — the datasets are live test material. The result table is a frozen
+> baseline from the 2026-06-19 run (`mimo-v2.5-pro`, 10/10 correct); treat a future miss as
+> a regression signal, not noise.
+> **Audience:** developers changing Auto Visualiser tool descriptions or adding tools.
+
+These fixtures live beside the crate's other test data rather than under `docs/` because
+they are inputs a test run reads, not prose. This README is the documentation for them,
+and is written to the same house style as the rest of the documentation tree — see
+[the documentation style guide](../../../../../docs/contributing/documentation-style.md).
 
 Ten synthetic datasets for checking that a model picks the **right** Auto
 Visualiser tool from a raw file, with **no tool named in the prompt**.
@@ -66,3 +79,9 @@ in every case, so any future miss is a signal, not noise.
 - `render_map` — reports its size to the iframe + `invalidateSize()`, fixing
   dimensions. Now in `templates/map_template.html`.
 - Removed the "MCP UI is experimental" note under inline visualizations.
+
+## Related documentation
+
+- [Auto Visualiser extension](../../../../../docs/extensions/built-in/auto-visualiser.md) — what the extension does and how a user enables it
+- [Auto Visualiser stress test](../../../../../docs/history/autovis-stress-test/README.md) — the 100-request campaign that hardened the composite report tool
+- [Documentation index](../../../../../docs/README.md) — the rest of the documentation tree

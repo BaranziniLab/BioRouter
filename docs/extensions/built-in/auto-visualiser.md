@@ -138,4 +138,5 @@ Would you like me to create additional visualizations or dive deeper into any sp
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — how extensions are configured, discovered and enabled generally.
 - [Environment variables](../../configuration/environment-variables.md) — the full set of `BIOROUTER_*` variables, including the asset-loading flags above.
 - [Auto Visualiser stress test](../../history/autovis-stress-test/README.md) — the historical stress-test campaign that hardened these tools, useful for knowing which figure types were exercised.
+- [Tool-selection fixtures](../../../crates/biorouter-mcp/tests/fixtures/autovis-datasets/README.md) — ten datasets plus a recorded 10/10 baseline for checking that a model still picks the right tool from a raw file; run these after editing any tool description.
 - [Troubleshooting](../../troubleshooting/README.md) — where to go when a figure or extension misbehaves.

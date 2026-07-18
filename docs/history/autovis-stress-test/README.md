@@ -754,6 +754,8 @@ Two notes on the index:
 
 ## Related documentation
 
+- [Tool-selection fixtures](../../../crates/biorouter-mcp/tests/fixtures/autovis-datasets/README.md) — the companion probe: ten datasets that check tool *selection* rather than tool *output*, with its own recorded baseline.
+
 - [run-results.md](run-results.md) — what actually happened when these 100 scenarios were run, per visualization and per batch.
 - [hardening-log.md](hardening-log.md) — the fixes made between batches while this corpus was being executed.
 - [Auto Visualiser extension guide](../../extensions/built-in/auto-visualiser.md) — what the extension is, how to enable it, and the full tool catalogue these scenarios exercise.
