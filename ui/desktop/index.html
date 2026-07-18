@@ -81,8 +81,23 @@
          Spec: docs/superpowers/specs/2026-07-18-boot-splash-design.md
          ═══════════════════════════════════════════════════════════════════ */
       #br-boot {
-        /* Parchment, light — the same ground the post-boot Hub uses
-           (background-muted), so handing off to the app has no colour jump. */
+        /* Parchment (the default family), light.
+
+           These are LITERAL values, not var(--background-muted) and friends.
+           Tailwind v4's `@theme inline` compiles those tokens away — they are
+           substituted into utility classes at build time and do not exist as
+           runtime custom properties, so a var() reference here silently falls
+           back and paints the wrong ground. Verified: a probe element styled
+           `background: var(--background-muted, magenta)` computes magenta in
+           every theme. Do not "simplify" this back to tokens.
+
+           The values mirror --background-muted per family, which is the ground
+           the post-boot Hub uses, so handing off to the app has no colour jump.
+
+           EVERY theme family needs a light and a dark rule below.
+           boot-splash.test.ts cross-checks this list against THEME_FAMILIES in
+           src/contexts/ThemeContext.tsx and fails if one is missing, so adding
+           a family cannot silently regress this screen. */
         --br-bg: #faf8f3;
         --br-navy: #052049;
         --br-coral: #b85a32;
@@ -104,14 +119,16 @@
       #br-boot[hidden] { display: none; }
       #br-boot.br-out { opacity: 0; }
 
-      /* Navy becomes UCSF teal on a dark surface, matching BioRouterMark.tsx.
-         The combined dark+alma selector is deliberately more specific so it
-         wins over the two single-condition rules above it. */
+      /* Parchment dark. Navy becomes UCSF teal on a dark surface, matching
+         BioRouterMark.tsx. Each combined dark+family selector below is
+         deliberately more specific than these single-condition rules, so it
+         wins regardless of source order. */
       html.dark #br-boot {
         --br-bg: #282217;
         --br-navy: #18a3ac;
         --br-track: #3a3223;
       }
+      /* Alma Mater keeps the UCSF mark; only the ground changes. */
       html[data-theme='alma-mater'] #br-boot {
         --br-bg: #f2f3f4;
         --br-navy: #052049;
@@ -122,8 +139,9 @@
         --br-navy: #18a3ac;
         --br-track: #17386a;
       }
-      /* Roche Limit: the mark's ink goes warm near-black on the grey panel,
-         and lifts to the light ink in dark. Coral becomes the bright orange. */
+      /* Roche Limit rebrands the mark itself: the ink goes warm near-black on
+         the grey panel and lifts to the light ink in dark, and coral becomes
+         the bright orange. */
       html[data-theme='roche-limit'] #br-boot {
         --br-bg: #f4f4f2;
         --br-navy: #1f1e1c;

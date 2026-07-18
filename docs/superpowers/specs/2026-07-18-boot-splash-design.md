@@ -115,18 +115,50 @@ read differently at every size. A test pins this specifically.
 
 ## 4. Theme matrix
 
-Navy becomes UCSF teal on a dark surface, matching `BioRouterMark.tsx`. Coral is
-constant.
+| Family | Mode | Ground | Mark ink | Accent | Sweep track |
+|---|---|---|---|---|---|
+| Parchment | light | `#faf8f3` | `#052049` | `#b85a32` | `#e8e1d2` |
+| Parchment | dark | `#282217` | `#18a3ac` | `#b85a32` | `#3a3223` |
+| Alma Mater | light | `#f2f3f4` | `#052049` | `#b85a32` | `#e1e3e5` |
+| Alma Mater | dark | `#0d2a50` | `#18a3ac` | `#b85a32` | `#17386a` |
+| Roche Limit | light | `#f4f4f2` | `#1f1e1c` | `#ee6c1a` | `#e4e4e0` |
+| Roche Limit | dark | `#232320` | `#ededea` | `#ee6c1a` | `#302f2c` |
 
-| Family | Mode | Ground | Navy role | Sweep track |
-|---|---|---|---|---|
-| Parchment | light | `#faf8f3` | `#052049` | `#e8e1d2` |
-| Parchment | dark | `#282217` | `#18a3ac` | `#3a3223` |
-| Alma Mater | light | `#f2f3f4` | `#052049` | `#e1e3e5` |
-| Alma Mater | dark | `#0d2a50` | `#18a3ac` | `#17386a` |
+Parchment and Alma Mater keep the UCSF mark, where navy becomes teal on a dark
+surface exactly as `BioRouterMark.tsx` does. **Roche Limit rebrands the mark
+itself** — theme ink instead of navy, bright orange instead of coral — so mark
+colour is a per-family decision, not a brand constant.
 
-The combined `html.dark[data-theme='alma-mater']` selector is deliberately more
-specific than the two single-condition rules so it wins over both.
+Each combined `html.dark[data-theme='…']` selector is deliberately more specific
+than the single-condition rules, so it wins regardless of source order.
+
+### 4.1 Why these are literals and not theme tokens 🚩
+
+The obvious simplification — `--br-bg: var(--background-muted)`, so any new
+family is correct for free — **does not work here, and fails silently.**
+
+Tailwind v4's `@theme inline` *compiles these tokens away*: they are substituted
+into utility classes at build time and do not exist as runtime custom
+properties. A probe element styled `background: var(--background-muted, magenta)`
+computes **magenta** in every theme; `--text-default` resolves in light but not
+dark (its dark value is `var(--color-neutral-100)`, and the Tailwind palette
+variables are gone too, making it invalid-at-computed-value-time).
+
+So a token reference here does not fall back loudly — it paints the *Parchment
+light* literal on every theme, which at worst means a cream flash on a dark
+ground. The values must be literal, and every family needs its own rule.
+
+### 4.2 How a new family is kept from regressing this screen
+
+Three lists have to agree and none can import the others, because the splash
+paints before React: the splash CSS, the `FAMILIES` allow-list in the
+pre-React theme script, and `THEME_FAMILIES` in `ThemeContext.tsx`.
+
+`boot-splash.test.ts` enforces the lockstep: it parses the canonical family list
+out of `ThemeContext.tsx` and fails if any family lacks both a light and a dark
+splash rule, or if the theme script's list has drifted. Adding a family without
+touching this screen therefore breaks the build rather than shipping a wrong
+ground. Mutation-checked: adding a phantom fourth family fails two tests.
 
 ## 5. Lifecycle
 
