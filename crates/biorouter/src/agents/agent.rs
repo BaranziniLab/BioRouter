@@ -1241,6 +1241,9 @@ impl Agent {
         conversation: &Conversation,
         working_dir: &std::path::Path,
     ) -> Conversation {
+        let _phase = super::phase_timing::Phase::start("agent.assemble_turn_context");
+
+        let moim_phase = super::phase_timing::Phase::start("agent.inject_moim");
         let (conversation, moim_injected) = super::moim::inject_moim(
             session_id,
             conversation.clone(),
@@ -1249,11 +1252,13 @@ impl Agent {
             &self.normalizer,
         )
         .await;
+        drop(moim_phase);
 
         if moim_injected || !normalize_each_turn() {
             // MOIM injection normalizes on its way through.
             return conversation;
         }
+        let _normalize_phase = super::phase_timing::Phase::start("agent.normalize_conversation");
         self.normalizer.normalize(conversation).0
     }
 
@@ -1380,6 +1385,7 @@ impl Agent {
         tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
         tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
+        let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let output = call_tool_result::validate(output);
 
         // Scan tool output for injection markers + PII/PHI before it re-enters
@@ -2156,6 +2162,14 @@ impl Agent {
         // path lock, so a lock holder always makes progress — no deadlock).
         let dispatch_args = tool_call.arguments.clone();
         let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+        // Stage 0 instrumentation: the existing WAITING_TOOL_START/END pair
+        // above brackets only dispatch *setup* — the future below is returned
+        // un-awaited and driven later by `select_all`, so those markers close
+        // in microseconds while the tool runs for seconds. Any claim about
+        // tools running serially has to be measured HERE, inside the future,
+        // around the actual await. This is the gate for the H5/H6 work.
+        let exec_tool_name = tool_call.name.to_string();
+        let exec_request_id = request_id.clone();
 
         (
             request_id,
@@ -2174,8 +2188,24 @@ impl Agent {
                     } else {
                         None
                     };
+                    // Timed after the dispatch guard is acquired, so this span
+                    // is execution only and excludes time parked on the
+                    // concurrency semaphore.
+                    let exec_started = std::time::Instant::now();
+                    debug!(
+                        name = %exec_tool_name,
+                        id = %exec_request_id,
+                        "TOOL_EXEC_START"
+                    );
+                    let inner_result = inner.await;
+                    debug!(
+                        name = %exec_tool_name,
+                        id = %exec_request_id,
+                        dur_ms = exec_started.elapsed().as_millis() as u64,
+                        "TOOL_EXEC_END"
+                    );
                     super::large_response_handler::process_tool_response(
-                        inner.await,
+                        inner_result,
                         &large_response_ctx,
                     )
                     .await

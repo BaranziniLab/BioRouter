@@ -217,8 +217,22 @@ impl Agent {
 
         // Capture errors during stream creation and return them as part of the stream
         // so they can be handled by the existing error handling logic in the agent
+        // Marker semantics (deliberately explicit — the previous names were
+        // actively misleading, see the Stage 0 note in
+        // `docs/investigations/2026-07-18-tool-call-ui-latency.md` §4.4).
+        //
+        // `provider.stream()` returns as soon as the response *headers* arrive;
+        // token generation happens later, while the returned stream is polled.
+        // So the OPEN -> OPENED span is request-serialize + connect + TTFB
+        // ONLY, and is NOT comparable to the non-streaming pair below, which
+        // brackets an entire blocking generation. Three distinct spans:
+        //
+        //   OPEN      -> OPENED     : connect + TTFB
+        //   OPENED    -> EXHAUSTED  : generation (tokens streaming back)
+        //   OPEN      -> EXHAUSTED  : total
+        let stream_open_start = std::time::Instant::now();
         let stream_result = if provider.supports_streaming() {
-            debug!("WAITING_LLM_STREAM_START");
+            debug!("WAITING_LLM_STREAM_OPEN");
             let result = provider
                 .stream(
                     system_prompt.as_str(),
@@ -226,10 +240,15 @@ impl Agent {
                     &tools,
                 )
                 .await;
-            debug!("WAITING_LLM_STREAM_END");
+            debug!(
+                open_ms = stream_open_start.elapsed().as_millis() as u64,
+                "WAITING_LLM_STREAM_OPENED"
+            );
             result
         } else {
-            debug!("WAITING_LLM_START");
+            // Non-streaming: this pair brackets the FULL generation (request +
+            // connect + all tokens), unlike the streaming OPEN/OPENED pair.
+            debug!("WAITING_LLM_FULL_GENERATION_START");
             let complete_result = provider
                 .complete(
                     system_prompt.as_str(),
@@ -237,7 +256,10 @@ impl Agent {
                     &tools,
                 )
                 .await;
-            debug!("WAITING_LLM_END");
+            debug!(
+                total_ms = stream_open_start.elapsed().as_millis() as u64,
+                "WAITING_LLM_FULL_GENERATION_END"
+            );
 
             match complete_result {
                 Ok((message, usage)) => Ok(stream_from_single_message(message, usage)),
@@ -273,6 +295,15 @@ impl Agent {
 
                 yield (message, usage);
             }
+
+            // The stream is drained: generation is genuinely finished. This is
+            // the marker the old instrumentation lacked entirely, which is why
+            // generation time was invisible and prior investigations attributed
+            // the whole model wait to the (tiny) stream-open span.
+            debug!(
+                total_ms = stream_open_start.elapsed().as_millis() as u64,
+                "WAITING_LLM_STREAM_EXHAUSTED"
+            );
         }))
     }
 
