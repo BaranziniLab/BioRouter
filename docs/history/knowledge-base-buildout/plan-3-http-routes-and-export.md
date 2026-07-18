@@ -201,7 +201,7 @@ fn extract_tool_calls(msg: &Message) -> Vec<LlmToolCall> {
 }
 ```
 
-**You must** read [`crates/biorouter/src/conversation/message.rs`](crates/biorouter/src/conversation/message.rs) and `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` (the `LlmMessage`/`LlmReply`/`LlmToolCall` defs Batch B introduced) before filling in the two `todo!()`s. They are the exact translation Batch B's mock did, but with real Provider/Message types.
+**You must** read [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs) and `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` (the `LlmMessage`/`LlmReply`/`LlmToolCall` defs Batch B introduced) before filling in the two `todo!()`s. They are the exact translation Batch B's mock did, but with real Provider/Message types.
 
 - [ ] **Step 3: Re-export + tests**
 
@@ -1002,7 +1002,7 @@ This is the biggest task. For each macro: parse request body → resolve Provide
 
 - [ ] **Step 1: SSE helper**
 
-Reuse the existing `SseResponse` pattern from [`reply.rs`](crates/biorouter-server/src/routes/reply.rs). Build a small helper:
+Reuse the existing `SseResponse` pattern from [`reply.rs`](../../../crates/biorouter-server/src/routes/reply.rs). Build a small helper:
 
 ```rust
 use tokio::sync::mpsc::UnboundedSender;

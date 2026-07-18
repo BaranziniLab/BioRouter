@@ -1,7 +1,7 @@
 // ui/desktop/src/components/knowledge/graph/credColors.ts
 import type { CredibilityTier, PageKind } from '../../../api/types.gen';
 
-// Mirrors the spec's Credibility palette (docs/superpowers/specs/2026-05-30-knowledge-design.md ~L195).
+// Mirrors the spec's Credibility palette (docs/history/knowledge-base-buildout/founding-design.md ~L195).
 // Blues = academic credibility ramp; warmer colors = web/personal/retracted.
 export const credColor: Record<CredibilityTier, string> = {
   peer_reviewed: '#49659a',

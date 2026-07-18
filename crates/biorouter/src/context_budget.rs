@@ -5,7 +5,7 @@
 //! `<info-msg>` block — had any *aggregate* size accounting. The only guard was
 //! a per-file 128 KB *parse* cap in `import_files.rs`, so a large `AGENTS.md`, a
 //! chatty MCP server, or several `@import`s could silently blow the model's
-//! context window (see `docs/agent-loop-review/internal/context-injection.md`
+//! context window (see `docs/history/agent-loop-review/subsystem-reviews/context-injection-and-system-prompt.md`
 //! gap #1). This module is the shared, cheap, synchronous budgeter those call
 //! sites use to rank, truncate, and drop injected blocks so worst-case token
 //! spend is bounded, logging whatever it trims.

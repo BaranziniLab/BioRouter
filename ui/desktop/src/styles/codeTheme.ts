@@ -51,7 +51,7 @@ const DARK = {
  * Alma Mater (UCSF) syntax palette — recoloured to UCSF hue families, measured
  * against the Alma code grounds (light #f2f3f4, dark #08213f). `type` is the
  * eggplant accent so code ties to the brand. Every stop clears WCAG AA; ratios
- * asserted in codeTheme.test.ts. See docs/design/alma-mater-theme.md §5g.
+ * asserted in codeTheme.test.ts. See docs/design/theming/alma-mater-theme-tokens.md §5g.
  */
 const ALMA_LIGHT = {
   plain: '#052049', // Navy

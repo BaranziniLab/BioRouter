@@ -7,7 +7,7 @@
 //! table (migration 11), keyed to the turn's anchor `created_timestamp`.
 //! `CheckpointManager::restore` then rewinds along one of three axes.
 //!
-//! First mergeable slice (design `docs/agent-loop-fixes/designs/BR-43-design.md`,
+//! First mergeable slice (design `docs/agent-loop/designs/shadow-git-checkpoints.md`,
 //! Slice 1): the module + turn-boundary capture + programmatic restore API,
 //! gated off by default (`BIOROUTER_CHECKPOINTS`). No server routes / GUI yet.
 

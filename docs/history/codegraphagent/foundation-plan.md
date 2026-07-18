@@ -175,7 +175,7 @@ Once a `.brxt` release is published, BioRouter installs the extension via:
 ## Status
 
 v0.1.0-rc1 — initial release wrapping upstream CodeGraph unchanged.
-See [CHANGELOG](CHANGELOG.md).
+See the extension repository's `CHANGELOG.md`.
 
 ## Credits
 

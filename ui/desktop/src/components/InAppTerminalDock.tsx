@@ -145,7 +145,7 @@ const TERMINAL_THEMES = {
  *
  * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
  * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
- * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/alma-mater-theme.md.
+ * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/theming/alma-mater-theme-tokens.md.
  */
 const ALMA_TERMINAL_THEMES = {
   light: {

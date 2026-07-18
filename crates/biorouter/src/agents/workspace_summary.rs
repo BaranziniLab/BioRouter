@@ -4,7 +4,7 @@
 //! single `Working directory: <path>` line in the per-turn MOIM `<info-msg>`
 //! block (`extension_manager.rs`) — and nothing about the *shape* of the
 //! project: no file tree, no listing, no `ls` snapshot
-//! (`docs/agent-loop-review/internal/state-awareness.md` gap #1). The agent
+//! (`docs/history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md` gap #1). The agent
 //! rediscovered structure by hand every session. This module produces a bounded
 //! file listing (Cline/Claude-Code `environment_details` level) and
 //! [`collect_moim`](crate::agents::extension_manager::ExtensionManager::collect_moim)

@@ -298,7 +298,7 @@ pub async fn read_page(
 cargo test -p biorouter-server --test knowledge_routes read_page_returns_markdown_body 2>&1 | tail -10
 ```
 
-Expected: PASS. If `resolve_readable_path` returns a string-matchable error for the `../../etc/passwd` case that doesn't match the `path traversal|outside` heuristic, broaden the heuristic to include the actual phrase used in [`crates/biorouter-mcp/src/knowledge/paths.rs`](crates/biorouter-mcp/src/knowledge/paths.rs) (grep `bail!\|anyhow!` there).
+Expected: PASS. If `resolve_readable_path` returns a string-matchable error for the `../../etc/passwd` case that doesn't match the `path traversal|outside` heuristic, broaden the heuristic to include the actual phrase used in [`crates/biorouter-mcp/src/knowledge/paths.rs`](../../../crates/biorouter-mcp/src/knowledge/paths.rs) (grep `bail!\|anyhow!` there).
 
 - [ ] **Step 7: Regenerate OpenAPI + TS client.**
 
@@ -1415,7 +1415,7 @@ cd /Users/wgu/Desktop/biorouter-knowledge/ui/desktop
 npm run lint:check 2>&1 | tail -10
 ```
 
-Expected: no new errors. If `Sheet`'s prop API differs from the snippet (`side`, `SheetTitle` location), match what's in [`ui/desktop/src/components/ui/sheet.tsx`](ui/desktop/src/components/ui/sheet.tsx).
+Expected: no new errors. If `Sheet`'s prop API differs from the snippet (`side`, `SheetTitle` location), match what's in [`ui/desktop/src/components/ui/sheet.tsx`](../../../ui/desktop/src/components/ui/sheet.tsx).
 
 - [ ] **Step 5: Commit.**
 
