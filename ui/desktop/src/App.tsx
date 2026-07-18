@@ -25,6 +25,7 @@ import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
 import { closeActiveTab } from './components/chatGroups/closeActiveTabRegistry';
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
+import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
@@ -69,13 +70,13 @@ const HubRouteWrapper = () => {
 /**
  * TerminalDockProvider wraps /pair ONLY.
  *
- * It is what makes the dock global across chat groups — one dock below all of
- * them, per the spec's "the panel stays global, spans all groups". Its scope is
- * deliberately this route and no wider: every other surface (the Dashboard's N
- * chat windows, /extensions' mini-chat, the Hub) has no provider, so
- * useTerminalDock() returns null there and BaseChat keeps its own per-chat dock
- * exactly as it does today. Hoisting this to the app root would silently give
- * the Dashboard one shared terminal across all its windows.
+ * It holds the PER-CHAT-TAB terminals, keyed by tab id, above the tab switch so
+ * a tab's shell survives switching away from it (BaseChat, keyed by tab id,
+ * remounts on every switch). Its scope is deliberately this route and no wider:
+ * every other surface (the Dashboard's N chat windows, /extensions' mini-chat,
+ * the Hub) has no provider, so useTerminalDock() returns null there and BaseChat
+ * keeps its own local per-chat dock exactly as it does today. Hoisting this to
+ * the app root would let those surfaces share terminal state across windows.
  */
 const PairRouteWrapper = ({ setChat }: { setChat: (chat: ChatType) => void }) => (
   <ChatGroupsProvider>
@@ -542,19 +543,26 @@ export function AppInner() {
     []
   );
 
-  // Cmd+T / Ctrl+T — a new tab, which here means a new chat. Sent by the Go
-  // menu's "New Chat" item; like Cmd+W it can only be a menu item, because the
-  // menu already owned the key and would have eaten any renderer listener.
+  // Cmd+T / Ctrl+T — a new tab. Sent by the Go menu's "New Chat" item; like
+  // Cmd+W it can only be a menu item, because the menu already owned the key and
+  // would have eaten any renderer listener.
   //
-  // The same root-level reasoning as Cmd+W: the tab surface is mounted only
-  // under /pair, so off that route requestNewTab() finds no handler. It then
-  // REMEMBERS the request and we navigate — the mounting provider consumes it
-  // and opens the tab. Cmd+T on Settings therefore lands you on a fresh chat,
-  // not merely on /pair looking at whatever tab you left behind, which is what
-  // the key does in a browser from any page.
+  // What "new tab" MEANS is focus-aware: when the cursor is in the in-app
+  // terminal, Cmd+T adds a new terminal PANE (the reflex a terminal user has);
+  // otherwise it opens a new CHAT tab. isTerminalFocused only sees the visible
+  // dock (a hidden one is display:none and cannot hold focus), and
+  // requestNewTerminalPane returns false when no terminal is open — either way
+  // we fall through to the chat path, so a chat-focused Cmd+T is unchanged.
+  //
+  // The chat path keeps the same root-level reasoning as Cmd+W: the tab surface
+  // is mounted only under /pair, so off that route requestNewTab() finds no
+  // handler. It then REMEMBERS the request and we navigate — the mounting
+  // provider consumes it and opens the tab. Cmd+T on Settings therefore lands
+  // you on a fresh chat, as the key does in a browser from any page.
   useEffect(
     () =>
       window.electron.on('new-chat-tab', () => {
+        if (isTerminalFocused() && requestNewTerminalPane()) return;
         if (requestNewTab()) return;
         navigate('/pair');
       }),
