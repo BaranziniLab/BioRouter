@@ -4,8 +4,23 @@
 
 import { ExtensionLoadResult } from '../api/types.gen';
 import { toastService, ExtensionLoadingStatus } from '../toasts';
+import bundledExtensions from '../components/settings/extensions/bundled-extensions.json';
 
 export const MAX_ERROR_MESSAGE_LENGTH = 70;
+
+// The built-in (bundled) MCP servers ship with the app and effectively always
+// load, so counting them makes "15 of 16 loaded" where the user only cares that
+// "4 of 5" of THEIR extensions came up. Match by a normalized name so a display
+// name ("Auto Visualiser") still maps to its key ("autovisualiser").
+const normalizeExtensionName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+const BUILTIN_EXTENSION_KEYS = new Set(
+  (bundledExtensions as Array<{ name: string; type: string }>)
+    .filter((entry) => entry.type === 'builtin')
+    .map((entry) => normalizeExtensionName(entry.name))
+);
+export function isBuiltinExtension(name: string): boolean {
+  return BUILTIN_EXTENSION_KEYS.has(normalizeExtensionName(name));
+}
 
 /**
  * Creates recovery hints for the "Ask biorouter" feature when extension loading fails
@@ -79,10 +94,18 @@ export function resetExtensionToastState(): void {
  *                    (settings, manual extension add), which always toast.
  */
 export function showExtensionLoadResults(
-  results: ExtensionLoadResult[] | null | undefined,
+  allResults: ExtensionLoadResult[] | null | undefined,
   sessionId?: string
 ): void {
-  if (!results || results.length === 0) {
+  if (!allResults || allResults.length === 0) {
+    return;
+  }
+
+  // Drop the built-ins that loaded, so the count reflects the user's own
+  // extensions (a failed built-in is rare but still worth surfacing, so it
+  // stays). If nothing user-facing remains, there is nothing to report.
+  const results = allResults.filter((r) => !(r.success && isBuiltinExtension(r.name)));
+  if (results.length === 0) {
     return;
   }
 
