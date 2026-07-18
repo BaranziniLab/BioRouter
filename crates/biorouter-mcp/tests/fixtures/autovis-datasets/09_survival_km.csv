@@ -1,0 +1,15 @@
+arm,time_months,survival
+Treatment,0,1.0
+Treatment,3,0.887
+Treatment,6,0.787
+Treatment,9,0.698
+Treatment,12,0.619
+Treatment,15,0.549
+Treatment,18,0.487
+Control,0,1.0
+Control,3,0.787
+Control,6,0.619
+Control,9,0.487
+Control,12,0.383
+Control,15,0.301
+Control,18,0.237
