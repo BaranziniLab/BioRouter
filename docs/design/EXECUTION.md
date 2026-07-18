@@ -540,6 +540,57 @@ overlooked mask render shows BR, not the old circle.
 
 ---
 
+## Follow-on UI + terminal fixes (2026-07-17, on user review)
+
+Eight review fixes, all committed, gates green (**1290/1290**, tsc + lint clean).
+
+**Sidebar / home / tabs** (`fecf5dd3`, verified in the packaged build via CDP):
+- **Recents count → past 7 days.** The badge counted the loaded buffer (a paging
+  artefact — 170); it now counts chats touched in the last week (20) with a
+  tooltip. Shown in both states.
+- **"+" new-chat button** at the right end of each chat tab strip (the strip's
+  `endSlot`), opening a fresh blank chat in that group.
+- **Sidebar divider aligned.** It sat 9px low (band bottom y=60 vs the tab
+  strip's y=51); `-mt-2` cancels `SidebarContent`'s 8px top padding so the band
+  starts at the window's top edge — the "one continuous top edge" (D-23) it was
+  meant to have. Now y=52 vs 51.
+- **Default window 1280×900 → 1440×1000** so Home opens with the heatmap AND
+  recents above the composer.
+- **Home fold order** — recent chats fold first as the window shortens, then the
+  heatmap (greeting + composer last). ResizeObserver on the scroll area; jsdom's
+  0-height reads as "show all".
+- **Drag ghost rides under the cursor** — it tracks the grab point (captured in
+  `beginDrag`) instead of pinning its top-left to the pointer while a CSS
+  translate shoved it further off. The compounding translate is gone.
+
+**Extension toast** (`faad5c39`): the "x of y" count excludes the 7 bundled
+built-ins that always load, so 5 user extensions with one failure reads "4 of
+5", not "15 of 16". A *failed* built-in still surfaces. 13 tests.
+
+**In-app terminal → per chat tab** (`db095200`, `e08a4a18`, `c247b214`,
+`a5dabdb1`; 21 tests; verified in the packaged build):
+- Was one window-global dock. Now `TerminalDockContext` is a map keyed by **tab
+  id**; each tab has its own terminal, and it only shows for the active group's
+  active tab. Background tabs' shells stay alive (hidden) until the tab closes
+  (`retain` disposes the pty). CDP-confirmed: opening a new chat tab shows no
+  terminal in it.
+- **Opens in the session's working folder** (`session.working_dir`), frozen per
+  terminal at open. CDP-confirmed: the pty spawned in `/Users/wanjun/Desktop`.
+- **"+" left-aligned**, inside the strip right after the last terminal tab (like
+  the chat "+"). CDP-confirmed: `plusInStrip`, `plusAfterLastTab`.
+- **Cmd+T is focus-aware** — a new terminal pane when the terminal is focused
+  (`isTerminalFocused()` via the dock's `data-testid`), a new chat tab when the
+  chat is (unchanged). The menu-accelerator-keeps-focus path is unit-tested;
+  end-to-end keystroke routing is the one item left for a manual check.
+
+**Process note this round:** the dev server's Electron served **stale cached
+modules** on reload, so a change (the chat "+") looked broken while its code was
+correct — proven by rebuilding the packaged (production) bundle and driving it
+over CDP, where every change rendered. When HMR lies, the packaged build is the
+source of truth.
+
+---
+
 ## Decisions the user overrode (recorded, not argued)
 
 - **D-31 — tab labels: mono → sans.** I borrowed otty.sh's mono-for-UI-labels
