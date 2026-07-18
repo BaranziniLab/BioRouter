@@ -1124,12 +1124,30 @@ mod tests {
         Ok(())
     }
 
-    /// Replay gate: a thinking block decoded off the stream must round-trip
-    /// back into a subsequent request body in the exact shape Anthropic
-    /// accepts — `{"type":"thinking","thinking":…,"signature":…}` with a
-    /// non-empty signature (an unsigned thinking block is a 400).
+    /// Replay gate: a thinking block decoded off the stream must round-trip back
+    /// into a subsequent request body in the exact shape Anthropic accepts.
+    ///
+    /// This deliberately reproduces the pipeline the agent loop actually runs
+    /// rather than concatenating the decoded chunks by hand:
+    ///
+    ///  * the fixture contains a thinking block **followed by a tool_use
+    ///    block**, so the constraint that actually bites is exercised — with
+    ///    extended thinking on, the assistant message that carries `tool_use`
+    ///    must *begin* with a thinking block;
+    ///  * the decoded chunks are fed through the real `Conversation::push`,
+    ///    whose id-matching merge is the only thing that joins them;
+    ///  * the tool-bearing chunk is rebuilt exactly as `agent.rs` rebuilds it,
+    ///    via the real `assistant_turn_message_id`, which is what decides
+    ///    whether the merge happens at all.
+    ///
+    /// Concatenating the chunks by hand (the previous shape of this test) hides
+    /// the defect completely: it passes even when the live pipeline emits two
+    /// consecutive assistant messages with `tool_use` first, which Anthropic
+    /// 400-rejects.
     #[tokio::test]
     async fn test_streamed_thinking_replays_into_next_request() -> Result<()> {
+        use crate::agents::agent::assistant_turn_message_id;
+        use crate::conversation::Conversation;
         use tokio::pin;
         use tokio_stream::StreamExt;
 
@@ -1141,32 +1159,76 @@ mod tests {
             r#"data: {"type":"content_block_stop","index":0}"#,
             r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTEDdata"}}"#,
             r#"data: {"type":"content_block_stop","index":1}"#,
-            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}"#,
+            r#"data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01","name":"shell"}}"#,
+            r#"data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":2}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
         ];
         let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
         let messages = response_to_streaming_message(response_stream);
         pin!(messages);
 
-        let mut assistant = Message::assistant();
+        // Mirror the agent loop: a chunk with no tool requests is pushed
+        // verbatim; a chunk that requests tools is rebuilt as a fresh assistant
+        // message stamped with `assistant_turn_message_id`.
+        let mut conversation = Conversation::new_unvalidated(vec![Message::user().with_text("hi")]);
+        let mut saw_tool_use = false;
         while let Some(result) = messages.next().await {
             let (message, _usage) = result?;
-            if let Some(message) = message {
-                for content in message.content {
-                    assistant.content.push(content);
-                }
+            let Some(message) = message else { continue };
+
+            let tool_requests: Vec<_> = message
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    MessageContent::ToolRequest(r) => Some(r.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if tool_requests.is_empty() {
+                conversation.push(message);
+                continue;
+            }
+
+            saw_tool_use = true;
+            // The loop consumes the provider id once and falls back to fresh
+            // uuids after that; mirrored here so the fixture stays faithful.
+            let mut turn_id = Some(assistant_turn_message_id(&message));
+            for request in tool_requests {
+                let id = turn_id
+                    .take()
+                    .unwrap_or_else(|| format!("msg_{}", uuid::Uuid::new_v4()));
+                conversation.push(
+                    Message::assistant()
+                        .with_id(id)
+                        .with_tool_request(request.id.clone(), request.tool_call.clone()),
+                );
             }
         }
+        assert!(saw_tool_use, "fixture must produce a tool_use block");
 
-        let spec = format_messages(&[
-            Message::user().with_text("hi"),
-            assistant,
-            Message::user().with_text("continue"),
-        ]);
+        let spec = format_messages(conversation.messages());
 
-        let blocks = spec[1]["content"]
+        let assistant_entries: Vec<_> = spec
+            .iter()
+            .filter(|m| m["role"] == ASSISTANT_ROLE)
+            .collect();
+        assert_eq!(
+            assistant_entries.len(),
+            1,
+            "thinking and tool_use must land in ONE assistant message; two consecutive \
+             assistant entries are rejected by Anthropic. Got: {spec:#?}"
+        );
+
+        let blocks = assistant_entries[0]["content"]
             .as_array()
             .expect("assistant content array");
-        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(
+            blocks[0]["type"], "thinking",
+            "with extended thinking on, the tool-bearing assistant message must OPEN with \
+             a thinking block. Got: {blocks:#?}"
+        );
         assert_eq!(blocks[0]["thinking"], "Reasoning.");
         assert_eq!(blocks[0]["signature"], "SIGabc123");
         assert!(
@@ -1175,6 +1237,10 @@ mod tests {
         );
         assert_eq!(blocks[1]["type"], "redacted_thinking");
         assert_eq!(blocks[1]["data"], "REDACTEDdata");
+        assert_eq!(
+            blocks[2]["type"], "tool_use",
+            "the tool_use block must ride in the same message, after the thinking blocks"
+        );
         Ok(())
     }
 

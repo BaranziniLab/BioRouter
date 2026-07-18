@@ -187,6 +187,22 @@ pub async fn handle_response_openai_compat(response: Response) -> Result<Value, 
     })
 }
 
+/// The Azure OpenAI chat-completions path, shared by every Azure-shaped
+/// provider (`azure`, `versa_azure`) and by both their blocking and streaming
+/// paths.
+///
+/// One string in one place on purpose: `supports_streaming()` is hardcoded true
+/// on those providers, so there is no fallback to `complete()` if the path is
+/// wrong — a drift here 404s every streaming turn outright rather than
+/// degrading. Duplicating the `format!` per provider meant a change made in the
+/// tested copy could silently miss the untested one.
+pub fn azure_chat_completions_path(deployment_name: &str, api_version: &str) -> String {
+    format!(
+        "openai/deployments/{}/chat/completions?api-version={}",
+        deployment_name, api_version
+    )
+}
+
 pub fn stream_openai_compat(
     response: Response,
     mut log: RequestLog,

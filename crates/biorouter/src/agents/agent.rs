@@ -110,6 +110,37 @@ const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off — do not repeat what you already wrote.";
 
+/// The message id to stamp on the assistant-side messages the loop rebuilds for
+/// a reply that requested tools (the preserved thinking block and the tool
+/// requests themselves).
+///
+/// This must be the *provider's* id for the reply whenever there is one.
+/// `Conversation::push` merges a pushed message into the previous one only when
+/// their ids match, and on a streaming provider the thinking block and the
+/// tool_use block arrive as two separate chunks that share the provider's
+/// `message_id`: the thinking-only chunk is pushed verbatim (it requests no
+/// tools), and the tool-bearing chunk is rebuilt here. Stamping a fresh uuid on
+/// the rebuilt message leaves the two unmerged, so the request body carries two
+/// consecutive `assistant` entries and the tool-bearing one opens with
+/// `tool_use`. Anthropic rejects that outright when extended thinking is on —
+/// the final assistant message must begin with a thinking block.
+///
+/// Falls back to a fresh uuid only when the provider supplied no id, which is
+/// exactly the pre-existing behaviour for those providers.
+///
+/// The caller must use this id for at most ONE message per reply — the session
+/// store enforces `UNIQUE (session_id, msg_uid)`, so a second message carrying
+/// the same id fails the whole turn at persist time. Only the first rebuilt
+/// message can merge anyway: consecutive tool requests are separated by their
+/// tool-response (user) messages, which breaks the `Conversation::push`
+/// last-message match.
+pub(crate) fn assistant_turn_message_id(response: &Message) -> String {
+    response
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
+}
+
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
 /// body every turn.
@@ -3883,10 +3914,33 @@ impl Agent {
                                     }
                                 }
 
+                                // The provider's own id for this reply, so the
+                                // rebuilt thinking + tool_use messages merge back
+                                // into one assistant message via Conversation::push.
+                                // See `assistant_turn_message_id`.
+                                //
+                                // Consumed exactly ONCE, by whichever rebuilt
+                                // assistant message comes first. Every later one
+                                // gets a fresh uuid: a tool response (a user
+                                // message) is pushed between consecutive tool
+                                // requests, so they cannot merge anyway, and
+                                // reusing the id would persist two rows with the
+                                // same msg_uid — which the session store rejects
+                                // outright (UNIQUE session_id, msg_uid).
+                                let mut assistant_turn_id = Some(assistant_turn_message_id(&response));
+                                let mut next_assistant_id = move || {
+                                    assistant_turn_id
+                                        .take()
+                                        .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
+                                };
+
                                 // Preserve thinking content from the original response
-                                // Gemini (and other thinking models) require thinking to be echoed back
+                                // Gemini (and other thinking models) require thinking to be echoed back.
+                                // RedactedThinking counts too: Anthropic accepts it as the
+                                // leading block of a tool-bearing assistant message, and
+                                // dropping it breaks replay exactly like dropping Thinking.
                                 let thinking_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
+                                    .filter(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
                                     .cloned()
                                     .collect();
                                 if !thinking_content.is_empty() {
@@ -3894,14 +3948,14 @@ impl Agent {
                                         response.role.clone(),
                                         response.created,
                                         thinking_content,
-                                    ).with_id(format!("msg_{}", Uuid::new_v4()));
+                                    ).with_id(next_assistant_id());
                                     messages_to_add.push(thinking_msg);
                                 }
 
                                 for (idx, request) in frontend_requests.iter().chain(remaining_requests.iter()).enumerate() {
                                     if request.tool_call.is_ok() {
                                         let request_msg = Message::assistant()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_id(next_assistant_id())
                                             .with_tool_request_with_metadata(
                                                 request.id.clone(),
                                                 request.tool_call.clone(),

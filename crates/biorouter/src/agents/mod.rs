@@ -1,4 +1,4 @@
-mod agent;
+pub(crate) mod agent;
 // BR-35: the per-reply wall-clock / token / dollar ceiling. Off unless
 // configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
 // steps a reply takes, this bounds how long it runs and what it costs.

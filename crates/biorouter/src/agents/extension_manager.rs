@@ -1385,10 +1385,20 @@ impl ExtensionManager {
         // returned future), so contention here stalls the dispatch of every
         // *subsequent* tool in the same turn — measured separately from the
         // in-future lock below.
+        //
+        // Two spans, not one: `register_dispatch()` is real work (it mints a
+        // progress token and installs a routing entry), so timing the lock
+        // acquisition and the call together would report registration cost as
+        // mutex contention and vice versa. The guard is bound rather than left
+        // a temporary so the lock-wait span closes before the call span opens.
         let register_wait = crate::agents::phase_timing::Phase::start("mcp.register_dispatch_wait");
-        let (progress_token, notifications_receiver) =
-            client.lock().await.register_dispatch().await;
+        let client_guard = client.lock().await;
         drop(register_wait);
+
+        let register_call = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
+        let (progress_token, notifications_receiver) = client_guard.register_dispatch().await;
+        drop(register_call);
+        drop(client_guard);
         let session_id = session_id.to_string();
 
         let fut = async move {
