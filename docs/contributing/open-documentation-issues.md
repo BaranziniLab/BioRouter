@@ -35,7 +35,7 @@ this worktree; `file:line` references point at real current lines.
 
 The institutional-providers plan carried three apparently real credentials in its Playwright
 validation steps: a Versa Azure API key (a base64 blob), a Bedrock access key id
-`ca3582f5…`, and a matching secret access key. **Verified:** they were removed from this
+`<redacted — see the affected commits>`, and a matching secret access key. **Verified:** they were removed from this
 worktree's working tree, but they are still present in the main checkout at
 `/Users/wanjun/Desktop/biorouter/docs/superpowers/plans/2026-05-07-institutional-providers.md`
 (three matches), and in this repo's history at commits `8c74498a` and `2c7c873f` (removed in
