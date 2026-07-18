@@ -5,12 +5,21 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, Terminal as TerminalIcon, X } from './icons/app-icons';
 import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
+import { registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
 
 interface InAppTerminalDockProps {
   open: boolean;
   workingDir?: string;
+  /** Hide the dock — the header X or the parent toggle. Panes stay alive. */
   onClose: () => void;
+  /**
+   * The user closed the LAST pane, so this terminal is now empty. Distinct from
+   * onClose (hide): the parent should DESTROY the terminal here, not just hide
+   * it. Falls back to onClose when omitted, which is the local (non-/pair) dock's
+   * behaviour — there hiding and emptying are the same "set open false".
+   */
+  onEmptied?: () => void;
 }
 
 type TerminalPane = {
@@ -424,6 +433,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   open,
   workingDir,
   onClose,
+  onEmptied,
 }) => {
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
@@ -480,8 +490,20 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   useEffect(() => {
     if (!open || panes.length !== 0 || !pendingDockCloseRef.current) return;
     pendingDockCloseRef.current = false;
-    onClose();
-  }, [onClose, open, panes.length]);
+    // The last pane closed: DESTROY, don't merely hide. onEmptied lets the
+    // per-tab shell drop this terminal entirely (disposing it); the local dock
+    // has no onEmptied and falls back to onClose, its "set open false".
+    (onEmptied ?? onClose)();
+  }, [onClose, onEmptied, open, panes.length]);
+
+  // While this dock is the VISIBLE one, own the "new terminal pane" gesture:
+  // focus-aware Cmd+T (routed in App.tsx) adds a pane here instead of a chat
+  // tab. Only the open dock registers, and the shell keeps exactly one open at a
+  // time, so last-write-wins in the registry is correct.
+  useEffect(() => {
+    if (!open) return;
+    return registerNewTerminalPane(addPane);
+  }, [open, addPane]);
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
@@ -509,58 +531,57 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           class leaves height to the host; the dock's strip is 40px) and
           flex-shrink-0, so the strip holds its height in the dock's flex column. */}
       <div className="br-tabstrip br-tabstrip--sm h-10 flex-shrink-0">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          <div
-            className="flex min-w-0 flex-1 items-center overflow-x-auto"
-            role="tablist"
-            aria-label="Terminal sessions"
-          >
-            {panes.map((pane) => {
-              const active = pane.id === activePaneId;
-              return (
-                <div
-                  key={pane.id}
-                  // .br-tab already caps at 190px and lets the label ellipsis;
-                  // flex-shrink-0 is the only addition, so a full strip scrolls
-                  // rather than crushing every tab.
-                  className="br-tab flex-shrink-0"
-                  data-active={active}
+        <div
+          className="flex min-w-0 flex-1 items-center overflow-x-auto"
+          role="tablist"
+          aria-label="Terminal sessions"
+        >
+          {panes.map((pane) => {
+            const active = pane.id === activePaneId;
+            return (
+              <div
+                key={pane.id}
+                // .br-tab already caps at 190px and lets the label ellipsis;
+                // flex-shrink-0 is the only addition, so a full strip scrolls
+                // rather than crushing every tab.
+                className="br-tab flex-shrink-0"
+                data-active={active}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActivePaneId(pane.id)}
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => setActivePaneId(pane.id)}
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
-                  >
-                    <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                    <span className="br-tab__label">{pane.title}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closePane(pane.id);
-                    }}
-                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-                    aria-label={`Close terminal tab ${pane.title}`}
-                    title={`Close ${pane.title}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          <Button
+                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="br-tab__label">{pane.title}</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePane(pane.id);
+                  }}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                  aria-label={`Close terminal tab ${pane.title}`}
+                  title={`Close ${pane.title}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+          {/* Left-aligned "+", immediately to the right of the last tab and
+              scrolling WITH the tabs — the same placement (and the chat strip's
+              .br-tab-new styling) as the chat tabs' new-tab button. It used to be
+              pushed to the far right of the strip. */}
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
-            shape="round"
             onClick={addPane}
             disabled={panes.length >= MAX_TERMINAL_PANES}
-            className="h-7 w-7 flex-shrink-0 p-0 text-text-muted hover:bg-background-default/70 hover:text-text-default"
+            className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
             aria-label="New terminal session"
             title={
               panes.length >= MAX_TERMINAL_PANES
@@ -568,8 +589,8 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                 : 'New terminal session'
             }
           >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+            <Plus className="h-4 w-4" />
+          </button>
         </div>
         <span className="hidden min-w-0 max-w-[38%] truncate text-xs text-text-muted sm:block">
           {formatCwd(workingDir)}

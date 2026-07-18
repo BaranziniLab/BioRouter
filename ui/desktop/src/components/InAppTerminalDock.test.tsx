@@ -187,6 +187,31 @@ describe('InAppTerminalDock', () => {
     expect(region).not.toHaveClass('p-2'); // no gutter: the terminal bleeds to the dock edges
   });
 
+  // The "+" is LEFT-aligned: it lives inside the tab strip's scroll box, right
+  // after the last tab, and scrolls with the tabs — the same placement as the
+  // chat tabs' new-tab button. It used to be pushed to the far right of the row.
+  it('places the new-terminal "+" inside the tab strip, after the last tab', async () => {
+    const user = userEvent.setup();
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
+
+    const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
+    const addButton = await screen.findByRole('button', { name: /new terminal session/i });
+
+    // Inside the scrolling tab strip (not a right-hand toolbar).
+    expect(tabList.contains(addButton)).toBe(true);
+    expect(addButton).toHaveClass('br-tab-new');
+
+    await user.click(addButton);
+    await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+
+    // In DOM order the "+" comes after every tab.
+    const allTabs = screen.getAllByRole('tab');
+    const lastTab = allTabs[allTabs.length - 1].closest('.br-tab') as HTMLElement;
+    expect(lastTab.compareDocumentPosition(addButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  });
+
   // design.md D-07: the left accent bar is for VERTICAL lists only. These are
   // horizontal tabs, so they use the shared Safari-style tab classes; the pill,
   // the divider and the strip ground all come from main.css, never from here.
