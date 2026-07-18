@@ -940,8 +940,11 @@ const createChat = async (
   const workingDir = windowWorkingDir;
 
   const mainWindowState = windowStateKeeper({
-    defaultWidth: 1280,
-    defaultHeight: 900,
+    // First-launch size (windowStateKeeper remembers the user's own size after
+    // that). Sized so the Home view opens with the usage heatmap AND the recent
+    // chats both visible above the composer, rather than the heatmap alone.
+    defaultWidth: 1440,
+    defaultHeight: 1000,
   });
   const initialBounds = windowOptions?.initialBounds;
 

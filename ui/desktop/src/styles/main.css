@@ -1130,9 +1130,10 @@
   position: fixed;
   z-index: 400;
   pointer-events: none;
-  /* Offset from the cursor so the label is readable rather than sitting under
-     the pointer, and translated so the grab feels like it holds the tab's edge. */
-  transform: translate(-16px, -50%) rotate(2deg);
+  /* No translate: the ghost's top-left is positioned in JS so the cursor lands
+     on the exact grab point (useTabDragReorder). A translate here would shift it
+     back off the cursor — the bug this replaced. Just the 2deg lift. */
+  transform: rotate(2deg);
   background: var(--background-default);
   color: var(--text-default);
   box-shadow: var(--shadow-popover);

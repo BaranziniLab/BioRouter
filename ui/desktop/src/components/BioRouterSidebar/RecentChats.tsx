@@ -263,6 +263,14 @@ export default function RecentChats({
   onViewAll,
 }: RecentChatsProps) {
   const groups = useMemo(() => groupRecentChatsByDate(sessions), [sessions]);
+  // The badge counts chats touched in the last 7 days, not the number of rows
+  // loaded into the buffer (which is a paging artefact with no meaning to the
+  // user). Derived from the loaded sessions: they arrive newest-first, so every
+  // past-week chat is present unless a single week holds more than the page size.
+  const pastWeekCount = useMemo(() => {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return sessions.reduce((n, session) => (sessionActivityTime(session) >= cutoff ? n + 1 : n), 0);
+  }, [sessions]);
   const [isExpanded, setIsExpanded] = useState(readStoredRecentsExpanded);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -316,28 +324,27 @@ export default function RecentChats({
             }`}
           />
           <span>Recents</span>
-          {!isExpanded && sessions.length > 0 && (
-            <span
-              data-testid="recents-hidden-count"
-              // D-31, sans: this badge sat in --font-mono at 10.5px directly
-              // beside its own label, which is --font-sans at 11px — one row of
-              // sidebar chrome speaking two fonts, which is the incoherence the
-              // pass exists to remove (and D-31's note already claims "the
-              // sidebar ... [is] all --font-sans", which this was the one
-              // exception to).
-              //
-              // It does not earn mono by the rule's own test: you do not read a
-              // collapsed-section count character by character, and it is alone
-              // in a pill rather than in a column, so there are no digits to
-              // keep from jittering — it carries no tabular-nums and has nothing
-              // to align with. 11px is the §3.2 metadata size the three strip
-              // tokens standardised; 10.5px was one of the one-off sizes.
-              // normal-case/tracking-normal stay: they undo the uppercase and
-              // tracking the section header sets on its label.
-              className="rounded-full bg-sidebar-active px-1.5 py-px text-[11px] font-semibold normal-case tracking-normal text-text-subtle"
-            >
-              {sessions.length}
-            </span>
+          {sessions.length > 0 && (
+            // The past-7-day count, shown whether or not the list is expanded —
+            // it is a live metric now ("you've had N chats this week"), not just
+            // a stand-in for the hidden rows. --font-sans at 11px (§3.2), the
+            // same as its own label: a badge does not earn mono (you do not read
+            // a count character by character, and it is alone in a pill with no
+            // column of digits to keep aligned). normal-case/tracking-normal
+            // undo the uppercase + tracking the section header sets.
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-testid="recents-week-count"
+                  className="rounded-full bg-sidebar-active px-1.5 py-px text-[11px] font-semibold normal-case tracking-normal text-text-subtle"
+                >
+                  {pastWeekCount}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {pastWeekCount === 1 ? '1 chat' : `${pastWeekCount} chats`} in the past 7 days
+              </TooltipContent>
+            </Tooltip>
           )}
         </button>
         <button

@@ -249,11 +249,15 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         {/* The 52px titlebar band: traffic lights and the floating TitlebarControls
             strip live over this space, so the sidebar only reserves it. Its bottom
             hairline continues the chat/preview header hairline, giving the window
-            one continuous top edge. */}
+            one continuous top edge.
+            `-mt-2` cancels SidebarContent's 8px top padding so the band starts at
+            the window's top edge (y=0), exactly like the chat/preview header —
+            otherwise the band sat 8px low and its hairline fell ~9px below the tab
+            strip's, breaking the "one continuous top edge". */}
         <div
           data-testid="sidebar-titlebar-band"
           aria-hidden="true"
-          className="h-13 shrink-0 border-b border-sidebar-border"
+          className="-mt-2 h-13 shrink-0 border-b border-sidebar-border"
         />
 
         <div className="shrink-0">

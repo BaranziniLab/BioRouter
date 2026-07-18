@@ -5,6 +5,7 @@ import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
 import { useTerminalDock } from '../../contexts/TerminalDockContext';
 import { ChatTabStrip } from './ChatTabStrip';
+import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
 import { ChatTabDragProvider } from './ChatTabDragContext';
@@ -94,6 +95,13 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const handleReorder = useCallback(
     (draggedTabId: string, targetTabId: string) =>
       dispatch?.({ type: 'reorderTab', draggedTabId, targetTabId }),
+    [dispatch]
+  );
+  // The "+" at the end of a strip opens a fresh blank chat IN THAT group — the
+  // same empty-session tab Cmd+T opens (sessionId '' is not deduped, so every
+  // click is a new tab). Per-group, so a "+" on a split pane adds to that pane.
+  const handleNewTab = useCallback(
+    (groupId: ChatGroupId) => dispatch?.({ type: 'openTab', payload: { sessionId: '', groupId } }),
     [dispatch]
   );
   const handleDropToGroup = useCallback(
@@ -257,6 +265,18 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         onReorder={handleReorder}
         reserveTitlebar={reserveTitlebarControls && groupId === reservedGroupId}
         isCompactSidebarOverlayOpen={isCompactSidebarOverlayOpen}
+        endSlot={
+          <button
+            type="button"
+            aria-label="New chat"
+            title="New chat"
+            data-testid="chat-tab-new"
+            onClick={() => handleNewTab(groupId)}
+            className="br-tab-new ml-0.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        }
       />
     );
 

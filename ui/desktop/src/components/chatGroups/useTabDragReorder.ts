@@ -87,6 +87,10 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
     sourceGroupId?: string;
     startX: number;
     startY: number;
+    // Where inside the tab the cursor grabbed it, so the ghost rides under the
+    // same point rather than hanging off the cursor's lower-right.
+    grabOffsetX: number;
+    grabOffsetY: number;
   } | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
   const dragOverTabIdRef = useRef<string | null>(null);
@@ -113,7 +117,15 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
       }
 
       event.preventDefault();
-      setGhost({ tabId: gesture.tabId, title: gesture.title, x: event.clientX, y: event.clientY });
+      // Place the ghost's top-left so the cursor lands on the exact spot inside
+      // the tab where the drag began — the tab travels UNDER the cursor, not
+      // trailing to its lower-right.
+      setGhost({
+        tabId: gesture.tabId,
+        title: gesture.title,
+        x: event.clientX - gesture.grabOffsetX,
+        y: event.clientY - gesture.grabOffsetY,
+      });
 
       // ===================================================================
       // THE STRIP IS ALWAYS INSIDE ITS GROUP'S `top` EDGE BAND.
@@ -204,12 +216,19 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
     sourceGroupId?: string
   ) => {
     if (event.button !== 0) return;
+    // Measure the grab point against the whole tab (the ghost is styled as a
+    // `.br-tab`), falling back to the pointer target if it is somehow detached.
+    const tabEl =
+      (event.currentTarget.closest('.br-tab') as HTMLElement | null) ?? event.currentTarget;
+    const rect = tabEl.getBoundingClientRect();
     gestureRef.current = {
       tabId,
       title,
       sourceGroupId,
       startX: event.clientX,
       startY: event.clientY,
+      grabOffsetX: event.clientX - rect.left,
+      grabOffsetY: event.clientY - rect.top,
     };
   };
 

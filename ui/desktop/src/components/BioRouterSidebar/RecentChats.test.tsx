@@ -148,8 +148,9 @@ describe('RecentChats', () => {
     expect(ongoingChat).not.toHaveTextContent('1 message');
     expect(screen.getByText('Recents')).toBeInTheDocument();
     expect(screen.getByText('Today')).toHaveClass('text-xs', 'font-normal');
-    // The count badge only stands in for the list while it is retracted.
-    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
+    // The badge is the past-7-day chat count (all 3 fixtures are seconds old),
+    // shown whether the list is expanded or not.
+    expect(screen.getByTestId('recents-week-count')).toHaveTextContent('3');
     expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
 
     fireEvent.click(currentChat);
@@ -219,11 +220,11 @@ describe('RecentChats', () => {
     expect(scrollContainer).not.toHaveClass('flex-1');
     expect(screen.getByText('No recent chats yet')).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
-    // Nothing is hidden, so the badge must not claim otherwise.
-    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
+    // No chats at all, so there is no past-week count to show.
+    expect(screen.queryByTestId('recents-week-count')).not.toBeInTheDocument();
   });
 
-  it('retracts the history behind the Recents label, standing a count in for the hidden rows', () => {
+  it('retracts the history behind the Recents label, keeping the past-week count in both states', () => {
     renderRecentChats();
 
     const disclosure = screen.getByTestId('recents-disclosure');
@@ -238,13 +239,15 @@ describe('RecentChats', () => {
     expect(disclosure).toHaveAttribute('aria-expanded', 'false');
     expect(scrollWell).not.toBeVisible();
     expect(screen.getByTestId('recent-chat-session-0')).not.toBeVisible();
-    expect(screen.getByTestId('recents-hidden-count')).toHaveTextContent('3');
+    // The count is a persistent past-week metric now, not a stand-in for the
+    // hidden rows — it stays put through the collapse.
+    expect(screen.getByTestId('recents-week-count')).toHaveTextContent('3');
 
     fireEvent.click(disclosure);
 
     expect(disclosure).toHaveAttribute('aria-expanded', 'true');
     expect(scrollWell).toBeVisible();
-    expect(screen.queryByTestId('recents-hidden-count')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recents-week-count')).toHaveTextContent('3');
   });
 
   it('restores the retracted state from storage on the next mount', () => {
