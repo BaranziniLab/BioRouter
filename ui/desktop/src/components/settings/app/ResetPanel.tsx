@@ -18,7 +18,6 @@ import { toastService } from '../../../toasts';
 import { clearAllSessionCache } from '../../../utils/sessionCache';
 import { clearSessionListCache } from '../../../utils/sessionListCache';
 import { LocalMessageStorage } from '../../../utils/localMessageStorage';
-import { clearDashboardState } from '../../Dashboard/dashboardStorage';
 import { Button } from '../../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import {
@@ -107,11 +106,22 @@ const CATEGORIES: CategoryDefinition[] = [
 
 const ALL_CATEGORIES = CATEGORIES.map((category) => category.id);
 
+// Dashboard mode is gone, but installs that ran an older build still carry its
+// localStorage payload. Reset stays responsible for clearing it so the keys do
+// not linger forever; drop this once those versions are out of circulation.
+const DISCONTINUED_DASHBOARD_KEYS = [
+  'biorouter.dashboard.v2',
+  'biorouter.dashboard.v1',
+  'biorouter.labmeeting.v1',
+];
+
 function clearRendererHistory() {
   LocalMessageStorage.clearHistory();
   clearAllSessionCache();
   clearSessionListCache();
-  clearDashboardState();
+  for (const key of DISCONTINUED_DASHBOARD_KEYS) {
+    localStorage.removeItem(key);
+  }
 }
 
 function clearKnowledgeSelections() {

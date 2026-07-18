@@ -32,7 +32,6 @@ import ImportWorkflowForm, { ImportWorkflowButton } from './ImportWorkflowForm';
 import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
-import { useNavigate } from 'react-router-dom';
 import { CronPicker } from '../schedule/CronPicker';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { SearchView } from '../conversation/SearchView';
@@ -54,7 +53,6 @@ import { EmptyState } from '../ui/empty-state';
 
 export default function WorkflowsView() {
   const setView = useNavigation();
-  const navigate = useNavigate();
   const [savedWorkflows, setSavedWorkflows] = useState<WorkflowManifest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
