@@ -27,8 +27,11 @@ const GAP_K = 0.02; // letters -> underline, fraction of cap height
 const THICK_K = 0.15; // underline thickness, fraction of cap height
 const WORK_SIZE = 100;
 
+// The brand mark is set in Inter (bundled @font-face in main.css), not the native
+// UI stack, so the BR monogram matches the app icon on every platform. The native
+// stack stays only as a load-time fallback.
 const SANS =
-  '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif';
+  'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif';
 
 type Geo = {
   vb: string;
@@ -90,8 +93,10 @@ export function BioRouterMark({
     const unionBottom = ulBottom;
     const unionW = right - left;
     const unionH = unionBottom - unionTop;
-    // Square viewBox centered on the union, with even breathing room.
-    const side = Math.max(unionW, unionH) * (plate ? 1.7 : 1.2);
+    // Square viewBox centered on the union, with even breathing room. On the
+    // plate the union fills 60% of the icon (studio-approved), so side = union /
+    // 0.60 ≈ ×1.667; the transparent mark sits a touch tighter.
+    const side = Math.max(unionW, unionH) * (plate ? 1.667 : 1.2);
     const cx = (left + right) / 2;
     const cy = (unionTop + unionBottom) / 2;
     const next: Geo = {
