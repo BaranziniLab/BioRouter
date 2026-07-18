@@ -11,14 +11,16 @@
 > tree). Read it as the record of *how the work was sequenced*, not as an active plan.
 > **Audience:** maintainers.
 
-`BR-NN` identifiers (`BR-1` … `BR-70`) are proposal numbers from the agentic-loop
-review. `BR-1`…`BR-67` are defined in
-[the improvement proposals register](../agent-loop-review/improvement-proposals.md);
-`BR-68`, `BR-69` and `BR-70` were added mid-campaign by the cross-platform audit and
-are defined in [the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md).
-`GAP-1`…`GAP-3` are the three cross-platform gaps that same audit found; they are also
-defined there. Commit messages carry the `BR-NN:` prefix, so these identifiers are
-cited across git history and cannot be renumbered.
+> **Identifier key.** `BR-NN` identifiers (`BR-1` … `BR-70`) are proposal numbers from the
+> agentic-loop review. `BR-1`…`BR-67` are defined in
+> [the improvement proposals register](../agent-loop-review/improvement-proposals.md);
+> `BR-68`, `BR-69` and `BR-70` were added mid-campaign by the cross-platform audit and are
+> defined in [the platform parity audit](cross-platform/platform-parity-audit.md) in this
+> folder's [`cross-platform/`](cross-platform/README.md) sub-area. `GAP-N` identifiers are
+> per-platform degradation findings coined by that same audit, which is their canonical
+> key; the campaign scheduled `GAP-1`, `GAP-2` and `GAP-3` into Wave 3. Commit messages
+> carry the `BR-NN:` prefix, so these identifiers are cited across git history and cannot
+> be renumbered.
 
 The campaign implemented the 67 proposals raised by the agentic-loop review. The
 strategy was clustered worktrees in dependency-ordered waves off a single integration
@@ -34,7 +36,16 @@ separately in [the outcome report](outcome-report.md).
 | [Outcome report](outcome-report.md) | The closing record: what landed, test progression across all four gates, highest-value fixes, caveats. |
 | [Mid-flight review index](mid-flight-review-index.md) | The hand-off index written for the human reviewer at Gate 1, frozen mid-campaign. |
 | [Commit log](commit-log.md) | One line per commit on the campaign branch, mapping each commit to the `BR-NN` proposal it implements. |
-| [Wave reports](wave-reports/) | One verification report per cluster: per-proposal commits, files, exact test-result lines, regressions found and fixed. |
+
+## Subfolders
+
+- [Wave reports](wave-reports/README.md) — one verification report per cluster: per-proposal
+  commits, files, exact test-result lines, and the regressions found and fixed at each gate.
+- [Cross-platform work](cross-platform/README.md) — the Wave 3 cross-platform ("xplat")
+  arm, kept together because its five documents cross-reference each other: the parity
+  audit that coined the `GAP-N` findings and defined BR-68/69/70, the BR-68 command-safety
+  and BR-70 CI-gate designs, the superseded BR-64 macOS Seatbelt design, and the cluster's
+  verification report.
 
 ## Conventions
 
@@ -55,8 +66,10 @@ separately in [the outcome report](outcome-report.md).
 - **Docs:** each wave writes `docs/agent-loop-fixes/wave<N>.md` (what changed,
   test evidence, regressions found/resolved). Architectural items get a design
   doc in `docs/agent-loop-fixes/designs/BR-NN-design.md` before implementation.
-  Those files now live in [`wave-reports/`](wave-reports/) and
-  [`docs/agent-loop/designs/`](../../agent-loop/designs/) respectively.
+  Those files now live in [`wave-reports/`](wave-reports/README.md) and
+  [`docs/agent-loop/designs/`](../../agent-loop/designs/README.md) respectively — except
+  the cross-platform designs, which were archived into
+  [`cross-platform/`](cross-platform/README.md) alongside the audit that raised them.
 - **Regression gate:** full `cargo test --workspace --no-fail-fast` compared
   against the baseline log (`~/.cache/br-baseline/workspace-test.log`, taken at
   integration commit a409e7d7). A wave merges only with **zero new failures**.
@@ -95,7 +108,7 @@ Newest first. Entries within a single day carry no clock time in the source; whe
 day holds several entries they are ordered by the sequence their content implies.
 
 - **2026-07-13** — **Cross-platform audit**
-  ([platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md)) +
+  ([platform parity audit](cross-platform/platform-parity-audit.md)) +
   design specs BR-68/69/70 committed (bd18d8ab). Verdict: **zero compile BREAKs** —
   the branch builds on macOS/Windows/Linux (every `#[cfg]` has a complementary arm;
   `libc` is correctly `[target.'cfg(unix)'.dependencies]`). But the campaign's
@@ -155,5 +168,6 @@ day holds several entries they are ordered by the sequence their content implies
 - [Outcome report](outcome-report.md) — what the campaign actually landed, with final test counts and the caveat list.
 - [Mid-flight review index](mid-flight-review-index.md) — the Gate-1 snapshot handed to the reviewer; superseded by the outcome report but records the five open decisions as they were put.
 - [Improvement proposals register](../agent-loop-review/improvement-proposals.md) — the definition of BR-1…BR-67, the source of every ticket in the wave table.
-- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — defines GAP-1/2/3 and the BR-68/69/70 cross-platform work added in Wave 3.
-- [Wave reports](wave-reports/) — per-cluster verification evidence behind each "gate GREEN" in the table above.
+- [Cross-platform work](cross-platform/README.md) — the Wave 3 xplat arm, including the [platform parity audit](cross-platform/platform-parity-audit.md) that defines GAP-1/2/3 and the BR-68/69/70 work.
+- [Wave reports](wave-reports/README.md) — per-cluster verification evidence behind each "gate GREEN" in the table above.
+- [Agent-loop designs](../../agent-loop/designs/README.md) — the campaign's subsystem designs that are still live plans of record, kept out of the archive because parts of them remain unbuilt.

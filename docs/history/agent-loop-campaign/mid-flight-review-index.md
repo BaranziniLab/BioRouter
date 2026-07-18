@@ -14,7 +14,7 @@
 
 `BR-NN` identifiers are proposal numbers from the agentic-loop review;
 [the improvement proposals register](../agent-loop-review/improvement-proposals.md)
-defines BR-1…BR-67, and [the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md)
+defines BR-1…BR-67, and [the platform parity audit](cross-platform/platform-parity-audit.md)
 defines the later BR-68/69/70. The campaign's plan of record and dated log live in
 [the campaign README](README.md).
 
@@ -77,7 +77,7 @@ listed here so the index is usable as an index.
 | [wave-2-hooks-and-permissions.md](wave-reports/wave-2-hooks-and-permissions.md) | BR-18, 19, 24, 27, 28, 63 |
 | [wave-2-server-cancellation.md](wave-reports/wave-2-server-cancellation.md) | BR-6, 7, 52, 61, 62 |
 | [wave-3-polish.md](wave-reports/wave-3-polish.md) | BR-40 (async subagent handle), BR-62b (desktop cancel wiring), and the frontend gate-greening commit |
-| [parity-verification-report.md](../../agent-loop/cross-platform/parity-verification-report.md) | BR-68, 69, 70 (cross-platform cluster) |
+| [parity-verification-report.md](cross-platform/parity-verification-report.md) | BR-68, 69, 70 (cross-platform cluster) |
 
 ## Design docs — the architectural items
 
@@ -90,7 +90,7 @@ These were designed before coding; each records the options considered and the c
 - [BR-17 — cross-session memory](../../agent-loop/designs/cross-session-memory.md)
 - [BR-45 — session branching / fork](../../agent-loop/designs/session-branching.md)
 - [BR-65 — managed/enterprise policy tier](../../agent-loop/designs/managed-policy-tier.md)
-- [BR-64 — OS-level sandbox](../../agent-loop/designs/macos-seatbelt-sandbox.md)
+- [BR-64 — OS-level sandbox](cross-platform/macos-seatbelt-sandbox.md)
 
 > **Note.** The "*designed, not implemented*" label on BR-54 was true only at this
 > snapshot. SharedMcpPool was built later in the Wave-3 perf tail (decision 2 below)
@@ -184,4 +184,4 @@ The user approved the default path on every open question. Locked in:
 - [Campaign README](README.md) — the plan of record, wave table, and dated log this index navigates.
 - [Improvement proposals register](../agent-loop-review/improvement-proposals.md) — defines BR-1…BR-67.
 - [Agentic-loop review](../agent-loop-review/README.md) — the 28-document review that motivated every proposal.
-- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — the cross-platform findings that added BR-68/69/70 after this snapshot was taken.
+- [Platform parity audit](cross-platform/platform-parity-audit.md) — the cross-platform findings that added BR-68/69/70 after this snapshot was taken.

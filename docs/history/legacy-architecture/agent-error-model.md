@@ -1,7 +1,7 @@
 # Agent error model
 
 > **What this is.** A design note on Biorouter's two-tier error model: infrastructure failures that are raised to the caller, versus model-generated "agent errors" that are fed back to the LLM as recoverable prompts.
-> **Status:** Superseded — the *concept* described here still governs the agent loop, but every concrete type name is obsolete. The `AgentError` enum and the `Result<T, AgentError>` alias no longer exist anywhere in `crates/`; rmcp's `ErrorData` replaced them. Current truth lives in the source: [`crates/biorouter/src/mcp_utils.rs`](../../crates/biorouter/src/mcp_utils.rs), [`crates/biorouter/src/conversation/message.rs`](../../crates/biorouter/src/conversation/message.rs), [`crates/biorouter/src/agents/agent.rs`](../../crates/biorouter/src/agents/agent.rs), and [`crates/biorouter/src/providers/errors.rs`](../../crates/biorouter/src/providers/errors.rs).
+> **Status:** Superseded — the *concept* described here still governs the agent loop, but every concrete type name is obsolete. The `AgentError` enum and the `Result<T, AgentError>` alias no longer exist anywhere in `crates/`; rmcp's `ErrorData` replaced them. Current truth lives in the source: [`crates/biorouter/src/mcp_utils.rs`](../../../crates/biorouter/src/mcp_utils.rs), [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs), [`crates/biorouter/src/agents/agent.rs`](../../../crates/biorouter/src/agents/agent.rs), and [`crates/biorouter/src/providers/errors.rs`](../../../crates/biorouter/src/providers/errors.rs).
 > **Audience:** developers working on the agent loop and on provider integrations.
 
 Error handling is a key performance-driving part of Biorouter. There are many ways that the
@@ -53,10 +53,10 @@ onto rmcp's error type.
 
 | Name used above | Name in the code today | Defined in |
 |---|---|---|
-| `AgentError` | `rmcp::model::ErrorData` (re-exported as `biorouter::mcp_utils::ErrorData`) | [`crates/biorouter/src/mcp_utils.rs`](../../crates/biorouter/src/mcp_utils.rs) |
-| `Result<T, AgentError>` | `ToolResult<T>` | [`crates/biorouter/src/mcp_utils.rs`](../../crates/biorouter/src/mcp_utils.rs) |
-| `ToolUse` | `ToolRequest` | [`crates/biorouter/src/conversation/message.rs`](../../crates/biorouter/src/conversation/message.rs) |
-| `ToolResult` (the message part) | `ToolResponse` | [`crates/biorouter/src/conversation/message.rs`](../../crates/biorouter/src/conversation/message.rs) |
+| `AgentError` | `rmcp::model::ErrorData` (re-exported as `biorouter::mcp_utils::ErrorData`) | [`crates/biorouter/src/mcp_utils.rs`](../../../crates/biorouter/src/mcp_utils.rs) |
+| `Result<T, AgentError>` | `ToolResult<T>` | [`crates/biorouter/src/mcp_utils.rs`](../../../crates/biorouter/src/mcp_utils.rs) |
+| `ToolUse` | `ToolRequest` | [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs) |
+| `ToolResult` (the message part) | `ToolResponse` | [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs) |
 
 The alias is a one-liner:
 
@@ -88,17 +88,17 @@ pub struct ToolResponse {
 
 | Concern | Location |
 |---|---|
-| Tool dispatch, and the construction of error results handed back to the model | [`crates/biorouter/src/agents/agent.rs`](../../crates/biorouter/src/agents/agent.rs) |
-| The `ToolResult` alias and the `ErrorData` re-export | [`crates/biorouter/src/mcp_utils.rs`](../../crates/biorouter/src/mcp_utils.rs) |
-| `ToolRequest` / `ToolResponse` message parts | [`crates/biorouter/src/conversation/message.rs`](../../crates/biorouter/src/conversation/message.rs) |
-| Provider-side error translation into each vendor's API spec | [`crates/biorouter/src/providers/errors.rs`](../../crates/biorouter/src/providers/errors.rs) |
+| Tool dispatch, and the construction of error results handed back to the model | [`crates/biorouter/src/agents/agent.rs`](../../../crates/biorouter/src/agents/agent.rs) |
+| The `ToolResult` alias and the `ErrorData` re-export | [`crates/biorouter/src/mcp_utils.rs`](../../../crates/biorouter/src/mcp_utils.rs) |
+| `ToolRequest` / `ToolResponse` message parts | [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs) |
+| Provider-side error translation into each vendor's API spec | [`crates/biorouter/src/providers/errors.rs`](../../../crates/biorouter/src/providers/errors.rs) |
 
 [anyhow-error]: https://docs.rs/anyhow/latest/anyhow/
 [this-error]: https://docs.rs/thiserror/latest/thiserror/
 
 ## Related documentation
 
-- [System overview](system-overview.md) — places this error policy inside the wider agent interaction loop.
-- [Extension trait design](../history/legacy-architecture/extension-trait-design.md) — the historical extension API this error model was designed alongside; it shares the same superseded vocabulary.
-- [Context engineering](../agent-loop/context-engineering.md) — what happens to error messages once they are in the conversation and the context window fills up.
-- [Diagnostics and bug reports](../troubleshooting/diagnostics-and-bug-reports.md) — how to capture the logs when an error is *not* recovered from.
+- [System overview](../../architecture/system-overview.md) — places this error policy inside the wider agent interaction loop.
+- [Extension trait design](extension-trait-design.md) — the historical extension API this error model was designed alongside; it shares the same superseded vocabulary.
+- [Context engineering](../../agent-loop/context-engineering.md) — what happens to error messages once they are in the conversation and the context window fills up.
+- [Diagnostics and bug reports](../../troubleshooting/diagnostics-and-bug-reports.md) — how to capture the logs when an error is *not* recovered from.

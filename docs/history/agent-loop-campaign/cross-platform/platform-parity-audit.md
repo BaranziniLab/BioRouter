@@ -13,7 +13,7 @@
 Two identifier schemes appear below. **BR-NN** is a proposal from the agent-loop review's
 master list — BR-1, BR-2, BR-17, BR-20, BR-21, BR-23, BR-37, BR-42, BR-43, BR-44, BR-64
 and BR-65 are all cited here; each is defined in
-[improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+[improvement proposals](../../agent-loop-review/improvement-proposals.md).
 **GAP-N** is this document's own coinage for a per-platform degradation, numbered in the
 [GAP findings](#gap-findings--ranked-by-user-impact) section below; other campaign
 documents cite these numbers without redefining them, so this file is the canonical key.
@@ -42,7 +42,7 @@ four; the evidence is in the
 | GAP-1 — Windows catastrophic safety net absent | Resolved | BR-68 (`baseline.windows/linux/macos.policy.yaml` now exist) — see [command safety](command-safety.md) |
 | GAP-2 — Windows orphan reaper has no PID-reuse guard | Resolved | The PID-reuse fix, commit `3d6d3aa9` |
 | GAP-3 — POSIX tokenizer mangles Windows paths | Resolved | BR-68 (`security/policy/{pwsh,cmd_shell}.rs` tokenizers) |
-| GAP-4 — sandbox exists on one of three platforms | Resolved | BR-69 (`crates/biorouter-sandbox/src/shell_sandbox/{linux,windows}.rs`) — see [Linux and Windows sandboxing](linux-and-windows-sandboxing.md) |
+| GAP-4 — sandbox exists on one of three platforms | Resolved | BR-69 (`crates/biorouter-sandbox/src/shell_sandbox/{linux,windows}.rs`) — see [Linux and Windows sandboxing](../../../agent-loop/designs/linux-and-windows-sandboxing.md) |
 | GAP-5 — no graceful-shutdown window on Windows | Partly resolved | The graceful Windows kill phase shipped with commit `3d6d3aa9`; the Job Object is not recorded as shipped |
 | GAP-6 — `undo_edit` misses PowerShell writes | Appears open | — |
 | GAP-7 — Windows managed-policy trust check is a no-op | Appears open | — |
@@ -167,7 +167,7 @@ shlex::split(stage).unwrap_or_else(|| stage.split_whitespace().map(String::from)
 ### GAP-4 — BR-64: the shell sandbox exists on exactly one of three shipped platforms
 
 > **Resolved** by BR-69 in Wave 3, which introduced the `ShellSandbox` trait and the
-> Linux and Windows backends. See [Linux and Windows sandboxing](linux-and-windows-sandboxing.md).
+> Linux and Windows backends. See [Linux and Windows sandboxing](../../../agent-loop/designs/linux-and-windows-sandboxing.md).
 
 **Files:** `crates/biorouter-sandbox/src/seatbelt.rs:167-170`, `crates/biorouter-mcp/src/developer/shell.rs:125-157`.
 
@@ -329,6 +329,6 @@ A `windows-latest` **clippy** job is the single highest-value addition: it is ch
 
 - [Cross-platform cluster verification report](parity-verification-report.md) — the Wave 3 gate record that cleared GAP-1 through GAP-4.
 - [Cross-platform command safety (BR-68)](command-safety.md) — the design that remediated GAP-1 and GAP-3, restating both findings at length.
-- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the design that remediated GAP-4.
+- [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the design that remediated GAP-4.
 - [Cross-platform CI verification gate (BR-70)](ci-gate.md) — what the "How to verify" recommendations became.
-- [Improvement proposals](../../history/agent-loop-review/improvement-proposals.md) — the index defining every BR-NN cited here.
+- [Improvement proposals](../../agent-loop-review/improvement-proposals.md) — the index defining every BR-NN cited here.

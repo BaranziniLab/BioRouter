@@ -91,7 +91,7 @@ this cluster.
 > **Note.** Three sibling reports write up the same tooling defect independently, each from its
 > own run: [Wave 2 — hooks and permissions](wave-2-hooks-and-permissions.md),
 > [Wave 2 — loop detection](wave-2-loop-detection.md) and
-> [the cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md).
+> [the cross-platform parity verification report](../cross-platform/parity-verification-report.md).
 > It was never fixed inside the campaign.
 
 ## Regression evidence
@@ -144,5 +144,5 @@ Restating the three conclusions established above:
   definition of BR-40 and BR-62.
 - [Campaign outcome report](../outcome-report.md) — the end-of-campaign totals across all three
   gates, of which this is the last.
-- [Cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md)
+- [Cross-platform parity verification report](../cross-platform/parity-verification-report.md)
   — the other Wave 3 gate, covering the cross-platform proposals and GAP-2.

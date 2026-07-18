@@ -254,6 +254,6 @@ its final push.
 
 - [Terminal UI stability review — July 2026](terminal-ui-stability.md) — the companion audit that checked whether this same batch of shared-core changes destabilized the CLI.
 - [Diverge behavior checklist](../../desktop-ui/diverge-behavior-checklist.md) — the living checklist for the divergence contract this batch centralized.
-- [Agent error model](../../architecture/agent-error-model.md) — the error taxonomy behind "a failed turn is not a failed session".
+- [Agent error model](../legacy-architecture/agent-error-model.md) — the error taxonomy behind "a failed turn is not a failed session".
 - [Diagnostics and bug reports](../../troubleshooting/diagnostics-and-bug-reports.md) — the user-facing side of the diagnostics bundle repaired here.
 - [Debug-session issue tracker (June 2026 GUI QA)](../gui-qa-2026-06/debug-session-issue-tracker.md) — the earlier issue log that several of these defects were first raised in.

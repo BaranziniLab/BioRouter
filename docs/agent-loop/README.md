@@ -14,7 +14,9 @@ than within one message. Go elsewhere if you are looking for: the **user-facing*
 on autonomy, admin policy and credentials, which live in
 [`docs/security/`](../security/README.md) (this folder holds the *design* behind them, not
 the how-to); the **narrative record** of when the campaign work landed and what it proved,
-which lives in [`docs/history/agent-loop-campaign/`](../history/agent-loop-campaign/README.md);
+which lives in [`docs/history/agent-loop-campaign/`](../history/agent-loop-campaign/README.md)
+— including its [cross-platform arm](../history/agent-loop-campaign/cross-platform/README.md),
+which holds the audits and shipped designs behind the loop's Windows and Linux behaviour;
 or the **packaged, shareable form** of a configured session, which is
 [`docs/workflows/`](../workflows/README.md). Several documents below are plans of record
 for work that is only partly built — each states its own status in its header, and the
@@ -29,10 +31,6 @@ table repeats it, so check that before treating a design as a description of shi
 
 ## Subfolders
 
-- [Cross-platform work](cross-platform/README.md) — the audit that found the agent loop's
-  security, process and checkpoint work was POSIX-only, the three designs that remediated
-  it (command safety, OS-level sandboxing, a CI gate that compiles the Windows and Linux
-  `cfg` arms), and the verification report that gated the cluster.
 - [Agent lifecycle hooks](hooks/README.md) — the hook system reference and the shipped
   verify-and-checkpoint Stop hook: the shell commands and LLM judges that run before a
   tool call, around compaction, at session boundaries, and when the agent tries to finish
@@ -41,8 +39,10 @@ table repeats it, so check that before treating a design as a description of shi
   much of itself has shipped: the [command policy engine](designs/command-policy-engine.md)
   (BR-21, replacing the evadable `THREAT_PATTERNS` regex table; slice 1 live),
   [cross-session memory](designs/cross-session-memory.md) (BR-17; FTS5 chat recall live,
-  distillation and digest unbuilt), the [macOS Seatbelt sandbox](designs/macos-seatbelt-sandbox.md)
-  (BR-64; superseded as a plan by BR-69, kept for the profile design),
+  distillation and digest unbuilt),
+  [OS-level tool sandboxing on Linux and Windows](designs/linux-and-windows-sandboxing.md)
+  (BR-69; the `ShellSandbox` trait and its macOS and Linux backends shipped, real Windows
+  containment did not),
   the [managed policy tier](designs/managed-policy-tier.md) (BR-65; first slice live,
   `verify_trusted()` still a no-op on Windows),
   [session branching](designs/session-branching.md) (BR-45; stable message ids landed, the
@@ -52,10 +52,11 @@ table repeats it, so check that before treating a design as a description of shi
   now the architecture reference for live pooling code).
 
 > **Identifier key.** `BR-NN` identifiers throughout this folder are proposals from the
-> 67-item master list in
-> [the agent-loop improvement proposals](../history/agent-loop-review/improvement-proposals.md).
-> `GAP-N` identifiers were coined by the
-> [platform parity audit](cross-platform/platform-parity-audit.md).
+> campaign's numbering. `BR-1`…`BR-67` are defined in the 67-item master list in
+> [the agent-loop improvement proposals](../history/agent-loop-review/improvement-proposals.md);
+> `BR-68`, `BR-69` and `BR-70` were added mid-campaign and, like the `GAP-N` per-platform
+> findings, are defined in
+> [the platform parity audit](../history/agent-loop-campaign/cross-platform/platform-parity-audit.md).
 
 ## Related documentation
 
@@ -65,6 +66,6 @@ table repeats it, so check that before treating a design as a description of shi
   the 67-item master list the `BR-NN` identifiers in these designs point back to.
 - [Security](../security/README.md) — the user- and admin-facing side of the same
   guardrails: permission modes, managed policy, and secret storage.
-- [Biorouter agentic system explorer](../design/agentic-system-explorer.md) — the
+- [Biorouter agentic system explorer](../architecture/agentic-system-explorer.md) — the
   code-aligned account of how one request becomes context, tool work, durable state and a
   verified answer, if you want the loop end-to-end before reading a single subsystem.

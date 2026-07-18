@@ -87,7 +87,7 @@ Both sessions were focused on safely refining the cohort dataset. Would you like
 
 ## Related documentation
 
-- [Sessions](../../sessions/README.md) — how sessions are created, stored and resumed, and where the SQLite history lives.
+- [Sessions](../../getting-started/managing-sessions.md) — how sessions are created, stored and resumed, and where the SQLite history lives.
 - [CLI command reference](../../cli/command-reference.md) — the `session` subcommands that list sessions and reveal their IDs.
 - [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
 - [Memory extension](memory.md) — the complementary way to carry knowledge forward, by teaching BioRouter facts rather than searching old chats.

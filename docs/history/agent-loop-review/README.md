@@ -438,5 +438,5 @@ register is authoritative if they ever disagree.
 - [Improvement proposals register](improvement-proposals.md) — the full `BR-1`…`BR-67` program this report summarizes, with problem, affected code, impact, effort and risk per proposal.
 - [Agent-loop fix campaign](../agent-loop-campaign/README.md) — the plan of record for implementing these 67 proposals, including the wave-to-proposal mapping.
 - [Agent-loop campaign outcome report](../agent-loop-campaign/outcome-report.md) — what actually landed, so you can tell which gaps below are now closed.
-- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — the cross-platform audit that added `BR-68`…`BR-70` after this review.
+- [Platform parity audit](../agent-loop-campaign/cross-platform/platform-parity-audit.md) — the cross-platform audit that added `BR-68`…`BR-70` after this review.
 - [Context engineering guide](../../agent-loop/context-engineering.md) — current documentation of how context reaches the model, superseding this report's snapshot.

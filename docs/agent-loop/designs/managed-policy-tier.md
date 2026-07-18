@@ -24,7 +24,7 @@ wins over user and project settings for both surfaces.
 > [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
 > **P** (performance), **R** (robustness), or **U** (ux). `GAP-N` identifiers are the
 > cross-platform findings in the
-> [platform parity audit](../cross-platform/platform-parity-audit.md). This document is BR-65,
+> [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md). This document is BR-65,
 > raised under the robustness lens as P-50.
 
 | Field | Value |
@@ -39,7 +39,7 @@ wins over user and project settings for both surfaces.
 > this tier's entire trust claim rests on is absent on that platform. This design anticipated
 > it — the ownership section below defers Windows ACL checks to phase 2 — but the gap is
 > real and shipped. See the
-> [platform parity audit](../cross-platform/platform-parity-audit.md).
+> [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md).
 
 > **Warning.** This is security-critical design. The
 > [campaign outcome report](../../history/agent-loop-campaign/outcome-report.md) lists BR-65
@@ -185,7 +185,7 @@ privilege escalation" (see the
   `windows` crate; until then, restrict to `%ProgramData%` (already
   admin-writable-only by default) and skip deep ACL checks. **This deferral
   shipped**, and is GAP-7 in the
-  [platform parity audit](../cross-platform/platform-parity-audit.md).
+  [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md).
 
 ### Module layout
 
@@ -474,7 +474,7 @@ and evaluate inside `ManagedPolicyInspector`.
 ## Related documentation
 
 - [Managed policy guide](../../security/managed-policy.md) — the administrator-facing counterpart: where to put the file and how to verify it is trusted.
-- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-7, the Windows ownership check that is still a no-op.
+- [Platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md) — GAP-7, the Windows ownership check that is still a no-op.
 - [Command policy engine (BR-21)](command-policy-engine.md) — the rule set that deserializes into this tier's `command_rules` field.
-- [macOS Seatbelt sandbox (BR-64)](macos-seatbelt-sandbox.md) — the containment layer an admin would pin on via this tier in its Slice 4.
+- [macOS Seatbelt sandbox (BR-64)](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md) — the containment layer an admin would pin on via this tier in its Slice 4.
 - [Wave 1 security report](../../history/agent-loop-campaign/wave-reports/wave-1-security.md) — the implementation record for Phase 1.

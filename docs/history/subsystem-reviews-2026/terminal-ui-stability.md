@@ -123,4 +123,4 @@ traffic.
 - [Agent tool discovery hardening — July 2026](tool-discovery-hardening.md) — a sibling July 2026 review whose verification section records the differing library test count noted above.
 - [CLI QA checklist](../../cli/qa-checklist.md) — the living manual checklist for exercising the terminal UI.
 - [CLI command reference](../../cli/command-reference.md) — what `/help` and the other slash commands exercised in the tmux matrix actually do.
-- [Agent error model](../../architecture/agent-error-model.md) — the provider error taxonomy behind "classified kind".
+- [Agent error model](../legacy-architecture/agent-error-model.md) — the provider error taxonomy behind "classified kind".

@@ -17,7 +17,7 @@ Plan 3 put the Knowledge backend behind HTTP. This plan builds the first user-fa
 > "matching the mockup", the shipped components in
 > `ui/desktop/src/components/knowledge/` are the only remaining record of what was
 > meant. A later redesign of this surface is captured in
-> [`docs/design/ui-overhaul/knowledge-view-redesign.md`](../../design/ui-overhaul/knowledge-view-redesign.md).
+> [`docs/history/ui-overhaul-2026-07/knowledge-view-redesign.md`](../ui-overhaul-2026-07/knowledge-view-redesign.md).
 
 > **Warning — this plan has thin automated test coverage by design.** The repo had
 > no strong frontend unit-test culture when this was written, so several tasks
@@ -1158,4 +1158,4 @@ git commit -m "docs(claude): document Plan 4 Knowledge frontend (route + ingest)
 - [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — the `/knowledge/*` endpoints and SSE framing every component here calls.
 - [Plan 5 — graph view and change log](plan-5-graph-view-and-change-log.md) — fills in the right-column placeholder Task 9 leaves behind.
 - [Plan 6 — chat integration and closeout](plan-6-chat-integration-and-closeout.md) — moves active-KB state off `localStorage` and adds the chat-side KB chip.
-- [Knowledge view redesign](../../design/ui-overhaul/knowledge-view-redesign.md) — the later visual rework of this surface.
+- [Knowledge view redesign](../ui-overhaul-2026-07/knowledge-view-redesign.md) — the later visual rework of this surface.

@@ -104,7 +104,7 @@ The agent operates in a continuous loop:
 
 If a tool call produces an error (invalid JSON, missing tool, etc.), Biorouter captures and returns
 the error to the model as a tool response, allowing the LLM to self-correct without breaking the
-session. The [agent error model](agent-error-model.md) explains the two-tier policy behind that
+session. The [agent error model](../history/legacy-architecture/agent-error-model.md) explains the two-tier policy behind that
 behaviour and where it is implemented.
 
 ## Configuration and data paths
@@ -151,7 +151,7 @@ Biorouter supports running multiple agents in parallel:
 ## Related documentation
 
 - [Installation](../getting-started/installation.md) — how to get the platform described here onto a machine; the natural next step after this page.
-- [Agent error model](agent-error-model.md) — the error policy governing step 4 of the agent loop.
+- [Agent error model](../history/legacy-architecture/agent-error-model.md) — the error policy governing step 4 of the agent loop.
 - [Extensions and skills guide](../extensions/extensions-and-skills-guide.md) — how to install and configure the extension layer.
 - [Config file reference](../configuration/config-file-reference.md) — the full schema of the `config.yaml` named above.
 - [Security overview](../security/README.md) — expands each bullet in the security section into an enforced mechanism.

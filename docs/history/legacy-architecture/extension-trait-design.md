@@ -89,7 +89,7 @@ for general extension operations.
 > `rmcp`'s error type and is what extensions return today. `AgentResult<Value>` and
 > `ToolResult<Value>`, used in the trait and tool signatures above, were never defined
 > anywhere in the workspace. For the error model actually in force, read
-> [the agent error model](../../architecture/agent-error-model.md).
+> [the agent error model](agent-error-model.md).
 
 ## Best practices
 
@@ -172,6 +172,6 @@ async fn test_echo_tool() {
 
 - [Extensions and skills guide](../../extensions/extensions-and-skills-guide.md) — how extensions are actually authored, installed, and configured today.
 - [Extension manager](../../extensions/built-in/extension-manager.md) — the component that owns MCP extension lifecycle and tool registration, the role this design assigned to the `Extension` trait.
-- [Agent error model](../../architecture/agent-error-model.md) — the error types that replaced the `AgentResult` / `ToolResult` vocabulary sketched here.
+- [Agent error model](agent-error-model.md) — the error types that replaced the `AgentResult` / `ToolResult` vocabulary sketched here.
 - [System overview](../../architecture/system-overview.md) — where extensions sit in the Interface → Agent → Extensions architecture.
 - [Auto Visualiser extension](../../extensions/built-in/auto-visualiser.md) — a large real built-in MCP server, useful as the concrete counterexample to the design above.

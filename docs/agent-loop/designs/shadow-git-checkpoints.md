@@ -25,7 +25,7 @@ to, or read from, the user's real `.git`.
 > gap list at the end of the
 > [state-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md).
 > `GAP-N` identifiers (distinct from those) are the cross-platform findings in the
-> [platform parity audit](../cross-platform/platform-parity-audit.md). This document is BR-43,
+> [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md). This document is BR-43,
 > raised under both the robustness lens (P-12) and the ux lens (P-1).
 
 | Field | Value |
@@ -40,7 +40,7 @@ to, or read from, the user's real `.git`.
 > **Warning — Windows restore has known defects.** The cross-platform audit recorded
 > **GAP-8** against this feature: on Windows, executable bits are dropped on restore, and
 > locked files defeat `CheckoutBuilder::force`. Neither is addressed by this design. See the
-> [platform parity audit](../cross-platform/platform-parity-audit.md) before enabling
+> [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md) before enabling
 > checkpoints on a Windows fleet.
 
 > **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
@@ -390,6 +390,6 @@ Overall **L**.
 
 - [Session branching (BR-45)](session-branching.md) — the stable message ids this design deliberately does *not* anchor on, and the fork tree that shares the restore UX surface.
 - [Wave 1 checkpoints report](../../history/agent-loop-campaign/wave-reports/wave-1-checkpoints.md) — the implementation record for Slice 1.
-- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-8, the Windows exec-bit and locked-file defects in restore.
+- [Platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md) — GAP-8, the Windows exec-bit and locked-file defects in restore.
 - [State-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md) — gaps #2 and #9, the source of this proposal.
 - [Verify-and-checkpoint Stop hook](../hooks/verify-and-checkpoint-stop-hook.md) — the shipped, opt-in alternative that commits to the user's *real* repo at turn end, and so makes the opposite trade-off from this design.

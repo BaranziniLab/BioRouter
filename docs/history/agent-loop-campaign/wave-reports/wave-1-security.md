@@ -42,7 +42,7 @@ commits.
 | BR-23 | Central secret-redaction boundary across all extensions | done | `fc4e5ae6` | `biorouter-mcp/src/secret_guard.rs` (new), `biorouter-mcp/src/lib.rs`, `developer/rmcp_developer.rs`, `biorouter/src/agents/extension_manager.rs` | in-module unit tests within `biorouter-mcp` lib suite (594 passed) |
 | BR-21 | Auditable command policy engine (Slice 1) atop the BR-20 floor | done | `afa11aa8` | `biorouter/src/security/policy/{mod,command,rule,baseline}.rs` + `baseline.policy.yaml` + `tests.rs` (new), `security/mod.rs`, `security/security_inspector.rs`, `Cargo.toml` | `security/policy/tests.rs` within `biorouter` lib suite (829 passed) |
 | BR-65 | Managed/enterprise policy tier (first mergeable slice) | done | `3862995a` | `biorouter/src/managed/{mod,settings,trust}.rs` (new), `permission/managed_inspector.rs` (new), `permission/{mod,permission_inspector}.rs`, `hooks/mod.rs`, `config/paths.rs`, `agents/agent.rs`, `lib.rs`, managed-policy guide | `tests/managed_policy_tests.rs` — 4 passed |
-| BR-64 (design) | Design doc: OS-level tool-execution sandbox | done | `1459b100` | [macOS Seatbelt sandbox design](../../../agent-loop/designs/macos-seatbelt-sandbox.md) | n/a (docs) |
+| BR-64 (design) | Design doc: OS-level tool-execution sandbox | done | `1459b100` | [macOS Seatbelt sandbox design](../cross-platform/macos-seatbelt-sandbox.md) | n/a (docs) |
 | BR-64 (Slice 1) | macOS Seatbelt sandbox for the developer shell tool | done | `b1407965` | `biorouter-sandbox/src/seatbelt.rs` (new), `biorouter-sandbox/src/lib.rs`, `biorouter-mcp/src/developer/shell.rs` | seatbelt unit tests within `biorouter-mcp` lib suite (594 passed) |
 
 Two of these were designed before implementation:
@@ -151,7 +151,7 @@ desktop UI were touched, so OpenAPI regeneration and npm checks were not applica
   merge status this report is evidence for.
 - [Master improvement proposals](../../agent-loop-review/improvement-proposals.md) — the
   definition of BR-21, BR-22, BR-23, BR-64 and BR-65.
-- [macOS Seatbelt sandbox design](../../../agent-loop/designs/macos-seatbelt-sandbox.md) — the
+- [macOS Seatbelt sandbox design](../cross-platform/macos-seatbelt-sandbox.md) — the
   design BR-64 Slice 1 implements.
 - [Command policy engine design](../../../agent-loop/designs/command-policy-engine.md) — the
   design BR-21 Slice 1 implements.

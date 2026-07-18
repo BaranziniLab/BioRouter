@@ -19,7 +19,7 @@ cross-compile recipe: it extracts the one recipe the release already uses, has C
 
 **Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list —
 BR-70 is this one; BR-20, BR-21, BR-37 and BR-64 are the proposals it protects. All are
-defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+defined in [improvement proposals](../../agent-loop-review/improvement-proposals.md).
 *Lens* tags which review raised a proposal: **R** = robustness, P = performance, U = ux.
 *D1*–*D5* below are this document's own labels for its five design decisions, cross-referenced
 from the slice table and the workflow.
@@ -688,5 +688,5 @@ exists to expose.
 - [Platform parity audit](platform-parity-audit.md) — the audit whose "what CI should run on every PR" recommendation this design answers.
 - [Cross-platform cluster verification report](parity-verification-report.md) — the Wave 3 gate record covering commit `ab721780`, which shipped this design.
 - [Cross-platform command safety (BR-68)](command-safety.md) — one of the `cfg`-heavy proposals this gate exists to keep compiling.
-- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the Landlock work that had no compile venue until this gate landed.
-- [Local cross-compilation guide](../../releases/local-cross-compilation.md) — running the same cross builds by hand outside CI.
+- [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the Landlock work that had no compile venue until this gate landed.
+- [Local cross-compilation guide](../../../releases/local-cross-compilation.md) — running the same cross builds by hand outside CI.

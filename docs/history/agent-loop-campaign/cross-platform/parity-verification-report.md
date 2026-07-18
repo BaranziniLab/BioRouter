@@ -13,7 +13,7 @@
 cross-platform arm, covering Windows and Linux parity for command safety, tool
 sandboxing, and compile coverage. Two identifier schemes appear below: **BR-NN**, a
 proposal from the agent-loop review's master list (see
-[improvement proposals](../../history/agent-loop-review/improvement-proposals.md)), and
+[improvement proposals](../../agent-loop-review/improvement-proposals.md)), and
 **GAP-N**, a numbered finding from the
 [platform parity audit](platform-parity-audit.md), which is where each GAP is defined.
 
@@ -62,7 +62,7 @@ not orphaned junk. The working tree was clean at intake; no orphaned work to rec
 
 The design docs for the three BR proposals are siblings of this report:
 [command safety](command-safety.md) for BR-68,
-[Linux and Windows sandboxing](linux-and-windows-sandboxing.md) for BR-69, and
+[Linux and Windows sandboxing](../../../agent-loop/designs/linux-and-windows-sandboxing.md) for BR-69, and
 [the CI gate](ci-gate.md) for BR-70.
 
 ## Regression fixed by the verifier
@@ -169,6 +169,6 @@ Skipped — no `ui/desktop` change in the range.
 
 - [Platform parity audit](platform-parity-audit.md) — defines the GAP-N findings this report clears, and is the origin of the cluster's scope.
 - [Cross-platform command safety (BR-68)](command-safety.md) — the design behind commit `651acff0`, including the tokenizers that produced the clippy regression.
-- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the design behind commit `2d16ff0a`, and where the unverified Windows tier is specified.
+- [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the design behind commit `2d16ff0a`, and where the unverified Windows tier is specified.
 - [Cross-platform CI verification gate (BR-70)](ci-gate.md) — the design behind commit `ab721780`, the gate that now compiles the Windows/Linux `cfg` surface on every PR.
-- [Agent-loop campaign outcome report](../../history/agent-loop-campaign/outcome-report.md) — where this cluster sits in the campaign as a whole.
+- [Agent-loop campaign outcome report](../outcome-report.md) — where this cluster sits in the campaign as a whole.

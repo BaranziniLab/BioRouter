@@ -695,5 +695,5 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [CLI QA checklist](qa-checklist.md) — the manual and headless verification script covering every command on this page.
 - [Configuration file reference](../configuration/config-file-reference.md) — the `config.yaml` keys behind `biorouter configure` and the theme setting.
 - [Environment variables](../configuration/environment-variables.md) — per-invocation overrides for the same settings, including `BIOROUTER_CLI_THEME`.
-- [Managing sessions](../sessions/README.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
+- [Managing sessions](../getting-started/managing-sessions.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

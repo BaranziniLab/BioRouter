@@ -36,7 +36,7 @@ Use [lead/worker mode](../configuration/environment-variables.md#leadworker-mode
 
 ### Keep sessions short
 
-LLMs have context windows, which are limits on how much conversation history they can retain. Once exceeded, they may forget earlier parts of the conversation. Monitor your token usage and [start new sessions](../sessions/README.md) as needed.
+LLMs have context windows, which are limits on how much conversation history they can retain. Once exceeded, they may forget earlier parts of the conversation. Monitor your token usage and [start new sessions](managing-sessions.md) as needed.
 
 ### Use Quick Launcher for faster session starts
 

@@ -217,7 +217,7 @@ hard-asserts the glyph path `M 125 220` across 8 locations and will fail CI on d
 - `ui/desktop/src/components/WelcomeBioRouterLogo.tsx`
 
 > **Note.** The three `docs/*.html` paths asserted by `check-brand-consistency.sh` have since
-> moved: `docs/agentic-system.html` is now [`docs/design/agentic-system-explorer.html`](../agentic-system-explorer.html),
+> moved: `docs/agentic-system.html` is now [`docs/architecture/agentic-system-explorer.html`](../../architecture/agentic-system-explorer.html),
 > `docs/design-system.html` is now [`docs/design/design-system-gallery.html`](../design-system-gallery.html),
 > and `docs/theme-system.html` is now [`docs/design/theming/theme-system-explorer.html`](../theming/theme-system-explorer.html).
 

@@ -26,16 +26,16 @@ this design is BR-69. *Lens* records which review raised it — **R** = robustne
 *P-32* is that proposal's number within the robustness lens review.
 
 **Extends:** BR-64 (macOS Seatbelt, Slice 1 shipped; designed in
-[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) — this is BR-64's Slice 3
+[macOS Seatbelt sandbox](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md)) — this is BR-64's Slice 3
 generalized. **Complements:** BR-20 (catastrophic denylist) and BR-21 (policy engine),
 which this design shows are POSIX-only and therefore near-vacuous on Windows.
 
 > **Overlap to be aware of.** The Problem section's account of the POSIX-only command
 > safety net restates the premise of
-> [Cross-platform command safety (BR-68)](command-safety.md), and its Slice 0 overlaps
+> [Cross-platform command safety (BR-68)](../../history/agent-loop-campaign/cross-platform/command-safety.md), and its Slice 0 overlaps
 > that design's rule work. BR-68 is the authority on the rules; this document is the
 > authority on containment. The underlying findings (GAP-1, GAP-4) come from the
-> [platform parity audit](platform-parity-audit.md).
+> [platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md).
 
 ## Contents
 
@@ -83,7 +83,7 @@ Windows user who deliberately sets `BIOROUTER_SHELL_SANDBOX=1` — a UCSF fleet
 admin pushing it via env, say — gets **zero** containment and a `warn!` line
 buried in the daemon log they never read. BR-64's own design acknowledges this
 ("On non-macOS hosts the gate is a silent no-op", `BR-64-design.md:203`, now
-[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) and
+[macOS Seatbelt sandbox](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md)) and
 defers it to "Slice 3 (L)". This is that slice.
 
 The abstraction is also wrong-shaped: `shell.rs` names the *mechanism*
@@ -95,7 +95,7 @@ today means a second `#[cfg]` ladder at the call site, and Windows a third.
 This is the finding that matters most, and it is worse than "the sandbox is
 missing." Every rule in **both** layers matches Unix syntax exclusively.
 
-> **Note.** [Cross-platform command safety (BR-68)](command-safety.md) works this same
+> **Note.** [Cross-platform command safety (BR-68)](../../history/agent-loop-campaign/cross-platform/command-safety.md) works this same
 > finding in far more depth and is the design that fixed it. The summary here exists so
 > this document's Slice 0 argument stands on its own.
 
@@ -169,7 +169,7 @@ value** — do not let the kernel work delay it.
 ### Slice 0 — Close the POSIX-only rule gap (no sandbox involved)
 
 > **Shipped.** Delivered by BR-68 rather than by this item — see
-> [Cross-platform command safety](command-safety.md), commit `651acff0`. The
+> [Cross-platform command safety](../../history/agent-loop-campaign/cross-platform/command-safety.md), commit `651acff0`. The
 > `platform:` field described below shipped as the richer `platforms` + `shells` pair.
 
 Independent of everything below, and worth shipping alone. Both rule layers gain
@@ -327,7 +327,7 @@ is today**. A regression test asserts exactly that (see Test plan).
 
 > **Shipped** as commit `2d16ff0a` (`shell_sandbox/linux.rs`), but **not verified**: the
 > Linux arm was never compiled on the macOS dev host, only type-checked by flipping `cfg`
-> gates. See the [verification report](parity-verification-report.md).
+> gates. See the [verification report](../../history/agent-loop-campaign/cross-platform/parity-verification-report.md).
 
 This is the platform where a real, unprivileged kernel sandbox exists.
 
@@ -705,7 +705,7 @@ host that cannot enforce.
 > **Outstanding.** This subsection is the part of the design that has not been carried
 > out: the Linux and Windows arms were never compiled on the dev host, so the enforcement
 > tests below have never actually run. The generic cross-compile gate that landed
-> alongside is [BR-70](ci-gate.md); the sandbox-specific jobs described here are still to
+> alongside is [BR-70](../../history/agent-loop-campaign/cross-platform/ci-gate.md); the sandbox-specific jobs described here are still to
 > be built.
 
 The Linux enforcement tests are worthless if they only ever skip. Three jobs:
@@ -747,7 +747,7 @@ design's original estimate.
 
 | Slice | Scope | Size | Independently valuable? | Status |
 |---|---|---|---|---|
-| **0** | Windows/PowerShell rules in `patterns.rs` + `baseline.policy.yaml`; `platform:` field on rules; tokenizer learns Windows argv | **M** | **Yes — biggest single win.** Turns Windows' safety net from *absent* to *present*, with no kernel work and no new deps. Ship first, alone if need be. | Shipped, via [BR-68](command-safety.md) (`651acff0`) |
+| **0** | Windows/PowerShell rules in `patterns.rs` + `baseline.policy.yaml`; `platform:` field on rules; tokenizer learns Windows argv | **M** | **Yes — biggest single win.** Turns Windows' safety net from *absent* to *present*, with no kernel work and no new deps. Ship first, alone if need be. | Shipped, via [BR-68](../../history/agent-loop-campaign/cross-platform/command-safety.md) (`651acff0`) |
 | **1** | `ShellSandbox` trait + `SandboxPolicy`/`SandboxTier`/`SandboxReport`; `detect()`; `SeatbeltSandbox` adapter; `shell.rs` calls one API; `SandboxMode` (off/auto/strict); tier reporting in tool result + `doctor` | **M** | Yes — macOS users get `strict` and a visible tier; the codebase gets the seam. No behavior change. | Shipped (`2d16ff0a`) |
 | **2** | Linux: `__br-sandbox` helper in both `main()`s; `landlock` + `seccompiler`; ABI probe; bubblewrap fallback; the enforcement + AF_UNIX + degradation tests; the CI matrix | **L** | Yes — Linux (deb/rpm, and the UCSF HPC/Linux users) gets a real kernel sandbox for the first time. | Shipped (`2d16ff0a`), not compiled or enforcement-tested on the dev host |
 | **3** | Windows W1: Job Object + restricted token + Low IL via the same helper; honest `ContainmentOnly` reporting; fixes BR-37's Windows kill gap | **M** | Yes — real process-tree kill + resource caps, honestly labelled. | Outstanding — the weakest tier per the campaign outcome report |
@@ -821,8 +821,8 @@ Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
 
 ## Related documentation
 
-- [macOS Seatbelt sandbox (BR-64)](../designs/macos-seatbelt-sandbox.md) — the macOS-only predecessor this design generalizes, and the source of `SeatbeltPolicy`.
-- [Cross-platform command safety (BR-68)](command-safety.md) — the companion design that delivered Slice 0's rule work; rules there, containment here.
-- [Platform parity audit](platform-parity-audit.md) — GAP-4, the finding that the sandbox existed on one of three shipped platforms.
-- [Cross-platform cluster verification report](parity-verification-report.md) — the gate record for commit `2d16ff0a`, and the caveat that the Linux and Windows arms were never compiled.
-- [Cross-platform CI verification gate (BR-70)](ci-gate.md) — the compile gate this design needed as a venue for its Linux-only kernel code.
+- [macOS Seatbelt sandbox (BR-64)](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md) — the macOS-only predecessor this design generalizes, and the source of `SeatbeltPolicy`.
+- [Cross-platform command safety (BR-68)](../../history/agent-loop-campaign/cross-platform/command-safety.md) — the companion design that delivered Slice 0's rule work; rules there, containment here.
+- [Platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md) — GAP-4, the finding that the sandbox existed on one of three shipped platforms.
+- [Cross-platform cluster verification report](../../history/agent-loop-campaign/cross-platform/parity-verification-report.md) — the gate record for commit `2d16ff0a`, and the caveat that the Linux and Windows arms were never compiled.
+- [Cross-platform CI verification gate (BR-70)](../../history/agent-loop-campaign/cross-platform/ci-gate.md) — the compile gate this design needed as a venue for its Linux-only kernel code.

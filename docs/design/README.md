@@ -1,28 +1,26 @@
 # Design
 
-This folder holds BioRouter's design specifications and their rendered companions: the
-brand marks, the theme families, the desktop UI overhaul that produced the current look,
-and the explorer pages that render a system as diagrams rather than prose. Nearly every
-document here comes in two halves — a Markdown file carrying the reasoning, the exact
-values and the sign-off decisions, and an HTML page carrying the mockups, swatches and
-interactive dials that Markdown cannot reproduce. The Markdown half is written so an
-agent, or anyone without a browser, still gets the whole argument.
+This folder holds BioRouter's **visual** design specifications and their rendered
+companions: the brand marks, the theme families, and the desktop UI overhaul that produced
+the current look. Nearly every document here comes in two halves — a Markdown file carrying
+the reasoning, the exact values and the sign-off decisions, and an HTML page carrying the
+mockups, swatches and interactive dials that Markdown cannot reproduce. The Markdown half is
+written so an agent, or anyone without a browser, still gets the whole argument.
 
 Come here when you need to know *what a surface should look like and why it was decided
 that way* — the token behind a colour, the geometry behind the app icon, the decision
-record behind a redesign. Go elsewhere for the rules themselves or for the code: the
-single source of truth for the design language is the root
+record behind a redesign. Go elsewhere for the rules themselves, for the runtime, or for
+the code: the single source of truth for the design language is the root
 [Biorouter Design System](../../design.md), which everything here cites by its `D-NN`
-decision numbers; the mechanics of driving and debugging the real desktop app live in
-[`docs/desktop-ui/`](../desktop-ui/agent-browser-debugging.md); and superseded design
-packets that were overtaken by later work are filed under
-[`docs/history/`](../history/chat-groups/design-judgement-and-plan.md), not here.
+decision numbers; the explorer of the *agent runtime* — a system rather than a surface —
+lives in [`docs/architecture/`](../architecture/agentic-system-explorer.md); the mechanics
+of driving and debugging the real desktop app live in
+[`docs/desktop-ui/`](../desktop-ui/agent-browser-debugging.md); and design packets that
+shipped or were overtaken by later work are filed under
+[`docs/history/`](../history/README.md), not here.
 
-## Documents in this folder
-
-| Document | What it covers |
-|---|---|
-| [Biorouter agentic system explorer](agentic-system-explorer.md) | The written companion to the agentic-system explorer: a code-aligned account of how a request becomes model context, inspected tool work, durable state, recovery and a verified answer. Current, and follows the Rust behaviour of the agent runtime. |
+There are no Markdown files directly in this folder. All specifications sit in the four
+topic subfolders below, alongside one top-level rendered page.
 
 ## Subfolders
 
@@ -38,8 +36,8 @@ packets that were overtaken by later work are filed under
   [Alma Mater theme tokens](theming/alma-mater-theme-tokens.md), the authoritative
   token-by-token light/dark mapping and WCAG contrast ratios for BioRouter's UCSF-brand
   theme, alongside the theme studios and the theme-system explorer.
-- **[`ui-overhaul/`](ui-overhaul/)** — the 2026-07 desktop redesign, its specs and its
-  status record:
+- **[`ui-overhaul/`](ui-overhaul/)** — the app-wide half of the 2026-07 desktop redesign:
+  its specification and its status record.
   - [Execution status](ui-overhaul/execution-status.md) — the stated source of truth for
     the UI cohesion and chat-groups branch: the 20-step list, commits, gates, the brand
     rollout, and the register of what is still broken or open. All 20 steps are done;
@@ -48,14 +46,10 @@ packets that were overtaken by later work are filed under
     ink" specification for the markdown layer, preview panel, terminal, tabbed chat groups
     and floating surfaces. A design specification: it was a static sketch on the real
     tokens when written, with execution tracked in the status record above.
-  - [Home screen redesign](ui-overhaul/home-screen-redesign.md) — why the Home column was
-    realigned to the chat column, what its token and session numbers actually meant, and
-    the eight decisions behind the usage heatmap. Historical record, signed off 2026-07-08
-    and shipped.
-  - [Knowledge view redesign](ui-overhaul/knowledge-view-redesign.md) — the three defects
-    diagnosed in the Knowledge view and the radius, surface and component specifications
-    that corrected them. Historical record, signed off 2026-07-10, implemented and
-    verified.
+
+  The two **view-level** redesigns specified in the same period — the Home page and the
+  Knowledge view — both shipped and were signed off, so they were archived to
+  [`docs/history/ui-overhaul-2026-07/`](../history/ui-overhaul-2026-07/README.md).
 
 ## Rendered pages and assets
 
@@ -63,9 +57,6 @@ The HTML files are self-contained pages that **must be opened in a browser to be
 they render live mockups, diagrams and interactive controls, and show nothing meaningful as
 source text. Each sits beside the Markdown companion that explains it.
 
-- `agentic-system-explorer.html` — seventeen rendered SVG architecture diagrams of the
-  agent runtime: the turn lifecycle, entry paths, request assembly, inspection pipeline,
-  vault substitution, dispatch, hook lanes, recovery paths and transport lanes.
 - `design-system-gallery.html` — the design system rendered as a gallery of every token,
   element and state; the companion artifact to the root [design system](../../design.md).
 - `branding/logo-wordmark-studio.html` and `branding/logo-icon-studio.html` — interactive
@@ -74,9 +65,9 @@ source text. Each sits beside the Markdown companion that explains it.
 - `theming/alma-mater-theme-studio.html`, `theming/alma-mater-light-theme-studio.html`,
   `theming/roche-limit-theme-studio.html` and `theming/theme-system-explorer.html` — the
   per-family theme studios and the explorer covering the four colour environments.
-- `ui-overhaul/ui-cohesion-redesign.html`, `ui-overhaul/home-screen-redesign.html` and
-  `ui-overhaul/knowledge-view-redesign.html` — the before/after mockups, component frames,
-  heatmaps and theme-switchable swatches for each redesign.
+- `ui-overhaul/ui-cohesion-redesign.html` — a full interactive mockup of the BioRouter
+  shell with toggles for theme, Current ⇄ Redesigned, sidebar collapse, split, terminal
+  and highlight, plus markdown specimens, live component frames and colour swatches.
 - `branding/assets/` — the exported brand icons as PNG and SVG (`br-icon-beige`,
   `br-icon-transparent`, and a review render).
 
@@ -85,10 +76,12 @@ source text. Each sits beside the Markdown companion that explains it.
 - [Biorouter Design System](../../design.md) — the root source of truth for the design
   language, and the register the `D-NN` decisions cited throughout this folder belong to.
 - [Architecture](../architecture/README.md) — the orientation-level map of how BioRouter is
-  put together; read it before the agentic system explorer if the crate and process
-  boundaries are unfamiliar.
+  put together, and the home of the agentic system explorer, which documents the agent
+  runtime rather than any visual surface.
+- [UI overhaul, July 2026](../history/ui-overhaul-2026-07/README.md) — the two shipped
+  view-level redesigns, Home and Knowledge, archived out of `ui-overhaul/` once signed off.
 - [The agent loop](../agent-loop/README.md) — the reasoning loop's own documentation, where
-  the guardrail designs behind the runtime described by the agentic system explorer live.
+  the guardrail designs behind the runtime live.
 - [Chat groups: design judgement and reduced plan](../history/chat-groups/design-judgement-and-plan.md)
   — the historical design packet that preceded the chat-groups work, and the origin of the
   `R7` risk that the nesting blocker spike investigated.

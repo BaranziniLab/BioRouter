@@ -1,7 +1,7 @@
 # Context engineering
 
 > **What this is.** An index of the BioRouter features you use to give the agent durable background knowledge, preferences, and workflows, so you do not re-explain yourself every session.
-> **Status:** Superseded — this page's body was a set of docs-site card components that the 2026-05-07 "migrate 36 files to plain markdown" commit stripped, leaving two empty sections and no links. Nothing survived except the opening definition; the guides below are the current truth.
+> **Status:** Current — the page body below is a live routing table. (Its original docs-site body was stripped by the 2026-05-07 plain-markdown migration; what you are reading replaces it.)
 > **Audience:** end users
 
 Context engineering is about building background knowledge, preferences, and workflows that help biorouter work more effectively. Instead of repeating instructions, you define them once and teach biorouter how you work. Each mechanism below covers one way of doing that — persistent memory, reusable instruction sets, packaged session configurations, lifecycle hooks, and delegation — and each has its own guide.
@@ -25,4 +25,4 @@ Context engineering is about building background knowledge, preferences, and wor
 - [Hooks reference](hooks/hooks-reference.md) — programmatic context injection at defined lifecycle points.
 - [Workflows](../workflows/README.md) — the packaged, shareable form of a configured session.
 - [Usage tips](../getting-started/usage-tips.md) — practical habits, including why to keep sessions short.
-- [Managing sessions](../sessions/README.md) — how session context and history are maintained.
+- [Managing sessions](../getting-started/managing-sessions.md) — how session context and history are maintained.

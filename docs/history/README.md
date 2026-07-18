@@ -8,7 +8,7 @@ Come here when you are tracing a decision, reconstructing what landed in a relea
 
 > **How to check a document's standing.** Every file here opens with a context header carrying a `Status:` line that states whether the work shipped, was superseded, or was removed, and — where it was superseded — links the document that now holds the truth. Trust that line over the filename.
 
-There are no Markdown files directly in this folder. All content sits in the 23 topic subfolders below.
+There are no Markdown files directly in this folder. All content sits in the 24 topic subfolders below. One of them, [`agent-loop-campaign/`](agent-loop-campaign/README.md), carries a sub-area of its own — [`cross-platform/`](agent-loop-campaign/cross-platform/README.md), the campaign's Windows and Linux arm — indexed by that campaign's README as well as here.
 
 ## Agent Drafter and the Apps SDK
 
@@ -24,6 +24,7 @@ There are no Markdown files directly in this folder. All content sits in the 23 
 |---|---|
 | [agent-loop-review](agent-loop-review/README.md) | The executive report of the agentic-loop review — a walkthrough of the loop, answers to 14 review questions, a comparison against nine open-source coding agents, and 28 sub-reports. A point-in-time snapshot read against commit `24cdc3a2` on 2026-07-12, now superseded by the campaign it triggered. |
 | [agent-loop-campaign](agent-loop-campaign/README.md) | The plan of record for the `BR-1`…`BR-70` fix campaign that implemented the review's findings: wave conventions, regression gates, and a dated log of every merge decision. Finished and merged to `main` across 86 `BR-`prefixed commits. |
+| [agent-loop-campaign/cross-platform](agent-loop-campaign/cross-platform/README.md) | That campaign's Wave 3 cross-platform arm, kept as a sub-area: the parity audit that coined the `GAP-N` findings, the BR-68 command-safety and BR-70 CI-gate designs, the superseded BR-64 macOS Seatbelt design, and the cluster's verification report. The cluster merged Gate 3 GREEN; three lower-ranked `GAP` findings appear to remain open. |
 | [performance-2026-06](performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 and its [implementation log](performance-2026-06/implementation-log.md), plus a second, independent effort comparing BioRouter against the third-party jcode harness ([analysis](performance-2026-06/jcode-comparison-analysis.md), [report](performance-2026-06/jcode-borrows-implementation-report.md)). Nine fixes merged 2026-06-23 and the jcode waves 2026-06-24; the review's Tier 2 and Tier 3 items were never scheduled. |
 | [subsystem-reviews-2026](subsystem-reviews-2026/desktop-reliability-defects.md) | Five unrelated July-2026 hardening and audit records: desktop reliability defects, the [background jobs design](subsystem-reviews-2026/developer-background-jobs-design.md), the [system-prompt inventory](subsystem-reviews-2026/system-prompt-inventory-and-gaps.md), [terminal UI stability](subsystem-reviews-2026/terminal-ui-stability.md), and [tool discovery hardening](subsystem-reviews-2026/tool-discovery-hardening.md). All resolved and integrated, except one open system-prompt item. |
 
@@ -37,6 +38,7 @@ There are no Markdown files directly in this folder. All content sits in the 23 
 | [desktop-ui-fixes](desktop-ui-fixes/v1-72-1-bug-fix-batch.md) | The implementation plan for the four fixes batched into v1.72.1 — runtime enforcement of disabled skills, plus a drop-zone-only redesign of three import modals. All four shipped in May 2026. |
 | [notification-redesign](notification-redesign/notification-surface-design.md) | The design for `NotificationSurface`, a shared primitive owning the layout of both transient toasts and inline alerts. The primitive shipped; the follow-up it deferred — migrating roughly 40 ad-hoc inline banners — should be assumed still open. |
 | [gui-qa-2026-06](gui-qa-2026-06/debug-session-issue-tracker.md) | Two records from one QA session run on 2026-06-24/25 against build 1.86.1: an item-by-item [issue tracker](gui-qa-2026-06/debug-session-issue-tracker.md) and a [regression pass](gui-qa-2026-06/week-commit-regression-pass.md) over the 133 commits of the preceding eight days. Neither is a checklist to re-run. |
+| [ui-overhaul-2026-07](ui-overhaul-2026-07/README.md) | The two view-level redesigns from the July 2026 desktop overhaul — the [Home page](ui-overhaul-2026-07/home-screen-redesign.md) and the [Knowledge view](ui-overhaul-2026-07/knowledge-view-redesign.md) — each with an HTML companion carrying its mockups. Both signed off (2026-07-08 and 2026-07-10) and shipped; the overhaul's app-wide specification and its still-open status record stayed in [`docs/design/ui-overhaul/`](../design/ui-overhaul/README.md). |
 
 ## Extensions, providers and packaging
 
@@ -72,15 +74,16 @@ The six implementation plans that built the feature out were executed in order a
 |---|---|
 | [branch-merge-2026-07](branch-merge-2026-07/merge-execution-plan.md) | The execution record of the July 2026 branch and pull-request merge campaign: decisions `D1`–`D10`, conflicts resolved, and a commit-level inventory of everything that landed. Completed 2026-07-13 with all nine examined pull requests merged. |
 | [docs-migration](docs-migration/consolidation-design.md) | The [design](docs-migration/consolidation-design.md) and [plan](docs-migration/docusaurus-to-markdown-plan.md) for merging the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site into one plain-markdown tree, purging upstream Goose/Block branding and renaming `recipe` to `workflow`. Executed in May 2026; `docs/` was reorganized again in July 2026, so the target paths are a record of intent rather than links to follow. |
-| [legacy-architecture](legacy-architecture/extension-trait-design.md) | The original design sketch for an extension framework built around a hand-written `Extension` trait, a `ToolRegistry` and a `#[tool]` proc macro. **Never shipped** — extensions are MCP servers on the `rmcp` SDK instead. |
+| [legacy-architecture](legacy-architecture/README.md) | Two superseded internals designs. The [extension trait design](legacy-architecture/extension-trait-design.md) was **never shipped** — extensions are MCP servers on the `rmcp` SDK instead. The [agent error model](legacy-architecture/agent-error-model.md) *was* built and its two-tier policy still governs the loop, but `AgentError` no longer exists; the folder index points at the source for the current types. |
 
-## Data files and scripts
+## Data files, scripts and rendered pages
 
-This folder holds no non-Markdown files at its top level, but four subfolders carry machine-readable evidence and one carries a script. Each is described by its own folder's index.
+This folder holds no non-Markdown files at its top level, but four subfolders carry machine-readable evidence, one carries a script, and one carries rendered HTML. Each is described by its own folder's index.
 
 - [`agent-drafter-stress-test/data/prompts.json`](agent-drafter-stress-test/data/prompts.json) — the 100 app specs that drove the stress test, each with an `id`, `domain`, `interaction`, `patterns` and a prose `requirement`.
 - `agent-drafter-testdrive-100/data/` — the machine-readable authoring ledger, the platform-integration audit output, and the static evidence for the five layout probes. The sibling `app-results/`, `layout-probes/` and `authoring-logs/` folders hold the per-app rubrics and static audits.
 - [`agent-loop-review/generate_review_html.py`](agent-loop-review/generate_review_html.py) — a Python script that stitches the review's Markdown corpus into one self-contained HTML report using pandoc. The generated `review.html` is not checked in; the Markdown corpus remains the source of truth, so you never need to run this to read the review.
+- `ui-overhaul-2026-07/home-screen-redesign.html` and `ui-overhaul-2026-07/knowledge-view-redesign.html` — the rendered mockups for the two archived view redesigns. **These must be opened in a browser to be useful**; each has a Markdown companion beside it carrying the same reasoning and values in text.
 
 ## Related documentation
 

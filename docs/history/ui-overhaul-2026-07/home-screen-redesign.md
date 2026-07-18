@@ -409,9 +409,9 @@ schema kept; from here forward every turn is stamped when it is spent (H-02).
 
 - [`home-screen-redesign.html`](home-screen-redesign.html) — the rendered mockups, live
   heatmap and formula histograms this page describes
-- [UI overhaul execution status](execution-status.md) — the branch-wide step list, gates
+- [UI overhaul execution status](../../design/ui-overhaul/execution-status.md) — the branch-wide step list, gates
   and open items for the UI cohesion pass
-- [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) — the approved visual spec for
+- [`ui-cohesion-redesign.html`](../../design/ui-overhaul/ui-cohesion-redesign.html) — the approved visual spec for
   the app-wide cohesion pass, with Current ⇄ Redesigned toggles
 - [`knowledge-view-redesign.html`](knowledge-view-redesign.html) — the sibling redesign
   spec for the Knowledge view

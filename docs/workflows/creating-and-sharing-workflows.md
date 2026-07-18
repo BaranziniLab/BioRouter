@@ -49,7 +49,7 @@ Create a workflow from the current session or from a template.
 
 ### In the CLI, from the current session
 
-Workflow files can be either JSON (`.json`) or YAML (`.yaml`) files. While in a [session](../sessions/README.md), run this command to generate a `workflow.yaml` file in your current directory:
+Workflow files can be either JSON (`.json`) or YAML (`.yaml`) files. While in a [session](../getting-started/managing-sessions.md), run this command to generate a `workflow.yaml` file in your current directory:
 
 ```sh
 /workflow
@@ -395,7 +395,7 @@ Validate your workflow file to ensure it's properly configured. Validation verif
 biorouter workflow validate workflow.yaml
 ```
 
-> **Note.** If you want to validate a workflow you just created, you need to exit the session before running the [`validate` subcommand](../cli/command-reference.md#workflow). See [Managing sessions](../sessions/README.md).
+> **Note.** If you want to validate a workflow you just created, you need to exit the session before running the [`validate` subcommand](../cli/command-reference.md#workflow). See [Managing sessions](../getting-started/managing-sessions.md).
 
 Workflow validation can be useful for:
 

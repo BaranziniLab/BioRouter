@@ -169,6 +169,6 @@ chat route at `/pair` that a conversation opens into.
 
 - [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) — how to drive the real app for the `[UI]` items above.
 - [Dashboard mode history](../history/dashboard-mode/README.md) — the removal that deleted ~25 items from this checklist.
-- [Sessions](../sessions/README.md) — the session and history model that diverge branches from.
+- [Sessions](../getting-started/managing-sessions.md) — the session and history model that diverge branches from.
 - [CLI command reference](../cli/command-reference.md) — where `/diverge` sits among the other CLI and TUI commands.
 - [CLI QA checklist](../cli/qa-checklist.md) — the sibling manual test script covering the terminal surfaces.

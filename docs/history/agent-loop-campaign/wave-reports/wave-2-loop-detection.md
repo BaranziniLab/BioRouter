@@ -216,7 +216,7 @@ Baseline: `~/.cache/br-baseline/gate1-summary.txt`, 2024 tests / 55 suites ok.
    > **Note.** Three sibling reports write up the same tooling defect independently, each from
    > its own run: [Wave 2 — hooks and permissions](wave-2-hooks-and-permissions.md),
    > [Wave 3 — polish](wave-3-polish.md) and
-   > [the cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md).
+   > [the cross-platform parity verification report](../cross-platform/parity-verification-report.md).
    > It was never fixed inside the campaign.
 
 2. **The tunnel tests are a live-network dependency.** `tunnel::lapstone_test` hits a

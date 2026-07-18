@@ -18,7 +18,7 @@ none can be renumbered:
 
 | Scheme | Meaning | Where it is defined |
 |---|---|---|
-| `BR-1` … `BR-67` | A proposal in this register. Campaign commit messages carry a `BR-NN:` prefix. | This file. `BR-68`…`BR-70` were added later by [the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md). |
+| `BR-1` … `BR-67` | A proposal in this register. Campaign commit messages carry a `BR-NN:` prefix. | This file. `BR-68`…`BR-70` were added later by [the platform parity audit](../agent-loop-campaign/cross-platform/platform-parity-audit.md). |
 | `P` / `R` / `U` | The **Lens** tag on each entry: which of the three source reviews raised it — P = performance, R = robustness, U = ux. | [proposal-lenses/](proposal-lenses/) |
 | `performance P-3`, `ux P-13`, … | A proposal id *inside* one lens file. The lens name always precedes the number, because each lens numbers from `P-1` independently. | [The lens-to-BR crosswalk](#appendix-lens-to-br-crosswalk) maps every one to its `BR-NN`. |
 
@@ -825,4 +825,4 @@ so it remains individually actionable.
 - [Agent-loop fix campaign](../agent-loop-campaign/README.md) — the plan of record that turned these 67 proposals into dependency-ordered waves.
 - [Campaign commit log](../agent-loop-campaign/commit-log.md) — one line per commit, mapping each commit to the `BR-NN` it implements; the closest thing to a per-proposal status column.
 - [Campaign outcome report](../agent-loop-campaign/outcome-report.md) — what landed, the test progression, and the honest caveat list.
-- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — defines `BR-68`…`BR-70` and the `GAP-N` cross-platform gaps added after this register was written.
+- [Platform parity audit](../agent-loop-campaign/cross-platform/platform-parity-audit.md) — defines `BR-68`…`BR-70` and the `GAP-N` cross-platform gaps added after this register was written.

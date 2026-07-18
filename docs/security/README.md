@@ -49,5 +49,5 @@ documents below cover those layers in that order.
   variables, including `BIOROUTER_DISABLE_KEYRING`.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the full
   provider inventory behind the data-privacy recommendations.
-- [Sessions](../sessions/README.md) — what session history retains on disk after a
+- [Sessions](../getting-started/managing-sessions.md) — what session history retains on disk after a
   conversation ends.

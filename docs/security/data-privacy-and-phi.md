@@ -138,7 +138,7 @@ Information Commons.
   it is in a session.
 - [Managed enterprise policy](managed-policy.md) — how an administrator enforces tool
   restrictions that a user cannot disable.
-- [Sessions](../sessions/README.md) — what session history retains on disk, which matters if a
+- [Sessions](../getting-started/managing-sessions.md) — what session history retains on disk, which matters if a
   session ever contained regulated data.
 - [Secret storage](secret-storage.md) — where the provider API keys behind these choices are
   held.

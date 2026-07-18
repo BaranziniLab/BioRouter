@@ -121,6 +121,11 @@ Rules:
 5. If it is a record of work rather than living guidance, it belongs under `history/`,
    and its status line says what completed and when.
 
+> **Where a document goes** is a separate question, governed by
+> [how this documentation is organized](../organization.md). This page covers what a document
+> looks like once you know its home.
+
 ## Related documentation
 
+- [How this documentation is organized](../organization.md) — the sorting rules that decide a document's folder and name
 - [Documentation index](../README.md) — the entry point this style serves

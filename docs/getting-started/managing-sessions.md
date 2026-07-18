@@ -1,7 +1,7 @@
 # Managing sessions
 
 > **What this is.** The landing page for session management: what a session is, where biorouter keeps one on disk, and which document covers each part of starting, resuming, exporting, and pruning them.
-> **Status:** Superseded — this page's body was a set of docs-site card components that the 2026-05-07 "migrate 36 files to plain markdown" commit stripped, leaving two empty sections and a dangling heading. The child pages it linked to (`session-management`, `smart-context-management`) were never recreated. The current truth lives in the CLI command reference and the environment variable reference, routed below.
+> **Status:** Current — a working index naming the real source for each session topic. (The original docs-site body was stripped by the 2026-05-07 plain-markdown migration and its child pages were never recreated.)
 > **Audience:** end users
 
 Sessions are your continuous interactions with biorouter. Each session maintains context and conversation history, enabling biorouter to understand your ongoing work and provide relevant assistance.

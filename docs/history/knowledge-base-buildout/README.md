@@ -19,6 +19,6 @@ These are completed records, kept for provenance and not as current guidance. Co
 ## Related documentation
 
 - [Knowledge base](../../knowledge-base/README.md) — the live working documents for the Knowledge subsystem; go there for the current shape of a layer and what work is still open on it.
-- [Knowledge view redesign](../../design/ui-overhaul/knowledge-view-redesign.md) — the later visual redesign of the surface Plans 4 and 5 built, signed off 2026-07-10; it is also the best surviving record of the intent behind those plans' unrecoverable UI mockup.
+- [Knowledge view redesign](../ui-overhaul-2026-07/knowledge-view-redesign.md) — the later visual redesign of the surface Plans 4 and 5 built, signed off 2026-07-10; it is also the best surviving record of the intent behind those plans' unrecoverable UI mockup.
 - [Nested `KnowledgeProvider`: the chat-groups nesting blocker](../../design/chat-groups/knowledge-provider-nesting-blocker.md) — an open defect in the active-KB state that Plan 6 shipped, still unfixed.
 - [Historical records](../README.md) — the archive index this folder sits in, covering the other completed campaigns and designs from May to July 2026.

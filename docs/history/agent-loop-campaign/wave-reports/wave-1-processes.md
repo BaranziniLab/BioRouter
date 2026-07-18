@@ -8,7 +8,7 @@
 > `agents/goal.rs` and `agents/subagent_result.rs` exist in the tree today. One defect this
 > gate did **not** catch — BR-37's missing Windows PID-reuse guard in the orphan reaper — was
 > found later and fixed as GAP-2 in Wave 3; see
-> [the cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md).
+> [the cross-platform parity verification report](../cross-platform/parity-verification-report.md).
 > The verification run itself is undated in the original record.
 > **Audience:** maintainers auditing what the campaign shipped and on what evidence.
 
@@ -190,9 +190,9 @@ reports record the same campaign-wide disk pressure; see
   merge status this report is evidence for.
 - [Master improvement proposals](../../agent-loop-review/improvement-proposals.md) — the
   definition of BR-37, BR-40, BR-41 and BR-42.
-- [Cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md)
+- [Cross-platform parity verification report](../cross-platform/parity-verification-report.md)
   — where GAP-2 fixed the Windows PID-reuse hole in BR-37's reaper that this gate missed.
-- [Platform parity audit](../../../agent-loop/cross-platform/platform-parity-audit.md) — the
+- [Platform parity audit](../cross-platform/platform-parity-audit.md) — the
   audit that found GAP-2 in the first place.
 - [Wave 1 — context and prompts cluster](wave-1-context-and-prompts.md) — the sibling cluster
   whose build cache this run deleted, and which deleted this one's in return.

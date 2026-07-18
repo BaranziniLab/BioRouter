@@ -306,8 +306,8 @@ Workflow and session configuration may narrow or extend these defaults.
 ## Related documentation
 
 - [`agentic-system-explorer.html`](agentic-system-explorer.html) — the rendered explorer this file accompanies; open it for the seventeen architecture diagrams.
-- [`theming/theme-system-explorer.html`](theming/theme-system-explorer.html) — the companion theme-system explorer, including the Parchment theme this page is rendered in.
-- [`design-system-gallery.html`](design-system-gallery.html) — the rendered design-system component and token gallery.
+- [`theming/theme-system-explorer.html`](../design/theming/theme-system-explorer.html) — the companion theme-system explorer, including the Parchment theme this page is rendered in.
+- [`design-system-gallery.html`](../design/design-system-gallery.html) — the rendered design-system component and token gallery.
 - [`../agent-loop/context-engineering.md`](../agent-loop/context-engineering.md) — how context is selected and budgeted, in depth.
 - [`../agent-loop/hooks/hooks-reference.md`](../agent-loop/hooks/hooks-reference.md) — the full hook event contracts summarized above.
 - [`../agent-loop/subagents.md`](../agent-loop/subagents.md) — child-session limits, lineage, and delegation.

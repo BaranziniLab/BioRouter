@@ -18,20 +18,20 @@ system — so Windows and Linux rules can be authored against a dialect-aware pa
 critically, tested on a macOS or Linux machine.
 
 **Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list,
-defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md);
+defined in [improvement proposals](../../agent-loop-review/improvement-proposals.md);
 this design is BR-68. *Lens* records which review raised a proposal — this one is tagged
 **Security / Robustness**. *GAP-N* findings cited below are defined in the
 [platform parity audit](platform-parity-audit.md).
 
 **Depends on:** BR-20 (catastrophic floor) and BR-21 (policy engine, designed in
-[the command policy engine](../designs/command-policy-engine.md)). **Coordinates with:**
+[the command policy engine](../../../agent-loop/designs/command-policy-engine.md)). **Coordinates with:**
 BR-64 (macOS Seatbelt sandbox, designed in
-[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) and BR-37
+[macOS Seatbelt sandbox](macos-seatbelt-sandbox.md)) and BR-37
 (process-group kill).
 
 **Overlaps to be aware of.** The Problem section below restates GAP-1 and GAP-3 from the
 [platform parity audit](platform-parity-audit.md) at length; the audit is the original
-finding. [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) restates
+finding. [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) restates
 this document's premise in its own Problem section — the two are companion designs, one
 covering rules and one covering containment, and neither supersedes the other.
 
@@ -802,7 +802,7 @@ containment, and the Open Questions push for this to be scheduled.
 ## Related documentation
 
 - [Platform parity audit](platform-parity-audit.md) — the original GAP-1 and GAP-3 findings this design remediates.
-- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the companion containment design; this one covers rules, that one covers the sandbox.
+- [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the companion containment design; this one covers rules, that one covers the sandbox.
 - [Cross-platform cluster verification report](parity-verification-report.md) — the gate record for commit `651acff0`, including the clippy regression the tokenizers introduced.
-- [Command policy engine (BR-21)](../designs/command-policy-engine.md) — the rule model this design extends with `platforms` and `shells`.
-- [Permission modes](../../security/permission-modes.md) — how `Auto` mode and the non-bypassable floor relate from a user's point of view.
+- [Command policy engine (BR-21)](../../../agent-loop/designs/command-policy-engine.md) — the rule model this design extends with `platforms` and `shells`.
+- [Permission modes](../../../security/permission-modes.md) — how `Auto` mode and the non-bypassable floor relate from a user's point of view.

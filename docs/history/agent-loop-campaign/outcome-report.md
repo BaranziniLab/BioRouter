@@ -15,7 +15,7 @@
 [The improvement proposals register](../agent-loop-review/improvement-proposals.md)
 defines BR-1…BR-67 with Problem / Proposal / Affected code / Impact / Effort / Risk;
 BR-68, BR-69 and BR-70 were added mid-campaign and are defined in
-[the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md),
+[the platform parity audit](cross-platform/platform-parity-audit.md),
 along with the `GAP-N` cross-platform gaps. Commit messages carry the `BR-NN:` prefix.
 
 This is the wrap-up of the campaign that implemented every proposal from the
@@ -38,9 +38,12 @@ the dated log. This file is the outcome record.
 | Design docs | 10 (`designs/BR-{17,21,43,45,54,64,65,68,69,70}-design.md`) — architectural items designed before coding; the big ones shipped as a **first mergeable slice** |
 | New crate | `biorouter-sandbox` (OS-level tool sandboxing) |
 
-The ten design docs now live in [`docs/agent-loop/designs/`](../../agent-loop/designs/)
-and, for the three cross-platform ones, in
-[`docs/agent-loop/cross-platform/`](../../agent-loop/cross-platform/).
+The design docs are split by whether they still describe live guidance. Seven remain in
+[`docs/agent-loop/designs/`](../../agent-loop/designs/), including the cross-platform
+BR-69 sandboxing design. The rest — the cross-platform records and the superseded
+Seatbelt design — were archived alongside this report in
+[`cross-platform/`](cross-platform/README.md) when the documentation tree was
+reorganized on 2026-07-18.
 
 ### Test progression, full workspace, each gate
 
@@ -93,11 +96,11 @@ the five questions as they were put to the user.
 ## Cross-platform: Windows, Linux, macOS
 
 The app ships on all three. Findings + specs in
-[the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md)
+[the platform parity audit](cross-platform/platform-parity-audit.md)
 and the three cross-platform design docs:
-[BR-68 command safety](../../agent-loop/cross-platform/command-safety.md),
-[BR-69 Linux and Windows sandboxing](../../agent-loop/cross-platform/linux-and-windows-sandboxing.md),
-[BR-70 CI gate](../../agent-loop/cross-platform/ci-gate.md).
+[BR-68 command safety](cross-platform/command-safety.md),
+[BR-69 Linux and Windows sandboxing](../../agent-loop/designs/linux-and-windows-sandboxing.md),
+[BR-70 CI gate](cross-platform/ci-gate.md).
 
 - **Source audit: zero compile BREAKs.** Every `#[cfg]` has a complementary arm;
   `libc` is `[target.'cfg(unix)'.dependencies]`; `git2`/sqlite/FTS5 are portable.
@@ -153,6 +156,6 @@ open docs/agent-loop-fixes/changes.html  # the rendered dashboard
 
 - [Campaign README](README.md) — the plan of record, wave table, conventions, and the dated log behind every gate in this report.
 - [Mid-flight review index](mid-flight-review-index.md) — the Gate-1 snapshot, with the five decisions in their original question form.
-- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — the findings behind the cross-platform section, including GAP-1/2/3.
+- [Platform parity audit](cross-platform/platform-parity-audit.md) — the findings behind the cross-platform section, including GAP-1/2/3.
 - [Improvement proposals register](../agent-loop-review/improvement-proposals.md) — defines every BR-NN cited above.
 - [Wave reports](wave-reports/) — the per-cluster verification evidence behind the gate test counts.

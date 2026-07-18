@@ -15,7 +15,7 @@ Plan 4 shipped the Knowledge route with a live ingest panel and a placeholder wh
 > That is a personal Downloads path, never committed to the repo, and no copy
 > survives. The shipped components under `ui/desktop/src/components/knowledge/` are
 > the only remaining record of what was meant. A later redesign of this surface is
-> captured in [`docs/design/ui-overhaul/knowledge-view-redesign.md`](../../design/ui-overhaul/knowledge-view-redesign.md).
+> captured in [`docs/history/ui-overhaul-2026-07/knowledge-view-redesign.md`](../ui-overhaul-2026-07/knowledge-view-redesign.md).
 
 > **Note — worktree paths and line anchors are point-in-time.** Commands below
 > `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated git worktree the

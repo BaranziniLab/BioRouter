@@ -116,7 +116,7 @@ regressions.
    > **Note.** Three sibling reports write up the same tooling defect independently, each from
    > its own run: [Wave 2 — loop detection](wave-2-loop-detection.md),
    > [Wave 3 — polish](wave-3-polish.md) and
-   > [the cross-platform parity verification report](../../../agent-loop/cross-platform/parity-verification-report.md).
+   > [the cross-platform parity verification report](../cross-platform/parity-verification-report.md).
    > It was never fixed inside the campaign.
 
 2. **The strict gate did pass on its own merits**: `cargo clippy --all-targets -- -D warnings`

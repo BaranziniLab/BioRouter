@@ -280,5 +280,5 @@ were thin the Rust source was read directly.
 - [Claude Code report](claude-code.md) — the hook event model Codex's `hooks` crate follows.
 - [Goose report](goose.md) — upstream Goose, the closest lineage relative to Codex's crate-per-concern Rust layout.
 - [Command policy engine design](../../agent-loop/designs/command-policy-engine.md) — BR-21, the BioRouter design this report fed into.
-- [macOS Seatbelt sandbox design](../../agent-loop/designs/macos-seatbelt-sandbox.md) — the BioRouter counterpart to Codex's Seatbelt profile.
+- [macOS Seatbelt sandbox design](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md) — the BioRouter counterpart to Codex's Seatbelt profile.
 - [Improvement proposals register](../../history/agent-loop-review/improvement-proposals.md) — the `BR-NN` index, including BR-2, BR-3, BR-19 and BR-21.

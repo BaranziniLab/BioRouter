@@ -209,5 +209,5 @@ These are future work, not defects:
 - [CLI command reference](command-reference.md) — the definition of every command and flag this checklist exercises.
 - [Diverge behaviour checklist](../desktop-ui/diverge-behavior-checklist.md) — the equivalent manual verification script on the desktop UI side.
 - [Llama Server model catalog QA checklist](../providers/llama-server/model-catalog-qa-checklist.md) — the per-model checklist for the bundled local-model provider.
-- [Managing sessions](../sessions/README.md) — background on the session storage the `session` items here exercise.
+- [Managing sessions](../getting-started/managing-sessions.md) — background on the session storage the `session` items here exercise.
 - [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) — what the `extension` and `skill` subcommands install and how the pieces relate.

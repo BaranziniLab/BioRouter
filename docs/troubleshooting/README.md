@@ -1,7 +1,7 @@
 # Troubleshooting
 
 > **What this is.** The index for the troubleshooting section: where to look up a specific error or symptom, how to produce a diagnostics bundle, and where to report a problem the documentation does not cover.
-> **Status:** Superseded — the original body was two docs-site card components ("Getting Help" and "Community Support") that the [Docusaurus-to-markdown migration](../history/docs-migration/docusaurus-to-markdown-plan.md) stripped, leaving an empty page with two headings and no content. This index replaces them and routes to the two guides in this folder.
+> **Status:** Current — this index replaces the two docs-site cards that the 2026-05-07 plain-markdown migration stripped.
 > **Audience:** end users
 
 This folder holds the end-user troubleshooting material: a catch-all reference of known problems and their fixes, and a guide to the built-in diagnostics bundle and the bug-report and feature-request flows. Support runs through the project's GitHub issue tracker, [github.com/BaranziniLab/biorouter/issues](https://github.com/BaranziniLab/biorouter/issues) — attaching a diagnostics bundle to an issue is the fastest way to get a useful answer.

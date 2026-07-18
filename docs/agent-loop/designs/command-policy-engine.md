@@ -142,10 +142,10 @@ Change:
 The `command.rs` tokenizer specified above uses POSIX `shlex`. The cross-platform
 audit found that POSIX tokenization mangles every absolute Windows path, so Windows
 rules silently fail to match (recorded as GAP-3 in the
-[platform parity audit](../cross-platform/platform-parity-audit.md)). BR-68 replaced the
+[platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md)). BR-68 replaced the
 single POSIX tokenizer with platform- and dialect-aware tokenizers in `target.rs`,
 `pwsh.rs` and `cmd_shell.rs`. For the tokenizer as it exists today, read
-[cross-platform command safety (BR-68)](../cross-platform/command-safety.md); the rest of
+[cross-platform command safety (BR-68)](../../history/agent-loop-campaign/cross-platform/command-safety.md); the rest of
 this document's architecture is unchanged by that work.
 
 ### Data model
@@ -311,7 +311,7 @@ rule the literal form does — the whole point of the item.
   *containment*, but it is a much larger, platform-specific effort and does not
   give a lab admin a reviewable allow/deny catalog. Complementary, not a
   replacement — tracked separately as
-  [the macOS Seatbelt sandbox design (BR-64)](macos-seatbelt-sandbox.md); the policy
+  [the macOS Seatbelt sandbox design (BR-64)](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md); the policy
   engine is the auditable layer that can later *drive* sandbox profile selection.
 - **Do the work inside the developer MCP `validate_shell_command`
   (`rmcp_developer.rs:1114`).** Rejected: that only covers the built-in shell
@@ -438,8 +438,8 @@ ownership-verification machinery landed separately as
 
 ## Related documentation
 
-- [Cross-platform command safety (BR-68)](../cross-platform/command-safety.md) — supersedes this document's POSIX tokenizer with platform- and dialect-aware ones.
+- [Cross-platform command safety (BR-68)](../../history/agent-loop-campaign/cross-platform/command-safety.md) — supersedes this document's POSIX tokenizer with platform- and dialect-aware ones.
 - [Managed policy tier (BR-65)](managed-policy-tier.md) — the trusted admin tier this engine's rules plug into.
-- [macOS Seatbelt sandbox (BR-64)](macos-seatbelt-sandbox.md) — the kernel-enforced containment layer that complements this auditable catalog.
+- [macOS Seatbelt sandbox (BR-64)](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md) — the kernel-enforced containment layer that complements this auditable catalog.
 - [Guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md) — the source review whose gaps #3 and #4 this design closes.
-- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-1 and GAP-3, where this engine's Windows coverage falls short.
+- [Platform parity audit](../../history/agent-loop-campaign/cross-platform/platform-parity-audit.md) — GAP-1 and GAP-3, where this engine's Windows coverage falls short.

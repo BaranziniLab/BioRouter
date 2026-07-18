@@ -1310,5 +1310,5 @@ These notes were written as a self-review for the agent executing the plan. They
 
 - [Image input design](image-input-design.md) — the spec this plan executes, with the problem statement, rejected alternatives, and non-goals.
 - [Choosing a model provider](../../getting-started/choosing-a-model-provider.md) — the providers whose `metadata()` impls Tasks 2–5 edit.
-- [Sessions](../../sessions/README.md) — how transcripts are persisted, which is what the pre-/post-v1.76.1 rendering split in Task 17 depends on.
+- [Sessions](../../getting-started/managing-sessions.md) — how transcripts are persisted, which is what the pre-/post-v1.76.1 rendering split in Task 17 depends on.
 - [System overview](../../architecture/system-overview.md) — the renderer → `biorouterd` → provider path that this plan threads `ImageContent` blocks through.

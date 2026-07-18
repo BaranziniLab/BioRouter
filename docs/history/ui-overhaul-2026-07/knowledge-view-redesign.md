@@ -282,9 +282,9 @@ is marked complete in the source page.
 - [Knowledge view redesign (rendered)](knowledge-view-redesign.html) — the
   source page, with the live before/after mockups and radius swatches this
   companion describes.
-- [UI overhaul — execution status](execution-status.md) — the branch-level status
+- [UI overhaul — execution status](../../design/ui-overhaul/execution-status.md) — the branch-level status
   record: the 20-step list, gates, commits, and the register of open items.
-- [UI cohesion redesign](ui-cohesion-redesign.html) — the app-wide visual spec
+- [UI cohesion redesign](../../design/ui-overhaul/ui-cohesion-redesign.html) — the app-wide visual spec
   this Knowledge pass aligns to, with a Current ⇄ Redesigned toggle.
 - [Home screen redesign](home-screen-redesign.html) — the sibling view-level
   redesign from the same overhaul.

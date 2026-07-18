@@ -291,4 +291,4 @@ The spec declared that if any of these five fail, implementation is not done reg
 - [Image input implementation plan](image-input-plan.md) — the task-by-task execution of this spec, with the exact code that landed.
 - [Choosing a model provider](../../getting-started/choosing-a-model-provider.md) — which providers and models are available, and therefore which ones can accept images.
 - [System overview](../../architecture/system-overview.md) — how the renderer, `biorouterd`, and provider layer fit together, which this design threads a new content type through.
-- [Sessions](../../sessions/README.md) — how conversation state is persisted, relevant to the pre-/post-v1.76.1 rendering split.
+- [Sessions](../../getting-started/managing-sessions.md) — how conversation state is persisted, relevant to the pre-/post-v1.76.1 rendering split.

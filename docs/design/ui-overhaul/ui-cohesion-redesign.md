@@ -4,7 +4,7 @@
 > the forensics that explain why the shipped app never matched the design sketch, and the
 > specifications for the markdown layer, the preview panel, the terminal, tabbed chat
 > groups, and every floating surface.
-> **Status:** Design specification — a static sketch on the real tokens, nothing committed
+> **Status:** Current — the design specification for the UI cohesion overhaul; execution is tracked in [execution-status.md](execution-status.md).
 > to the app at the time of writing. Execution is tracked in
 > [`execution-status.md`](execution-status.md).
 > **Audience:** developers working on the BioRouter desktop UI, and agents implementing
@@ -634,9 +634,9 @@ The cold Tailwind defaults the app paints today, kept for the forensics comparis
   version of this spec; open it in a browser for the mockups and swatches.
 - [`execution-status.md`](execution-status.md) — the status record for this branch: the
   20-step list, commits, gates, and what is still open.
-- [`home-screen-redesign.html`](home-screen-redesign.html) — the sibling redesign pass for
+- [`home-screen-redesign.html`](../../history/ui-overhaul-2026-07/home-screen-redesign.html) — the sibling redesign pass for
   the home screen.
-- [`knowledge-view-redesign.html`](knowledge-view-redesign.html) — the sibling redesign
+- [`knowledge-view-redesign.html`](../../history/ui-overhaul-2026-07/knowledge-view-redesign.html) — the sibling redesign
   pass for the Knowledge view.
 - [`design.md`](../../../design.md) — the design system itself: the Parchment palette, the
   `D-NN` decision register, and the `DR-NN` drift register this spec references.

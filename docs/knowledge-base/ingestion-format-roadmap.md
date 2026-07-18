@@ -3,7 +3,7 @@
 > **What this is.** A survey of the knowledge-base conversion pipeline as it stood on
 > 2026-06-10, a licensed comparison of open-source document converters, and a phased plan
 > to extend ingestion to PowerPoint, Excel/ODS, and a higher-fidelity PDF path.
-> **Status:** Partially implemented. Phases 1, 2, 3 and 4.1 shipped and were verified on
+> **Status:** Current — partially implemented. Phases 4.2, 4.3 and 5 remain open work; the earlier phases have shipped.
 > 2026-06-10; Phases 4.2, 4.3 and 5 are open work.
 > **Audience:** developers working on the knowledge base and its conversion layer.
 
