@@ -31,8 +31,8 @@ use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, ResourceContents, Role,
-        ServerCapabilities, ServerInfo,
+        CallToolResult, Content, ErrorCode, ErrorData, Implementation, RawResource,
+        ResourceContents, Role, ServerCapabilities, ServerInfo,
     },
     schemars::JsonSchema,
     service::RequestContext,
@@ -1078,7 +1078,13 @@ fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(S
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_files(base, &path, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             let rel = rel.to_string_lossy().replace('\\', "/");
@@ -1116,7 +1122,7 @@ pub fn rebuild_and_stamp(store: &ArtifactStore, id: &str) -> std::io::Result<bun
     // `build_app` refreshes the vendored `src/sdk.ts` before bundling, so the
     // fingerprint we stamp below always describes what actually went into
     // `dist/app.js` — never a current hash over a stale runtime.
-    let report = bundle::build_app(&store.artifact_dir(id))?;
+    let report = bundle::build_app(&store.artifact_dir(id)?)?;
     if report.ok {
         if let Ok(mut m) = store.load_manifest(id) {
             m.built_at = Some(now_secs());
@@ -1151,7 +1157,7 @@ pub fn export_scaffold(
 ) -> std::io::Result<Vec<(String, String)>> {
     let store = ArtifactStore::new(root.to_path_buf());
     let manifest = store.load_manifest(id)?;
-    let dir = store.artifact_dir(id);
+    let dir = store.artifact_dir(id)?;
     let mut all_files = Vec::new();
     collect_files(&dir, &dir, &mut all_files);
     let entry_html = all_files
@@ -1532,8 +1538,8 @@ impl AgentDrafterServer {
             artifacts", but each app embeds a genuine Biorouter backend — when the
             user sends a message, Biorouter runs the full agent loop (the app's own
             model, extensions, skills, knowledge base) and streams the answer back
-            into the app. Apps open in the user's browser (GUI) or via a printed
-            URL (CLI); they are NOT shown in a chat iframe.
+            into the app. The GUI presents a clickable preview and the CLI prints
+            a browser URL; apps are NOT shown in a chat iframe.
 
             Two kinds:
             - "agentic" (default): a UI plus a live Biorouter agent + chat. Use this
@@ -2215,7 +2221,8 @@ impl AgentDrafterServer {
             let manifest = store.load_manifest(&p.id).map_err(internal)?;
             // Run the guardrail harness and surface findings so the agent can
             // self-correct (SDK-wired, self-contained, on-theme).
-            let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+            let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
+            let lint = bundle::lint_app(&app_dir);
             // A fresh bundle is a new visible state: show the rebuilt app, don't
             // just tell the user it compiled.
             Ok(CallToolResult::success(vec![
@@ -2250,7 +2257,8 @@ impl AgentDrafterServer {
         if !store.exists(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
         }
-        let findings = bundle::lint_app(&store.artifact_dir(&p.id));
+        let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
+        let findings = bundle::lint_app(&app_dir);
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Harness check for '{}':\n{}",
             p.id,
@@ -2260,7 +2268,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "launch_app",
-        description = "Build (if needed) and launch a Biorouter app. Returns the URL to open in the browser (GUI auto-opens; CLI prints it)."
+        description = "Build (if needed) and launch a Biorouter app. Returns a browser URL. The GUI shows a clickable preview and the CLI prints the URL."
     )]
     pub async fn launch_app(
         &self,
@@ -2276,7 +2284,7 @@ impl AgentDrafterServer {
         if manifest.kind == ArtifactKind::Agentic
             && (manifest.built_at.is_none() || !store.file_exists(&p.id, "dist/app.js"))
         {
-            let dir = store.artifact_dir(&p.id);
+            let dir = store.artifact_dir(&p.id).map_err(internal)?;
             let report = tokio::task::spawn_blocking(move || bundle::build_app(&dir))
                 .await
                 .map_err(internal)?
@@ -2291,7 +2299,8 @@ impl AgentDrafterServer {
             store.save_manifest(&manifest).map_err(internal)?;
         }
 
-        let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+        let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
+        let lint = bundle::lint_app(&app_dir);
         if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
             return Err(err(
                 ErrorCode::INTERNAL_ERROR,
@@ -2304,29 +2313,46 @@ impl AgentDrafterServer {
         }
 
         let path = format!("/apps/{}/", manifest.id);
-        let base = std::env::var("BIOROUTER_APP_BASE_URL").ok();
-        let url = base
-            .as_ref()
-            .map(|b| format!("{}{}", b.trim_end_matches('/'), path))
-            .unwrap_or_else(|| path.clone());
+        let browser_url = std::env::var("BIOROUTER_APP_BASE_URL")
+            .ok()
+            .and_then(|base| url::Url::parse(base.trim()).ok())
+            .filter(|base| {
+                matches!(base.scheme(), "http" | "https")
+                    && base.host_str().is_some()
+                    && base.username().is_empty()
+                    && base.password().is_none()
+                    && base.query().is_none()
+                    && base.fragment().is_none()
+            })
+            .map(|base| format!("{}{}", base.as_str().trim_end_matches('/'), path))
+            .unwrap_or_else(|| {
+                let port = std::env::var("BIOROUTER_PORT")
+                    .ok()
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .unwrap_or(3000);
+                format!("http://127.0.0.1:{port}{path}")
+            });
 
-        // Surface a launch marker the GUI can act on, plus a human URL line.
+        // Surface a launch marker clients can turn into a user-initiated preview,
+        // plus a human URL line that also works in plain terminals.
         let mut meta = serde_json::Map::new();
         meta.insert(
             "biorouter/launch-app".to_string(),
             serde_json::json!(manifest.id),
         );
         meta.insert("biorouter/app-path".to_string(), serde_json::json!(path));
-        let mut result = CallToolResult::success(vec![
-            // Launching is the moment the user most wants to see the app, so hand
-            // the artifact panel a live preview alongside the URL.
-            self.card_content(&manifest)?,
+        let mut link = RawResource::new(&browser_url, format!("{} app", manifest.id));
+        link.title = Some(format!("Open {}", manifest.title));
+        link.mime_type = Some("text/html".to_string());
+        let mut content = vec![Content::resource_link(link).with_audience(vec![Role::User])];
+        content.push(
             Content::text(format!(
-                "App '{}' is ready. Open it in your browser: {}\n(In the desktop GUI use the Applications panel's Launch button; in the CLI open the URL above with a running biorouterd.)",
-                manifest.id, url
+                "App '{}' is ready. Open it in your browser: {}\n(The desktop GUI shows a click-only preview link; in the CLI open the URL above with a running biorouterd.)",
+                manifest.id, browser_url
             ))
             .with_audience(vec![Role::Assistant]),
-        ]);
+        );
+        let mut result = CallToolResult::success(content);
         result.meta = Some(rmcp::model::Meta(meta));
         Ok(result)
     }
@@ -2512,7 +2538,12 @@ impl AgentDrafterServer {
         params: Parameters<AppIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
-        let dir = store.artifact_dir(&params.0.id);
+        let dir = store.artifact_dir(&params.0.id).map_err(|_| {
+            err(
+                ErrorCode::INVALID_PARAMS,
+                format!("no app '{}'", params.0.id),
+            )
+        })?;
         if !dir.join("index.html").exists() {
             return Err(err(
                 ErrorCode::INVALID_PARAMS,
@@ -2663,7 +2694,8 @@ impl AgentDrafterServer {
         if !store.exists(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
         }
-        let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+        let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
+        let lint = bundle::lint_app(&app_dir);
         if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
             return Err(err(
                 ErrorCode::INTERNAL_ERROR,
@@ -3229,9 +3261,13 @@ run.addEventListener("click", async () => {
             .await
             .unwrap();
         assert!(text_of(&launch).contains("/apps/cohort-review-console/"));
+        assert!(launch
+            .content
+            .iter()
+            .any(|content| matches!(&content.raw, rmcp::model::RawContent::ResourceLink(_))));
         assert!(
-            has_ui_resource(&launch),
-            "launch_app must return a preview card"
+            !has_ui_resource(&launch),
+            "launch_app should expose one click-only browser link"
         );
 
         let manifest = s.store().load_manifest("cohort-review-console").unwrap();
@@ -3630,7 +3666,7 @@ br.run("hello", "#missing");
         let mut p = create("Vaulted", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         s.create_app_inner(p, None).await.unwrap();
-        let vault_dir = s.store().artifact_dir("vaulted").join(".vault");
+        let vault_dir = s.store().artifact_dir("vaulted").unwrap().join(".vault");
         std::fs::create_dir_all(&vault_dir).unwrap();
         std::fs::write(vault_dir.join("API_KEY.enc"), "sealed-bytes").unwrap();
 
@@ -3742,7 +3778,7 @@ br.run("hello", "#missing");
         s.create_app_inner(p, None).await.unwrap();
 
         // Give the app a vault to prove full mode still excludes it.
-        let vault = s.store().artifact_dir("cohort").join(".vault");
+        let vault = s.store().artifact_dir("cohort").unwrap().join(".vault");
         std::fs::create_dir_all(&vault).unwrap();
         std::fs::write(vault.join("K.enc"), "sealed").unwrap();
 
@@ -3984,7 +4020,7 @@ br.run("hello", "#missing");
             assert!(index.contains(badge), "{arch}: index missing '{badge}'");
             assert!(main.contains(marker), "{arch}: main.ts missing '{marker}'");
 
-            let findings = bundle::lint_app(&s.store().artifact_dir(&id));
+            let findings = bundle::lint_app(&s.store().artifact_dir(&id).unwrap());
             let errors: Vec<String> = findings
                 .iter()
                 .filter(|f| f.level == bundle::LintLevel::Error)

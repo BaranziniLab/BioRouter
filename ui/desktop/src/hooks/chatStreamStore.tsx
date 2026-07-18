@@ -15,7 +15,6 @@ import {
   updateFromSession,
   updateSessionUserWorkflowValues,
 } from '../api';
-import { client } from '../api/client.gen';
 import {
   announceSessionName,
   cacheGet,
@@ -32,13 +31,10 @@ import {
   NotificationEvent,
   UserAttachment,
 } from '../types/message';
-import { getToolResponses } from '../types/message';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
-
-const openedAppUrls = new Set<string>();
 
 /**
  * BR-62b — a client-generated idempotency key naming a single `/reply` turn. If
@@ -54,23 +50,6 @@ function newTurnId(): string {
     return c.randomUUID();
   }
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function autoOpenLaunchedApps(msg: Message): void {
-  for (const tr of getToolResponses(msg)) {
-    const result = tr.toolResult as {
-      status?: string;
-      value?: { _meta?: Record<string, unknown> };
-    };
-    if (result?.status !== 'success') continue;
-    const path = result.value?._meta?.['biorouter/app-path'];
-    if (typeof path !== 'string' || !path.startsWith('/apps/')) continue;
-    const base = ((client.getConfig().baseUrl as string) || '').replace(/\/+$/, '');
-    const url = base + path;
-    if (!base || openedAppUrls.has(url)) continue;
-    openedAppUrls.add(url);
-    window.electron?.openExternal(url).catch((e) => console.error('auto-open app failed:', e));
-  }
 }
 
 const SESSION_LIST_CACHE_TTL_MS = 5000;
@@ -512,8 +491,6 @@ class ChatStreamController {
           case 'Message': {
             const msg = event.message;
             currentMessages = pushMessage(currentMessages, msg);
-            autoOpenLaunchedApps(msg);
-
             const hasToolConfirmation = msg.content.some(
               (content) => content.type === 'toolConfirmationRequest'
             );

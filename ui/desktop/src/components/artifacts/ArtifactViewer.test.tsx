@@ -67,6 +67,29 @@ describe('artifact title helpers', () => {
 });
 
 describe('ArtifactViewer', () => {
+  it('shows external URLs as a click-only preview without loading them in an iframe', async () => {
+    installElectronMock();
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'externalUrl',
+            title: 'Published report',
+            url: 'https://example.test/report.html',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByText('External preview')).toBeInTheDocument();
+    expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /open in default browser/i }));
+    expect(window.electron.openExternal).toHaveBeenCalledWith('https://example.test/report.html');
+  });
+
   it('renders HTML artifacts in a side viewer frame with title-only header', async () => {
     installElectronMock();
 
@@ -86,11 +109,12 @@ describe('ArtifactViewer', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('artifact-viewer')).toBeInTheDocument();
-      expect(
-        screen
-          .getByTestId('artifact-viewer')
-          .querySelector('iframe[aria-label="visualization.html"]')
-      ).toHaveAttribute('sandbox');
+      const frame = screen
+        .getByTestId('artifact-viewer')
+        .querySelector('iframe[aria-label="visualization.html"]');
+      expect(frame).toHaveAttribute('sandbox');
+      expect(frame).toHaveAttribute('name', 'biorouter-artifact-preview');
+      expect(frame?.getAttribute('srcdoc')).toContain('Content-Security-Policy');
     });
     expect(screen.queryByText(/read-only artifact preview/i)).not.toBeInTheDocument();
   });

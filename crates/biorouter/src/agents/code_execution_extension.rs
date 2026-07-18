@@ -3,8 +3,11 @@ use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::Engine as _;
 use boa_engine::builtins::promise::PromiseState;
+use boa_engine::context::HostHooks;
 use boa_engine::module::{MapModuleLoader, Module, SyntheticModuleInitializer};
+use boa_engine::realm::Realm;
 use boa_engine::{js_string, Context, JsNativeError, JsString, JsValue, NativeFunction, Source};
 use indoc::indoc;
 use regex::Regex;
@@ -16,20 +19,81 @@ use rmcp::model::{
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "code_execution";
+
+const MAX_JS_SOURCE_BYTES: usize = 256 * 1024;
+const MAX_JS_RESULT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_JS_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
+const MAX_JS_TOOL_RESULT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_JS_LOOP_ITERATIONS: u64 = 1_000_000;
+const MAX_JS_ARRAY_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_JS_TOOL_CALLS: usize = 256;
 const MAX_MODULE_SEARCH_RESULTS: usize = 12;
+const MAX_COLLECTED_ARTIFACTS: usize = 16;
+const MAX_COLLECTED_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_EMBEDDED_ARTIFACT_HTML_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ENCODED_ARTIFACT_HTML_BYTES: usize = (MAX_EMBEDDED_ARTIFACT_HTML_BYTES * 4 / 3) + 4;
+const MAX_BROWSER_RESOURCE_URI_BYTES: usize = 8 * 1024;
+const MAX_URI_LIST_BYTES: usize = 64 * 1024;
+const MAX_ENCODED_URI_LIST_BYTES: usize = (MAX_URI_LIST_BYTES * 4 / 3) + 4;
+const BOA_RUNTIME_LIMIT_PANIC: &str =
+    "The RuntimeLimit native error cannot be converted to an opaque type.";
+static INSTALL_JS_PANIC_HOOK: Once = Once::new();
 
 type ToolCallRequest = (
     String,
     String,
     tokio::sync::oneshot::Sender<Result<String, String>>,
 );
+
+struct SandboxHooks;
+
+impl HostHooks for SandboxHooks {
+    fn ensure_can_compile_strings(
+        &self,
+        _realm: Realm,
+        _parameters: &[JsString],
+        _body: &JsString,
+        _direct: bool,
+        _context: &mut Context,
+    ) -> boa_engine::JsResult<()> {
+        Err(JsNativeError::typ()
+            .with_message("eval and dynamic Function compilation are disabled")
+            .into())
+    }
+
+    fn max_buffer_size(&self, _context: &mut Context) -> u64 {
+        MAX_JS_ARRAY_BUFFER_BYTES
+    }
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> Option<&str> {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+}
+
+fn install_js_panic_hook() {
+    INSTALL_JS_PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Boa represents a module runtime limit as a panic; run_js_module
+            // catches it and returns a normal tool error, so do not print a
+            // misleading process-panic banner for that one engine condition.
+            if panic_payload_message(info.payload()) != Some(BOA_RUNTIME_LIMIT_PANIC) {
+                previous(info);
+            }
+        }));
+    });
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct ToolGraphNode {
@@ -266,14 +330,14 @@ impl ToolInfo {
             .find(|line| !line.is_empty())
             .unwrap_or("");
         format!(
-            "{}[\"{}\"]({{{params}}}): {} - {desc}",
-            module_name, self.tool_name, self.return_type
+            "{module_name}[\"{}\"]({{{params}}}): {} - {desc}",
+            self.tool_name, self.return_type
         )
     }
 }
 
 fn module_search_alias(server_name: &str) -> String {
-    let safe_name = server_name
+    let sanitized = server_name
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() || character == '_' {
@@ -283,7 +347,7 @@ fn module_search_alias(server_name: &str) -> String {
             }
         })
         .collect::<String>();
-    format!("module_{safe_name}")
+    format!("module_{sanitized}")
 }
 
 fn render_module_search_results(
@@ -384,18 +448,72 @@ fn parse_result_to_js(result: &str, ctx: &mut Context) -> JsValue {
         .unwrap_or_else(|| JsValue::from(js_string!(result)))
 }
 
+fn js_string_exceeds_limit(value: &JsValue, limit: usize) -> bool {
+    value.as_string().is_some_and(|string| string.len() > limit)
+}
+
+fn serialize_json_limited<T: Serialize>(
+    value: &T,
+    limit: usize,
+    label: &str,
+    pretty: bool,
+) -> Result<String, String> {
+    struct LimitedWriter {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+
+    impl std::io::Write for LimitedWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.bytes.len().saturating_add(buffer.len()) > self.limit {
+                return Err(std::io::Error::other("serialized value exceeds limit"));
+            }
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = LimitedWriter {
+        bytes: Vec::new(),
+        limit,
+    };
+    let serialized = if pretty {
+        let mut serializer = serde_json::Serializer::pretty(&mut writer);
+        value.serialize(&mut serializer)
+    } else {
+        serde_json::to_writer(&mut writer, value)
+    };
+    serialized.map_err(|_| format!("{label} exceeds the {limit} byte limit"))?;
+    String::from_utf8(writer.bytes).map_err(|error| error.to_string())
+}
+
 fn create_tool_function(full_tool_name: String) -> NativeFunction {
     NativeFunction::from_copy_closure_with_captures(
         |_this, args, full_name: &String, ctx| {
-            let args_json = args
-                .first()
-                .cloned()
-                .unwrap_or(JsValue::undefined())
+            let args_value = args.first().cloned().unwrap_or(JsValue::undefined());
+            if js_string_exceeds_limit(&args_value, MAX_JS_TOOL_ARGUMENT_BYTES) {
+                return Err(JsNativeError::error()
+                    .with_message(format!(
+                        "Tool arguments exceed the {MAX_JS_TOOL_ARGUMENT_BYTES} byte limit"
+                    ))
+                    .into());
+            }
+            let args_json = args_value
                 .to_json(ctx)
                 .map_err(|e| JsNativeError::error().with_message(e.to_string()))?
                 .unwrap_or(Value::Object(serde_json::Map::new()));
 
-            let args_str = serde_json::to_string(&args_json).unwrap_or_else(|_| "{}".to_string());
+            let args_str = serialize_json_limited(
+                &args_json,
+                MAX_JS_TOOL_ARGUMENT_BYTES,
+                "Tool arguments",
+                false,
+            )
+            .map_err(|error| JsNativeError::error().with_message(error))?;
             let (tx, rx) = tokio::sync::oneshot::channel();
 
             CALL_TX
@@ -422,24 +540,61 @@ fn run_js_module(
     tools: &[ToolInfo],
     call_tx: mpsc::UnboundedSender<ToolCallRequest>,
 ) -> Result<String, String> {
+    if code.len() > MAX_JS_SOURCE_BYTES {
+        return Err(format!(
+            "JavaScript source exceeds the {} byte limit",
+            MAX_JS_SOURCE_BYTES
+        ));
+    }
+    install_js_panic_hook();
     CALL_TX.with(|tx| *tx.borrow_mut() = Some(call_tx));
     RESULT_CELL.with(|cell| *cell.borrow_mut() = None);
 
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_js_module_inner(code, tools)
+    }))
+    .unwrap_or_else(|payload| {
+        let message =
+            panic_payload_message(payload.as_ref()).unwrap_or("unknown JavaScript engine panic");
+        if message == BOA_RUNTIME_LIMIT_PANIC {
+            Err("JavaScript execution limit exceeded".to_string())
+        } else {
+            Err(format!("JavaScript engine failure: {message}"))
+        }
+    });
+    CALL_TX.with(|tx| *tx.borrow_mut() = None);
+    RESULT_CELL.with(|cell| *cell.borrow_mut() = None);
+    result
+}
+
+fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String> {
     let loader = Rc::new(MapModuleLoader::new());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
+        .host_hooks(Rc::new(SandboxHooks))
         .build()
         .map_err(|e| format!("Failed to create JS context: {e}"))?;
+    let limits = ctx.runtime_limits_mut();
+    limits.set_loop_iteration_limit(MAX_JS_LOOP_ITERATIONS);
+    limits.set_recursion_limit(256);
+    limits.set_stack_size_limit(4096);
 
     let record_result = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let value = args.first().cloned().unwrap_or(JsValue::undefined());
-        let fallback = || value.display().to_string();
-        let result_str = value
-            .to_json(ctx)
-            .ok()
-            .flatten()
-            .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|_| fallback()))
-            .unwrap_or_else(fallback);
+        if js_string_exceeds_limit(&value, MAX_JS_RESULT_BYTES) {
+            return Err(JsNativeError::error()
+                .with_message(format!(
+                    "JavaScript result exceeds the {MAX_JS_RESULT_BYTES} byte limit"
+                ))
+                .into());
+        }
+        let result_str = match value.to_json(ctx).ok().flatten() {
+            Some(json) => {
+                serialize_json_limited(&json, MAX_JS_RESULT_BYTES, "JavaScript result", true)
+                    .map_err(|error| JsNativeError::error().with_message(error))?
+            }
+            None => value.display().to_string(),
+        };
         RESULT_CELL.with(|cell| *cell.borrow_mut() = Some(result_str));
         Ok(value)
     });
@@ -468,7 +623,15 @@ fn run_js_module(
     match promise.state() {
         PromiseState::Fulfilled(_) => {
             let result = RESULT_CELL.with(|cell| cell.borrow().clone());
-            Ok(result.unwrap_or_else(|| "undefined".to_string()))
+            let result = result.unwrap_or_else(|| "undefined".to_string());
+            if result.len() > MAX_JS_RESULT_BYTES {
+                Err(format!(
+                    "JavaScript result exceeds the {} byte limit",
+                    MAX_JS_RESULT_BYTES
+                ))
+            } else {
+                Ok(result)
+            }
         }
         PromiseState::Rejected(err) => Err(format!("Module error: {}", err.display())),
         PromiseState::Pending => Err("Module evaluation did not complete".to_string()),
@@ -478,6 +641,277 @@ fn run_js_module(
 pub struct CodeExecutionClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
+}
+
+#[derive(Default)]
+struct CollectedArtifacts {
+    content: Vec<Content>,
+    encoded_bytes: usize,
+    app_paths: Vec<String>,
+    last_app_path: Option<String>,
+}
+
+impl CollectedArtifacts {
+    fn push_artifact(&mut self, artifact: &Content) -> bool {
+        let bytes = artifact_content_size(artifact);
+        let existing = artifact_content_uri(artifact).and_then(|uri| {
+            self.content
+                .iter()
+                .position(|content| artifact_content_uri(content) == Some(uri))
+        });
+        let old_bytes = existing
+            .map(|index| artifact_content_size(&self.content[index]))
+            .unwrap_or(0);
+        let next_bytes = self
+            .encoded_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(bytes);
+        if next_bytes > MAX_COLLECTED_ARTIFACT_BYTES
+            || (existing.is_none() && self.content.len() >= MAX_COLLECTED_ARTIFACTS)
+        {
+            return false;
+        }
+
+        self.encoded_bytes = next_bytes;
+        if let Some(index) = existing {
+            self.content[index] = artifact.clone();
+        } else {
+            self.content.push(artifact.clone());
+        }
+        true
+    }
+
+    fn push_app_path(&mut self, path: String) {
+        if self.app_paths.contains(&path) {
+            self.last_app_path = Some(path);
+        } else {
+            if self.app_paths.len() >= MAX_COLLECTED_ARTIFACTS {
+                self.app_paths.remove(0);
+            }
+            self.app_paths.push(path.clone());
+            self.last_app_path = Some(path);
+        }
+    }
+}
+
+fn is_html_mime(mime_type: Option<&str>) -> bool {
+    mime_type.is_some_and(|mime_type| {
+        let mime_type = mime_type.split(';').next().unwrap_or("").trim();
+        mime_type.eq_ignore_ascii_case("text/html")
+            || mime_type.eq_ignore_ascii_case("application/xhtml+xml")
+    })
+}
+
+fn is_uri_list_mime(mime_type: Option<&str>) -> bool {
+    mime_type.is_some_and(|mime_type| {
+        mime_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("text/uri-list")
+    })
+}
+
+fn is_browser_resource_uri(uri: &str) -> bool {
+    if uri.len() > MAX_BROWSER_RESOURCE_URI_BYTES {
+        return false;
+    }
+    url::Url::parse(uri).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+
+fn uri_list_has_browser_url(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .any(|line| !line.is_empty() && !line.starts_with('#') && is_browser_resource_uri(line))
+}
+
+fn is_renderable_artifact_resource(resource: &ResourceContents) -> bool {
+    match resource {
+        ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } => {
+            (uri.len() <= MAX_BROWSER_RESOURCE_URI_BYTES
+                && (uri.starts_with("ui://") || is_browser_resource_uri(uri)))
+                && ((is_html_mime(mime_type.as_deref())
+                    && text.len() <= MAX_EMBEDDED_ARTIFACT_HTML_BYTES)
+                    || (is_uri_list_mime(mime_type.as_deref())
+                        && text.len() <= MAX_URI_LIST_BYTES
+                        && uri_list_has_browser_url(text)))
+        }
+        ResourceContents::BlobResourceContents {
+            uri,
+            mime_type,
+            blob,
+            ..
+        } => {
+            if uri.len() > MAX_BROWSER_RESOURCE_URI_BYTES
+                || !(uri.starts_with("ui://") || is_browser_resource_uri(uri))
+            {
+                false
+            } else if is_html_mime(mime_type.as_deref())
+                && blob.len() <= MAX_ENCODED_ARTIFACT_HTML_BYTES
+            {
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob)
+                    .is_ok_and(|bytes| {
+                        bytes.len() <= MAX_EMBEDDED_ARTIFACT_HTML_BYTES
+                            && std::str::from_utf8(&bytes).is_ok()
+                    })
+            } else {
+                is_uri_list_mime(mime_type.as_deref())
+                    && blob.len() <= MAX_ENCODED_URI_LIST_BYTES
+                    && base64::engine::general_purpose::STANDARD
+                        .decode(blob)
+                        .is_ok_and(|bytes| {
+                            bytes.len() <= MAX_URI_LIST_BYTES
+                                && std::str::from_utf8(&bytes).is_ok_and(uri_list_has_browser_url)
+                        })
+            }
+        }
+    }
+}
+
+fn is_artifact_content(content: &Content) -> bool {
+    if content
+        .audience()
+        .is_some_and(|audience| !audience.contains(&Role::User))
+    {
+        return false;
+    }
+    match &content.raw {
+        RawContent::Resource(resource) => is_renderable_artifact_resource(&resource.resource),
+        RawContent::ResourceLink(link) => is_browser_resource_uri(&link.uri),
+        _ => false,
+    }
+}
+
+fn artifact_content_size(content: &Content) -> usize {
+    struct CappedSizeWriter(usize);
+
+    impl std::io::Write for CappedSizeWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buffer.len());
+            if self.0 > MAX_COLLECTED_ARTIFACT_BYTES {
+                return Err(std::io::Error::other("artifact exceeds collection limit"));
+            }
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = CappedSizeWriter(0);
+    serde_json::to_writer(&mut writer, content)
+        .map(|()| writer.0)
+        .unwrap_or(MAX_COLLECTED_ARTIFACT_BYTES + 1)
+}
+
+fn artifact_content_uri(content: &Content) -> Option<&str> {
+    match &content.raw {
+        RawContent::Resource(resource) => match &resource.resource {
+            ResourceContents::TextResourceContents { uri, .. }
+            | ResourceContents::BlobResourceContents { uri, .. } => Some(uri),
+        },
+        RawContent::ResourceLink(link) => Some(&link.uri),
+        _ => None,
+    }
+}
+
+fn app_paths_from_meta(meta: Option<&rmcp::model::Meta>) -> Vec<String> {
+    let Some(meta) = meta else {
+        return Vec::new();
+    };
+    let mut paths = meta
+        .0
+        .get("biorouter/app-paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| is_valid_app_path(path))
+        .take(MAX_COLLECTED_ARTIFACTS)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(path) = meta
+        .0
+        .get("biorouter/app-path")
+        .and_then(Value::as_str)
+        .filter(|path| is_valid_app_path(path))
+    {
+        paths.push(path.to_string());
+    }
+    paths
+}
+
+fn is_valid_app_path(path: &str) -> bool {
+    path.strip_prefix("/apps/")
+        .and_then(|id| id.strip_suffix('/'))
+        .is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn assistant_tool_result_text(
+    content: &[Content],
+    collected_any: bool,
+    has_resources: bool,
+) -> Result<String, String> {
+    let mut output = String::new();
+    let mut first = true;
+    for segment in content
+        .iter()
+        .filter(|item| {
+            item.audience()
+                .is_none_or(|audience| audience.contains(&Role::Assistant))
+        })
+        .filter_map(|item| match &item.raw {
+            RawContent::Text(text) => Some(text.text.as_str()),
+            RawContent::Resource(resource) => match &resource.resource {
+                ResourceContents::TextResourceContents { text, .. } => Some(text.as_str()),
+                ResourceContents::BlobResourceContents { .. } => None,
+            },
+            _ => None,
+        })
+    {
+        let separator_bytes = usize::from(!first);
+        if output
+            .len()
+            .saturating_add(separator_bytes)
+            .saturating_add(segment.len())
+            > MAX_JS_TOOL_RESULT_BYTES
+        {
+            return Err(format!(
+                "Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit"
+            ));
+        }
+        if !first {
+            output.push('\n');
+        }
+        output.push_str(segment);
+        first = false;
+    }
+
+    if output.is_empty() && collected_any {
+        Ok("[artifact available in the host preview]".to_string())
+    } else if output.is_empty() && has_resources {
+        Ok("[artifact omitted because it exceeded host limits]".to_string())
+    } else {
+        Ok(output)
+    }
 }
 
 impl CodeExecutionClient {
@@ -546,7 +980,8 @@ impl CodeExecutionClient {
         &self,
         session_id: &str,
         arguments: Option<JsonObject>,
-    ) -> Result<Vec<Content>, String> {
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult, String> {
         let code = arguments
             .as_ref()
             .and_then(|a| a.get("code"))
@@ -555,26 +990,46 @@ impl CodeExecutionClient {
             .to_string();
 
         let tools = self.get_tool_infos().await;
-        let collected_resources: Arc<Mutex<Vec<Content>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let tool_handler = tokio::spawn(Self::run_tool_handler(
             session_id.to_string(),
             call_rx,
             self.context.extension_manager.clone(),
-            Arc::clone(&collected_resources),
+            Arc::clone(&collected_artifacts),
+            cancellation_token.clone(),
         ));
 
-        let js_result = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx))
-            .await
-            .map_err(|e| format!("JS execution task failed: {e}"))?;
+        let js_task = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx));
+        let js_result = tokio::select! {
+            result = js_task => result.map_err(|e| format!("JS execution task failed: {e}"))?,
+            () = cancellation_token.cancelled() => {
+                tool_handler.abort();
+                return Err("JavaScript execution cancelled".to_string());
+            }
+        };
 
         tool_handler.abort();
 
         let mut contents = js_result.map(|r| vec![Content::text(format!("Result: {r}"))])?;
-        // Append any resource content collected from tool calls (e.g. autovisualiser HTML charts).
-        // The UI renders these inline when the resource URI uses the ui:// scheme.
-        contents.extend(collected_resources.lock().await.drain(..));
-        Ok(contents)
+        let mut collected = collected_artifacts.lock().await;
+        contents.append(&mut collected.content);
+        let mut result = CallToolResult::success(contents);
+        if !collected.app_paths.is_empty() {
+            let mut meta = JsonObject::new();
+            if let Some(path) = &collected.last_app_path {
+                meta.insert(
+                    "biorouter/app-path".to_string(),
+                    Value::String(path.clone()),
+                );
+            }
+            meta.insert(
+                "biorouter/app-paths".to_string(),
+                serde_json::to_value(&collected.app_paths).unwrap_or_default(),
+            );
+            result.meta = Some(rmcp::model::Meta(meta));
+        }
+        Ok(result)
     }
 
     async fn handle_read_module(
@@ -751,9 +1206,18 @@ impl CodeExecutionClient {
         session_id: String,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
-        collected_resources: Arc<Mutex<Vec<Content>>>,
+        collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
+        cancellation_token: CancellationToken,
     ) {
+        let mut tool_calls = 0;
         while let Some((tool_name, arguments, response_tx)) = call_rx.recv().await {
+            tool_calls += 1;
+            if tool_calls > MAX_JS_TOOL_CALLS {
+                let _ = response_tx.send(Err(format!(
+                    "JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit"
+                )));
+                continue;
+            }
             let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
                 Some(manager) => {
                     let tool_call = CallToolRequestParams {
@@ -763,41 +1227,40 @@ impl CodeExecutionClient {
                         meta: None,
                     };
                     match manager
-                        .dispatch_tool_call(&session_id, tool_call, CancellationToken::new())
+                        .dispatch_tool_call(&session_id, tool_call, cancellation_token.clone())
                         .await
                     {
                         Ok(dispatch_result) => match dispatch_result.result.await {
                             Ok(result) => {
                                 let is_error = result.is_error.unwrap_or(false);
-                                // Collect *binary/blob* resource content (e.g. autovisualiser
-                                // ui:// HTML blobs) so handle_execute_code can append them to its
-                                // result for inline UI rendering. These are not representable as JS
-                                // strings, so they are passed out-of-band via the shared collector.
-                                // Text resources (e.g. developer/text_editor file contents) are NOT
-                                // collected here — they are surfaced to the script as text below,
-                                // and appending them again would duplicate the payload.
-                                let resources: Vec<Content> = result
+                                // Renderable resources are passed out-of-band because a JS string
+                                // cannot preserve an MCP UI artifact. Plain text/file resources stay
+                                // in the script result and are not duplicated.
+                                let resources = result
                                     .content
                                     .iter()
-                                    .filter(|c| {
-                                        matches!(
-                                            &c.raw,
-                                            RawContent::Resource(r)
-                                                if matches!(
-                                                    r.resource,
-                                                    ResourceContents::BlobResourceContents { .. }
-                                                )
-                                        )
-                                    })
-                                    .cloned()
-                                    .collect();
-                                let has_resources = !resources.is_empty();
-                                if has_resources {
-                                    collected_resources.lock().await.extend(resources);
+                                    .filter(|content| is_artifact_content(content));
+                                let has_resources = resources.clone().next().is_some();
+                                let mut collected_any = false;
+                                {
+                                    let mut collected = collected_artifacts.lock().await;
+                                    for path in app_paths_from_meta(result.meta.as_ref()) {
+                                        collected.push_app_path(path);
+                                    }
+                                    for resource in resources {
+                                        if collected.push_artifact(resource) {
+                                            collected_any = true;
+                                        }
+                                    }
                                 }
 
-                                let output = if let Some(sc) = &result.structured_content {
-                                    serde_json::to_string(sc).unwrap_or_default()
+                                let value = if let Some(sc) = &result.structured_content {
+                                    serialize_json_limited(
+                                        sc,
+                                        MAX_JS_TOOL_RESULT_BYTES,
+                                        "Tool result",
+                                        false,
+                                    )
                                 } else {
                                     // Surface exactly what the model itself would see: content
                                     // targeted at the Assistant (or with no audience set), mirroring
@@ -807,42 +1270,23 @@ impl CodeExecutionClient {
                                     // otherwise hand the script "40\n40" for `echo 40` — and (b)
                                     // unwraps embedded text resources (developer/text_editor returns
                                     // file contents as an Assistant-audience text resource).
-                                    let text: String = result
-                                        .content
-                                        .iter()
-                                        .filter(|c| {
-                                            c.audience()
-                                                .is_none_or(|a| a.contains(&Role::Assistant))
-                                        })
-                                        .filter_map(|c| match &c.raw {
-                                            RawContent::Text(t) => Some(t.text.clone()),
-                                            RawContent::Resource(r) => match &r.resource {
-                                                ResourceContents::TextResourceContents {
-                                                    text,
-                                                    ..
-                                                } => Some(text.clone()),
-                                                ResourceContents::BlobResourceContents {
-                                                    ..
-                                                } => None,
-                                            },
-                                            _ => None,
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
                                     // When a tool (e.g. autovisualiser) returns only resource
                                     // content and no text, JS would receive an empty string and
                                     // the model would see `Result: ""` and loop retrying. Return
                                     // a terse confirmation so the model knows it succeeded.
-                                    if text.is_empty() && has_resources {
-                                        "[rendered inline]".to_string()
-                                    } else {
-                                        text
-                                    }
+                                    assistant_tool_result_text(
+                                        &result.content,
+                                        collected_any,
+                                        has_resources,
+                                    )
                                 };
                                 if is_error {
-                                    Err(format!("Tool error: {output}"))
+                                    match value {
+                                        Ok(message) => Err(format!("Tool error: {message}")),
+                                        Err(error) => Err(error),
+                                    }
                                 } else {
-                                    Ok(output)
+                                    value
                                 }
                             }
                             Err(e) => Err(format!("Tool error: {}", e.message)),
@@ -852,6 +1296,15 @@ impl CodeExecutionClient {
                 }
                 None => Err("Extension manager not available".to_string()),
             };
+            let result = result.and_then(|value| {
+                if value.len() > MAX_JS_TOOL_RESULT_BYTES {
+                    Err(format!(
+                        "Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit"
+                    ))
+                } else {
+                    Ok(value)
+                }
+            });
             let _ = response_tx.send(result);
         }
     }
@@ -1000,10 +1453,17 @@ impl McpClientTrait for CodeExecutionClient {
         name: &str,
         arguments: Option<JsonObject>,
         meta: McpMeta,
-        _cancellation_token: CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        if name == "execute_code" {
+            return Ok(self
+                .handle_execute_code(&meta.session_id, arguments, cancellation_token)
+                .await
+                .unwrap_or_else(|error| {
+                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                }));
+        }
         let content = match name {
-            "execute_code" => self.handle_execute_code(&meta.session_id, arguments).await,
             "read_module" => self.handle_read_module(arguments).await,
             "search_modules" => self.handle_search_modules(arguments).await,
             _ => Err(format!("Unknown tool: {name}")),
@@ -1129,6 +1589,244 @@ mod tests {
         } else {
             panic!("Expected text content");
         }
+    }
+
+    #[test]
+    fn javascript_runtime_enforces_source_result_and_execution_limits() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let oversized_source = "x".repeat(MAX_JS_SOURCE_BYTES + 1);
+        assert!(run_js_module(&oversized_source, &[], tx.clone())
+            .unwrap_err()
+            .contains("source exceeds"));
+
+        let oversized_result = format!("record_result('x'.repeat({}))", MAX_JS_RESULT_BYTES + 1);
+        assert!(run_js_module(&oversized_result, &[], tx.clone())
+            .unwrap_err()
+            .contains("result exceeds"));
+
+        assert!(run_js_module("while (true) {}", &[], tx.clone())
+            .unwrap_err()
+            .contains("execution limit exceeded"));
+        assert!(run_js_module("eval('record_result(1)')", &[], tx)
+            .unwrap_err()
+            .contains("dynamic Function compilation are disabled"));
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(
+            run_js_module("record_result(new ArrayBuffer(33 * 1024 * 1024))", &[], tx,)
+                .unwrap_err()
+                .contains("Module error")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_javascript_returns_an_error_result() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp_dir.path().to_path_buf(),
+        ));
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager,
+        })
+        .unwrap();
+        let mut args = JsonObject::new();
+        args.insert(
+            "code".to_string(),
+            Value::String("while (true) {}".to_string()),
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = client
+            .call_tool(
+                "execute_code",
+                Some(args),
+                McpMeta::new("cancelled-session"),
+                cancellation,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[test]
+    fn only_browser_renderable_user_resources_are_relayed() {
+        let html = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://chart/report".to_string(),
+            mime_type: Some("text/html; charset=utf-8".to_string()),
+            text: "<!doctype html>".to_string(),
+            meta: None,
+        });
+        let plain = Content::resource(ResourceContents::BlobResourceContents {
+            uri: "ui://chart/plain".to_string(),
+            mime_type: Some("text/plain".to_string()),
+            blob: "PHNjcmlwdD4=".to_string(),
+            meta: None,
+        });
+        let assistant_only = html.clone().with_audience(vec![Role::Assistant]);
+        let invalid_blob = Content::resource(ResourceContents::BlobResourceContents {
+            uri: "ui://chart/invalid".to_string(),
+            mime_type: Some("text/html".to_string()),
+            blob: "not base64".to_string(),
+            meta: None,
+        });
+        let oversized_html = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://chart/oversized".to_string(),
+            mime_type: Some("text/html".to_string()),
+            text: "x".repeat(MAX_EMBEDDED_ARTIFACT_HTML_BYTES + 1),
+            meta: None,
+        });
+        let oversized_ui_uri = Content::resource(ResourceContents::TextResourceContents {
+            uri: format!("ui://chart/{}", "x".repeat(MAX_BROWSER_RESOURCE_URI_BYTES)),
+            mime_type: Some("text/html".to_string()),
+            text: "<!doctype html>".to_string(),
+            meta: None,
+        });
+        let uri_list = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://report/published".to_string(),
+            mime_type: Some("text/uri-list".to_string()),
+            text: "# report\nhttps://example.test/report.html\n".to_string(),
+            meta: None,
+        });
+        let unsafe_uri_list = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://report/unsafe".to_string(),
+            mime_type: Some("text/uri-list".to_string()),
+            text: "javascript:alert(1)".to_string(),
+            meta: None,
+        });
+        let safe_link = Content::resource_link(rmcp::model::RawResource::new(
+            "https://example.test/report.html",
+            "report",
+        ));
+        let unsafe_link = Content::resource_link(rmcp::model::RawResource::new(
+            "javascript:alert(1)",
+            "unsafe",
+        ));
+        let local_file_link = Content::resource_link(rmcp::model::RawResource::new(
+            "file:///etc/passwd",
+            "local file",
+        ));
+        let credential_link = Content::resource_link(rmcp::model::RawResource::new(
+            "https://user:secret@example.test/report",
+            "credentials",
+        ));
+        let oversized_link = Content::resource_link(rmcp::model::RawResource::new(
+            format!(
+                "https://example.test/{}",
+                "x".repeat(MAX_BROWSER_RESOURCE_URI_BYTES)
+            ),
+            "oversized",
+        ));
+
+        assert!(is_artifact_content(&html));
+        assert!(!is_artifact_content(&plain));
+        assert!(!is_artifact_content(&assistant_only));
+        assert!(!is_artifact_content(&invalid_blob));
+        assert!(!is_artifact_content(&oversized_html));
+        assert!(!is_artifact_content(&oversized_ui_uri));
+        assert!(is_artifact_content(&uri_list));
+        assert!(!is_artifact_content(&unsafe_uri_list));
+        assert!(is_artifact_content(&safe_link));
+        assert!(!is_artifact_content(&unsafe_link));
+        assert!(!is_artifact_content(&local_file_link));
+        assert!(!is_artifact_content(&credential_link));
+        assert!(!is_artifact_content(&oversized_link));
+    }
+
+    #[test]
+    fn later_artifacts_replace_earlier_versions_of_the_same_uri() {
+        let first = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://dashboard/report".to_string(),
+            mime_type: Some("text/html".to_string()),
+            text: "first".to_string(),
+            meta: None,
+        });
+        let final_version = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://dashboard/report".to_string(),
+            mime_type: Some("text/html".to_string()),
+            text: "final".to_string(),
+            meta: None,
+        });
+        let mut collected = CollectedArtifacts::default();
+
+        assert!(collected.push_artifact(&first));
+        assert!(collected.push_artifact(&final_version));
+        assert_eq!(collected.content.len(), 1);
+        assert_eq!(
+            collected.encoded_bytes,
+            artifact_content_size(&final_version)
+        );
+        assert!(matches!(
+            &collected.content[0].raw,
+            RawContent::Resource(resource)
+                if matches!(
+                    &resource.resource,
+                    ResourceContents::TextResourceContents { text, .. } if text == "final"
+                )
+        ));
+    }
+
+    #[test]
+    fn artifact_limit_counts_resource_link_metadata() {
+        let mut link = rmcp::model::RawResource::new("https://example.test/report", "report");
+        link.description = Some("x".repeat(MAX_COLLECTED_ARTIFACT_BYTES));
+        let artifact = Content::resource_link(link);
+        let mut collected = CollectedArtifacts::default();
+
+        assert!(!collected.push_artifact(&artifact));
+        assert!(collected.content.is_empty());
+        assert_eq!(collected.encoded_bytes, 0);
+    }
+
+    #[test]
+    fn json_and_text_tool_results_fail_before_exceeding_limits() {
+        assert!(
+            serialize_json_limited(&serde_json::json!({ "value": "long" }), 8, "value", false)
+                .unwrap_err()
+                .contains("value exceeds")
+        );
+
+        let content = vec![Content::text("x".repeat(MAX_JS_TOOL_RESULT_BYTES + 1))];
+        assert!(assistant_tool_result_text(&content, false, false)
+            .unwrap_err()
+            .contains("Tool result exceeds"));
+    }
+
+    #[test]
+    fn app_launch_metadata_is_filtered_before_relay() {
+        let meta = rmcp::model::Meta(
+            serde_json::from_value(serde_json::json!({
+                "biorouter/app-path": "/apps/direct/",
+                "biorouter/app-paths": [
+                    "/apps/nested/",
+                    "/apps/../escape/",
+                    "https://example.test/"
+                ]
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(
+            app_paths_from_meta(Some(&meta)),
+            vec!["/apps/nested/".to_string(), "/apps/direct/".to_string()]
+        );
+    }
+
+    #[test]
+    fn last_launched_app_path_keeps_call_order() {
+        let mut collected = CollectedArtifacts::default();
+        collected.push_app_path("/apps/zebra/".to_string());
+        collected.push_app_path("/apps/alpha/".to_string());
+        collected.push_app_path("/apps/zebra/".to_string());
+
+        assert_eq!(
+            collected.app_paths,
+            vec!["/apps/zebra/".to_string(), "/apps/alpha/".to_string()]
+        );
+        assert_eq!(collected.last_app_path.as_deref(), Some("/apps/zebra/"));
     }
 
     #[tokio::test]

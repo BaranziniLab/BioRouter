@@ -52,7 +52,9 @@ use biorouter_mcp::agent_drafter::control::{
     ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
 };
 use biorouter_mcp::agent_drafter::manifest::{PiiMode, SignalDecl, UiCapability};
-use biorouter_mcp::agent_drafter::store::{AgentConfig, ArtifactStore, Manifest};
+use biorouter_mcp::agent_drafter::store::{
+    validate_artifact_id, AgentConfig, ArtifactStore, Manifest,
+};
 use biorouter_mcp::agent_drafter::{
     bundle_is_stale, default_root, export_scaffold, rebuild_and_stamp,
 };
@@ -136,8 +138,11 @@ async fn list_apps() -> Json<Vec<Manifest>> {
 }
 
 /// GET /apps/{id} — redirect to the trailing-slash form so relative URLs resolve.
-async fn redirect_to_slash(Path(id): Path<String>) -> Redirect {
-    Redirect::temporary(&format!("/apps/{id}/"))
+async fn redirect_to_slash(Path(id): Path<String>) -> Response {
+    if validate_artifact_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
+    }
+    Redirect::temporary(&format!("/apps/{id}/")).into_response()
 }
 
 /// GET /apps/{id}/ — the assembled, served index.html.
@@ -920,7 +925,13 @@ async fn inject_workspace_capabilities(
     manifest: &Manifest,
     cfg: &AgentConfig,
 ) {
-    let workspace = store().artifact_dir(&manifest.id).join("workspace");
+    let Ok(workspace) = store()
+        .artifact_dir(&manifest.id)
+        .map(|dir| dir.join("workspace"))
+    else {
+        warn!(app = %manifest.id, "invalid app workspace path");
+        return;
+    };
 
     // Data sources are resolved inside the app workspace jail and are read-only.
     if let Some(data) = cfg.capabilities.data.as_ref() {
@@ -1015,7 +1026,13 @@ async fn install_main_vault(
         return;
     }
 
-    let workspace = store().artifact_dir(&manifest.id).join("workspace");
+    let Ok(workspace) = store()
+        .artifact_dir(&manifest.id)
+        .map(|dir| dir.join("workspace"))
+    else {
+        warn!(app = %manifest.id, "invalid app vault path");
+        return;
+    };
     let _ = std::fs::create_dir_all(&workspace);
     let Some(key) = load_or_create_vault_key(&manifest.id) else {
         return;
@@ -1054,7 +1071,13 @@ async fn configure_main_delegation(
         return;
     }
 
-    let dir = store().artifact_dir(&manifest.id).join("subagents");
+    let Ok(dir) = store()
+        .artifact_dir(&manifest.id)
+        .map(|dir| dir.join("subagents"))
+    else {
+        warn!(app = %manifest.id, "invalid app subagent path");
+        return;
+    };
     let _ = std::fs::create_dir_all(&dir);
     let mut subs = Vec::new();
     for (name, sa) in &cfg.orchestration.sub_agents {
@@ -4487,7 +4510,10 @@ async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) ->
         )
             .into_response();
     }
-    let workspace = store().artifact_dir(&id).join("workspace");
+    let workspace = match store().artifact_dir(&id) {
+        Ok(dir) => dir.join("workspace"),
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid app id").into_response(),
+    };
     let _ = std::fs::create_dir_all(&workspace);
     let key = match load_or_create_vault_key(&id) {
         Some(k) => k,
@@ -4565,6 +4591,26 @@ mod tests {
         apply_pii_policy, decide_output, ClientFrame, OutputDecision, PiiMode, PiiOutcome,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn app_redirect_rejects_invalid_ids_before_building_a_location() {
+        use axum::extract::Path;
+        use axum::http::{header, StatusCode};
+
+        let rejected = super::redirect_to_slash(Path("bad\r\nid".to_string())).await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert!(rejected.headers().get(header::LOCATION).is_none());
+
+        let accepted = super::redirect_to_slash(Path("safe-app_2".to_string())).await;
+        assert_eq!(accepted.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            accepted
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/apps/safe-app_2/")
+        );
+    }
 
     #[test]
     fn pii_policy_off_passes_through_even_with_phi() {

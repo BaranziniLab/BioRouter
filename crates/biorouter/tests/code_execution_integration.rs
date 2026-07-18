@@ -665,6 +665,85 @@ async fn case22_autovisualiser_blob_resource_is_collected_and_rendered_inline() 
 }
 
 #[tokio::test]
+async fn case23_agent_drafter_preview_and_launch_metadata_survive_execute_code() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let session_manager = Arc::new(biorouter::session::SessionManager::new(
+        temp_dir.path().join("sessions"),
+    ));
+    let m = Arc::new(ExtensionManager::new(
+        Arc::new(Mutex::new(None)),
+        session_manager,
+    ));
+    m.add_inprocess_server(
+        "agent_drafter",
+        biorouter_mcp::AgentDrafterServer::with_root(temp_dir.path().join("apps")),
+    )
+    .await
+    .expect("add agent drafter");
+    m.add_extension(ExtensionConfig::Platform {
+        name: "code_execution".to_string(),
+        description: "Execute JavaScript code in a sandboxed environment".to_string(),
+        bundled: Some(true),
+        available_tools: vec![],
+    })
+    .await
+    .expect("add code_execution");
+
+    let call = CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "code_execution__execute_code".into(),
+        arguments: Some(object!({ "code": r#"
+            import { create_app, launch_app } from "agent_drafter";
+            create_app({ title: "Nested Preview", id: "nested-preview", kind: "static" });
+            const launched = launch_app({ id: "nested-preview" });
+            record_result(launched);
+        "# })),
+    };
+    let result = m
+        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .await
+        .expect("dispatch")
+        .result
+        .await
+        .expect("tool result");
+
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "should succeed, got: {:?}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .iter()
+            .any(|content| matches!(&content.raw, RawContent::Resource(_))),
+        "Agent Drafter preview resources should be appended"
+    );
+    assert!(
+        result
+            .content
+            .iter()
+            .any(|content| matches!(&content.raw, RawContent::ResourceLink(_))),
+        "Agent Drafter launch link should be appended"
+    );
+    let meta = result.meta.expect("launch metadata");
+    assert_eq!(
+        meta.0
+            .get("biorouter/app-path")
+            .and_then(|value| value.as_str()),
+        Some("/apps/nested-preview/")
+    );
+    assert_eq!(
+        meta.0
+            .get("biorouter/app-paths")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
 async fn case21_chained_data_real_dataflow() {
     let m = manager().await;
     let (_dir, dir_s) = workdir_tempdir();

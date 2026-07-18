@@ -983,9 +983,22 @@ mod tests {
     }
 
     #[cfg(not(windows))]
+    fn find_command(program: &str, work_dir: &Path) -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|directory| {
+                if directory.is_absolute() {
+                    directory.join(program)
+                } else {
+                    work_dir.join(directory).join(program)
+                }
+            })
+            .find(|candidate| candidate.is_file() && command_has_version(candidate, work_dir))
+    }
+
+    #[cfg(not(windows))]
     fn find_usable_bash(work_dir: &Path) -> Option<PathBuf> {
-        let bash = PathBuf::from("bash");
-        command_has_version(&bash, work_dir).then_some(bash)
+        find_command("bash", work_dir)
     }
 
     #[cfg(windows)]
@@ -1519,8 +1532,11 @@ mod tests {
 
         use std::process::Command;
 
-        let node = PathBuf::from("node");
-        if command_has_version(&node, dir.path()) {
+        #[cfg(not(windows))]
+        let node = find_command("node", dir.path());
+        #[cfg(windows)]
+        let node = Some(PathBuf::from("node")).filter(|node| command_has_version(node, dir.path()));
+        if let Some(node) = node {
             // `node --check` infers ESM from the `.mjs` extension, so top-level
             // await parses. (`--input-type` is stdin/eval-only, not for a file.)
             let out = Command::new(&node)

@@ -71,6 +71,7 @@ import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTu
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
+  artifactSourceFromResourceLink,
   artifactSourceFromResource,
   basenameFromPath,
   fileArtifactPathsFromToolCall,
@@ -78,7 +79,13 @@ import {
   pathFromArtifactHref,
   resolveArtifactPath,
 } from './artifacts/artifactUtils';
-import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
+import type {
+  CallToolResponse,
+  Content,
+  EmbeddedResource,
+  RawResource,
+  ResourceContents,
+} from '../api';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -152,6 +159,14 @@ export function shouldAutoRepairArtifact(
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
   return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
+}
+
+function isResourceLink(content: Content): content is RawResource {
+  return (
+    !('resource' in content) &&
+    'uri' in content &&
+    typeof (content as Record<string, unknown>).uri === 'string'
+  );
 }
 
 function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
@@ -279,14 +294,16 @@ export function collectArtifactsFromMessages(
       }
 
       for (const resultContent of getToolResultContent(content.toolResult)) {
-        if (!isEmbeddedResource(resultContent)) continue;
-        const artifact = artifactSourceFromResource(
-          { ...resultContent, type: 'resource' as const },
-          'Artifact'
-        );
+        const artifact = isEmbeddedResource(resultContent)
+          ? artifactSourceFromResource({ ...resultContent, type: 'resource' as const }, 'Artifact')
+          : isResourceLink(resultContent)
+            ? artifactSourceFromResourceLink(resultContent)
+            : null;
         if (!artifact) continue;
 
-        const uri = (resultContent.resource as { uri?: string } | undefined)?.uri;
+        const uri = isEmbeddedResource(resultContent)
+          ? (resultContent.resource as { uri?: string } | undefined)?.uri
+          : undefined;
         if (uri?.startsWith(DASHBOARD_URI_PREFIX)) {
           const slotKey = `${turnIndex}:${uri}`;
           const slot = dashboardSlotByKey.get(slotKey);

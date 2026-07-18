@@ -49,6 +49,34 @@ fn record_failed_attempt(client_ip: &str) {
         .push(Instant::now());
 }
 
+fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
+    if method != axum::http::Method::GET {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix("/apps/") else {
+        return false;
+    };
+    let mut segments = rest.split('/');
+    let Some(id) = segments.next() else {
+        return false;
+    };
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return false;
+    }
+    // Keep this route list explicit so a future management GET does not become
+    // unauthenticated merely because it lives below `/apps/{id}`.
+    let tail = segments.collect::<Vec<_>>();
+    matches!(
+        tail.as_slice(),
+        [] | [""] | ["agent"] | ["models"] | ["runstate"]
+    ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..])
+}
+
 pub async fn check_token(
     State(state): State<String>,
     request: Request,
@@ -61,13 +89,13 @@ pub async fn check_token(
     // Biorouter apps are opened directly in the browser (and connect a WebSocket),
     // so they can't send the secret-key header. Allow browser-facing GET reads
     // of a *specific* app (serving the bundle + the per-app agent socket);
-    // management verbs (POST/DELETE) still require the secret.
+    // management operations and source/content export still require the secret.
     //
     // `GET /apps` -- the list -- is deliberately NOT exempt: it enumerates app
     // ids, and an id is all `/apps/{id}/agent` needs. That socket runs agent
     // turns and carries its own tool-approval frames, so it additionally
     // validates `Origin` (see `apps::agent_ws`).
-    if request.method() == axum::http::Method::GET && path.starts_with("/apps/") {
+    if is_public_app_get(request.method(), path) {
         return Ok(next.run(request).await);
     }
 
@@ -100,7 +128,8 @@ pub async fn check_token(
 
 #[cfg(test)]
 mod tests {
-    use super::secret_matches;
+    use super::{is_public_app_get, secret_matches};
+    use axum::http::Method;
 
     #[test]
     fn secret_compare_is_exact() {
@@ -108,5 +137,20 @@ mod tests {
         assert!(!secret_matches("abc", "abd"));
         assert!(!secret_matches("ab", "abc"));
         assert!(!secret_matches("", "abc"));
+    }
+
+    #[test]
+    fn app_exports_still_require_the_server_secret() {
+        assert!(is_public_app_get(&Method::GET, "/apps/example/"));
+        assert!(is_public_app_get(&Method::GET, "/apps/example/dist/app.js"));
+        assert!(is_public_app_get(&Method::GET, "/apps/example/agent"));
+        assert!(!is_public_app_get(&Method::GET, "/apps/example/export"));
+        assert!(!is_public_app_get(&Method::GET, "/apps/example/export/"));
+        assert!(!is_public_app_get(
+            &Method::GET,
+            "/apps/example/future-admin"
+        ));
+        assert!(!is_public_app_get(&Method::GET, "/apps/bad%2Fid/"));
+        assert!(!is_public_app_get(&Method::POST, "/apps/example/build"));
     }
 }

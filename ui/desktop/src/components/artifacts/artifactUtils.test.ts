@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  artifactSourceFromResource,
+  artifactSourceFromResourceLink,
   baseToolName,
   basenameFromPath,
+  decodeResourceHtml,
   extensionFromPath,
   fileArtifactPathsFromToolCall,
   languageFromPath,
@@ -39,6 +42,180 @@ describe('basenameFromPath', () => {
   it('extensionFromPath survives a literal percent sign in the name', () => {
     expect(() => extensionFromPath('/work/results 100%.csv')).not.toThrow();
     expect(extensionFromPath('/work/results 100%.csv')).toBe('csv');
+  });
+});
+
+describe('MCP artifact resources', () => {
+  it('accepts explicit HTML MIME types with parameters', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://report/safe',
+            mimeType: 'text/html; charset=utf-8',
+            text: '<!doctype html><title>Safe</title>',
+          },
+        },
+        'Artifact'
+      )
+    ).toMatchObject({
+      kind: 'html',
+      html: '<!doctype html><title>Safe</title>',
+    });
+  });
+
+  it('does not execute non-HTML blob or text resources as HTML', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://report/plain',
+            mimeType: 'text/plain',
+            blob: btoa('<script>window.bad = true</script>'),
+          },
+        },
+        'Artifact'
+      )
+    ).toMatchObject({ kind: 'mcpResource' });
+  });
+
+  it('rejects malformed encoded HTML', () => {
+    expect(decodeResourceHtml({ blob: 'not-base64' })).toBeNull();
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://report/broken',
+            mimeType: 'text/html',
+            blob: 'not-base64',
+          },
+        },
+        'Artifact'
+      )
+    ).toBeNull();
+  });
+
+  it('rejects oversized resource URIs before deriving a preview title', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: `ui://report/${'x'.repeat(8 * 1024)}`,
+            mimeType: 'text/html',
+            text: '<!doctype html>',
+          },
+        },
+        'Artifact'
+      )
+    ).toBeNull();
+  });
+
+  it('turns web resource links into click-only previews and blocks unsafe schemes', () => {
+    expect(
+      artifactSourceFromResourceLink({
+        uri: 'https://example.test/report.html',
+        name: 'report',
+        title: 'Study report',
+      })
+    ).toEqual({
+      kind: 'externalUrl',
+      title: 'Study report',
+      url: 'https://example.test/report.html',
+    });
+    expect(
+      artifactSourceFromResourceLink({ uri: 'javascript:alert(1)', name: 'unsafe' })
+    ).toBeNull();
+    expect(
+      artifactSourceFromResourceLink({
+        uri: 'https://user:secret@example.test/report',
+        name: 'credentials',
+      })
+    ).toBeNull();
+    expect(
+      artifactSourceFromResourceLink({
+        uri: `https://example.test/${'x'.repeat(8 * 1024)}`,
+        name: 'oversized',
+      })
+    ).toBeNull();
+
+    expect(
+      artifactSourceFromResourceLink({
+        uri: 'https://example.test/safe',
+        name: 'report',
+        title: `Safe\u001b]8;;https://evil.test\u0007spoof\u202e${'x'.repeat(300)}`,
+      })?.title
+    ).toBe(`Safe]8;;https://evil.testspoof${'x'.repeat(226)}`);
+  });
+
+  it('keeps externally hosted HTML resources click-only', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'https://example.test/generated-report.html',
+            mimeType: 'text/html',
+            text: '<script>window.location = "https://unexpected.test"</script>',
+          },
+        },
+        'Generated report'
+      )
+    ).toMatchObject({
+      kind: 'externalUrl',
+      url: 'https://example.test/generated-report.html',
+    });
+  });
+
+  it('sanitizes a control-only fallback title', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: '',
+            mimeType: 'text/plain',
+            text: 'not an HTML preview',
+          },
+        },
+        '\u001b\u202e'
+      )?.title
+    ).toBe('Artifact');
+  });
+
+  it('turns URI-list resources into normalized click-only previews', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://report/published',
+            mimeType: 'text/uri-list; charset=utf-8',
+            text: '# published report\nhttps://example.test/report with spaces.html\n',
+          },
+        },
+        'Published report'
+      )
+    ).toMatchObject({
+      kind: 'externalUrl',
+      url: 'https://example.test/report%20with%20spaces.html',
+    });
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://report/unsafe',
+            mimeType: 'text/uri-list',
+            text: 'file:///etc/passwd',
+          },
+        },
+        'Unsafe report'
+      )
+    ).toBeNull();
   });
 });
 

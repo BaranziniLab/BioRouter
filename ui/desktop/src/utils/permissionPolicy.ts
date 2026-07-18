@@ -23,10 +23,43 @@ export function isAppOrigin(candidate: string, appUrl: URL): boolean {
 }
 
 export function shouldOpenExternalNavigation(candidate: string, appUrl: URL): boolean {
+  if (candidate.length > 8 * 1024) return false;
   if (isAppOrigin(candidate, appUrl)) return false;
   try {
-    const { protocol } = new URL(candidate);
-    return protocol === 'http:' || protocol === 'https:';
+    const url = new URL(candidate);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.username === '' &&
+      url.password === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isAllowedArtifactFrameNavigation(
+  candidate: string,
+  proxyBaseUrl?: string
+): boolean {
+  try {
+    const url = new URL(candidate);
+    if (candidate === 'about:srcdoc' || candidate === 'about:blank') return true;
+    if (!proxyBaseUrl || url.username || url.password) return false;
+    const proxy = new URL(`${proxyBaseUrl.replace(/\/+$/, '')}/mcp-ui-proxy`);
+    if (
+      url.origin !== proxy.origin ||
+      url.pathname !== proxy.pathname ||
+      url.hash ||
+      url.searchParams.get('contentType') !== 'rawhtml'
+    ) {
+      return false;
+    }
+    for (const [key, value] of url.searchParams) {
+      if (key === 'contentType' && value === 'rawhtml') continue;
+      if (key === 'waitForRenderData' && value === 'true') continue;
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }

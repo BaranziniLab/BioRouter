@@ -113,6 +113,44 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
+  it('does not auto-open Agent Drafter launch metadata', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Message',
+          message: {
+            id: 'launch-result',
+            role: 'tool',
+            created: 2,
+            content: [
+              {
+                type: 'toolResponse',
+                id: 'launch-tool',
+                toolResult: {
+                  status: 'success',
+                  value: {
+                    is_error: false,
+                    content: [{ type: 'text', text: 'App ready' }],
+                    _meta: { 'biorouter/app-path': '/apps/click-me/' },
+                  },
+                },
+              },
+            ],
+            metadata: { userVisible: false, agentVisible: true },
+          },
+          token_state: tokenState,
+        } as MessageEvent;
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    await registry.getController('s1').handleSubmit('build an app');
+
+    expect(window.electron.openExternal).not.toHaveBeenCalled();
+  });
+
   it('synchronizes a generated title and refreshes history after a tool-first turn', async () => {
     const registry = new ChatStreamRegistry();
     const initialSession = { ...session('20260716_27'), name: 'New Session' };

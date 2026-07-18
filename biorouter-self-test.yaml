@@ -10,6 +10,7 @@ activities:
   - Validate shell command execution and error handling
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Validate Auto Visualiser and JavaScript-executed artifact handoff
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Generate and execute test workflows
@@ -23,7 +24,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, apps, subagents, workflows, reset, advanced"
+    description: "Which test phases to run: all, basic, extensions, apps, previews, subagents, workflows, reset, advanced"
   
   - key: test_depth
     input_type: string
@@ -89,6 +90,13 @@ instructions: |
   - Build and lint the app
   - Execute its controls through the browser smoke harness
   - Delete only the self-test app during cleanup
+
+  ### Phase 2C: Artifact Preview Handoff
+  Validate artifact-producing tools through the JavaScript execution extension:
+  - Render one Auto Visualiser chart through `execute_code`
+  - Create and launch one fixed-id static Agent Drafter app through `execute_code`
+  - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
+  - Delete only the fixed-id self-test preview app during cleanup
   
   ### Phase 3: Subagent Testing (Meta-Recursion)
   Create subagents to test yourself recursively:
@@ -139,10 +147,25 @@ extensions:
     timeout: 600
     bundled: true
     description: Typed authoring, build, lint, and browser smoke tools for BioRouter apps
+
+  - type: builtin
+    name: autovisualiser
+    display_name: Auto Visualiser
+    timeout: 600
+    bundled: true
+    description: Browser-renderable charts and dashboards for artifact preview validation
+
+  - type: platform
+    name: code_execution
+    bundled: true
+    description: Sandboxed JavaScript orchestration for nested extension and artifact validation
   
 prompt: |
   Execute the BioRouter Self-Testing Integration Suite in {{ workspace_dir }}.
   Test phases: {{ test_phases }}, Depth: {{ test_depth }}, Parallel: {{ parallel_tests }}
+
+  Never stage, commit, or push test artifacts or source changes. Leave every generated report
+  untracked in the test workspace for the caller to inspect and remove.
   
   ## 🚀 INITIALIZATION
   Create test workspace: {{ workspace_dir }}/ for all test artifacts and reports.
@@ -208,6 +231,18 @@ prompt: |
   6. Call `smoke_app`; require the real-browser harness to execute successfully. A missing browser or skipped execution is a failure, not a pass.
   7. Record setup, manifest assertions, build output, lint output, and smoke output in {{ workspace_dir }}/phase2b_apps.md.
   8. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-sdk-v2` after recording the result.
+  {% endif %}
+
+  {% if test_phases == "all" or "previews" in test_phases %}
+  ## 🖼️ PHASE 2C: Artifact Preview Handoff
+
+  Use only the exact app id `biorouter-self-test-preview`; never modify or delete any other app.
+
+  1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
+  2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `biorouter-self-test-preview`, launch it, and record the launch result.
+  3. Require the nested Agent Drafter call to return its preview resource and launch metadata containing exactly `/apps/biorouter-self-test-preview/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
+  4. Record setup, JavaScript, result metadata, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md.
+  5. If `cleanup_after` is `true`, call `delete_app` for exactly `biorouter-self-test-preview` after recording the result.
   {% endif %}
   
   {% if test_phases == "all" or "subagents" in test_phases %}

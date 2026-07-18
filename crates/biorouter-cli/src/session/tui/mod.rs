@@ -1843,6 +1843,61 @@ mod tests {
     }
 
     #[test]
+    fn renders_browser_links_for_resources_and_launched_apps() {
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Meta, RawResource};
+
+        let mut report = RawResource::new("https://example.test/report.html", "report");
+        report.title = Some("Study report".to_string());
+        let mut result = CallToolResult::success(vec![
+            Content::resource_link(report),
+            Content::text("assistant-only duplicate URL")
+                .with_audience(vec![rmcp::model::Role::Assistant]),
+        ]);
+        result.meta = Some(Meta(
+            serde_json::from_value(serde_json::json!({
+                "biorouter/app-path": "/apps/cohort-viewer/"
+            }))
+            .unwrap(),
+        ));
+        let message = biorouter::conversation::message::Message::assistant()
+            .with_tool_response("tool-1", Ok(result));
+
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(&message, false);
+        let next_tool = biorouter::conversation::message::Message::assistant().with_tool_request(
+            "tool-2",
+            Ok(CallToolRequestParams {
+                name: "developer__shell".into(),
+                arguments: None,
+                meta: None,
+                task: None,
+            }),
+        );
+        app.push_message(&next_tool, false);
+        let rendered = app
+            .scrollback
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("Artifact: Study report"), "{rendered}");
+        assert!(
+            rendered.contains("https://example.test/report.html"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Artifact: App: cohort-viewer"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("/apps/cohort-viewer/"), "{rendered}");
+        assert!(
+            !rendered.contains("assistant-only duplicate URL"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn renders_permission_modal() {
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {

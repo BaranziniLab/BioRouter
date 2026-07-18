@@ -1,4 +1,4 @@
-import type { EmbeddedResource, ResourceContents } from '../../api';
+import type { EmbeddedResource, RawResource, ResourceContents } from '../../api';
 import type { ArtifactSource } from './artifactTypes';
 
 const TEXT_EXTENSIONS = new Set([
@@ -40,6 +40,7 @@ const TEXT_EXTENSIONS = new Set([
 const IMAGE_EXTENSIONS = new Set(['gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
 const HTML_EXTENSIONS = new Set(['htm', 'html']);
 const DOCUMENT_EXTENSIONS = new Set(['docx', 'ipynb', 'pdf', 'pptx', 'xlsx']);
+const MAX_BROWSER_URL_BYTES = 8 * 1024;
 const GENERIC_UI_TITLE_PARTS = new Set([
   'chart',
   'diagram',
@@ -171,7 +172,7 @@ export function withHostTheme(html: string, theme: 'light' | 'dark'): string {
 }
 
 export function titleFromResourceUri(uri?: string): string | null {
-  if (!uri || !uri.startsWith('ui://')) return null;
+  if (!uri || uri.length > MAX_BROWSER_URL_BYTES || !uri.startsWith('ui://')) return null;
   let parts: string[];
   try {
     const parsed = new URL(uri);
@@ -306,17 +307,82 @@ export function pathFromArtifactHref(href: string): string {
   return href;
 }
 
-export function decodeResourceHtml(resource: { blob?: string; text?: string }): string {
-  if (resource.blob) {
+const MAX_EMBEDDED_HTML_BYTES = 16 * 1024 * 1024;
+const MAX_ENCODED_HTML_BYTES = Math.ceil((MAX_EMBEDDED_HTML_BYTES * 4) / 3) + 4;
+const MAX_URI_LIST_BYTES = 64 * 1024;
+const MAX_ARTIFACT_TITLE_CHARS = 256;
+
+function sanitizeArtifactTitle(title: string, fallback = 'Artifact'): string {
+  const sanitized = title
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .trim()
+    .slice(0, MAX_ARTIFACT_TITLE_CHARS);
+  if (sanitized) return sanitized;
+  return (
+    fallback
+      .replace(/[\p{Cc}\p{Cf}]/gu, '')
+      .trim()
+      .slice(0, MAX_ARTIFACT_TITLE_CHARS) || 'Artifact'
+  );
+}
+
+function isHtmlMime(mimeType?: string): boolean {
+  const essence = mimeType?.split(';', 1)[0]?.trim().toLowerCase();
+  return essence === 'text/html' || essence === 'application/xhtml+xml';
+}
+
+function isUriListMime(mimeType?: string): boolean {
+  return mimeType?.split(';', 1)[0]?.trim().toLowerCase() === 'text/uri-list';
+}
+
+function externalBrowserUrl(uri?: string): string | null {
+  if (!uri || uri.length > MAX_BROWSER_URL_BYTES) return null;
+  try {
+    const url = new URL(uri);
+    const safeProtocol = url.protocol === 'http:' || url.protocol === 'https:';
+    return safeProtocol && !url.username && !url.password ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeResourceText(
+  resource: { blob?: string; text?: string },
+  maxBytes: number,
+  maxEncodedBytes = Math.ceil((maxBytes * 4) / 3) + 4
+): string | null {
+  if (typeof resource.blob === 'string') {
+    if (resource.blob.length > maxEncodedBytes) return null;
     try {
       const bin = atob(resource.blob);
+      if (bin.length > maxBytes) return null;
       const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-      return new TextDecoder().decode(bytes);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
-      return '';
+      return null;
     }
   }
-  return resource.text || '';
+  if (typeof resource.text === 'string') {
+    if (resource.text.length > maxBytes) return null;
+    return new TextEncoder().encode(resource.text).byteLength <= maxBytes ? resource.text : null;
+  }
+  return null;
+}
+
+export function decodeResourceHtml(resource: { blob?: string; text?: string }): string | null {
+  return decodeResourceText(resource, MAX_EMBEDDED_HTML_BYTES, MAX_ENCODED_HTML_BYTES);
+}
+
+function browserUrlFromUriList(resource: { blob?: string; text?: string }): string | null {
+  const list = decodeResourceText(resource, MAX_URI_LIST_BYTES);
+  if (list === null) return null;
+  for (const line of list.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate || candidate.startsWith('#')) continue;
+    const url = externalBrowserUrl(candidate);
+    if (url) return url;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,9 +513,12 @@ export function artifactSourceFromResource(
     text?: string;
     _meta?: Record<string, unknown>;
   };
-  const title =
+  if (resource.uri && resource.uri.length > MAX_BROWSER_URL_BYTES) return null;
+  const title = sanitizeArtifactTitle(
     titleFromResourceUri(resource.uri) ??
-    (resource.uri ? basenameFromPath(resource.uri) : fallbackTitle);
+      (resource.uri ? basenameFromPath(resource.uri) : fallbackTitle),
+    fallbackTitle
+  );
   const prefSize = resource._meta?.['mcpui.dev/ui-preferred-frame-size'] as
     | [string, string]
     | undefined;
@@ -461,19 +530,39 @@ export function artifactSourceFromResource(
   const preferredWidth = pxOf(prefSize?.[0]);
   const preferredHeight = pxOf(prefSize?.[1]);
 
-  if (resource.mimeType?.includes('html') || resource.blob || resource.text) {
+  const resourceUrl = externalBrowserUrl(resource.uri);
+  if (resourceUrl) {
+    return { kind: 'externalUrl', title, url: resourceUrl };
+  }
+
+  if (isHtmlMime(resource.mimeType)) {
+    const html = decodeResourceHtml(resource);
+    if (html === null) return null;
     return {
       kind: 'html',
       title,
-      html: decodeResourceHtml(resource),
+      html,
       preferredWidth,
       preferredHeight,
     };
   }
 
-  if (resource.uri?.startsWith('http://') || resource.uri?.startsWith('https://')) {
-    return { kind: 'externalUrl', title, url: resource.uri };
+  if (isUriListMime(resource.mimeType)) {
+    const url = browserUrlFromUriList(resource);
+    return url ? { kind: 'externalUrl', title, url } : null;
   }
 
   return { kind: 'mcpResource', title, resource, preferredWidth, preferredHeight };
+}
+
+export function artifactSourceFromResourceLink(resource: RawResource): ArtifactSource | null {
+  const url = externalBrowserUrl(resource.uri);
+  if (!url) return null;
+  return {
+    kind: 'externalUrl',
+    title: sanitizeArtifactTitle(
+      resource.title?.trim() || resource.name?.trim() || basenameFromPath(resource.uri)
+    ),
+    url,
+  };
 }

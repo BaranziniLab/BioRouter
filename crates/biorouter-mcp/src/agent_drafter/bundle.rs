@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
-use crate::agent_drafter::store::Manifest;
+use crate::agent_drafter::store::{ArtifactKind, Manifest};
 
 // ---------------------------------------------------------------------------
 // Build-time guardrail harness
@@ -69,6 +69,9 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     let manifest: Option<Manifest> = std::fs::read_to_string(project_dir.join("manifest.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    let is_agentic = manifest
+        .as_ref()
+        .is_none_or(|manifest| manifest.kind == ArtifactKind::Agentic);
     let system_prompt = manifest
         .as_ref()
         .and_then(|m| m.agent.as_ref())
@@ -143,7 +146,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     }
 
     // (1) Backend wiring through the App SDK / agent protocol.
-    if !main.contains("./sdk") {
+    if is_agentic && !main.contains("./sdk") {
         error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the Biorouter backend.");
     }
     for line in main.lines() {
@@ -162,7 +165,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         || main.contains(".prompt(")
         || main.contains(".ask(")
         || main.contains("autoChat");
-    if !calls_agent {
+    if is_agentic && !calls_agent {
         out.push(LintFinding {
             level: LintLevel::Warn,
             msg: "src/main.ts never calls the agent (br.run / br.prompt / br.ask) and doesn't enable autoChat. Wire a control to br.run(prompt, \"#out\").".into(),
@@ -1561,6 +1564,20 @@ br.run("go", "#missing");
         assert!(formatted.contains("external <script"), "{formatted}");
         assert!(formatted.contains("non-local import"), "{formatted}");
         assert!(formatted.contains("#missing"), "{formatted}");
+    }
+
+    #[test]
+    fn lint_static_app_does_not_require_agent_sdk() {
+        let formatted = lint_with(
+            r#"<html><body><main class="br-container">Static</main></body></html>"#,
+            "",
+            Some(
+                r#"{"id":"static-app","title":"Static","description":"","kind":"static","entry":"index.html","created_at":0,"updated_at":0}"#,
+            ),
+        );
+
+        assert!(!formatted.contains("src/main.ts must"), "{formatted}");
+        assert!(!formatted.contains("ERROR"), "{formatted}");
     }
 
     /// H6: a hardcoded text color won't adapt to the theme and can go invisible.

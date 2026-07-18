@@ -7,7 +7,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use super::manifest::{
@@ -258,13 +258,17 @@ fn now_secs() -> u64 {
 
 /// Turn a title into a filesystem-safe, URL-safe slug.
 pub fn slugify(title: &str) -> String {
+    const MAX_GENERATED_ID_BYTES: usize = 110;
     let mut out = String::new();
     let mut prev_dash = false;
     for ch in title.trim().chars() {
         if ch.is_ascii_alphanumeric() {
+            if out.len() >= MAX_GENERATED_ID_BYTES {
+                break;
+            }
             out.extend(ch.to_lowercase());
             prev_dash = false;
-        } else if !prev_dash && !out.is_empty() {
+        } else if !prev_dash && !out.is_empty() && out.len() < MAX_GENERATED_ID_BYTES {
             out.push('-');
             prev_dash = true;
         }
@@ -305,6 +309,126 @@ fn safe_relative(path: &str) -> io::Result<PathBuf> {
     Ok(clean)
 }
 
+/// App ids are both directory names and URL path segments. Keep the accepted
+/// alphabet deliberately small so an id can never escape the store or become a
+/// surprising route. Existing generated ids use the stricter lowercase + dash
+/// subset; uppercase and underscores remain accepted for older installations.
+pub fn validate_artifact_id(id: &str) -> io::Result<()> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "app id must be 1-128 ASCII letters, digits, '-' or '_'",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse to traverse a symlink below the store root. Lexical `..` checks are
+/// not enough when an app directory or one of its children is a symlink.
+fn reject_store_symlinks(root: &Path, path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the app store root may not be a symlink",
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the app store root must be a directory",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path escapes the app store"))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "app store paths may not contain symlinks",
+                ));
+            }
+            Ok(metadata) if current == path && has_multiple_hard_links(&metadata) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "app store files may not have multiple hard links",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn has_multiple_hard_links(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    metadata.is_file() && metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn has_multiple_hard_links(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(content)?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+fn reject_tree_symlinks(dir: &Path) -> io::Result<()> {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let entries = match std::fs::read_dir(current) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "app store paths may not contain symlinks",
+                ));
+            }
+            if has_multiple_hard_links(&entry.metadata()?) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "app store files may not have multiple hard links",
+                ));
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Filesystem-backed artifact store rooted at a single directory.
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
@@ -320,31 +444,45 @@ impl ArtifactStore {
         &self.root
     }
 
-    fn dir(&self, id: &str) -> PathBuf {
-        self.root.join(id)
+    fn dir(&self, id: &str) -> io::Result<PathBuf> {
+        validate_artifact_id(id)?;
+        let dir = self.root.join(id);
+        reject_store_symlinks(&self.root, &dir)?;
+        Ok(dir)
     }
 
-    fn manifest_path(&self, id: &str) -> PathBuf {
-        self.dir(id).join("manifest.json")
+    fn manifest_path(&self, id: &str) -> io::Result<PathBuf> {
+        let path = self.dir(id)?.join("manifest.json");
+        reject_store_symlinks(&self.root, &path)?;
+        Ok(path)
     }
 
     pub fn exists(&self, id: &str) -> bool {
-        self.manifest_path(id).exists()
+        self.manifest_path(id).is_ok_and(|path| path.is_file())
     }
 
-    /// Allocate a unique id derived from the title.
-    fn unique_id(&self, title: &str) -> String {
+    /// Atomically allocate a unique directory derived from the title.
+    fn create_unique_dir(&self, title: &str) -> io::Result<(String, PathBuf)> {
+        std::fs::create_dir_all(&self.root)?;
+        reject_store_symlinks(&self.root, &self.root)?;
         let base = slugify(title);
-        if !self.exists(&base) && !self.dir(&base).exists() {
-            return base;
-        }
-        for n in 2..10_000 {
-            let candidate = format!("{base}-{n}");
-            if !self.exists(&candidate) && !self.dir(&candidate).exists() {
-                return candidate;
+        for n in 1..10_000 {
+            let id = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            let dir = self.dir(&id)?;
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok((id, dir)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
             }
         }
-        format!("{base}-{}", now_secs())
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique app id",
+        ))
     }
 
     /// Create a new artifact directory with a manifest and the given files.
@@ -356,9 +494,8 @@ impl ArtifactStore {
         entry: &str,
         files: &[(String, String)],
     ) -> io::Result<Manifest> {
-        let id = self.unique_id(title);
-        let dir = self.dir(&id);
-        std::fs::create_dir_all(&dir)?;
+        let (id, dir) = self.create_unique_dir(title)?;
+        reject_store_symlinks(&self.root, &dir)?;
         let now = now_secs();
         let manifest = Manifest {
             id: id.clone(),
@@ -401,11 +538,12 @@ impl ArtifactStore {
         files: &[(String, String)],
     ) -> io::Result<Manifest> {
         let id = slugify(id);
-        if self.dir(&id).exists() {
+        if self.dir(&id)?.exists() {
             self.delete(&id)?;
         }
-        let dir = self.dir(&id);
+        let dir = self.dir(&id)?;
         std::fs::create_dir_all(&dir)?;
+        reject_store_symlinks(&self.root, &dir)?;
         let now = now_secs();
         let manifest = Manifest {
             id: id.clone(),
@@ -436,16 +574,27 @@ impl ArtifactStore {
     }
 
     pub fn save_manifest(&self, manifest: &Manifest) -> io::Result<()> {
-        let dir = self.dir(&manifest.id);
+        let dir = self.dir(&manifest.id)?;
         std::fs::create_dir_all(&dir)?;
+        reject_store_symlinks(&self.root, &dir)?;
         let json = serde_json::to_string_pretty(manifest)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        std::fs::write(self.manifest_path(&manifest.id), json)
+        let manifest_path = self.manifest_path(&manifest.id)?;
+        write_atomically(&manifest_path, json.as_bytes())
     }
 
     pub fn load_manifest(&self, id: &str) -> io::Result<Manifest> {
-        let raw = std::fs::read_to_string(self.manifest_path(id))?;
-        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let raw = std::fs::read_to_string(self.manifest_path(id)?)?;
+        let manifest: Manifest = serde_json::from_str(&raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        validate_artifact_id(&manifest.id)?;
+        if manifest.id != id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "manifest id does not match its app directory",
+            ));
+        }
+        Ok(manifest)
     }
 
     pub fn touch(&self, id: &str) -> io::Result<()> {
@@ -472,45 +621,52 @@ impl ArtifactStore {
 
     pub fn write_file(&self, id: &str, path: &str, content: &str) -> io::Result<()> {
         let rel = safe_relative(path)?;
-        let full = self.dir(id).join(&rel);
+        let full = self.dir(id)?.join(&rel);
+        reject_store_symlinks(&self.root, &full)?;
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(full, content)
+        reject_store_symlinks(&self.root, &full)?;
+        write_atomically(&full, content.as_bytes())
     }
 
     pub fn read_file(&self, id: &str, path: &str) -> io::Result<String> {
         let rel = safe_relative(path)?;
-        std::fs::read_to_string(self.dir(id).join(rel))
+        let full = self.dir(id)?.join(rel);
+        reject_store_symlinks(&self.root, &full)?;
+        std::fs::read_to_string(full)
     }
 
     /// Read a file's raw bytes (for serving binary assets like images/fonts).
     pub fn read_bytes(&self, id: &str, path: &str) -> io::Result<Vec<u8>> {
         let rel = safe_relative(path)?;
-        std::fs::read(self.dir(id).join(rel))
+        let full = self.dir(id)?.join(rel);
+        reject_store_symlinks(&self.root, &full)?;
+        std::fs::read(full)
     }
 
     /// Absolute path to an artifact's directory (used by the bundler/server).
-    pub fn artifact_dir(&self, id: &str) -> PathBuf {
-        self.dir(id)
+    pub fn artifact_dir(&self, id: &str) -> io::Result<PathBuf> {
+        let dir = self.dir(id)?;
+        reject_tree_symlinks(&dir)?;
+        Ok(dir)
     }
 
     /// Absolute path to a file within an artifact, path-traversal checked.
     pub fn file_path(&self, id: &str, path: &str) -> io::Result<PathBuf> {
         let rel = safe_relative(path)?;
-        Ok(self.dir(id).join(rel))
+        let full = self.dir(id)?.join(rel);
+        reject_store_symlinks(&self.root, &full)?;
+        Ok(full)
     }
 
     /// Whether a file exists within an artifact (path-traversal checked).
     pub fn file_exists(&self, id: &str, path: &str) -> bool {
-        match safe_relative(path) {
-            Ok(rel) => self.dir(id).join(rel).is_file(),
-            Err(_) => false,
-        }
+        self.file_path(id, path).is_ok_and(|file| file.is_file())
     }
 
     pub fn delete(&self, id: &str) -> io::Result<()> {
-        let dir = self.dir(id);
+        let dir = self.dir(id)?;
         if dir.exists() {
             std::fs::remove_dir_all(dir)?;
         }
@@ -535,6 +691,7 @@ mod tests {
         assert_eq!(slugify("  Trim   Me  "), "trim-me");
         assert_eq!(slugify("***"), "artifact");
         assert_eq!(slugify("Café Méta 2"), "caf-m-ta-2");
+        assert_eq!(slugify(&"a".repeat(256)).len(), 110);
     }
 
     #[test]
@@ -555,6 +712,116 @@ mod tests {
         let loaded = s.load_manifest("my-app").unwrap();
         assert_eq!(loaded.title, "My App");
         assert_eq!(loaded.description, "does things");
+    }
+
+    #[test]
+    fn artifact_ids_cannot_escape_the_store() {
+        let (root, s) = store();
+        let outside = root.path().with_extension("outside-app");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("manifest.json"), "do not touch").unwrap();
+
+        for id in ["", ".", "..", "../outside-app", "a/b", "a\\b"] {
+            assert!(!s.exists(id));
+            assert!(s.load_manifest(id).is_err());
+            assert!(s.write_file(id, "index.html", "owned").is_err());
+            assert!(s.artifact_dir(id).is_err());
+            assert!(s.delete(id).is_err());
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(outside.join("manifest.json")).unwrap(),
+            "do not touch"
+        );
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn manifest_id_must_match_its_directory() {
+        let (_root, s) = store();
+        s.create("Safe", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        let path = s.root().join("safe").join("manifest.json");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        value["id"] = serde_json::json!("different");
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let error = s.load_manifest("safe").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_inside_an_app_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (root, s) = store();
+        s.create("Safe", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        let outside = root.path().join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        symlink(&outside, s.root().join("safe").join("linked.txt")).unwrap();
+
+        assert!(s.read_file("safe", "linked.txt").is_err());
+        assert!(s.write_file("safe", "linked.txt", "overwrite").is_err());
+        assert!(s.artifact_dir("safe").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_app_directories_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (root, s) = store();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("manifest.json"), "outside").unwrap();
+        symlink(outside.path(), root.path().join("linked-app")).unwrap();
+
+        assert!(!s.exists("linked-app"));
+        assert!(s.load_manifest("linked-app").is_err());
+        assert!(s
+            .write_file("linked-app", "index.html", "overwrite")
+            .is_err());
+        assert!(s.delete("linked-app").is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("manifest.json")).unwrap(),
+            "outside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_store_roots_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = base.path().join("store");
+        symlink(outside.path(), &root).unwrap();
+        let store = ArtifactStore::new(root);
+
+        assert!(store
+            .create("Unsafe", "", ArtifactKind::Static, "index.html", &[])
+            .is_err());
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_files_are_rejected() {
+        let (_root, s) = store();
+        s.create("Safe", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        let outside = s.root().join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::hard_link(&outside, s.root().join("safe").join("linked.txt")).unwrap();
+
+        assert!(s.read_file("safe", "linked.txt").is_err());
+        assert!(s.write_file("safe", "linked.txt", "overwrite").is_err());
+        assert!(s.artifact_dir("safe").is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "secret");
     }
 
     #[test]
@@ -801,6 +1068,36 @@ mod tests {
         assert_ne!(a.id, b.id);
         assert_eq!(a.id, "same");
         assert_eq!(b.id, "same-2");
+    }
+
+    #[test]
+    fn concurrent_creates_allocate_distinct_ids() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+
+        let (_root, store) = store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .create("Same", "", ArtifactKind::Static, "index.html", &[])
+                        .unwrap()
+                        .id
+                })
+            })
+            .collect::<Vec<_>>();
+        let ids = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(ids.len(), 8);
+        assert!(ids.contains("same"));
     }
 
     #[test]

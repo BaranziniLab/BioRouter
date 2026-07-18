@@ -405,29 +405,20 @@ impl App {
                 MessageContent::ToolResponse(resp) => {
                     if let Ok(result) = &resp.tool_result {
                         let start = self.scrollback.len();
+                        let mut has_artifact = false;
                         for c in &result.content {
-                            // A `ui://` figure/report/app artifact. The TUI can't
-                            // render the inline HTML the desktop shows, so surface
-                            // a titled signal plus a saved copy to open.
+                            // The TUI surfaces artifact HTML and launch targets as
+                            // browser URLs instead of attempting an inline panel.
                             if let Some(note) =
                                 crate::session::output::artifact_note_from_content(c)
                             {
-                                self.push_line(Line::from(vec![
-                                    Span::styled(
-                                        "◆ ",
-                                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        format!("Artifact: {}", note.title),
-                                        Style::new().add_modifier(Modifier::BOLD),
-                                    ),
-                                ]));
-                                if let Some(path) = &note.saved_path {
-                                    self.push_line(Line::from(Span::styled(
-                                        format!("    open in a browser: {}", path.display()),
-                                        DIM,
-                                    )));
-                                }
+                                has_artifact = true;
+                                self.push_artifact_note(&note);
+                                continue;
+                            }
+                            if c.audience().is_some_and(|audience| {
+                                !audience.contains(&rmcp::model::Role::User)
+                            }) {
                                 continue;
                             }
                             if let Some(text) = c.as_text() {
@@ -441,10 +432,16 @@ impl App {
                                 }
                             }
                         }
+                        let launch_notes = crate::session::output::app_launch_notes(result);
+                        has_artifact |= !launch_notes.is_empty();
+                        for note in launch_notes {
+                            self.push_artifact_note(&note);
+                        }
                         // Remember this block so the NEXT tool call can collapse it.
                         // Skip in debug (full output is intentionally kept there).
                         let count = self.scrollback.len() - start;
-                        self.last_tool_result = (!debug && count > 1).then_some((start, count));
+                        self.last_tool_result =
+                            (!debug && !has_artifact && count > 1).then_some((start, count));
                     }
                 }
                 MessageContent::Thinking(t) => {
@@ -483,6 +480,22 @@ impl App {
             if *s >= start + len {
                 *s -= len - 1;
             }
+        }
+    }
+
+    fn push_artifact_note(&mut self, note: &crate::session::output::ArtifactNote) {
+        self.push_line(Line::from(vec![
+            Span::styled("◆ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("Artifact: {}", note.title),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        if let Some(url) = &note.browser_url {
+            self.push_line(Line::from(Span::styled(
+                format!("    open in a browser: {url}"),
+                DIM,
+            )));
         }
     }
 

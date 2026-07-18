@@ -2610,23 +2610,9 @@
           "super::routes::mcp_ui_proxy"
         ],
         "operationId": "mcp_ui_proxy",
-        "parameters": [
-          {
-            "name": "secret",
-            "in": "query",
-            "description": "Secret key for authentication",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "MCP UI proxy HTML page"
-          },
-          "401": {
-            "description": "Unauthorized - invalid or missing secret"
           }
         }
       }

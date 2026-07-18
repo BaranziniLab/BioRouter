@@ -7,10 +7,10 @@ use biorouter::conversation::message::{
 use biorouter::utils::safe_truncate;
 use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument};
+use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument, ResourceContents};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Error, IsTerminal, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -362,12 +362,8 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     match &resp.tool_result {
         Ok(result) => {
             for content in &result.content {
-                // A `ui://` artifact (Auto Visualiser figure/report, Agent
-                // Drafter app preview). A terminal can't render the inline HTML
-                // the desktop shows, so surface a titled signal — and, for HTML,
-                // a saved copy the user can open in a browser. This is handled
-                // before the audience/priority filters below, which would
-                // otherwise silently drop the resource.
+                // A terminal can't render inline artifact HTML, so surface a
+                // browser-safe target before the normal text priority filter.
                 if let Some(note) = artifact_note_from_content(content) {
                     render_artifact_note(&note);
                     continue;
@@ -398,26 +394,53 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                     print_markdown_source(&text.text, theme);
                 }
             }
+            for note in app_launch_notes(result) {
+                render_artifact_note(&note);
+            }
         }
         Err(e) => print_markdown_source(&e.to_string(), theme),
     }
 }
 
-/// A user-facing summary of a `ui://` artifact resource emitted by a tool.
+/// A user-facing summary of an artifact resource or browser link emitted by a tool.
 pub struct ArtifactNote {
     /// Human title derived from the `ui://` URI (e.g. "Volcano Plot").
     pub title: String,
     /// Where a standalone HTML copy was saved, if the artifact was HTML.
     pub saved_path: Option<std::path::PathBuf>,
+    /// A browser-safe URL the terminal can expose as a clickable target.
+    pub browser_url: Option<String>,
 }
 
-/// Extract an [`ArtifactNote`] from a tool-response content item, if it is a
-/// `ui://` resource. Shared by the classic renderer and the TUI so both surface
-/// artifacts identically.
+/// Extract an [`ArtifactNote`] from a `ui://` resource or browser-safe resource
+/// link. Shared by the classic renderer and TUI so both surface artifacts
+/// identically.
 pub fn artifact_note_from_content(content: &rmcp::model::Content) -> Option<ArtifactNote> {
-    use rmcp::model::ResourceContents;
+    use rmcp::model::RawContent;
+
+    if content
+        .audience()
+        .is_some_and(|audience| !audience.contains(&rmcp::model::Role::User))
+    {
+        return None;
+    }
+
+    if let RawContent::ResourceLink(link) = &content.raw {
+        let browser_url = external_browser_url(&link.uri)?;
+        let title = link
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| link.name.clone());
+        return Some(ArtifactNote {
+            title: sanitize_artifact_title(&title),
+            saved_path: None,
+            browser_url: Some(browser_url),
+        });
+    }
 
     let resource = content.as_resource()?;
+    let linked_url = uri_list_browser_url(&resource.resource);
     let (uri, html) = match &resource.resource {
         ResourceContents::BlobResourceContents {
             uri,
@@ -425,11 +448,14 @@ pub fn artifact_note_from_content(content: &rmcp::model::Content) -> Option<Arti
             blob,
             ..
         } => {
-            let html = if mime_type.as_deref() == Some("text/html") {
+            let html = if mime_type.as_deref().is_some_and(is_html_mime)
+                && blob.len() <= MAX_ENCODED_ARTIFACT_BYTES
+            {
                 use base64::Engine;
                 base64::engine::general_purpose::STANDARD
                     .decode(blob)
                     .ok()
+                    .filter(|bytes| bytes.len() <= MAX_ARTIFACT_HTML_BYTES)
                     .and_then(|bytes| String::from_utf8(bytes).ok())
             } else {
                 None
@@ -442,24 +468,240 @@ pub fn artifact_note_from_content(content: &rmcp::model::Content) -> Option<Arti
             text,
             ..
         } => {
-            let html = (mime_type.as_deref() == Some("text/html")).then(|| text.clone());
+            let html = (mime_type.as_deref().is_some_and(is_html_mime)
+                && text.len() <= MAX_ARTIFACT_HTML_BYTES)
+                .then(|| text.clone());
             (uri.clone(), html)
         }
     };
 
+    if let Some(browser_url) = external_browser_url(&uri) {
+        let title = sanitize_artifact_title(&title_from_external_url(&browser_url));
+        return Some(ArtifactNote {
+            title,
+            saved_path: None,
+            browser_url: Some(browser_url),
+        });
+    }
     if !uri.starts_with("ui://") {
         return None;
     }
+    if uri.len() > MAX_BROWSER_URL_BYTES {
+        return None;
+    }
 
-    let title = title_from_ui_uri(&uri).unwrap_or_else(|| "Artifact".to_string());
+    let title =
+        sanitize_artifact_title(&title_from_ui_uri(&uri).unwrap_or_else(|| "Artifact".to_string()));
     let saved_path = html.and_then(|h| save_artifact_html(&uri, &h));
-    Some(ArtifactNote { title, saved_path })
+    let browser_url = saved_path
+        .as_ref()
+        .and_then(|path| url::Url::from_file_path(path).ok())
+        .map(|url| url.to_string());
+    Some(ArtifactNote {
+        title,
+        saved_path,
+        browser_url: linked_url.or(browser_url),
+    })
+}
+
+const MAX_ARTIFACT_HTML_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ENCODED_ARTIFACT_BYTES: usize = (MAX_ARTIFACT_HTML_BYTES * 4 / 3) + 4;
+const MAX_BROWSER_URL_BYTES: usize = 8 * 1024;
+const MAX_URI_LIST_BYTES: usize = 64 * 1024;
+const MAX_ENCODED_URI_LIST_BYTES: usize = (MAX_URI_LIST_BYTES * 4 / 3) + 4;
+const MAX_APP_LAUNCH_NOTES: usize = 64;
+const MAX_ARTIFACT_TITLE_CHARS: usize = 256;
+
+fn is_html_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type.split(';').next().map(str::trim),
+        Some(value)
+            if value.eq_ignore_ascii_case("text/html")
+                || value.eq_ignore_ascii_case("application/xhtml+xml")
+    )
+}
+
+fn is_uri_list_mime(mime_type: &str) -> bool {
+    mime_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/uri-list"))
+}
+
+fn uri_list_browser_url(resource: &ResourceContents) -> Option<String> {
+    let text = match resource {
+        ResourceContents::TextResourceContents {
+            mime_type, text, ..
+        } if mime_type.as_deref().is_some_and(is_uri_list_mime)
+            && text.len() <= MAX_URI_LIST_BYTES =>
+        {
+            text.clone()
+        }
+        ResourceContents::BlobResourceContents {
+            mime_type, blob, ..
+        } if mime_type.as_deref().is_some_and(is_uri_list_mime)
+            && blob.len() <= MAX_ENCODED_URI_LIST_BYTES =>
+        {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(blob)
+                .ok()?;
+            if bytes.len() > MAX_URI_LIST_BYTES {
+                return None;
+            }
+            String::from_utf8(bytes).ok()?
+        }
+        _ => return None,
+    };
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(url) = external_browser_url(line) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn external_browser_url(uri: &str) -> Option<String> {
+    if uri.len() > MAX_BROWSER_URL_BYTES {
+        return None;
+    }
+    let url = url::Url::parse(uri).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then(|| url.to_string())
+}
+
+fn sanitize_artifact_title(title: &str) -> String {
+    let mut sanitized = String::new();
+    for ch in title.chars().take(MAX_ARTIFACT_TITLE_CHARS) {
+        let is_directional_control = matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{feff}'
+        );
+        if ch.is_control() || is_directional_control {
+            if ch.is_whitespace() && !sanitized.ends_with(' ') {
+                sanitized.push(' ');
+            }
+        } else {
+            sanitized.push(ch);
+        }
+    }
+    let sanitized = sanitized.trim();
+    if sanitized.is_empty() {
+        "Artifact".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn title_from_external_url(uri: &str) -> String {
+    url::Url::parse(uri)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()?
+                .rfind(|segment| !segment.is_empty())
+                .map(str::to_string)
+                .or_else(|| url.host_str().map(str::to_string))
+        })
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "Artifact link".to_string())
+}
+
+/// Extract live Agent Drafter launch targets from result metadata. A normal
+/// `launch_app` result uses one path; `execute_code` can aggregate several.
+pub fn app_launch_notes(result: &rmcp::model::CallToolResult) -> Vec<ArtifactNote> {
+    let Some(meta) = &result.meta else {
+        return Vec::new();
+    };
+    let mut paths = meta
+        .0
+        .get("biorouter/app-paths")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .take(MAX_APP_LAUNCH_NOTES)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(path) = meta
+        .0
+        .get("biorouter/app-path")
+        .and_then(serde_json::Value::as_str)
+    {
+        paths.push(path.to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    paths.truncate(MAX_APP_LAUNCH_NOTES);
+    let linked_urls = result
+        .content
+        .iter()
+        .filter(|content| {
+            content
+                .audience()
+                .is_none_or(|audience| audience.contains(&rmcp::model::Role::User))
+        })
+        .filter_map(|content| match &content.raw {
+            rmcp::model::RawContent::ResourceLink(link) => external_browser_url(&link.uri),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let id = path.strip_prefix("/apps/")?.strip_suffix('/')?;
+            biorouter_mcp::agent_drafter::store::validate_artifact_id(id).ok()?;
+            let browser_url = app_browser_url(&path);
+            if linked_urls.contains(&browser_url) {
+                return None;
+            }
+            Some(ArtifactNote {
+                title: format!("App: {id}"),
+                saved_path: None,
+                browser_url: Some(browser_url),
+            })
+        })
+        .collect()
+}
+
+fn app_browser_url(path: &str) -> String {
+    if let Some(base) = std::env::var("BIOROUTER_APP_BASE_URL")
+        .ok()
+        .and_then(|base| url::Url::parse(base.trim()).ok())
+        .filter(|base| {
+            matches!(base.scheme(), "http" | "https")
+                && base.host_str().is_some()
+                && base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none()
+        })
+    {
+        return format!("{}{}", base.as_str().trim_end_matches('/'), path);
+    }
+    let port = std::env::var("BIOROUTER_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(3000);
+    format!("http://127.0.0.1:{port}{path}")
 }
 
 /// Derive a human title from a `ui://host/path` URI, mirroring the desktop's
 /// `titleFromResourceUri`: title-case the path segments (e.g. `ui://volcano/plot`
 /// → "Volcano Plot", `ui://dashboard/omics-summary` → "Dashboard Omics Summary").
 fn title_from_ui_uri(uri: &str) -> Option<String> {
+    if uri.len() > MAX_BROWSER_URL_BYTES {
+        return None;
+    }
     let rest = uri.strip_prefix("ui://")?;
     // Drop any query string / fragment before splitting the path.
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
@@ -489,25 +731,137 @@ fn title_from_ui_uri(uri: &str) -> Option<String> {
 
 /// Save a standalone HTML artifact to a temp dir so a terminal user can open it
 /// in a browser. Best-effort: returns None on any IO error.
-fn save_artifact_html(uri: &str, html: &str) -> Option<std::path::PathBuf> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+fn save_artifact_html(_uri: &str, html: &str) -> Option<std::path::PathBuf> {
+    use std::io::Write;
 
-    let dir = std::env::temp_dir().join("biorouter-artifacts");
-    std::fs::create_dir_all(&dir).ok()?;
+    if html.len() > MAX_ARTIFACT_HTML_BYTES {
+        return None;
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix("biorouter-artifact-")
+        .suffix(".html")
+        .tempfile()
+        .ok()?;
+    let html = wrap_artifact_for_browser(html);
+    file.write_all(html.as_bytes()).ok()?;
+    let (_file, path) = file.keep().ok()?;
+    Some(path)
+}
 
-    let slug: String = uri
-        .strip_prefix("ui://")
-        .unwrap_or(uri)
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = slug.trim_matches('-');
-    let slug = if slug.is_empty() { "artifact" } else { slug };
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let file = dir.join(format!("{}-{}-{}.html", slug, std::process::id(), n));
-    std::fs::write(&file, html).ok()?;
-    Some(file)
+fn inject_artifact_browser_csp(html: &str) -> String {
+    const META: &str = concat!(
+        r#"<meta http-equiv="Content-Security-Policy" content="#,
+        "default-src 'none'; ",
+        "script-src 'unsafe-inline' 'unsafe-eval' blob:; ",
+        "style-src 'unsafe-inline'; ",
+        "img-src data: blob:; ",
+        "connect-src 'none'; ",
+        "font-src data:; frame-src 'none'; worker-src blob:; ",
+        "media-src data: blob:; navigate-to 'none'; ",
+        "form-action 'none'; base-uri 'none'; object-src 'none'",
+        r#"">"#
+    );
+
+    let lower = html.to_ascii_lowercase();
+    if let Some(html_start) = find_start_tag(&lower, "html") {
+        let Some(prefix) = lower.get(..html_start) else {
+            return format!("<head>{META}</head>{html}");
+        };
+        if !is_document_preamble(prefix) {
+            return format!("<head>{META}</head>{html}");
+        }
+        if let Some(relative_end) = lower.get(html_start..).and_then(|tail| tail.find('>')) {
+            let insert_at = html_start + relative_end + 1;
+            let Some(remainder) = lower.get(insert_at..) else {
+                return format!("<head>{META}</head>{html}");
+            };
+            let whitespace = remainder.len() - remainder.trim_start().len();
+            let head_start = insert_at + whitespace;
+            if lower
+                .get(head_start..)
+                .is_some_and(|tail| find_start_tag(tail, "head") == Some(0))
+            {
+                if let Some(relative_end) = lower.get(head_start..).and_then(|tail| tail.find('>'))
+                {
+                    let head_end = head_start + relative_end + 1;
+                    if let Some(secured) = insert_html_at(html, head_end, META) {
+                        return secured;
+                    }
+                }
+            }
+            if let Some(secured) = insert_html_at(html, insert_at, &format!("<head>{META}</head>"))
+            {
+                return secured;
+            }
+        }
+    }
+    if let Some(head_start) = find_start_tag(&lower, "head") {
+        if lower
+            .get(..head_start)
+            .is_some_and(|prefix| prefix.trim().is_empty())
+        {
+            if let Some(relative_end) = lower.get(head_start..).and_then(|tail| tail.find('>')) {
+                let insert_at = head_start + relative_end + 1;
+                if let Some(secured) = insert_html_at(html, insert_at, META) {
+                    return secured;
+                }
+            }
+        }
+    }
+    format!("<head>{META}</head>{html}")
+}
+
+fn insert_html_at(html: &str, index: usize, fragment: &str) -> Option<String> {
+    let prefix = html.get(..index)?;
+    let suffix = html.get(index..)?;
+    let mut result = String::with_capacity(html.len() + fragment.len());
+    result.push_str(prefix);
+    result.push_str(fragment);
+    result.push_str(suffix);
+    Some(result)
+}
+
+fn wrap_artifact_for_browser(html: &str) -> String {
+    let secured = inject_artifact_browser_csp(html);
+    let srcdoc = secured
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('\0', "\u{fffd}");
+    format!(
+        concat!(
+            "<!doctype html><html><head><meta charset=\"utf-8\">",
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"",
+            "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'\">",
+            "<style>html,body,iframe{{width:100%;height:100%;margin:0;border:0;overflow:hidden}}",
+            "body{{background:#fff}}</style></head><body>",
+            "<iframe name=\"biorouter-artifact-preview\" title=\"Biorouter artifact preview\" ",
+            "credentialless referrerpolicy=\"no-referrer\" ",
+            "sandbox=\"allow-scripts allow-downloads\" ",
+            "srcdoc=\"{}\"></iframe></body></html>"
+        ),
+        srcdoc
+    )
+}
+
+fn is_document_preamble(prefix: &str) -> bool {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return true;
+    }
+    prefix
+        .strip_prefix("<!doctype")
+        .and_then(|doctype| doctype.find('>').and_then(|end| doctype.get(end + 1..)))
+        .is_some_and(|remainder| remainder.trim().is_empty())
+}
+
+fn find_start_tag(html: &str, tag: &str) -> Option<usize> {
+    let needle = format!("<{tag}");
+    html.match_indices(&needle).find_map(|(offset, _)| {
+        html.as_bytes()
+            .get(offset + needle.len())
+            .is_some_and(|byte| *byte == b'>' || byte.is_ascii_whitespace())
+            .then_some(offset)
+    })
 }
 
 /// Print the titled artifact signal (classic path).
@@ -517,15 +871,15 @@ fn render_artifact_note(note: &ArtifactNote) {
         style("◆").fg(ACCENT),
         style(format!("Artifact: {}", note.title)).bold()
     );
-    match &note.saved_path {
-        Some(path) => println!(
+    match &note.browser_url {
+        Some(url) => println!(
             "    {} {}",
             style("open in a browser:").dim(),
-            style(path.display()).fg(ACCENT)
+            style(url).fg(ACCENT)
         ),
         None => println!(
             "    {}",
-            style("(rendered inline in the Biorouter desktop app)").dim()
+            style("(no browser-safe preview URL was provided)").dim()
         ),
     }
 }
@@ -1269,6 +1623,17 @@ pub fn preview() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    fn embedded_html(uri: &str, mime_type: &str, html: &str) -> Content {
+        Content::resource(ResourceContents::BlobResourceContents {
+            uri: uri.to_string(),
+            mime_type: Some(mime_type.to_string()),
+            blob: base64::engine::general_purpose::STANDARD.encode(html),
+            meta: None,
+        })
+    }
 
     #[test]
     fn test_title_from_ui_uri() {
@@ -1298,6 +1663,240 @@ mod tests {
         // Not a ui:// URI, or empty → None.
         assert_eq!(title_from_ui_uri("file:///tmp/x.html"), None);
         assert_eq!(title_from_ui_uri("ui://"), None);
+    }
+
+    #[test]
+    fn ui_html_artifact_is_saved_as_a_browser_url() {
+        let html = "<!doctype html><title>Safe preview</title>";
+        let content = embedded_html("ui://chart/safe-preview", "text/html; charset=utf-8", html);
+        let note = artifact_note_from_content(&content).expect("artifact note");
+
+        assert_eq!(note.title, "Chart Safe Preview");
+        let path = note.saved_path.expect("saved HTML path");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(html));
+        assert!(saved.contains("Content-Security-Policy"));
+        assert!(saved.contains("connect-src 'none'"));
+        assert!(saved.contains("navigate-to 'none'"));
+        assert!(saved.contains("sandbox=\"allow-scripts allow-downloads\""));
+        assert!(saved.contains("credentialless referrerpolicy=\"no-referrer\""));
+        assert!(!saved.contains("allow-same-origin"));
+        assert_eq!(
+            note.browser_url.as_deref(),
+            url::Url::from_file_path(&path)
+                .ok()
+                .map(|url| url.to_string())
+                .as_deref()
+        );
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(
+                    |name| name.starts_with("biorouter-artifact-") && name.ends_with(".html")
+                )
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn unsafe_or_non_html_artifacts_are_not_written() {
+        let plain = embedded_html(
+            "ui://chart/not-html",
+            "text/plain",
+            "<script>bad()</script>",
+        );
+        let note = artifact_note_from_content(&plain).expect("ui artifact note");
+        assert!(note.saved_path.is_none());
+        assert!(note.browser_url.is_none());
+
+        let malformed = Content::resource(ResourceContents::BlobResourceContents {
+            uri: "ui://chart/malformed".to_string(),
+            mime_type: Some("text/html".to_string()),
+            blob: "not-base64".to_string(),
+            meta: None,
+        });
+        let note = artifact_note_from_content(&malformed).expect("ui artifact note");
+        assert!(note.saved_path.is_none());
+
+        let assistant_only = embedded_html(
+            "ui://chart/private",
+            "text/html",
+            "<p>assistant-only detail</p>",
+        )
+        .with_audience(vec![rmcp::model::Role::Assistant]);
+        assert!(artifact_note_from_content(&assistant_only).is_none());
+
+        let oversized_uri = embedded_html(
+            &format!("ui://chart/{}", "x".repeat(MAX_BROWSER_URL_BYTES)),
+            "text/html",
+            "<p>too long</p>",
+        );
+        assert!(artifact_note_from_content(&oversized_uri).is_none());
+    }
+
+    #[test]
+    fn browser_resource_links_are_exposed_but_unsafe_schemes_are_rejected() {
+        let mut resource = RawResource::new("https://example.test/report.html", "report");
+        resource.title = Some("Study report".to_string());
+        let note = artifact_note_from_content(&Content::resource_link(resource)).unwrap();
+        assert_eq!(note.title, "Study report");
+        assert_eq!(
+            note.browser_url.as_deref(),
+            Some("https://example.test/report.html")
+        );
+
+        let resource = RawResource::new("javascript:alert(1)", "unsafe");
+        assert!(artifact_note_from_content(&Content::resource_link(resource)).is_none());
+
+        let resource = RawResource::new("file:///etc/passwd", "local file");
+        assert!(artifact_note_from_content(&Content::resource_link(resource)).is_none());
+
+        let resource = RawResource::new("https://user:secret@example.test/report", "credentials");
+        assert!(artifact_note_from_content(&Content::resource_link(resource)).is_none());
+
+        let resource = RawResource::new(
+            format!("https://example.test/{}", "x".repeat(MAX_BROWSER_URL_BYTES)),
+            "oversized",
+        );
+        assert!(artifact_note_from_content(&Content::resource_link(resource)).is_none());
+
+        let mut resource = RawResource::new("https://example.test/report", "report");
+        resource.title = Some("Safe\u{1b}]8;;https://evil.test\u{7}spoof\u{202e}".to_string());
+        let note = artifact_note_from_content(&Content::resource_link(resource)).unwrap();
+        assert_eq!(note.title, "Safe]8;;https://evil.testspoof");
+    }
+
+    #[test]
+    fn uri_list_artifacts_expose_the_first_safe_browser_url() {
+        let content = Content::resource(ResourceContents::TextResourceContents {
+            uri: "ui://report/published".to_string(),
+            mime_type: Some("text/uri-list; charset=utf-8".to_string()),
+            text: "# generated report\njavascript:alert(1)\nhttps://example.test/report.html\n"
+                .to_string(),
+            meta: None,
+        });
+        let note = artifact_note_from_content(&content).expect("artifact note");
+
+        assert_eq!(note.title, "Report Published");
+        assert!(note.saved_path.is_none());
+        assert_eq!(
+            note.browser_url.as_deref(),
+            Some("https://example.test/report.html")
+        );
+    }
+
+    #[test]
+    fn app_launch_metadata_becomes_terminal_links() {
+        let mut result = CallToolResult::success(vec![]);
+        result.meta = Some(Meta(
+            serde_json::from_value(serde_json::json!({
+                "biorouter/app-path": "/apps/direct/",
+                "biorouter/app-paths": ["/apps/nested/", "/apps/direct/", "/apps/../escape/"]
+            }))
+            .unwrap(),
+        ));
+
+        let notes = app_launch_notes(&result);
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().any(|note| {
+            note.title == "App: direct"
+                && note
+                    .browser_url
+                    .as_deref()
+                    .is_some_and(|url| url.ends_with("/apps/direct/"))
+        }));
+        assert!(notes.iter().any(|note| note.title == "App: nested"));
+    }
+
+    #[test]
+    fn app_launch_metadata_does_not_duplicate_a_resource_link() {
+        let mut result = CallToolResult::success(vec![Content::resource_link(RawResource::new(
+            "http://127.0.0.1:3000/apps/direct/",
+            "direct app",
+        ))]);
+        result.meta = Some(Meta(
+            serde_json::from_value(serde_json::json!({
+                "biorouter/app-path": "/apps/direct/"
+            }))
+            .unwrap(),
+        ));
+
+        assert!(app_launch_notes(&result).is_empty());
+
+        result.content = vec![Content::resource_link(RawResource::new(
+            "https://example.test/apps/direct/",
+            "unrelated external app",
+        ))];
+        assert_eq!(app_launch_notes(&result).len(), 1);
+
+        result.content = vec![Content::resource_link(RawResource::new(
+            "http://127.0.0.1:3000/apps/direct/",
+            "assistant-only app link",
+        ))
+        .with_audience(vec![rmcp::model::Role::Assistant])];
+        assert_eq!(app_launch_notes(&result).len(), 1);
+    }
+
+    #[test]
+    fn csp_injection_does_not_treat_header_as_head() {
+        let html = "<html><header>Title</header><main>Preview</main></html>";
+        let secured = inject_artifact_browser_csp(html);
+
+        assert!(secured.starts_with("<html><head><meta "));
+        assert!(secured.contains("</head><header>"));
+    }
+
+    #[test]
+    fn csp_injection_precedes_content_before_a_late_head() {
+        let html = "<script>window.ran=true</script><head><title>Late</title></head>";
+        let secured = inject_artifact_browser_csp(html);
+
+        assert!(secured.starts_with("<head><meta "));
+        assert!(
+            secured.find("Content-Security-Policy").unwrap() < secured.find("<script>").unwrap()
+        );
+    }
+
+    #[test]
+    fn csp_injection_preserves_unicode_around_insertion_points() {
+        for (html, marker) in [
+            (
+                r#"<!doctype html><html><head data-title="Résumé"><title>東京</title></head></html>"#,
+                "Résumé",
+            ),
+            ("<html>é<head><title>Preview</title></head></html>", "é"),
+            (
+                "Предисловие<head><title>Preview</title></head>",
+                "Предисловие",
+            ),
+        ] {
+            let secured = inject_artifact_browser_csp(html);
+
+            assert!(secured.contains("Content-Security-Policy"));
+            assert!(secured.contains(marker));
+        }
+    }
+
+    #[test]
+    fn browser_wrapper_escapes_srcdoc_and_blocks_top_navigation() {
+        let wrapped = wrap_artifact_for_browser(
+            r#"<script>top.location='https://example.test/?a=1&b="break"'</script>"#,
+        );
+
+        assert!(wrapped.contains("&amp;"));
+        assert!(wrapped.contains("&quot;break&quot;"));
+        assert!(wrapped.contains("name=\"biorouter-artifact-preview\""));
+        assert!(wrapped.contains("sandbox=\"allow-scripts allow-downloads\""));
+        assert!(!wrapped.contains("allow-top-navigation"));
+        assert!(!wrapped.contains("allow-same-origin"));
     }
 
     #[test]

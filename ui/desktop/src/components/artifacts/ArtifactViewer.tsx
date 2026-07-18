@@ -13,6 +13,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useTheme, useThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
+import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import {
   ChevronDown,
   ChevronRight,
@@ -573,9 +574,8 @@ export default function ArtifactViewer({
 
   const openStandalone = async () => {
     if (activeArtifact.kind === 'html') {
-      // Expand opens the artifact in the user's default browser (agentic
-      // artifacts fall back to a managed window in the main process). The theme
-      // is passed so the browser view matches this preview.
+      // Expand opens the offline preview in the user's default browser. Live
+      // Agent Drafter apps use the explicit launch link returned by the tool.
       await window.electron.openArtifactInBrowser({
         html: visiblePreview.kind === 'html' ? visiblePreview.html : activeArtifact.html,
         title: activeArtifact.title,
@@ -766,12 +766,13 @@ function ArtifactPreviewBody({
     // BrowserWindow that inherits the preload IPC bridge.
     return (
       <iframe
+        name="biorouter-artifact-preview"
         ref={trustedFrameRef}
         aria-label={artifact.title}
         // Inject the app theme so this preview matches the expanded/opened view,
         // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
-        srcDoc={withHostTheme(preview.html, resolvedTheme)}
-        sandbox="allow-scripts allow-forms allow-modals"
+        srcDoc={injectArtifactBrowserCsp(withHostTheme(preview.html, resolvedTheme))}
+        sandbox="allow-scripts allow-downloads"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
     );
@@ -779,12 +780,21 @@ function ArtifactPreviewBody({
 
   if (preview.kind === 'externalUrl') {
     return (
-      <iframe
-        aria-label={artifact.title}
-        src={preview.url}
-        sandbox="allow-scripts allow-forms allow-modals"
-        className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
-      />
+      <div className="flex h-full items-center justify-center bg-background-medium p-6">
+        <div className="w-full max-w-lg rounded-xl border border-border-subtle bg-background-default p-5 text-center shadow-popover">
+          <Globe className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
+          <div className="text-sm font-medium text-text-default">External preview</div>
+          <div className="mt-1 break-all text-xs text-text-muted">{preview.url}</div>
+          <button
+            type="button"
+            onClick={() => void window.electron.openExternal(preview.url)}
+            className="mt-4 inline-flex h-8 items-center gap-2 rounded-lg border border-border-subtle bg-background-default px-3 text-xs font-medium text-text-default transition-colors hover:bg-background-medium"
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            Open in default browser
+          </button>
+        </div>
+      </div>
     );
   }
 
@@ -792,7 +802,7 @@ function ArtifactPreviewBody({
     return (
       <UIResourceRenderer
         resource={artifact.resource}
-        supportedContentTypes={['rawHtml', 'externalUrl']}
+        supportedContentTypes={['rawHtml']}
         htmlProps={{
           autoResizeIframe: { height: false, width: false },
           style: { width: '100%', height: '100%', minHeight: '100%', border: 'none' },
@@ -1355,9 +1365,12 @@ function TextFilePreview({
           // is withheld so the framed HTML can't window.open() into a real BrowserWindow
           // that would inherit the preload IPC bridge.
           <iframe
+            name="biorouter-artifact-preview"
             aria-label={file.title}
-            srcDoc={withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)}
-            sandbox="allow-scripts allow-forms allow-modals"
+            srcDoc={injectArtifactBrowserCsp(
+              withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+            )}
+            sandbox="allow-scripts allow-downloads"
             className="h-full w-full bg-white"
           />
         ) : (

@@ -4150,20 +4150,8 @@ export type LlamacppWarmupResponse = LlamacppWarmupResponses[keyof LlamacppWarmu
 export type McpUiProxyData = {
     body?: never;
     path?: never;
-    query: {
-        /**
-         * Secret key for authentication
-         */
-        secret: string;
-    };
+    query?: never;
     url: '/mcp-ui-proxy';
-};
-
-export type McpUiProxyErrors = {
-    /**
-     * Unauthorized - invalid or missing secret
-     */
-    401: unknown;
 };
 
 export type McpUiProxyResponses = {

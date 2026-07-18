@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   ARTIFACT_BROWSER_CSP,
+  ARTIFACT_WRAPPER_CSP,
   injectArtifactBrowserCsp,
   injectArtifactHostTheme,
+  wrapArtifactForBrowser,
 } from './artifactSecurity';
 
 describe('injectArtifactBrowserCsp', () => {
@@ -18,11 +20,41 @@ describe('injectArtifactBrowserCsp', () => {
     );
   });
 
+  it('places the policy before executable content that precedes a late head', () => {
+    const secured = injectArtifactBrowserCsp(
+      '<script>window.ran=true</script><head><title>Late</title></head>'
+    );
+
+    expect(secured.indexOf('Content-Security-Policy')).toBeLessThan(secured.indexOf('<script>'));
+  });
+
   it('does not allow remote scripts, arbitrary network requests, forms, or plugins', () => {
     expect(ARTIFACT_BROWSER_CSP).not.toContain('script-src https:');
     expect(ARTIFACT_BROWSER_CSP).not.toContain('connect-src https:');
+    expect(ARTIFACT_BROWSER_CSP).toContain("connect-src 'none'");
+    expect(ARTIFACT_BROWSER_CSP).not.toContain('img-src data: blob: https:');
+    expect(ARTIFACT_BROWSER_CSP).toContain("frame-src 'none'");
+    expect(ARTIFACT_BROWSER_CSP).toContain("navigate-to 'none'");
     expect(ARTIFACT_BROWSER_CSP).toContain("form-action 'none'");
     expect(ARTIFACT_BROWSER_CSP).toContain("object-src 'none'");
+  });
+});
+
+describe('wrapArtifactForBrowser', () => {
+  it('runs generated markup in a sandbox without top-navigation or same-origin access', () => {
+    const wrapped = wrapArtifactForBrowser(
+      '<script>top.location="https://example.test/?a=1&b=2"</script>'
+    );
+
+    expect(wrapped).toContain('&amp;');
+    expect(wrapped).toContain('&quot;https://example.test/');
+    expect(wrapped).toContain('name="biorouter-artifact-preview"');
+    expect(wrapped).toContain('credentialless referrerpolicy="no-referrer"');
+    expect(wrapped).toContain('sandbox="allow-scripts allow-downloads"');
+    expect(wrapped).not.toContain('allow-top-navigation');
+    expect(wrapped).not.toContain('allow-same-origin');
+    expect(ARTIFACT_WRAPPER_CSP).toContain("frame-src 'self'");
+    expect(ARTIFACT_WRAPPER_CSP).not.toContain("frame-src 'none'");
   });
 });
 

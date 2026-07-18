@@ -33,12 +33,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
-import {
-  checkServerStatus,
-  startBiorouterd,
-  getBiorouterCliBinaryPath,
-  findAvailablePort,
-} from './biorouterd';
+import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
 import log from './utils/logger';
@@ -74,11 +69,16 @@ import {
 } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import {
+  isAllowedArtifactFrameNavigation,
   isAllowedRendererPermission,
   isAppOrigin,
   shouldOpenExternalNavigation,
 } from './utils/permissionPolicy';
-import { injectArtifactBrowserCsp, injectArtifactHostTheme } from './utils/artifactSecurity';
+import {
+  ARTIFACT_WRAPPER_CSP,
+  injectArtifactHostTheme,
+  wrapArtifactForBrowser,
+} from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
@@ -189,9 +189,14 @@ const ARTIFACT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
 
 /** Only http(s) may be handed to the OS opener. */
 export function isExternallyOpenableUrl(candidate: string): boolean {
+  if (candidate.length > 8 * 1024) return false;
   try {
-    const { protocol } = new URL(candidate);
-    return protocol === 'http:' || protocol === 'https:';
+    const url = new URL(candidate);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.username === '' &&
+      url.password === ''
+    );
   } catch {
     return false;
   }
@@ -854,6 +859,28 @@ let appConfig = {
 const windowMap = new Map<number, BrowserWindow>();
 const biorouterdClients = new Map<number, Client>();
 
+const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
+  const frameIds = new Set<string>();
+  contents.on('frame-created', (_event, { frame }) => {
+    if (frame?.name === 'biorouter-artifact-preview') {
+      frameIds.add(`${frame.processId}:${frame.routingId}`);
+    }
+  });
+  return (frame: Electron.WebFrameMain | null | undefined) => {
+    let current = frame;
+    while (current) {
+      if (
+        current.name === 'biorouter-artifact-preview' ||
+        frameIds.has(`${current.processId}:${current.routingId}`)
+      ) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  };
+};
+
 // A chat window and every Agent Drafter app window it launches share ONE
 // biorouterd (launch-app reuses the launching window's client). The backend
 // must outlive any single dependent window, so it is ref-counted and killed
@@ -1173,9 +1200,20 @@ const createChat = async (
     }
   };
   mainWindow.webContents.on('will-navigate', blockOffOriginNavigation);
+  const isArtifactPreviewFrame = trackArtifactPreviewFrames(mainWindow.webContents);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mainWindow.webContents.on('will-frame-navigate' as any, (event: any) => {
-    if (event.isMainFrame) blockOffOriginNavigation(event, event.url);
+    if (event.isMainFrame) {
+      blockOffOriginNavigation(event, event.url);
+      return;
+    }
+    if (
+      isArtifactPreviewFrame(event.frame) &&
+      !isAllowedArtifactFrameNavigation(event.url, biorouterdClient.getConfig().baseUrl as string)
+    ) {
+      log.warn('[Main] Blocked artifact frame navigation to', event.url);
+      event.preventDefault();
+    }
   });
 
   const windowId = mainWindow.id;
@@ -1774,8 +1812,15 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
 
 ipcMain.handle('open-external', async (_event, url: string) => {
   try {
+    if (typeof url !== 'string' || url.length > 8 * 1024) {
+      throw new Error('Blocked: invalid or oversized URL');
+    }
     const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.username !== '' ||
+      parsed.password !== ''
+    ) {
       throw new Error(`Blocked: unsafe URL protocol '${parsed.protocol}'`);
     }
     // Pass the normalized URL — shell.openExternal and the WHATWG URL parser
@@ -4032,38 +4077,14 @@ async function appMain() {
 
   // Add CSP headers to all sessions
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    // Agent Drafter / Auto Visualiser artifacts are opened in a standalone
-    // "Expand" window from a file:// temp file (see the open-artifact-window
-    // handler). Those self-contained artifacts run their OWN inline <script>
-    // (the converter's convert(), a figure's Chart.js/D3/Mermaid render, the
-    // agentic runtime), pull chart libs from a CDN when BIOROUTER_AUTOVIS_CDN
-    // is on, and — for agentic apps — open a WebSocket to the local ACP
-    // sidecar. The app's strict `script-src 'self'` CSP silently blocks ALL of
-    // that, so the Expand window showed only static markup (blank charts, a
-    // dead Convert button, an unresponsive embedded agent). These artifacts are
-    // agent-generated and already isolated (sandbox + contextIsolation, no node
-    // integration), so give just this file:// path a CSP permissive enough to
-    // actually run. Everything else keeps the strict policy.
+    // Standalone artifact files contain a sandboxed srcdoc preview. Its inline
+    // chart runtime must execute, but the artifact must not fetch remote code,
+    // beacon data, or connect to local services.
     const isArtifactWindow =
       details.url.startsWith('file://') && details.url.includes('biorouter-artifacts');
 
-    // Artifact HTML is agent-generated. It must be able to run its own inline
-    // scripts and reach the local ACP sidecar, but a blanket `script-src https:`
-    // would let it pull in arbitrary remote code, and `connect-src https:` would
-    // let it beacon the figure's data to any host. The only CDN it legitimately
-    // loads is jsdelivr (and `prepareArtifactHtml` inlines those assets anyway,
-    // so this only matters when BIOROUTER_AUTOVIS_CDN is on). `img-src https:`
-    // stays: map tiles come from third-party tile servers.
     const csp = isArtifactWindow
-      ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:;" +
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net blob:;" +
-        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;" +
-        "img-src 'self' data: blob: https:;" +
-        "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*;" +
-        "font-src 'self' data: https://cdn.jsdelivr.net;" +
-        "frame-src 'self' https: http:;" +
-        "worker-src 'self' blob:;" +
-        "base-uri 'self';"
+      ? ARTIFACT_WRAPPER_CSP
       : "default-src 'self';" +
         "style-src 'self' 'unsafe-inline';" +
         "script-src 'self';" +
@@ -4409,19 +4430,8 @@ async function appMain() {
     }
   });
 
-  // A single shared `biorouter acp --ws` sidecar that standalone artifact
-  // windows connect to, so an agentic artifact's chat genuinely answers
-  // (instead of the in-chat preview's bridge mode, which routes to the host).
-  //
-  // The endpoint is authenticated. The ACP protocol lets a client register an
-  // `McpServer::Stdio`, i.e. spawn a process, and browsers allow cross-origin
-  // WebSocket connects -- so a fixed unauthenticated port would let any page the
-  // user visits drive an agent. The port is ephemeral, a per-launch bearer token
-  // is required, and the server refuses stdio MCP servers on this transport.
-  let acpWsEndpoint: string | null = null;
-  let acpWsStarting: Promise<string | null> | null = null;
-  let acpWsSidecar: import('child_process').ChildProcess | null = null;
-  let acpWsCleanupRegistered = false;
+  // Standalone previews are offline. Inline the small, fixed set of libraries
+  // emitted by Auto Visualiser before applying its network-denying CSP.
   const artifactCdnAssetCache = new Map<string, Promise<string>>();
   const artifactCdnAssets = [
     'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js',
@@ -4431,50 +4441,6 @@ async function appMain() {
     'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css',
     'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
   ];
-  const ensureAcpWsServer = async (): Promise<string | null> => {
-    if (acpWsSidecar && acpWsSidecar.exitCode === null && acpWsEndpoint) return acpWsEndpoint;
-    if (acpWsStarting) return acpWsStarting;
-
-    acpWsStarting = (async () => {
-      try {
-        const cli = getBiorouterCliBinaryPath(app);
-        const port = await findAvailablePort();
-        const addr = `127.0.0.1:${port}`;
-        const token = crypto.randomBytes(32).toString('hex');
-
-        // Token travels in the environment, not argv, so it does not appear in `ps`.
-        acpWsSidecar = spawn(cli, ['acp', '--ws', addr], {
-          stdio: 'ignore',
-          env: { ...process.env, BIOROUTER_ACP_WS_TOKEN: token },
-        });
-        acpWsSidecar.on('exit', () => {
-          acpWsSidecar = null;
-          acpWsEndpoint = null;
-        });
-        if (!acpWsCleanupRegistered) {
-          acpWsCleanupRegistered = true;
-          app.on('before-quit', () => {
-            try {
-              acpWsSidecar?.kill();
-            } catch {
-              // best-effort
-            }
-          });
-        }
-        acpWsEndpoint = `ws://${addr}/acp?token=${token}`;
-        console.log('Started authenticated ACP WebSocket sidecar for artifacts on', addr);
-        return acpWsEndpoint;
-      } catch (e) {
-        console.error('Failed to start ACP WebSocket sidecar:', e);
-        return null;
-      } finally {
-        acpWsStarting = null;
-      }
-    })();
-
-    return acpWsStarting;
-  };
-
   const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   const fetchArtifactCdnAsset = (url: string): Promise<string> => {
@@ -4518,44 +4484,6 @@ async function appMain() {
     return html;
   };
 
-  const prepareArtifactHtml = async (rawHtml: string): Promise<string> => {
-    let html = rawHtml;
-    const isAgentic = html.includes('"transport":"bridge"');
-    if (isAgentic) {
-      const endpoint = await ensureAcpWsServer();
-      if (endpoint) {
-        html = html
-          .replace('"transport":"bridge"', '"transport":"acp-ws"')
-          .replace('"endpoint":null', () => `"endpoint":${JSON.stringify(endpoint)}`);
-      }
-    }
-    return inlineKnownArtifactCdnAssets(html);
-  };
-
-  ipcMain.handle('prepare-artifact-html', async (_event, payload: { html: string }) => ({
-    html: await prepareArtifactHtml(payload.html),
-  }));
-
-  const writeArtifactTempFile = async (html: string): Promise<string> => {
-    const artifactDir = path.join(os.tmpdir(), 'biorouter-artifacts');
-    await fs.mkdir(artifactDir, { recursive: true });
-    // No window 'closed' event fires for a browser-opened artifact, so sweep old
-    // temp files (>1h) on each open instead of leaking them into tmp forever.
-    try {
-      const cutoff = Date.now() - 3_600_000;
-      for (const name of await fs.readdir(artifactDir)) {
-        const fp = path.join(artifactDir, name);
-        const st = await fs.stat(fp).catch(() => null);
-        if (st && st.mtimeMs < cutoff) await fs.unlink(fp).catch(() => {});
-      }
-    } catch {
-      /* best effort */
-    }
-    const artifactFile = path.join(artifactDir, `artifact-${crypto.randomUUID()}.html`);
-    await fs.writeFile(artifactFile, html, 'utf-8');
-    return artifactFile;
-  };
-
   type OpenArtifactPayload = {
     html: string;
     title?: string;
@@ -4564,15 +4492,69 @@ async function appMain() {
     theme?: 'light' | 'dark';
   };
 
-  // Open an artifact's HTML in a large standalone Electron window. The HTML is
-  // self-contained; it runs sandboxed (no node, isolated context). For agentic
-  // artifacts we start the ACP WebSocket sidecar (in prepareArtifactHtml) and
-  // rewrite the runtime to use it, so the embedded agent responds inside the window.
+  const normalizeArtifactPayload = (payload: unknown): OpenArtifactPayload | null => {
+    if (!payload || typeof payload !== 'object') return null;
+    const value = payload as Record<string, unknown>;
+    if (
+      typeof value.html !== 'string' ||
+      Buffer.byteLength(value.html, 'utf8') > 16 * 1024 * 1024
+    ) {
+      return null;
+    }
+    const title =
+      typeof value.title === 'string'
+        ? value.title.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 256)
+        : undefined;
+    const finiteDimension = (dimension: unknown) =>
+      typeof dimension === 'number' && Number.isFinite(dimension) ? dimension : undefined;
+    return {
+      html: value.html,
+      title,
+      width: finiteDimension(value.width),
+      height: finiteDimension(value.height),
+      theme: value.theme === 'dark' ? 'dark' : value.theme === 'light' ? 'light' : undefined,
+    };
+  };
+
+  const prepareArtifactHtml = async (rawHtml: string): Promise<string> => {
+    return inlineKnownArtifactCdnAssets(rawHtml);
+  };
+
+  ipcMain.handle('prepare-artifact-html', async (_event, payload: unknown) => {
+    const normalized = normalizeArtifactPayload(payload);
+    if (!normalized) throw new Error('Invalid or oversized artifact preview');
+    return { html: await prepareArtifactHtml(normalized.html) };
+  });
+
+  let artifactTempDirectoryPromise: Promise<string> | null = null;
+  const artifactTempDirectory = (): Promise<string> => {
+    artifactTempDirectoryPromise ??= fs
+      .mkdtemp(path.join(os.tmpdir(), 'biorouter-artifacts-'))
+      .then(async (directory) => {
+        await fs.chmod(directory, 0o700);
+        app.once('before-quit', () => {
+          void fs.rm(directory, { recursive: true, force: true });
+        });
+        return directory;
+      });
+    return artifactTempDirectoryPromise;
+  };
+
+  const writeArtifactTempFile = async (html: string): Promise<string> => {
+    const artifactDir = await artifactTempDirectory();
+    const artifactFile = path.join(artifactDir, `artifact-${crypto.randomUUID()}.html`);
+    await fs.writeFile(artifactFile, html, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    return artifactFile;
+  };
+
+  // Open self-contained artifact HTML in a large sandboxed Electron window.
+  // Live Agent Drafter apps use their explicit browser link instead.
   const openArtifactInWindow = async (payload: OpenArtifactPayload) => {
     try {
-      const html = await prepareArtifactHtml(payload.html);
-
       const isDark = payload.theme === 'dark';
+      const html = wrapArtifactForBrowser(
+        injectArtifactHostTheme(await prepareArtifactHtml(payload.html), isDark ? 'dark' : 'light')
+      );
       const win = new BrowserWindow({
         title: payload.title || 'Biorouter Artifact',
         width: Math.min(Math.max(payload.width || 1000, 480), 1600),
@@ -4588,12 +4570,14 @@ async function appMain() {
           backgroundThrottling: true,
         },
       });
-      // Route external links to the system browser; keep the artifact in-window.
-      win.webContents.setWindowOpenHandler(({ url }) => {
-        if (/^https?:\/\//.test(url)) {
-          shell.openExternal(url);
+      // Artifact scripts cannot create windows or trigger the system browser.
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      const isArtifactPreviewFrame = trackArtifactPreviewFrames(win.webContents);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      win.webContents.on('will-frame-navigate' as any, (event: any) => {
+        if (isArtifactPreviewFrame(event.frame) && !isAllowedArtifactFrameNavigation(event.url)) {
+          event.preventDefault();
         }
-        return { action: 'deny' };
       });
 
       // Self-contained artifact HTML can be several megabytes — Auto Visualiser
@@ -4618,18 +4602,15 @@ async function appMain() {
     }
   };
 
-  // Open a self-contained artifact in the user's default browser instead of an
-  // Electron window (the artifact preview's "expand" uses this). An AGENTIC
-  // artifact needs the managed window's context for the ACP bridge, so those fall
-  // back to a window rather than break silently in a plain browser tab.
+  // Open a self-contained, offline artifact preview in the user's default browser.
+  // Live Agent Drafter apps are launched through their explicit `/apps/<id>/` link.
   const openArtifactInBrowser = async (payload: OpenArtifactPayload) => {
-    if (payload.html.includes('"transport":"bridge"')) {
-      return openArtifactInWindow(payload);
-    }
     try {
-      const html = injectArtifactHostTheme(
-        injectArtifactBrowserCsp(await prepareArtifactHtml(payload.html)),
-        payload.theme === 'dark' ? 'dark' : 'light'
+      const html = wrapArtifactForBrowser(
+        injectArtifactHostTheme(
+          await prepareArtifactHtml(payload.html),
+          payload.theme === 'dark' ? 'dark' : 'light'
+        )
       );
       const artifactFile = await writeArtifactTempFile(html);
       await shell.openExternal(pathToFileURL(artifactFile).href);
@@ -4640,12 +4621,14 @@ async function appMain() {
     }
   };
 
-  ipcMain.handle('open-artifact-window', (_event, payload: OpenArtifactPayload) =>
-    openArtifactInWindow(payload)
-  );
-  ipcMain.handle('open-artifact-in-browser', (_event, payload: OpenArtifactPayload) =>
-    openArtifactInBrowser(payload)
-  );
+  ipcMain.handle('open-artifact-window', (_event, payload: unknown) => {
+    const normalized = normalizeArtifactPayload(payload);
+    return normalized ? openArtifactInWindow(normalized) : { ok: false };
+  });
+  ipcMain.handle('open-artifact-in-browser', (_event, payload: unknown) => {
+    const normalized = normalizeArtifactPayload(payload);
+    return normalized ? openArtifactInBrowser(normalized) : { ok: false };
+  });
 
   ipcMain.handle('launch-app', async (event, biorouterApp: BioRouterApp) => {
     try {

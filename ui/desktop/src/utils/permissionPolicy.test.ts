@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAllowedArtifactFrameNavigation,
   isAllowedRendererPermission,
   isAppOrigin,
   shouldOpenExternalNavigation,
@@ -31,8 +32,52 @@ describe('permissionPolicy', () => {
     expect(shouldOpenExternalNavigation('http://localhost:5174/', appUrl)).toBe(false);
     expect(shouldOpenExternalNavigation('http://localhost:5174/pair', appUrl)).toBe(false);
     expect(shouldOpenExternalNavigation('https://example.com/report', appUrl)).toBe(true);
+    expect(shouldOpenExternalNavigation('https://user:secret@example.com/', appUrl)).toBe(false);
+    expect(
+      shouldOpenExternalNavigation(`https://example.com/${'x'.repeat(9 * 1024)}`, appUrl)
+    ).toBe(false);
     expect(shouldOpenExternalNavigation('file:///tmp/report.pdf', appUrl)).toBe(false);
     expect(shouldOpenExternalNavigation('not a URL', appUrl)).toBe(false);
+  });
+
+  it('keeps artifact frames on srcdoc or the configured HTML proxy', () => {
+    expect(isAllowedArtifactFrameNavigation('about:srcdoc')).toBe(true);
+    expect(isAllowedArtifactFrameNavigation('about:blank')).toBe(true);
+    expect(isAllowedArtifactFrameNavigation('data:text/html,escape')).toBe(false);
+    expect(isAllowedArtifactFrameNavigation('blob:https://example.test/id')).toBe(false);
+    const proxyBase = 'http://127.0.0.1:8765';
+    expect(
+      isAllowedArtifactFrameNavigation(
+        'http://127.0.0.1:8765/mcp-ui-proxy?contentType=rawhtml&waitForRenderData=true',
+        proxyBase
+      )
+    ).toBe(true);
+    expect(isAllowedArtifactFrameNavigation('http://127.0.0.1:8765/mcp-ui-proxy', proxyBase)).toBe(
+      false
+    );
+    expect(
+      isAllowedArtifactFrameNavigation(
+        'http://127.0.0.1:8765/mcp-ui-proxy?url=https://example.test',
+        proxyBase
+      )
+    ).toBe(false);
+    expect(
+      isAllowedArtifactFrameNavigation(
+        'http://127.0.0.1:8765/mcp-ui-proxy?contentType=rawhtml&secret=leak',
+        proxyBase
+      )
+    ).toBe(false);
+    expect(isAllowedArtifactFrameNavigation('http://127.0.0.1:9000/mcp-ui-proxy', proxyBase)).toBe(
+      false
+    );
+    expect(
+      isAllowedArtifactFrameNavigation('http://user:secret@127.0.0.1:8765/mcp-ui-proxy', proxyBase)
+    ).toBe(false);
+    expect(isAllowedArtifactFrameNavigation('http://127.0.0.1:8765/apps/escape/', proxyBase)).toBe(
+      false
+    );
+    expect(isAllowedArtifactFrameNavigation('https://example.test/exfiltrate')).toBe(false);
+    expect(isAllowedArtifactFrameNavigation('file:///etc/passwd')).toBe(false);
   });
 
   it('allows only audio capture requested by Biorouter itself', () => {

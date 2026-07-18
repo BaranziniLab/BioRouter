@@ -214,7 +214,7 @@ fn test_acp_with_builtin_and_mcp() {
                 include_str!("./test_data/openai_builtin_search.txt"),
             ),
             (
-                r#"lookup/get_code: Get the code"#.into(),
+                r#"module_lookup[\"get_code\"]({}): string - Get the code"#.into(),
                 include_str!("./test_data/openai_builtin_read_modules.txt"),
             ),
             (

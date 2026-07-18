@@ -1,38 +1,20 @@
 use axum::{
-    extract::Query,
-    http::{header, StatusCode},
+    http::header,
     response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct ProxyQuery {
-    secret: String,
-}
 
 const MCP_UI_PROXY_HTML: &str = include_str!("templates/mcp_ui_proxy.html");
 
 #[utoipa::path(
     get,
     path = "/mcp-ui-proxy",
-    params(
-        ("secret" = String, Query, description = "Secret key for authentication")
-    ),
     responses(
         (status = 200, description = "MCP UI proxy HTML page", content_type = "text/html"),
-        (status = 401, description = "Unauthorized - invalid or missing secret"),
     )
 )]
-async fn mcp_ui_proxy(
-    axum::extract::State(secret_key): axum::extract::State<String>,
-    Query(params): Query<ProxyQuery>,
-) -> Response {
-    if params.secret != secret_key {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
+async fn mcp_ui_proxy() -> Response {
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -46,8 +28,20 @@ async fn mcp_ui_proxy(
         .into_response()
 }
 
-pub fn routes(secret_key: String) -> Router {
-    Router::new()
-        .route("/mcp-ui-proxy", get(mcp_ui_proxy))
-        .with_state(secret_key)
+pub fn routes() -> Router {
+    Router::new().route("/mcp-ui-proxy", get(mcp_ui_proxy))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[tokio::test]
+    async fn proxy_document_does_not_require_a_secret_in_its_url() {
+        assert_eq!(mcp_ui_proxy().await.status(), StatusCode::OK);
+        assert!(!MCP_UI_PROXY_HTML.contains("payload.sandbox"));
+        assert!(!MCP_UI_PROXY_HTML.contains("params.get('url')"));
+        assert!(MCP_UI_PROXY_HTML.contains("sandbox', 'allow-scripts allow-downloads'"));
+    }
 }

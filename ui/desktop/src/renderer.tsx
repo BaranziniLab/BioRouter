@@ -9,6 +9,7 @@ import { ConfigProvider } from './components/ConfigContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import SuspenseLoader from './suspense-loader';
 import { client } from './api/client.gen';
+import { wrapArtifactForBrowser } from './utils/artifactSecurity';
 
 const App = lazy(() => import('./App'));
 
@@ -370,12 +371,12 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       openDirectoryInExplorer: async () => {},
       openArtifactWindow: async (payload: { html: string } | string) => {
         const html = typeof payload === 'string' ? payload : payload.html;
-        const blob = new Blob([html], { type: 'text/html' });
+        const blob = new Blob([wrapArtifactForBrowser(html)], { type: 'text/html' });
         window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
       },
       openArtifactInBrowser: async (payload: { html: string } | string) => {
         const html = typeof payload === 'string' ? payload : payload.html;
-        const blob = new Blob([html], { type: 'text/html' });
+        const blob = new Blob([wrapArtifactForBrowser(html)], { type: 'text/html' });
         window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
       },
       prepareArtifactHtml: async ({ html }: { html: string }) => ({ html }),

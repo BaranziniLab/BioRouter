@@ -73,6 +73,52 @@ describe('collectArtifactsFromMessages', () => {
     });
   });
 
+  it('collects external resource links as click-only preview artifacts', () => {
+    const request = visibleMessage([
+      {
+        type: 'toolRequest',
+        id: 'tool-link',
+        toolCall: {
+          status: 'success',
+          value: { name: 'reports__publish', arguments: {} },
+        },
+      },
+    ]);
+    const response: Message = {
+      id: crypto.randomUUID(),
+      role: 'tool',
+      created: 2,
+      metadata: { userVisible: false, agentVisible: true },
+      content: [
+        {
+          type: 'toolResponse',
+          id: 'tool-link',
+          toolResult: {
+            status: 'success',
+            value: {
+              is_error: false,
+              content: [
+                {
+                  uri: 'https://example.test/report.html',
+                  name: 'report',
+                  title: 'Study report',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+
+    expect(collectArtifactsFromMessages([request, response])).toEqual([
+      {
+        kind: 'externalUrl',
+        title: 'Study report',
+        url: 'https://example.test/report.html',
+      },
+    ]);
+  });
+
   it('ignores orphaned hidden tool responses without a visible request', () => {
     expect(collectArtifactsFromMessages([hiddenToolResponse('tool-1', '<p>Hidden</p>')])).toEqual(
       []

@@ -11,9 +11,12 @@ import { useState, useEffect } from 'react';
 import { EmbeddedResource } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
 import { toastError, toastInfo } from '../toasts';
-import { Maximize2 } from './icons/app-icons';
+import { injectArtifactBrowserCsp } from '../utils/artifactSecurity';
+import { ExternalLink, Maximize2 } from './icons/app-icons';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
+
+const MAX_UI_PROMPT_BYTES = 64 * 1024;
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -68,16 +71,17 @@ export default function MCPUIResourceRenderer({
 }: MCPUIResourceRendererProps) {
   const { resolvedTheme } = useTheme();
   const [proxyUrl, setProxyUrl] = useState<string | undefined>(undefined);
+  const [pendingExternalUrl, setPendingExternalUrl] = useState<string | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchProxyUrl = async () => {
       try {
         const apiHost = await window.electron.getBiorouterdHostPort();
-        const secretKey = await window.electron.getSecretKey();
-        if (apiHost && secretKey) {
-          setProxyUrl(`${apiHost}/mcp-ui-proxy?secret=${encodeURIComponent(secretKey)}`);
+        if (apiHost) {
+          setProxyUrl(`${apiHost}/mcp-ui-proxy`);
         } else {
-          console.error('Failed to get biorouterd host/port or secret key');
+          console.error('Failed to get biorouterd host/port');
         }
       } catch (error) {
         console.error('Error fetching MCP-UI Proxy URL:', error);
@@ -115,23 +119,23 @@ export default function MCPUIResourceRenderer({
       const { prompt } = actionEvent.payload;
 
       if (appendPromptToChat) {
-        try {
-          appendPromptToChat(prompt);
-          window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom'));
-          return {
-            status: 'success' as const,
-            message: 'Prompt sent to chat successfully',
-          };
-        } catch (error) {
+        if (
+          typeof prompt !== 'string' ||
+          new TextEncoder().encode(prompt).byteLength > MAX_UI_PROMPT_BYTES
+        ) {
           return {
             status: 'error' as const,
             error: {
-              code: UIActionErrorCode.PROMPT_FAILED,
-              message: 'Failed to send prompt to chat',
-              details: error instanceof Error ? error.message : error,
+              code: UIActionErrorCode.INVALID_PARAMS,
+              message: 'Prompt is invalid or too large',
             },
           };
         }
+        setPendingPrompt(prompt);
+        return {
+          status: 'pending' as const,
+          message: 'Waiting for the user to send the prompt',
+        };
       }
 
       return {
@@ -150,8 +154,15 @@ export default function MCPUIResourceRenderer({
       const { url } = actionEvent.payload;
 
       try {
+        if (url.length > 8 * 1024) {
+          throw new TypeError('Invalid URL: value is too long');
+        }
         const urlObj = new URL(url);
-        if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        if (
+          !['http:', 'https:'].includes(urlObj.protocol) ||
+          urlObj.username !== '' ||
+          urlObj.password !== ''
+        ) {
           return {
             status: 'error' as const,
             error: {
@@ -162,10 +173,10 @@ export default function MCPUIResourceRenderer({
           };
         }
 
-        await window.electron.openExternal(url);
+        setPendingExternalUrl(urlObj.toString());
         return {
-          status: 'success' as const,
-          message: `Opened ${url} in default browser`,
+          status: 'pending' as const,
+          message: 'Waiting for the user to open the link',
         };
       } catch (error) {
         if (error instanceof TypeError && error.message.includes('Invalid URL')) {
@@ -305,44 +316,30 @@ export default function MCPUIResourceRenderer({
   const prefW = pxOf(prefSize?.[0]);
   const prefH = pxOf(prefSize?.[1]);
 
-  const decodeArtifactHtml = (): string => {
-    if (resource.blob) {
-      try {
-        const bin = window.atob(resource.blob);
-        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        return new globalThis.TextDecoder().decode(bytes);
-      } catch {
-        return '';
-      }
-    }
-    return resource.text || '';
-  };
-
   const fallbackArtifactTitle =
     titleFromResourceUri(resource.uri) || resource.uri?.split('/').pop() || 'Artifact';
   const artifactSource = artifactSourceFromResource(content, fallbackArtifactTitle);
   const artifactTitle = artifactSource?.title ?? fallbackArtifactTitle;
 
   const handleOpenArtifact = async () => {
-    const html = decodeArtifactHtml();
-    if (artifactSource && onOpenArtifact && artifactSource.kind !== 'html') {
-      onOpenArtifact(artifactSource);
-      return;
-    }
-    if (!html) {
-      toastError({
-        title: 'Artifact unavailable',
-        msg: 'Could not read the artifact contents.',
-      });
-      return;
-    }
     if (artifactSource && onOpenArtifact) {
       onOpenArtifact(artifactSource);
       return;
     }
+    if (artifactSource?.kind === 'externalUrl') {
+      await window.electron.openExternal(artifactSource.url);
+      return;
+    }
+    if (artifactSource?.kind !== 'html') {
+      toastError({
+        title: 'Artifact unavailable',
+        msg: 'This resource does not provide a browser-safe HTML preview.',
+      });
+      return;
+    }
     try {
       await window.electron.openArtifactWindow({
-        html,
+        html: artifactSource.html,
         title: artifactTitle,
         width: prefW || 1100,
         height: prefH || 820,
@@ -356,13 +353,15 @@ export default function MCPUIResourceRenderer({
     }
   };
 
-  if (artifactSource && onOpenArtifact) {
+  if (artifactSource && (onOpenArtifact || artifactSource.kind === 'externalUrl')) {
+    const destination =
+      artifactSource.kind === 'externalUrl' ? 'in the default browser' : 'in the artifact viewer';
     return (
       <div className="group mt-3 flex w-full max-w-xl items-center gap-2">
         <button
           type="button"
           onClick={handleOpenArtifact}
-          aria-label={`Open ${artifactTitle} in the artifact viewer`}
+          aria-label={`Open ${artifactTitle} ${destination}`}
           className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border-subtle bg-background-default/75 px-3 py-2.5 text-left shadow-popover transition-colors hover:bg-background-medium"
         >
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background-medium text-text-muted">
@@ -381,8 +380,78 @@ export default function MCPUIResourceRenderer({
     );
   }
 
+  if (artifactSource?.kind !== 'html') {
+    return (
+      <div className="mt-3 text-xs text-text-muted" role="status">
+        No browser-safe preview is available for {artifactTitle}.
+      </div>
+    );
+  }
+
+  const securedResource = {
+    ...content.resource,
+    blob: undefined,
+    text: injectArtifactBrowserCsp(artifactSource.html),
+    mimeType: 'text/html',
+  };
+
   return (
     <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-popover">
+      {pendingExternalUrl && (
+        <div className="flex items-center gap-2 border-b border-border-subtle bg-background-default px-3 py-2 text-xs">
+          <span className="min-w-0 flex-1 truncate text-text-muted">{pendingExternalUrl}</span>
+          <button
+            type="button"
+            onClick={() => {
+              void window.electron.openExternal(pendingExternalUrl);
+              setPendingExternalUrl(null);
+            }}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle px-2 font-medium text-text-default hover:bg-background-medium"
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            Open link
+          </button>
+          <button
+            type="button"
+            onClick={() => setPendingExternalUrl(null)}
+            className="h-7 shrink-0 rounded-md px-2 text-text-muted hover:bg-background-medium hover:text-text-default"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {pendingPrompt !== null && (
+        <div className="flex items-center gap-2 border-b border-border-subtle bg-background-default px-3 py-2 text-xs">
+          <span className="min-w-0 flex-1 truncate text-text-muted">
+            Artifact prompt: {pendingPrompt}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                appendPromptToChat?.(pendingPrompt);
+                window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom'));
+                setPendingPrompt(null);
+              } catch (error) {
+                toastError({
+                  title: 'Could not send artifact prompt',
+                  msg: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }}
+            className="inline-flex h-7 shrink-0 items-center rounded-md border border-border-subtle px-2 font-medium text-text-default hover:bg-background-medium"
+          >
+            Send prompt
+          </button>
+          <button
+            type="button"
+            onClick={() => setPendingPrompt(null)}
+            className="h-7 shrink-0 rounded-md px-2 text-text-muted hover:bg-background-medium hover:text-text-default"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="absolute right-2 top-2 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
@@ -398,7 +467,7 @@ export default function MCPUIResourceRenderer({
       </div>
       <div className="overflow-hidden rounded-lg bg-transparent" style={{ minHeight: 320 }}>
         <UIResourceRenderer
-          resource={content.resource}
+          resource={securedResource}
           onUIAction={handleUIAction}
           supportedContentTypes={['rawHtml', 'externalUrl']} // Biorouter does not support remoteDom content
           htmlProps={{
@@ -413,6 +482,10 @@ export default function MCPUIResourceRenderer({
               // usage of this is experimental, leaving in place for demos
               host: 'biorouter',
               theme: resolvedTheme,
+            },
+            iframeProps: {
+              // @ts-expect-error -- @mcp-ui/client narrows iframeProps to generic HTMLAttributes.
+              name: 'biorouter-artifact-preview',
             },
             proxy: proxyUrl, // refer to https://mcpui.dev/guide/client/using-a-proxy
           }}
