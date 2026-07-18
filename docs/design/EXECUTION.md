@@ -540,6 +540,47 @@ overlooked mask render shows BR, not the old circle.
 
 ---
 
+## Brand font → Inter, and a re-tune (2026-07-18)
+
+**Why the font changed.** The mark shipped in the native UI stack
+(`-apple-system` → **SF Pro** on macOS). But Apple's font license forbids SF Pro
+"in app icons, logos, or any other trademark use" — legitimate as live UI text,
+not as a brand mark, and doubly wrong once baked into cross-platform icon rasters
+and the served landing SVG. A native stack also renders the logo in a *different*
+face per OS (SF Pro / Segoe UI / Roboto), which a logo must never do.
+
+**The font chosen.** From a 7-font study (all **SIL Open Font License**, which
+explicitly permits logos + embedding + outlining), the user picked **Inter** —
+the closest to SF Pro's UI face, with the "rounder" feel they asked for. OFL
+resolves both problems at once: legal for a logo, and fixed across platforms.
+
+**Re-tuned in the studios** (now set in Inter), exported by the user:
+- **Wordmark** — weight 600, letter-spacing 0, underline gap 2%, thickness 10%,
+  underline width 100%, vertical offset 0 (word + underline centered as one body).
+- **BR icon** — mark size 60% of the icon, vertical offset −10px, underline gap
+  2% (cap 262, underline 39 thick, union 306 = 60% on the 512 canvas). The
+  wordmark studio gained a **Vertical position** dial it had lacked.
+
+**How Inter ships.**
+- In-app: a single latin-subset **variable** Inter `@font-face` is embedded (data
+  URI, not fetched) in `main.css` — a deliberate, *logo-only* exception to D-06's
+  native-stack rule, used only by `<BioRouterWordmark>`/`<BioRouterMark>`. The
+  components now name `Inter` first in their font stack (native stack stays as the
+  load fallback); the monogram's plate fill is pinned to the approved 60%.
+- Assets: `icon.svg` / `br-icon-beige.svg` / `br-icon-transparent.svg` /
+  `glyph.svg` embed a weight-800 Inter `@font-face` so they render Inter without
+  it installed. The 1024 PNG masters (`br-icon-beige.png`, `br-glyph-mono.png`)
+  were re-rendered through Chromium (still not `sips` — it flattens weight), and
+  `prepare.sh` re-propagated every raster: `icon.icns`/`.ico`/`.png` + light
+  variants, the menu-bar templates, `landing/icon.{svg,png}` (+ video copies),
+  and the CLI `logo_{light,dark}.png`.
+
+The mark is otherwise unchanged — same navy `#052049` "B/Bio", coral `#b85a32`
+"R/Router", split underline, and navy → UCSF teal `#18A3AC` on dark. Only the
+letterforms are now a font BioRouter is licensed to fly as its logo.
+
+---
+
 ## Follow-on UI + terminal fixes (2026-07-17, on user review)
 
 Eight review fixes, all committed, gates green (**1290/1290**, tsc + lint clean).
