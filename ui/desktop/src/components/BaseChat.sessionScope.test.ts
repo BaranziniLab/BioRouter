@@ -9,8 +9,8 @@ import {
 
 /**
  * These events are BROADCAST on `window`, so every mounted BaseChat hears every
- * one of them. That is latent on /pair today (one BaseChat) but the Dashboard
- * already mounts N of them, and tabbed chat will mount N on /pair.
+ * one of them. That is latent on /pair today (one BaseChat) but tabbed chat
+ * mounts N of them on /pair.
  *
  * Mounting two real BaseChats here is not practical — BaseChatContent is a
  * ~1900-line component that needs react-router plus useConfig / useSidebar /

@@ -40,7 +40,7 @@ const TerminalDockContext = createContext<TerminalDockContextValue | null>(null)
  * Returns null outside a provider — the ChatContext.tsx:74-77 pattern.
  *
  * That null is what makes the seam free: with no provider mounted (every surface
- * other than /pair — the Dashboard, /extensions, the Hub), BaseChat keeps its own
+ * other than /pair — /extensions, the Hub), BaseChat keeps its own
  * local dock state and its behaviour is byte-identical to before this existed.
  */
 export function useTerminalDock(): TerminalDockContextValue | null {

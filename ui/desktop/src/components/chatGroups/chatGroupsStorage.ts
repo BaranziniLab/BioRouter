@@ -8,9 +8,9 @@ const WINDOW_ID_KEY = 'biorouter.chatgroups.windowId';
 /**
  * R3: two Electron windows share an origin and would clobber ONE localStorage
  * key. createChatWindow (main.ts:~894) spawns a real second renderer, so this
- * is not hypothetical. The Dashboard has exactly this bug today with
- * `biorouter.dashboard.v2`, unnoticed only because nobody opens two dashboards.
- * Tabs will be used daily. Do not copy the Dashboard here.
+ * is not hypothetical. The now-removed dashboard mode shipped exactly this bug
+ * in `biorouter.dashboard.v2`, unnoticed only because nobody opened two
+ * dashboards at once. Tabs are used daily, so scope the key per window.
  *
  * The id is minted into sessionStorage rather than plumbed through appConfig:
  * sessionStorage is per-BrowserWindow by construction (each renderer gets its
