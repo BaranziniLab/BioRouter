@@ -1,36 +1,67 @@
-# Diverge — comprehensive behavior checklist
+# Diverge behavior checklist
 
-A catalog of concrete user actions for the **Diverge** feature and the behavior
-BioRouter must exhibit for each. Use it as a manual QA script and as the spec
-the automated tests encode. Items marked **[T]** are covered by an automated
-test; **[UI]** require driving the real app.
+> **What this is.** A catalog of 68 concrete user actions for **Diverge** — the feature
+> that branches a conversation into a new session — paired with the behavior BioRouter
+> must exhibit for each. It doubles as a manual QA script and as the spec the automated
+> tests encode.
+> **Status:** Current. Last revised 2026-07-18, when the ~25 dashboard-canvas items were
+> deleted alongside dashboard mode itself.
+> **Audience:** maintainers of the desktop chat UI, and anyone running a Diverge
+> regression pass.
 
-> **2026-07-18 — dashboard mode removed.** This checklist previously carried
-> ~25 items about diverging on the free-floating dashboard canvas, including a
-> whole section on "Chat ⇄ Dashboard isolation". Dashboard mode has been
-> removed in favour of tabs / chat groups / split panes, so diverge no longer
-> branches on canvas-vs-chat — it *always* opens a new Electron window. Those
-> items were vacuous and have been deleted; everything below still describes
-> real behaviour. See
-> [`superpowers/specs/2026-07-18-dashboard-mode-removal.md`](superpowers/specs/2026-07-18-dashboard-mode-removal.md)
-> for what was removed. (Release notes and the dated dashboard plans/specs are
-> historical records and were left untouched.)
+Three labelling schemes are used below, and every one of them is cited elsewhere in the
+repo, so keep the identifiers stable when editing:
 
-Core invariants (everything below is a consequence of these):
+- **Items 1–68** run in one continuous sequence across the lettered sections. Use the
+  section index to find which section an item number lives in.
+- **Sections A–I** group the items by surface or concern.
+- **Invariants I1–I4** are the four core guarantees stated below; the rest of the
+  document is a consequence of them, and section I checks I2 directly.
 
-- **I1.** Diverge branches the conversation into a *new session* that inherits
-  the full history; the **original session is never mutated**.
-- **I2.** Diverge only ever *spins up a new chat surface*. It changes nothing
-  else about the agent, the current window, or other conversations.
-- **I3.** Diverge **always opens a new, focused Electron window**. There is a
-  single diverge surface — it never navigates the current window and never
-  re-uses a tab or split pane.
-- **I4.** Closing a chat surface **never deletes a conversation.** A branch,
-  once created, stays in History until the user deletes it explicitly.
+Each item is tagged with how it is verified: **[T]** is covered by an automated test
+(see the coverage map at the end); **[UI]** requires driving the real app.
 
----
+Two window-model terms appear throughout. **Hub** is the landing screen where a user
+starts a new conversation (`ui/desktop/src/components/Hub.tsx`). **Pair** is the tabbed
+chat route at `/pair` that a conversation opens into.
 
-## A. Button presence & affordance
+> **Note.** 2026-07-18 — dashboard mode removed. This checklist previously carried ~25
+> items about diverging on the free-floating dashboard canvas, including a whole section
+> on "Chat ⇄ Dashboard isolation". Dashboard mode has been removed in favour of tabs,
+> chat groups and split panes, so diverge no longer branches on canvas-vs-chat — it
+> *always* opens a new Electron window. Those items were vacuous and have been deleted;
+> everything below still describes real behaviour. See the
+> [dashboard mode history](../history/dashboard-mode/README.md) for what was removed.
+> Release notes and the dated dashboard plans and specs are historical records and were
+> left untouched.
+
+## Core invariants
+
+- **I1.** Diverge branches the conversation into a *new session* that inherits the full
+  history; the **original session is never mutated**.
+- **I2.** Diverge only ever *spins up a new chat surface*. It changes nothing else about
+  the agent, the current window, or other conversations.
+- **I3.** Diverge **always opens a new, focused Electron window**. There is a single
+  diverge surface — it never navigates the current window and never re-uses a tab or
+  split pane.
+- **I4.** Closing a chat surface **never deletes a conversation.** A branch, once
+  created, stays in History until the user deletes it explicitly.
+
+## Section index
+
+| Section | Topic | Items |
+|---------|-------|-------|
+| A | Button presence and affordance | 1–8 |
+| B | Diverge in a chat window | 9–20 |
+| C | Diverge via the `/diverge` slash command (GUI) | 21–27 |
+| D | Diverge via `/diverge` in the CLI and TUI | 28–36 |
+| E | Closing surfaces and data preservation | 37–39 |
+| F | Naming and lineage | 40–46 |
+| G | Edge cases and failure modes | 47–56 |
+| H | Persistence and reload | 57–58 |
+| I | "Changes nothing else" guarantees (I2) | 59–68 |
+
+## A. Button presence and affordance
 
 1. **[UI]** Finish an assistant reply in a chat → a **Diverge** action appears next to **Copy** on hover.
 2. **[UI]** While the assistant is still streaming → Diverge is **not** shown.
@@ -56,7 +87,7 @@ Core invariants (everything below is a consequence of these):
 19. **[UI]** Diverge from the Hub landing chat behaves the same as from Pair.
 20. **[UI]** Model / mode / extensions in the new window match the branch's inherited config; the original's are untouched.
 
-## C. Diverge via `/diverge` slash command (GUI)
+## C. Diverge via the `/diverge` slash command (GUI)
 
 21. **[UI]** Type `/diverge` in the chat input → it appears in the slash popover.
 22. **[UI]** Select it (Enter) → inserts `/diverge`; Enter again → branches (does **not** send a chat message).
@@ -66,25 +97,25 @@ Core invariants (everything below is a consequence of these):
 26. **[UI]** `/diverge` with no active session yet (empty Hub) is a no-op, input clears.
 27. **[UI]** After `/diverge`, the input is cleared and the original conversation is unchanged.
 
-## D. Diverge via CLI / TUI `/diverge`
+## D. Diverge via `/diverge` in the CLI and TUI
 
 28. **[T]** CLI parser maps `/diverge` → `InputResult::Diverge`; near-misses don't.
 29. **[T]** `/diverge` is in the CLI completion registry.
 30. **[T]** The deeplink is `biorouter://diverge?session_id=…&dir=…`, URL-encoded.
 31. **[UI]** Running `/diverge` in the TUI prints "Diverged into a new window (session …)".
 32. **[UI]** The TUI's own conversation is unchanged after `/diverge`.
-33. **[UI]** The deeplink opens a **new, focused** desktop window with the branch (main.ts `diverge` handler).
+33. **[UI]** The deeplink opens a **new, focused** desktop window with the branch (`main.ts` `diverge` handler).
 34. **[UI]** If the desktop app can't be opened, the TUI still reports the created branch + the link.
 35. **[T]** A branch session row is created in the DB with full history + lineage.
 36. **[UI]** Classic CLI `/diverge` renders the success/"couldn't open" output.
 
-## E. Closing surfaces & data preservation
+## E. Closing surfaces and data preservation
 
 37. **[UI]** Closing a branch window **never** deletes its session — it is still listed in History.
 38. **[UI]** Closing the *original* window never affects the branch, and vice-versa.
 39. **[UI]** Close a branch window, then reopen it from History → it still loads with the full inherited history.
 
-## F. Naming & lineage
+## F. Naming and lineage
 
 40. **[T]** Branch name = `"{parent} (branch 1)"`, `"(branch 2)"`, … (sibling-numbered).
 41. **[T]** Diverging a branch flattens numbering (no `(branch 1) (branch 1)`).
@@ -94,7 +125,7 @@ Core invariants (everything below is a consequence of these):
 45. **[UI]** History shows "⑂ branched from {parent}" on a branch; parent shows none.
 46. **[T]** A custom name passed to diverge overrides the auto branch name.
 
-## G. Edge cases & failure modes
+## G. Edge cases and failure modes
 
 47. **[T]** Diverge with no session id → error toast, nothing opens.
 48. **[T]** Backend diverge fails → error toast, nothing opens, original intact.
@@ -107,7 +138,7 @@ Core invariants (everything below is a consequence of these):
 55. **[UI]** Diverge while the agent is mid-stream is not offered (button hidden while streaming).
 56. **[T]** LIKE-wildcard names (`100%_done`) don't break sibling counting.
 
-## H. Persistence & reload
+## H. Persistence and reload
 
 57. **[UI]** A branch window survives an app restart (the session is in History).
 58. **[UI]** Reload the app with a branch window open → it re-loads its session with full history.
@@ -125,13 +156,19 @@ Core invariants (everything below is a consequence of these):
 67. **[UI]** The original conversation can still be exported/diverged/edited after a diverge.
 68. **[UI]** No extra biorouterd backends leak per diverge beyond the new window's own.
 
----
-
-### Automated coverage map
+## Automated coverage map
 
 | Area | Test file |
 |------|-----------|
-| Hook behaviour (always a new window, failure paths) | `src/hooks/useDiverge.test.tsx` |
-| Button affordance & failure modes | `src/components/MessageDivergeLink.test.tsx` |
+| Hook behaviour (always a new window, failure paths) | `ui/desktop/src/hooks/useDiverge.test.tsx` |
+| Button affordance & failure modes | `ui/desktop/src/components/MessageDivergeLink.test.tsx` |
 | CLI parsing + deeplink | `crates/biorouter-cli` (`session::input::tests`, `session::tests`) |
 | Backend naming/lineage/history | `crates/biorouter` (`session_manager::tests`), `crates/biorouter-server` (`routes::session::diverge_tests`) |
+
+## Related documentation
+
+- [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) — how to drive the real app for the `[UI]` items above.
+- [Dashboard mode history](../history/dashboard-mode/README.md) — the removal that deleted ~25 items from this checklist.
+- [Sessions](../sessions/README.md) — the session and history model that diverge branches from.
+- [CLI command reference](../cli/command-reference.md) — where `/diverge` sits among the other CLI and TUI commands.
+- [CLI QA checklist](../cli/qa-checklist.md) — the sibling manual test script covering the terminal surfaces.

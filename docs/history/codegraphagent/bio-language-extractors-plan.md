@@ -1,4 +1,14 @@
-# CodeGraphAgent Bio-Languages Plan (Plan 2)
+# CodeGraphAgent bio-language extractors plan
+
+> **What this is.** The task-by-task implementation plan for adding R, Julia, MATLAB and Perl tree-sitter extractors to CodeGraphAgent's vendored CodeGraph engine, and shipping them as `engine-v0.2.0` plus a `.brxt v0.1.0` release.
+> **Status:** Historical record — this work was completed. CodeGraphAgent ships today as a marketplace extension covering 23 languages "incl. R/Julia/MATLAB/Perl", which is exactly this plan's deliverable. The unticked checkboxes below are the plan as authored, not an indication of outstanding work.
+> **Audience:** agents executing the plan, and developers tracing how the four bio-language extractors were added.
+
+This plan describes work in a **separate repository**, [`Broccolito/CodeGraphAgent`](https://github.com/Broccolito/CodeGraphAgent), not in the BioRouter tree. It is filed under BioRouter's docs because BioRouter is the consuming application. It is called **"Plan 2"** because it is the second of two plans derived from [the CodeGraphAgent extension design](extension-design.md): [the foundation plan](foundation-plan.md) ("Plan 1") built the repo scaffold, Python shim and release pipeline, and this one adds the languages on top.
+
+> **How to read the identifiers.** Work is grouped into lettered **phases** named after their subject — **Q** (acquire WASM grammars), **R** (R extractor), **J** (Julia), **M** (MATLAB), **Pe** (Perl), **Z** (release) — and each phase contains numbered **tasks** (`Q1`, `R3`, `Pe5`, …). The letters carry no ordering meaning beyond the sequence in which the phases appear here.
+
+> **Note.** Every command block below hardcodes the original author's checkout path, `/Users/wgu/Desktop/CodeGraphAgent/`. Read it as "your CodeGraphAgent checkout". The pre-work commit `a5e62e6` likewise refers to that external repository and cannot be resolved from the BioRouter tree.
 
 > **For agentic workers:** Use superpowers:subagent-driven-development to execute task-by-task.
 
@@ -6,11 +16,11 @@
 
 **Architecture:** For each language, follow upstream's well-factored pattern: vendor the tree-sitter WASM grammar into `engine/src/extraction/wasm/`, register it in `engine/src/types.ts` + `engine/src/extraction/grammars.ts`, write a `LanguageExtractor` TS file in `engine/src/extraction/languages/<lang>.ts`, and import it from `engine/src/extraction/languages/index.ts`. Add vitest fixtures. Document in `engine/PATCHES.md`. The `.m` extension is shared between MATLAB and Objective-C, resolved by a content heuristic.
 
-**Tech Stack:** TypeScript (engine), tree-sitter / web-tree-sitter, vitest. No Python changes — the Python shim is language-agnostic.
+**Tech stack:** TypeScript (engine), tree-sitter / web-tree-sitter, vitest. No Python changes — the Python shim is language-agnostic.
 
-**Spec:** [docs/superpowers/specs/2026-05-29-codegraphagent-extension-design.md](../specs/2026-05-29-codegraphagent-extension-design.md) (Plan 2 deliverable per the "Engine fork — language additions for v0.1" section).
+**Spec:** [CodeGraphAgent BioRouter extension design](extension-design.md) (this plan delivers its "Engine fork — language additions for v0.1" section).
 
-**Working directory:** `/Users/wgu/Desktop/CodeGraphAgent/`. Engine source under `engine/`. HEAD before Plan 2 starts: `a5e62e6` (post-v0.1.0-rc1 release).
+**Working directory:** `/Users/wgu/Desktop/CodeGraphAgent/`. Engine source under `engine/`. HEAD before this plan starts: `a5e62e6` (post-v0.1.0-rc1 release).
 
 ---
 
@@ -37,6 +47,10 @@ Expected: file size ~481 KB.
 
 ### Task Q2: Download `tree-sitter-julia.wasm`
 
+**Files:** Create `engine/src/extraction/wasm/tree-sitter-julia.wasm`
+
+- [ ] **Step 1:** Download from tree-sitter/tree-sitter-julia v0.25.0
+
 ```bash
 cd /Users/wgu/Desktop/CodeGraphAgent && \
 gh release download v0.25.0 \
@@ -50,7 +64,11 @@ Expected: ~2.6 MB.
 
 ### Task Q3: Build `tree-sitter-matlab.wasm`
 
+**Files:** Create `engine/src/extraction/wasm/tree-sitter-matlab.wasm`
+
 acristoffers/tree-sitter-matlab doesn't ship WASM as a release asset (only Python wheels). Build it locally via the tree-sitter CLI + Docker.
+
+- [ ] **Step 1:** Clone the grammar and build the WASM
 
 ```bash
 cd /tmp && \
@@ -65,6 +83,10 @@ If the build fails, fall back to using emscripten directly or pin a different MA
 
 ### Task Q4: Download `tree-sitter-perl.wasm`
 
+**Files:** Create `engine/src/extraction/wasm/tree-sitter-perl.wasm`
+
+- [ ] **Step 1:** Download from tree-sitter-perl/tree-sitter-perl v1.0.2
+
 ```bash
 cd /Users/wgu/Desktop/CodeGraphAgent && \
 gh release download v1.0.2 \
@@ -77,6 +99,8 @@ ls -lh engine/src/extraction/wasm/tree-sitter-perl.wasm
 Expected: ~4.1 MB.
 
 ### Task Q5: Commit all four WASMs
+
+- [ ] **Step 1:** Stage and commit the vendored grammars
 
 ```bash
 cd /Users/wgu/Desktop/CodeGraphAgent && \
@@ -108,6 +132,7 @@ Find the existing `export type Language = '...'` definition. Add `'r'`.
 ### Task R3: Create `engine/src/extraction/languages/r.ts`
 
 R AST node kinds (from tree-sitter-r grammar):
+
 - functions: `function_definition` (also `left_assignment` with function value, but `function_definition` is the canonical node)
 - calls: `call`
 - imports: `library` / `require` calls (R has no `import` statement — modules are loaded with `library(pkg)`, `require(pkg)`)
@@ -157,7 +182,7 @@ export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
 };
 ```
 
-### Task R5: vitest fixture + test
+### Task R5: Add vitest fixture and test
 
 Create `engine/__tests__/extraction/r.test.ts`:
 
@@ -214,7 +239,7 @@ Commit as one task: `feat(engine): Julia extractor`.
 
 ---
 
-## Phase M — MATLAB extractor + `.m` disambiguation
+## Phase M — MATLAB extractor and `.m` disambiguation
 
 MATLAB shares `.m` extension with Objective-C. Existing engine maps `.m` → `objc`. We add a content heuristic.
 
@@ -274,7 +299,7 @@ Expected: type-check clean, all engine tests pass (including the new R/Julia/MAT
 
 ### Task Z2: Bump engine version
 
-Edit `engine/package.json` — bump `"version"` from current (likely `0.9.7`) to a new value matching our Plan 2 release tag. Use `0.9.7-bio.1` to express "upstream 0.9.7 + our bio language patches".
+Edit `engine/package.json` — bump `"version"` from current (likely `0.9.7`) to a new value matching our release tag for this plan. Use `0.9.7-bio.1` to express "upstream 0.9.7 + our bio language patches".
 
 ### Task Z3: Update CHANGELOG.md
 
@@ -283,6 +308,7 @@ Bump from `v0.1.0-rc1` to `v0.1.0` with a new bullet listing the 4 bio languages
 ### Task Z4: Bump `release_manifest.json`
 
 Update `engine_version` and `base_url`:
+
 ```json
 {
   "engine_version": "0.2.0",
@@ -293,7 +319,7 @@ Update `engine_version` and `base_url`:
 
 Set the SHAs back to `"PLACEHOLDER_FILLED_AT_RELEASE"` (Task Z6 fills them after the build).
 
-### Task Z5: Commit + push
+### Task Z5: Commit and push
 
 ```bash
 git add -A && git commit -m "release: prep for engine-v0.2.0 + .brxt v0.1.0" && git push
@@ -318,7 +344,7 @@ gh release view v0.1.0
 
 ---
 
-## Done — what's working after Plan 2
+## Done — what's working after this plan
 
 - 4 new languages: R, Julia, MATLAB, Perl
 - Each with: WASM grammar + LanguageExtractor + vitest tests + PATCHES.md entry
@@ -334,3 +360,10 @@ gh release view v0.1.0
 | R/Julia AST node names differ from what we wrote | First test failure reveals the exact node kind; update extractor accordingly |
 | `.m` disambiguation false-positives | Test fixtures cover both directions; tunable regex |
 | Engine type-check fails with our `Language` union additions | Test catches; reorder enum if needed |
+
+## Related documentation
+
+- [CodeGraphAgent BioRouter extension design](extension-design.md) — the design this plan implements, including the rationale for the `.m` content heuristic.
+- [CodeGraphAgent foundation plan](foundation-plan.md) — the preceding plan ("Plan 1") that built the repo scaffold, Python shim and release pipeline this plan extends.
+- [Extensions and skills guide](../../extensions/extensions-and-skills-guide.md) — how BioRouter installs and enables the resulting `.brxt`.
+- [Extension manager](../../extensions/built-in/extension-manager.md) — the built-in MCP server that manages extension lifecycle at runtime.

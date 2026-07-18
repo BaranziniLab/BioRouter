@@ -1,21 +1,60 @@
-# BR-69 — OS-level tool sandboxing on Linux and Windows
+# OS-level tool sandboxing on Linux and Windows (BR-69)
 
-**Lens:** R (robustness P-32). **Status:** proposed.
-**Extends:** **BR-64** (macOS Seatbelt, Slice 1 shipped) — this is BR-64's Slice 3
-generalized: one platform-agnostic sandbox abstraction, a real Linux backend
-(Landlock + seccomp, bubblewrap fallback), an honest Windows tier, and the
-capability reporting that lets a user tell *which* tier they actually got.
-**Complements:** **BR-20** (catastrophic denylist) / **BR-21** (policy engine) —
-which this design shows are **POSIX-only** and therefore near-vacuous on Windows.
+> **What this is.** The design generalizing the macOS-only Seatbelt sandbox into one
+> `ShellSandbox` trait with three backends — Landlock + seccomp on Linux with a bubblewrap
+> fallback, and an honest "no containment" tier on Windows — plus the capability reporting
+> that tells a user which tier they actually got.
+> **Status:** Current, partly implemented. Slices 0, 1, 2 and 4 shipped as commit
+> `2d16ff0a` in Wave 3: `crates/biorouter-sandbox/src/shell_sandbox/{mod,macos,linux,windows}.rs`
+> exist and `biorouter doctor` reports the tier. Slice 3 (real Windows containment) and the
+> CI enforcement section remain the plan for that work — the campaign's outcome report
+> calls the Windows tier the weakest part of the sandbox story, and the Linux and Windows
+> arms were never compiled on the dev host. See the per-slice status in
+> [Effort and phasing](#effort-and-phasing).
+> **Audience:** developers working on tool sandboxing and shell execution.
 
----
+BioRouter ships on macOS, Windows and Linux, but before this work its only OS-level
+sandbox for the shell tool was macOS Seatbelt, and on the other two platforms the gate
+was a no-op that logged a warning and ran the command anyway. This design replaces the
+mechanism-named call site with a capability-named one, adds a real Linux backend, states
+plainly what Windows can and cannot enforce, and makes the resulting tier visible to the
+user instead of buried in a daemon log.
+
+**Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list,
+defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md);
+this design is BR-69. *Lens* records which review raised it — **R** = robustness, and
+*P-32* is that proposal's number within the robustness lens review.
+
+**Extends:** BR-64 (macOS Seatbelt, Slice 1 shipped; designed in
+[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) — this is BR-64's Slice 3
+generalized. **Complements:** BR-20 (catastrophic denylist) and BR-21 (policy engine),
+which this design shows are POSIX-only and therefore near-vacuous on Windows.
+
+> **Overlap to be aware of.** The Problem section's account of the POSIX-only command
+> safety net restates the premise of
+> [Cross-platform command safety (BR-68)](command-safety.md), and its Slice 0 overlaps
+> that design's rule work. BR-68 is the authority on the rules; this document is the
+> authority on containment. The underlying findings (GAP-1, GAP-4) come from the
+> [platform parity audit](platform-parity-audit.md).
+
+## Contents
+
+- [Problem](#problem)
+- [Design](#design) — Slice 0 rules, Slice 1 the trait, Slice 2 Linux, Slice 3 Windows, Slice 4 reporting
+- [Alternatives considered](#alternatives-considered)
+- [Migration and compatibility](#migration-and-compatibility)
+- [Test plan](#test-plan)
+- [Effort and phasing](#effort-and-phasing)
+- [Open questions](#open-questions-recommendation-taken-recorded-not-blocking)
+- [Sources](#sources)
+- [Related documentation](#related-documentation)
 
 ## Problem
 
 BioRouter ships on macOS (dmg), Windows (zip) and Linux (deb/rpm). Its security
 posture does not.
 
-### 1. The only OS sandbox is macOS-only, and it fails open everywhere else
+### The only OS sandbox is macOS-only, and it fails open everywhere else
 
 `crates/biorouter-sandbox/src/seatbelt.rs:168`:
 
@@ -43,17 +82,22 @@ So on Linux and Windows the gate is a **no-op that logs a warning**. A Linux or
 Windows user who deliberately sets `BIOROUTER_SHELL_SANDBOX=1` — a UCSF fleet
 admin pushing it via env, say — gets **zero** containment and a `warn!` line
 buried in the daemon log they never read. BR-64's own design acknowledges this
-("On non-macOS hosts the gate is a silent no-op", `BR-64-design.md:203`) and
+("On non-macOS hosts the gate is a silent no-op", `BR-64-design.md:203`, now
+[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) and
 defers it to "Slice 3 (L)". This is that slice.
 
 The abstraction is also wrong-shaped: `shell.rs` names the *mechanism*
 (`seatbelt::available()`, `SeatbeltPolicy`), not the *capability*. Adding Linux
 today means a second `#[cfg]` ladder at the call site, and Windows a third.
 
-### 2. The command safety net (BR-20/BR-21) is POSIX-only — verified
+### The command safety net (BR-20/BR-21) is POSIX-only — verified
 
 This is the finding that matters most, and it is worse than "the sandbox is
 missing." Every rule in **both** layers matches Unix syntax exclusively.
+
+> **Note.** [Cross-platform command safety (BR-68)](command-safety.md) works this same
+> finding in far more depth and is the design that fixed it. The summary here exists so
+> this document's Slice 0 argument stands on its own.
 
 `crates/biorouter/src/security/patterns.rs:463` — the always-on, non-bypassable
 BR-20 `CATASTROPHIC_RULES`, all eight of them:
@@ -87,7 +131,7 @@ with a regex set that only understands `sh`.** On Windows the agent's floor is
 not "weak" — it is *absent*, in both layers, while the code reports "Allow" with
 full confidence.
 
-### 3. BR-37's process-group kill is dual-armed, but the Windows arm is untested and structurally weaker
+### BR-37's process-group kill is dual-armed, but the Windows arm is untested and structurally weaker
 
 Verified in `crates/biorouter-mcp/src/developer/background.rs:343-360` and
 `shell.rs:210-258`: both `kill_process_group` implementations do have
@@ -107,7 +151,7 @@ real caveats, though:
 - **Every test in `background.rs` is `#[cfg(unix)]`** (lines 680, 694, 704, 753…).
   The Windows kill path and the orphan reaper have **no** coverage.
 
-### Net
+### Where each platform stands
 
 | Platform | OS sandbox | Catastrophic denylist (BR-20) | Policy engine (BR-21) | Process-tree kill (BR-37) |
 |---|---|---|---|---|
@@ -123,6 +167,10 @@ Four pieces, in dependency order. **Slice 0 is the cheapest and the highest
 value** — do not let the kernel work delay it.
 
 ### Slice 0 — Close the POSIX-only rule gap (no sandbox involved)
+
+> **Shipped.** Delivered by BR-68 rather than by this item — see
+> [Cross-platform command safety](command-safety.md), commit `651acff0`. The
+> `platform:` field described below shipped as the richer `platforms` + `shells` pair.
 
 Independent of everything below, and worth shipping alone. Both rule layers gain
 Windows coverage, gated so they cost nothing on POSIX hosts:
@@ -147,6 +195,8 @@ dev box, and it turns Windows' safety net from *absent* to *present*. The kernel
 sandbox below is defense-in-depth on top of it — not a substitute.
 
 ### Slice 1 — One trait, three backends
+
+> **Shipped** as commit `2d16ff0a`: `crates/biorouter-sandbox/src/shell_sandbox/{mod,macos,linux,windows}.rs`.
 
 Generalize `SeatbeltPolicy` into a mechanism-neutral policy + a backend trait, in
 `crates/biorouter-sandbox/`.
@@ -275,6 +325,10 @@ is today**. A regression test asserts exactly that (see Test plan).
 
 ### Slice 2 — Linux: Landlock (+ seccomp), bubblewrap fallback
 
+> **Shipped** as commit `2d16ff0a` (`shell_sandbox/linux.rs`), but **not verified**: the
+> Linux arm was never compiled on the macOS dev host, only type-checked by flipping `cfg`
+> gates. See the [verification report](parity-verification-report.md).
+
 This is the platform where a real, unprivileged kernel sandbox exists.
 
 #### Why a helper binary (and not `pre_exec`)
@@ -394,6 +448,12 @@ never *require* it: a missing `bwrap` is a reported degradation, not an error.
 
 ### Slice 3 — Windows: the honest tier
 
+> **Still the plan.** `shell_sandbox/windows.rs` exists and reports an honest tier, but
+> the campaign's [outcome report](../../history/agent-loop-campaign/outcome-report.md)
+> calls the Windows tier the weakest part of the sandbox story, and the Windows arm was
+> never compiled on the dev host. Treat the Job Object / restricted-token work below as
+> outstanding.
+
 **Say the hard thing plainly: there is no unprivileged, general-purpose,
 kernel-enforced write-confinement sandbox on Windows that can wrap an arbitrary
 developer shell command without breaking it.** Anyone who tells you otherwise is
@@ -440,6 +500,9 @@ gap) is worth more than Slice 3.** A user is far likelier to be saved by
 they turned off because `git` stopped working. Ship the rules first.
 
 ### Slice 4 — Capability reporting and config
+
+> **Shipped** as commit `2d16ff0a`: `biorouter doctor` gained a Shell-sandbox section that
+> reports the tier.
 
 #### `BIOROUTER_SHELL_SANDBOX` grows a three-valued mode
 
@@ -528,7 +591,7 @@ have to *infer* what was lost from a tier enum.
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **Default is still off.** `BIOROUTER_SHELL_SANDBOX` unset ⇒ `configure_shell_command`
   produces the identical program and argv it does today, on all three platforms.
@@ -639,6 +702,12 @@ host that cannot enforce.
 
 ### CI (the dev box is a mac — this is the part that must not be hand-waved)
 
+> **Outstanding.** This subsection is the part of the design that has not been carried
+> out: the Linux and Windows arms were never compiled on the dev host, so the enforcement
+> tests below have never actually run. The generic cross-compile gate that landed
+> alongside is [BR-70](ci-gate.md); the sandbox-specific jobs described here are still to
+> be built.
+
 The Linux enforcement tests are worthless if they only ever skip. Three jobs:
 
 1. **`linux-sandbox` job on `ubuntu-24.04`** (GitHub-hosted). Ubuntu ships
@@ -671,15 +740,18 @@ deps matter.)
 
 ---
 
-## Effort & phasing
+## Effort and phasing
 
-| Slice | Scope | Size | Independently valuable? |
-|---|---|---|---|
-| **0** | Windows/PowerShell rules in `patterns.rs` + `baseline.policy.yaml`; `platform:` field on rules; tokenizer learns Windows argv | **M** | **Yes — biggest single win.** Turns Windows' safety net from *absent* to *present*, with no kernel work and no new deps. Ship first, alone if need be. |
-| **1** | `ShellSandbox` trait + `SandboxPolicy`/`SandboxTier`/`SandboxReport`; `detect()`; `SeatbeltSandbox` adapter; `shell.rs` calls one API; `SandboxMode` (off/auto/strict); tier reporting in tool result + `doctor` | **M** | Yes — macOS users get `strict` and a visible tier; the codebase gets the seam. No behavior change. |
-| **2** | Linux: `__br-sandbox` helper in both `main()`s; `landlock` + `seccompiler`; ABI probe; bubblewrap fallback; the enforcement + AF_UNIX + degradation tests; the CI matrix | **L** | Yes — Linux (deb/rpm, and the UCSF HPC/Linux users) gets a real kernel sandbox for the first time. |
-| **3** | Windows W1: Job Object + restricted token + Low IL via the same helper; honest `ContainmentOnly` reporting; fixes BR-37's Windows kill gap | **M** | Yes — real process-tree kill + resource caps, honestly labelled. |
-| **4** | Windows W2 (AppContainer, opt-in); typed `Settings`/`config.yaml` + GUI toggle; BR-65 managed-tier pin of `strict`; BR-64 Slice 2's escalate-to-approval-on-denial wired to `SandboxReport` | **L** | Yes — completes the two-axis model. |
+The `Status` column records where each slice stands today; the rest of the table is the
+design's original estimate.
+
+| Slice | Scope | Size | Independently valuable? | Status |
+|---|---|---|---|---|
+| **0** | Windows/PowerShell rules in `patterns.rs` + `baseline.policy.yaml`; `platform:` field on rules; tokenizer learns Windows argv | **M** | **Yes — biggest single win.** Turns Windows' safety net from *absent* to *present*, with no kernel work and no new deps. Ship first, alone if need be. | Shipped, via [BR-68](command-safety.md) (`651acff0`) |
+| **1** | `ShellSandbox` trait + `SandboxPolicy`/`SandboxTier`/`SandboxReport`; `detect()`; `SeatbeltSandbox` adapter; `shell.rs` calls one API; `SandboxMode` (off/auto/strict); tier reporting in tool result + `doctor` | **M** | Yes — macOS users get `strict` and a visible tier; the codebase gets the seam. No behavior change. | Shipped (`2d16ff0a`) |
+| **2** | Linux: `__br-sandbox` helper in both `main()`s; `landlock` + `seccompiler`; ABI probe; bubblewrap fallback; the enforcement + AF_UNIX + degradation tests; the CI matrix | **L** | Yes — Linux (deb/rpm, and the UCSF HPC/Linux users) gets a real kernel sandbox for the first time. | Shipped (`2d16ff0a`), not compiled or enforcement-tested on the dev host |
+| **3** | Windows W1: Job Object + restricted token + Low IL via the same helper; honest `ContainmentOnly` reporting; fixes BR-37's Windows kill gap | **M** | Yes — real process-tree kill + resource caps, honestly labelled. | Outstanding — the weakest tier per the campaign outcome report |
+| **4** | Windows W2 (AppContainer, opt-in); typed `Settings`/`config.yaml` + GUI toggle; BR-65 managed-tier pin of `strict`; BR-64 Slice 2's escalate-to-approval-on-denial wired to `SandboxReport` | **L** | Yes — completes the two-axis model. | Tier reporting shipped in `biorouter doctor` (`2d16ff0a`); AppContainer and the config surface outstanding |
 
 Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
 (the trait) and are independent of each other. 4 depends on all.
@@ -687,6 +759,10 @@ Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
 ---
 
 ## Open questions (recommendation taken; recorded, not blocking)
+
+> **Note.** These were recorded at design time, each with the author's recommendation.
+> Most of the design has since shipped without them being resolved in this document, so
+> check the code before assuming any recommendation below was adopted.
 
 1. **Does `strict` accept `WriteOnly`?** *Recommendation taken:* **no** — `strict`
    requires `Full`. A mode whose entire purpose is "do not run unless contained"
@@ -730,6 +806,11 @@ Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
 
 ## Sources
 
+> **Note.** This design carries no authoring date; it was written before the Wave 3
+> cross-platform cluster landed (verified 2026-07-13). The Landlock ABI levels and the
+> Codex sandbox internals cited below move upstream — re-verify them before relying on
+> any specific version claim.
+
 - [openai/codex — `codex-rs/linux-sandbox/README.md`](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md) — helper-binary architecture, `PR_SET_NO_NEW_PRIVS` + seccomp net filter, bubblewrap `--ro-bind` / `--unshare-net`, Landlock as legacy fallback.
 - [Inside the Codex Sandbox: Platform-Specific Implementation on macOS, Linux and Windows](https://codex.danielvaughan.com/2026/04/08/codex-sandbox-platform-implementation/) — Landlock+seccomp split, `AF_UNIX` exemption, and the Windows restricted-token / sandbox-user / firewall model (and its admin requirement).
 - [`rust-landlock` crate docs](https://landlock.io/rust-landlock/landlock/) and [`ABI` enum](https://landlock.io/rust-landlock/landlock/enum.ABI.html) — `CompatLevel::BestEffort` vs `HardRequirement`; ABI 1 = 5.13, ABI 2 = 5.19, ABI 3 = 6.2, ABI 4+ (TCP scoping).
@@ -737,3 +818,11 @@ Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
 - [openai/codex issue #1039 — WSL: seccomp/landlock combination not supported](https://github.com/openai/codex/issues/1039) — real-world evidence that a kernel-version check is insufficient.
 - [Launch an AppContainer — Win32](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer) and [`windows::Win32::System::JobObjects`](https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/JobObjects/index.html) — the two Windows primitives and their scope.
 - [Chromium sandbox design](https://chromium.googlesource.com/chromium/src/+/b4730a0c2773d8f6728946013eb812c6d3975bec/docs/design/sandbox.md) — restricted token + job object + integrity level, and the `Everyone`-writable-ACL limitation.
+
+## Related documentation
+
+- [macOS Seatbelt sandbox (BR-64)](../designs/macos-seatbelt-sandbox.md) — the macOS-only predecessor this design generalizes, and the source of `SeatbeltPolicy`.
+- [Cross-platform command safety (BR-68)](command-safety.md) — the companion design that delivered Slice 0's rule work; rules there, containment here.
+- [Platform parity audit](platform-parity-audit.md) — GAP-4, the finding that the sandbox existed on one of three shipped platforms.
+- [Cross-platform cluster verification report](parity-verification-report.md) — the gate record for commit `2d16ff0a`, and the caveat that the Linux and Windows arms were never compiled.
+- [Cross-platform CI verification gate (BR-70)](ci-gate.md) — the compile gate this design needed as a venue for its Linux-only kernel code.

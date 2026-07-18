@@ -1,95 +1,99 @@
-The Tutorial extension is a built-in feature of biorouter that provides interactive, step-by-step guidance for learning various aspects of biorouter and its capabilities. It's designed to help users get comfortable with biorouter's features through hands-on practice.
+# Tutorial extension
 
-The Tutorial extension serves as an interactive learning tool that:
-- Provides structured, step-by-step tutorials
-- Allows hands-on practice with biorouter features
-- Offers immediate feedback and guidance
+> **What this is.** User guide to the built-in Tutorial extension, which loads interactive, step-by-step walkthroughs of BioRouter features.
+> **Status:** Current, with a correction — the extension is live in `crates/biorouter-mcp/src/tutorial/`, but this page's tutorial list had gone stale (it named 2 of the 7 tutorials that ship). The list below has been regenerated from `crates/biorouter-mcp/src/tutorial/tutorials/`, which remains the authoritative source.
+> **Audience:** end users, especially new ones.
+
+The Tutorial extension gives you hands-on guidance for learning BioRouter. Rather than reading a page, you ask BioRouter to walk you through something and it loads a structured tutorial, guides you a step at a time, and answers questions as you go. It is aimed at getting new users comfortable with BioRouter's features through practice.
+
+The extension provides:
+
+- Structured, step-by-step tutorials
+- Hands-on practice with BioRouter features
+- Immediate feedback and guidance
 
 ## Configuration
 
-1. Ensure the Tutorial extension is enabled:
+1. Run the `configure` command:
 
-  
-  
-  
-  
+   ```bash
+   biorouter configure
+   ```
 
-  1. Run the `configure` command:
-  ```sh
-  biorouter configure
-  ```
+2. Choose `Toggle Extensions`, then enable `tutorial`:
 
-  2. Choose to `Toggle Extensions`
-  ```sh
-  ┌   biorouter-configure 
-  │
-  ◇  What would you like to configure?
-  │  Toggle Extensions 
-  │
-  ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
-  // highlight-start    
-  │  ● tutorial
-  // highlight-end
-  |
-  └  Extension settings updated successfully
-  ```
+   ```text
+   ┌   biorouter-configure
+   │
+   ◇  What would you like to configure?
+   │  Toggle Extensions
+   │
+   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   │  ● tutorial
+   └  Extension settings updated successfully
+   ```
 
-## Available Tutorials
+## Available tutorials
 
-Currently, the following tutorials are available:
+Seven tutorials ship with BioRouter:
 
-- **build-mcp-extension**: Learn how to build an extension using the Model Context Protocol (MCP)
-- **first-game**: Create your first game with biorouter
+| Tutorial | What it covers |
+|----------|----------------|
+| `getting-started` | Your first 15 minutes with BioRouter: connecting an LLM provider, learning the desktop app and CLI, and having a productive first conversation. |
+| `knowledge-bases` | Building a personal, citable library from papers and documents: creating a knowledge base, ingesting sources, querying it in chat, exploring the graph, and export/import. |
+| `create-workflows` | Turning a conversation into a reusable, parameterized automation: authoring, validating and running declarative YAML workflows. |
+| `schedule-automations` | Running workflows on a cron schedule, unattended: cron syntax, testing headless runs before scheduling, and monitoring results. |
+| `create-skills` | Packaging your preferred methods as reusable instruction sets: creating, testing and managing skills — folders containing a `SKILL.md` the agent loads on demand. |
+| `build-mcp-extension` | Building a custom MCP tool server and registering it in BioRouter, using the Python, TypeScript or Kotlin SDK. |
+| `first-game` | A hands-on coding introduction, building a simple game together (the default suggestion is a Flappy Bird clone in Python and Pygame). This one is not biomedical — it exists as a low-stakes way to experience the full build-run-debug loop before you point BioRouter at real research code. |
 
-More tutorials are being added regularly to cover additional features and use cases.
+> **Note.** If a tutorial you expect is missing here, check `crates/biorouter-mcp/src/tutorial/tutorials/` in the repository — that directory is the definitive list.
 
-## Using the Tutorial Extension
+## Starting a tutorial
 
-### Starting a Tutorial
+There are two ways to begin.
 
-There are two main ways to interact with tutorials:
+**Ask BioRouter directly.** Describe a topic you're interested in and BioRouter suggests a relevant tutorial:
 
-1. **Ask biorouter directly**: You can simply ask about a topic you're interested in, and biorouter will suggest relevant tutorials.
-
-```
-( O)> I'd like to learn how to build an extension for biorouter
-```
-
-2. **Request a specific tutorial**: You can directly request a tutorial by name.
-
-```
-( O)> Can you walk me through the first-game tutorial?
-```
-
-### During the Tutorial
-
-While going through a tutorial:
-
-1. biorouter will guide you step-by-step through the process
-2. You'll receive clear instructions before any actions are taken
-3. You can ask questions at any time for clarification
-4. You can take breaks and resume later
-
-### Best Practices
-
-- **Take your time**: Don't rush through the tutorials. Make sure you understand each step before moving on.
-- **Ask questions**: If something isn't clear, ask biorouter to explain it further.
-- **Experiment**: Feel free to try variations of what you're learning.
-- **Take notes**: Document any interesting findings or techniques you learn.
-
-## Example Usage
-
-### Starting a Tutorial Session
-
-Here's an example of how to start learning about building extensions:
-
-### biorouter Prompt
-```
+```text
 I'd like to learn how to build an extension for biorouter
 ```
 
-### biorouter Output
+**Request a specific tutorial by name:**
+
+```text
+Can you walk me through the first-game tutorial?
 ```
+
+## During the tutorial
+
+While going through a tutorial:
+
+1. BioRouter guides you step-by-step through the process
+2. You receive clear instructions before any actions are taken
+3. You can ask questions at any time for clarification
+4. You can take breaks and resume later
+
+## Best practices
+
+- **Take your time**: don't rush. Make sure you understand each step before moving on.
+- **Ask questions**: if something isn't clear, ask BioRouter to explain further.
+- **Experiment**: try variations of what you're learning.
+- **Take notes**: document any interesting findings or techniques.
+
+## Example usage
+
+Here's how a session starts when you want to learn about building extensions.
+
+### BioRouter prompt
+
+```text
+I'd like to learn how to build an extension for biorouter
+```
+
+### BioRouter output
+
+```text
 I'll help you learn about building extensions! The "build-mcp-extension" tutorial would be perfect for this. Let me load it and guide you through it.
 
 ─── load_tutorial | tutorial ──────────────────────────
@@ -118,14 +122,21 @@ For reference, here's what we'll cover:
 Which SDK would you like to use to get started?
 ```
 
-## Next Steps
+## Next steps
 
 After completing tutorials, you can:
-- Apply learned concepts to your own projects
-- Contribute to the biorouter community by sharing your experiences
-- Suggest new tutorial topics that would be helpful for others
 
-### Need Further Help? 
-If you have questions, run into issues, or just need to brainstorm ideas, [open an issue on GitHub][issues]!
+- Apply what you learned to your own projects
+- Share your experience or suggest new tutorial topics by [opening an issue on the BioRouter repository](https://github.com/BaranziniLab/biorouter/issues)
 
-[issues]: https://github.com/BaranziniLab/biorouter/issues
+## Getting further help
+
+If you have questions, run into issues, or just want to brainstorm ideas, [open an issue on GitHub](https://github.com/BaranziniLab/biorouter/issues).
+
+## Related documentation
+
+- [Quickstart](../../getting-started/quickstart.md) — the written path through your first session, which the `getting-started` tutorial covers interactively.
+- [Skills extension](skills.md) — the skills the `create-skills` tutorial teaches you to author.
+- [Workflows](../../workflows/README.md) — reference material behind the `create-workflows` tutorial.
+- [Scheduled jobs](../../workflows/scheduled-jobs.md) — reference material behind the `schedule-automations` tutorial.
+- [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.

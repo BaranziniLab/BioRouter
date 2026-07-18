@@ -1,39 +1,45 @@
-# Driving BioRouter Agent Drafter to Build & Test 100 Apps — A Guide for a Coding Agent
+# Agent Drafter 100-app test-drive runbook
 
-**Audience:** you are a coding agent (Claude Code / Codex / similar) with **shell access** and a
-**computer-use / browser-automation** tool (Playwright MCP or equivalent). Your job is to take each of
-the **100 app specs** in [`docs/agentic-app-test-ideas-100.md`](agentic-app-test-ideas-100.md) and, for
-each one:
+> **What this is.** The operational runbook for driving BioRouter's Agent Drafter across the 100 app specs in the companion corpus: bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect, gap and friction point.
+> **Status:** Superseded in part — written 2026-07-12 against a `feat/apps-sdk-v2` git worktree at `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`, which no longer exists and is not a registered worktree. The Apps SDK v2 primitives it depends on now live in the main tree (`crates/biorouter-mcp/src/agent_drafter/`), so the worktree requirement in "Where the code lives" is void — run everything else from an ordinary checkout. The campaign this runbook drove is recorded in [the 100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md).
+> **Audience:** coding agents running an Agent Drafter test campaign, and the maintainers supervising them.
 
-1. **Make BioRouter's Agent Drafter author the app** — do NOT hand-write the app yourself; the whole
-   point is to test the Agent Drafter, so the *BioRouter agent* must build it via its `create_app` /
-   `build_app` tools while you converse with it.
-2. **Iterate conversationally** with that agent — ask it questions, answer its questions, grow its
-   capabilities, and keep refining until the app matches the spec (functionally *and* aesthetically).
-3. **Verify with computer-use** — drive the running app in a browser, confirm it is functionally
-   correct and aesthetically aligned with the spec, exercising the agent-driven loop end to end.
-4. **Keep a comprehensive findings log** — record every bug, inconsistency, missing capability, and
-   inefficient back-and-forth, so the team can improve Agent Drafter later. **This log is a primary
-   deliverable, not an afterthought.**
+Agent Drafter is BioRouter's app-authoring MCP extension: it builds **BioRouter apps**, each a served TypeScript front-end wired to its own per-app BioRouter agent over a WebSocket. This runbook tests it end to end — not by hand-writing apps, but by making the agent author them from a spec and then checking whether what came out is the app the spec asked for.
 
-Read this whole document before you start. It encodes hard-won operational detail (ports, keys,
-gotchas) from a real run.
+**Identifier scheme used throughout.** Sections are numbered (`§0`–`§10`) and individual rubric checks carry the section number as an ID (`5.2` = "It is not a chatbot", `6.1` = "Theme pack applied"). Those check IDs are cited by the per-app result files the executed run produced, so they are kept verbatim. `spec-NNN` refers to a numbered brief in the corpus — spec 1 is `spec-001`; app ids follow `spec-NNN-<slug>`, for example `spec-001-variant-tribunal`.
+
+**Prerequisites.** You need shell access and a computer-use / browser-automation tool (Playwright MCP or equivalent). Your job is to take each of the **100 app specs** in [the 100 agentic app test specs](hundred-app-test-specs.md) and, for each one:
+
+1. **Make Agent Drafter author the app** — do not hand-write the app yourself; the whole point is to test Agent Drafter, so the *BioRouter agent* must build it via its `create_app` / `build_app` tools while you converse with it.
+2. **Iterate conversationally** with that agent — ask it questions, answer its questions, grow its capabilities, and keep refining until the app matches the spec (functionally *and* aesthetically).
+3. **Verify with computer-use** — drive the running app in a browser, confirm it is functionally correct and aesthetically aligned with the spec, exercising the agent-driven loop end to end.
+4. **Keep a comprehensive findings log** — record every bug, inconsistency, missing capability, and inefficient back-and-forth, so the team can improve Agent Drafter later. This log is a primary deliverable, not an afterthought.
+
+Read this whole document before you start. It encodes hard-won operational detail (ports, keys, gotchas) from a real run.
 
 ---
 
-## 0. Where the code is — the ONLY correct worktree
+## 0. Where the code lives
 
-All of the Apps SDK v2 work lives on a **git worktree**, not on `main`:
+The Apps SDK v2 primitives — declared `surface`, `ui_patch`, `app_call`, `signals`, `br.kb`, multi-agent profiles, theme packs, archetype starters, strict CSP, ws-token auth — now live in the main tree under `crates/biorouter-mcp/src/agent_drafter/`. An ordinary checkout is sufficient; substitute your checkout path for `$REPO` everywhere below.
 
-```
+Two reference documents are your background material — read them:
+
+- [Apps SDK reference](../../apps-sdk/sdk-reference.md) — the human-facing SDK reference (manifest surface, every `br.*` API, all `ui_*` tools, the widget catalog, the frame protocol, capability matrix, export).
+- [Agent Drafter apps platform design](../apps-platform-design.md) — the design plus the "SDK v2" section.
+
+### 0.1 As originally written — no longer applicable
+
+> **Warning.** The following requirement held on 2026-07-12 and does not hold now. It is preserved because the run archived under `docs/history/agent-drafter-testdrive-100/` was executed under it. Do not act on it.
+
+All of the Apps SDK v2 work lived on a **git worktree**, not on `main`:
+
+```text
 Worktree:  /Users/wanjun/Desktop/biorouter-sdk-v2-wt
 Branch:    feat/apps-sdk-v2
 ```
 
-**You must operate from this worktree.** `main` does **not** have the v2 SDK primitives (declared
-`surface`, `ui_patch`, `app_call`, `signals`, `br.kb`, multi-agent profiles, theme packs, archetype
-starters, strict CSP, ws-token auth). Building the specs against `main` will fail or silently produce
-v1 chatbot-shaped apps. Confirm before doing anything:
+The original instruction was to operate from this worktree, because `main` did not have the v2 SDK primitives and building the specs against `main` would fail or silently produce v1 chatbot-shaped apps. The confirmation step was:
 
 ```bash
 cd /Users/wanjun/Desktop/biorouter-sdk-v2-wt
@@ -42,58 +48,61 @@ git log --oneline -1               # should be an "SDK v2 …" commit
 ls docs/agentic-app-test-ideas-100.md docs/apps-sdk-reference.md   # both must exist
 ```
 
-Two other docs on this branch are your reference material — read them:
-- **`docs/apps-sdk-reference.md`** — the human-facing SDK reference (manifest surface, every `br.*` API,
-  all `ui_*` tools, the widget catalog, the frame protocol, capability matrix, export).
-- **`docs/agent-drafter-apps.md`** — the design + the "SDK v2" section.
+Both of those documents have since moved: the spec corpus is now `docs/agent-drafter/testing/hundred-app-test-specs.md` and the SDK reference is now `docs/apps-sdk/sdk-reference.md`.
 
 ---
 
 ## 1. Bring the environment up
 
+> **Note.** The scratch paths below (`/tmp/br-testdrive-target`, `/tmp/br-testdrive.env`, `/tmp/br-daemon.log`, `/tmp/br-testdrive/`), the port `8899`, and the provider `versa_azure` are the values the recorded run used. They are conventions, not requirements — substitute your own, but keep them consistent across the whole batch.
+
 ### 1.1 Toolchain
 
+Point `REPO` at your checkout once, then in every shell:
+
 ```bash
-cd /Users/wanjun/Desktop/biorouter-sdk-v2-wt
+export REPO=/path/to/your/biorouter/checkout
+cd "$REPO"
 source bin/activate-hermit          # Node 24 + cargo toolchain; run first, every shell
 ```
 
 Use an **isolated cargo target dir** so you don't fight other builds:
 `export CARGO_TARGET_DIR=/tmp/br-testdrive-target` (any path). Do this in every cargo command.
 
-### 1.2 Build the daemon and CLI (they carry the v2 changes)
+### 1.2 Build the daemon and CLI (they carry the SDK v2 changes)
 
 ```bash
 CARGO_TARGET_DIR=/tmp/br-testdrive-target cargo build -p biorouter-server --bin biorouterd
 CARGO_TARGET_DIR=/tmp/br-testdrive-target cargo build -p biorouter-cli    --bin biorouter
 ```
 
-A prior build of `biorouterd` on disk may be **stale** (predating later phases). If you pulled or
-switched to this branch, **rebuild** — don't trust an old binary. The binaries land at
+A prior build of `biorouterd` on disk may be **stale** (predating later phases). If you pulled or switched branches, **rebuild** — don't trust an old binary. The binaries land at
 `/tmp/br-testdrive-target/debug/{biorouterd,biorouter}`.
 
 ### 1.3 esbuild (the app bundler)
 
-The daemon bundles each app's TypeScript with esbuild. Point it at the worktree's copy:
+The daemon bundles each app's TypeScript with esbuild. Point it at the checkout's copy:
 
 ```bash
-export BIOROUTER_ESBUILD_BIN=/Users/wanjun/Desktop/biorouter-sdk-v2-wt/ui/desktop/node_modules/.bin/esbuild
+export BIOROUTER_ESBUILD_BIN="$REPO/ui/desktop/node_modules/.bin/esbuild"
 ls "$BIOROUTER_ESBUILD_BIN"    # must exist; if not: (cd ui/desktop && npm ci)
 ```
 
 ### 1.4 The provider (so the app's agent can actually run)
 
-Authoring **and** the per-app runtime agent both call an LLM. The configured provider is
+Authoring **and** the per-app runtime agent both call an LLM. The provider the recorded run used is
 **`versa_azure`** (UCSF gpt-5.5); its key lives in the macOS keychain, not in plaintext. A freshly
 built debug binary may not have keychain access (grants are per-signed-binary). Two options:
 
-**Option A — re-sign the binary so keychain grants apply** (cleanest if you can):
+**Option A — re-sign the binary so keychain grants apply** (cleanest if you can).
 `just copy-binary debug` re-signs dev binaries with the Developer ID. Then the daemon reads the key
 from the keychain and macOS shows at most one "Always Allow" prompt.
 
 **Option B — extract the key into env** (what a headless run should do). The BioRouter secrets are a
 JSON blob under keychain service `biorouter`. Extract just the one key you need into an env file that
-you `source` into the daemon **and never print**:
+you `source` into the daemon and never print:
+
+> **Warning.** This snippet moves a live provider API key out of the OS keychain into a file on disk. Only run it on a machine you control, keep the `0600` mode it sets, delete the file when the batch ends (see the cleanup line in §9), and never echo the key or paste raw daemon logs into any shared channel — the daemon logs its full spawn env, including secrets, to stdout.
 
 ```bash
 python3 - <<'PY'
@@ -109,17 +118,15 @@ PY
 ```
 
 The provider env vars (`AZURE_OPENAI_ENDPOINT`, deployment, api-version) are already in
-`~/.config/biorouter/config.yaml`; only the key needs supplying. **Never echo the key or paste raw
-daemon logs into any shared channel** — the daemon logs its full spawn env (including secrets) to
-stdout.
+`~/.config/biorouter/config.yaml`; only the key needs supplying.
 
 ### 1.5 Start the daemon
 
 ```bash
 source /tmp/br-testdrive.env                      # provider key (Option B)
 export BIOROUTER_SERVER__SECRET_KEY=test          # auth for mutating routes (POST /reply etc.)
-export BIOROUTER_PORT=8899                         # a fixed, non-3000 port so you know the URL
-export BIOROUTER_ESBUILD_BIN=/Users/wanjun/Desktop/biorouter-sdk-v2-wt/ui/desktop/node_modules/.bin/esbuild
+export BIOROUTER_PORT=8899                        # a fixed, non-3000 port so you know the URL
+export BIOROUTER_ESBUILD_BIN="$REPO/ui/desktop/node_modules/.bin/esbuild"
 /tmp/br-testdrive-target/debug/biorouterd agent > /tmp/br-daemon.log 2>&1 &
 # wait for readiness:
 until curl -sf -o /dev/null http://localhost:8899/status; do sleep 1; done
@@ -130,16 +137,14 @@ Keep **one** daemon up for the whole batch. Apps are served at
 `http://localhost:8899/apps/<app-id>/`. `GET`s under `/apps/*` are auth-exempt; the mutating routes
 (`POST /reply`, `POST /agent/start`, `POST /apps/{id}/build`, `DELETE /apps/{id}`) require the secret
 `test` — send it per the server's auth scheme (default header in debug is the secret key; confirm the
-exact header from `crates/biorouter-server/src/routes/auth.rs` or the generated client
+exact header from `crates/biorouter-server/src/auth.rs` or the generated client
 `ui/desktop/src/api/`).
 
 ---
 
-## 2. Mental model — what "an Agent Drafter app" is (so you know what "correct" means)
+## 2. Mental model — what "an Agent Drafter app" is
 
-An app is a **served web front-end + a per-app BioRouter agent**, wired by the Apps SDK v2. When you
-open `/apps/<id>/`, the page connects a WebSocket to that app's agent. The agent doesn't just chat —
-it **drives the page**:
+Knowing this is how you know what "correct" means. An app is a **served web front-end plus a per-app BioRouter agent**, wired by the Apps SDK v2. When you open `/apps/<id>/`, the page connects a WebSocket to that app's agent. The agent doesn't just chat — it **drives the page**:
 
 - **Declared surface** (in `manifest.json`): `surface.actions` (typed verbs the agent invokes on the
   app, e.g. `focus_node(id)`), `surface.signals` (app→agent events fired by user gestures, e.g.
@@ -167,7 +172,7 @@ narrates. It is **not a chatbot** — the chat box is at most a small secondary 
 
 Store layout for each authored app (inspect it directly):
 
-```
+```text
 ~/.config/biorouter/agent_drafter/<app-id>/
   manifest.json      # id, title, kind, entry, agent{system_prompt,capabilities,extensions,skills,
                      #   knowledge_base, orchestration.agents, orchestration.routes}, surface{...}, theme{pack}
@@ -191,6 +196,7 @@ endpoint. So authoring happens through a **BioRouter chat session that has the `
 extension enabled**. Three channels, pick one (recommended first):
 
 **Channel A — programmatic session over REST (best for scripting 100 apps).**
+
 - `POST /agent/start` with `StartAgentRequest { extension_overrides, working_dir, … }` — use
   `extension_overrides` to **enable `agent_drafter`** (also enable `autovisualiser`, `knowledge`,
   `developer` when a spec needs figures / KB / shell). `agent_drafter` is a builtin MCP server
@@ -202,25 +208,25 @@ extension enabled**. Three channels, pick one (recommended first):
   what the agent did and what it returned.
 - Iterate by calling `POST /reply` again with a follow-up `user_message` on the **same `session_id`**
   (session state persists server-side; you can also pass `conversation_so_far`).
-- Exact field names/enums live in `ui/desktop/openapi.json` (paths `/agent/start`, `/reply`) and the
-  generated client `ui/desktop/src/api/` — **read them; do not guess.** Send the `test` secret on
+- Exact field names and enums live in `ui/desktop/openapi.json` (paths `/agent/start`, `/reply`) and the
+  generated client `ui/desktop/src/api/` — read them, do not guess. Send the `test` secret on
   these POSTs.
 
 **Channel B — the desktop GUI (visual, uses the `debug-app` skill).**
-Launch the Electron dev GUI (`.claude/skills/debug-app` runbook: standalone vite on :5173 + a
+Launch the Electron dev GUI (per the `debug-app` skill runbook: standalone vite on :5173 plus a
 Playwright-owned Electron instance, `unset ELECTRON_RUN_AS_NODE` first, single-instance lock caveat),
 open a chat with `agent_drafter` enabled, and type build prompts. Heavier; good for spot-checking a
 few, not for all 100.
 
 **Channel C — the CLI TUI.**
-`biorouter session` in a tmux PTY (`.claude/skills/debug-app/cli-driver.sh start|send|snap`). Works,
+`biorouter session` in a tmux PTY (the `debug-app` skill's `cli-driver.sh start|send|snap`). Works,
 but scraping a full-screen ratatui TUI for structured build results is brittle.
 
-Whatever the channel, **verification and store inspection are the same** (§4–§6).
+Whatever the channel, verification and store inspection are the same (§4–§6).
 
 ### 3.2 The iteration protocol (per app)
 
-For spec **N**, run this loop. Budget ~4–8 authoring rounds; stop early on acceptance, stop late with
+For spec **N**, run this loop. Budget roughly 4–8 authoring rounds; stop early on acceptance, stop late with
 a recorded finding (§7).
 
 **Round 0 — kick-off.** Send the *entire spec block* as the first `user_message`, framed as a build
@@ -246,6 +252,7 @@ sed -n '1,160p' ~/.config/biorouter/agent_drafter/$ID/src/main.ts
 ```
 
 Check against the spec, on paper:
+
 - Does `surface.actions` contain every declared verb (with params)? `surface.signals`?
   `surface.components`? `surface.state_schema`?
 - Does `agent.capabilities.ui.enabled` = true, plus `allow_signals` / `allow_html` / `allow_autorun`
@@ -261,6 +268,7 @@ error back verbatim as the next `user_message`: *"lint reported: <errors>. Fix t
 **Round 2+ — grow and correct via targeted prompts.** For every gap you found (store review + lint +
 the browser checks in §5–§6), send a **specific** follow-up. Examples of the *kind* of prompt that
 "grows the agent" and drives iteration:
+
 - "The spec requires a Right 340px inspector region; index.html has no `data-br-region="inspector"`.
   Add it and have the agent patch node dossiers into it."
 - "You declared `move_avatar` but the spec also needs `set_color` and `speak` — add those actions and
@@ -284,15 +292,17 @@ re-author, `DELETE /apps/<id>` or `rm -rf ~/.config/biorouter/agent_drafter/<id>
 **a clean re-author that succeeds where iteration failed is itself a finding** (it means iteration
 didn't converge; log it).
 
-### 3.3 Building / rebuilding directly (when you need to force it)
+### 3.3 Building and rebuilding directly (when you need to force it)
 
 `build_app` is the agent's tool, but you can also rebuild out-of-band:
+
 ```bash
 curl -s -X POST http://localhost:8899/apps/$ID/build -H 'x-secret-key: test'   # confirm header name in auth.rs
 # or bundle by hand to catch TS errors fast:
 (cd ~/.config/biorouter/agent_drafter/$ID && "$BIOROUTER_ESBUILD_BIN" --bundle src/main.ts \
    --outfile=dist/app.js --format=iife --target=es2018 --loader:.ts=ts)
 ```
+
 A hand bundle that errors tells you the authored `main.ts` is broken → feed the esbuild error back to
 the agent.
 
@@ -314,14 +324,14 @@ Navigate with your computer-use tool. Core moves you'll use: `browser_navigate`,
 `browser_evaluate` (run JS in the page — your most powerful verification tool),
 `browser_console_messages`, `browser_wait_for`, `browser_resize`.
 
-**Gotcha — stale browser profile lock.** If navigation fails with *"Browser is already in use …
-mcp-chrome-…"*, a stale Chrome holds the profile. Clear it:
+> **Gotcha — stale browser profile lock.** If navigation fails with *"Browser is already in use … mcp-chrome-…"*, a stale Chrome holds the profile. Clear it:
+
 ```bash
 pkill -9 -f "mcp-chrome" 2>/dev/null; sleep 1
 rm -f "$HOME/Library/Caches/ms-playwright-mcp/"*/SingletonLock 2>/dev/null
 ```
-**Gotcha — a `favicon.ico` 401 console error is benign** (the app doesn't serve a favicon). Ignore it;
-any *other* console error is a real defect.
+
+> **Gotcha — a `favicon.ico` 401 console error is benign** (the app doesn't serve a favicon). Ignore it; any *other* console error is a real defect.
 
 ### 4.3 Optional: the repo's own harnesses (fast, headless sanity)
 
@@ -335,46 +345,53 @@ any *other* console error is a real defect.
 
 ---
 
-## 5. Verify FUNCTIONAL correctness (computer-use rubric)
+## 5. Verify functional correctness (computer-use rubric)
 
 For each app, run these checks with the browser tool and record pass/fail. This is the core of "is it
 actually the app the spec asked for, and does it work."
 
-**5.1 Load & wiring.** Confirm the served page is healthy and v2-wired:
+**5.1 Load and wiring.** Confirm the served page is healthy and v2-wired:
+
 ```bash
 curl -s -D - -o /dev/null http://localhost:8899/apps/$ID/ | grep -iE "content-security-policy|HTTP/"
 curl -s http://localhost:8899/apps/$ID/ | grep -oE "biorouter-app-config|wsToken|data-br-pack=\"[a-z-]+\""
 curl -s -o /dev/null -w "bundle HTTP %{http_code} %{size_download}b\n" http://localhost:8899/apps/$ID/dist/app.js
 ```
+
 In the browser after load, the snapshot should show **"Session ready"** and a `ui` capability badge —
 that proves the per-app agent WebSocket connected and advertised its capabilities. Console must be
 clean (favicon 401 aside).
 
-**5.2 It is NOT a chatbot.** The primary surface is the specified interface (canvas/graph/map/board),
+**5.2 It is not a chatbot.** The primary surface is the specified interface (canvas/graph/map/board),
 and any chat box is small and secondary. Fail the app if the "app" is just a chat transcript.
 
 **5.3 Layout matches the spec.** Verify each named region exists at roughly the specified
 position/size. Use the snapshot for presence, and `browser_evaluate` for geometry:
+
 ```js
 () => ['[data-br-region="stage"]','[data-br-region="inspector"]','#pad','.br-presence']
   .map(sel => { const el=document.querySelector(sel); const r=el&&el.getBoundingClientRect();
     return {sel, present:!!el, box: r && {x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}}; })
 ```
+
 Check the left-rail width, center surface, right-inspector width, bottom transport bar, and the
 floating presence chip against the spec's pixel intents (allow reasonable tolerance).
 
 **5.4 The declared surface is real.** In the page, read what the app advertises:
+
 ```js
 () => ({ agents: window.BioRouter.agents ? window.BioRouter.agents() : [],
          state: window.BioRouter.state.get(),
          boundNodes: [...document.querySelectorAll('[data-br-bind]')].map(n=>n.getAttribute('data-br-bind')) })
 ```
+
 Cross-check against `manifest.json`'s `surface` (you already inspected it in §3.2) and the spec's
 declared actions/signals/components/state.
 
 **5.5 Client-side reactivity (user → shared state → bindings).** Exercise the spec's direct-
 manipulation controls (click the manual pad, drag a slider, select a node) and confirm the shared
 state doc and `data-br-bind` DOM update — no agent involved:
+
 ```js
 () => ({ scene: window.BioRouter.state.get('/scene'),
          coordShown: document.querySelector('[data-br-bind="/scene/x"]')?.textContent })
@@ -382,6 +399,7 @@ state doc and `data-br-bind` DOM update — no agent involved:
 
 **5.6 The agent-driven loop (the headline test).** Type the spec's worked-example instruction into the
 app's composer and submit. Wait, then verify **all** of:
+
 - The transcript shows the agent called **`ui_describe`** (to learn the surface) then a **sequence of
   `app_call` / `ui_patch`** frames — read the tool trace in the DOM (tool-call rows) or via the SSE if
   you drove authoring over REST. Multi-step reasoning must be visible, not a single reply.
@@ -405,12 +423,13 @@ and the layout (5.3) substantially matches.
 
 ---
 
-## 6. Verify AESTHETIC alignment (computer-use rubric)
+## 6. Verify aesthetic alignment (computer-use rubric)
 
-Screenshots + computed styles, judged against the spec's **Theme & aesthetic** and **Layout** fields.
+Screenshots plus computed styles, judged against the spec's **Theme & aesthetic** and **Layout** fields.
 
 **6.1 Theme pack applied.** `document.documentElement.getAttribute('data-br-pack')` must equal the
 spec's pack. Spot-check the palette and type against the pack's intent:
+
 ```js
 () => { const cs = getComputedStyle(document.documentElement);
   return { pack: document.documentElement.getAttribute('data-br-pack'),
@@ -419,12 +438,8 @@ spec's pack. Spot-check the palette and type against the pack's intent:
            font: getComputedStyle(document.body).fontFamily,
            surface: cs.getPropertyValue('--br-surface').trim() }; }
 ```
-**Known SDK behavior to account for (not an app bug):** the pack attribute is set on `<html>`, but the
-*grounds* render in **light** mode unless the app opts into `theme:"auto"` in `createApp`. So a spec
-that asks for a dark pack (e.g. `midnight`, `terminal`) may render on light grounds with the pack's
-accent/typography applied. Judge the accent/typography/density against the pack; if the spec truly
-needs full dark, that's a legitimate finding to log (and you can prompt the agent to set
-`theme:"auto"`).
+
+> **Known SDK behavior to account for (not an app bug).** The pack attribute is set on `<html>`, but the *grounds* render in **light** mode unless the app opts into `theme:"auto"` in `createApp`. So a spec that asks for a dark pack (e.g. `midnight`, `terminal`) may render on light grounds with the pack's accent/typography applied. Judge the accent/typography/density against the pack; if the spec truly needs full dark, that's a legitimate finding to log (and you can prompt the agent to set `theme:"auto"`).
 
 **6.2 Density, chrome, motion.** Compare the screenshot to the spec's motif ("dense stacked tracks,
 near-zero chrome, amber only on live state"; "generous whitespace, serif headers"). Confirm accent is
@@ -433,7 +448,7 @@ capture in a still — check that CSS transitions exist on the relevant elements
 (`getComputedStyle(el).transition`), and note if entrance/idle animation matches "calm, short,
 informative" vs "bouncy" (the design language forbids overshoot).
 
-**6.3 Region placement & specified controls.** The buttons named in the spec must be where the spec
+**6.3 Region placement and specified controls.** The buttons named in the spec must be where the spec
 puts them (e.g. "Bottom 64px transport bar: *Re-adjudicate* button"; "floating top-right presence
 chip"). Confirm via snapshot + geometry.
 
@@ -444,11 +459,13 @@ Record an aesthetic verdict: **ALIGNED / PARTIAL / OFF**, with the specific mism
 
 ---
 
-## 7. The findings log — a PRIMARY deliverable
+## 7. The findings log — a primary deliverable
 
 **Everything that goes wrong, is awkward, or takes too many rounds must be captured so Agent Drafter
 can be improved.** Keep two artifacts under `/tmp/br-testdrive/` (or a repo path you choose), and keep
 them current as you go — do not reconstruct from memory at the end.
+
+> **Where the executed run put these.** The 2026-07 campaign committed its deliverables into the repo, and they now live under [`docs/history/agent-drafter-testdrive-100/`](../../history/agent-drafter-testdrive-100/README.md): per-app results in `app-results/spec-NNN-<slug>.md`, the rollup as [`audit-findings-register.md`](../../history/agent-drafter-testdrive-100/audit-findings-register.md), and the machine-readable ledger in `data/ledger.json`. For a new run, prefer those kebab-case names over the `FINDINGS.md` spelling used in the templates below.
 
 ### 7.1 Per-app result file — `results/spec-NNN.md`
 
@@ -486,25 +503,18 @@ One per spec, written as you test it:
 The cumulative, de-duplicated log the team will act on. Every entry is one issue, tagged by **type**
 and **severity**, with enough to reproduce. Suggested taxonomy:
 
-- **`AUTHORING-INEFFICIENCY`** — the agent needed too many rounds, kept undoing its own work, misread
-  the spec, or produced a chatbot on the first pass. *Capture the prompt→response that was wasteful and
-  what finally worked.* (This is exactly the "inefficient back-and-forth" the team wants surfaced.)
-- **`SPEC-GAP`** — the agent silently dropped a spec requirement (a region, an action, a profile).
-- **`SDK-LIMITATION`** — the SDK genuinely can't express what the spec needs (a missing widget kind,
-  no way to do a real-time frame loop, a layout the grammar can't produce, a theme that won't go dark,
-  a multi-agent pattern that isn't supported). These ambitious specs are *designed* to surface these —
-  distinguish them clearly from app bugs.
-- **`FUNCTIONAL-BUG`** — the built app misbehaves (a `ui_patch` targets a nonexistent region, a signal
-  never fires, `app_call` errors, state doesn't bind, the agent stalls).
-- **`AESTHETIC-DRIFT`** — the look diverges from the spec/design language (pack not applied, decorative
-  accent, wrong density, bouncy motion, cold neutrals).
-- **`SECURITY/ROBUSTNESS`** — CSP violation, ws-token/auth issue, sanitizer bypass, a crash, an
-  uncaught console error, a hang.
-- **`ERGONOMICS`** — anything clunky in the loop itself (unclear tool errors, no lint signal, opaque
-  build failures, the agent not narrating, `ui_ask` not surfacing) that made *driving* Agent Drafter
-  harder than it should be.
+| Tag | What it means |
+|---|---|
+| `AUTHORING-INEFFICIENCY` | The agent needed too many rounds, kept undoing its own work, misread the spec, or produced a chatbot on the first pass. *Capture the prompt→response that was wasteful and what finally worked.* This is exactly the "inefficient back-and-forth" the team wants surfaced. |
+| `SPEC-GAP` | The agent silently dropped a spec requirement (a region, an action, a profile). |
+| `SDK-LIMITATION` | The SDK genuinely can't express what the spec needs (a missing widget kind, no way to do a real-time frame loop, a layout the grammar can't produce, a theme that won't go dark, a multi-agent pattern that isn't supported). These ambitious specs are *designed* to surface these — distinguish them clearly from app bugs. |
+| `FUNCTIONAL-BUG` | The built app misbehaves (a `ui_patch` targets a nonexistent region, a signal never fires, `app_call` errors, state doesn't bind, the agent stalls). |
+| `AESTHETIC-DRIFT` | The look diverges from the spec/design language (pack not applied, decorative accent, wrong density, bouncy motion, cold neutrals). |
+| `SECURITY/ROBUSTNESS` | CSP violation, ws-token/auth issue, sanitizer bypass, a crash, an uncaught console error, a hang. |
+| `ERGONOMICS` | Anything clunky in the loop itself (unclear tool errors, no lint signal, opaque build failures, the agent not narrating, `ui_ask` not surfacing) that made *driving* Agent Drafter harder than it should be. |
 
 Entry template:
+
 ```markdown
 ### [TYPE][SEV: high/med/low] Short title
 - **Where:** spec NNN (<App>), round R.
@@ -517,21 +527,21 @@ Entry template:
   ui_patch but absent from index.html", "default `theme:auto` when a dark pack is chosen".
 ```
 
-**Also keep a top-of-file dashboard** in `FINDINGS.md`: counts by type/severity, the median authoring
+**Also keep a top-of-file dashboard** in the rollup: counts by type/severity, the median authoring
 rounds to acceptance, the top 10 most-common failure modes, and a "what would most improve Agent
 Drafter" shortlist. That rollup is the point of the whole exercise.
 
 ---
 
-## 8. Batch execution & discipline
+## 8. Batch execution and discipline
 
 - **Loop over the 100 specs** with a stable id per spec. Keep the daemon and one browser session up
   across the batch.
-- **Iteration budget:** cap authoring rounds (≈6–8). If an app still fails, stop, record the app as
+- **Iteration budget:** cap authoring rounds (roughly 6–8). If an app still fails, stop, record the app as
   `partial`/`fail` with the blocking finding, and move on — don't burn unbounded effort on one spec.
   A stuck app is *data* about Agent Drafter, not a personal failure.
 - **Do not lower the bar.** These specs are intentionally ambitious. If Agent Drafter can't build one,
-  that is a `SDK-LIMITATION` finding, not a reason to simplify the spec.
+  that is an `SDK-LIMITATION` finding, not a reason to simplify the spec.
 - **Never hand-author the app to "make it pass."** If you edit `main.ts`/`manifest.json` yourself to
   fix something, you've stopped testing Agent Drafter. The only permitted human edits are the ids you
   assign and reading/deleting store files. All app content must come from the agent.
@@ -544,9 +554,9 @@ Drafter" shortlist. That rollup is the point of the whole exercise.
 
 ## 9. Quick reference — the exact loop, condensed
 
-```
+```bash
 # once
-cd /Users/wanjun/Desktop/biorouter-sdk-v2-wt && source bin/activate-hermit
+cd "$REPO" && source bin/activate-hermit
 export CARGO_TARGET_DIR=/tmp/br-testdrive-target
 cargo build -p biorouter-server --bin biorouterd && cargo build -p biorouter-cli --bin biorouter
 python3  # extract VERSA_AZURE_API_KEY → /tmp/br-testdrive.env  (see §1.4)
@@ -564,7 +574,7 @@ until curl -sf -o /dev/null http://localhost:8899/status; do sleep 1; done
 #  5. browser: navigate http://localhost:8899/apps/<id>/ ; snapshot ; screenshot
 #  6. run §5 functional checks + §6 aesthetic checks (browser_evaluate + curl header checks)
 #  7. for each gap: POST /reply with a SPECIFIC fix prompt → agent update_app+build_app → re-verify
-#  8. write results/spec-NNN.md ; append every friction point to FINDINGS.md   ← DO NOT SKIP
+#  8. write results/spec-NNN.md ; append every friction point to the findings rollup   ← do not skip
 #  9. accept (rubrics pass) or record partial/fail with the blocking finding ; next spec
 
 # cleanup
@@ -577,7 +587,15 @@ pkill -f "biorouterd agent"; pkill -9 -f mcp-chrome; rm -f /tmp/br-testdrive.env
 
 You are done when, for all 100 specs, you have: an authored app (or a recorded reason it couldn't be
 built), a per-app result file with functional + aesthetic verdicts and screenshots, and a
-**`FINDINGS.md` rollup** that tells the BioRouter team, concretely and with reproductions, **where
+**findings rollup** that tells the BioRouter team, concretely and with reproductions, **where
 Agent Drafter is inefficient, where it silently drops requirements, where the SDK is genuinely
 limited, and what to improve first.** That findings document — not a pile of passing apps — is the real
 output.
+
+## Related documentation
+
+- [100 agentic app test specs](hundred-app-test-specs.md) — the corpus of 100 briefs this runbook consumes, one per iteration of the loop.
+- [100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md) — the evidence, per-app results and blockers from the run executed under this runbook.
+- [Audit findings register](../../history/agent-drafter-testdrive-100/audit-findings-register.md) — the findings rollup this runbook's §7 asks you to produce, as it was actually written.
+- [Apps SDK reference](../../apps-sdk/sdk-reference.md) — every `br.*` and `ui_*` signature you check an authored app against.
+- [Agent Drafter apps platform design](../apps-platform-design.md) — why apps are shaped the way they are, and what the SDK v2 contract promises.

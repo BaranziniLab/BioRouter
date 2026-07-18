@@ -1,12 +1,24 @@
-# Loop Detection, Repetition & Stuck States — Architecture Review
+# Loop detection, repetition and stuck states — architecture review
 
-Subsystem review of BioRouter's agentic feedback loop, focused on how the agent
-avoids infinite loops, repetitive tool calls, runaway turns, and stuck states.
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents the five layered mechanisms that bound runaway agent behaviour — the `RepetitionInspector`, the 100-iteration turn cap, cancellation, provider retry, and `/goal` stall detection — and records ten gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gaps #1 and #2 (a single hard deny, and the model being falsely told the user declined) were fixed by BR-29; near-duplicate and A/B/A/B oscillation detection by BR-30, with repeated-failing-result detection by BR-31; #5 and #8 (unused `call_counts`, an iteration-only cap) by BR-34; #6 (no wall-clock budget) by BR-35 (`agents/budget.rs`); and #9 (stall detection confined to `/goal`) by BR-32 (`agents/stall.rs`).
+> **Audience:** developers working on the agent loop, loop safety, or cancellation.
 
-Primary files reviewed (all under the review worktree
-`/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review`):
+This review is scoped to how the agent avoids infinite loops, repetitive tool calls, runaway turns, and stuck states. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); `REP-001` is the runtime finding id the repetition inspector emits; and the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `loop-detection.md #N` (the file's former name).
 
-- `crates/biorouter/src/tool_monitor.rs` (165 lines — read fully)
+Contents:
+
+- [Overview](#overview) — the five mechanisms, and one reply in a diagram
+- [Infinite loops and repetitive identical tool calls](#infinite-loops-and-repetitive-identical-tool-calls)
+- [Max-turns and max-tool-calls caps](#max-turns-and-max-tool-calls-caps)
+- [How cancellation works mid-turn](#how-cancellation-works-mid-turn)
+- [Local-minimum detection beyond exact duplicates](#local-minimum-detection-beyond-exact-duplicates)
+- [How the provider retry loops interact](#how-the-provider-retry-loops-interact)
+- [Notable design choices](#notable-design-choices-worth-keeping) and [Gaps and weaknesses](#gaps-and-weaknesses)
+
+## Scope and files reviewed
+
+- `crates/biorouter/src/tool_monitor.rs` (165 lines)
 - `crates/biorouter/src/tool_inspection.rs` (the trait + result-application glue)
 - `crates/biorouter/src/agents/retry.rs` (workflow-level RetryManager)
 - `crates/biorouter/src/providers/retry.rs` (provider transient-error retry)
@@ -17,6 +29,8 @@ Primary files reviewed (all under the review worktree
   `crates/biorouter/src/agents/mcp_client.rs`,
   `crates/biorouter/src/utils.rs`,
   `crates/biorouter-server/src/routes/reply.rs`.
+
+> **Note.** The review recorded no commit or branch, and line numbers in the citations below have drifted since; treat them as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -39,7 +53,7 @@ expensive-and-global:
 
 Data flow of one reply (simplified):
 
-```
+```text
 reply(user_msg, session_config, cancel_token)               agent.rs:1240
   └─ reply_internal → async_stream loop                      agent.rs:1525
        loop {                                                 agent.rs:1556
@@ -67,9 +81,9 @@ Provider retries (`providers/retry.rs`) sit *inside* `provider.stream(...)`;
 the workflow `RetryManager` (`agents/retry.rs`) sits at the very end, resetting
 history and re-running when `retry_config` success-checks fail.
 
-## Answers
+## Review questions answered
 
-### How does the system deal with infinite loops / repetitive identical tool calls?
+### Infinite loops and repetitive identical tool calls
 
 The only general-purpose repetition guard is `RepetitionInspector`
 (`tool_monitor.rs`). It is registered as a `ToolInspector` at
@@ -133,7 +147,7 @@ denials get their reason appended to the model-visible text
 "the user declined" — which is false, and gives the model no signal that it was
 looping. The tool simply does not execute; the turn continues.
 
-### Is there a max-turns / max-tool-calls cap per reply?
+### Max-turns and max-tool-calls caps
 
 Yes for turns, **no dedicated cap for tool calls**.
 
@@ -178,7 +192,7 @@ Adjacent bounds that also cap loop-like behavior:
 - Goal system: `GOAL_MAX_ITERATIONS = 20`, `GOAL_STALL_LIMIT = 3`
   (`goal.rs:53-55`).
 
-### How does cancellation work mid-turn?
+### How cancellation works mid-turn
 
 Cancellation is **cooperative**, via `tokio_util::sync::CancellationToken`
 threaded from `reply` → `reply_internal` (`agent.rs:1244,1525`) and into tool
@@ -234,7 +248,9 @@ soft-interrupt path (`/interrupt` → `queue_soft_interrupt` →
 deliberate *non-cancelling* alternative that injects a user message at a safe
 boundary.
 
-### Is there anything that detects a local minimum (same failing approach repeatedly) beyond exact-duplicate detection?
+### Local-minimum detection beyond exact duplicates
+
+Is anything watching for the same failing approach tried repeatedly?
 
 Mostly **no**, and this is the biggest honest gap.
 
@@ -264,7 +280,9 @@ ordinary chat it is absent. For a normal conversation the only guardrails
 against a stuck loop are: (a) the exact-duplicate inspector, and (b) the 100-turn
 hard cap.
 
-### How do provider retry loops interact (could retries themselves loop)?
+### How the provider retry loops interact
+
+Could the retries themselves loop?
 
 Provider retries are **self-bounded and cannot loop infinitely on their own.**
 `providers/retry.rs` retries only transient errors
@@ -327,7 +345,10 @@ the `RepetitionInspector` instance registered in the inspection manager is a
   logged and skipped, `tool_inspection.rs:108-116`) — robust, though see the gap
   about swallowed reasons.
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These ten items fed the improvement phase. They are what other documents in this
+review cite as `loop-detection.md #N`; the numbering below is that scheme and is stable.
 
 1. **Exact-duplicate only — trivially defeated.** `matches` requires byte-exact
    JSON (`tool_monitor.rs:18-20`) and only counts *consecutive* calls. A
@@ -382,9 +403,19 @@ the `RepetitionInspector` instance registered in the inspection manager is a
     `RetryManager::new()`), so anyone reasoning about "history reset also resets
     repetition state" is wrong — a subtle trap.
 
-**Net assessment.** The subsystem is defensive enough to prevent a truly
+## Net assessment
+
+The subsystem is defensive enough to prevent a truly
 unbounded hang (the 100-turn cap and self-bounded provider retries guarantee
 termination), but its *loop-quality* detection is well behind modern coding
 agents: it catches only literal identical-call spam, hides the reason from the
 model, tests a code path production never runs, and has no notion of "same
 failing approach" or "no progress" outside the opt-in goal system.
+
+## Related documentation
+
+- [Self-verification, output validation and done-ness](self-verification-and-doneness.md) — the sibling review that covers the `/goal` judge and no-progress detection from the verification side; the two overlap on stall detection.
+- [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector chain the `RepetitionInspector` runs inside, and where a denial's reason gets swallowed.
+- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how these loop bounds measure against nine other coding agents.
+- [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — the loop whose iterations `max_turns` counts.
+- [Wave 2 loop detection report](../../agent-loop-campaign/wave-reports/wave-2-loop-detection.md) — what was actually built in response to these gaps.

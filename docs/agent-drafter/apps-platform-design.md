@@ -1,25 +1,35 @@
-# Agent Drafter → BioRouter Apps (redesign)
+# BioRouter Apps platform design
+
+> **What this is.** The design overview of the Agent Drafter subsystem — what a
+> BioRouter app is, how the Apps SDK v2 surface is organised, and how the protocol,
+> capabilities, themes, export modes and multi-agent orchestration fit together.
+> It also preserves, in a clearly marked second half, the v1 redesign notes and the
+> app-building campaign logs that produced the current design.
+> **Status:** Current. The first half matches the shipped code (`control.rs`,
+> `manifest.rs`, `apps.rs`, six theme packs, six archetype starters); the second half
+> is a deliberately retained historical record, labelled as such.
+> **Audience:** developers working on Agent Drafter / BioRouter Apps.
+> **Shorthand.** *MiMo* is the Xiaomi MiMo provider (see
+> [Xiaomi MiMo provider notes](../providers/xiaomi-mimo.md)); *round2* / *round3* name
+> batch-authoring runs driven by `scripts/agent-drafter-apps/round2.sh` and
+> `round3.sh`; `@region:<name>` is an agent render target naming an author-declared
+> `<section data-br-region="…">`; *Pillar N* refers to the nine SDK v2 pillars
+> enumerated below.
 
 Agent Drafter was reworked from "Claude-style artifacts" into a builder for
 **BioRouter apps**: TypeScript front-ends wired to a *real* BioRouter agent
 backend. When a user sends a message in a built app, BioRouter runs the full
-agent loop — the app's own model, extensions, skills, and knowledge base — and
+agent loop — the app's own model, extensions, skills, and knowledge base (KB) — and
 streams the answer (text / markdown / tool activity) back into the app. Apps are
-*launched in the browser* (GUI auto-opens the default browser; CLI prints a URL),
-not embedded in a chat iframe.
+*launched in the browser* (the desktop GUI auto-opens the default browser; the CLI
+prints a URL), not embedded in a chat iframe.
 
----
-
-# SDK v2
-
-Apps SDK v2 (design: `docs/superpowers/specs/2026-07-12-apps-sdk-v2-design.md`)
-turns the app from "a chat box the agent answers in" into a **typed, two-way
-surface the agent drives**. The full developer reference — every `br.*` signature,
-the manifest schema, the widget catalog, the frame tables, and the export format —
-lives in [`docs/apps-sdk-reference.md`](apps-sdk-reference.md). This section is the
-map; that file is the territory. The sections **below "## What changed"** are the
-original v1 redesign notes, kept for history; where v1 text conflicts with the
-below, v2 wins (superseded bits are flagged inline).
+Apps SDK v2 (design: [Apps SDK v2 design](../apps-sdk/v2-design.md)) turns the app
+from "a chat box the agent answers in" into a **typed, two-way surface the agent
+drives**. The full developer reference — every `br.*` signature, the manifest schema,
+the widget catalog, the frame tables, and the export format — lives in the
+[Apps SDK reference](../apps-sdk/sdk-reference.md). This document is the map; that
+file is the territory.
 
 ## The nine pillars
 
@@ -37,8 +47,8 @@ author-registered custom components; **(4) platform encapsulation** — knowledg
 bases and provider routing behind `br.kb` / `br.model`, resolved server-side so
 keys never touch the page; **(5) the interaction loop** — coalesced app→agent
 signals, an ambient presence chip that narrates every agent UI change, and
-`ui_ask` for blocking mid-turn questions (the DynaVis rule: after an NL request
-tunes a knob, synthesize a persistent bound control for it).
+`ui_ask` for blocking mid-turn questions (the DynaVis rule: after a natural-language
+request tunes a knob, synthesize a persistent bound control for it).
 
 Pillars 6–9 cover surface and lifecycle: **(6) aesthetics** — six curated theme
 packs, a bounded `ui_layout` grid grammar, and six archetype starters so a fresh
@@ -51,9 +61,7 @@ of payload caps; **(8) multi-agent** — both the sub-agents-as-tools path
 → `br.agent(name)` + the agent-side `consult` tool, advertised in `ready.profiles`)
 ship, with the caveat that cross-profile turns are **serialized** (parallel across
 profiles is a stretch goal); **(9) lifecycle** — the Applications-panel round-trip
-and a standalone export that can carry the app's server-side payload. The
-multi-agent-profiles work is **actively landing** in this branch — treat the code
-as authoritative for its exact current shape.
+and a standalone export that can carry the app's server-side payload.
 
 ## Protocol v2 overview
 
@@ -83,17 +91,19 @@ Three things ride these frames beyond the v1 agent stream:
   `<app-data>` … `</app-data>` envelope the system prompt marks as data, not
   instructions.
 
-> **Superseded:** the v1 "WebSocket protocol" section below predates protocol v2
-> (no `ready.protocol`/`surface`, no state/call/signal/kb frames). Use the
-> [reference frame tables](apps-sdk-reference.md#5-protocol-appendix) instead.
->
-> **`ui_error` — consumed server-side:** the SDK emits `ui_error` frames
+> **`ui_error` — consumed server-side.** The SDK emits `ui_error` frames
 > (render/action failures, rate-limited with a `droppedCount`); the daemon now
 > buffers them (cap 5) and delivers them to the model under the artifact-repair
 > grace discipline — riding the next turn as an `[app ui errors]` `<app-data>`
 > envelope, or auto-starting one repair turn within 15 s of the last turn ending
 > (capped at once per 60 s). `ui_suggest` is now a real MCP tool (non-blocking
 > suggestion chips, ≤5), alongside the blocking `ui_ask`.
+
+> **Note.** The v1 "WebSocket protocol" section in the historical record below
+> predates protocol v2 (no `ready.protocol`/`surface`, no state/call/signal/kb
+> frames). Use the
+> [reference frame tables](../apps-sdk/sdk-reference.md#5-protocol-appendix)
+> instead.
 
 ## Capability matrix
 
@@ -118,14 +128,14 @@ under `manifest.agent.capabilities`.
 | `tracing` | off | Span export (`redact` on by default; `processor` langfuse/phoenix/otlp). |
 | `events[]` | none | Agent→app lifecycle stream to `br.on()` (`tool`/`handoff`/`compaction`/…). |
 
-> **Autorun (shipped, capability-gated):** `ui.allow_autorun` (design §3.5/§3.7)
+> **Autorun (shipped, capability-gated).** `ui.allow_autorun` (design §3.5/§3.7)
 > lets a declared signal that opts in (`surface.signals[].autorun:true`)
 > autonomously start a turn — **default off, user-granted only** (the agent can
 > never self-grant), and bounded by per-minute/per-session budgets. Without the
 > grant, or without the per-signal opt-in, signals stay queue-only (context for
 > the next turn, never a turn trigger).
 
-## Archetypes + starters
+## Archetypes and starters
 
 `create_app { archetype }` (or an inferred one from the title/description) seeds a
 working, lint-clean `index.html` + `src/main.ts` **plus** the matching declared
@@ -148,7 +158,7 @@ no overrides), `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` —
 each a `[data-br-pack]` token layer with a dark variant. An unknown pack resolves
 back to `biorouter`. `theme.accent` + `theme.tokens` (only `--br-*` custom
 properties) are sanitized at render time; `ui_theme` can switch packs at runtime
-when `allow_theme` holds. (Design listed a `glass` pack; the shipped set is the
+when `allow_theme` holds. (The design listed a `glass` pack; the shipped set is the
 six above.)
 
 ## Export modes
@@ -168,9 +178,9 @@ six above.)
 directly-runnable launchers for all three OSes (`run.command` / `run.sh` /
 `run.bat`+`run.ps1`, shared `biorouter-launch.sh`, `serve.mjs` loopback proxy) and
 a prebuilt `dist/app.js` — no build step. See the
-[export guide](apps-sdk-reference.md#7-export-guide).
+[export guide](../apps-sdk/sdk-reference.md#7-export-guide).
 
-## Multi-agent
+## Multi-agent orchestration
 
 Two mechanisms ship. **Sub-agents-as-tools** (`orchestration.sub_agents`): each
 declared sub-agent is materialized as an engine recipe
@@ -181,12 +191,15 @@ an agent-as-tool. **Named worker profiles** (`orchestration.agents`, validated b
 in `ready.profiles`. The app addresses one via `br.agent(name)` (frames carry
 `agent: name`); the main agent delegates mid-turn via the `consult` tool (main-only,
 depth 1). **Serialized, not parallel** — one worker (or the main agent) runs at a
-time on the app socket; parallel-across-profiles turns are a stretch goal. This
-feature is **actively landing** in the `feat/apps-sdk-v2` branch; see
-`docs/apps-sdk-reference.md` §3.10 and treat the code (`consult` in `control.rs`,
-`AgentFacade` in `sdk.ts`) as authoritative.
+time on the app socket; parallel-across-profiles turns are a stretch goal.
 
-## CLI (`biorouter apps`)
+> **Currency caveat.** This section was written while the worker-profiles work was
+> landing, and named a `feat/apps-sdk-v2` branch that no longer exists in this
+> repository. Treat the code — `consult` in `control.rs`, `AgentFacade` in
+> `sdk.ts` — as authoritative, alongside
+> [Apps SDK reference §3.10](../apps-sdk/sdk-reference.md#310-bragent--worker-profiles-multi-agent-pillar-8).
+
+## The `biorouter apps` CLI
 
 Apps are browser-rendered, but the CLI gives list/open/serve parity
 (`crates/biorouter-cli/src/commands/apps.rs`):
@@ -207,14 +220,24 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
 |---|---|
 | `cargo test -p biorouter-mcp --lib agent_drafter::` | store, tools, render, bundler, the `ui_*` tools, manifest/theme/surface types |
 | `cargo test -p biorouter-mcp --test ui_example_apps` | example UI apps emit `ui` frames deterministically |
-| `cargo test -p biorouter-server --lib routes::apps` | WS frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
+| `cargo test -p biorouter-server --lib routes::apps` | WebSocket frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
 | `node scripts/agent-drafter/ui-control-harness.mjs` | SDK v2 self-test — real `sdk.ts` in jsdom vs a mock daemon: state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb`, `br.model`, theme/layout, presence, `wsToken` (needs esbuild + jsdom) |
 | `node scripts/agent-drafter/ui-control-harness.mjs --app <dir>` | serve a built app for a real browser (`/__emit` + `/__frames`) |
 | `ui/desktop/scripts/appcheck/check-ui-app.mjs` | real agent; asserts `ui` frames arrive |
 
 ---
 
-## What changed
+## Historical record: the v1 redesign and the app-building campaigns
+
+> **Status of everything below.** Historical. These are the original v1 redesign
+> notes plus the undated logs of the campaigns that authored the first ~90 apps.
+> They are kept because they record decisions, regressions and their fixes that are
+> easy to reintroduce. **Where v1 text conflicts with the sections above, v2 wins**
+> — the v1 protocol frames and the 11-tool `ui_*` table in particular have been
+> superseded, and each such subsection carries a note naming its v2 replacement.
+> The campaign logs carried no dates in the original and none have been added.
+
+### What the redesign changed
 
 | Before | After |
 |---|---|
@@ -224,7 +247,7 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
 | Shown inline in a sandboxed chat iframe | Served by `biorouterd` at `/apps/<id>/`, opened in the browser |
 | No per-artifact model/extension/skill/KB | Manifest carries model (default MiMo), extensions, skills, knowledge base, persona |
 
-## Architecture
+### Subsystem architecture
 
 - **Store + manifest** — `crates/biorouter-mcp/src/agent_drafter/store.rs`.
   Each app is a project dir `~/.config/biorouter/agent_drafter/<id>/`:
@@ -233,8 +256,8 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
   `extensions[]`, `skills[]`, `knowledge_base`.
 - **App SDK** — `templates/sdk.ts` (authored in TypeScript, bundled into each app).
   Opens the per-app WebSocket, streams events, renders markdown (headings, lists,
-  code, links, **GFM tables**), handles multimodal image input, and can auto-mount
-  a chat panel into `[data-br-chat]`.
+  code, links, **GitHub-flavoured Markdown tables**), handles multimodal image
+  input, and can auto-mount a chat panel into `[data-br-chat]`.
 - **Bundler** — `bundle.rs`. Locates esbuild (`$BIOROUTER_ESBUILD_BIN` → desktop
   `node_modules/.bin/esbuild` → PATH → `npx esbuild`); falls back to a vendored
   type-stripper when esbuild is absent. `src/main.ts` → `dist/app.js` (IIFE).
@@ -255,11 +278,11 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
   an "Applications" sidebar entry under Knowledge. Lists built apps; Launch opens
   the app URL in the default browser via the existing `openExternal` IPC.
 
-## WebSocket protocol (browser ⇄ backend)
+### WebSocket protocol, v1 (browser ⇄ backend)
 
-> **Superseded by protocol v2** (see the SDK v2 "Protocol v2 overview" above and
-> the [reference frame tables](apps-sdk-reference.md#5-protocol-appendix)). The
-> frames below are the v1 subset; v2 adds the `ready.protocol`/`surface` fields
+> **Superseded by protocol v2** (see "Protocol v2 overview" above and
+> the [reference frame tables](../apps-sdk/sdk-reference.md#5-protocol-appendix)).
+> The frames below are the v1 subset; v2 adds the `ready.protocol`/`surface` fields
 > and the `state_write` / `call` / `signal` / `kb` / `app_result` / `model_status`
 > frames.
 
@@ -276,12 +299,12 @@ Server → client: `{"type":"ready","capabilities":[…]}`, `{"type":"message","
 `{"type":"ui","cmd":"panel"|"render"|"chart"…}`, `{"type":"done"}`,
 `{"type":"error","message"}`.
 
-## Agent-driven UI (the `ui_*` tools)
+### Agent-driven UI, v1 (the `ui_*` tools)
 
 > **Extended in v2.** This v1 table lists the original 11 tools; v2 adds
 > `ui_patch_state`, `ui_patch`, `ui_html`, `ui_figure`, `app_call`, `emit_result`,
 > and `ui_subscribe` (18 total). Full table + widget catalog in the
-> [reference](apps-sdk-reference.md#4-agent-driven-ui-the-ui_-tools).
+> [reference](../apps-sdk/sdk-reference.md#4-agent-driven-ui-the-ui_-tools).
 
 An app's agent **drives the app**, it doesn't just answer inside it. A per-session
 in-process MCP server (`agent_drafter/control.rs`, injected by `configure_agent`
@@ -333,7 +356,7 @@ Examples live in `scripts/agent-drafter-apps/examples/ui/` (install with
 `ui/desktop/scripts/appcheck/check-ui-app.mjs` (drives a real agent and asserts
 `ui` command frames arrive).
 
-## Verification
+### Verification evidence
 
 Unit + integration (deterministic, no daemon, no LLM):
 
@@ -382,7 +405,7 @@ Export, on a **fresh `$HOME`** with no app installed and no daemon on :3000:
   proxies `/apps/**` including the WebSocket — `br.model.list()` returns 25
   providers through the proxy (it silently returned `[]` before, wrong origin).
 
-## Iteration log (bugs found via testing → fixed)
+### Iteration log: bugs found via testing, then fixed
 
 1. **`biorouterd` requires the `agent` subcommand** — operational note; the bare
    binary prints usage.
@@ -393,11 +416,11 @@ Export, on a **fresh `$HOME`** with no app installed and no daemon on :3000:
    back to BioRouter's global provider/model when the app-specific provider can't
    be created (`apps.rs`).
 3. **Markdown tables not rendered** — the SDK's renderer handled headings/lists/
-   code/links but not GFM tables (agents emit them often). **Fix:** added a table
-   parser to `sdk.ts` `renderMarkdown` + table CSS in `theme.css`. Verified the
-   rebuilt bundle emits `<table>`.
+   code/links but not GitHub-flavoured Markdown tables (agents emit them often).
+   **Fix:** added a table parser to `sdk.ts` `renderMarkdown` + table CSS in
+   `theme.css`. Verified the rebuilt bundle emits `<table>`.
 
-## Known limitations / next steps
+### Known limitations and next steps
 
 - **Per-app skill scoping** is advisory (the selected skills are named in the
   system prompt and the `skills` extension is enabled); BioRouter's skill
@@ -410,7 +433,7 @@ Export, on a **fresh `$HOME`** with no app installed and no daemon on :3000:
 - Older artifact-format apps from the previous design remain in the store but
   won't serve a working bundle (no `src/main.ts`); recreate them with `create_app`.
 
-## Example apps built by driving MiMo (16)
+### Campaign 1: 16 example apps built by driving MiMo
 
 Each app below was authored end-to-end by the **MiMo model itself** calling the
 Agent Drafter tools (`create_app` → `build_app` → `launch_app`) via
@@ -420,7 +443,7 @@ Agent Drafter tools (`create_app` → `build_app` → `launch_app`) via
 
 | App | Extensions | What it does |
 |-----|-----------|--------------|
-| spoke-network-explorer | (chart-block) | NL → SPOKE graph relationships + **AI-generated inline charts** |
+| spoke-network-explorer | (chart-block) | Natural language → SPOKE graph relationships + **AI-generated inline charts** |
 | web-research-assistant | computercontroller | Query → web search → sourced markdown answer |
 | pathway-explainer | — | Pathway: overview / steps / genes / regulation |
 | gene-function-explorer | — | Gene → function, pathways, expression, disease |
@@ -430,14 +453,14 @@ Agent Drafter tools (`create_app` → `build_app` → `launch_app`) via
 | lab-protocol-generator | — | Experiment → numbered reproducible protocol |
 | literature-summarizer-pro | — | Text → TL;DR / findings / methods / limitations |
 | biostatistics-advisor | — | Study design → recommended test + assumptions table |
-| differential-diagnosis-helper | — | Symptoms → structured DDx (with caveat) |
+| differential-diagnosis-helper | — | Symptoms → structured differential diagnosis (with caveat) |
 | sequence-analysis-toolkit | — | DNA/RNA/protein → GC, ORFs, translation, motifs |
 | cell-type-annotator | — | Marker genes → likely cell type + confidence |
 | enzyme-kinetics-tutor | — | Michaelis–Menten / Km / Vmax, step-by-step |
 | omics-pipeline-advisor | — | Assay description → tools + workflow + QC |
 | medical-term-explainer | — | Term → plain-language + technical definition |
 
-### Per-app checklist (all green)
+#### Per-app checklist (all green)
 
 For every app: `manifest` valid (agentic, model = MiMo, non-empty system prompt) ·
 `GET /apps/<id>/` 200 with theme injected · `GET /apps/<id>/dist/app.js` 200
@@ -448,7 +471,7 @@ persona-shaped reply · no error frame. Harness:
 Round 1: **15/15 pass**. After the chart iteration + SDK propagation + biorouterd
 rebuild: regression re-verify **15/15 pass**.
 
-### Iteration log (drive → find issue → fix Agent Drafter → recompile → re-make)
+#### Campaign 1 iteration log (drive → find issue → fix → recompile → re-make)
 
 1. **xargs arg-length** in the batch authoring runner (long personas) → switched
    to a batched background loop (`round.sh`).
@@ -458,13 +481,14 @@ rebuild: regression re-verify **15/15 pass**.
    to `theme.css`. Recompiled biorouterd, re-copied `sdk.ts` into all 24 stored
    apps, rebuilt bundles. Verified: SPOKE renders an SVG bar chart in the browser.
 3. **`autovisualiser` hijacks visualization**: with that extension the agent calls
-   `show_chart` (a `ui://` resource the app WS only surfaces as tool activity) and
-   the tool turn timed out, instead of emitting an inline chart block. **Fix:**
-   the SPOKE app drops `autovisualiser` and uses a chart-block system prompt, so
-   the chart renders inline and the turn finishes promptly. (Lesson: apps wanting
-   app-native inline charts should not also load `autovisualiser`.)
+   `show_chart` (a `ui://` resource the app WebSocket only surfaces as tool
+   activity) and the tool turn timed out, instead of emitting an inline chart
+   block. **Fix:** the SPOKE app drops `autovisualiser` and uses a chart-block
+   system prompt, so the chart renders inline and the turn finishes promptly.
+   (Lesson: apps wanting app-native inline charts should not also load
+   `autovisualiser`.)
 
-## Scale-up: 22 MiMo-authored apps + export pipeline + workflow loops
+### Campaign 2: scale-up to 22 MiMo-authored apps, export pipeline, workflow loops
 
 A second push added 6 more app *types* (now 22 apps total, all MiMo-authored via
 the tools) and hardened the whole build→export→run pipeline.
@@ -475,6 +499,7 @@ variant-consequence-distribution (pie), clinical-calculator.
 
 Full-fleet results (harness: `scripts/agent-drafter-apps/round.sh`,
 `ui/desktop/scripts/appcheck/{check-all,export-all}.mjs`):
+
 - **CHECKLIST 21/21 ok** — serve + esbuild bundle + theme + real streamed reply.
 - **EXPORT 21/21 ok** — every app exports a complete, directly-runnable folder
   (index.html + src + sdk + package.json + serve.mjs + run.command + run.sh +
@@ -486,15 +511,15 @@ Full-fleet results (harness: `scripts/agent-drafter-apps/round.sh`,
 - **Charts**: bar (SPOKE), line, and pie (variant consequences) render as native
   SVG with the BioRouter palette; markdown tables render bordered.
 
-### Provider-agnostic (BioRouter's flexibility)
+#### Provider-agnostic apps
 
 Apps no longer hardcode a model. By default an app pins **no** model and inherits
 whatever provider/model the user configured in BioRouter (Anthropic, OpenAI,
 Azure, Bedrock, Ollama, Xiaomi MiMo, local llama.cpp, …). A specific
-provider+model is stored only when explicitly chosen (`configure_app`). The WS
-handler applies the app's model or falls back to the global provider.
+provider+model is stored only when explicitly chosen (`configure_app`). The
+WebSocket handler applies the app's model or falls back to the global provider.
 
-### Export = directly runnable + portable
+#### Export made directly runnable and portable
 
 `export_app <id> <target_dir>` (e.g. "export this app to my Desktop") writes a
 self-contained folder. Double-click `run.command` (macOS) or `bash run.sh`: it
@@ -536,7 +561,7 @@ each one is easy to reintroduce:
    message. `export_app` chmods the launchers +x, and `.vault/` is excluded from
    exports so sealed secrets never leave the author's machine.
 
-### Workflow-style agentic loops + guardrails
+#### Workflow-style agentic loops and guardrails
 
 Every user message runs BioRouter's **full agent loop** — multi-step tool calls
 + reasoning, not a single LLM reply — so apps encode real pipelines via
@@ -544,7 +569,7 @@ system-prompt steps + extensions (modeled on the knowledge sub-agent loop's
 bounded design). `agent.max_turns` bounds/raises that loop (a guardrail against
 runaway/cost; the knob workflow apps raise), defaulting to a safe server cap (24).
 
-### Security / consistency review (findings + fixes)
+#### Security and consistency review: findings and fixes
 
 - **serve.mjs path traversal**: the exported static server now resolves under
   ROOT and rejects escapes (verified: `/../../etc/passwd` → blocked).
@@ -559,7 +584,7 @@ runaway/cost; the knob workflow apps raise), defaulting to a safe server cap (24
   biorouterd. A fresh unsigned dev `biorouterd` can't read the macOS keychain
   (per-binary grant) → pass the provider key via env in dev.
 
-## Diverse interactive UIs + a build harness (70 more apps)
+### Campaign 3: diverse interactive UIs and a build harness (70 more apps)
 
 The apps initially all looked alike because they used the default chat panel. Two
 changes fixed that, plus a build-time validation harness:
@@ -581,7 +606,7 @@ changes fixed that, plus a build-time validation harness:
 → explicit idempotent `create_app` id → element-id lint → `br.run` serialization
 (rapid control changes never overlap/orphan) → control-wiring lint.
 
-### 50 detailed-spec apps (round2) — varied UIs, 10 at a time
+#### 50 detailed-spec apps (round2) — varied UIs, 10 at a time
 
 Built by MiMo through the tools, in 5 batches, each verified (serve + esbuild
 bundle + **custom UI in markup** + real streamed reply) with retry:
@@ -592,7 +617,7 @@ region maps (prevalence/outbreak/biobank/trial-sites), drag-drop (workflow/
 gene-set/protocol reorder, abstract/CSV drop), tabs (omics/patient/gene/compound),
 and form wizards (study-design/grant-aims/cohort).
 
-### 20 vague-prompt apps (round3) — the benchmark
+#### 20 vague-prompt apps (round3) — the benchmark
 
 Built from one-line ideas with **no UI/SDK/layout guidance** to measure how the
 agent handles under-specified requests, relying on its instructions + harness.
@@ -609,17 +634,32 @@ single-control layouts. (Verifier note: the served HTML embeds the theme CSS,
 which *defines* every `br-*` class — the honest "real controls" metric is
 measured against the raw app markup in the store, not the served page.)
 
-### Autonomous testing
+#### Autonomous testing setup
 
 Provider key cached to `/tmp/br-mimo.key` (600) + `start-biorouterd.sh` /
 `author.sh` read it, so authoring + tests run with **no macOS Keychain prompts**.
 Harness: `scripts/agent-drafter-apps/{round2,round3}.sh`,
 `ui/desktop/scripts/appcheck/{batch-verify,check-all,export-all,benchmark}.mjs`.
 
-## Note on the work environment
+### Where the v1 work was done
 
-This redesign was implemented in an isolated git worktree
-(`/Users/wanjun/Desktop/biorouter-apps-wt`, branch `feat/agent-drafter-apps`)
-because a parallel workstream (`perf/streaming-and-latency`) was sharing the main
-working tree and snapshotted/reset files mid-edit. The worktree keeps the two
-efforts from clobbering each other; merge `feat/agent-drafter-apps` when ready.
+The v1 redesign was implemented in an isolated git worktree (branch
+`feat/agent-drafter-apps`) because a parallel workstream
+(`perf/streaming-and-latency`) was sharing the main working tree and
+snapshotted/reset files mid-edit. The worktree kept the two efforts from
+clobbering each other. Neither that worktree nor the `feat/agent-drafter-apps`
+branch exists in this repository any more.
+
+## Related documentation
+
+- [Apps SDK reference](../apps-sdk/sdk-reference.md) — the territory to this
+  document's map: every `br.*` signature, the manifest schema, frame tables and
+  export format.
+- [Apps SDK v2 design](../apps-sdk/v2-design.md) — the design spec the nine
+  pillars above summarise.
+- [Apps SDK v2 phase roadmap](../apps-sdk/v2-phase-roadmap.md) — how the pillars
+  were sequenced into shippable phases.
+- [App test-drive runbook](testing/app-test-drive-runbook.md) — how to drive a
+  model through the Agent Drafter tools and verify the app it builds.
+- [100-app test-drive audit](../history/agent-drafter-testdrive-100/README.md) —
+  the largest authored-app campaign, with per-app verdicts and the defects it found.

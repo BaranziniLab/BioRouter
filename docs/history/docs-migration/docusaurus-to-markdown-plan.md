@@ -1,6 +1,18 @@
-# Docs Consolidation Implementation Plan
+# Docusaurus-to-markdown migration plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The task-by-task execution plan that folded BioRouter's Docusaurus-generated `docs/` site and the hand-written `documentation/` folder into one plain-markdown `docs/` tree — writing a migration script, running it over 36 files, deleting the Docusaurus infrastructure, and verifying the result.
+> **Status:** Historical record — written 2026-05-07 and carried out. `documentation/` no longer exists, `docs/` is plain markdown in the getting-started / architecture / guides / extensions / troubleshooting layout this plan creates, and the throwaway `scripts/migrate-docs.py` was removed by Task 6 as designed. `scripts/verify-docs.sh` survives.
+> **Audience:** maintainers and agents tracing how a documentation page reached its current path.
+
+Two terms this plan assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree; its output mixes JSX components into Markdown (MDX) and ships generated HTML, feeds and media beside the source. **Goose** is the upstream open-source agent project BioRouter was forked from, published by the company **Block** — both appear as inherited branding the migration replaces with BioRouter.
+
+The design this plan implements is [consolidation-design.md](consolidation-design.md), its sibling in this folder: that document holds the file-by-file move tables, the deletion list and the transformation rules, while this one holds the runnable steps.
+
+> **Note.** Every command below hardcodes `/Users/wgu/Desktop/biorouter`, the author's checkout at the time of the run. To replay any step, substitute the path of your own clone.
+
+> **Note.** Tasks 1 and 2 author `scripts/verify-docs.sh` and `scripts/migrate-docs.py` inline through `cat > … << 'EOF'` heredocs, so the script bodies below are a snapshot taken at authoring time, not the live source. `scripts/verify-docs.sh` has since been edited in the repository (its Goose check gained a `mongoose` false-positive filter) — treat the checked-in file as authoritative. `scripts/migrate-docs.py` was deleted by Task 6, Step 2, so the copy below is the only remaining record of it.
+
+**How this plan was run:** as an agentic worker task, using the `superpowers:subagent-driven-development` sub-skill (`superpowers:executing-plans` was the alternative). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Merge `documentation/` and `docs/` into a single plain-markdown `docs/` folder, purging all Docusaurus infrastructure, Goose/Block branding, and recipe→workflow renaming.
 
@@ -8,11 +20,11 @@
 
 **Tech Stack:** Python 3 (stdlib only), bash, standard Unix tools (`find`, `grep`, `rm`, `git`)
 
-**Spec:** [docs/superpowers/specs/2026-05-07-docs-consolidation-design.md](../specs/2026-05-07-docs-consolidation-design.md)
+**Spec:** [consolidation-design.md](consolidation-design.md)
 
 ---
 
-## File Structure
+## File structure
 
 ```text
 scripts/
@@ -43,6 +55,8 @@ docs/v1/                   DELETE
 docs/*.html                DELETE (404.html, index.html)
 docs/sitemap.xml           DELETE (and all other Docusaurus root files)
 ```
+
+> **Note.** The `docs/extensions/` line above flags a name collision and leaves it open. Task 4, Step 2 resolves it: a `docs/extensions/` directory already existed in the Docusaurus site, holding `index.html` and a `detail/` subdirectory. The migrated `.md` files land in the same directory, so that step deletes only the HTML artifacts and leaves the new Markdown in place. The folder is not deleted wholesale.
 
 ---
 
@@ -534,7 +548,7 @@ rm -rf /Users/wgu/Desktop/biorouter/docs/docs
 rm -rf /Users/wgu/Desktop/biorouter/documentation
 ```
 
-- [ ] **Step 4: Check for any remaining non-superpowers directories**
+- [ ] **Step 5: Check for any remaining non-superpowers directories**
 
 ```bash
 ls /Users/wgu/Desktop/biorouter/docs/
@@ -551,7 +565,7 @@ If any unexpected directory remains (e.g. `docs/markdown-page/`, `docs/recipes/`
 # rm -rf docs/<unexpected-folder>
 ```
 
-- [ ] **Step 5: Commit deletions**
+- [ ] **Step 6: Commit deletions**
 
 ```bash
 cd /Users/wgu/Desktop/biorouter
@@ -680,7 +694,9 @@ docs/troubleshooting
 
 ---
 
-## Spec Coverage Checklist
+## Spec coverage checklist
+
+Each requirement from [consolidation-design.md](consolidation-design.md), mapped to the task that satisfies it.
 
 | Spec requirement | Task |
 | --- | --- |
@@ -688,8 +704,16 @@ docs/troubleshooting
 | No audio/video files | Task 4 + verify check 2 |
 | Purge Goose/Block branding | Tasks 2–3 (migration script) + verify check 3 |
 | recipe → workflow rename | Tasks 2–3 (migration script) + verify check 4 |
-| Delete docs/docs/ | Task 4, Step 2 |
-| Delete documentation/ | Task 4, Step 3 |
-| Only built-in extensions kept | MAPPING in Task 2 (10 files) |
-| superpowers/ untouched | Not in any delete command |
-| All files are .md | verify check 7 |
+| Delete `docs/docs/` | Task 4, Step 3 |
+| Delete `documentation/` | Task 4, Step 4 |
+| Only built-in extensions kept | `MAPPING` in Task 2 (10 files) |
+| `superpowers/` untouched | Not in any delete command |
+| All files are `.md` | verify check 7 |
+
+## Related documentation
+
+- [Docs consolidation design](consolidation-design.md) — the design this plan implements, with the full file-by-file move tables and transformation rules
+- [System overview](../../architecture/system-overview.md) — the architecture page produced by the first entry in this plan's `MAPPING`
+- [Workflows](../../workflows/README.md) — the section created by the recipe→workflow rename in Tasks 2–3
+- [Extensions and skills guide](../../extensions/extensions-and-skills-guide.md) — one of the 36 migrated pages, carried over from `documentation/extensions-skills-mcp.md`
+- [Troubleshooting](../../troubleshooting/README.md) — the troubleshooting section this migration created

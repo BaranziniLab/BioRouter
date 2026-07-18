@@ -1,103 +1,114 @@
-# Agent Drafter remediation — what was built, and what it caught
+# Agent Drafter remediation results
 
-**Branch:** `feat/apps-sdk-v2` · **Commits:** `ae8987a6`, `7527f848`, `d8cf95cc`
-**Plan:** [REMEDIATION-PLAN.md](REMEDIATION-PLAN.md) · **Audit:** [FINDINGS.md](FINDINGS.md)
+> **What this is.** The completion report for the remediation campaign that closed out the 100-app
+> test drive: what shipped per wave, the four cases where the platform itself turned out to be the
+> cause, the corpus re-lint results, test counts, the end-to-end self-repair proof, and an honest
+> ledger of what was left undone.
+> **Status:** Historical record — the work described here was built and is present in the tree. It
+> shipped on branch `feat/apps-sdk-v2` in commits `ae8987a6`, `7527f848`, and `d8cf95cc`. The report
+> itself carries no date; it was written after the [remediation plan](remediation-plan.md), which is
+> dated 2026-07-12. Only the closing "What is not done" section is forward-looking.
+> **Audience:** developers working on Agent Drafter and the Apps SDK.
 
----
+**Plan:** [remediation-plan.md](remediation-plan.md) ·
+**Audit:** [audit-findings-register.md](audit-findings-register.md)
 
-## 1. The thesis, and whether it held
+### Vocabulary used throughout
 
-The audit's finding was not "Agent Drafter is bad at building apps". It builds the
-static shell perfectly — not-a-chatbot 18/18, prescribed layout 11/11, declared
-surface 25/25. The finding was:
+| Term | Meaning |
+|---|---|
+| **Signal round-trip** | A user gesture in the app emits a declared signal that actually reaches the agent and starts a turn. The audit's worst-performing check. |
+| **Agent-driven loop** | agent → app → agent: the agent calls a declared action, the app state changes, and the agent reads the change back. |
+| **`consult` vs `subagent`** | `consult` delegates to a worker profile declared in `orchestration.agents`; `subagent` is BioRouter's generic delegation tool, registered from `orchestration.sub_agents`. Having both armed at once is finding 14. |
+| **`ui_describe`** | The control-plane tool an app agent calls to read the page's declared regions and surface. |
+| **Wave** | A dependency-ordered stage of the remediation plan. Waves 0–5 come from the plan; Wave 6 was added during implementation and is described below. |
 
-> **Everything the platform *checks*, the model gets right. Everything the platform
-> merely *asks for in a system prompt*, the model gets wrong** — signals 1/12,
-> agent-driven loop 0/3, zero full functional passes.
+## The thesis, and whether it held
 
-So the remediation was never "write better instructions". Every fix moves one clause
-of the contract out of the system prompt and into one of four enforcement points:
+The audit's finding was not that Agent Drafter is bad at building apps. It builds the static shell
+perfectly — not-a-chatbot 18/18, prescribed layout 11/11, declared surface 25/25. The finding was:
+
+> **Everything the platform *checks*, the model gets right. Everything the platform merely *asks for
+> in a system prompt*, the model gets wrong** — signals 1/12, agent-driven loop 0/3, zero full
+> functional passes.
+
+So the remediation was never "write better instructions". Every fix moves one clause of the contract
+out of the system prompt and into one of four enforcement points:
 
 | Enforcement | Meaning |
 |---|---|
-| **A schema the model is handed** | It cannot emit a shape the schema forbids. |
-| **A tool absent from the tool list** | It cannot call what it cannot see. |
-| **A server check that fails closed** | An invalid manifest cannot be saved or built. |
-| **A check that executes** | A control that delivers no turn fails the build. |
+| A schema the model is handed | It cannot emit a shape the schema forbids. |
+| A tool absent from the tool list | It cannot call what it cannot see. |
+| A server check that fails closed | An invalid manifest cannot be saved or built. |
+| A check that executes | A control that delivers no turn fails the build. |
 
-That thesis held under implementation. Repeatedly, the code turned out to be *worse*
-than the audit reported — and worse in the same direction: the platform was not
-failing to prevent the model's mistakes, it was **causing** them.
+That thesis held under implementation. Repeatedly, the code turned out to be *worse* than the audit
+reported — and worse in the same direction: the platform was not failing to prevent the model's
+mistakes, it was **causing** them.
 
----
-
-## 2. The four times the platform was the culprit
+## The four times the platform was the culprit
 
 These are the findings where reading the source changed the diagnosis.
 
 ### The runaway tool loop was BioRouter's own guard
 
-The audit said the engine "neither masks the declined tool nor terminates repeated
-calls". True — but the decline the model saw came from `RepetitionInspector`, and:
+The audit said the engine "neither masks the declined tool nor terminates repeated calls". True — but
+the decline the model saw came from `RepetitionInspector`, and:
 
-- it tracked only the **immediately preceding** call, so an alternating `A,B,A,B`
-  reset the counter every iteration and **never tripped at all**;
-- the deny answered *"The user has declined to run this tool"* — **a lie**, and one
+- it tracked only the **immediately preceding** call, so an alternating `A,B,A,B` reset the counter
+  every iteration and **never tripped at all**;
+- the deny answered *"The user has declined to run this tool"*, which was factually untrue and which
   the model could not see through, so it could not learn to do something different;
-- and the loop **simply continued**. Nothing removed the tool from the next provider
-  request, so the model retried to the turn cap — every iteration a billed call.
+- and the loop **simply continued**. Nothing removed the tool from the next provider request, so the
+  model retried to the turn cap — every iteration a billed call.
 
 The whole guard was, literally, a sentence in a tool result.
 
-### Workers were *instructed* to seize the UI
+### Workers were instructed to seize the UI
 
-The audit read this as model drift. It is a deny-by-default inversion.
-`UiCapability::enabled` defaults `true` — correct for the main agent, whose blast
-radius is its own page. But a worker profile is a full `AgentConfig`, so a profile
-authored *without* a `ui` block deserialized as `true`, and `validate_profiles` ANDed
-`true && true`. Every worker was handed `appcontrol` on the **main bridge** plus the
-`ui_system_prompt` whose first rule is *"drive the page"*. Prose telling them not to
-was competing with the tools they had just been given.
+The audit read this as model drift. It is a deny-by-default inversion. `UiCapability::enabled`
+defaults `true` — correct for the main agent, whose blast radius is its own page. But a worker profile
+is a full `AgentConfig`, so a profile authored *without* a `ui` block deserialized as `true`, and
+`validate_profiles` ANDed `true && true`. Every worker was handed `appcontrol` on the **main bridge**
+plus the `ui_system_prompt` whose first rule is *"drive the page"*. Prose telling them not to was
+competing with the tools they had just been given.
 
 ### Both delegation mechanisms were armed at once
 
 `orchestration.sub_agents` registered recipes for the generic `subagent` tool while
-`orchestration.agents` armed `consult`. The generic one is easier to reach — its
-description auto-lists the very worker names the author registered, and it takes a
-free-form `instructions` string. `spec-006-ward-board` declared the same four workers
-**twice**, once in each map, and the declared profiles were dead configuration.
+`orchestration.agents` armed `consult`. The generic one is easier to reach — its description
+auto-lists the very worker names the author registered, and it takes a free-form `instructions`
+string. `spec-006-ward-board` declared the same four workers **twice**, once in each map, and the
+declared profiles were dead configuration.
 
 ### "Both workers timed out and main silently completed" was guaranteed
 
-Two racing timers on either side of a channel. The `consult` tool started a 120 s
-timer *before* the request reached the socket loop; `run_consult` started a second one
-strictly later. The outer always won, so the inner was dead code — and when the outer
-fired, the loop was still awaiting the worker, **draining nothing**. When the abandoned
-worker finally answered, `resolve_consult` found no pending entry and **threw the
-answer away**. Paid work, discarded. And the deadline was a compile-time constant with
-**no configuration path at all**.
+Two racing timers on either side of a channel. The `consult` tool started a 120 s timer *before* the
+request reached the socket loop; `run_consult` started a second one strictly later. The outer always
+won, so the inner was dead code — and when the outer fired, the loop was still awaiting the worker,
+**draining nothing**. When the abandoned worker finally answered, `resolve_consult` found no pending
+entry and **threw the answer away**, discarding paid model work. The deadline was also a compile-time
+constant with **no configuration path at all**.
 
----
+## Two findings the audit never saw
 
-## 3. Two findings the audit never saw
+Both surfaced while verifying the plan's citations. Neither appears in the
+[audit findings register](audit-findings-register.md); the plan tracks them as findings 23 and 24.
 
-Both surfaced while verifying the plan's citations.
+**A literal NUL byte in `sdk.ts` (line 4446).** `grep` classifies the file as binary and prints
+nothing; `git diff` shows *"Binary files differ"*. The most-reviewed file in the feature was
+**unsearchable and unreviewable** — and the review pass that found this had already, briefly,
+dismissed a whole cluster of real findings as fabricated because of it.
 
-**A literal NUL byte in `sdk.ts` (line 4446).** `grep` classifies the file as binary
-and prints nothing; `git diff` shows *"Binary files differ"*. The most-reviewed file in
-the feature was **unsearchable and unreviewable** — and the review pass that found this
-had already, briefly, dismissed a whole cluster of real findings as fabricated because
-of it.
+**The client half of the signals bug.** `emitSignal` fire-and-forgets through a `send()` that returns
+`false` when the socket is not `OPEN`, with no queue. A signal fired during page load never left the
+browser *at all*. Both ends were dropping the same gesture, for different reasons — so the
+server-side fix alone would not have worked.
 
-**The client half of the signals bug.** `emitSignal` fire-and-forgets through a
-`send()` that returns `false` when the socket is not `OPEN`, with no queue. A signal
-fired during page load never left the browser *at all*. Both ends were dropping the
-same gesture, for different reasons — so the server-side fix alone would not have
-worked.
+## What was built
 
----
-
-## 4. What was built
+The Wave column below cites either a whole wave number or a specific plan item within it (`3.1`,
+`4.2`), depending on the granularity at which that change was planned.
 
 | Wave | Change | Enforcement |
 |---|---|---|
@@ -117,12 +128,10 @@ worked.
 | **5.2** | `br.dnd.catalog` — pointer + click + keyboard parity, and it **emits the declared signal itself** | primitive |
 | **5** | Lint: drag-only surface is an Error naming `br.dnd.catalog`; bindings with no `state_initial` warn and explain why the obvious workaround *is* the bug | executing-adjacent |
 
----
+## What it catches on the real corpus
 
-## 5. What it catches on the **real** corpus
-
-Not on fixtures — on the 30 apps Agent Drafter actually produced during the audit,
-re-linted by the fixed platform (`tests/testdrive_corpus_relint.rs`):
+Not on fixtures — on the 30 apps Agent Drafter actually produced during the audit, re-linted by the
+fixed platform (`tests/testdrive_corpus_relint.rs`):
 
 | Check | Apps caught (of 30) |
 |---|---|
@@ -131,20 +140,16 @@ re-linted by the fixed platform (`tests/testdrive_corpus_relint.rs`):
 | Hand-rolled HTML5 drag (unreachable by keyboard, touch, or any automated pointer) | **10** |
 | **Still load under the new schema** (back-compat) | **30 / 30** |
 
-That last row is the one that matters for the ~110 v1 apps in the wild. Waves 1–5 added
-nine manifest fields — `requires`, `state_initial`, `effect`, `writes`,
-`requires_evidence`, `provenance_required`, `eager`, `worker_ui`, `consult_timeout_s` —
-and every one defaults. Had any been made required, all 30 of these would have failed
-to deserialize.
+That last row is the one that matters for the ~110 v1 apps in the wild. Waves 1–5 added nine manifest
+fields — `requires`, `state_initial`, `effect`, `writes`, `requires_evidence`, `provenance_required`,
+`eager`, `worker_ui`, `consult_timeout_s` — and every one defaults. Had any been made required, all
+30 of these would have failed to deserialize.
 
 The 19 rejections are not abstract. They are `phenotype-defs`, `clinical-guidelines`,
-`hpo-omim-gene-disease`, `ecology-parameter-ranges`, `statistical-genetics` — ids the
-model invented because the manifest had **no vocabulary for "I need this and it isn't
-here"**. It does now.
+`hpo-omim-gene-disease`, `ecology-parameter-ranges`, `statistical-genetics` — ids the model invented
+because the manifest had **no vocabulary for "I need this and it isn't here"**. It does now.
 
----
-
-## 6. Tests
+## Tests
 
 | Suite | Result |
 |---|---|
@@ -153,50 +158,49 @@ here"**. It does now.
 | `biorouter` | 750 pass (+1 known-flaky `gcpauth` timing race, passes 12/12 in isolation) |
 | `biorouter-cli` | 182 pass |
 
+> **Note.** These are whole-crate counts. The pre-run gates in
+> [pre-run-baseline-gates.md](pre-run-baseline-gates.md) report *filtered* counts for the same crates
+> (202 for `biorouter-mcp --lib agent_drafter::`, 74 for `biorouter-server --lib routes::apps`), so
+> the two tables are not directly subtractable — the delta cannot be read off them by hand.
+
 New suites, each pinned to a specific audit finding: `template_text_integrity`,
-`path_resolver_agreement`, `turn_abort_tests`, `catalog_write_boundary`,
-`typed_declaration`, `eager_signals`, `action_effects`, `evidence_gate`, `turn_guard`,
-`lint_interaction`, `testdrive_corpus_relint`.
+`path_resolver_agreement`, `turn_abort_tests`, `catalog_write_boundary`, `typed_declaration`,
+`eager_signals`, `action_effects`, `evidence_gate`, `turn_guard`, `lint_interaction`,
+`testdrive_corpus_relint`.
 
-Three pre-existing tests **asserted the old, broken contracts** and were rewritten —
-which is itself evidence the bugs were baked in, not accidental:
+Three pre-existing tests **asserted the old, broken contracts** and were rewritten — which is itself
+evidence the bugs were baked in, not accidental:
 
-- `ui_is_shared_when_both_grant_it` asserted that a default-config worker *gets the
-  UI*. That assertion was the inversion.
-- `validate_signal_checks_subscription…` asserted that a declared signal is refused
-  until the agent subscribes. That assertion was the 1/12 bug.
-- The repetition tests asserted consecutive-only counting — the reason an interleaved
-  loop never tripped.
+- `ui_is_shared_when_both_grant_it` asserted that a default-config worker *gets the UI*. That
+  assertion was the inversion.
+- `validate_signal_checks_subscription…` asserted that a declared signal is refused until the agent
+  subscribes. That assertion was the 1/12 bug.
+- The repetition tests asserted consecutive-only counting — the reason an interleaved loop never
+  tripped.
 
-`fallback_strips_real_sdk_template_into_valid_js` earned its keep: it caught that the
-no-esbuild fallback bundler cannot strip tuple types or function-type return
-annotations, so the new contrast-audit and `br.dnd` code would have shipped as **broken
-JS on any machine without esbuild**.
+`fallback_strips_real_sdk_template_into_valid_js` earned its keep: it caught that the no-esbuild
+fallback bundler cannot strip tuple types or function-type return annotations, so the new
+contrast-audit and `br.dnd` code would have shipped as **broken JS on any machine without esbuild**.
 
----
+## The end-to-end proof: the platform repairs its own broken app
 
-## 6b. The end-to-end proof: the platform repairs its own broken app
+The strongest test available is not a fixture. It is to point the **fixed** Agent Drafter at an app
+the **broken** Agent Drafter produced, and ask it to fix itself — no hand-editing, `agent_drafter`
+tools only.
 
-The strongest test available is not a fixture. It is to point the **fixed** Agent
-Drafter at an app the **broken** Agent Drafter produced, and ask it to fix itself —
-no hand-editing, agent_drafter tools only.
+`scripts/agent-drafter-testdrive/repair.sh spec-002-cohort-funnel-foundry` did that. The app had four
+of the audit's defects: an invented knowledge base (`phenotype-defs`), no declared initial state,
+hand-rolled HTML5 drag, and four declared signals that could never round-trip.
 
-`scripts/agent-drafter-testdrive/repair.sh spec-002-cohort-funnel-foundry` did that.
-The app had four of the audit's defects: an invented knowledge base
-(`phenotype-defs`), no declared initial state, hand-rolled HTML5 drag, and four
-declared signals that could never round-trip.
+**What the agent did** — 1 × `list_platform_catalog`, 1 × `configure_app`, 9 × `declare_surface`,
+3 × `build_app`, 1 × `lint_app`. **Zero** shell escapes, and **zero** manifest-rewrite guessing loops
+(the old failure mode was ~6 rejected rewrites per app).
 
-**What the agent did** — 1 × `list_platform_catalog`, 1 × `configure_app`,
-9 × `declare_surface`, 3 × `build_app`, 1 × `lint_app`. **Zero** shell escapes, and
-**zero** manifest-rewrite guessing loops (the old failure mode was ~6 rejected
-rewrites per app).
+**Verified independently** (not the agent's word): re-linting the corpus shows spec-002 dropped from
+3 warnings to **1** — the pre-existing `<style>` note — and it is no longer in the invented-id
+rejection list.
 
-**Verified independently** (not the agent's word): re-linting the corpus shows
-spec-002 dropped from 3 warnings to **1** — the pre-existing `<style>` note — and it
-is no longer in the invented-id rejection list.
-
-**Verified in a browser** (Playwright, against the real daemon, with **zero agent
-turns run**):
+**Verified in a browser** (Playwright, against the real daemon, with **zero agent turns run**):
 
 | Check | Audit result | Now |
 |---|---|---|
@@ -207,43 +211,42 @@ turns run**):
 | Screen-reader announcement | none | *"eGFR<30 dropped on funnel."* |
 | **`chip_dropped` signal reaches the agent** | **1 / 12 across the corpus** | **"Agent turn queued — chip_dropped"**, agent responds with `ui_describe` |
 
-That last row is the whole campaign. A **keyboard** drop, on an interaction that
-previously no automated or assistive pointer could perform at all, emitted the app's
-declared signal, which reached the agent, which started a turn. Screenshot:
-[`shots/spec-002-repaired-keyboard-drop.png`](shots/spec-002-repaired-keyboard-drop.png).
+That last row is the campaign's headline result. A **keyboard** drop, on an interaction that
+previously no automated or assistive pointer could perform at all, emitted the app's declared signal,
+which reached the agent, which started a turn. The run was captured as
+`shots/spec-002-repaired-keyboard-drop.png`; that screenshot directory was not preserved in this
+repository.
 
 ### Two bugs the repair run found in the remediation itself
 
-Worth recording, because both are the exact failure class this campaign is about — a
-tool that reports success while doing nothing.
+Worth recording, because both are the exact failure class this campaign is about — a tool that
+reports success while doing nothing.
 
-1. **`declare_surface(merge: true)` silently dropped `state_initial`.** The merge
-   branch upserted actions/signals/components and carried `state_schema` across, but
-   never `state_initial` — so the caller declared an initial document, got a success
-   result, and the manifest was unchanged. That is what cost the repair agent 8 of its
-   9 `declare_surface` calls: it was thrashing against a lie. Fixed, with a regression
-   test.
-
+1. **`declare_surface(merge: true)` silently dropped `state_initial`.** The merge branch upserted
+   actions, signals, and components and carried `state_schema` across, but never `state_initial` — so
+   the caller declared an initial document, got a success result, and the manifest was unchanged. That
+   is what cost the repair agent 8 of its 9 `declare_surface` calls: it was thrashing against a tool
+   that reported success falsely. Fixed, with a regression test.
 2. **Wave 0.1's path fix moved the store.** `BIOROUTER_PATH_ROOT=<R>` now resolves to
-   `<R>/config/agent_drafter` — correct, and pinned to `biorouter::config::Paths` by a
-   cross-crate test. But the old, broken resolver ignored that variable and went
-   through XDG, so every existing sandboxed store is at
-   `<R>/config/biorouter/agent_drafter`. The first repair run saw **zero apps** and
-   flailed. This is a real migration step for anyone with a `BIOROUTER_PATH_ROOT`
-   store, and it is now documented in the harness scripts.
+   `<R>/config/agent_drafter` — correct, and pinned to `biorouter::config::Paths` by a cross-crate
+   test. But the old, broken resolver ignored that variable and went through XDG, so every existing
+   sandboxed store is at `<R>/config/biorouter/agent_drafter`. The first repair run saw **zero apps**
+   and flailed. This is a real migration step for anyone with a `BIOROUTER_PATH_ROOT` store, and it is
+   now documented in the harness scripts.
 
----
+## Wave 6 — lint that runs the app
 
-## 7. Wave 6 — lint that RUNS the app
+> **Note.** Wave 6 is not in the [remediation plan](remediation-plan.md), which stops at Wave 5. It
+> was added during implementation, building on the plan's item 5.1 (`app-smoke.mjs`, the executing
+> preview) and extending it into a discriminating corpus check.
 
-Every remaining finding shares one property: **no string analysis can catch it.** The
-code is correct-looking and the failure is a runtime state. A control that fires and
-delivers no turn leaves *nothing* behind — the handler completes, the console is
-clean, and the session holds no record. Only the wire knows.
+Every remaining finding shares one property: **no string analysis can catch it.** The code is
+correct-looking and the failure is a runtime state. A control that fires and delivers no turn leaves
+*nothing* behind — the handler completes, the console is clean, and the session holds no record. Only
+the wire knows.
 
-`scripts/agent-drafter/app-smoke.mjs` (+ the `smoke_app` tool) boots the built app in
-a real browser against a real mock daemon, drives it, and asserts on **frames** and
-**pixels**:
+`scripts/agent-drafter/app-smoke.mjs` (plus the `smoke_app` tool) boots the built app in a real
+browser against a real mock daemon, drives it, and asserts on **frames** and **pixels**:
 
 | Check | What it catches |
 |---|---|
@@ -253,44 +256,51 @@ a real browser against a real mock daemon, drives it, and asserts on **frames** 
 | `drag-is-reachable` | a keyboard `Enter`→`Enter` drop must land, and must emit the declared signal |
 | `progress-isolation` | tool frames must not render twice, nor inside the declared result region |
 
-It **fails closed**: if no browser can be launched it exits 2 (*could not run*), never
-0. A check that reports success without executing is the exact failure this whole
-campaign exists to eliminate.
+It **fails closed**: if no browser can be launched it exits 2 (*could not run*), never 0. A check that
+reports success without executing is the exact failure this whole campaign exists to eliminate.
 
-### It discriminates — which is the only thing that makes it worth having
+### It discriminates between apps
 
-A harness that passes everything is decoration; one that fails everything gets muted.
-Run against the real corpus (`the_executing_check_separates_the_repaired_app_from_the_broken_ones`):
+A harness that passes everything is decoration; one that fails everything gets muted. Run against the
+real corpus (`the_executing_check_separates_the_repaired_app_from_the_broken_ones`):
 
-- **`spec-002` (repaired by the platform's own agent)** → **exit 0**, 37 frames on the
-  wire, no findings.
-- **`spec-009-survival-atelier` (the audit's own FAIL verdict, untouched)** → **exit 1**,
-  and it independently reproduced all three of the audit's failures — including the one
-  no static rule can see:
+- **`spec-002` (repaired by the platform's own agent)** → **exit 0**, 37 frames on the wire, no
+  findings.
+- **`spec-009-survival-atelier` (the audit's own FAIL verdict, untouched)** → **exit 1**, and it
+  independently reproduced all three of the audit's failures — including the one no static rule can
+  see:
 
-  > *"Fit Cox", "Check PH", "Adjust confounders" fired and delivered **NOTHING** to the
-  > agent — no prompt, call, or signal frame reached the wire.*
+  > *"Fit Cox", "Check PH", "Adjust confounders" fired and delivered **NOTHING** to the agent — no
+  > prompt, call, or signal frame reached the wire.*
 
-- `spec-004-trial-regia` → 8/13 bindings blank before any turn; 12 HTML5-draggable
-  elements no assistive pointer can drive.
+- `spec-004-trial-regia` → 8/13 bindings blank before any turn; 12 HTML5-draggable elements no
+  assistive pointer can drive.
 
-The dead control — the defect that produced *0/18 functional passes* and that the audit
-could only find by hand, one app at a time — is now caught automatically, by a tool the
-authoring agent can call.
+The dead control — the defect that produced *0/18 functional passes* and that the audit could only
+find by hand, one app at a time — is now caught automatically, by a tool the authoring agent can call.
 
----
+## What is not done
 
-## 8. What is *not* done
+An honest ledger of what the campaign left open:
 
-Honest ledger:
+- **The 30 corpus apps are not re-authored.** They were built against the broken platform; the fixed
+  platform now *sees* their defects (and `spec-002` proves an agent can repair one on request), but
+  making them all pass means re-running the authoring loop, not patching them.
+- **The `done{degraded}` banner and the `ui_theme` contrast audit are unit- and build-tested, not
+  browser-tested.** `app-smoke.mjs` is the natural home for both; the hooks are there, the scenarios
+  are not written.
+- **`smoke_app` is not yet wired into `build_app`.** It is a tool the agent (or CI) must call. Making
+  a failing smoke check *block* a build is a deliberate follow-up: it should ship advisory first, so a
+  false positive cannot brick an existing app.
 
-- **The 30 corpus apps are not re-authored.** They were built against the broken
-  platform; the fixed platform now *sees* their defects (and `spec-002` proves an agent
-  can repair one on request), but making them all pass means re-running the authoring
-  loop, not patching them.
-- **The `done{degraded}` banner and the `ui_theme` contrast audit are unit- and
-  build-tested, not browser-tested.** `app-smoke.mjs` is the natural home for both; the
-  hooks are there, the scenarios are not written.
-- **`smoke_app` is not yet wired into `build_app`.** It is a tool the agent (or CI) must
-  call. Making a failing smoke check *block* a build is a deliberate follow-up: it
-  should ship advisory first, so a false positive cannot brick an existing app.
+## Related documentation
+
+- [Remediation plan](remediation-plan.md) — the six-wave plan this report closes out, with the
+  `file:line` citation for every fix above.
+- [Audit findings register](audit-findings-register.md) — the 22 findings the plan and this report
+  were built against.
+- [Test drive README](README.md) — the index for the campaign as a whole.
+- [Pre-run baseline gates](pre-run-baseline-gates.md) — the test counts this report's table
+  supersedes.
+- [Apps SDK v2 design](../../apps-sdk/v2-design.md) — the contract whose enforcement these waves
+  moved out of prose and into the platform.

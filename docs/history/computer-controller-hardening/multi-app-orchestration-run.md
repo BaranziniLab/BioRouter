@@ -1,59 +1,76 @@
-# Computer Controller — 20 Multi-App Orchestration Test Tasks
+# Computer Controller — multi-app orchestration run
 
-Goal: stress the Computer Controller on realistic, multi-step, multi-app workflows
-(Slack messaging, web literature gathering on multiple sclerosis, touring GWAS
-summary-statistics resource sites, and writing MS Word reports). Model:
-**mimo-v2-omni** (vision). Environment: macOS with Slack, Microsoft Word (AppleScript +
-`docx_tool`), Safari, Chrome installed.
+> **What this is.** A 20-task multi-app stress scenario for the Computer Controller — Slack messaging, web literature gathering, GWAS resource-site tours and Word report writing — together with the live findings from running it and the prompt and tool fixes that came out of those findings.
+> **Status:** Historical record — a completed 2026-06-20 hardening pass. The fixes described here (the `computer_control` watchdog timeout, the chat-app playbook, recovery principle #6) landed in that commit. The one recommendation left open, a Slack Web-API path, is carried by [the Slack posting investigation](../../extensions/slack-posting-investigation.md).
+> **Audience:** maintainers working on the Computer Controller extension.
+
+The goal was to stress the Computer Controller on realistic, multi-step, multi-app
+workflows rather than single tool calls: Slack messaging, web literature gathering on
+multiple sclerosis, touring GWAS summary-statistics resource sites, and writing MS Word
+reports. The model was **mimo-v2-omni** (vision). Roughly half of this document is the
+task list; the rest is the live findings, root-cause analysis and fixes.
+
+Each problem found is tagged with a fix category: **P** = prompt / context-engineering
+fix, **T** = tool-hardening fix in Rust, **E** = environment or out-of-scope (OS
+permissions, hardware, model capability). These are the same categories used in
+[the Computer Controller test plan and root causes](./test-plan-and-root-causes.md).
+
+The live findings below cover a subset of the 20 designed tasks — tasks 1 and 2 (Slack),
+5 (PubMed literature), 9 (GWAS Catalog) and 13 (Word report). The remaining tasks are the
+designed scenario, recorded here so the same stress run can be repeated.
+
+> **Note.** The environment is one specific developer machine and does not generalize: a
+> macOS host with Slack, Microsoft Word (AppleScript + `docx_tool`), Safari and Chrome
+> installed, signed in to the **Broccolito Lab** Slack workspace, whose channels include
+> `#spoke-tech` and — importantly for task 1 — no `#general`. Runs used a sandboxed
+> config. Reproducing the Slack tasks requires an equivalent workspace.
 
 Tool inventory the agent can orchestrate:
+
 - `web_scrape` (HTTP fetch → cache), `computer_control` (AppleScript: browser/Slack/Word UI),
   `docx_tool` (write `.docx` directly), `pdf_tool`, `xlsx_tool`, `cache`,
   `developer` shell + `screen_capture`/`list_windows`.
 
-Status: ✅ pass · ⚠️ partial · ❌ fail · 🔬 run live below
+## Designed tasks
 
-## Slack (UI-automation only — Slack is not meaningfully AppleScript-scriptable)
+### Slack
+
+Slack is not meaningfully AppleScript-scriptable, so these are UI-automation only.
 
 1. Open Slack, surface the **Broccolito Lab** workspace, and report the visible channels.
 2. **Send** a clearly-labeled test message to a Broccolito Lab channel.
 3. Read the latest message in a Slack channel and summarize it.
 4. Search Slack for messages mentioning "GWAS" and report what you find.
 
-## Web literature on multiple sclerosis
+### Web literature on multiple sclerosis
 
 5. Fetch a PubMed search for "multiple sclerosis GWAS" and list the top article titles.
 6. Open a review article on MS genetics in the browser and extract the abstract.
 7. Gather 5 recent MS literature references (title + link) from a search.
 8. Open Google Scholar for "multiple sclerosis susceptibility loci" and capture the top results.
 
-## GWAS summary-statistics resource tours
+### GWAS summary-statistics resource tours
 
 9. Tour the **GWAS Catalog** (ebi.ac.uk/gwas), search "multiple sclerosis", report summary-stat downloads.
 10. Visit **IEU OpenGWAS** and find MS datasets / summary stats.
 11. Visit **FinnGen** and locate the MS endpoint summary statistics.
 12. Find the **IMSGC** MS GWAS resource and report its download links.
 
-## MS Word reports
+### MS Word reports
 
 13. Write a Word report summarizing MS-genetics literature gathered.
 14. Create a Word doc with a title, headings, and a bibliography of MS references.
 15. Append a "GWAS resources" section (resource + URL table) to an existing report.
 16. Insert a figure with a caption into a Word report.
 
-## Full multi-app orchestration (hardest)
+### Full multi-app orchestration (hardest)
 
 17. Gather MS literature → synthesize a summary → write it into a Word report → post a Slack message announcing it.
 18. Search GWAS Catalog for MS summary stats → compile the download links into a Word table → save the report.
 19. Read two local text files → synthesize → write a Word report → notify Slack.
 20. Find MS GWAS summary stats across 3 sites → write a comparison report in Word → post a summary to Slack.
 
----
-
-## Live results & findings
-
-Each problem is tagged **P** prompt/context, **T** tool-hardening, or **E** environment.
-Model: mimo-v2-omni. Sandboxed config.
+## Live results and findings
 
 ### Tasks that worked well
 
@@ -73,7 +90,7 @@ Model: mimo-v2-omni. Sandboxed config.
 Conclusion: **web/data/report tasks are reliable.** The hard part — as the user
 reported — is **GUI app automation**, specifically Slack.
 
-### Task 1+2 (Slack) — the failure the user observed, and the fixes
+### Tasks 1 and 2 (Slack) — the observed failure and the fixes
 
 **Observed:** the agent got **stuck in Slack's search/quick-switcher overlay**. It typed
 "general" expecting a `#general` channel (this workspace has none — only a Slackbot DM),
@@ -83,7 +100,7 @@ coordinate click** (`click at {230,170}`) and repeatedly hitting
 `System Events ... AppleEvent timed out (-1712)` — **each hung call blocked ~120 s**,
 burning time/tokens (the user's "circling / consuming tokens" symptom).
 
-**Root causes & fixes:**
+**Root causes and fixes:**
 
 | Cause | Category | Fix |
 |---|---|---|
@@ -101,13 +118,27 @@ not do before (trapped in the search overlay, never locating the composer). With
 overlay cleared and the composer identified, the composer→type→Return send flow proceeds
 normally.
 
-**Operational note discovered during testing:** the dev `biorouter` binary was *adhoc*-signed,
-so every `cargo build` changed its signature and **voided the macOS Keychain grant** for the
-provider API key (runs then failed with "XIAOMI_MIMO_API_KEY not found"). Re-signing the dev
-binary with the UCSF Developer ID (stable identity, as `just copy-binary` does) restores the
-grant and keeps it across rebuilds. Worth doing automatically after a dev rebuild.
+### Keychain grant lost on every dev rebuild
 
-**Recommendation (not yet implemented):** for *reliable* Slack posting, add a Slack
-Web-API / incoming-webhook path instead of UI automation — UI automation will always be
-brittle for Slack. The fixes above make the UI path fail gracefully and recover, but an
-API integration is the real solution (separate, larger piece of work).
+An operational problem discovered during testing: the dev `biorouter` binary was
+*adhoc*-signed, so every `cargo build` changed its signature and **voided the macOS
+Keychain grant** for the provider API key (runs then failed with
+"XIAOMI_MIMO_API_KEY not found"). Re-signing the dev binary with the UCSF Developer ID
+(stable identity, as `just copy-binary` does) restores the grant and keeps it across
+rebuilds. Worth doing automatically after a dev rebuild.
+
+### Recommendation, not implemented in this pass
+
+For *reliable* Slack posting, add a Slack Web-API / incoming-webhook path instead of UI
+automation — UI automation will always be brittle for Slack. The fixes above make the UI
+path fail gracefully and recover, but an API integration is the real solution (separate,
+larger piece of work). That option is worked through in
+[the Slack posting investigation](../../extensions/slack-posting-investigation.md),
+which reaches the same conclusion.
+
+## Related documentation
+
+- [Computer Controller executed test results](./executed-test-results.md) — the sibling record of the same 2026-06-20 pass, covering the single-tool cases, automated tests and the MiMo vision finding.
+- [Computer Controller test plan and root causes](./test-plan-and-root-causes.md) — the case matrix and the K1–K5 root causes that this run was designed to stress.
+- [Slack posting investigation](../../extensions/slack-posting-investigation.md) — the follow-up on replacing Slack UI automation with an API or webhook path.
+- [Computer Controller extension reference](../../extensions/built-in/computer-controller.md) — current documentation for `computer_control`, `web_scrape`, `docx_tool` and the rest of the tool inventory used above.

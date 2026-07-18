@@ -1,11 +1,29 @@
-# CodeGraphAgent — BioRouter Extension Design
+# CodeGraphAgent BioRouter extension design
 
-**Date:** 2026-05-29 (revised 2026-05-30)
-**Status:** Draft, pending implementation
-**Repo (extension + engine fork):** [Broccolito/CodeGraphAgent](https://github.com/Broccolito/CodeGraphAgent)
-**Upstream engine (fork source):** [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) (MIT)
+> **What this is.** The full design for CodeGraphAgent — a BioRouter `.brxt` extension consisting of a Python MCP proxy shim in front of a vendored fork of the CodeGraph engine, extended with R, Julia, MATLAB and Perl tree-sitter extractors.
+> **Status:** Historical record — this design was implemented and shipped. CodeGraphAgent is now a live marketplace extension covering 23 languages including R/Julia/MATLAB/Perl. The design text below is preserved as written and is **not** maintained against the shipped code.
+> **Audience:** developers working on BioRouter extensions, and anyone tracing why CodeGraphAgent is built the way it is.
 
-## Goal
+CodeGraphAgent lives in its **own repository**, [`Broccolito/CodeGraphAgent`](https://github.com/Broccolito/CodeGraphAgent), not in the BioRouter tree. This design is filed under BioRouter's docs because BioRouter is the consuming application — the extension format, the install location and the default-off bundling mechanism are all BioRouter-side concerns. For the current state of the code, the extension repository is authoritative; treat every version number, file path and count in this document as a snapshot of the design date.
+
+> **Note.** The original document was dated 2026-05-29 and revised 2026-05-30. No changelog of what the revision changed was recorded, so the two dates cannot be distinguished from the text.
+
+**Upstream engine (fork source):** [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) (MIT).
+
+## Contents
+
+- [Goal and constraints](#goal-and-constraints) — what the extension ships and the boundaries it works within
+- [Naming convention](#naming-convention) — every surface where the name appears
+- [Architecture](#architecture) — the proxy shim, the vendored engine, the release pipeline
+- [Repo structure](#repo-structure) — full directory layout
+- [Vendoring and upstream sync](#vendoring-and-upstream-sync) — how the fork tracks upstream
+- [`.brxt` structure](#brxt-structure) — the shipped bundle, manifest and packaging
+- [Python shim — component responsibilities](#python-shim--component-responsibilities) — module-by-module design
+- [Engine fork — language additions for v0.1](#engine-fork--language-additions-for-v01) — the four new languages
+- [Data flow](#data-flow), [Build and release pipeline](#build-and-release-pipeline), [Error handling](#error-handling), [Testing strategy](#testing-strategy)
+- [Bundling with BioRouter](#bundling-with-biorouter-default-off-mechanism), [Out of scope for v0.1](#out-of-scope-for-v01), [Risks](#risks), [Open questions](#open-questions), [Plan handoff](#plan-handoff)
+
+## Goal and constraints
 
 Ship a BioRouter extension (`.brxt`) that gives BioRouter agents a pre-indexed code knowledge graph: persistent SQLite-backed call graph, framework-aware routing, cross-language bridges, and typed query tools (`codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_trace`, `codegraph_impact`, `codegraph_node`, `codegraph_explore`, `codegraph_context`, `codegraph_status`).
 
@@ -20,7 +38,9 @@ Constraints:
 - The shim downloads engine bundles from **our** repo's releases, not upstream's. Users never reach colbymchenry/codegraph at runtime.
 - May vendor / re-use code from upstream CodeGraph (MIT-licensed).
 
-## Naming convention (matches `BaranziniLab/UCSFOMOPAgent`)
+## Naming convention
+
+Matches the convention already used by `BaranziniLab/UCSFOMOPAgent`.
 
 | Surface | Value |
 | --- | --- |
@@ -72,7 +92,7 @@ Three layers in our repo:
 2. **Engine fork** (`engine/`) — flat copy of upstream CodeGraph TypeScript source, modified to add R/Julia/MATLAB/Perl extractors. ~3 MB.
 3. **Build/release pipeline** (`scripts/`, `.github/workflows/`) — runs upstream's `engine/scripts/build-bundle.sh` per platform, attaches tarballs to GitHub Releases on our repo.
 
-## Repo structure (full)
+## Repo structure
 
 ```text
 Broccolito/CodeGraphAgent/
@@ -132,7 +152,7 @@ We do not attempt automated nightly merges in v0.1 — too risky without test co
 
 **Upstream attribution:** upstream's `LICENSE` file is preserved verbatim at `engine/LICENSE`. Our top-level `README.md` credits upstream prominently.
 
-## .brxt structure
+## `.brxt` structure
 
 ```text
 codegraphagent.brxt   (ZIP, ~hundreds of KB)
@@ -197,7 +217,7 @@ codegraphagent = "codegraphagent.cli:main"
 
 ## Python shim — component responsibilities
 
-### `paths.py` — project root + symlink setup
+### `paths.py` — project root and symlink setup
 
 - `resolve_project_root() -> Path` — read `BIOROUTER_WORKING_DIR`, else walk up from `Path.cwd()` looking for `.biorouter/`, `.git/`, or `pyproject.toml`. Fall back to CWD.
 - `ensure_layout(root: Path)`:
@@ -276,7 +296,7 @@ These use the `codegraphagent_` prefix (not `codegraph_`) so the agent can tell 
 
 Per upstream's [`BUNDLING.md`](https://github.com/colbymchenry/codegraph/blob/main/BUNDLING.md), the engine has zero native deps (uses Node 22.5's built-in `node:sqlite`), so "any target builds on any OS" via `build-bundle.sh`.
 
-Adding a language to the engine takes four edits, well-isolated:
+Adding a language to the engine takes five edits, well-isolated:
 
 1. **WASM grammar** — drop `tree-sitter-<lang>.wasm` into `engine/wasm/` (precompiled via `tree-sitter build --wasm` from the official grammar repo).
 2. **`engine/src/extraction/grammars.ts`** — add entry to `WASM_GRAMMAR_FILES` and `EXTENSION_MAP`.
@@ -297,6 +317,8 @@ Each language extractor lives in its own file with its own tests in `engine/__te
 
 **The `.m` ambiguity** between MATLAB and Objective-C is real and not solvable purely by extension. We add a content heuristic in `engine/src/extraction/grammars.ts`: if the first non-empty / non-comment line contains `@interface`, `@implementation`, `#import`, or `#include`, treat as Objective-C; otherwise MATLAB. Documented in `PATCHES.md`.
 
+The step-by-step execution of this section is [the bio-language extractors plan](bio-language-extractors-plan.md).
+
 ## Data flow
 
 ```text
@@ -315,7 +337,7 @@ Each language extractor lives in its own file with its own tests in `engine/__te
    thread propagates exit code.
 ```
 
-## Build & release pipeline
+## Build and release pipeline
 
 ### `.github/workflows/build-engine.yml`
 
@@ -360,7 +382,7 @@ No auto-restart in v0.1.
 - `tests/test_bootstrap.py` — mocked tarball download, SHA verification, atomic extract, `CODEGRAPH_ENGINE_PATH` short-circuit, partial-download cleanup
 - `tests/test_proxy.py` — stdio framing against a fake engine, exit-code propagation
 
-### Engine (TS, vitest — upstream's framework)
+### Engine (TypeScript, vitest — upstream's framework)
 
 - `engine/__tests__/extraction/r.test.ts` — sample R fixtures parse into expected functions/calls/imports
 - `engine/__tests__/extraction/julia.test.ts`
@@ -372,14 +394,14 @@ No auto-restart in v0.1.
 
 - Build engine locally, run shim against it, send MCP `initialize` + `tools/list`, assert ≥9 `codegraph_*` tools and that calling `codegraph_search` on a fixture R repo returns R symbols.
 
-### Manual E2E (deferred)
+### Manual end-to-end (deferred)
 
 - Install `codegraphagent.brxt` into a dev BioRouter, enable, open against this repo, verify `.biorouter/codegraph/codegraph.db` materializes.
 - Open against an R bioinformatics repo (e.g. a Bioconductor package), confirm `codegraph_callers` finds callers of an exported function across multiple R files.
 
 ## Bundling with BioRouter (default-off mechanism)
 
-Out of scope for this .brxt repo, tracked here so we don't lose the thread.
+> **Scope.** This section is out of scope for the CodeGraphAgent repo itself. It is recorded here so the BioRouter-side requirement is not lost, and it sketches the mechanism rather than specifying it. The original text defers the specification to a "separate BioRouter-side spec" that is not named and that this survey could not locate.
 
 Approach: ship `codegraphagent.brxt` as a resource inside the BioRouter app bundle (`ui/desktop/resources/bundled-extensions/codegraphagent.brxt`). On first launch, BioRouter:
 
@@ -437,3 +459,13 @@ After this design is approved, the writing-plans skill will turn it into a step-
 10. `scripts/sync-upstream.sh` (periodic merge tool)
 11. README + LICENSE + attribution
 12. Cut `engine-v0.1.0` and `v0.1.0` releases, verify the .brxt installs cleanly into a local BioRouter and runs against this repo as a fixture
+
+Steps 1–6 and 8–12 became [the foundation plan](foundation-plan.md); step 7 became [the bio-language extractors plan](bio-language-extractors-plan.md).
+
+## Related documentation
+
+- [CodeGraphAgent foundation plan](foundation-plan.md) — the task-by-task execution of this design's scaffold, shim, build pipeline and first `.brxt` release.
+- [CodeGraphAgent bio-language extractors plan](bio-language-extractors-plan.md) — the task-by-task execution of the R/Julia/MATLAB/Perl engine additions specified above.
+- [Extensions and skills guide](../../extensions/extensions-and-skills-guide.md) — how BioRouter installs, enables and configures `.brxt` extensions like this one.
+- [Extension manager](../../extensions/built-in/extension-manager.md) — the built-in MCP server that manages extension lifecycle at runtime.
+- [Bundled skills in `.brxt` design](../skills-packaging/brxt-bundled-skills-design.md) — the neighbouring design for shipping skills inside a `.brxt`, sharing this document's packaging format.

@@ -1,63 +1,57 @@
-The Developer extension allows biorouter to automate developer-centric tasks such as file editing, shell command execution, and project setup. It also provides tools for [enhanced code editing](/docs/guides/enhanced-code-editing) and [codebase analysis](/docs/guides/codebase-analysis).
+# Developer extension
 
-This tutorial will cover enabling and using the Developer MCP Server, which is a built-in biorouter extension. 
+> **What this is.** Two things in one file: a walkthrough of the built-in Developer extension (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
+> **Status:** Current — the extension and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
+> **Audience:** end users, and anyone deciding how much autonomy to grant BioRouter.
+
+The Developer extension lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.
+
+Because `shell` and `text_editor` can run any command and modify any accessible file with your user privileges, this page carries the most substantive security guidance of any extension page. If you only want to know how to rein BioRouter in, skip to [Configuring access controls](#configuring-access-controls).
 
 ## Configuration
 
-> **Info:** The Developer extension is already enabled by default when biorouter is installed.
+> **Note.** The Developer extension is already enabled by default when BioRouter is installed. The steps below are only needed to confirm or restore that state.
 
-  
-  
-  
-  
+1. Run the `configure` command:
 
-  1. Run the `configure` command:
-  ```sh
-  biorouter configure
-  ```
+   ```bash
+   biorouter configure
+   ```
 
-  2. Choose to `Toggle Extensions`
-  ```sh
-  ┌   biorouter-configure 
-  │
-  ◇  What would you like to configure?
-  │  Toggle Extensions 
-  │
-  ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
-  // highlight-start    
-  │  ● developer
-  // highlight-end  
-  └  Extension settings updated successfully
-  ```
-  
+2. Choose `Toggle Extensions`, then confirm `developer` is enabled:
 
-## Example Usage
+   ```text
+   ┌   biorouter-configure
+   │
+   ◇  What would you like to configure?
+   │  Toggle Extensions
+   │
+   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   │  ● developer
+   └  Extension settings updated successfully
+   ```
 
-In this example, I'm going to have biorouter automate setting up my Python bioinformatics analysis environment with pandas, scikit-learn, scanpy, and python-dotenv, and initialize Git.
+## Example usage
 
-> **Info:** Anthropic's Claude 4 Sonnet was used for this task.
+In this example, BioRouter sets up a Python bioinformatics analysis environment with pandas, scikit-learn, scanpy and python-dotenv, and initializes Git.
 
-  
-   1. Open a new session in biorouter Desktop
-  
-  
+To follow along, either open a new session in BioRouter Desktop, or start one from a terminal:
 
-  1. Open a terminal and start a new biorouter session:
-
-  ```sh
-  biorouter session
-  ```
-
-  
-
-### biorouter Prompt
+```bash
+biorouter session
 ```
+
+> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the extension; the exact wording will differ by model.
+
+### BioRouter prompt
+
+```text
 set up a new Python bioinformatics project with pandas, scikit-learn, scanpy, and python-dotenv? Fetch the latest package versions, generate a README with those versions, and initialize Git
 ```
 
-After 1 minute, biorouter was done setting up my entire analysis environment! 🎉
+After about a minute, the whole analysis environment was set up.
 
-### biorouter Output
+### BioRouter output
 
 ```md
 I'll help you set up a new Python bioinformatics project with those dependencies. I'll break this down into steps:
@@ -123,13 +117,13 @@ python run_analysis.py --cohort data/cohort.csv --step qc
 Would you like me to add any additional features or make other improvements to the setup?
 ```
 
-## Configuring Access Controls
+## Configuring access controls
 
-By default, biorouter can run system commands with your user privileges and edit any accessible file **without your approval**. This is because biorouter runs in Autonomous permission mode by default and has access to the Developer extension's shell and file editing tools. While this configuration allows biorouter to work quickly and independently, there's potential for unexpected outcomes. Understanding the available access control features can help you configure biorouter to match your comfort level and specific needs.
+By default, BioRouter can run system commands with your user privileges and edit any accessible file **without your approval**. This is because BioRouter runs in Autonomous permission mode by default and has access to the Developer extension's shell and file editing tools. While this configuration lets BioRouter work quickly and independently, there is potential for unexpected outcomes. Understanding the available access control features helps you configure BioRouter to match your comfort level and specific needs.
 
-> **Tip:** See the [Quick Setup Example](#quick-setup-example) below for some ways to configure more control over biorouter's behavior.
+> **Tip.** See the [Quick setup example](#quick-setup-example) below for ways to configure more control over BioRouter's behavior.
 
-### Developer Extension Tools
+### Developer extension tools
 
 The Developer extension provides these tools:
 
@@ -141,41 +135,41 @@ The Developer extension provides these tools:
 | `screen_capture` | Take screenshots | Debugging UI issues, documenting state | ✅ Low<br />Visual information only |
 | `image_processor` | Process and resize images | Optimizing assets, format conversion | ✅ Low<br />Image manipulation only |
 
-### Access Control Features
+### Access control features
 
-You can layer multiple controls to match your risk tolerance and workflow:
+You can layer multiple controls to match your risk tolerance and workflow.
 
-- **[biorouter Permission Modes](/docs/guides/biorouter-permissions)** control when biorouter asks for approval:
+**[Permission modes](../../security/permission-modes.md)** control when BioRouter asks for approval:
 
-  | Mode | Description | Use Cases |
-  |------|-------------|-----------|
-  | Autonomous<br />CLI: `auto` | No approval required | Best for experienced users in safe environments |
-  | Manual Approval<br />CLI: `approve` | Review every action | Recommended for sensitive work or when you want maximum control |
-  | Smart Approval<br />CLI: `smart_approve` | AI decides what needs review | Balanced approach |
-  | Chat Only<br />CLI: `chat` | Disable all tools | For maximum security and models that don't support tool-calling |
+| Mode | Description | Use Cases |
+|------|-------------|-----------|
+| Autonomous<br />CLI: `auto` | No approval required | Best for experienced users in safe environments |
+| Manual Approval<br />CLI: `approve` | Review every action | Recommended for sensitive work or when you want maximum control |
+| Smart Approval<br />CLI: `smart_approve` | AI decides what needs review | Balanced approach |
+| Chat Only<br />CLI: `chat` | Disable all tools | For maximum security and models that don't support tool-calling |
 
-- **[Tool Permissions](/docs/guides/managing-tools/tool-permissions)** let you set `Always allow`, `Ask before`, and `Never allow` permissions for individual extension tools when in Manual Approval or Smart Approval modes
+**Tool permissions** let you set `Always allow`, `Ask before`, and `Never allow` permissions for individual extension tools when in Manual Approval or Smart Approval modes.
 
-- **[.biorouterignore files](/docs/guides/using-biorouterignore)** restrict which files and directories biorouter can access (`.gitignore` files are fallback)
+**`.biorouterignore` files** restrict which files and directories BioRouter can access (`.gitignore` files are the fallback).
 
-> **Tip:** You can change biorouter permission modes during a session without restarting:
-- **CLI**: Use the `/mode` command (e.g. `/mode approve`)
-- **Desktop**: Use the  mode selector button in the bottom menu
+> **Tip.** You can change permission modes during a session without restarting. In the CLI, use the `/mode` command (for example `/mode approve`). In Desktop, use the mode selector button in the bottom menu.
 
-#### Quick Setup Example
+#### Quick setup example
 
-You might want more control over biorouter's operations when working with sensitive systems, exploring unfamiliar codebases, using untrusted models, or simply preferring to review actions before execution.
+You might want more control over BioRouter's operations when working with sensitive systems, exploring unfamiliar codebases, using untrusted models, or simply preferring to review actions before execution.
 
 Here's an example configuration that enables oversight:
 
-1. **Set the [permission mode](/docs/guides/biorouter-permissions)** to Smart Approval or Manual Approval:
+1. **Set the [permission mode](../../security/permission-modes.md)** to Smart Approval or Manual Approval:
+
    ```yaml
    # ~/.config/biorouter/config.yaml
    BIOROUTER_MODE: smart_approve  # or approve
    ```
 
-2. **Create a [`.biorouterignore` file](/docs/guides/using-biorouterignore)** in your project to protect sensitive files:
-   ```
+2. **Create a `.biorouterignore` file** in your project to protect sensitive files:
+
+   ```text
    .env*
    secrets.*
    *.key
@@ -183,8 +177,14 @@ Here's an example configuration that enables oversight:
    .git/
    ```
 
-3. **Configure [tool permissions](/docs/guides/managing-tools/tool-permissions)** based on your needs
+3. **Configure tool permissions** based on your needs.
 
-As you become more comfortable with biorouter's behavior, you can adjust these settings to reduce friction while maintaining appropriate safeguards for your environment.
+As you become more comfortable with BioRouter's behavior, you can adjust these settings to reduce friction while maintaining appropriate safeguards for your environment.
 
-> **Info:** Also see the [Security Guide](/docs/guides/security/) for information about using biorouter safely.
+## Related documentation
+
+- [Security guide](../../security/README.md) — the umbrella page for using BioRouter safely.
+- [Permission modes](../../security/permission-modes.md) — the full reference for approval modes and per-tool permissions.
+- [Computer Controller extension](computer-controller.md) — the other high-privilege built-in extension; it automates your desktop rather than your project, and the same access controls apply.
+- [Code Execution extension](code-execution.md) — Code Mode scripts import `shell` and `text_editor` from this extension, so they inherit its blast radius.
+- [Configuration file reference](../../configuration/config-file-reference.md) — where `BIOROUTER_MODE` and other settings live in `config.yaml`.

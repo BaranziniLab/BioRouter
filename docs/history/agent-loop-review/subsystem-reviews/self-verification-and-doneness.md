@@ -1,9 +1,10 @@
-# Self-verification, Output Validation & Quality Checkpoints
+# Self-verification, output validation and done-ness — architecture review
 
-*Subsystem review — BioRouter agentic feedback loop.*
-Paths are relative to the review worktree root
-(`/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review`). Line numbers
-match files as read on 2026-07-12.
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents the three code-level verification checkpoints — `final_output` JSON-Schema validation, workflow success-checks with retry, and the `/goal` judge — and argues that nothing enforces done-ness in interactive chat. It records eleven gaps.
+> **Status:** Historical record — a snapshot of the code as read on **2026-07-12**, before the agent-loop fix campaign, whose findings were then implemented. Gap #3 (no automatic post-edit diagnostics; the LSP/analyze capability listed but unwired) was fixed by BR-47 (`agents/post_edit_diagnostics.rs`), the done-ness gap by BR-49 (`agents/done_gate.rs`), the missing self-critique pass by BR-50 (`agents/self_critique.rs`), the dormant `structured_output` loop by BR-48, and gap #7 (no no-progress detector outside `/goal`) by BR-31 and BR-32.
+> **Audience:** developers working on verification, structured output, or workflow retry.
+
+This is the only one of the ten subsystem reviews carrying a date: its line numbers match the files as read on 2026-07-12. It pins no commit, so the citations are anchored to that date rather than to a revision. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `verification.md gap #N` (the file's former name).
 
 ## Overview
 
@@ -31,7 +32,7 @@ an enforced checkpoint.
 
 Text data-flow (interactive chat, the common case):
 
-```
+```text
 model turn ──► tool calls ──► tool results (is_error flag + stderr text)
    ▲                                   │
    │  (natural feedback: model reads   ▼
@@ -49,16 +50,16 @@ turn ends with no tool call ──► finish_reason?
 
 Workflow path adds the retry layer *around* the whole loop:
 
-```
+```text
 loop finishes ──► execute_success_checks(shell commands)  [retry.rs:191]
    all pass ─► SuccessChecksPassed (done)
    any fail ─► on_failure cmd ─► reset messages to initial ─► retry
               (until max_retries) ─► MaxAttemptsReached message  [retry.rs:131]
 ```
 
-## Answers
+## Review questions answered
 
-### 1. When/how does the agent realize an answer needs hardening or double-checking? What concrete mechanisms exist?
+### How the agent realizes an answer needs hardening
 
 **Concrete, code-enforced mechanisms are limited to two, plus one UI loop:**
 
@@ -93,7 +94,7 @@ output, (b) a tool returned an error it can see, or (c) the prompt told it to �
 there is no reflection/critique pass, no self-consistency check, no
 LLM-as-judge on ordinary answers.
 
-### 2. How does the system decide a task is "done"? Enforced verification, or prompt suggestion?
+### How the system decides a task is done
 
 Termination is decided when a model turn ends **with no tool call**
 (`crates/biorouter/src/agents/agent.rs:2044`). What happens then, in priority
@@ -133,7 +134,7 @@ the initial messages (`retry.rs:98-110`, `retry.rs:149`) and retries until
 For everyday interactive chat, "done" is **whatever the model decides**, gated
 only by optional Stop hooks / `/goal`. No enforced verification.
 
-### 3. What feedback loops exist from tools back to the agent?
+### Feedback loops from tools back to the agent
 
 - **Compiler / shell / MCP errors as text.** Tool failures return
   `CallToolResult { is_error: Some(true), content: [text …] }`
@@ -173,7 +174,7 @@ There is **no** loop that runs the compiler/linter automatically after an edit �
 (tree-sitter semantic analysis, `developer/analyze/`) is a *manual* tool the
 agent must choose to call, not an on-save check.
 
-### 4. How does the agent know when to explore more vs. answer quickly — explicit effort/planning machinery?
+### Explore more or answer quickly — the effort and planning machinery
 
 Very little explicit machinery; it's mostly prompt guidance:
 
@@ -204,7 +205,7 @@ Very little explicit machinery; it's mostly prompt guidance:
 No reasoning-effort / thinking-budget knob is surfaced at the agent-loop level;
 the planning/exploration tradeoff is left to the model and prompt tone.
 
-### 5. What is `final_output_tool.rs` for, and how is output validated?
+### What `final_output_tool.rs` is for, and how output is validated
 
 `FinalOutputTool` is the **structured-output contract for workflows, recipes,
 and schema-bearing subagents**. Construction *panics* unless a non-empty,
@@ -237,9 +238,9 @@ its own file (only `pub mod structured_output;` in `agents/mod.rs:23`). So the
 "validate the terminal message, re-prompt up to N times" loop it was written for
 **does not exist yet** — it is tested, dead-ish primitive code awaiting wiring.
 
-### 6. Honest list of what is MISSING vs. what a careful engineer would want.
+### What is missing, versus what a careful engineer would want
 
-See **Gaps & weaknesses**.
+See [Gaps and weaknesses](#gaps-and-weaknesses) below.
 
 ## Notable design choices (worth keeping)
 
@@ -262,7 +263,10 @@ See **Gaps & weaknesses**.
 - **Observability data model is redaction-safe by default** (spans carry timings
   + token counts, never args/text — `observability/mod.rs:9-11,196-218`).
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These eleven items fed the improvement phase. They are what other documents in this
+review cite as `verification.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **No enforced verification in interactive chat.** The only hard gate
    (`execute_success_checks`) is workflow-only (`retry.rs:191`). A normal coding
@@ -325,3 +329,11 @@ See **Gaps & weaknesses**.
 11. **`final_output` validation is structural only.** JSON Schema checks shape,
     not semantic correctness — a syntactically valid but factually wrong answer
     passes. No cross-check against tool evidence.
+
+## Related documentation
+
+- [Loop detection, repetition and stuck states](loop-and-stuck-detection.md) — the sibling review covering the `/goal` stall logic and repetition inspection from the loop-safety side; the two overlap on no-progress detection.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how BioRouter's thin verification story measures against nine other coding agents.
+- [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — where the no-tool-call termination decision described here actually lives.
+- [Verify-and-checkpoint stop hook](../../../agent-loop/hooks/verify-and-checkpoint-stop-hook.md) — the living, hook-based answer to "nothing enforces done-ness".
+- [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-47 to BR-50) these gaps became.

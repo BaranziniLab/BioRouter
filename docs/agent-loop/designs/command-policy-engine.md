@@ -1,12 +1,46 @@
-# BR-21: Replace the regex command scanner with an auditable policy engine
+# Command policy engine (BR-21)
 
-Design doc. Status: proposed. Lens: Robustness (P-21). Inspired by Codex
-`execpolicy` (best-in-class), Gemini CLI tiered-TOML policy engine, OpenCode
-wildcard last-match-wins.
+> **What this is.** The design for replacing BioRouter's evadable `THREAT_PATTERNS` regex
+> table with an argv-parsing, path-canonicalizing, declarative allow/ask/deny policy
+> engine whose rules carry their own self-tests.
+> **Status:** Current. Slice 1 shipped — `crates/biorouter/src/security/policy/{mod,command,rule,baseline}.rs`
+> and `baseline.policy.yaml` are live security code. Slices 2–3 below are not built, so
+> this remains the plan of record for them. One section is superseded: see
+> [Tokenization is superseded by BR-68](#tokenization-is-superseded-by-br-68).
+> **Audience:** developers working on BioRouter's guardrails and permission subsystem.
+
+BioRouter's only command-governance control used to be a static regex table presented as a
+security control. This document explains why that table could not do the job, and specifies
+the policy engine that replaced it: one that tokenizes a command into argv, resolves the
+invoked binary, canonicalizes path arguments, and then evaluates declarative rules that
+return a first-class `Allow | Ask | Deny` verdict with a human-readable justification.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). This document is BR-21, raised
+> under the robustness lens as P-21.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-21 |
+| Lens | Robustness (P-21) |
+| Inspired by | Codex `execpolicy` (best-in-class), Gemini CLI tiered-TOML policy engine, OpenCode wildcard last-match-wins |
+| Shipped | Slice 1, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, security cluster) |
+
+> **Warning.** This is security-critical design. The
+> [campaign outcome report](../../history/agent-loop-campaign/outcome-report.md) lists BR-21
+> among the changes that warrant human review regardless of a green test suite, per
+> `HOWTOAI.md`. Read the shipped code, not only this document, before relying on it.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter's only command-governance control is a static regex table presented as
 a security control. It has four concrete, code-visible failure modes.
@@ -23,7 +57,8 @@ a security control. It has four concrete, code-visible failure modes.
    (indirection), `RM=rm; $RM -rf /` (env indirection), `/usr/bin/env rm -rf /`
    (wrapper), or any tool other than the developer `shell` all miss. The literal
    `rm\s+(-[rf]...)` shape (`patterns.rs:52,59`) is a string shape, not a command.
-   This is exactly `guardrails-permissions.md` gap #4.
+   This is exactly gap #4 in the
+   [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md).
 
 2. **It is off by default and, when on, only asks — it can never deny.** The
    whole scanner is gated on `SECURITY_PROMPT_ENABLED`, default `false`
@@ -35,8 +70,8 @@ a security control. It has four concrete, code-visible failure modes.
    the `PermissionInspector` allows everything (`permission_inspector.rs`), while
    the escalation-only merge (`tool_inspection.rs:217-257`) means the security
    layer could only *raise* to an approval prompt Auto mode never surfaces. Net:
-   `curl … | bash` in Auto mode gets zero screening (`guardrails-permissions.md`
-   gap #3).
+   `curl … | bash` in Auto mode gets zero screening (gap #3 in the
+   [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md)).
 
 3. **Confidence is theatrical.** Each risk level maps to a fixed float — Critical
    0.95 / High 0.75 / Medium 0.60 / Low 0.45 (`patterns.rs:36-45`) — compared to a
@@ -71,7 +106,7 @@ a per-rule justification, and (c) ships an always-on baseline denylist that even
 (`classification_client.rs`, `scanner.rs` ML paths) is left intact and untouched;
 this design carves the command scanner out from under it.
 
-### Module layout (files to create / change)
+### Module layout: files to create and change
 
 Create `crates/biorouter/src/security/policy/`:
 
@@ -101,6 +136,17 @@ Change:
 - Workspace `Cargo.toml` + `crates/biorouter/Cargo.toml` — add `shlex` (argv
   tokenizer). Policy files use **YAML** (`serde_yaml` is already a dep,
   `crates/biorouter/Cargo.toml:68`), avoiding a new `toml`/`starlark` dependency.
+
+### Tokenization is superseded by BR-68
+
+The `command.rs` tokenizer specified above uses POSIX `shlex`. The cross-platform
+audit found that POSIX tokenization mangles every absolute Windows path, so Windows
+rules silently fail to match (recorded as GAP-3 in the
+[platform parity audit](../cross-platform/platform-parity-audit.md)). BR-68 replaced the
+single POSIX tokenizer with platform- and dialect-aware tokenizers in `target.rs`,
+`pwsh.rs` and `cmd_shell.rs`. For the tokenizer as it exists today, read
+[cross-platform command safety (BR-68)](../cross-platform/command-safety.md); the rest of
+this document's architecture is unchanged by that work.
 
 ### Data model
 
@@ -143,7 +189,7 @@ pub struct PolicyVerdict {
 }
 ```
 
-### Key APIs / signatures
+### Key APIs and signatures
 
 ```rust
 // command.rs
@@ -173,9 +219,9 @@ impl PolicyEngine {
 }
 ```
 
-### Control flow (the tool-call gauntlet, revised)
+### Control flow: the tool-call gauntlet, revised
 
-```
+```text
 model emits tool requests
   └─ agent.rs reply loop
      └─ tool_inspection_manager.inspect_tools(...)          [agent.rs:342-364]
@@ -211,7 +257,7 @@ model emits tool requests
 5. `Deny` is authoritative and mode-independent; `Ask` becomes
    `RequireApproval`; both carry `justification` into the card.
 
-### Baseline policy (ported, always-on, self-tested)
+### Baseline policy: ported, always-on, self-tested
 
 `baseline.policy.yaml` ports `THREAT_PATTERNS` into declarative rules, but the
 handful of catastrophic ones become **`decision: deny`** (non-bypassable), the
@@ -243,7 +289,7 @@ rule the literal form does — the whole point of the item.
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 - **Embed Starlark and copy Codex `execpolicy` verbatim.** Most powerful
   (arbitrary `prefix_rule` logic, `host_executable` pinning). Rejected for the
@@ -264,8 +310,9 @@ rule the literal form does — the whole point of the item.
   is real enforcement (Codex/Gemini both do it) and strictly better for
   *containment*, but it is a much larger, platform-specific effort and does not
   give a lab admin a reviewable allow/deny catalog. Complementary, not a
-  replacement — track separately; the policy engine is the auditable layer that
-  can later *drive* sandbox profile selection.
+  replacement — tracked separately as
+  [the macOS Seatbelt sandbox design (BR-64)](macos-seatbelt-sandbox.md); the policy
+  engine is the auditable layer that can later *drive* sandbox profile selection.
 - **Do the work inside the developer MCP `validate_shell_command`
   (`rmcp_developer.rs:1114`).** Rejected: that only covers the built-in shell
   tool. The agent-loop inspector governs *every* tool (compute, third-party MCP,
@@ -274,7 +321,7 @@ rule the literal form does — the whole point of the item.
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **Config / rollout.** The baseline rule set is compiled into the binary
   (`include_str!`), so protection is on by default with no user action — a strict
@@ -339,9 +386,11 @@ asserting the new engine returns non-`Allow`.
 
 ---
 
-## Effort & phasing (Effort: L overall)
+## Effort and phasing
 
-**Slice 1 — mergeable first cut (S/M).** `policy/{rule,command,mod,baseline,tests}.rs`
+Overall effort: **L**.
+
+**Slice 1 — mergeable first cut (S/M). Shipped.** `policy/{rule,command,mod,baseline,tests}.rs`
 + `baseline.policy.yaml` with ~10 catastrophic rules ported as always-on `Deny`
 and self-tests; `shlex` dep; `ParsedCommand::parse` with argv + `env`/`sh -c`
 unwrap + pipeline split + path canonicalization; `SecurityInspector` rewired to
@@ -350,17 +399,25 @@ files yet — engine is `PolicyEngine::load()` = embedded baseline only. This al
 closes gaps #3 (always-on deny even in Auto) and #4-evasion for the worst
 commands, and is independently valuable.
 
-**Slice 2 (M).** Port the remaining ~38 patterns as `Ask` rules; add `loader.rs`
+**Slice 2 (M). Not built.** Port the remaining ~38 patterns as `Ask` rules; add `loader.rs`
 tiered external file loading (user + project); `SECURITY_COMMAND_POLICY` config
 knob; retire the `RiskLevel`-float scoring for commands.
 
-**Slice 3 (M, coordinates with BR-20).** Admin tier + ownership verification;
+**Slice 3 (M, coordinates with BR-20). Not built.** Admin tier + ownership verification;
 GUI: surface `justification` in `ToolCallConfirmation.tsx` and a deny card;
-optional Starlark power-tier.
+optional Starlark power-tier. The admin tier's trusted-location and
+ownership-verification machinery landed separately as
+[the managed policy tier (BR-65)](managed-policy-tier.md).
 
 ---
 
-## Open questions for the human
+## Open questions, and how the campaign answered them
+
+> **Note.** These were recorded as open when the design was written. On 2026-07-13 the
+> campaign owner signed off with a blanket "proceed with all of the default options"
+> (logged in the [campaign README](../../history/agent-loop-campaign/README.md)), so the
+> recommendation stated in each question is what shipped. They are preserved here because
+> the reasoning still matters if a later slice revisits the choice.
 
 1. **Default posture for catastrophic commands: hard-`Deny` or `Ask`?** This doc
    proposes a small non-bypassable `Deny` set (fixes the Auto-mode gap) but that
@@ -376,3 +433,13 @@ optional Starlark power-tier.
 4. **`host_executable` pinning (Codex).** Worth resolving `argv[0]` to an absolute
    path and pinning trusted binaries (defeats `PATH` shadowing), or out of scope
    for the first engine?
+
+---
+
+## Related documentation
+
+- [Cross-platform command safety (BR-68)](../cross-platform/command-safety.md) — supersedes this document's POSIX tokenizer with platform- and dialect-aware ones.
+- [Managed policy tier (BR-65)](managed-policy-tier.md) — the trusted admin tier this engine's rules plug into.
+- [macOS Seatbelt sandbox (BR-64)](macos-seatbelt-sandbox.md) — the kernel-enforced containment layer that complements this auditable catalog.
+- [Guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md) — the source review whose gaps #3 and #4 this design closes.
+- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-1 and GAP-3, where this engine's Windows coverage falls short.

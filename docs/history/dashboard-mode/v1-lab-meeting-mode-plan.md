@@ -1,16 +1,47 @@
-# Lab Meeting Mode Implementation Plan
+# Lab Meeting Mode — implementation plan (v1)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The 20-task implementation plan for Lab Meeting Mode: a
+> `/lab-meeting` route holding a multi-conversation parallel workspace with
+> auto-tiled chat windows, a tuck sidebar, and a per-window `BaseChat` in
+> "coherent" mode. It is written for an agent to execute task-by-task, and is
+> dominated by verbatim TSX and shell steps.
+> **Status:** Superseded, and then removed. `ui/desktop/src/components/LabMeeting/`
+> does not exist: the feature was renamed to Dashboard Mode by the
+> [v2 implementation plan](v2-dashboard-mode-plan.md), and the whole Dashboard
+> component tree was then deleted (commits `64d03097` and `9ab9c980`). **Nothing
+> this plan describes remains in the codebase** — see the
+> [removal record](README.md). The unticked `- [ ]` checkboxes below were ticked
+> during execution in a working copy; they are not a record of unfinished work.
+> **Audience:** maintainers reading the dashboard-mode archive.
+
+**Date:** 2026-05-08
+**Spec:** [v1 — Lab Meeting Mode design spec](v1-lab-meeting-mode-design.md).
+The `§N` references throughout this plan are that spec's numbered sections.
 
 **Goal:** Add `/lab-meeting` route to BioRouter desktop app — a multi-conversation parallel workspace with auto-tile grid, intersection-point overflow, and sidebar tucking. Each window holds an independent biorouterd session.
 
 **Architecture:** New `LabMeetingProvider` mounted at the app root above `<Routes>` so background streams persist across navigation. Pure `computeLayout()` engine drives positioning. Each `<ChatWindow>` reuses `<BaseChat>` in a new `coherent` + `hideStatusBar` mode. Board state persists via localStorage. App-level status bar reads/writes the focused window's per-window state. No backend changes.
 
-**Tech Stack:** React 19, TypeScript, Vite, Electron Forge, Tailwind, react-router-dom, lucide-react. Test runners: Vitest (unit/component) + Playwright (E2E).
+**Tech stack:** React 19, TypeScript, Vite, Electron Forge, Tailwind, react-router-dom, lucide-react. Test runners: Vitest (unit/component) + Playwright (E2E).
+
+> **Note for agentic workers.** REQUIRED SUB-SKILL: use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
+
+## How to read this plan
+
+The plan runs in three arcs. **Tasks 1–4** build the pure modules — palette, the
+`computeLayout` engine, and localStorage persistence — each test-first.
+**Tasks 5–15** build the React surface: the provider and its state machine, the
+`coherent`/`hideStatusBar` props on `BaseChat`, then window chrome, drag, the
+board, the tuck sidebar, toolbar, status bar and route shell. **Tasks 16–20**
+wire it into the app (route, icon button, Electron IPC), add drag-to-evoke and
+the return pill, and close with an end-to-end smoke run and a changelog entry.
 
 ---
 
-## File Structure
+## File structure
 
 ### New files (under `ui/desktop/src/components/LabMeeting/`)
 
@@ -57,7 +88,9 @@
 
 ## Conventions used in this plan
 
-- All paths are absolute from repo root `/Users/wgu/Desktop/biorouter`.
+- All paths are absolute from the repo root. `<repo-root>` below stands for your
+  BioRouter checkout; the plan as originally written hardcoded one developer's
+  home directory there.
 - Frontend test runner: `cd ui/desktop && npm run test:run -- <path>` (Vitest).
 - Frontend type-check + lint: `cd ui/desktop && npm run lint:check`.
 - Commit conventions follow the repo's existing pattern (`feat(ui):`, `fix(...):`, `docs(...):` etc.). See `.claude/skills/git-commit-style/` if present, otherwise mirror recent commits.
@@ -65,7 +98,7 @@
 
 ---
 
-# Task 1: Color palette + name generator (TDD)
+## Task 1: Color palette + name generator (TDD)
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/palette.ts`
@@ -178,7 +211,7 @@ git commit -m "feat(lab-meeting): palette + name generator"
 
 ---
 
-# Task 2: Layout engine (TDD) — clean grid for n ≤ T1
+## Task 2: Layout engine (TDD) — clean grid for n ≤ T1
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/layoutEngine.ts`
@@ -419,7 +452,7 @@ git commit -m "feat(lab-meeting): layout engine — clean grid for n ≤ T1"
 
 ---
 
-# Task 3: Layout engine — overflow at intersection points (TDD)
+## Task 3: Layout engine — overflow at intersection points (TDD)
 
 **Files:**
 - Modify: `ui/desktop/src/components/LabMeeting/layoutEngine.ts`
@@ -555,7 +588,7 @@ git commit -m "feat(lab-meeting): layout engine — intersection-point overflow"
 
 ---
 
-# Task 4: localStorage persistence helper (TDD)
+## Task 4: localStorage persistence helper (TDD)
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/labMeetingStorage.ts`
@@ -726,7 +759,7 @@ git commit -m "feat(lab-meeting): localStorage persistence helper"
 
 ---
 
-# Task 5: LabMeetingProvider — state machine
+## Task 5: LabMeetingProvider — state machine
 
 **Files:**
 - Create: `ui/desktop/src/contexts/LabMeetingContext.tsx`
@@ -1197,7 +1230,7 @@ git commit -m "feat(lab-meeting): provider + state machine"
 
 ---
 
-# Task 6: Mount LabMeetingProvider at app root
+## Task 6: Mount LabMeetingProvider at app root
 
 **Files:**
 - Modify: `ui/desktop/src/App.tsx`
@@ -1256,7 +1289,7 @@ git commit -m "feat(lab-meeting): mount provider at app root"
 
 ---
 
-# Task 7: Coherent + hideStatusBar props on BaseChat / ChatInput
+## Task 7: Coherent + hideStatusBar props on BaseChat / ChatInput
 
 **Files:**
 - Modify: `ui/desktop/src/components/BaseChat.tsx`
@@ -1378,7 +1411,7 @@ git commit -m "feat(lab-meeting): coherent + hideStatusBar props on BaseChat/Cha
 
 ---
 
-# Task 8: Window chrome — WindowTitleBar & ResizeHandle
+## Task 8: Window chrome — WindowTitleBar & ResizeHandle
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/WindowTitleBar.tsx`
@@ -1501,7 +1534,7 @@ git commit -m "feat(lab-meeting): window title bar + resize handle"
 
 ---
 
-# Task 9: useLabMeetingDrag hook
+## Task 9: useLabMeetingDrag hook
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/useLabMeetingDrag.ts`
@@ -1577,7 +1610,7 @@ git commit -m "feat(lab-meeting): pointer-drag hook"
 
 ---
 
-# Task 10: ChatWindow — wraps BaseChat with chrome
+## Task 10: ChatWindow — wraps BaseChat with chrome
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/ChatWindow.tsx`
@@ -1716,7 +1749,7 @@ git commit -m "feat(lab-meeting): ChatWindow wrapping BaseChat in window chrome"
 
 ---
 
-# Task 11: TuckSidebar + TuckedCard
+## Task 11: TuckSidebar + TuckedCard
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/TuckedCard.tsx`
@@ -1821,7 +1854,7 @@ git commit -m "feat(lab-meeting): tuck sidebar + cards"
 
 ---
 
-# Task 12: LabMeetingBoard — renders ChatWindows from layout
+## Task 12: LabMeetingBoard — renders ChatWindows from layout
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/LabMeetingBoard.tsx`
@@ -1949,7 +1982,7 @@ git commit -m "feat(lab-meeting): board renders windows via layout engine"
 
 ---
 
-# Task 13: LabMeetingToolbar
+## Task 13: LabMeetingToolbar
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/LabMeetingToolbar.tsx`
@@ -2028,7 +2061,7 @@ git commit -m "feat(lab-meeting): toolbar with spawn/organize/clear/T1/T2/status
 
 ---
 
-# Task 14: LabMeetingStatusBar (focused-window-aware)
+## Task 14: LabMeetingStatusBar (focused-window-aware)
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/LabMeetingStatusBar.tsx`
@@ -2086,7 +2119,7 @@ git commit -m "feat(lab-meeting): status bar reflecting focused window"
 
 ---
 
-# Task 15: LabMeetingRoute — wires everything
+## Task 15: LabMeetingRoute — wires everything
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/LabMeetingRoute.tsx`
@@ -2167,7 +2200,7 @@ git commit -m "feat(lab-meeting): route shell + auto-spawn + keyboard shortcuts"
 
 ---
 
-# Task 16: Register `/lab-meeting` route + Users icon button + IPC
+## Task 16: Register `/lab-meeting` route + Users icon button + IPC
 
 **Files:**
 - Modify: `ui/desktop/src/App.tsx`
@@ -2290,7 +2323,7 @@ git commit -m "feat(lab-meeting): register /lab-meeting route + Users icon + max
 
 ---
 
-# Task 17: Drag-from-sidebar evoke (ghost drag)
+## Task 17: Drag-from-sidebar evoke (ghost drag)
 
 **Files:**
 - Modify: `ui/desktop/src/components/LabMeeting/LabMeetingBoard.tsx`
@@ -2365,7 +2398,7 @@ git commit -m "feat(lab-meeting): drag tucked card onto board to evoke"
 
 ---
 
-# Task 18: BackToLabMeetingPill
+## Task 18: BackToLabMeetingPill
 
 **Files:**
 - Create: `ui/desktop/src/components/LabMeeting/BackToLabMeetingPill.tsx`
@@ -2425,7 +2458,7 @@ git commit -m "feat(lab-meeting): floating pill to return to /lab-meeting"
 
 ---
 
-# Task 19: Run dev server & verify end-to-end
+## Task 19: Run dev server & verify end-to-end
 
 ### Context
 
@@ -2450,7 +2483,7 @@ Expected: clean.
 From repo root:
 
 ```bash
-cd /Users/wgu/Desktop/biorouter && source bin/activate-hermit && just run-ui
+cd <repo-root> && source bin/activate-hermit && just run-ui
 ```
 
 This will rebuild the Rust backend, build the renderer, and launch the Electron app.
@@ -2485,7 +2518,7 @@ git commit --allow-empty -m "feat(lab-meeting): end-to-end smoke verified"
 
 ---
 
-# Task 20: README / changelog update (if applicable)
+## Task 20: README / changelog update (if applicable)
 
 **Files:**
 - Modify: `ui/desktop/CHANGELOG.md` (if present) or `CHANGELOG.md` at root.
@@ -2538,3 +2571,10 @@ git commit -m "docs: changelog entry for Lab Meeting Mode"
 **Placeholder scan:** None.
 
 **Known v1 note:** live tucked-card preview text and full interactive model/mode/cwd controls in the status bar are minimal stubs in v1. The provider exposes the necessary fields; future iterations can wire them up without re-architecting.
+
+## Related documentation
+
+- [v1 — Lab Meeting Mode design spec](v1-lab-meeting-mode-design.md) — the spec this plan implements, and the source of every `§N` reference above.
+- [Dashboard mode — removal record and archive index](README.md) — what became of the component tree this plan creates.
+- [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md) — the direct successor, which renames every file and identifier this plan introduces.
+- [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) — deletes the tuck sidebar and layout engine built in Tasks 2, 3 and 11.

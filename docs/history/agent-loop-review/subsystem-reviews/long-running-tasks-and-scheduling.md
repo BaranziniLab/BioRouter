@@ -1,13 +1,12 @@
-# Long-running tasks, background processes & scheduling
+# Long-running tasks, background processes and scheduling — architecture review
 
-Review subsystem: how BioRouter (a Goose fork: CLI + `biorouterd` daemon +
-Electron GUI) handles work that outlives a single tool call — background shell
-jobs, subagents, the cron scheduler, mid-run user decisions, and what survives a
-daemon restart.
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents the four mechanisms for work that outlives a single tool call — background shell jobs, subagents, the cron scheduler and MCP elicitation — plus process tracking and what survives a daemon restart, and records eleven gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gaps #1 and #3 (no PID-file reaping, a dead-coded `list()`) were fixed by BR-37, BR-38 and BR-42 plus the `shell_list` surfacing proposal; scheduler reconciliation by BR-39 and BR-40; and blocking subagents by BR-41 (`agents/subagent_handle.rs`). Its praise for the background-job design still reads true.
+> **Audience:** developers working on background execution, subagents, or the scheduler.
 
-Note on paths: the review worktree path arrived as literal `undefined`, so this
-review was run against the live checkout at `/Users/wanjun/Desktop/biorouter`.
-All citations are repo-relative.
+The subsystem question is how BioRouter (a Goose fork: CLI, the `biorouterd` daemon, and the Electron GUI) handles work that does not finish inside one blocking tool call. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `long-running.md gap #N` (the file's former name).
+
+> **Note.** The review recorded no commit or branch, and line numbers in the citations below have drifted since; all paths are repository-relative and should be treated as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -31,9 +30,14 @@ one blocking call":
    server pause a tool call mid-run to ask the user a structured question; the
    answer arrives as a follow-up `/reply`.
 
+The sections below take those four mechanisms in that order — background shell jobs,
+subagents, the scheduler, then elicitation — and add two cross-cutting questions:
+how spawned processes are tracked (immediately after the background-jobs section,
+because that is where the registries live) and what survives a daemon restart.
+
 Text data-flow for a background shell job:
 
-```
+```text
 agent → shell{background:true} → BackgroundJobs.spawn()
     → tokio::process::Command (own process group, kill_on_drop=false)
     → supervisor task: child.wait() → records JobStatus::Exited(code)
@@ -47,7 +51,7 @@ agent → shell_kill{job_id} → SIGTERM(-pgid) then SIGKILL
 
 Text data-flow for a scheduled run:
 
-```
+```text
 tokio_cron_scheduler fires → claim_run_slot() (overlap/pause/rate-limit/max_runs guard)
     → persist_jobs(schedule.json) → execute_job()
     → load workflow YAML/JSON → Agent::new() → create SessionType::Scheduled session
@@ -55,9 +59,9 @@ tokio_cron_scheduler fires → claim_run_slot() (overlap/pause/rate-limit/max_ru
     → SessionEnd hooks → persist last_run / clear currently_running
 ```
 
-## Answers
+## Review questions answered
 
-### How does the agent handle long-running tasks? Background execution with later retrieval, or blocking?
+### Background execution versus blocking
 
 Both exist, and the split is explicit.
 
@@ -100,7 +104,7 @@ The four tools are surfaced in `rmcp_developer.rs`: `shell` (1103), `shell_wait`
 explicitly instruct the model to use `background=true` instead of appending `&`
 (`rmcp_developer.rs:1101`, `194-200`).
 
-### How does the agent track processes it started (registry, PIDs, orphan cleanup)?
+### How spawned processes are tracked — registries, PIDs, orphan cleanup
 
 Three separate registries, none unified:
 
@@ -133,7 +137,7 @@ That pattern was not applied to the shell background jobs. The only
 process-group hygiene is that jobs run in their own process group so a *live*
 `shell_kill` can take down the whole tree.
 
-### How do subagents work (spawning, task config, result return, parallelism)?
+### How subagents work — spawning, task config, result return, parallelism
 
 **Spawning.** The `subagent` tool (`crates/biorouter/src/agents/subagent_tool.rs`)
 accepts `instructions` (ad-hoc), `subworkflow` (predefined), `parameters`,
@@ -177,7 +181,7 @@ notification event types (`TaskStatus`, `TaskExecutionNotificationEvent`) and a
 `list()` helper — no live task-execution engine is wired up
 (`subagent_execution_tool/mod.rs`, `notification_events.rs`).
 
-### How does the cron scheduler work, and how do scheduled runs differ from interactive ones?
+### The cron scheduler, and how scheduled runs differ from interactive ones
 
 `Scheduler` (`crates/biorouter/src/scheduler.rs`) wraps
 `tokio_cron_scheduler::JobScheduler`. Jobs are `ScheduledJob` structs
@@ -224,7 +228,7 @@ completion, fires a `SessionEnd` hook, and records the session id.
   (`execution/manager.rs:32,70`), which also installs a first-run "Daily
   Meditation" schedule for the Soul KB (`execution/manager.rs:49`).
 
-### What is `action_required_manager.rs` (mid-run user decisions)?
+### Mid-run user decisions — `action_required_manager.rs`
 
 `ActionRequiredManager` (`crates/biorouter/src/action_required_manager.rs`) is
 the **MCP elicitation** path — how an extension server can pause a tool call
@@ -250,7 +254,7 @@ which is a different mechanism — `agent.handle_confirmation` driven by the
 (`biorouter-server/src/routes/action_required.rs:33-56`). Both are "mid-run user
 decisions" but only elicitation goes through `ActionRequiredManager`.
 
-### What survives a daemon restart?
+### What survives a daemon restart
 
 - **Scheduled jobs**: yes. `schedule.json` is persisted and reloaded on startup
   (`load_jobs_from_storage`, scheduler.rs:481-549). Managed `/loop` and
@@ -293,7 +297,10 @@ decisions" but only elicitation goes through `ActionRequiredManager`.
 - **Overlap guard + max_runs auto-pause** so slow scheduled runs never stack and
   `/loop` cannot run forever (scheduler.rs:170-211).
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These eleven items fed the improvement phase. They are what other documents in this
+review cite as `long-running.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **Background jobs don't survive restart and orphan on crash.** They set
    `kill_on_drop(false)` (`background.rs:119`) but there is no PID-file /
@@ -345,3 +352,11 @@ decisions" but only elicitation goes through `ActionRequiredManager`.
     subagents, and scheduled runs are three disjoint systems with no unified view
     of "what is this agent currently running," which is what mature coding agents
     expose to the user.
+
+## Related documentation
+
+- [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — the turn these mechanisms hang off, including the per-extension timeout that bounds a blocking subagent call.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this background-job and subagent design measures against nine other coding agents.
+- [Subagents guide](../../../agent-loop/subagents.md) — the current, living reference for the `subagent` tool.
+- [Scheduled jobs guide](../../../workflows/scheduled-jobs.md) — the current, living reference for `/schedule` and `/loop`.
+- [Wave 1 processes report](../../agent-loop-campaign/wave-reports/wave-1-processes.md) — what was actually built in response to these gaps.

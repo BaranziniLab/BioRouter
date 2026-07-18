@@ -1,104 +1,102 @@
-This guide covers storing, organizing, and finding biorouter workflows when you need to access them again later. 
+# Workflow storage and discovery
 
-> **Info:** - **biorouter Desktop** has a visual Workflow Library for browsing and managing saved workflows
-- **biorouter CLI** stores workflows as files that you find using file paths or environment variables
+> **What this is.** Where Biorouter workflow files live on disk, how to save and import them, and how to list and find them again from the Desktop Workflow Library or the CLI.
+> **Status:** Current.
+> **Audience:** end users who have written workflows and need to keep, organize, and re-find them.
 
-## Understanding Workflow Storage
+Biorouter Desktop and the Biorouter CLI take different approaches to storage, and knowing which one you are using determines where a workflow ends up:
+
+- **Biorouter Desktop** has a visual Workflow Library for browsing and managing saved workflows.
+- **Biorouter CLI** stores workflows as files that you find using file paths or environment variables.
+
+## Understanding workflow storage
 
 Before saving workflows, it's important to understand where they can be stored and how this affects their availability.
 
-### Workflow Storage Locations
+### Workflow storage locations
 
 | Type | Location | Availability | Best For |
 |------|----------|-------------|----------|
 | **Global** | `~/.config/biorouter/workflows/` | All projects and sessions | Personal workflows, general-purpose workflows |
 | **Local** | `YOUR_WORKING_DIRECTORY/.biorouter/workflows/` | Only when working in that project | Project-specific workflows, team workflows |
 
-**Choose Global Storage When:**
+**Choose global storage when:**
 - You want the workflow available across all projects
 - It's a personal workflow or general-purpose workflow
 - You're the primary user of the workflow
 
-**Choose Local Storage When:**
+**Choose local storage when:**
 - The workflow is specific to a particular project
 - You're working with a team and want to share the workflow
 - The workflow depends on project-specific files or configurations
 
-## Storing Workflows
+> **Note.** These two locations are where workflows are *saved*. They are not the whole set of places Biorouter *looks*: [the workflows index](README.md#workflow-locations) lists the current directory, `BIOROUTER_WORKFLOW_PATH`, and a configured GitHub repository. The full search order used by `biorouter workflow list` is under [Workflow discovery process](#workflow-discovery-process) below.
 
-  
+## Storing workflows
 
-**Save New Workflow:**
+### In Desktop
 
-1. To create a workflow from your chat session, see [Create Workflow](/docs/guides/workflows/session-workflows#create-workflow)
-2. Once in the Workflow Editor, click `Save Workflow` to save it to your Workflow Library
+**Save a new workflow:**
 
-**Save Modified Workflow:**
+1. To create a workflow from your chat session, see [Create a workflow](creating-and-sharing-workflows.md#create-a-workflow).
+2. Once in the Workflow Editor, click `Save Workflow` to save it to your Workflow Library.
+
+**Save a modified workflow:**
 
 If you're already using a workflow and want to save a modified version:
-1. Click the  button at the bottom of the app, which appears after sending your first message
-2. Make any desired edits to the instructions, prompt, or other fields
-3. Click `Save Workflow`
 
-> **Info:** When you modify and save a workflow with a new name, a new workflow and new link are generated. You can still run the original workflow from the workflow library, or using the original link. If you edit a workflow without changing its name, the version in the workflow library is updated, but you can still run the original workflow via link.
+1. Click the edit button at the bottom of the app, which appears after sending your first message.
+2. Make any desired edits to the instructions, prompt, or other fields.
+3. Click `Save Workflow`.
 
-  
-  
+> **Note.** When you modify and save a workflow with a new name, a new workflow and new link are generated. You can still run the original workflow from the workflow library, or using the original link. If you edit a workflow without changing its name, the version in the workflow library is updated, but you can still run the original workflow via link.
 
-    When you [create a workflow](/docs/guides/workflows/reference), it gets saved to:
+### In the CLI
 
-    * Your working directory by default: `./workflow.yaml`
-    * Any path you specify: `/workflow /path/to/my-workflow.yaml`  
-    * Local project workflows: `/workflow .biorouter/workflows/my-workflow.yaml`
+When you [create a workflow](creating-and-sharing-workflows.md#create-a-workflow) with the `/workflow` command, it gets saved to:
 
-    
-> **Note:** The CLI saves workflows as `.yaml` files. While the CLI can run workflows in `.json` format, it does not provide an option to save workflows as JSON.
+- Your working directory by default: `./workflow.yaml`
+- Any path you specify: `/workflow /path/to/my-workflow.yaml`
+- Local project workflows: `/workflow .biorouter/workflows/my-workflow.yaml`
 
-  
+> **Note.** The CLI saves workflows as `.yaml` files. While the CLI can run workflows in `.json` format, it does not provide an option to save workflows as JSON.
 
-### Importing Workflows
+## Importing workflows
 
-  
-    Import a workflow using its deeplink or workflow file:
+Workflow import is only available in Biorouter Desktop.
 
-    1. Click the  button in the top-left to open the sidebar
-    2. Click `Workflows` in the sidebar
-    3. Click `Import Workflow`
-    4. Choose your import method:
-       - To import via a link: Under `Workflow Deeplink`, paste in the [workflow link](/docs/guides/workflows/session-workflows#share-via-workflow-link)
-       - To import via a file: Under `Workflow File`, click `Choose File`, select a workflow file, and click `Open`
-    5. Click `Import Workflow` to save a copy of the workflow to your Workflow Library
+Import a workflow using its deeplink or workflow file:
 
-  
-> **Warning:** biorouter Desktop accepts `.yaml`, `.yml`, and `.json` files, but **the CLI only supports `.yaml` and `.json`**. For full compatibility across both interfaces, avoid `.yml` extensions.
+1. Click the sidebar button in the top-left to open the sidebar.
+2. Click `Workflows` in the sidebar.
+3. Click `Import Workflow`.
+4. Choose your import method:
+   - To import via a link: Under `Workflow Deeplink`, paste in the [workflow link](creating-and-sharing-workflows.md#share-via-workflow-link).
+   - To import via a file: Under `Workflow File`, click `Choose File`, select a workflow file, and click `Open`.
+5. Click `Import Workflow` to save a copy of the workflow to your Workflow Library.
 
-  All workflow formats follow the same [schema structure](/docs/guides/workflows/reference#core-workflow-schema).
+> **Warning.** Biorouter Desktop accepts `.yaml`, `.yml`, and `.json` files, but **the CLI only supports `.yaml` and `.json`**. For full compatibility across both interfaces, avoid `.yml` extensions.
 
-  
-  
-    Workflow import is only available in biorouter Desktop.
-  
+All workflow formats follow the same [schema structure](workflow-schema-reference.md#core-workflow-schema).
 
-## Finding Available Workflows
+## Finding available workflows
 
-  
+### In Desktop
 
-**Access Workflow Library:**
-1. Click the  button in the top-left to open the sidebar
-2. Click `Workflows` to view your Workflow Library
+**Access the Workflow Library:**
+
+1. Click the sidebar button in the top-left to open the sidebar.
+2. Click `Workflows` to view your Workflow Library.
 3. Browse your available workflows, which show:
    - Workflow title and description
    - Last modified date
    - Whether they're stored globally or locally
 
-> **Info:** The Desktop Workflow Library displays all workflows you've explicitly saved or imported. It doesn't automatically discover workflow files from your filesystem like the CLI does.
+> **Note.** The Desktop Workflow Library displays all workflows you've explicitly saved or imported. It doesn't automatically discover workflow files from your filesystem like the CLI does.
 
-  
-  
+### In the CLI
 
 Use the `biorouter workflow list` command to find all available workflows from multiple sources:
-
-**Basic Usage**
 
 ```bash
 # List all available workflows
@@ -111,17 +109,17 @@ biorouter workflow list --verbose
 biorouter workflow list --format json
 ```
 
-**Workflow Discovery Process**
+#### Workflow discovery process
 
-biorouter searches for workflows in the following locations (in order):
+Biorouter searches for workflows in the following locations (in order):
 
 1. **Current directory**: `.` (looks for `*.yaml` and `*.json` files)
-2. **Custom paths**: Directories specified in [`BIOROUTER_WORKFLOW_PATH`](/docs/guides/environment-variables#workflow-configuration) environment variable
+2. **Custom paths**: Directories specified in the [`BIOROUTER_WORKFLOW_PATH`](../configuration/environment-variables.md#workflow-configuration) environment variable
 3. **Global workflow library**: `~/.config/biorouter/workflows/` (or equivalent on your OS)
 4. **Local project workflows**: `./.biorouter/workflows/`
-5. **GitHub repository**: If [`BIOROUTER_WORKFLOW_GITHUB_REPO`](/docs/guides/environment-variables#workflow-configuration) environment variable is configured
+5. **GitHub repository**: If the [`BIOROUTER_WORKFLOW_GITHUB_REPO`](../configuration/environment-variables.md#workflow-configuration) environment variable is configured
 
-**Example Output**
+#### Example output
 
 *Default text format:*
 ```bash
@@ -164,7 +162,7 @@ Available workflows:
 ]
 ```
 
-**Configuring Workflow Sources**
+#### Configuring workflow sources
 
 Add custom workflow directories:
 ```bash
@@ -176,9 +174,9 @@ Configure GitHub workflow repository:
 biorouter workflow list
 ```
 
-See the [Environment Variables Guide](/docs/guides/environment-variables#workflow-configuration) for more configuration options.
+See the [environment variables guide](../configuration/environment-variables.md#workflow-configuration) for more configuration options.
 
-**Manual Directory Browsing (Advanced)**
+#### Manual directory browsing (advanced)
 
 If you need to browse workflow directories manually:
 
@@ -193,24 +191,29 @@ ls .biorouter/workflows/
 find . -name "*.yaml" -path "*/workflows/*" -o -name "*.json" -path "*/workflows/*"
 ```
 
-> **Tip:** The `biorouter workflow list` command is the recommended way to find workflows as it automatically searches all configured sources and provides consistent formatting.
+> **Tip.** The `biorouter workflow list` command is the recommended way to find workflows as it automatically searches all configured sources and provides consistent formatting.
 
-  
+## Using saved workflows
 
-## Using Saved Workflows
+### In Desktop
 
-  
-
-1. Click the  button in the top-left to open the sidebar
-2. Click `Workflows`
-3. Find your workflow in the Workflow Library
+1. Click the sidebar button in the top-left to open the sidebar.
+2. Click `Workflows`.
+3. Find your workflow in the Workflow Library.
 4. Choose one of the following:
-   - Click `Use` to run it immediately
-   - Click `Preview` to see the workflow details first, then click **Load Workflow** to run it
+   - Click `Use` to run it immediately.
+   - Click `Preview` to see the workflow details first, then click **Load Workflow** to run it.
 
-  
-  
+### In the CLI
 
-Once you've located your workflow file, [run the workflow](/docs/guides/workflows/session-workflows#run-a-workflow) or [open it in biorouter Desktop](/docs/guides/biorouter-cli-commands#workflow).
+Once you've located your workflow file, [run the workflow](creating-and-sharing-workflows.md#run-a-workflow) or [open it in Biorouter Desktop](../cli/command-reference.md#workflow).
 
-> **Tip:** The CLI can run workflows saved from biorouter Desktop without any conversion. Both CLI-created and Desktop-saved workflows work with all workflow commands.
+> **Tip.** The CLI can run workflows saved from Biorouter Desktop without any conversion. Both CLI-created and Desktop-saved workflows work with all workflow commands.
+
+## Related documentation
+
+- [Workflows](README.md) — the workflow file format and a summary of where Biorouter looks for workflow files.
+- [Creating and sharing workflows](creating-and-sharing-workflows.md) — how the files described here get created, edited, and shared in the first place.
+- [Workflow schema reference](workflow-schema-reference.md#core-workflow-schema) — the schema every stored workflow must satisfy.
+- [Environment variables](../configuration/environment-variables.md#workflow-configuration) — `BIOROUTER_WORKFLOW_PATH` and `BIOROUTER_WORKFLOW_GITHUB_REPO`, which extend the search path.
+- [biorouter CLI command reference](../cli/command-reference.md#workflow) — every `workflow` subcommand, including `list`, `open`, and `validate`.

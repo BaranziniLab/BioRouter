@@ -1,13 +1,38 @@
-# Agent-Loop Campaign — Review Index
+# Agent-loop campaign mid-flight review index
+
+> **What this is.** The hand-off index written for the human reviewer at Gate 1 of the
+> agent-loop fix campaign: where the branch stood, which wave report covered which
+> proposals, links to the design docs, and the five open decisions put to the user.
+> **Status:** Superseded — every count and status below is a snapshot frozen at
+> Gate 1 (2026-07-13), roughly halfway through the campaign. The campaign then ran to
+> completion and landed on `main`: all 70 items shipped, not the "36 of 67" this file
+> reports. [The outcome report](outcome-report.md) supersedes every number here and is
+> the file to trust. This one is kept because it records the five decisions as they
+> were originally put to the user, and the reviewer's-eye framing of the work at its
+> midpoint.
+> **Audience:** maintainers.
+
+`BR-NN` identifiers are proposal numbers from the agentic-loop review;
+[the improvement proposals register](../agent-loop-review/improvement-proposals.md)
+defines BR-1…BR-67, and [the platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md)
+defines the later BR-68/69/70. The campaign's plan of record and dated log live in
+[the campaign README](README.md).
+
+> **Warning.** The branch and worktree this file navigates — `agent-loop-integration`
+> and `.worktrees/integration` — were deleted after the campaign merged. The shell
+> commands below no longer run as written; the work they pointed at is on `main`.
+
+The snapshot as written at the time follows, with the two claims that later changed
+flagged inline.
 
 **Branch:** `agent-loop-integration` · **Worktree:** `.worktrees/integration` ·
 **Nothing is merged to `main`.** This branch is the whole campaign; `main` is untouched.
 
 ---
 
-## 1. Where it stands
+## Where it stood at Gate 1
 
-| | |
+| Measure | Value at Gate 1 |
 |---|---|
 | Proposals implemented & merged | **36 of 67** (43 BR-tagged commits incl. fixes/regen) |
 | Proposals in flight (Wave 2) | 13 committed, 5 running |
@@ -21,43 +46,57 @@ server/cancel) is still implementing in its own worktrees and is **not** on this
 
 ---
 
-## 2. Start here
+## Start here
 
-- **[CAMPAIGN.md](CAMPAIGN.md)** — the plan, the wave table, conventions, and a dated log of every
-  gate (including the conflict resolutions and the schema-version collision I had to fix by hand).
-- **[../agent-loop-review/review.html](../agent-loop-review/review.html)** — the original 28-document
-  review, rendered. *This is the "why" behind every change.*
-- **[../agent-loop-review/PROPOSALS.md](../agent-loop-review/PROPOSALS.md)** — all 67 proposals
+- **[The campaign README](README.md)** — the plan, the wave table, conventions, and a dated log of every
+  gate (including the conflict resolutions and the schema-version collision that had to be fixed by hand).
+- **[The agentic-loop review](../agent-loop-review/README.md)** — the executive report for the original
+  28-document review, and the index to its internal, external and comparison chapters.
+  *This is the "why" behind every change.*
+- **[The improvement proposals register](../agent-loop-review/improvement-proposals.md)** — all 67 proposals
   (BR-1…BR-67) with Problem / Proposal / Affected code / Impact / Effort / Risk.
 
-## 3. Evidence per wave (what changed + what was tested)
-
-| Report | Covers |
-|---|---|
-| [wave0.md](wave0.md) | BR-4, 20, 25, 26, 33, 34, 36, 38, 39, 46 + the `agent.rs` seam refactor |
-| [wave1-compaction.md](wave1-compaction.md) | BR-10, 11, 12, 13, 14, 15, 17 |
-| [wave1-security.md](wave1-security.md) | BR-21, 22, 23, 64, 65 |
-| [wave1-checkpoints.md](wave1-checkpoints.md) | BR-43, 44, 45 |
-| [wave1-processes.md](wave1-processes.md) | BR-37, 40, 41, 42 |
-| [wave1-context.md](wave1-context.md) | BR-1, 2, 3, 5, 8, 9, 60 |
+## Evidence per wave
 
 Each report lists per-proposal commits, files, the exact test-result lines, and any regression
 found *and fixed* during that wave.
 
-## 4. Design docs — the architectural items
+The first six rows are the wave reports that existed when this index was written. The
+remaining rows cover Wave 2 and Wave 3, which completed after this snapshot; they are
+listed here so the index is usable as an index.
+
+| Report | Covers |
+|---|---|
+| [wave-0-foundation.md](wave-reports/wave-0-foundation.md) | BR-4, 20, 25, 26, 33, 34, 36, 38, 39, 46 + the `agent.rs` seam refactor |
+| [wave-1-compaction.md](wave-reports/wave-1-compaction.md) | BR-10, 11, 12, 13, 14, 15, 17 |
+| [wave-1-security.md](wave-reports/wave-1-security.md) | BR-21, 22, 23, 64, 65 |
+| [wave-1-checkpoints.md](wave-reports/wave-1-checkpoints.md) | BR-43, 44, 45 |
+| [wave-1-processes.md](wave-reports/wave-1-processes.md) | BR-37, 40, 41, 42 |
+| [wave-1-context-and-prompts.md](wave-reports/wave-1-context-and-prompts.md) | BR-1, 2, 3, 5, 8, 9, 60 |
+| [wave-2-loop-detection.md](wave-reports/wave-2-loop-detection.md) | BR-29, 30, 31, 32, 35, 66, 67 |
+| [wave-2-hooks-and-permissions.md](wave-reports/wave-2-hooks-and-permissions.md) | BR-18, 19, 24, 27, 28, 63 |
+| [wave-2-server-cancellation.md](wave-reports/wave-2-server-cancellation.md) | BR-6, 7, 52, 61, 62 |
+| [wave-3-polish.md](wave-reports/wave-3-polish.md) | BR-40 (async subagent handle), BR-62b (desktop cancel wiring), and the frontend gate-greening commit |
+| [parity-verification-report.md](../../agent-loop/cross-platform/parity-verification-report.md) | BR-68, 69, 70 (cross-platform cluster) |
+
+## Design docs — the architectural items
 
 These were designed before coding; each records the options considered and the choices made.
 **Only the first mergeable slice of each was implemented** — the rest is deliberately left for your call.
 
-- [BR-43 — shadow-git checkpoints + `/rewind`](designs/BR-43-design.md)
-- [BR-54 — SharedMcpPool (share MCP servers across sessions)](designs/BR-54-design.md) — *designed, not implemented*
-- [BR-21 — auditable command policy engine](designs/BR-21-design.md)
-- [BR-17 — cross-session memory](designs/BR-17-design.md)
-- [BR-45 — session branching / fork](designs/BR-45-design.md)
-- [BR-65 — managed/enterprise policy tier](designs/BR-65-design.md)
-- [BR-64 — OS-level sandbox](designs/BR-64-design.md)
+- [BR-43 — shadow-git checkpoints + `/rewind`](../../agent-loop/designs/shadow-git-checkpoints.md)
+- [BR-54 — SharedMcpPool (share MCP servers across sessions)](../../agent-loop/designs/shared-mcp-server-pool.md) — *designed, not implemented*
+- [BR-21 — auditable command policy engine](../../agent-loop/designs/command-policy-engine.md)
+- [BR-17 — cross-session memory](../../agent-loop/designs/cross-session-memory.md)
+- [BR-45 — session branching / fork](../../agent-loop/designs/session-branching.md)
+- [BR-65 — managed/enterprise policy tier](../../agent-loop/designs/managed-policy-tier.md)
+- [BR-64 — OS-level sandbox](../../agent-loop/designs/macos-seatbelt-sandbox.md)
 
-## 5. The changes themselves
+> **Note.** The "*designed, not implemented*" label on BR-54 was true only at this
+> snapshot. SharedMcpPool was built later in the Wave-3 perf tail (decision 2 below)
+> and now lives at `crates/biorouter/src/agents/mcp_pool.rs`.
+
+## The changes themselves
 
 ```bash
 # everything, vs main
@@ -89,9 +128,14 @@ git show <sha>
 
 ---
 
-## 6. Decisions — ANSWERED 2026-07-13 ("proceed with all defaults")
+## Decisions — answered 2026-07-13 ("proceed with all defaults")
 
 The user approved the default path on every open question. Locked in:
+
+> **Note.** This same decision record appears in [the campaign README](README.md)'s
+> 2026-07-13 log entry and, in its final form, in
+> [the outcome report](outcome-report.md). This copy is the one that preserves the
+> original question text as it was put to the user.
 
 | # | Decision | Resolution |
 |---|---|---|
@@ -101,7 +145,7 @@ The user approved the default path on every open question. Locked in:
 | 4 | Landing strategy | **Option (a):** finish Waves 2–3, hand over one verified branch. **Nothing merges to `main` without explicit sign-off.** |
 | 5 | Pre-existing frontend reds | **Fix them** — folded into the Wave-3 cleanup cluster. |
 
-### Original question text (for the record)
+### Original question text, for the record
 
 1. **Default-off flags.** Several new capabilities ship gated so they change nothing until enabled —
    checkpoints (`BIOROUTER_CHECKPOINTS`), the macOS Seatbelt sandbox, per-reply budgets. Do you want
@@ -117,13 +161,27 @@ The user approved the default path on every open question. Locked in:
    files (`biorouterd.test.ts`, `ExtensionModal.test.tsx`) **on `main`, unrelated to this work**.
    Want me to clean those up too?
 
-## 7. Known caveats (honest list)
+## Known caveats at Gate 1
 
 - `test_anthropic_provider` still fails — pre-existing, live-API, fails on `main` too. BR-46 fixed the
   underlying `finish_reason` mapping but the test needs network + credentials to go green.
 - **BR-35** (per-reply budget) has code in the Wave-2 tree but had not landed a commit at last check;
-  its cluster verifier is instructed to adopt orphaned work. I will confirm it is committed and tested
-  before that cluster merges — it will not be silently dropped.
+  its cluster verifier is instructed to adopt orphaned work. It was to be confirmed committed and
+  tested before that cluster merged — it would not be silently dropped.
+
+  > **Note.** This was resolved. The 2026-07-13 log entry in
+  > [the campaign README](README.md) records loopdet completing 7/7 with the BR-35
+  > orphan adopted by its verifier as designed, and the budget code is on `main` at
+  > `crates/biorouter/src/agents/budget.rs`.
+
 - Wave-1 cluster verifiers hit **ENOSPC** during parallel builds (the host disk filled). Some "failures"
   in their logs were disk, not code; each was re-run and passed. Mitigated by pruning build caches.
-- The `too_many_lines` clippy baseline was stale repo-wide; I regenerated it (13 entries).
+- The `too_many_lines` clippy baseline was stale repo-wide; it was regenerated (13 entries).
+
+## Related documentation
+
+- [Outcome report](outcome-report.md) — the campaign's closing record; supersedes every count in this file.
+- [Campaign README](README.md) — the plan of record, wave table, and dated log this index navigates.
+- [Improvement proposals register](../agent-loop-review/improvement-proposals.md) — defines BR-1…BR-67.
+- [Agentic-loop review](../agent-loop-review/README.md) — the 28-document review that motivated every proposal.
+- [Platform parity audit](../../agent-loop/cross-platform/platform-parity-audit.md) — the cross-platform findings that added BR-68/69/70 after this snapshot was taken.

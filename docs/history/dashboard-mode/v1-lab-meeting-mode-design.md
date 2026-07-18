@@ -1,9 +1,36 @@
-# Lab Meeting Mode — Design Spec
+# Lab Meeting Mode — design spec (v1)
+
+> **What this is.** The original (v1) design for Lab Meeting Mode: a
+> multi-conversation board at `/lab-meeting` where each chat lives in its own
+> draggable, resizable window, governed by a tile / overflow / tuck layout engine.
+> **Status:** Superseded, twice. The 2026-05-10 spec renamed the feature to
+> Dashboard Mode and reworked it ([v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md)),
+> and dashboard mode was then removed from the app entirely on 2026-07-18 (see
+> the [removal record](README.md)). No `LabMeeting/` or `Dashboard/` component
+> directory exists any more. The only surviving trace is the legacy localStorage
+> key `biorouter.labmeeting.v1`, which `ResetPanel.tsx` still clears for
+> upgrading installs.
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Section key.** Sections are numbered `§1`–`§16`. The
+> [v1 implementation plan](v1-lab-meeting-mode-plan.md) cites those numbers, so
+> they are preserved verbatim rather than renumbered.
 
 **Project:** BioRouter
 **Feature:** Lab Meeting Mode (multi-conversation parallel workspace)
 **Date:** 2026-05-08
-**Status:** Approved (pending implementation plan)
+**Original status line:** Approved (pending implementation plan)
+
+> **Name key.** One feature, four spellings, all of them intentional and all of
+> them appearing below: the product name is **Lab Meeting Mode**, the route is
+> `/lab-meeting`, the localStorage key is `biorouter.labmeeting.v1`, and the
+> TypeScript types are `LabWindow` / `LabMeetingState`. The v2 spec collapsed
+> the lot into "Dashboard".
+
+> **Threshold key.** `T1` and `T2` are the two capacity thresholds that drive
+> the whole layout engine, and they appear in the type listing in §3.2 before
+> they are defined in §7.1. `T1` is the **grid limit** (default 6): up to `T1`
+> windows tile without overlapping. `T2` is the **board limit** (default 8):
+> beyond `T2`, windows are tucked into a side panel.
 
 ---
 
@@ -13,24 +40,24 @@ Lab Meeting Mode is a multi-conversation workspace within BioRouter that lets re
 
 The mode is implemented as a new route (`/lab-meeting`) with a global state provider mounted above the router so background autonomous chats keep streaming when the user navigates elsewhere.
 
-This document is the canonical design. The user-supplied prose spec (which inspired this design) is preserved in §13 for reference.
+This document is the canonical design. The relationship to the user-supplied prose spec that inspired it is described in §16.
 
 ---
 
-## 2. Entry & Exit
+## 2. Entry & exit
 
 ### 2.1 Activation
 
-- A toggle is added in [`AppLayout.tsx`](../../../ui/desktop/src/components/Layout/AppLayout.tsx) immediately to the right of the existing `+` "new window" button (top-left of the app, near the sidebar trigger). Icon: lucide `Users` (`Users` from `components/icons/app-icons.tsx`). Tooltip: "Open Lab Meeting Mode".
+- A toggle is added in `ui/desktop/src/components/Layout/AppLayout.tsx` immediately to the right of the existing `+` "new window" button (top-left of the app, near the sidebar trigger). Icon: lucide `Users` (`Users` from `components/icons/app-icons.tsx`). Tooltip: "Open Lab Meeting Mode".
 - Clicking the toggle navigates to `/lab-meeting`.
-- On entry the renderer asks Electron `main` to maximize the BrowserWindow (matches user's spec — "enlarges to fit the full visible screen area; not full-screen"). The user retains the OS full-screen affordance.
+- On entry the renderer asks Electron `main` to maximize the BrowserWindow (matches the requester's spec — "enlarges to fit the full visible screen area; not full-screen"). The user retains the OS full-screen affordance.
 - The standard sidebar (Home, Chat, History, Workflows, Scheduler, Extensions, Skills, Apps, Settings) remains mounted and unchanged.
 - If the user had an active conversation in `/pair`, that conversation is *not* automatically pulled in. The board hydrates from `localStorage` if non-empty; otherwise a single new conversation is spawned to fill the board.
 
 ### 2.2 Deactivation
 
 - "Exit Lab Meeting Mode" is achieved by navigating to any sidebar destination, by clicking a "Back to Lab Meeting" pill (which only appears once Lab Meeting state is non-empty and the user is on a different route), or by closing the app.
-- All conversations persist in the standard BioRouter session store. Board state (positions, sizes, T1/T2, tucked list, accent colors, names) persists in `localStorage` under `biorouter.labmeeting.v1`.
+- All conversations persist in the standard BioRouter session store. Board state (positions, sizes, `T1`/`T2`, tucked list, accent colors, names) persists in `localStorage` under `biorouter.labmeeting.v1`.
 - The Electron BrowserWindow is **not** automatically restored on exit — the user can resize it manually. (Reasoning: heuristically restoring window bounds creates jarring transitions; users who maximize once usually want to stay maximized.)
 
 ---
@@ -97,7 +124,7 @@ Whole `LabMeetingState` is debounced-serialized (~250ms) to `localStorage`. On h
 
 Each `<ChatWindow>` renders:
 
-```
+```tsx
 <ChatProvider chat={chatStub} setChat={...} contextKey={`lab-${sessionId}`}>
   <BaseChat sessionId={sessionId} coherent hideStatusBar setChat={...} />
 </ChatProvider>
@@ -117,7 +144,7 @@ To avoid a deep refactor of [`ChatInput.tsx`](../../../ui/desktop/src/components
 
 ## 4. Component tree
 
-```
+```text
 <LabMeetingProvider>            (mounted at app root, above <Routes>)
   └─ <Routes>
       └─ /lab-meeting → <LabMeetingRoute>
@@ -137,7 +164,7 @@ A `<BackToLabMeetingPill>` lives in `AppLayout` and renders only when `LabMeetin
 
 ---
 
-## 5. The Lab Meeting Board
+## 5. The Lab Meeting board
 
 The board is the bounded rectangle to the right of the sidebar. It does **not** scroll or pan. All window positions are coordinates relative to the board's top-left.
 
@@ -151,7 +178,7 @@ Windows constrained to keep at least 80×40 px of the title bar within board bou
 
 ---
 
-## 6. Conversation Windows
+## 6. Conversation windows
 
 ### 6.1 Anatomy
 
@@ -172,7 +199,7 @@ Windows constrained to keep at least 80×40 px of the title bar within board bou
 
 Default names come from `palette.ts`'s name generator (Atlas, Nova, Prism, Echo, Lyra, Orion, Sage, Vega, Wren, Zephyr, ...). Double-click the title text → controlled `<input>`. Enter / blur commits, Esc cancels. Rename propagates to the conversation name in History.
 
-### 6.3 Focus & "pop"
+### 6.3 Focus and "pop"
 
 - Exactly one window is `focusedWindowId` at a time.
 - Focused window gets CSS class `is-focused` → `transform: translateY(-2px) scale(1.01)` plus a stronger neumorphic shadow.
@@ -190,7 +217,7 @@ Default names come from `palette.ts`'s name generator (Atlas, Nova, Prism, Echo,
 ### 6.5 Resizing
 
 Bottom-right resize handle (visible on hover or when focused).
-- Floor at the T1-grid cell size for the current board+T1 (so every window stays usable).
+- Floor at the `T1`-grid cell size for the current board and `T1` (so every window stays usable).
 - On release, `isManuallyPlaced=true`.
 
 ### 6.6 Closing
@@ -199,9 +226,13 @@ Bottom-right resize handle (visible on hover or when focused).
 
 ---
 
-## 7. Capacity Thresholds & the Sidebar Tuck System
+## 7. Capacity thresholds and the sidebar tuck system
 
-### 7.1 Definitions
+This section covers four distinct mechanisms: the two capacity thresholds
+(§7.1), the three layout modes they select between (§7.2), the tuck sidebar
+itself (§7.3), and dragging between board and sidebar (§7.4).
+
+### 7.1 Threshold definitions
 
 | Threshold | Default | Meaning |
 |---|---|---|
@@ -212,11 +243,13 @@ Constraint: `T2 ≥ T1`. Both editable in the toolbar; changes trigger immediate
 
 ### 7.2 Layout behavior — pure function
 
-`computeLayout(windows, board, T1, T2)` lives in [`layoutEngine.ts`](../../../ui/desktop/src/components/LabMeeting/layoutEngine.ts). Returns `Map<WindowId, {x, y, w, h, zIndex}>`.
+`computeLayout(windows, board, T1, T2)` lives in `ui/desktop/src/components/LabMeeting/layoutEngine.ts`. Returns `Map<WindowId, {x, y, w, h, zIndex}>`.
 
-Three modes by on-board count `n`:
+There are three modes, selected by the on-board window count `n`.
 
-**`n ≤ T1` — clean grid.** Pick the (cols × rows) configuration minimizing aspect-ratio deviation from a target ~1.3:1, given the board dimensions. Last row centers items if `n % cols !== 0`. Manually-placed windows are excluded from the auto-tile pass and rendered at their stored coords; remaining auto windows tile into the leftover area.
+#### 7.2.1 Mode A — `n ≤ T1`: clean grid
+
+Pick the (cols × rows) configuration minimizing aspect-ratio deviation from a target ~1.3:1, given the board dimensions. Last row centers items if `n % cols !== 0`. Manually-placed windows are excluded from the auto-tile pass and rendered at their stored coords; remaining auto windows tile into the leftover area.
 
 Examples (T1=6, landscape board):
 - 1 → fills board.
@@ -226,9 +259,10 @@ Examples (T1=6, landscape board):
 - 5 → 3×2 with last row centered (2 in last row).
 - 6 → 3×2.
 
-**`T1 < n ≤ T2` — overflow at intersections.**
-1. First T1 windows tile in the standard grid.
-2. Overflow windows (n − T1) sized to the T1-cell size, centered on grid intersection points:
+#### 7.2.2 Mode B — `T1 < n ≤ T2`: overflow at intersections
+
+1. First `T1` windows tile in the standard grid.
+2. Overflow windows (`n − T1`) sized to the `T1`-cell size, centered on grid intersection points:
    - Collect all horizontal & vertical edge lines from the tiled grid.
    - Generate all line crossings.
    - Sort by Euclidean distance from board center (prefer central).
@@ -236,7 +270,9 @@ Examples (T1=6, landscape board):
    - If overflow count > unique points, apply `(8px × i)` jitter to subsequent ones.
    - Overflow renders above tiled (higher z-index).
 
-**`n > T2` — tuck.** Windows beyond T2 (chosen as oldest non-focused by `lastInteraction`) get `isTucked=true`. Sidebar opens.
+#### 7.2.3 Mode C — `n > T2`: tuck
+
+Windows beyond `T2` (chosen as oldest non-focused by `lastInteraction`) get `isTucked=true`. Sidebar opens.
 
 ### 7.3 The tuck sidebar
 
@@ -249,14 +285,14 @@ A panel slides in on the right edge of the board when `windows.some(w => w.isTuc
 - `×` button (destroys the conversation).
 - Pulse dot if `unreadActivity` (autonomous-mode activity since user last viewed).
 
-Click-to-evoke: removes from sidebar, places on board as an active window with focus, auto-tucks the oldest non-focused if at T2.
+Click-to-evoke: removes from sidebar, places on board as an active window with focus, auto-tucks the oldest non-focused if at `T2`.
 
 When the sidebar empties, it collapses and the board reclaims full width.
 
 ### 7.4 Drag between board and sidebar
 
 - **Board → Sidebar (tuck by drag):** Right 12% strip of the board is the drop zone (expands to 20% if the sidebar is already open). Visual highlight while pointer is in zone. Release tucks; the window animates into a card in the list.
-- **Sidebar → Board (evoke by drag):** `pointerdown` on a card spawns a translucent T1-cell-sized ghost following the cursor. Release on board → `evokeWindow(id, dropPos)`, auto-tuck oldest non-focused if at T2. Release on sidebar (or outside board) cancels.
+- **Sidebar → Board (evoke by drag):** `pointerdown` on a card spawns a translucent `T1`-cell-sized ghost following the cursor. Release on board → `evokeWindow(id, dropPos)`, auto-tuck oldest non-focused if at `T2`. Release on sidebar (or outside board) cancels.
 
 ### 7.5 Persistence of message history
 
@@ -279,7 +315,7 @@ Renders top-right of the board (right of the existing `≡ + 👥` cluster, does
 
 ---
 
-## 9. Keyboard Shortcuts
+## 9. Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
@@ -292,7 +328,7 @@ Shortcuts are bound at the `<LabMeetingRoute>` level via a `keydown` handler; th
 
 ---
 
-## 10. Interaction with Existing BioRouter Features
+## 10. Interaction with existing BioRouter features
 
 ### 10.1 Status bar
 
@@ -324,7 +360,7 @@ Each window operates with its own working directory and tool context. No implici
 
 ---
 
-## 12. Edge Cases
+## 12. Edge cases
 
 | Scenario | Behavior |
 |---|---|
@@ -341,7 +377,12 @@ Each window operates with its own working directory and tool context. No implici
 
 ## 13. Files — created or modified
 
-### Created (under [`ui/desktop/src/components/LabMeeting/`](../../../ui/desktop/src/components/LabMeeting/))
+> **Note.** Every path in this section pointed into
+> `ui/desktop/src/components/LabMeeting/` or `ui/desktop/src/contexts/`. Those
+> directories no longer exist — they were renamed to `Dashboard/` by v2 and then
+> deleted outright. Paths are left unlinked and recorded as written.
+
+### Created (under `ui/desktop/src/components/LabMeeting/`)
 - `LabMeetingRoute.tsx`
 - `LabMeetingBoard.tsx`
 - `LabMeetingToolbar.tsx`
@@ -360,7 +401,7 @@ Each window operates with its own working directory and tool context. No implici
 - `index.ts`
 
 ### Created (context)
-- [`ui/desktop/src/contexts/LabMeetingContext.tsx`](../../../ui/desktop/src/contexts/LabMeetingContext.tsx)
+- `ui/desktop/src/contexts/LabMeetingContext.tsx`
 
 ### Modified
 - [`App.tsx`](../../../ui/desktop/src/App.tsx) — register `/lab-meeting` route; mount `LabMeetingProvider` at root.
@@ -383,7 +424,7 @@ Backend Rust crates are untouched. We only call existing `createSession` and cha
 ### Component
 - `LabMeetingProvider.test.tsx` — spawn / close / tuck / evoke / focus state transitions; localStorage hydration; filtering of dead sessions.
 
-### E2E (Playwright, follow [`ui/desktop/playwright/`](../../../ui/desktop/playwright/) conventions)
+### End-to-end (Playwright, following the `ui/desktop/playwright/` conventions of the time)
 - Enter mode → board renders with one auto-spawned window.
 - Spawn 3, 6, 8, 9 → assert tile / overflow / tuck transitions.
 - Drag-to-tuck and drag-to-evoke.
@@ -406,6 +447,18 @@ These are tracked here so future iterations have a clear scope boundary.
 
 ---
 
-## 16. Reference — original prose spec
+## 16. Reference — the original prose spec
 
-The original prose design doc inspired this spec. Anything in this document supersedes the prose where they diverge (most notably: routing, persistence, status-bar approach, and explicit file boundaries). Original is preserved in conversation history at the time of design approval.
+A prose design doc supplied by the requester inspired this spec. Anything in this document supersedes the prose where they diverge (most notably: routing, persistence, status-bar approach, and explicit file boundaries).
+
+> **Warning.** The original prose was never committed to the repository. The
+> spec recorded it as "preserved in conversation history at the time of design
+> approval", which is not a location a reader can open. Treat this document as
+> the only surviving statement of the design.
+
+## Related documentation
+
+- [Dashboard mode — removal record and archive index](README.md) — what became of this feature, and what was kept when it was deleted.
+- [v1 — Lab Meeting Mode implementation plan](v1-lab-meeting-mode-plan.md) — the 20-task plan that built this spec, and the document that cites `§N` above.
+- [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md) — the direct successor: renames this feature and reworks sizing, naming and the layout engine.
+- [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md) — deletes the tuck sidebar and the `T1`/`T2` thresholds described in §7 entirely.

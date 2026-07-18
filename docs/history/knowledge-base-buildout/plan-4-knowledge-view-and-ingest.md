@@ -1,6 +1,48 @@
-# Knowledge Frontend Route + KB Selector + Ingest Panel Implementation Plan
+# Plan 4 — Knowledge view and ingest panel
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 4 of the six-plan Knowledge buildout: the sidebar entry, the top-level `KnowledgeView` shell, the multi-KB command-palette selector, and the ingest panel with dropzone, paste box, staged list, model picker and live SSE progress.
+> **Status:** Historical record — executed and shipped. `ui/desktop/src/components/knowledge/` contains `KnowledgeView.tsx`, `KnowledgeContext.tsx`, `KBSelector/`, `IngestPanel/`, `DispatchProgress.tsx` and `hooks/` — the tree this plan specifies. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge desktop UI, and agents tracing why a component is shaped the way it is.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, executed in order against the design in
+> [`founding-design.md`](founding-design.md).
+
+Plan 3 put the Knowledge backend behind HTTP. This plan builds the first user-facing surface on top of it: a Knowledge route in the sidebar where a user creates knowledge bases, drops files or pastes text and URLs, picks a model, hits Digest, and watches sub-agent events stream in. The right-hand column stays a placeholder until [Plan 5](plan-5-graph-view-and-change-log.md).
+
+> **Warning — the UI mockup this plan depends on is unrecoverable.** Several
+> visual decisions below are justified by reference to a mockup at
+> `/Users/wgu/Downloads/biorouter_knowledge.html`. That is a personal Downloads
+> path, never committed to the repo, and no copy survives. Where the plan says
+> "matching the mockup", the shipped components in
+> `ui/desktop/src/components/knowledge/` are the only remaining record of what was
+> meant. A later redesign of this surface is captured in
+> [`docs/design/ui-overhaul/knowledge-view-redesign.md`](../../design/ui-overhaul/knowledge-view-redesign.md).
+
+> **Warning — this plan has thin automated test coverage by design.** The repo had
+> no strong frontend unit-test culture when this was written, so several tasks
+> deliberately skip Vitest and lean on the existing Playwright end-to-end setup or
+> on a manual smoke check via `just run-ui`. Tasks that do add Vitest tests say so
+> explicitly. Treat the absence of a test step as a known gap, not as a signal that
+> the behaviour is covered elsewhere.
+
+> **Note — worktree paths, line anchors and test counts are point-in-time.**
+> Commands below `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated
+> git worktree the Knowledge branch was developed in; read it as your own checkout
+> root. The baseline gate ("14 passed") records the suite as it stood when this
+> plan was written. Line anchors such as `AppSidebar.tsx:43-110` and
+> `SkillsView.tsx#L150` have moved and never resolved as rendered markdown links —
+> use the file paths and symbol names.
+
+## Risks to watch during execution
+
+- **Model picker reuse**: The chat's `ModelsBottomBar` is tangled with the chat-session state. If lifting it cleanly is hard, the Plan-4-simple read-only picker shipped above is acceptable; Plan 6 polishes it.
+- **SSE through axum without `axum-extra::sse`**: the backend returns `text/event-stream` framed manually. The frontend `useIngestStream` parses it manually. If the backend's framing changes (e.g., from comma-split to JSON-stream), the parser breaks. The current backend format is documented in the Plan 3 handlers.
+- **File upload from frontend**: Task 7's Digest button skips file uploads (only text/url). File uploads need multipart `FormData` against the `/raw` endpoint; the SDK may not generate a clean Blob-aware method. Hand-rolled `fetch` with `FormData` is the fallback.
+- **`MainPanelLayout` + nested provider**: wrapping `KnowledgeView` inside `KnowledgeProvider` means the provider's API call fires every time the user clicks the Knowledge sidebar entry. Cache via `useEffect`/`useMemo` if it becomes annoying.
+- **`crypto.randomUUID()`**: requires a secure context. The Electron renderer should provide one, but if the bundled environment doesn't, fall back to `Math.random().toString(36).substring(2)`.
+
+## Scope and approach
 
 **Goal:** Add a Knowledge entry in the sidebar (between Skills and Settings), build the top-level `KnowledgeView` shell, the multi-KB selector (trigger + cmd-K-style palette), and the ingest panel (dropzone, paste box, staged list, model picker, live progress). After Plan 4, users can create knowledge bases, drop files / paste text / paste URLs to ingest, pick a model, hit Digest, and watch sub-agent events stream in. The graph view + change-log drawer come in Plan 5.
 
@@ -12,13 +54,15 @@
 - The IngestPanel mirrors the mockup's left column: dropzone, paste-text box (with URL-extraction chip preview), staged list, "Digest" button that POSTs each staged item to `/knowledge/bases/:id/ingest`. SSE events stream live into a collapsible `<DispatchProgress>` panel.
 - The right side of the view is a placeholder (graph + change log) — Plan 5 fills it in.
 
-**Tech Stack:** React 19, TypeScript, the auto-generated TS API client at `ui/desktop/src/api/`, Tailwind utility classes matching existing BioRouter component style. No new npm deps unless a step explicitly calls one out.
+**Tech stack:** React 19, TypeScript, the auto-generated TS API client at `ui/desktop/src/api/`, Tailwind utility classes matching existing BioRouter component style. No new npm deps unless a step explicitly calls one out.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md). UI mockup: `/Users/wgu/Downloads/biorouter_knowledge.html`.
+**Source spec:** [`founding-design.md`](founding-design.md). UI mockup: `/Users/wgu/Downloads/biorouter_knowledge.html` (no longer available — see the warning above).
 
-**This is Plan 4 of ~6.** Plan 5 = graph view + change-log drawer. Plan 6 = chat-side KB chip + slash commands + polish.
+**Series position:** Plan 4 of 6. Plan 5 = graph view + change-log drawer. Plan 6 = chat-side KB chip + slash commands + polish.
 
 **TDD note:** Same convention as Plans 1-3 — most tasks combine "write tests" + "write impl" into single steps. The frontend doesn't have a strong unit-test culture in this repo, so several tasks deliberately skip Vitest and lean on the existing Playwright e2e setup OR on a manual smoke check via `just run-ui`. Tasks that DO add Vitest tests will say so explicitly.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
@@ -39,20 +83,20 @@ If `npm run typecheck` doesn't exist, use `npm run lint:check` or `npm run build
 
 - [ ] **Pre-step B:** skim the integration points the Plan 4 recon uncovered.
 
-  - Sidebar menuItems: [`AppSidebar.tsx:43-110`](ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx#L43) (Skills at L89-94, Settings at L104-109).
-  - Route reg: [`App.tsx`](ui/desktop/src/App.tsx) (import line 42, RouteWrapper line 214, `<Route>` line 618).
-  - Layout: [`MainPanelLayout.tsx`](ui/desktop/src/components/Layout/MainPanelLayout.tsx) wraps with `flex flex-col bg-background-muted h-full`.
-  - SkillsView reference style: [`SkillsView.tsx:150-193`](ui/desktop/src/components/skills/SkillsView.tsx#L150).
-  - Generated SDK: `listBases`, `createBase`, `getGraph`, etc. already in [`sdk.gen.ts`](ui/desktop/src/api/sdk.gen.ts).
-  - Model picker reference: [`ModelsBottomBar.tsx`](ui/desktop/src/components/settings/models/bottom_bar/ModelsBottomBar.tsx) (drop-down trigger pattern).
-  - Context pattern: [`ChatContext.tsx`](ui/desktop/src/contexts/ChatContext.tsx) (Provider + hook).
-  - localStorage usage: see [`ThemeContext.tsx`](ui/desktop/src/contexts/ThemeContext.tsx) — direct `window.localStorage.*`.
+  - Sidebar menuItems in `ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx` — insert between the Skills and Settings entries.
+  - Route registration in `ui/desktop/src/App.tsx` — the import, the `RouteWrapper`, and the `<Route>` element.
+  - Layout: `ui/desktop/src/components/Layout/MainPanelLayout.tsx` wraps with `flex flex-col bg-background-muted h-full`.
+  - Reference page style: `ui/desktop/src/components/skills/SkillsView.tsx`.
+  - Generated SDK: `listBases`, `createBase`, `getGraph`, etc. already in `ui/desktop/src/api/sdk.gen.ts`.
+  - Model picker reference: `ui/desktop/src/components/settings/models/bottom_bar/ModelsBottomBar.tsx` (drop-down trigger pattern).
+  - Context pattern: `ui/desktop/src/contexts/ChatContext.tsx` (Provider + hook).
+  - localStorage usage: see `ui/desktop/src/contexts/ThemeContext.tsx` — direct `window.localStorage.*`.
 
 ---
 
 ## File structure (decomposition map)
 
-```
+```text
 ui/desktop/src/components/knowledge/                 — NEW directory
 ├── KnowledgeView.tsx                 — top-level page (MainPanelLayout + 2-col grid)
 ├── KnowledgeContext.tsx              — Provider + useKnowledgeContext() hook
@@ -1108,10 +1152,10 @@ git commit -m "docs(claude): document Plan 4 Knowledge frontend (route + ingest)
 
 ---
 
-## Risks worth flagging up front
+## Related documentation
 
-- **Model picker reuse**: The chat's `ModelsBottomBar` is tangled with the chat-session state. If lifting it cleanly is hard, the Plan-4-simple read-only picker shipped above is acceptable; Plan 6 polishes it.
-- **SSE through axum without `axum-extra::sse`**: the backend returns `text/event-stream` framed manually. The frontend `useIngestStream` parses it manually. If the backend's framing changes (e.g., from comma-split to JSON-stream), the parser breaks. The current backend format is documented in the Plan 3 handlers.
-- **File upload from frontend**: Task 7's Digest button skips file uploads (only text/url). File uploads need multipart `FormData` against the `/raw` endpoint; the SDK may not generate a clean Blob-aware method. Hand-rolled `fetch` with `FormData` is the fallback.
-- **`MainPanelLayout` + nested provider**: wrapping `KnowledgeView` inside `KnowledgeProvider` means the provider's API call fires every time the user clicks the Knowledge sidebar entry. Cache via `useEffect`/`useMemo` if it becomes annoying.
-- **`crypto.randomUUID()`**: requires a secure context. The Electron renderer should provide one, but if the bundled environment doesn't, fall back to `Math.random().toString(36).substring(2)`.
+- [Knowledge founding design](founding-design.md) — the component tree, ingest flow and styling rules this plan implements.
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — the `/knowledge/*` endpoints and SSE framing every component here calls.
+- [Plan 5 — graph view and change log](plan-5-graph-view-and-change-log.md) — fills in the right-column placeholder Task 9 leaves behind.
+- [Plan 6 — chat integration and closeout](plan-6-chat-integration-and-closeout.md) — moves active-KB state off `localStorage` and adds the chat-side KB chip.
+- [Knowledge view redesign](../../design/ui-overhaul/knowledge-view-redesign.md) — the later visual rework of this surface.

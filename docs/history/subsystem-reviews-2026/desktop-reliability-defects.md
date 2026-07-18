@@ -1,4 +1,21 @@
-# Desktop Reliability and Regression Review — July 2026
+# Desktop reliability defects — July 2026
+
+> **What this is.** The record of one batch of desktop defects reported against the July 2026 build — startup crash, diverge, stream/provider errors, tool-call expansion, provider auto-detection, notifications and diagnostics — with root causes, the fixes that shipped, the durable behavioural contracts they establish, and the full verification record.
+> **Status:** Historical record — every defect in this batch was resolved and integrated into `main` in July 2026; the verification record below closes with passing automated suites and post-integration application checks against the merged tree.
+> **Audience:** maintainers working on the Electron desktop application.
+
+Nine defects were reported against the July 2026 desktop build across otherwise
+unrelated surfaces. They shared one theme: a failure local to a single turn, tool
+call or dialog escalated into a failure of the whole session or the whole
+application shell. This document catalogues each defect, states the behavioural
+contract the fix locks in, and records what was run to confirm it.
+
+> **Note.** The `## Behavioural contracts` section below is written as durable
+> reference, not as a July 2026 snapshot. Read it as the intended standing
+> behaviour of the desktop application; the surrounding defect matrix and
+> verification record are the historical part of this document.
+
+**Date:** July 2026.
 
 ## Scope
 
@@ -7,21 +24,67 @@ and notification defects reported against the July 2026 desktop build. It record
 the observed failure modes, root causes, implementation changes, and the regression
 checks required before and after publishing the integrated `main` branch.
 
-## Defect and fix matrix
+## Defects and fixes
 
-| Area | Reported behavior | Root cause | Resolution |
-| --- | --- | --- | --- |
-| Conversation startup | A new conversation replaced the whole app with `z is not a function`. | React's external-store subscription received an unstable or incorrectly shaped callback across chat-store lifecycles. | Added a stable subscription adapter and regression tests, and hardened the chat boundary so a malformed store update cannot take down the application shell. |
-| Diverge | A branch could swap the user's prompt with the assistant response. The message action and title-menu action behaved differently. | The two entry points inferred the branch point and message role independently, and one path selected the adjacent message rather than the requested turn. | Centralized branch-point selection in `useDiverge`, made both entry points use the same turn semantics, and added role/order assertions. |
-| Stream/provider errors | Quota, connection, and decode failures replaced the conversation with a full-page “Failed to Load Session” error. | A turn-local stream failure was persisted and rethrown as a session-loading failure. The integrated UI also rendered both the persisted assistant failure and the structured turn card. | Store structured turn errors beside the affected user turn, keep the transcript and composer available, classify wrapped provider failures from their preserved details, and suppress the structured card when the same failure is already visible in the transcript. |
-| Tool-call expansion | Expanding an unsuccessful or partial tool call crashed while reading `undefined.length`. | The renderer assumed every response contained the complete content-array shape. | Normalize absent and legacy tool responses, provide readable fallbacks for malformed payloads, and test missing content, errors, and empty outputs. |
-| Reasoning plus tools | Some OpenAI reasoning models received unsupported `/v1/chat/completions` requests with `reasoning_effort` and tools. | Model capability metadata did not participate in transport selection, so compatible reasoning settings could still use an incompatible endpoint. | Route reasoning-and-tool requests that require it through the Responses format, preserve Chat Completions for compatible models, and test the transport/capability combinations. |
-| Provider auto-detection | A key was detected on onboarding, but the next model-selection screen did not retain the provider/model. | The UI reused a stale provider catalog, guessed the provider's key-storage field, and did not wait for persistence before advancing. | Return the authoritative `api_key_config_key`, trim and await key persistence, force one catalog refresh, and preselect the detected model. Coverage includes all configured commercial providers. |
-| Session notifications | Delete/update notifications used different spacing and could overlap page controls. | Session views had bespoke toast markup and positioning outside the shared notification surface. | Migrate session and remaining raw notifications to `NotificationSurface` and the shared toast helpers. |
-| Toast alignment | Notification text sat a few pixels above its status icon and close button. | The 28 px status chip, text line-height, and 20 px close affordance used different alignment origins. | Standardize notification geometry, including text padding and close-button offset, across success, info, warning, error, and loading states. |
-| Diagnostics bundle | Opening diagnostics could leave a blurred, pointer-blocking chat surface, and generating the archive produced no file. | Diagnostics used a one-off overlay outside the shared modal stacking contract, then relied on a synthetic browser download from an Electron `file://` renderer. Fresh installs also failed server-side when the optional logs directory did not exist. | Use the shared dialog surface, generate the ZIP with visible progress, validate it, and save it through a parented native save sheet. Missing logs are now treated as an empty optional input. |
+### Conversation startup
+
+- **Reported behaviour.** A new conversation replaced the whole app with `z is not a function`.
+- **Root cause.** React's external-store subscription received an unstable or incorrectly shaped callback across chat-store lifecycles.
+- **Resolution.** Added a stable subscription adapter and regression tests, and hardened the chat boundary so a malformed store update cannot take down the application shell.
+
+### Diverge
+
+- **Reported behaviour.** A branch could swap the user's prompt with the assistant response. The message action and title-menu action behaved differently.
+- **Root cause.** The two entry points inferred the branch point and message role independently, and one path selected the adjacent message rather than the requested turn.
+- **Resolution.** Centralized branch-point selection in `useDiverge`, made both entry points use the same turn semantics, and added role/order assertions.
+
+### Stream and provider errors
+
+- **Reported behaviour.** Quota, connection, and decode failures replaced the conversation with a full-page `Failed to Load Session` error.
+- **Root cause.** A turn-local stream failure was persisted and rethrown as a session-loading failure. The integrated UI also rendered both the persisted assistant failure and the structured turn card.
+- **Resolution.** Store structured turn errors beside the affected user turn, keep the transcript and composer available, classify wrapped provider failures from their preserved details, and suppress the structured card when the same failure is already visible in the transcript.
+
+### Tool-call expansion
+
+- **Reported behaviour.** Expanding an unsuccessful or partial tool call crashed while reading `undefined.length`.
+- **Root cause.** The renderer assumed every response contained the complete content-array shape.
+- **Resolution.** Normalize absent and legacy tool responses, provide readable fallbacks for malformed payloads, and test missing content, errors, and empty outputs.
+
+### Reasoning plus tools
+
+- **Reported behaviour.** Some OpenAI reasoning models received unsupported `/v1/chat/completions` requests with `reasoning_effort` and tools.
+- **Root cause.** Model capability metadata did not participate in transport selection, so compatible reasoning settings could still use an incompatible endpoint.
+- **Resolution.** Route reasoning-and-tool requests that require it through the Responses format, preserve Chat Completions for compatible models, and test the transport/capability combinations.
+
+### Provider auto-detection
+
+- **Reported behaviour.** A key was detected on onboarding, but the next model-selection screen did not retain the provider/model.
+- **Root cause.** The UI reused a stale provider catalog, guessed the provider's key-storage field, and did not wait for persistence before advancing.
+- **Resolution.** Return the authoritative `api_key_config_key`, trim and await key persistence, force one catalog refresh, and preselect the detected model. Coverage includes all configured commercial providers.
+
+### Session notifications
+
+- **Reported behaviour.** Delete/update notifications used different spacing and could overlap page controls.
+- **Root cause.** Session views had bespoke toast markup and positioning outside the shared notification surface.
+- **Resolution.** Migrate session and remaining raw notifications to `NotificationSurface` and the shared toast helpers.
+
+### Toast alignment
+
+- **Reported behaviour.** Notification text sat a few pixels above its status icon and close button.
+- **Root cause.** The 28 px status chip, text line-height, and 20 px close affordance used different alignment origins.
+- **Resolution.** Standardize notification geometry, including text padding and close-button offset, across success, info, warning, error, and loading states.
+
+### Diagnostics bundle
+
+- **Reported behaviour.** Opening diagnostics could leave a blurred, pointer-blocking chat surface, and generating the archive produced no file.
+- **Root cause.** Diagnostics used a one-off overlay outside the shared modal stacking contract, then relied on a synthetic browser download from an Electron `file://` renderer. Fresh installs also failed server-side when the optional logs directory did not exist.
+- **Resolution.** Use the shared dialog surface, generate the ZIP with visible progress, validate it, and save it through a parented native save sheet. Missing logs are now treated as an empty optional input.
 
 ## Integration notes
+
+The branch names below are the working git branches whose changes this batch
+integrated. This document does not record whether they survive as branches after
+the merge; treat them as identifiers for the work, not as branches to check out.
 
 - `codex/homepage-activity-cache` and `codex/settings-reset-panel` were already
   ancestors of `main` when this batch was integrated.
@@ -30,9 +93,11 @@ checks required before and after publishing the integrated `main` branch.
 - Generated OpenAPI files are refreshed from the server definition after the merge;
   they are not edited as source files.
 - The landing site intentionally advertises `1.88.1`; `1.88.2` is treated as a
-  retracted build by the consistency check and download metadata.
+  retracted build by the consistency check and download metadata. This is a
+  point-in-time fact recorded at the time of the review — check the current release
+  notes and download metadata rather than relying on it.
 
-## Behavioral contracts
+## Behavioural contracts
 
 ### A failed turn is not a failed session
 
@@ -93,6 +158,11 @@ The bundle remains valid on a fresh installation before any request logs exist.
 
 ## Verification record
 
+> **Note.** The desktop test and file counts below differ between subsections
+> (978, then 988 of 989, then 985 tests; 114, then 131, then 133 files). These are
+> successive reruns taken at different points in the batch as follow-up work added
+> and reorganized tests — not disagreeing measurements of the same run.
+
 ### Automated checks
 
 - Focused desktop reliability suite: 12 files and 114 tests passed.
@@ -128,7 +198,7 @@ traffic. No real provider credential or existing user session was used.
 - A controlled provider 401 kept the transcript and composer visible. It exposed a
   duplicate persisted/structured error and a generic error classification; both were
   corrected during this pass. The resulting view contains one inline failure and no
-  full-page “Failed to Load Session” or “Honk!” state.
+  full-page `Failed to Load Session` or `Honk!` state.
 - The final provider 401 check was repeated after rebuilding and restarting the real
   development backend. The new turn again produced exactly one inline authentication
   failure, left the composer enabled, and reported no renderer or console errors.
@@ -179,3 +249,11 @@ its final push.
   typecheck, ESLint, Prettier, all 128 contrast assertions, and `cargo fmt --check`
   also passed. The complete `scripts/clippy-lint.sh` workflow passed for all targets,
   including the baseline-rule and banned-TLS checks.
+
+## Related documentation
+
+- [Terminal UI stability review — July 2026](terminal-ui-stability.md) — the companion audit that checked whether this same batch of shared-core changes destabilized the CLI.
+- [Diverge behavior checklist](../../desktop-ui/diverge-behavior-checklist.md) — the living checklist for the divergence contract this batch centralized.
+- [Agent error model](../../architecture/agent-error-model.md) — the error taxonomy behind "a failed turn is not a failed session".
+- [Diagnostics and bug reports](../../troubleshooting/diagnostics-and-bug-reports.md) — the user-facing side of the diagnostics bundle repaired here.
+- [Debug-session issue tracker (June 2026 GUI QA)](../gui-qa-2026-06/debug-session-issue-tracker.md) — the earlier issue log that several of these defects were first raised in.

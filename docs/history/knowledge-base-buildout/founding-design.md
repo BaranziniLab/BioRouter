@@ -1,7 +1,23 @@
-# Knowledge — personal knowledge base feature
+# Knowledge — founding design for the personal knowledge base feature
 
-**Status:** draft — design approved 2026-05-30
-**Owner:** Wanjun Gu
+> **What this is.** The origin design document for BioRouter's Knowledge feature: git-backed markdown knowledge bases maintained by an LLM, a credibility classifier, graph derivation, the MCP tool surface, the HTTP routes, the `.brkb` portability format, and the desktop UI.
+> **Status:** Historical record — approved 2026-05-30 and built out across the six implementation plans in this folder. The feature shipped; `crates/biorouter-mcp/src/knowledge/` contains `brkb.rs`, `git.rs`, `graph.rs`, `credibility/`, `convert/` and `macros/` substantially as specified here.
+> **Audience:** developers working on the Knowledge subsystem, and agents that need the original rationale behind a design decision.
+> **Design owner:** Wanjun Gu, BioRouter maintainer (Baranzini Lab, UCSF). No other contact was recorded on the original document.
+
+Knowledge lets a user maintain one or more personal knowledge bases inside BioRouter. The pattern follows what this document calls the **Karpathy incremental-knowledge idea**: rather than re-deriving knowledge from raw documents on every query, an LLM incrementally builds and maintains a persistent, interlinked markdown knowledge folder that sits between the user and the raw sources. The design targets what the document later calls the **Karpathy-scale regime** — a handful of knowledge bases, each up to a few hundred pages — not a search engine over thousands of them. The original document cited Andrej Karpathy's gist for this idea without recording a URL; no link is available to reproduce here.
+
+This is the design as approved, preserved for the reasoning it carries. For what the code does *today*, read `crates/biorouter-mcp/src/knowledge/` and the Knowledge section of `CLAUDE.md`. Where the shipped implementation diverged from this design, an inline note says so.
+
+## How to read this document
+
+The document runs from concept to delivery plan, in five parts:
+
+1. **Scope** — Summary, Goals, Non-goals.
+2. **Design** — Architecture overview, Data model, Credibility classifier.
+3. **Interfaces** — MCP tool surface, Sub-agent loop, Conversion pipeline, Graph derivation, History and revert, `.brkb` format, Server endpoints.
+4. **Frontend** — sidebar and routing, component tree, graph rendering, ingest flow, change log, active-KB state, chat integration, styling.
+5. **Delivery** — Test plan, Implementation phasing, Risks and mitigations, Open questions.
 
 ## Summary
 
@@ -62,7 +78,7 @@ The Knowledge extension provides the operational layer that reads, writes,
 and maintains these files. The desktop UI is a front-end into the same
 extension via the BioRouter server.
 
-```
+```text
 ┌──────────────────────── Desktop UI (React) ────────────────────────┐
 │   KnowledgeView                                                    │
 │   ├── KBSelector (cmd-K palette)                                   │
@@ -89,6 +105,16 @@ extension via the BioRouter server.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
+> **Note — the shipped layering differs from this diagram.** The diagram shows
+> `KnowledgeService` implemented in the `biorouter` crate with the MCP server
+> layered on top. In the shipped code the whole module lives in
+> `crates/biorouter-mcp/src/knowledge/`, and `crates/biorouter/src/knowledge/mod.rs`
+> is a re-export (`pub use biorouter_mcp::knowledge::*;`) — done that way because
+> `biorouter` depends on `biorouter-mcp`, so implementing the service in
+> `biorouter` would have created a circular dependency. The path
+> `biorouter::knowledge::KnowledgeService` still resolves, but the implementation
+> is not there. This distinction matters when navigating the source.
+
 The chat agent calls the MCP tools directly. The UI calls the HTTP routes.
 Both paths delegate to the same `KnowledgeService`, so there is exactly one
 implementation per operation.
@@ -101,7 +127,7 @@ One KB = one directory = one git repo. Stored at
 `~/.config/biorouter/knowledge/<kb-id>/` (resolved via the existing
 `etcetera` strategy used by Memory).
 
-```
+```text
 <kb-root>/
 ├── manifest.yaml        # id, name, color, created_at, schema_version,
 │                        #   default_model (optional)
@@ -371,7 +397,7 @@ simulation.
 `kb_list_history` walks the git log. Each commit message follows a
 machine-parseable header:
 
-```
+```text
 [ingest] <source-title>
 
 source_id: 8f3a2-arxiv-2403-12345
@@ -388,11 +414,11 @@ nodes drawn dashed and faded).
 applies the historical tree on top of HEAD. The restore itself shows up
 as a log entry of kind `restore`, so it is auditable and itself reversible.
 
-## .brkb format
+## The `.brkb` format
 
 A `.brkb` file is a zip with the following root:
 
-```
+```text
 <kb-id>/
 ├── manifest.yaml
 ├── schema.md
@@ -414,7 +440,7 @@ manifest.
 
 New router under `crates/biorouter-server/src/routes/knowledge.rs`:
 
-```
+```text
 GET    /knowledge/bases
 POST   /knowledge/bases
 DELETE /knowledge/bases/:id
@@ -439,9 +465,9 @@ PUT    /knowledge/bases/:id/sources/:sid/credibility
 After adding routes, `just generate-openapi` regenerates the TypeScript
 client at `ui/desktop/src/api/`. We never hand-edit that directory.
 
-## Frontend
+## Frontend design
 
-### Sidebar + routing
+### Sidebar and routing
 
 Three edits to wire the route in the existing pattern:
 
@@ -455,7 +481,7 @@ Three edits to wire the route in the existing pattern:
 
 ### Component tree
 
-```
+```text
 ui/desktop/src/components/knowledge/
 ├── KnowledgeView.tsx
 ├── KBSelector/
@@ -509,7 +535,7 @@ animation as ingestion progresses.
    renders into `DispatchProgress` and updates the graph live.
 5. On completion, a toast shows the summary; the change log gains an entry.
 
-### Change log + revert
+### Change log and revert
 
 Drawer slides in with the entry list, replicating the mockup's visual.
 Click an entry → graph enters preview mode (read-only, banner across the
@@ -546,7 +572,7 @@ ramp (`--cred-*`) is the only net-new color addition. A small scoped CSS
 file `knowledge/styles.css` carries Knowledge-only adjustments so it does
 not bleed into other surfaces.
 
-## Testing
+## Test plan
 
 ### Rust unit tests
 
@@ -580,7 +606,7 @@ HTTP-level smoke tests via `tower::ServiceExt::oneshot` per endpoint. One
 SSE test drives a mock ingest and verifies the event order
 (`source-added` → `page-written` → `commit` → `done`).
 
-### Frontend
+### Frontend tests
 
 - Vitest units for `KBSelector` (filter + keyboard nav), `Dropzone`
   (routing), `useIngestStream` (SSE parsing + abort), `useChangeLog`
@@ -592,6 +618,13 @@ SSE test drives a mock ingest and verifies the event order
   fixture SSE streams.
 
 ## Implementation phasing
+
+> **Outcome.** All fifteen phases below were delivered. They were executed as the
+> six implementation plans that sit beside this document in this folder — the
+> backend foundation, the macros and sub-agent loop, the HTTP routes and export,
+> the Knowledge view and ingest panel, the graph view and change log, and the chat
+> integration and closeout. The table is preserved in its original future tense as
+> the plan of record; read the plan documents for what each step actually produced.
 
 The feature ships on a `feature/knowledge` branch off `main`, isolated
 from the current `feature/multimodal-image-input` work. Phases:
@@ -617,7 +650,7 @@ from the current `feature/multimodal-image-input` work. Phases:
 The extension stays disabled by default until Phase 14, so partial work
 never affects users who do not opt in.
 
-## Risks
+## Risks and mitigations
 
 - **Sub-agent loop quality** is bounded by `schema.md` + the operating
   procedure templates. We invest in 3–5 realistic biomedical fixture
@@ -638,3 +671,15 @@ never affects users who do not opt in.
 ## Open questions
 
 None at design time.
+
+> **Note.** No open questions were recorded when this design was approved, and none
+> were added afterwards. Design questions that arose during implementation were
+> resolved inside the individual plan documents rather than being folded back here.
+
+## Related documentation
+
+- [Plan 1 — storage, git and graph](plan-1-storage-git-and-graph.md) — the backend foundation this design specifies, task by task.
+- [Plan 2 — macros and sub-agent loop](plan-2-macros-and-subagent-loop.md) — how the `kb_ingest_source` / `kb_query` / `kb_lint` macros were actually built.
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — the shipped shape of the `/knowledge/*` routes and the `.brkb` format.
+- [Plan 4 — Knowledge view and ingest panel](plan-4-knowledge-view-and-ingest.md) — the frontend route, KB selector, and ingest panel described above.
+- [Knowledge ingestion format roadmap](../../knowledge-base/ingestion-format-roadmap.md) — the follow-on work extending the conversion pipeline beyond the formats listed here.

@@ -1,22 +1,37 @@
-# Gemini CLI (Google) — Agentic Feedback Loop Review
+# Gemini CLI (Google) — agentic feedback loop review
 
-**Tool:** Gemini CLI, Google's open-source terminal AI coding agent
-([`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli)), a
-TypeScript/Node monorepo (`packages/core` = agent engine, `packages/cli` = Ink/React
-terminal UI).
-**Why this matters for BioRouter:** BioRouter is a Rust Goose fork. Gemini CLI is an
-*independent* architecture (Node, not Rust; no Goose lineage), so it is the cleanest
-"how would a from-scratch competitor solve the same loop problems" reference. Several of
-its subsystems — a layered `LoopDetectionService`, a declarative TOML **policy engine**,
-shadow-git **checkpointing + rewind**, and an unusually deep **hooks** surface — are more
-mature than anything in the Goose base BioRouter inherited.
+> **What this is.** An external review of Gemini CLI
+> ([`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli)), Google's
+> open-source terminal AI coding agent, covering its layered `LoopDetectionService`, its
+> declarative TOML policy engine, shadow-git checkpointing with `/rewind`, and
+> 30%-verbatim-tail compaction. One of nine tool reports in this folder, each covering the
+> same ten dimensions.
+> **Status:** Current. External-tool research; the cited source for verbatim-window
+> compaction (BR-10), three-layer loop detection (BR-29/BR-30) and shadow-git rewind
+> (BR-43). A July 2026 snapshot.
+> **Audience:** developers working on BioRouter's agent loop.
 
-Sources are primary: the `google-gemini/gemini-cli` source tree and official `docs/`
-(fetched July 2026). Constants are quoted from source where cited.
+`BR-NN` identifiers name proposals in the agent-loop review's improvement register; the
+index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
----
+Gemini CLI is a TypeScript/Node monorepo — `packages/core` is the agent engine,
+`packages/cli` the Ink/React terminal UI. BioRouter is a Rust Goose fork, so Gemini CLI is an
+*independent* architecture with no shared lineage: the cleanest "how would a from-scratch
+competitor solve the same loop problems" reference in this corpus. Several of its subsystems
+— the layered `LoopDetectionService`, the declarative TOML policy engine, shadow-git
+checkpointing and rewind, and an unusually deep hooks surface — are more mature than their
+counterparts in the Goose base BioRouter inherited. That cross-project judgement is developed
+properly in the
+[competitive comparison chapters](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md);
+this report records the mechanics.
 
-## System prompt & context injection
+> **Note.** Sources are primary: the `google-gemini/gemini-cli` source tree and official
+> `docs/`, fetched July 2026 — month granularity only. All citations point at branch `main`
+> with no commit pin. At 277 lines this is one of the deepest reports in the folder; siblings
+> such as [Codex CLI](codex-cli.md) and [OpenCode](opencode.md) cover the same ten dimensions
+> in 80-odd lines, so a thin section there is not evidence of a thin feature.
+
+## System prompt and context injection
 
 The system prompt is assembled in `packages/core` from a built-in **core prompt**
 (safety protocol, tool-use mechanics, workflow rules) plus dynamic sections. It is fully
@@ -62,21 +77,24 @@ uniformly wrapped into a `functionResponse: { error: … }` and fed back to the 
 can self-correct rather than crashing the turn.
 [tool-executor.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/scheduler/tool-executor.ts)
 
-## Compaction & memory
+## Compaction and memory
 
-Compression lives in `packages/core/src/context/chatCompressionService.ts` and is
-threshold-triggered on token usage:
+Compression lives in
+[`packages/core/src/context/chatCompressionService.ts`](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/context/chatCompressionService.ts)
+and is threshold-triggered on token usage. Every constant and function named in this list is
+defined in that file:
 
-- **`DEFAULT_COMPRESSION_TOKEN_THRESHOLD = 0.5`** (surfaced as `model.compressionThreshold`,
-  default `0.5`): when history exceeds 50% of the window, compress.
-- **`COMPRESSION_PRESERVE_THRESHOLD = 0.3`**: keep the **last 30%** of history verbatim,
-  summarize the older 70%. `findCompressSplitPoint()` snaps the boundary to the most recent
-  user message that has no function responses, so the split falls on a clean conversational
-  turn.
-- **Reverse token budget**: before summarizing, `truncateHistoryToBudget()` walks backward
-  and truncates old tool responses to 30 lines once they exceed
-  `COMPRESSION_FUNCTION_RESPONSE_TOKEN_BUDGET = 50_000` tokens — a targeted "shrink giant
-  old tool outputs" pass distinct from full summarization.
+- **`DEFAULT_COMPRESSION_TOKEN_THRESHOLD = 0.5`** (`chatCompressionService.ts`; surfaced as
+  `model.compressionThreshold`, default `0.5`): when history exceeds 50% of the window,
+  compress.
+- **`COMPRESSION_PRESERVE_THRESHOLD = 0.3`** (`chatCompressionService.ts`): keep the **last
+  30%** of history verbatim, summarize the older 70%. `findCompressSplitPoint()`, in the same
+  file, snaps the boundary to the most recent user message that has no function responses, so
+  the split falls on a clean conversational turn.
+- **Reverse token budget**: before summarizing, `truncateHistoryToBudget()`
+  (`chatCompressionService.ts`) walks backward and truncates old tool responses to 30 lines
+  once they exceed `COMPRESSION_FUNCTION_RESPONSE_TOKEN_BUDGET = 50_000` tokens — a targeted
+  "shrink giant old tool outputs" pass distinct from full summarization.
 - **Two-phase, self-correcting summary**: an LLM produces a structured `<state_snapshot>`,
   then a **verification pass** re-reads it to recover omitted technical details.
 - **Inflation guard**: if the compressed history is *larger* than the original
@@ -84,20 +102,20 @@ threshold-triggered on token usage:
   `COMPRESSION_FAILED_INFLATED_TOKEN_COUNT` and **discards** the result, keeping the
   original — so a bad summary never makes things worse.
 
-[chatCompressionService.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/context/chatCompressionService.ts)
 `model.maxSessionTurns` (default `-1` = unlimited) is a separate hard cap on kept turns.
 
 **Cross-session memory** is a Markdown-file model, not a database: the memory tool edits the
 same three-tier `GEMINI.md` hierarchy (global preferences, project instructions, per-project
 private notes) directly via write/replace.
 [memory.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/memory.md)
+
 A newer experimental **Auto Memory** runs as a background task at session start on sessions
 *idle ≥ 3 h with ≥ 10 user messages*, mines transcripts for durable facts/reusable skills,
 and parks candidates in a project-local **review inbox** (`/memory inbox`) for human
 approval before they are ever loaded.
 [auto-memory.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/auto-memory.md)
 
-## Hooks & extensibility
+## Hooks and extensibility
 
 Gemini CLI has an unusually deep **hooks** surface — far beyond tool-level. Events:
 `SessionStart`, `SessionEnd`, `BeforeAgent`, `AfterAgent`, `BeforeModel`, `AfterModel`,
@@ -125,7 +143,7 @@ MCP servers (stdio/SSE/HTTP), custom slash commands, prompts, themes, **hooks**,
 (`gemini extensions install <url>`).
 [extensions/index.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/index.md)
 
-## Guardrails & permissions
+## Guardrails and permissions
 
 Two cooperating layers: coarse **approval modes** and a fine-grained **policy engine**.
 
@@ -157,26 +175,27 @@ absolute path). Enabled with `-s` / `GEMINI_SANDBOX=docker|podman|sandbox-exec|�
 `tools.sandboxNetworkAccess` defaults `false`.
 [sandbox.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md)
 
-## Loop & stuck detection
+## Loop and stuck detection
 
-The standout subsystem is `packages/core/src/services/loopDetectionService.ts`, a
-**three-layer** real-time detector fed every streaming event and checked before each turn:
+The standout subsystem is
+[`packages/core/src/services/loopDetectionService.ts`](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/loopDetectionService.ts),
+a **three-layer** real-time detector fed every streaming event and checked before each turn.
+All constants below are defined in that file:
 
 1. **Identical tool-call loop** — SHA-256 hash of `"${name}:${args}"`;
-   **`TOOL_CALL_LOOP_THRESHOLD = 5`** consecutive identical calls → `CONSECUTIVE_IDENTICAL_
-   TOOL_CALLS`. A unique call resets the counter.
+   **`TOOL_CALL_LOOP_THRESHOLD = 5`** (`loopDetectionService.ts`) consecutive identical calls
+   → `CONSECUTIVE_IDENTICAL_TOOL_CALLS`. A unique call resets the counter.
 2. **Content "chanting" loop** — sliding-window hashing of
    **`CONTENT_CHUNK_SIZE = 50`**-char chunks; **`CONTENT_LOOP_THRESHOLD = 10`** occurrences
    concentrated within an average distance ≤ 250 chars → `CONTENT_CHANTING_LOOP`
-   (`MAX_HISTORY_LENGTH = 5000`). A **list heuristic** (if > half the inter-occurrence
-   intervals differ, treat as a legitimate list) and code-block resets suppress false
-   positives.
+   (`MAX_HISTORY_LENGTH = 5000`), all in `loopDetectionService.ts`. A **list heuristic** (if
+   more than half the inter-occurrence intervals differ, treat as a legitimate list) and
+   code-block resets suppress false positives.
 3. **LLM-based loop check** — after **`LLM_CHECK_AFTER_TURNS = 30`**, an LLM inspects the
    last **`LLM_LOOP_CHECK_HISTORY_COUNT = 20`** turns; a loop is declared only at
    **`LLM_CONFIDENCE_THRESHOLD = 0.9`**, and the check interval self-adjusts between 5–15
    turns (default 10) based on confidence.
 
-[loopDetectionService.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/loopDetectionService.ts)
 On detection the loop yields a `LoopDetected` event and halts; a single early hit attempts
 recovery. The feature is user-disable-able per session (a known UX pain point — issues
 [#8237](https://github.com/google-gemini/gemini-cli/issues/8237),
@@ -184,7 +203,7 @@ recovery. The feature is user-disable-able per session (a known UX pain point �
 edit/test cycles can trip it). Subagents add `max_turns`/`timeout_mins`/`maxActionsPerTask`
 as hard bounds.
 
-## Long-running tasks & background processes
+## Long-running tasks and background processes
 
 - **Background shells**: `run_shell_command` takes `is_background: true`, returns
   immediately, and surfaces `Background PIDs` for tracking; `enableInteractiveShell` allows
@@ -201,7 +220,7 @@ as hard bounds.
 - No built-in cron scheduler in core; unattended runs use **headless mode** (`gemini -p`)
   driven by external schedulers, plus ACP/remote-agent modes.
 
-## State tracking & checkpoints
+## State tracking and checkpoints
 
 - **Todos** (`write_todos`): the agent authors an explicit task list (states
   pending/in_progress/completed/cancelled/blocked, **only one `in_progress`**), rendered as a
@@ -233,8 +252,6 @@ inspect/redact/append context, plan mode + `write_todos` structure the work, and
 `GEMINI.md` can instruct "run the tests / lint after editing." So Gemini CLI treats
 self-verification as a hook/skill responsibility rather than a built-in agent behavior.
 [hooks/reference.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md)
-
----
 
 ## Ideas worth stealing
 
@@ -275,3 +292,37 @@ self-verification as a hook/skill responsibility rather than a built-in agent be
    tool (one `in_progress`, five states, rendered above the prompt) gives users legible progress
    on long multi-step tasks. Goose (and thus BioRouter) has no equivalent; it is a small, high-
    UX-leverage addition, especially paired with plan mode.
+
+## Sources
+
+Primary sources only: the
+[google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) source tree and its
+official `docs/` directory, fetched July 2026. Constants are quoted from source where cited,
+with the defining file named at each mention.
+
+| Topic | Source |
+|---|---|
+| System prompt | [system-prompt.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/system-prompt.md) |
+| Context files | [gemini-md.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/gemini-md.md) |
+| Tool scheduling | [scheduler.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/scheduler/scheduler.ts), [tool-executor.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/scheduler/tool-executor.ts) |
+| Compaction | [chatCompressionService.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/context/chatCompressionService.ts) |
+| Memory | [memory.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/memory.md), [auto-memory.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/auto-memory.md) |
+| Hooks | [hooks/reference.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md) |
+| Extensions | [extensions/index.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/index.md) |
+| Permissions and policy | [configuration.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md), [policy-engine.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/policy-engine.md), [shell.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/shell.md) |
+| Sandboxing | [sandbox.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) |
+| Loop detection | [loopDetectionService.ts](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/loopDetectionService.ts), issues [#8237](https://github.com/google-gemini/gemini-cli/issues/8237), [#8928](https://github.com/google-gemini/gemini-cli/issues/8928) |
+| Subagents | [subagents.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md) |
+| State and checkpoints | [todos.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/todos.md), [plan-mode.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/plan-mode.md), [checkpointing.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/checkpointing.md), [rewind.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/rewind.md) |
+
+> **Note.** All source paths cite branch `main`, not a pinned commit. Re-verify constants
+> before relying on line-level details.
+
+## Related documentation
+
+- [Goose report](goose.md) — upstream Goose, whose `RepetitionInspector` and missing checkpoint story this report is measured against.
+- [Cline report](cline.md) — the other shadow-git checkpointing design in this corpus, with a different restore-axis split.
+- [Codex CLI report](codex-cli.md) — the other declarative command-policy engine, for comparison against the TOML tiers here.
+- [Safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md) — where the cross-project maturity judgements in this report are argued in full.
+- [Shadow-git checkpoints design](../../agent-loop/designs/shadow-git-checkpoints.md) — BR-43, the BioRouter design this report fed into.
+- [Improvement proposals register](../../history/agent-loop-review/improvement-proposals.md) — the `BR-NN` index, including BR-10, BR-29, BR-30 and BR-43.

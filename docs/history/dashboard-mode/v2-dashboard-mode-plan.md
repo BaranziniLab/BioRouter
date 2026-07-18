@@ -1,16 +1,61 @@
-# Dashboard Mode Implementation Plan
+# Dashboard Mode — implementation plan (v2)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The 12-task plan for renaming Lab Meeting Mode to Dashboard
+> Mode end-to-end, and for adding a deterministic soft-tile layout engine,
+> per-window `ChatInput` pickers, and `Session N` default naming. The rename is
+> the document's substance; the three sibling dashboard plans in this folder
+> cover different generations.
+> **Status:** Superseded, and then removed. The rename target —
+> `ui/desktop/src/components/Dashboard/` — has itself been deleted: the route,
+> the provider, the IPC channels and the body-class CSS all came out in the
+> 2026-07-18 dashboard removal. See the [removal record](README.md). The
+> unticked `- [ ]` checkboxes below were ticked during execution in a working
+> copy; they are not a record of unfinished work.
+> **Audience:** maintainers reading the dashboard-mode archive.
+
+**Date:** 2026-05-10
+**Spec:** [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md).
+The `§N` references throughout this plan (`§7`, `§7c`, `§8`, `§13`) are that
+spec's numbered sections.
 
 **Goal:** Rename Lab Meeting Mode → Dashboard Mode end-to-end; comfort-size spawning; deterministic soft-tile + relaxation layout engine; per-window full ChatInput pickers; coherent `/pair`; `Session N` default naming with user-set precedence; window-size restore on exit; toolbar polish.
 
 **Architecture:** Layout engine is a pure pipeline of partition → sizing → slot → repulse → relax → snap, with zero RNG (all "perturbation" comes from stable windowId hashes). Per-window ChatInput un-hides the existing pickers. localStorage one-shot migrates the old key. `BaseChat` flips `coherent` default to `true` so /pair matches dashboard chats.
 
-**Tech Stack:** React 19, TypeScript, Vite, Electron Forge, Tailwind, lucide-react. Test runners: Vitest (unit/component) + Playwright (E2E via CDP at port 9222).
+**Tech stack:** React 19, TypeScript, Vite, Electron Forge, Tailwind, lucide-react. Test runners: Vitest (unit/component) + Playwright (E2E via CDP at port 9222).
+
+> **Note for agentic workers.** REQUIRED SUB-SKILL: use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
+
+## The resulting naming scheme
+
+Task 1 is a mechanical rename executed as a `git mv` plus a multi-expression
+`sed -i ''` sweep over the whole `src/` tree. That sweep is preserved verbatim
+below because it *is* the change, but the naming scheme it produces is simple
+enough to state in one line each — read this before running anything:
+
+| Old | New |
+|---|---|
+| `LabMeeting*` component and type prefixes | `Dashboard*` |
+| `LabWindow` | `DashboardWindow` |
+| `useLabMeeting`, `useOptionalLabMeeting`, `useLabMeetingDrag` | `useDashboard`, `useOptionalDashboard`, `useDashboardDrag` |
+| `BackToLabMeetingPill` | `BackToDashboardPill` |
+| `labMeetingStorage` | `dashboardStorage` |
+| `labMeetingEnter` / `labMeetingExit` | `dashboardEnter` / `dashboardExit` |
+| `lab-meeting:enter` / `lab-meeting:exit` | `dashboard:enter` / `dashboard:exit` |
+| route `/lab-meeting` | route `/dashboard` |
+| `biorouter.labmeeting.v1` | `biorouter.dashboard.v1` |
+| user-facing "Lab Meeting" / "Lab Meeting Mode" | "Dashboard" |
+
+> **Warning.** The `sed -i ''` sweep in Task 1 Step 3 rewrites files in place
+> with no backup. It is safe only because Steps 1–2 put everything under `git mv`
+> first; run it on a clean working tree so `git checkout` can undo it.
 
 ---
 
-## File Structure
+## File structure
 
 ### Renamed (directory `LabMeeting/` → `Dashboard/`)
 
@@ -56,7 +101,9 @@
 
 ## Conventions
 
-- Paths absolute from repo root `/Users/wgu/Desktop/biorouter`.
+- Paths are absolute from the repo root. `<repo-root>` below stands for your
+  BioRouter checkout; the plan as originally written hardcoded one developer's
+  home directory there.
 - Frontend tests: `cd ui/desktop && npm run test:run -- <path>`.
 - Type-check: `cd ui/desktop && npx tsc --noEmit`.
 - Lint: `cd ui/desktop && npm run lint:check`.
@@ -65,7 +112,7 @@
 
 ---
 
-# Task 1: Rename — directory, files, identifiers
+## Task 1: Rename — directory, files, identifiers
 
 **Files:** all under `ui/desktop/src/components/LabMeeting/` (folder rename); `ui/desktop/src/contexts/LabMeetingContext.tsx`.
 
@@ -76,7 +123,7 @@ Mechanical refactor. Move the folder, rename every identifier, update import pat
 - [ ] **Step 1: Move the folder via `git mv` to preserve history**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git mv ui/desktop/src/components/LabMeeting ui/desktop/src/components/Dashboard
 git mv ui/desktop/src/contexts/LabMeetingContext.tsx ui/desktop/src/contexts/DashboardContext.tsx
 ```
@@ -104,7 +151,7 @@ git rm LabMeetingStatusBar.tsx
 Use a single combined sed sweep over all `.ts`, `.tsx` files. Note ordering: replace the longer/more specific tokens first so we don't get partial matches.
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop
+cd <repo-root>/ui/desktop
 # Update content (note: sed -i '' on macOS)
 files=$(grep -rIl --include='*.ts' --include='*.tsx' -E "Lab.?Meeting|labMeeting|lab-meeting" src/ 2>/dev/null)
 for f in $files; do
@@ -144,7 +191,7 @@ done
 - [ ] **Step 4: Verify grep is clean**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop
+cd <repo-root>/ui/desktop
 grep -rin "lab.\?meeting\|LabMeeting\|labMeeting\|labmeeting" src/ \
   | grep -v "src/test/setup.ts" | head
 ```
@@ -154,28 +201,28 @@ Expected: empty output (zero hits). The single allowed exception is the in-test 
 - [ ] **Step 5: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -20
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -20
 ```
 Expected: no errors mentioning Lab/lab.
 
 - [ ] **Step 6: Run renamed unit tests**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/
 ```
 Expected: all four test files pass with the same counts as before (palette 4, layoutEngine 12, dashboardStorage 5, DashboardProvider 9).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src
 git commit -m "refactor(dashboard): rename LabMeeting → Dashboard end-to-end"
 ```
 
 ---
 
-# Task 2: Icon — `Users` → `LayoutDashboard`
+## Task 2: Icon — `Users` → `LayoutDashboard`
 
 **Files:**
 - Modify: `ui/desktop/src/components/icons/app-icons.tsx`
@@ -257,7 +304,7 @@ import { LayoutDashboard } from '../icons/app-icons';
 - [ ] **Step 3: Sanity build**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 4: Commit**
@@ -271,7 +318,7 @@ git commit -m "feat(dashboard): swap Users icon for LayoutDashboard"
 
 ---
 
-# Task 3: localStorage migration v1 → dashboard
+## Task 3: localStorage migration v1 → dashboard
 
 **Files:**
 - Modify: `ui/desktop/src/components/Dashboard/dashboardStorage.ts`
@@ -319,7 +366,7 @@ Rename any test references inside the file from `loadLabMeetingState`/`saveLabMe
 - [ ] **Step 2: Run tests, expect new tests to FAIL, others PASS**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -15
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -15
 ```
 Expected: 2 new tests FAIL (load returns null when only the legacy key is present).
 
@@ -358,7 +405,7 @@ export function loadDashboardState(): SerializedDashboardState | null {
 - [ ] **Step 4: Run tests, expect all green**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -10
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/dashboardStorage.test.ts 2>&1 | tail -10
 ```
 Expected: 7 tests pass (5 existing + 2 new).
 
@@ -372,7 +419,7 @@ git commit -m "feat(dashboard): one-shot migration of legacy labmeeting localSto
 
 ---
 
-# Task 4: Window-size restore on exit — `dashboard:exit` IPC
+## Task 4: Window-size restore on exit — `dashboard:exit` IPC
 
 **Files:**
 - Modify: `ui/desktop/src/main.ts`
@@ -433,7 +480,7 @@ In `ui/desktop/src/components/Dashboard/DashboardRoute.tsx`, find the existing `
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 5: Commit**
@@ -446,7 +493,7 @@ git commit -m "feat(dashboard): restore BrowserWindow size on route exit"
 
 ---
 
-# Task 5: Toolbar polish — Spawn label + standard button hover
+## Task 5: Toolbar polish — Spawn label + standard button hover
 
 **Files:**
 - Modify: `ui/desktop/src/components/Dashboard/DashboardToolbar.tsx`
@@ -531,7 +578,7 @@ NEW: (delete this line)
 - [ ] **Step 3: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 4: Commit**
@@ -543,7 +590,7 @@ git commit -m "feat(dashboard): toolbar buttons match app hover style; drop Plus
 
 ---
 
-# Task 6: Default name generator — `Session N`
+## Task 6: Default name generator — `Session N`
 
 **Files:**
 - Modify: `ui/desktop/src/components/Dashboard/palette.ts`
@@ -571,7 +618,7 @@ And remove the old test referencing `NAME_POOL`. Also remove the `NAME_POOL` imp
 - [ ] **Step 2: Run tests — should fail**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
 ```
 Expected: FAIL — current `generateName(0)` returns `'Atlas'`, not `'Session 1'`.
 
@@ -588,21 +635,21 @@ export function generateName(index: number): string {
 Delete the `NAME_POOL` constant entirely (and its `export`). If any other file imports `NAME_POOL`, that import is now stale — Task 1's sed didn't touch identifier `NAME_POOL`, but tests in step 1 removed the import. Verify with:
 
 ```bash
-grep -rn "NAME_POOL" /Users/wgu/Desktop/biorouter/ui/desktop/src/
+grep -rn "NAME_POOL" <repo-root>/ui/desktop/src/
 ```
 Expected: empty.
 
 - [ ] **Step 4: Run tests — should pass**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/palette.test.ts 2>&1 | tail -10
 ```
 Expected: 3 tests pass.
 
 - [ ] **Step 5: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 6: Commit**
@@ -615,7 +662,7 @@ git commit -m "feat(dashboard): default name 'Session N' replaces Atlas/Nova poo
 
 ---
 
-# Task 7: New deterministic layout engine
+## Task 7: New deterministic layout engine
 
 **Files:**
 - Modify: `ui/desktop/src/components/Dashboard/layoutEngine.ts`
@@ -671,7 +718,7 @@ export function hash32(s: string): number {
 - [ ] **Step 3: Run hash test — should pass**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -10
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -10
 ```
 Expected: PASS (new hash32 tests + 12 existing tests).
 
@@ -804,7 +851,7 @@ In `layoutEngine.ts`, change the constants from `const X` to `export const X` fo
 - [ ] **Step 6: Run tests — most new ones fail**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -25
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -25
 ```
 Expected: at least the comfort-size, pinned-avoidance, and edge-guarantee tests FAIL.
 
@@ -1167,7 +1214,7 @@ The other three overflow tests keep their structural assertions — they don't r
 - [ ] **Step 9: Run all layout-engine tests, expect green**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -15
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/layoutEngine.test.ts 2>&1 | tail -15
 ```
 Expected: all tests pass (the 7 new + the updated 8 existing).
 
@@ -1185,7 +1232,7 @@ No RNG anywhere. Repeated organize() is deterministic by construction."
 
 ---
 
-# Task 8: Focus-pop respects board borders
+## Task 8: Focus-pop respects board borders
 
 **Files:**
 - Modify: `ui/desktop/src/components/Dashboard/ChatWindow.tsx`
@@ -1255,7 +1302,7 @@ Find the outer `<div>` of `ChatWindow` that uses `style={stylePos}`. Change to:
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 5: Commit**
@@ -1267,7 +1314,7 @@ git commit -m "fix(dashboard): focus pop respects board borders (origin + condit
 
 ---
 
-# Task 9: BaseChat coherent by default + per-window pickers
+## Task 9: BaseChat coherent by default + per-window pickers
 
 **Files:**
 - Modify: `ui/desktop/src/components/BaseChat.tsx`
@@ -1428,14 +1475,14 @@ Also remove the `import { DashboardStatusBar } from './DashboardStatusBar';` lin
 - [ ] **Step 6: Run unit tests for any regressions**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
 ```
 Expected: PASS (counts unchanged, ~30+).
 
 - [ ] **Step 7: Type-check + lint**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -10
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -10
 ```
 
 - [ ] **Step 8: Commit**
@@ -1451,7 +1498,7 @@ git commit -m "feat(dashboard): coherent /pair default; per-window pickers; drop
 
 ---
 
-# Task 10: SessionNamePill component + integration in BaseChat
+## Task 10: SessionNamePill component + integration in BaseChat
 
 **Files:**
 - Create: `ui/desktop/src/components/Dashboard/SessionNamePill.tsx`
@@ -1611,7 +1658,7 @@ Add the import: `import { updateSessionName } from '../../api';` at the top of C
 - [ ] **Step 4: Type-check**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npx tsc --noEmit 2>&1 | head -15
+cd <repo-root>/ui/desktop && npx tsc --noEmit 2>&1 | head -15
 ```
 
 - [ ] **Step 5: Commit**
@@ -1625,7 +1672,7 @@ git commit -m "feat(dashboard): editable SessionNamePill in BaseChat; rename pro
 
 ---
 
-# Task 11: `userSetName` flag + biorouterd-name sync
+## Task 11: `userSetName` flag + biorouterd-name sync
 
 **Files:**
 - Modify: `ui/desktop/src/contexts/DashboardContext.tsx`
@@ -1813,7 +1860,7 @@ In `ui/desktop/src/components/Dashboard/DashboardProvider.test.tsx`, ADD this te
 - [ ] **Step 6: Run tests, expect green**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
+cd <repo-root>/ui/desktop && npm run test:run -- src/components/Dashboard/ 2>&1 | tail -15
 ```
 Expected: all tests pass; counts now include the new provider tests.
 
@@ -1831,7 +1878,7 @@ git commit -m "feat(dashboard): userSetName flag; biorouterd auto-rename sync"
 
 ---
 
-# Task 12: Playwright debugger end-to-end validation
+## Task 12: Playwright debugger end-to-end validation
 
 **Files:** none modified (validation only).
 
@@ -1842,7 +1889,7 @@ Launch the dev app via Terminal.app (`script` workaround we found in the prior s
 - [ ] **Step 1: Kill any prior Electron, launch dev with CDP**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 killall -9 Electron "Electron Helper" 2>/dev/null
 osascript -e 'tell application "Terminal" to do script "/tmp/launch-biorouter.sh"'
 # wait until CDP is up
@@ -1909,7 +1956,7 @@ From `/dashboard`, click Home in the sidebar. Verify `window.outerWidth` and `ou
 - [ ] **Step 12: Spec-cleanup grep**
 
 ```bash
-grep -rin "lab.\?meeting\|LabMeeting\|labMeeting" /Users/wgu/Desktop/biorouter/ui/desktop/src/ | head
+grep -rin "lab.\?meeting\|LabMeeting\|labMeeting" <repo-root>/ui/desktop/src/ | head
 ```
 Expected: empty.
 
@@ -1947,11 +1994,19 @@ git commit --allow-empty -m "feat(dashboard): end-to-end Playwright validation c
 
 ---
 
-## Execution
+## Execution route chosen
 
-Plan complete. Two execution options:
+Two execution options were on the table when this plan was written:
 
-1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks. Fastest iteration; smallest review surface per cycle.
-2. **Inline Execution** — execute tasks in this session using executing-plans; batch execution with checkpoints.
+1. **Subagent-driven (recommended)** — dispatch a fresh subagent per task, review between tasks. Fastest iteration; smallest review surface per cycle.
+2. **Inline execution** — execute tasks in this session using `executing-plans`; batch execution with checkpoints.
 
-Per the user's request ("implement the plans using subagents if needed"), default to **Subagent-Driven**.
+The requester asked for "implement the plans using subagents if needed", so the
+default was **subagent-driven**.
+
+## Related documentation
+
+- [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md) — the spec this plan implements, and the source of every `§N` reference above.
+- [v1 — Lab Meeting Mode implementation plan](v1-lab-meeting-mode-plan.md) — builds the files this plan renames; read it for what each module actually does.
+- [Dashboard mode — removal record and archive index](README.md) — records the deletion of the `Dashboard/` directory this plan creates.
+- [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) — the direct successor, which retires the layout engine built in Task 7.

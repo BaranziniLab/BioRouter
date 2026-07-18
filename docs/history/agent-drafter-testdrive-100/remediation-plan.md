@@ -1,17 +1,59 @@
-# Agent Drafter — remediation plan for the 100-app test drive findings
+# Agent Drafter remediation plan for the 100-app test drive findings
 
-**Status:** proposed · **Branch:** `feat/apps-sdk-v2` · **Date:** 2026-07-12
-**Inputs:** [`FINDINGS.md`](FINDINGS.md) (22 findings), [`INVENTORY.md`](INVENTORY.md) (18 apps),
-[`PLATFORM-INTEGRATIONS.md`](PLATFORM-INTEGRATIONS.md), [`LAYOUT-DIVERSITY.md`](LAYOUT-DIVERSITY.md),
-`ledger.json`, `results/spec-001..025.md`.
+> **What this is.** The six-wave engineering plan that maps every finding from the 100-app Agent
+> Drafter test drive to a specific code fix, with `file:line` citations, effort estimates, risk notes,
+> per-wave gates, and target metrics.
+> **Status:** Historical record — **this plan was executed.** Its own front matter said "proposed" and
+> "no product code has been changed yet"; that was true on 2026-07-12 and is not true now. Waves 0–6
+> were built on branch `feat/apps-sdk-v2` in commits `ae8987a6`, `7527f848`, and `d8cf95cc`, and the
+> artifacts exist in the tree (`crates/biorouter-mcp/src/agent_drafter/catalog.rs`,
+> `state_initial`/`worker_ui` in `manifest.rs`, `scripts/agent-drafter/app-smoke.mjs`). Read
+> [remediation-results.md](remediation-results.md) for what actually shipped.
+> **Audience:** developers working on Agent Drafter and the Apps SDK.
 
-Every finding below was re-verified against the source in this worktree; each item cites the
-exact `file:line` that causes it. **No product code has been changed yet** — `git diff HEAD -- crates/`
-is empty, so all 19 non-harness findings are open.
+**Branch:** `feat/apps-sdk-v2` · **Date:** 2026-07-12
+**Inputs:** [audit-findings-register.md](audit-findings-register.md) (22 findings),
+[authored-app-verdict-index.md](authored-app-verdict-index.md) (18 apps),
+[platform-integration-audit.md](platform-integration-audit.md),
+[layout-diversity-audit.md](layout-diversity-audit.md),
+[`data/ledger.json`](data/ledger.json), and the per-app rubrics in `app-results/`.
 
----
+### Identifiers and codes used below
 
-## 1. The one-sentence thesis
+- **Finding numbers (1–24)** index the [audit findings register](audit-findings-register.md), which
+  numbers its entries 1–22 in document order. Findings **23 and 24 exist only here** — they were
+  discovered while verifying this plan's citations and were never added to the register, so the two
+  documents disagree by design. See the note under item 0.4.
+- **Wave numbers (0–5)** are dependency-ordered work stages; each wave's gate is the precondition for
+  the next wave's fixes to be checkable. The implementation later added a Wave 6, described only in
+  [remediation-results.md](remediation-results.md).
+- **Item numbers (`0.1`, `3.4`, `5.2`)** identify a single fix within a wave and are the stable
+  cross-reference target used by the other documents in this folder.
+- **Effort codes** are relative size estimates on the scale `XS` < `S` < `M` < `L`, used alongside the
+  explicit day counts in each wave heading; the day counts are the concrete figure.
+
+> **Warning.** The `crates/.../file.rs:LINE` citations throughout were read against the branch
+> worktree on 2026-07-12 and **no commit SHA is pinned** for them. The remediation commits listed
+> above have since moved this code, so treat every line number as an archival pointer, not a current
+> address.
+
+## Contents
+
+- [The one-sentence thesis](#the-one-sentence-thesis)
+- [Findings to plan map](#findings-to-plan-map)
+- [How the waves are ordered](#how-the-waves-are-ordered)
+- [Wave 0 — ground truth (S, ~1 day)](#wave-0--ground-truth-s-1-day)
+- [Wave 1 — the environment becomes knowable (M/L, ~3 days)](#wave-1--the-environment-becomes-knowable-ml-3-days)
+- [Wave 2 — the contract is declarable in one shot (M, ~2 days)](#wave-2--the-contract-is-declarable-in-one-shot-m-2-days)
+- [Wave 3 — the contract is enforced at runtime (L, ~6 days)](#wave-3--the-contract-is-enforced-at-runtime-l-6-days)
+- [Wave 4 — failure becomes visible, never silent (M, ~3 days)](#wave-4--failure-becomes-visible-never-silent-m-3-days)
+- [Wave 5 — lint that executes (L, ~4 days)](#wave-5--lint-that-executes-l-4-days)
+- [Back-compatibility](#back-compatibility)
+- [How the citations were verified](#how-the-citations-were-verified)
+- [Acceptance criteria and target metrics](#acceptance-criteria-and-target-metrics)
+- [Sequencing summary](#sequencing-summary)
+
+## The one-sentence thesis
 
 > **Agent Drafter reliably builds a correct static shell, and then does not honour the agentic
 > contract it just declared — because the contract is enforced only as prose.**
@@ -31,9 +73,9 @@ The corpus proves both halves. Across 18 authored apps plus 5 layout probes:
 
 Verdicts: 15 PARTIAL, 7 "PASS (static; browser pending)", 2 FAIL. Zero apps passed functionally.
 
-The shape of that table is the finding. Anything the platform *checks* — surface declaration,
-region markup, lint rules — the model gets right, first try, every time. Anything the platform merely
-*asks for in a system prompt* — "call `ui_subscribe` before the user clicks", "use `consult`, not
+The shape of that table is the finding. Anything the platform *checks* — surface declaration, region
+markup, lint rules — the model gets right, first try, every time. Anything the platform merely *asks
+for in a system prompt* — "call `ui_subscribe` before the user clicks", "use `consult`, not
 `subagent`", "read state from `br.state`", "call the action before you narrate it" — the model gets
 wrong, repeatedly, in exactly the ways the prompt warned against.
 
@@ -45,14 +87,12 @@ contract out of the system prompt and into one of four enforcement points:
 3. **A server-side check that fails closed** (an invalid manifest cannot be saved or built).
 4. **A check that executes the app** (a control that delivers no turn fails the build).
 
-Where prose survives at all, it is *generated from the manifest* (e.g. the profile-key list),
+Where prose survives at all, it is *generated from the manifest* (for example the profile-key list),
 never authored by the model.
 
----
+## Findings to plan map
 
-## 2. Findings → plan map
-
-| # | Finding (FINDINGS.md) | Sev | Wave | Plan item |
+| # | Finding | Sev | Wave | Plan item |
 |---|---|---|---|---|
 | 1 | Corpus cannot test layout diversity | high | — | mitigated by controlled probes; no product change |
 | 2 | Store ignores `BIOROUTER_PATH_ROOT` | high | **0** | [0.1](#01-one-env-aware-path-resolver-for-biorouter-mcp) |
@@ -71,7 +111,7 @@ never authored by the model.
 | 15 | `ui_theme` makes regions illegible | med | **4** | [4.5](#45-ui_theme-becomes-a-round-trip-with-a-contrast-audit) |
 | 16 | Agent narrates a plan without calling the action | high | **3** | [3.3](#33-an-action-has-an-effect-and-the-turn-knows-whether-it-ran) |
 | 17 | Main fabricates quantitative output | high | **3** | [3.6](#36-evidence-ledger-and-provenance) |
-| 18 | Drag-only interaction, no fallback | high | **5** | [5.2](#52-brdnd-a-drag-primitive-that-is-reliable-by-construction) |
+| 18 | Drag-only interaction, no fallback | high | **5** | [5.2](#52-brdnd--a-drag-primitive-that-is-reliable-by-construction) |
 | 19 | Reviewer misread omitted default theme | high | **0** | [0.2](#02-read_app-returns-a-resolved-view) — harness bug, but the product caused it |
 | 20 | Consults burn 120 s then main silently completes | high | **4** | [4.2](#42-consult-deadlines-that-cancel-and-are-visible) |
 | 21 | UCSF Azure egress IP | blocker | — | resolved; environment only |
@@ -79,23 +119,22 @@ never authored by the model.
 | 23 | **NEW** — NUL byte in `sdk.ts` defeats grep/git-diff | high | **0** | [0.4](#04-the-nul-byte-that-hides-the-sdk-from-every-tool) |
 | 24 | **NEW** — a signal emitted before the socket opens is dropped client-side | high | **3** | [3.1](#31-declaration-is-subscription-eager-signals) |
 
-Findings 23 and 24 were discovered while verifying the citations for this plan; they are not in
-`FINDINGS.md`. Both are load-bearing — see the note under 0.4.
+Findings 23 and 24 were discovered while verifying the citations for this plan; they are not in the
+[audit findings register](audit-findings-register.md). Both are load-bearing — see the note under
+item 0.4.
 
----
-
-## 3. Waves
+## How the waves are ordered
 
 Waves are ordered by dependency, not by severity: each wave's gate is the precondition for the next
 wave's fixes to be *checkable*. Wave 0 is a day; Waves 1–5 are roughly 3, 2, 6, 3 and 4 days of
 focused work (≈ 3.5 weeks, less with parallel agents — the waves are internally parallel).
 
-### Wave 0 — Ground truth (S, ~1 day)
+## Wave 0 — ground truth (S, ~1 day)
 
 Nothing else can be trusted until the sandbox is real, the manifest readback is honest, and a failed
 turn reports as failed.
 
-#### 0.1 One env-aware path resolver for `biorouter-mcp`
+### 0.1 One env-aware path resolver for `biorouter-mcp`
 
 Three hand-rolled resolvers bypass `BIOROUTER_PATH_ROOT`, so the "isolated" test drive wrote apps
 into the user's **global** store and read the user's **global** knowledge bases:
@@ -117,15 +156,15 @@ Add a **cross-crate agreement test** in `biorouter` (which sees both crates) ass
 *Effort S · risk none when `BIOROUTER_PATH_ROOT` is unset (all ~110 v1 apps unaffected).*
 *Blocks: the entire catalog work in Wave 1 — a catalog that enumerates the global store cannot verify a sandbox.*
 
-#### 0.2 `read_app` returns a *resolved* view
+### 0.2 `read_app` returns a *resolved* view
 
 `ThemeConfig::is_default()` (`manifest.rs:762`) + `skip_serializing_if` (`store.rs:175`) mean an
 explicitly-chosen default theme **disappears on save**. `resolved_pack()` (`manifest.rs:766`) exists
 and is correct, but nothing on the tool surface calls it: `read_app` just pretty-prints the manifest
 (`mod.rs:2079`). The same lossiness hits `surface`, `capabilities`, and every optional `AgentConfig`
 field — so the model reads *absence* where the truth is *default*, and is never shown the skeleton of
-the fields it must fill in. That is not just the harness's misread; it is half of the
-schema-guessing loop (finding 3).
+the fields it must fill in. That is not just the harness's misread; it is half of the schema-guessing
+loop (finding 3).
 
 **Fix:** `ReadAppParams.view: "resolved" | "raw"`, defaulting to **resolved** — a canonical,
 fully-populated, editable skeleton with every optional block present and a
@@ -134,7 +173,7 @@ today's bytes. `build_app` reports the resolved theme pack in its note.
 
 *Effort S · no on-disk format change.*
 
-#### 0.3 A failed turn is a failed turn
+### 0.3 A failed turn is a failed turn
 
 `biorouter run` exits **0** when the provider 403s. The bug is not in the CLI: `agent.rs:2020`
 downgrades a provider error into an *assistant chat message* and ends the stream normally, so the
@@ -151,7 +190,7 @@ human-readable message. Add `ProviderError::kind()` so auth/403 is distinguishab
 *Effort S–M · this type is shared by [4.1](#41-turn-guard-mask-the-tool-terminate-the-loop) and
 [4.2](#42-consult-deadlines-that-cancel-and-are-visible) — **land it first**.*
 
-#### 0.4 The NUL byte that hides the SDK from every tool
+### 0.4 The NUL byte that hides the SDK from every tool
 
 `templates/sdk.ts:4446` returns `"\0undef"` as `stateStringify`'s undefined sentinel — **a literal NUL
 byte at offset 157386**. Consequences, all silent:
@@ -176,22 +215,20 @@ codepoint), and add a CI check that fails on any NUL byte under `crates/**/templ
 shows `theme.pack`; `biorouter run` against a 403 provider exits 75 with `status:"failed"`;
 `git diff` on `sdk.ts` renders as text.
 
----
-
-### Wave 1 — The environment becomes knowable (M/L, ~3 days)
+## Wave 1 — the environment becomes knowable (M/L, ~3 days)
 
 85 of 100 specs request a knowledge base and 57 request a skill, against a runtime with **zero**
 installed KBs and **zero** installed skills. Agent Drafter configured 13 nonexistent KB ids and 7
 nonexistent skill lists — including the literal string `br.kb`, which is the *client API namespace*,
 not an id. This is not model sloppiness; it is an **epistemic hole**: Agent Drafter's 12 tools
-(`mod.rs:1551…2245`) include no way to ask what exists, and `AgentConfig` has no field in which to
-say "this app wants ClinVar and it isn't here". The only way to express the need is to invent an id.
+(`mod.rs:1551…2245`) include no way to ask what exists, and `AgentConfig` has no field in which to say
+"this app wants ClinVar and it isn't here". The only way to express the need is to invent an id.
 
 Worse, the server then *manufactures* the failure: `routes/apps.rs:804` arms the `skills` extension
 whenever the skill list is non-empty — real or not — and `apps.rs:1032` writes a system prompt saying
 "You are scoped to ONLY these skills: …". `skills__loadSkill` fails on turn 1 by construction.
 
-#### 1.1 A catalog and a discovery tool
+### 1.1 A catalog and a discovery tool
 
 New `crates/biorouter-mcp/src/agent_drafter/catalog.rs`:
 
@@ -201,40 +238,40 @@ pub struct Catalog { knowledge_bases: Vec<KbEntry>, skills: Vec<SkillEntry>,
 impl Catalog { pub fn discover() -> Self }   // KnowledgeService::list_bases() + skill-dir scan + BUILTIN registry
 ```
 
-plus a `list_platform_catalog` MCP tool. Expose the real skill scan as
-`pub fn installed_skills()` in `crates/biorouter/src/agents/skills_extension.rs:168` (today private)
-so `biorouter-server` uses the same source. The MCP-side scan is a deliberate duplicate (the crate
-cannot see `biorouter`), pinned by a **cross-crate agreement test**.
+plus a `list_platform_catalog` MCP tool. Expose the real skill scan as `pub fn installed_skills()` in
+`crates/biorouter/src/agents/skills_extension.rs:168` (today private) so `biorouter-server` uses the
+same source. The MCP-side scan is a deliberate duplicate (the crate cannot see `biorouter`), pinned by
+a **cross-crate agreement test**.
 
-#### 1.2 Reject unknown ids at the write boundary
+### 1.2 Reject unknown ids at the write boundary
 
 `configure_app` (`mod.rs:1751`) accepts any string as `knowledge_base` and any strings as `skills`.
 Make it fail closed, with the *available ids in the error message* so the model's next attempt is
 grounded rather than another guess:
 
-```
+```text
 knowledge_base 'br.kb' is not a KB id: kb-id may only contain a-z, 0-9, and '-'.
 `br.kb` is the CLIENT API namespace, never an id.
 Installed KBs: (none). Use `requires` to record an unmet KB need.
 ```
 
 `validate_kb_id` already exists in the same crate (`knowledge/paths.rs:3`). Mirror the rule as a
-`lint_app` **Error**, which requires widening the signature to
-`lint_app_with_catalog(dir, &Catalog)` — coordinate that change once, with Wave 5.
+`lint_app` **Error**, which requires widening the signature to `lint_app_with_catalog(dir, &Catalog)`
+— coordinate that change once, with Wave 5.
 
-#### 1.3 Never arm a tool for a grant that cannot be satisfied
+### 1.3 Never arm a tool for a grant that cannot be satisfied
 
 In `configure_agent` (`routes/apps.rs:804`), intersect `cfg.skills` with `installed_skills()`:
 
 - intersection empty → **do not push the `skills` extension at all** (the tool does not exist, so it
   cannot be called and cannot fail on turn 1);
 - replace the allow-list prompt (`apps.rs:1032`) with the *available* skills, and re-frame the
-  unavailable ones as domain guidance: "No skill is installed for pathway analysis. Reason from
-  first principles; do not attempt to load it."
+  unavailable ones as domain guidance: "No skill is installed for pathway analysis. Reason from first
+  principles; do not attempt to load it."
 - same treatment for an invalid/missing KB (`apps.rs:1008` currently swallows the failure into a
   `warn!` and arms `knowledge` anyway).
 
-#### 1.4 A typed slot for "I need X and it isn't here"
+### 1.4 A typed slot for "I need X and it isn't here"
 
 New additive manifest block (serde defaults ⇒ v1 manifests unchanged):
 
@@ -256,9 +293,7 @@ and a dismissible degraded-capability strip in `sdk.ts`. `build_app` prints the 
 **Wave 1 gate:** re-lint the 18 test-drive apps — all 13 invented KB ids and all 7 nonexistent skill
 lists are Errors; an app that declares `requires` and no invented id builds clean with a Warn.
 
----
-
-### Wave 2 — The contract is declarable in one shot (M, ~2 days)
+## Wave 2 — the contract is declarable in one shot (M, ~2 days)
 
 Agent Drafter's INSTRUCTIONS tell the model to seed `surface` in `create_app` (`mod.rs:1229`) — a
 parameter **that does not exist**. `CreateAppParams`/`ConfigureAppParams` expose `capabilities`,
@@ -280,7 +315,7 @@ sits inside `if use_starter` (`mod.rs:1696`), which is false whenever the caller
 `index.html` — i.e. **every one of the 18 spec apps**. They all began life with `surface: {}` and were
 forced into the rewrite loop by a fail-closed lint (`bundle.rs:346`, `:419`).
 
-#### 2.1 Typed declaration tools
+### 2.1 Typed declaration tools
 
 `declare_surface`, `set_theme`, `declare_profiles`, `set_routes` — each a narrow `JsonSchema` struct,
 so the tool schema *is* the documentation and an invalid shape is a schema rejection rather than a
@@ -290,7 +325,7 @@ validator Wave 3 needs for `consult`. Add a typed `surface` param to `create_app
 `use_starter` gate on the surface assignment, so an app can never reach `build_app` with a live agent
 and zero declared actions.
 
-#### 2.2 Merge, don't replace, on `manifest.json`
+### 2.2 Merge, don't replace, on `manifest.json`
 
 `update_app` on the manifest path loads the on-disk manifest, overwrites only author-owned fields,
 force-restores server-owned ones, and re-saves canonical serde output. `created_at`/`updated_at`
@@ -299,21 +334,19 @@ become `#[serde(default)]`. Error messages for map-shaped fields carry a one-lin
 **Wave 2 gate:** authoring a spec app declares its full surface in **one** tool call, with **zero**
 rejected manifest rewrites (today: 6).
 
----
-
-### Wave 3 — The contract is enforced at runtime (L, ~6 days)
+## Wave 3 — the contract is enforced at runtime (L, ~6 days)
 
 This is the wave that turns 0/18 into passes. Every item here replaces a sentence in a system prompt
 with a mechanism.
 
-#### 3.1 Declaration *is* subscription (eager signals)
+### 3.1 Declaration *is* subscription (eager signals)
 
-Signals round-trip 1✅/11❌ because **no turn ever subscribes automatically**:
-`control.rs:579` starts the subscription set empty; the only writer is the `ui_subscribe` tool
-(`control.rs:3559`); `validate_signal` fails closed (`control.rs:986`); and `handle_signal`
-(`apps.rs:2316`) turns the failure into a `warn` frame and **drops the payload**. The user's first
-click necessarily precedes the model's first tool call — this is an ordering problem that no prompt
-can win, which is exactly why one probe called `ui_subscribe` five times in a row.
+Signals round-trip 1✅/11❌ because **no turn ever subscribes automatically**: `control.rs:579` starts
+the subscription set empty; the only writer is the `ui_subscribe` tool (`control.rs:3559`);
+`validate_signal` fails closed (`control.rs:986`); and `handle_signal` (`apps.rs:2316`) turns the
+failure into a `warn` frame and **drops the payload**. The user's first click necessarily precedes the
+model's first tool call — this is an ordering problem that no prompt can win, which is exactly why one
+probe called `ui_subscribe` five times in a row.
 
 There is a **second, independent drop** on the client that the audit never saw, and it would survive
 the server-side fix on its own. `emitSignal` (`sdk.ts:1765`) coalesces on a `setTimeout` and then
@@ -323,6 +356,7 @@ or across a reconnect, never leaves the browser at all. Both ends of the path dr
 gesture, for different reasons.
 
 **Fix — both ends:**
+
 - *Server:* `SignalDecl.eager: bool` (default true). Seed the bridge's eager set from
   `surface.signals` in `AppControlServer::new_with_consult` (`control.rs:2312`, right where the surface
   is already mirrored) and re-seed on `attach()` — so main, workers and reconnects all get it with zero
@@ -334,21 +368,22 @@ gesture, for different reasons.
   a `ui_error` rather than growing without limit). A `false` return from `send()` must never be a
   silent loss of a user gesture.
 
-*Effort S. This is the single highest-leverage fix in the plan: it converts the worst-performing
-check (1/12) into a structural guarantee.*
+*Effort S. This is the single highest-leverage fix in the plan: it converts the worst-performing check
+(1/12) into a structural guarantee.*
 
-#### 3.2 One canonical state document
+### 3.2 One canonical state document
 
 Two findings, one root cause: **nothing forces the app's own code onto the shared doc.**
 `sdk.ts:1589 call()` ships whatever the author's closure passes, verbatim — so a generated
-`const state = { sample_size: 248 }` is the real input to the turn while `ui_patch_state` writes
-n=784 into a document nobody reads. And `build_call_text` (`apps.rs:1584`) composes the model's
-message from `name` + `args` **only**, so the model never sees the contradiction. Meanwhile the doc
-starts empty (`sdk.ts:4583`) with no manifest field to initialize it, so every `data-br-bind` KPI is
-blank until a paid turn completes — which is *why* authors invent the private object. And there is no
-two-way binding anywhere in the SDK, so a bound range snaps back and arrow keys never reach state.
+`const state = { sample_size: 248 }` is the real input to the turn while `ui_patch_state` writes n=784
+into a document nobody reads. And `build_call_text` (`apps.rs:1584`) composes the model's message from
+`name` + `args` **only**, so the model never sees the contradiction. Meanwhile the doc starts empty
+(`sdk.ts:4583`) with no manifest field to initialize it, so every `data-br-bind` KPI is blank until a
+paid turn completes — which is *why* authors invent the private object. And there is no two-way
+binding anywhere in the SDK, so a bound range snaps back and arrow keys never reach state.
 
 **Fix — three parts:**
+
 - `SurfaceDecl.state_initial: Option<Value>` (validated against `state_schema`), seeded into the
   bridge doc server-side (`apps.rs:2569`) *and* into `this.doc` at SDK construction, so bindings paint
   correctly **before the socket connects** (this is also the export/offline path).
@@ -361,7 +396,7 @@ two-way binding anywhere in the SDK, so a bound range snaps back and arrow keys 
   when a declared action's `params` collide with the doc, appends: *"arg `sample_size`=248 disagrees
   with canonical `/power/n`=784 — use the canonical value."*
 
-#### 3.3 An action has an effect, and the turn knows whether it ran
+### 3.3 An action has an effect, and the turn knows whether it ran
 
 `ActionDecl` (`manifest.rs:625`) carries only `name`/`description`/`params`. The platform cannot tell
 "apply an intervention" from "read a value", so it cannot require one — and `ui_patch_state`
@@ -370,6 +405,7 @@ app creates the appearance of agent control; specs 011/013/014 did exactly that.
 
 **Fix:** `ActionDecl.effect: Read|Mutate` (default Read ⇒ back-compat) and
 `ActionDecl.writes: Vec<String>` (JSON Pointers).
+
 - **Pointer ownership:** `ui_state`/`ui_patch_state` **refuse** any op at or under a pointer owned by
   a `Mutate` action — *"`/params/lion_vision` is owned by action `apply_intervention`; call `app_call`
   to change it."* The narration-only path becomes impossible: the number on screen can only move
@@ -381,9 +417,10 @@ app creates the appearance of agent control; specs 011/013/014 did exactly that.
   ledger on `UiBridge` records every `app_call`. If the turn ends unapplied: one bounded corrective
   message, then `done{applied:false, expected:…}` and a standard **"plan not applied"** banner.
 
-#### 3.4 `consult` binds to manifest keys; workers lose the UI
+### 3.4 `consult` binds to manifest keys; workers lose the UI
 
 Two defects, one of them a **deny-by-default inversion**:
+
 - `run_consult` (`apps.rs:1479`) does an exact map lookup, so `"Prosecutor"` ≠ `"prosecutor"` is a hard
   error — and `control.rs:3621 consult()` does no validation at all (it does not even know the profile
   names), so the model gets no early signal.
@@ -399,7 +436,7 @@ Generate the orchestration prompt from the validated keys (the author never writ
 cannot drift). Add `UiCapability.worker_ui: bool` defaulting **false**, so no worker gets `ui_*` tools
 unless explicitly opted in.
 
-#### 3.5 One delegation mechanism per app
+### 3.5 One delegation mechanism per app
 
 Both delegation paths are armed simultaneously, and the generic one is easier to reach:
 `orchestration.sub_agents` are registered as subworkflows (`apps.rs:958`) and the engine pushes
@@ -409,11 +446,11 @@ switch**. `spec-006-ward-board.log` shows Agent Drafter declaring the same four 
 the declared profiles were dead configuration.
 
 **Fix:** if `orchestration.agents` is non-empty, do not register `sub_agents` as subworkflows
-(auto-migrate them into profiles instead). Add `Agent::set_subagent_tool_enabled(false)` so the tool
-is **absent from the tool list** — the model cannot call what it cannot see — plus a structured refusal
-in `dispatch_tool_call` for a stale tool name. Lint errors on a manifest declaring both.
+(auto-migrate them into profiles instead). Add `Agent::set_subagent_tool_enabled(false)` so the tool is
+**absent from the tool list** — the model cannot call what it cannot see — plus a structured refusal in
+`dispatch_tool_call` for a stale tool name. Lint errors on a manifest declaring both.
 
-#### 3.6 Evidence ledger and provenance
+### 3.6 Evidence ledger and provenance
 
 The worst finding in the corpus: after Fine Mapper reported the data was insufficient, main **invented
 five PIPs** and rendered them as a credible set. The platform has no representation of "the evidence is
@@ -422,8 +459,9 @@ missing" — `consult` returns free prose (`control.rs:3675`), and `app_call` va
 the refusal and proceeded anyway: the strongest possible evidence that prose cannot fix this.
 
 **Fix:**
+
 - a required `report` tool for workers: `{status: ok|insufficient_data|error, missing: [...], findings, values?}`,
-  recorded in the same per-turn ledger as 3.3;
+  recorded in the same per-turn ledger as [3.3](#33-an-action-has-an-effect-and-the-turn-knows-whether-it-ran);
 - `ActionDecl.requires_evidence: Vec<String>` + `provenance_required: bool`;
 - `app_call` **refuses** a non-synthetic call whose required inputs intersect an `insufficient_data`
   verdict, and steers: *"…either call with `source:\"synthetic\"` (it will be labelled DEMO on the page)
@@ -437,33 +475,33 @@ the refusal and proceeded anyway: the strongest possible evidence that prose can
 **Wave 3 gate:** signal round-trip 12/12; the agent-driven loop (agent → app → agent) passes on
 specs 011/013/014; a scripted worker reporting `insufficient_data` blocks the downstream action.
 
----
+## Wave 4 — failure becomes visible, never silent (M, ~3 days)
 
-### Wave 4 — Failure becomes visible, never silent (M, ~3 days)
-
-#### 4.1 Turn guard: mask the tool, terminate the loop
+### 4.1 Turn guard: mask the tool, terminate the loop
 
 The runaway `ui_describe` loop was **caused by BioRouter's own guard**. `RepetitionInspector`
 (`tool_monitor.rs:139`) denies a call after `max_repetitions`; `handle_denied_tools` (`agent.rs:747`)
 answers with *"The user has declined to run this tool"* (`tool_execution.rs:38`) — **a lie; the user
-declined nothing** — and **the loop simply continues**. Nothing removes the tool from the next
-provider call. Two further defects fall out: the inspector only tracks the *immediately preceding*
-call (`tool_monitor.rs:126`), so `A,B,A,B` never trips at all; and the denial text is indistinguishable
-from a human decline, so the model cannot learn "this is a loop guard, do something else."
+declined nothing** — and **the loop simply continues**. Nothing removes the tool from the next provider
+call. Two further defects fall out: the inspector only tracks the *immediately preceding* call
+(`tool_monitor.rs:126`), so `A,B,A,B` never trips at all; and the denial text is indistinguishable from
+a human decline, so the model cannot learn "this is a loop guard, do something else."
 
-**Fix:** a turn-scoped `TurnToolGuard`. A denied tool is **removed from the tool list** for the rest
-of the turn (`filter_tools` before `stream_response_from_provider`, `agent.rs:1603`) — enforcement, not
+**Fix:** a turn-scoped `TurnToolGuard`. A denied tool is **removed from the tool list** for the rest of
+the turn (`filter_tools` before `stream_response_from_provider`, `agent.rs:1603`) — enforcement, not
 advice. Repetition becomes signature-keyed (`name` + hash of canonical args) over the whole turn, not
 consecutive-only. A second call of an already-disabled signature is **terminal**: `exit_chat`, skip the
-Stop-hook restart branch, and yield `TurnAborted{ ToolLoop }` (the type from 0.3). A distinct
-`LOOP_BLOCKED_RESPONSE` replaces the misattributed decline text.
+Stop-hook restart branch, and yield `TurnAborted{ ToolLoop }` (the type from
+[0.3](#03-a-failed-turn-is-a-failed-turn)). A distinct `LOOP_BLOCKED_RESPONSE` replaces the
+misattributed decline text.
 
 *Today a runaway loop costs up to 100 billed provider calls; after this, ≤5.*
 
-#### 4.2 `consult` deadlines that cancel, and are visible
+### 4.2 `consult` deadlines that cancel, and are visible
 
 "Both workers timed out at 120 s and main silently completed" is **guaranteed** by the current code, not
 bad luck. There are two racing timers and a serialized handler:
+
 - `control.rs:3654` starts a 120 s timer *before* the request reaches the socket loop; `apps.rs:1516`
   starts a second one strictly later, so the inner one is dead code.
 - `run_consult` is awaited **inline inside the `select!` loop** (`apps.rs:3222`). While worker A runs,
@@ -482,13 +520,15 @@ to 60) plus an env override; a **structured** timeout result (`is_error: true`,
 diagnostics surfaced instead of `warn!`-logged; and a `done{degraded:true, missing_profiles:[…]}` frame
 that renders a persistent banner whether or not the model mentions it.
 
-#### 4.3 `run()` fails loudly and cannot wedge
+### 4.3 `run()` fails loudly and cannot wedge
 
 A generated control "executes locally but delivers no turn" through two silent paths in `sdk.ts`:
+
 - **an unbounded global run queue** (`sdk.ts:1447`) — a turn that never emits `done` (a blocked
-  `ui_ask`, a 120 s consult, a dropped socket, the 4.1 loop) leaves `runChain` pending **forever**, so
-  every later `br.run` sits in the queue and never even reaches its target lookup or its
-  "Starting agent run…" paint. The control looks clickable, the handler completes, nothing is sent.
+  `ui_ask`, a 120 s consult, a dropped socket, the [4.1](#41-turn-guard-mask-the-tool-terminate-the-loop)
+  loop) leaves `runChain` pending **forever**, so every later `br.run` sits in the queue and never even
+  reaches its target lookup or its "Starting agent run…" paint. The control looks clickable, the
+  handler completes, nothing is sent.
 - **a missing target throws before any feedback** (`sdk.ts:1459`), rejecting a promise no generated
   click handler awaits.
 
@@ -501,7 +541,7 @@ frame); paint "Queued — waiting for the current agent run…" so a queued run 
 the chain; `prompt()` returns a **delivery receipt** so a closed socket says "not connected" instead of
 hanging. Plus a static lint rule: a `br.run` target that is a string literal must exist in `index.html`.
 
-#### 4.4 One progress sink; result regions are sacred
+### 4.4 One progress sink; result regions are sacred
 
 `doRun` **always** mounts a timeline inside the run target (`sdk.ts:1462-1465`), so
 `br.run(prompt, "#synthesis")` renders tool frames into the semantic region *by construction* — and if
@@ -514,7 +554,7 @@ renders the target with the answer only; `progress?: HTMLElement | string | fals
 tool frames into a result region; lint errors on two timeline consumers or on a `run` target that is a
 declared result region.
 
-#### 4.5 `ui_theme` becomes a round-trip with a contrast audit
+### 4.5 `ui_theme` becomes a round-trip with a contrast audit
 
 `ui_theme` is fire-and-forget (`control.rs:2743`): it emits the frame and reports success **no matter
 what it did to the page**. Client-side it flips tokens on `documentElement` only, while the app's own
@@ -524,24 +564,22 @@ label is invisible after a dark pack lands.
 
 **Fix:** make `ui_theme` park for a `ui_theme_result` frame carrying the client's **WCAG contrast
 audit**; on failure the client has already reverted and the **tool returns an error** naming the
-offending regions — so the agent sees it inside its own turn. Add a `--br-plot-*` token layer with
-sane `svg text`/axis defaults for every pack. Escalate the existing hardcoded-color lint to an Error
-for `background`/`fill`/`stroke` inside a region **when `allow_theme` is on**.
+offending regions — so the agent sees it inside its own turn. Add a `--br-plot-*` token layer with sane
+`svg text`/axis defaults for every pack. Escalate the existing hardcoded-color lint to an Error for
+`background`/`fill`/`stroke` inside a region **when `allow_theme` is on**.
 
 **Wave 4 gate:** a scripted looping agent is bounded at ≤5 provider calls and ends in `TurnAborted`;
 a wedged turn paints a visible failure instead of a dead control; no turn ends `done` while a required
 profile silently produced nothing.
 
----
-
-### Wave 5 — Lint that executes (L, ~4 days)
+## Wave 5 — lint that executes (L, ~4 days)
 
 Every remaining finding shares one property: **no string analysis can catch it.** A dead control, a
 blank first-load binding, a keyboard-unresponsive slider, a drag-only surface, an illegible theme —
 all of them are *correct-looking code with a runtime failure*. The acceptance gate has to observe a
 frame on the wire.
 
-#### 5.1 `app-smoke.mjs` — the executing preview
+### 5.1 `app-smoke.mjs` — the executing preview
 
 New `scripts/agent-drafter/app-smoke.mjs` + a `smoke_app` MCP tool that `build_app` invokes when a JS
 runtime is present. It reuses the mock daemon already in
@@ -566,11 +604,11 @@ app in headless Chromium (Playwright already resolves from `ui/desktop/node_modu
 Findings fold into `BuildReport`; `BIOROUTER_APP_SMOKE=off` is the escape hatch, and smoke is
 **advisory for v1 apps, gating for newly authored ones**, so no existing app is bricked.
 
-#### 5.2 `br.dnd` — a drag primitive that is reliable by construction
+### 5.2 `br.dnd` — a drag primitive that is reliable by construction
 
-`sdk.ts` contains **zero** drag support, while `theme.css:383-390` ships `.br-dropzone` and
-"Draggable list items" styling — starter gravity pointing straight at hand-rolled HTML5 DnD, which
-synthetic pointer moves cannot drive. Lint has no drag rule at all.
+`sdk.ts` contains **zero** drag support, while `theme.css:383-390` ships `.br-dropzone` and "Draggable
+list items" styling — starter gravity pointing straight at hand-rolled HTML5 DnD, which synthetic
+pointer moves cannot drive. Lint has no drag rule at all.
 
 **Fix:** `br.dnd.catalog({source, target, onDrop})` built on **pointer events** (so real and synthetic
 drags both work), with **click parity** (click to pick up, click to drop) and **keyboard parity**
@@ -584,9 +622,7 @@ make the model hand-roll something worse — the primitive is what makes the rul
 binding, a drag-only surface, a duplicated progress stream, an illegible theme, and a closure-captured
 state object. The five starters pass all of them.
 
----
-
-## 4. Back-compatibility
+## Back-compatibility
 
 ~110 v1 apps in the wild plus the 18 test-drive apps. The rules:
 
@@ -605,9 +641,7 @@ state object. The five starters pass all of them.
 - **One migration:** `knowledge_root()`'s strategy tuple changes (`io/biorouter` → `Block/Block`),
   which is identical on XDG and differs only on Windows. Ship a one-time path check.
 
----
-
-## 5. How this plan was verified
+## How the citations were verified
 
 Every `file:line` above was re-read against the source in this worktree, not taken from the findings
 log. Two claims changed under verification:
@@ -619,12 +653,12 @@ log. Two claims changed under verification:
   right, but the decline the model saw came from **BioRouter's own loop guard**, mislabelled as a user
   decline — which is worse than reported.
 
-And a caution for anyone re-checking this: until [0.4](#04-the-nul-byte-that-hides-the-sdk-from-every-tool)
-lands, **`grep` on `sdk.ts` silently returns nothing** (NUL byte → treated as binary). Use `grep -a`.
-Assuming grep was telling the truth is what nearly got finding 7's citations wrongly dismissed as
-fabricated during this very review.
+And a caution for anyone re-checking this: until
+[0.4](#04-the-nul-byte-that-hides-the-sdk-from-every-tool) lands, **`grep` on `sdk.ts` silently returns
+nothing** (NUL byte → treated as binary). Use `grep -a`. Assuming grep was telling the truth is what
+nearly got finding 7's citations wrongly dismissed as fabricated during this very review.
 
-## 6. Verification
+## Acceptance criteria and target metrics
 
 The plan is only real if the same harness that produced the findings re-runs and the numbers move.
 
@@ -646,11 +680,9 @@ The plan is only real if the same harness that produced the findings re-runs and
    | Rejected manifest mutations per app | ~6 | **0** |
    | Full functional PASS | **0 / 18** | **≥ 15 / 18** |
 
----
+## Sequencing summary
 
-## 7. Sequencing summary
-
-```
+```text
 Wave 0  Ground truth ......... NUL byte · paths · resolved read_app · TurnAborted+rc     (1d)
    │
 Wave 1  Knowable environment . Catalog · reject unknown ids · never arm a dead grant     (3d)
@@ -672,5 +704,18 @@ Waves 1 and 2 are internally parallel and can run as two agents; Wave 3's six it
 the ledger type exists; Wave 5's smoke runner is the long pole and can start during Wave 4 (it is
 built once and consumed by five findings).
 
-The single cheapest, highest-leverage item in the whole plan is **3.1 (eager signals)** — one `bool`,
-one seed call, and the worst-performing check in the corpus (1/12) becomes structural.
+The single cheapest, highest-leverage item in the whole plan is
+**[3.1 (eager signals)](#31-declaration-is-subscription-eager-signals)** — one `bool`, one seed call,
+and the worst-performing check in the corpus (1/12) becomes structural.
+
+## Related documentation
+
+- [Remediation results](remediation-results.md) — what was actually built from this plan, including a
+  Wave 6 that the plan does not contain.
+- [Audit findings register](audit-findings-register.md) — the 22 numbered findings the map table above
+  cites.
+- [Test drive README](README.md) — the index for the campaign as a whole.
+- [Apps SDK v2 design](../../apps-sdk/v2-design.md) — the contract these waves move from prose into
+  the platform.
+- [Agent Drafter apps platform design](../../agent-drafter/apps-platform-design.md) — the subsystem
+  every `file:line` citation above points into.

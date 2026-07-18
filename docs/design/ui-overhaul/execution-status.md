@@ -1,22 +1,50 @@
 # UI overhaul — execution status
 
+> **What this is.** The single status record for the UI cohesion and chat-groups
+> branch: the 20-step list, every commit, the gates, what was proven by driving the
+> real app, the register of what is still broken or open, and the brand rollout.
+> **Status:** Current — this is the stated source of truth for
+> `worktree-redesign-ui-cohesion`. All 20 steps are marked done; the branch still
+> carries open items (see [Known broken and open](#known-broken-and-open)).
+> **Audience:** maintainers working on the BioRouter desktop UI.
+> **Identifier key.** `D-NN` are numbered design decisions. The register lives in
+> [`design.md`](../../../design.md) — Part 6 (open decisions), Part 6b (this
+> cohesion pass), Part 7 (the drift register). `R1`/`R4`/`R7` are the risks named in
+> the chat-groups plan.
+
+This branch had two jobs: make the desktop app look like one product rather than
+several (the cohesion pass), and turn the chat area into browser-style tabs and
+splits (chat groups). Both are implemented. The sections below are ordered so the
+status material — steps, gates, commits, open items — comes first, and the longer
+evidence and retrospective write-ups follow it.
+
 **Branch:** `worktree-redesign-ui-cohesion` · **Worktree:** `.claude/worktrees/redesign-ui-cohesion`
 **Started:** 2026-07-16 · **Last updated:** 2026-07-17
 
-**This file is the single source of truth for where the work stands.** If you
-read one document, read this one. It links out to the others.
+## Contents
+
+- [Companion documents](#companion-documents)
+- [Where the work stands: 20 of 20 steps](#where-the-work-stands-20-of-20-steps)
+- [Gates](#gates)
+- [Commits](#commits)
+- [Known broken and open](#known-broken-and-open)
+- [Still to verify by driving](#still-to-verify-by-driving)
+- [Evidence from driving the real app](#evidence-from-driving-the-real-app)
+- [Dated change log](#dated-change-log)
+- [Decisions the user overrode](#decisions-the-user-overrode)
+- [What is not built, and why](#what-is-not-built-and-why)
+
+## Companion documents
 
 | Doc | What it is |
 |---|---|
-| **EXECUTION.md** (this file) | Status, step list, what's done, what's left, what's known-broken |
+| `execution-status.md` (this file) | Status, step list, what's done, what's left, what's known-broken |
 | [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) | The approved visual spec. Interactive: Current ⇄ Redesigned, light/dark, Highlight |
-| [`chat-groups-plan.md`](chat-groups-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
-| [`chat-groups-r7-spike.md`](chat-groups-r7-spike.md) | Proof that two KnowledgeProviders clobber each other through the server |
-| [`../../design.md`](../../design.md) | The design system. Decisions D-01…D-37; Part 6b is this pass; Part 7 is the drift register |
+| [Chat-groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
+| [Nested `KnowledgeProvider` blocker](../chat-groups/knowledge-provider-nesting-blocker.md) | Proof that two `KnowledgeProvider`s clobber each other through the server |
+| [`design.md`](../../../design.md) | The design system. Decisions D-01…D-37; Part 6b is this pass; Part 7 is the drift register |
 
----
-
-## Where we stand: 20 of 20 steps done — the branch is complete
+## Where the work stands: 20 of 20 steps
 
 The list grew from 15 steps to 20. The user added the browser-tab keyboard model
 (⌘T / ⌘N / ⌃Tab), made **lag a first-class acceptance criterion**, and asked for
@@ -49,11 +77,24 @@ not quietly better.
 | 19 | **D-32** the yield ladder — responsive collapse at every window size | ✅ done (+ D-36, D-37) |
 | 20 | Final gate + full visual QA sweep (**lag is an acceptance criterion, not a nice-to-have**) | ✅ done — 6/6 on screen, 1 real bug found + fixed |
 
----
+## Gates
 
-## Commits (every step reversible)
+| Gate | State |
+|---|---|
+| `tsc --noEmit` | ✅ clean |
+| `lint:check` | ✅ clean (tsc + eslint 0 warnings + contrast). **Use `npm run lint:check`, not a bare `npx eslint .`** — the latter lints `.vite/build/main.js`, a build artifact, and reports thousands of phantom errors |
+| `check-contrast.mjs` | ✅ 140/140 (was 128 — +12 guard the code ground) |
+| `vitest run` | ✅ **1266/1266 (151 files), 0 failures** — no timeout flags. **Run it on an idle machine; see [The suite is load-sensitive](#the-suite-is-load-sensitive-and-it-produced-a-false-diagnosis)** |
 
-```
+> **Note.** The suite count above is the figure at the close of step 20. The
+> follow-on fixes of 2026-07-17 report **1290/1290**; see
+> [Follow-on UI and terminal fixes](#follow-on-ui-and-terminal-fixes-2026-07-17-on-user-review).
+
+## Commits
+
+Every step is reversible.
+
+```text
 94125bbc  refactor      1120 had three homes; give it one (+ correct D-32's rationale)
 0c329018  fix(sidebar)  the Recents hidden-count badge is sans, not mono (D-31)
 0e75258f  fix(tabs)     move the titlebar reserve OUT of the strip's scroll box
@@ -89,20 +130,145 @@ c6f7551e  docs         record the cohesion pass; drift register status column
 4e6a4121  docs         the chat-groups plan, the R7 spike, the R1 measurement
 ```
 
----
+> **Note.** The commit subjects above name `EXECUTION.md`, the file's original
+> name. This document is now `execution-status.md`; the commit messages are quoted
+> as written.
 
-## Gates
+## Known broken and open
 
-| Gate | State |
-|---|---|
-| `tsc --noEmit` | ✅ clean |
-| `lint:check` | ✅ clean (tsc + eslint 0 warnings + contrast). **Use `npm run lint:check`, not a bare `npx eslint .`** — the latter lints `.vite/build/main.js`, a build artifact, and reports thousands of phantom errors |
-| `check-contrast.mjs` | ✅ 140/140 (was 128 — +12 guard the code ground) |
-| `vitest run` | ✅ **1266/1266 (151 files), 0 failures** — no timeout flags. **Run it on an idle machine; see below** |
+The register for this branch. Resolved items stay listed, with the cause and the
+fix, so the record survives.
 
----
+### Sidebar collapse could not recover — resolved
 
-## Verified by driving the real app (not by unit test)
+✅ **Fixed.** Not the cause first guessed. The rail translated correctly at every
+width and the toggle always hit-tested itself — it needed a *resize* to reproduce:
+`AppLayout`'s auto-collapse effect listed `open` in its deps, so the user's own
+click re-triggered it and set `open` straight back to `false` in the same tick. Now
+gated on a width-bucket **crossing**. Pure `sidebarAutoCollapseAction` + 8 tests,
+because the bug was **state, not geometry** — so it is genuinely provable in jsdom.
+
+### Chat column flush-left, ~158px dead space on the right — resolved
+
+✅ **Fixed, measured 250/250, delta 0** (was 24/158). Two causes: `BaseChat`'s root
+had no `flex-1` (it used to mount only in a flex *column*, where stretch gave it
+full width for free; a chat *group* mounts it in a flex **row**, where width is the
+main axis — so it hugged its content and `mx-auto` centred inside *that*), and
+`contentClassName` opened with `pr-1`, a right-only 4px inset. **No jsdom test**,
+deliberately: jsdom computes no layout, so a centering assertion there would pass
+with the bug present. Verified by measurement in the real app.
+
+### Tab icons at 13/12px, off §3.9's 16/20/24 scale — resolved
+
+✅ **Fixed** — both 16px. Glyphs already came from `app-icons` (stroke 1.5
+confirmed *rendered*, which catches a raw `lucide-react` swap).
+
+### History click replaced the chat instead of opening a tab — resolved
+
+✅ **Fixed** — tab per click, deduped across groups, closable via × / ⌘W. **User
+override of the VS Code preview-tab design**; the whole preview-tab concept
+(`preview` field, `pinTab`, pin-on-run, double-click-to-pin) is retired, with a
+test that fails if it creeps back.
+
+### ⌘W closed the window, not the tab — resolved
+
+✅ **Fixed, and it was a landmine.** `{ role: 'close' }` in `main.ts` silently
+claimed `CmdOrCtrl+W` with no `accelerator:` line to grep for. A renderer keydown
+listener could **never** have won — a menu accelerator is consumed before the web
+contents sees the key, so the window would have closed regardless, taking every tab
+with it. ⌘W = Close Tab (via IPC), ⇧⌘W = Close Window, per Safari/Chrome. Verified
+by dumping the built menu.
+
+### Preview panel is not window-pinned in a split — open
+
+📌 **Known partial, deliberate.** It stays per-pane; in a left/right split it sits
+inside the active group's box, not at the window edge. Hoisting it drops the
+artifact tab stack on every group switch (plan Stage 5, its own change).
+
+### `KnowledgeProvider` nesting — blocked
+
+🚫 Blocked on the R7 prerequisite fix. The fix was written, could not be
+demonstrated with a green test, and was **reverted** rather than ship an unverified
+change to a server-write path. See
+[Nested `KnowledgeProvider` blocker](../chat-groups/knowledge-provider-nesting-blocker.md).
+
+### The app's own `biorouterd` cannot read this machine's provider secrets — open
+
+📋 **Pre-existing, verified identical on old code** (by reverting).
+`provider_restore_failed: XIAOMI_MIMO_` → the route returns `extension_results:
+None` → extensions are never attempted → no readiness toast fires. All toast
+verification therefore ran against an **external** backend (`EXTERNAL=1`). This is
+not caused by progressive loading, but progressive loading is the first feature to
+*depend* on that field. Worth its own investigation.
+
+### Extensions are per-session, not global — open
+
+📌 **The deeper cost, and bigger than this branch.** 4 splits = 4 × ~1.0s of
+duplicate extension startup, spawning 4 copies of the same MCP servers. Proven, not
+inferred: a 4-split window fired **4 separate
+`resume(load_model_and_extensions=true)` calls**, and three cold sessions each paid
+independently. **Progressive loading hides this latency; it does not remove the
+work.** A shared/pooled extension manager is worth more than the reordering — and
+is a backend change of real size. Recommended, not built.
+
+### A split created at a narrow width keeps its slivers — open
+
+📌 **Deliberate — D-37.** A 4-up dragged out at 1400px sits at 169px panes and
+stays. Rung 4 merges only on a *crossing*, because a watcher that dissolved a split
+the instant you made it would be fighting the drop that just happened. If slivers
+should never exist, the fix belongs in the **drop** (refuse it, where the user can
+see why), not in a watcher that undoes it afterwards. Needs a decision, not a patch.
+
+### No virtualization in the transcript — open
+
+📋 **Count-proven, left alone deliberately.** 4 tabs mount **1211** message
+components at once and never unmount them (`ProgressiveMessageList` batches 20 at a
+time until *all* are mounted). It does not hurt typing today — 0 long tasks at 4
+groups — so fixing it now would be a refactor with no measured delta. **This is the
+scaling cliff**: the number that grows is messages × tabs, and nothing currently
+bounds it. File it before someone opens a 5000-message chat in four tabs.
+
+### `ChatStreamController` is never evicted — open
+
+📋 Pre-existing leak; tabs make it easier to hit but do not cause it. File
+separately.
+
+### `WorkflowsView.tsx:167` still routes to `/dashboard` — open
+
+📋 Removing the titlebar control did not remove the last entry point.
+
+## Still to verify by driving
+
+- **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
+  agent turn to produce an artifact. The arbitration is a pure
+  `event.target`/`closest()` question, which jsdom models faithfully and two
+  mutations caught — but the two listeners have not been proven to coexist in
+  the real app.
+- **Inherent, not a bug to fix:** with focus inside a preview's *sandboxed
+  iframe*, ⌃Tab does nothing — the keydown never reaches the parent document.
+  Clicking the panel's chrome restores it. Documented in `tabCycle.ts`.
+- **Production-bundle timing numbers were never obtained** — every absolute
+  figure in this document is dev-inflated. The ratio and long-task counts are the
+  trustworthy parts.
+- **4-group scroll shows a 442.9ms worst frame** (3/117 dropped). Real but
+  narrow — and **unverified**: the probe's scroller selector was wrong, so this
+  is a lead, not a finding.
+- ✅ **Resolved.** D-31 / D-33 / D-34 are now confirmed on screen — see
+  [the step-20 sweep](#step-20--the-visual-sweep-66-on-screen-and-one-real-bug).
+  The caution was warranted: the sweep found a real bug (the traffic-light
+  reserve) that every unit test passed straight through.
+- **A live agent turn was never exercised** — no provider is configured in this
+  environment (`XIAOMI_MIMO_API_KEY` missing; the composer reads "Unavailable").
+  The sweep worked around it with saved transcripts, real file links and the
+  harness, so **no artifact was produced by a live turn**.
+- **Split / multi-group layouts were not screen-verified** — the sweep drove the
+  single-group case only. The `firstLeaf` reserve aiming is unit-tested, not
+  seen.
+- **Widths below 800px are unreachable** (`main.ts` sets `minWidth: 800`). Not
+  faked.
+- macOS only.
+
+## Evidence from driving the real app
 
 jsdom applies no CSS and computes no layout, so none of this could be proven in
 a test. Each was observed:
@@ -118,8 +284,8 @@ a test. Each was observed:
 
 ### The "pre-existing test failures" were real, and are fixed
 
-I called them flakes three times. They were not. Two genuine defects in the
-shared test setup:
+They were dismissed as flakes three times. They were not. Two genuine defects in
+the shared test setup:
 
 1. **`findBy*` was racing a 1s timeout.** Testing Library's async helpers use
    their own `asyncUtilTimeout` (default 1000ms), which is INDEPENDENT of
@@ -128,26 +294,26 @@ shared test setup:
    gave up while the test still had 29s left. Fixed globally with
    `configure({ asyncUtilTimeout: 5000 })`.
 2. **jsdom has no `matchMedia` and nothing stubbed it.** Any component reaching
-   a responsive hook died. It was being re-stubbed per file — I added one of
-   those workarounds myself instead of fixing the root, which was the tell.
+   a responsive hook died. It was being re-stubbed per file — another such
+   workaround was added here rather than fixing the root, which was the tell.
 
-### The suite is load-sensitive, and it fooled me
+### The suite is load-sensitive, and it produced a false diagnosis
 
-I saw 17 failures and diagnosed a global ⌃Tab keydown listener swallowing
+A run showed 17 failures, diagnosed as a global ⌃Tab keydown listener swallowing
 Escape across the app. The cluster looked damning: menu dismissal, modal
-dismissal, focus restore. **I was wrong, and the way it was disproved is the
-lesson.**
+dismissal, focus restore. **That diagnosis was wrong, and the way it was disproved
+is the lesson.**
 
 The failing *sets differed between runs*, every failing file *passed in
 isolation*, `ChatGroupsProvider` only mounts under `/pair` so most of those
 components never had the listener at all — and `uptime` showed **load average
-112–166 on 8 cores**, because I had two heavy agents driving Electron while a
+112–166 on 8 cores**, because two heavy agents were driving Electron while a
 third ran the suite. At load 7: **1181/1181**. Exactly one of the 17 was real
 (the ArtifactViewer ⌃Tab contract, since fixed).
 
 Two things follow, and they generalise:
 
-1. **A coherent-looking story is not evidence.** My hypothesis explained the
+1. **A coherent-looking story is not evidence.** The hypothesis explained the
    cluster beautifully. It was still wrong. The cheap discriminator —
    *does it fail in isolation?* — costs seconds and would have killed it
    immediately. Run that before theorising.
@@ -168,7 +334,7 @@ Two things follow, and they generalise:
    the real name: nothing announces a session name on *load*, only on rename.
    Fixed twice over — first by listening for the load (which corrected the name
    but only *after* a visible second), then properly, by handing the name over
-   at open time (D-34). The first fix was treating the symptom: I made the
+   at open time (D-34). The first fix treated the symptom: it made the
    correction arrive reliably instead of asking why a correction was needed for
    a string the sidebar was already rendering.
 
@@ -176,11 +342,11 @@ Two things follow, and they generalise:
 
 **⌘T was already claimed by the menu**, exactly as ⌘W had been: "Go → New Chat"
 held `CmdOrCtrl+T` and merely navigated Home. That is now the *second* time a
-menu accelerator silently owned a key we wanted — a renderer listener could
-never have won either. Both go through menu + IPC. Worth generalising: **before
-binding any key in the renderer, dump the built menu.** `scripts/debug/menu-dump.mjs`
-does it, and it confirmed ⌃Tab is claimed by nothing, so ⌃Tab is an honest DOM
-listener.
+menu accelerator silently owned a key the renderer wanted — a renderer listener
+could never have won either. Both go through menu + IPC. Worth generalising:
+**before binding any key in the renderer, dump the built menu.**
+`scripts/debug/menu-dump.mjs` does it, and it confirmed ⌃Tab is claimed by
+nothing, so ⌃Tab is an honest DOM listener.
 
 **Verified by driving, 13/13** (`scripts/debug/tab-shortcuts-probe.mjs`): ⌘T
 0→1→2 blank tabs each with a composer; a real ⌃Tab keypress moving active 1→0;
@@ -188,6 +354,7 @@ listener.
 you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 windows.
 
 **Two bugs this work found, neither of them the feature:**
+
 1. **The preview panel was hijacking ⌃Tab app-wide.** Its listener was gated on
    `isOpen`, not focus — with a panel open it cycled *previews* from anywhere,
    including the composer. **Its test dispatched at `window`, so it passed while
@@ -195,7 +362,7 @@ you type — no text-input guard, deliberately); plain Tab inert; ⌘N 1→2 win
    Both listeners now consult one predicate (`isWithinArtifactPanel`), because
    both listen on `window` in capture and capture order is merely mount order.
 2. **Empty-tab adoption filled the *leftmost* blank tab.** ⌘T makes two blanks a
-   keystroke away, so your first message landed in the wrong one.
+   keystroke away, so the first message landed in the wrong one.
 
 ### Lag — measured, and the honest outcome was "don't refactor"
 
@@ -218,8 +385,8 @@ code. A refactor with no measured delta is a risk, not a fix.
 
 1. **Machine load.** Same probe, same build: **load 93 → p95 70ms + 41 long
    tasks; load 11 → p95 25.7ms + 0 long tasks.** Contention was nearly reported
-   as an app bug — the same trap that produced my phantom "17 failures". The
-   probe now asserts load and prints it next to every number.
+   as an app bug — the same trap that produced the phantom "17 failures" above.
+   The probe now asserts load and prints it next to every number.
 2. **The dev build is not the app.** A CPU profile indicted `jsxDEV` /
    `logComponentRender` / owner stacks — **~646ms of a ~1650ms typing burst is
    React dev-only work that does not exist in the packaged app.** Every
@@ -231,10 +398,16 @@ number that was silently measured against the dev bundle). This is the direct
 answer to the earlier N-mount probe that reported "affordable" while measuring
 an empty page.
 
-**The standing gate:** `cd ui/desktop && node scripts/perf/chat-perf-probe.mjs`
-(needs vite on :5173, non-zero exit on breach, docs in `scripts/perf/README.md`).
-Load-bearing budgets are the **ratio (1.6×)** and **long tasks (2)** — both
-near-immune to dev overhead. Absolutes are coarse on purpose.
+**The standing gate:**
+
+```bash
+cd ui/desktop && node scripts/perf/chat-perf-probe.mjs
+```
+
+It needs vite on `:5173`, exits non-zero on breach, and is documented in
+`scripts/perf/README.md`. Load-bearing budgets are the **ratio (1.6×)** and
+**long tasks (2)** — both near-immune to dev overhead. Absolutes are coarse on
+purpose.
 
 ### The premise behind progressive loading is confirmed, with numbers
 
@@ -289,6 +462,7 @@ Verified in a real 2×2 split: max 1 toast on screen, background successes
 silent, a background *failure* still spoke up.
 
 **Two pre-existing bugs found on the way, both fixed, both would have got worse:**
+
 - the transcript LRU cache (process-lifetime, no TTL) could reach a submit
   having **never loaded the agent at all** — a live-looking chat over a backend
   with no extensions;
@@ -308,7 +482,7 @@ from global state) — checked, fine.
 Each rung is a **pure function of (width, state)** in `Layout/yieldLadder.ts`
 (34 unit tests), following `sidebarAutoCollapseAction`'s shape on purpose:
 these are **state bugs waiting to happen, not layout bugs**, and the sidebar
-taught us that the testable part is the rule, not the geometry.
+showed that the testable part is the rule, not the geometry.
 
 | window | sidebar | pane | chat col | preview | tabs | rows | ▾ |
 |---|---|---|---|---|---|---|---|
@@ -365,7 +539,7 @@ harness in Chrome. **Observed values, not impressions.** 144 screenshots.
 | 5 | **Yield ladder 1400→800** | **PASS** | 11 tabs: never wraps (single `tabTops [9]`), nothing clipped, ▾ reachable at every rung, menu lists all 11 |
 | 6 | **Collapsed sidebar + traffic lights** | **BUG → FIXED** | below |
 
-#### The bug: the reserve was *inside the thing that moves*
+#### The bug: the reserve was inside the thing that moves
 
 The 172px traffic-light reserve was `padding-left` **on the scrolling element**.
 Padding is scrollable content — so any scroll carried the reserve away with it.
@@ -392,7 +566,7 @@ carries no left inset), which is the strongest claim jsdom can honestly make.
 The spec called this one in advance: *"a reserve that fails silently is worse
 than no reserve."*
 
-### One last thing the sweep flagged, and it was worse than reported
+#### The duplicated `1120` constant, and why it was worth fixing
 
 `BaseChat` re-declared `SIDEBAR_COMPACT_TITLE_WIDTH = 1120` instead of importing
 it. In fact **1120 was declared three times** — `AppLayout` (rung 1's threshold),
@@ -406,10 +580,10 @@ duplicate literal), and no runtime assertion can see a constant that was never
 imported. Mutation-checked: re-introducing a fourth copy fails exactly that test.
 
 The same commit corrected `CHAT_MIN_WIDTH`'s comment, which still carried the
-68ch rationale D-36 records as false. **A comment repeating a justification we
-have formally documented as wrong is worse than no comment.**
+68ch rationale D-36 records as false. **A comment repeating a justification
+formally documented as wrong is worse than no comment.**
 
-### Post-sweep: the one preview type the sweep couldn't see
+### Post-sweep: the one preview type the sweep could not see
 
 The step-20 sweep verified the artifact panel across 15 types — but **not the
 Jupyter notebook**, because the harness had no `.ipynb` fixture. That gap was
@@ -433,75 +607,30 @@ look at.
 ### Logo studios (separate deliverables, not part of the cohesion pass)
 
 Interactive tuning tools, self-contained, published as artifacts:
-- **`logo-icon-studio.html`** — the square `BR` app-icon mark (D-38: center the
-  union of letters + underline; size as a share of the plate). The user finalized
-  it (mark 70%, offset −20, gap 2%); the assets shipped as
-  `ui/desktop/src/images/br-icon-{beige,transparent}.{svg,png}` (`ff4635a7`) —
-  **new files, not the live `icon.*`**, which stays the abstract glyph until the
-  swap is approved. Note: `sips` flattens font-weight, so the rasters are
-  browser-rendered (weight-faithful), not `sips`-rendered.
-- **`logo-wordmark-studio.html`** — the horizontal `BioRouter` wordmark (navy Bio
-  + coral Router, a short split underline **between the o and the R**, UCSF-teal
-  `#18A3AC` navy on dark surfaces). Awaiting the user's finalized export.
 
-### Still to verify by driving
+- [`logo-icon-studio.html`](../branding/logo-icon-studio.html) — the square `BR`
+  app-icon mark (D-38: center the union of letters + underline; size as a share of
+  the plate). The user finalized it (mark 70%, offset −20, gap 2%); the assets
+  shipped as `ui/desktop/src/images/br-icon-{beige,transparent}.{svg,png}`
+  (`ff4635a7`) — **new files, not the live `icon.*`**, which stays the abstract
+  glyph until the swap is approved. Note: `sips` flattens font-weight, so the
+  rasters are browser-rendered (weight-faithful), not `sips`-rendered.
+- [`logo-wordmark-studio.html`](../branding/logo-wordmark-studio.html) — the
+  horizontal `BioRouter` wordmark (navy Bio + coral Router, a short split underline
+  **between the o and the R**, UCSF-teal `#18A3AC` navy on dark surfaces). Awaiting
+  the user's finalized export.
 
-- **The preview side of ⌃Tab is jsdom-only.** Opening the panel needs a live
-  agent turn to produce an artifact. The arbitration is a pure
-  `event.target`/`closest()` question, which jsdom models faithfully and two
-  mutations caught — but the two listeners have not been proven to coexist in
-  the real app.
-- **Inherent, not a bug to fix:** with focus inside a preview's *sandboxed
-  iframe*, ⌃Tab does nothing — the keydown never reaches the parent document.
-  Clicking the panel's chrome restores it. Documented in `tabCycle.ts`.
-- **Production-bundle timing numbers were never obtained** — every absolute
-  above is dev-inflated. The ratio and long-task counts are the trustworthy
-  parts.
-- **4-group scroll shows a 442.9ms worst frame** (3/117 dropped). Real but
-  narrow — and **unverified**: the probe's scroller selector was wrong, so this
-  is a lead, not a finding.
-- ✅ **Resolved.** D-31 / D-33 / D-34 are now confirmed on screen — see the
-  step-20 sweep above. The caution was warranted: the sweep found a real bug
-  (the traffic-light reserve) that every unit test passed straight through.
-- **A live agent turn was never exercised** — no provider is configured in this
-  environment (`XIAOMI_MIMO_API_KEY` missing; the composer reads "Unavailable").
-  The sweep worked around it with saved transcripts, real file links and the
-  harness, so **no artifact was produced by a live turn**.
-- **Split / multi-group layouts were not screen-verified** — the sweep drove the
-  single-group case only. The `firstLeaf` reserve aiming is unit-tested, not
-  seen.
-- **Widths below 800px are unreachable** (`main.ts` sets `minWidth: 800`). Not
-  faked.
-- macOS only.
+## Dated change log
 
----
+Entries in chronological order.
 
-## Known broken / open
-
-| Item | State |
-|---|---|
-| Sidebar collapse can't recover | ✅ **fixed.** Not the cause I guessed. The rail translated correctly at every width and the toggle always hit-tested itself — it needed a *resize* to reproduce: `AppLayout`'s auto-collapse effect listed `open` in its deps, so the user's own click re-triggered it and set `open` straight back to `false` in the same tick. Now gated on a width-bucket **crossing**. Pure `sidebarAutoCollapseAction` + 8 tests, because the bug was **state, not geometry** — so it is genuinely provable in jsdom |
-| Chat column flush-left, ~158px dead space right | ✅ **fixed, measured 250/250, delta 0** (was 24/158). Two causes: BaseChat's root had no `flex-1` (it used to mount only in a flex *column*, where stretch gave it full width for free; a chat *group* mounts it in a flex **row**, where width is the main axis — so it hugged its content and `mx-auto` centred inside *that*), and `contentClassName` opened with `pr-1`, a right-only 4px inset. **No jsdom test**, deliberately: jsdom computes no layout, so a centering assertion there would pass with the bug present. Verified by measurement in the real app |
-| Tab icons at 13/12px, off §3.9's 16/20/24 scale | ✅ **fixed** — both 16px. Glyphs already came from `app-icons` (stroke 1.5 confirmed *rendered*, which catches a raw `lucide-react` swap) |
-| History click replaces instead of opening a tab | ✅ **fixed** — tab per click, deduped across groups, closable via × / ⌘W. **User override of the VS Code preview-tab design**; the whole preview-tab concept (`preview` field, `pinTab`, pin-on-run, double-click-to-pin) is retired, with a test that fails if it creeps back |
-| ⌘W closed the **window**, not the tab | ✅ **fixed, and it was a landmine.** `{ role: 'close' }` in `main.ts` silently claimed `CmdOrCtrl+W` with no `accelerator:` line to grep for. A renderer keydown listener could **never** have won — a menu accelerator is consumed before the web contents sees the key, so the window would have closed regardless, taking every tab with it. ⌘W = Close Tab (via IPC), ⇧⌘W = Close Window, per Safari/Chrome. Verified by dumping the built menu |
-| Preview panel not window-pinned in a split | 📌 **known partial, deliberate.** It stays per-pane; in a left/right split it sits inside the active group's box, not at the window edge. Hoisting it drops the artifact tab stack on every group switch (plan Stage 5, its own change) |
-| `KnowledgeProvider` nesting | 🚫 blocked on the R7 prerequisite fix — I wrote it, could not demonstrate it with a green test, and **reverted it** rather than ship an unverified change to a server-write path |
-| **The app's own `biorouterd` cannot read this machine's provider secrets** | 📋 **pre-existing, verified identical on old code** (by reverting). `provider_restore_failed: XIAOMI_MIMO_` → the route returns `extension_results: None` → extensions are never attempted → no readiness toast fires. All toast verification therefore ran against an **external** backend (`EXTERNAL=1`). This is not caused by progressive loading, but progressive loading is the first feature to *depend* on that field. Worth its own investigation |
-| **Extensions are per-session, not global** | 📌 **the deeper cost, and bigger than this branch.** 4 splits = 4 × ~1.0s of duplicate extension startup, spawning 4 copies of the same MCP servers. Proven, not inferred: a 4-split window fired **4 separate `resume(load_model_and_extensions=true)` calls**, and three cold sessions each paid independently. **Progressive loading hides this latency; it does not remove the work.** A shared/pooled extension manager is worth more than the reordering — and is a backend change of real size. Recommended, not built |
-| **A split created at a narrow width keeps its slivers** | 📌 **deliberate — D-37.** A 4-up dragged out at 1400px sits at 169px panes and stays. Rung 4 merges only on a *crossing*, because a watcher that dissolved a split the instant you made it would be fighting the drop that just happened. If slivers should never exist, the fix belongs in the **drop** (refuse it, where the user can see why), not in a watcher that undoes it afterwards. Needs a decision, not a patch |
-| **No virtualization in the transcript** | 📋 **count-proven, left alone deliberately.** 4 tabs mount **1211** message components at once and never unmount them (`ProgressiveMessageList` batches 20 at a time until *all* are mounted). It does not hurt typing today — 0 long tasks at 4 groups — so fixing it now would be a refactor with no measured delta. **This is the scaling cliff**: the number that grows is messages × tabs, and nothing currently bounds it. File it before someone opens a 5000-message chat in four tabs |
-| `ChatStreamController` never evicted | 📋 pre-existing leak; tabs make it easier to hit but do not cause it. File separately |
-| `WorkflowsView.tsx:167` still routes to `/dashboard` | 📋 removing the titlebar control did not remove the last entry point |
-
----
-
-## Brand rollout — the BR mark + BioRouter wordmark ship (2026-07-17)
+### Brand rollout — the BR mark and BioRouter wordmark ship (2026-07-17)
 
 The abstract circle glyph is retired (D-40). The new identity flies everywhere
 the old glyph did.
 
 **Assets (D-38 mark, D-39 wordmark, all committed).**
+
 - App icon (`icon.icns`/`.ico`/`.png` + light variants) → the BR mark on the
   cream plate, **inset to the macOS icon safe-area** — the plate is 78.9% of the
   tile (~100px transparent margin), not the 97.6% full-bleed that read
@@ -516,6 +645,7 @@ the old glyph did.
   surface (but stay navy on the cream plate).
 
 **Verified on screen, not by unit test** (jsdom has no getBBox):
+
 - the two components rendered in isolation (esbuild + real browser), light and
   dark, transparent and plated — all correct;
 - the packaged **arm64 `.app`** launches and the sidebar flies the wordmark;
@@ -538,54 +668,12 @@ The old wrappers (`BioRouterLogo`, `WelcomeBioRouterLogo`, `BioRouterIcon`, the
 this pass rather than deleted; `glyph.svg` is itself now the BR mark, so even an
 overlooked mask render shows BR, not the old circle.
 
----
-
-## Brand font → Inter, and a re-tune (2026-07-18)
-
-**Why the font changed.** The mark shipped in the native UI stack
-(`-apple-system` → **SF Pro** on macOS). But Apple's font license forbids SF Pro
-"in app icons, logos, or any other trademark use" — legitimate as live UI text,
-not as a brand mark, and doubly wrong once baked into cross-platform icon rasters
-and the served landing SVG. A native stack also renders the logo in a *different*
-face per OS (SF Pro / Segoe UI / Roboto), which a logo must never do.
-
-**The font chosen.** From a 7-font study (all **SIL Open Font License**, which
-explicitly permits logos + embedding + outlining), the user picked **Inter** —
-the closest to SF Pro's UI face, with the "rounder" feel they asked for. OFL
-resolves both problems at once: legal for a logo, and fixed across platforms.
-
-**Re-tuned in the studios** (now set in Inter), exported by the user:
-- **Wordmark** — weight 600, letter-spacing 0, underline gap 2%, thickness 10%,
-  underline width 100%, vertical offset 0 (word + underline centered as one body).
-- **BR icon** — mark size 60% of the icon, vertical offset −10px, underline gap
-  2% (cap 262, underline 39 thick, union 306 = 60% on the 512 canvas). The
-  wordmark studio gained a **Vertical position** dial it had lacked.
-
-**How Inter ships.**
-- In-app: a single latin-subset **variable** Inter `@font-face` is embedded (data
-  URI, not fetched) in `main.css` — a deliberate, *logo-only* exception to D-06's
-  native-stack rule, used only by `<BioRouterWordmark>`/`<BioRouterMark>`. The
-  components now name `Inter` first in their font stack (native stack stays as the
-  load fallback); the monogram's plate fill is pinned to the approved 60%.
-- Assets: `icon.svg` / `br-icon-beige.svg` / `br-icon-transparent.svg` /
-  `glyph.svg` embed a weight-800 Inter `@font-face` so they render Inter without
-  it installed. The 1024 PNG masters (`br-icon-beige.png`, `br-glyph-mono.png`)
-  were re-rendered through Chromium (still not `sips` — it flattens weight), and
-  `prepare.sh` re-propagated every raster: `icon.icns`/`.ico`/`.png` + light
-  variants, the menu-bar templates, `landing/icon.{svg,png}` (+ video copies),
-  and the CLI `logo_{light,dark}.png`.
-
-The mark is otherwise unchanged — same navy `#052049` "B/Bio", coral `#b85a32`
-"R/Router", split underline, and navy → UCSF teal `#18A3AC` on dark. Only the
-letterforms are now a font BioRouter is licensed to fly as its logo.
-
----
-
-## Follow-on UI + terminal fixes (2026-07-17, on user review)
+### Follow-on UI and terminal fixes (2026-07-17, on user review)
 
 Eight review fixes, all committed, gates green (**1290/1290**, tsc + lint clean).
 
 **Sidebar / home / tabs** (`fecf5dd3`, verified in the packaged build via CDP):
+
 - **Recents count → past 7 days.** The badge counted the loaded buffer (a paging
   artefact — 170); it now counts chats touched in the last week (20) with a
   tooltip. Shown in both states.
@@ -610,6 +698,7 @@ built-ins that always load, so 5 user extensions with one failure reads "4 of
 
 **In-app terminal → per chat tab** (`db095200`, `e08a4a18`, `c247b214`,
 `a5dabdb1`; 21 tests; verified in the packaged build):
+
 - Was one window-global dock. Now `TerminalDockContext` is a map keyed by **tab
   id**; each tab has its own terminal, and it only shows for the active group's
   active tab. Background tabs' shells stay alive (hidden) until the tab closes
@@ -630,15 +719,56 @@ correct — proven by rebuilding the packaged (production) bundle and driving it
 over CDP, where every change rendered. When HMR lies, the packaged build is the
 source of truth.
 
----
+### Brand font → Inter, and a re-tune (2026-07-18)
 
-## Decisions the user overrode (recorded, not argued)
+**Why the font changed.** The mark shipped in the native UI stack
+(`-apple-system` → **SF Pro** on macOS). But Apple's font license forbids SF Pro
+"in app icons, logos, or any other trademark use" — legitimate as live UI text,
+not as a brand mark, and doubly wrong once baked into cross-platform icon rasters
+and the served landing SVG. A native stack also renders the logo in a *different*
+face per OS (SF Pro / Segoe UI / Roboto), which a logo must never do.
 
-- **D-31 — tab labels: mono → sans.** I borrowed otty.sh's mono-for-UI-labels
-  idea and justified it with P6. In the app it read as a special thin font that
-  belonged to nothing else on screen — the exact incoherence this pass exists to
-  remove. Mono keeps the jobs it earns (code, terminal, paths); a tab label is a
-  name. **Mono for data, sans for chrome.**
+**The font chosen.** From a 7-font study (all **SIL Open Font License**, which
+explicitly permits logos + embedding + outlining), the user picked **Inter** —
+the closest to SF Pro's UI face, with the "rounder" feel they asked for. OFL
+resolves both problems at once: legal for a logo, and fixed across platforms.
+
+**Re-tuned in the studios** (now set in Inter), exported by the user:
+
+- **Wordmark** — weight 600, letter-spacing 0, underline gap 2%, thickness 10%,
+  underline width 100%, vertical offset 0 (word + underline centered as one body).
+- **BR icon** — mark size 60% of the icon, vertical offset −10px, underline gap
+  2% (cap 262, underline 39 thick, union 306 = 60% on the 512 canvas). The
+  wordmark studio gained a **Vertical position** dial it had lacked.
+
+**How Inter ships.**
+
+- In-app: a single latin-subset **variable** Inter `@font-face` is embedded (data
+  URI, not fetched) in `main.css` — a deliberate, *logo-only* exception to D-06's
+  native-stack rule, used only by `<BioRouterWordmark>`/`<BioRouterMark>`. The
+  components now name `Inter` first in their font stack (native stack stays as the
+  load fallback); the monogram's plate fill is pinned to the approved 60%.
+- Assets: `icon.svg` / `br-icon-beige.svg` / `br-icon-transparent.svg` /
+  `glyph.svg` embed a weight-800 Inter `@font-face` so they render Inter without
+  it installed. The 1024 PNG masters (`br-icon-beige.png`, `br-glyph-mono.png`)
+  were re-rendered through Chromium (still not `sips` — it flattens weight), and
+  `prepare.sh` re-propagated every raster: `icon.icns`/`.ico`/`.png` + light
+  variants, the menu-bar templates, `landing/icon.{svg,png}` (+ video copies),
+  and the CLI `logo_{light,dark}.png`.
+
+The mark is otherwise unchanged — same navy `#052049` "B/Bio", coral `#b85a32`
+"R/Router", split underline, and navy → UCSF teal `#18A3AC` on dark. Only the
+letterforms are now a font BioRouter is licensed to fly as its logo.
+
+## Decisions the user overrode
+
+Recorded, not argued.
+
+- **D-31 — tab labels: mono → sans.** The original choice borrowed otty.sh's
+  mono-for-UI-labels idea and justified it with P6. In the app it read as a
+  special thin font that belonged to nothing else on screen — the exact
+  incoherence this pass exists to remove. Mono keeps the jobs it earns (code,
+  terminal, paths); a tab label is a name. **Mono for data, sans for chrome.**
 - **Tab-per-click.** VS Code preview tabs (single click = italic, reuses the
   slot) were deliberate, to stop history browsing leaving twelve tabs behind.
   The user looked at it and wants a tab per click, deduped, closable with ×/⌘W.
@@ -661,9 +791,9 @@ source of truth.
   ⌃Tab and not ⌘Tab because the OS owns ⌘Tab and will not give it up; this is
   also what Safari and Chrome do on macOS.
 
----
+## What is not built, and why
 
-## What is NOT built, and why (each has a reason, not a shrug)
+Each has a reason, not a shrug.
 
 - **Splitting past 4 groups** — `MAX_GROUPS=4` is the edge of the R4 evidence
   (measured with small windows and short transcripts), not a memory cliff.
@@ -672,4 +802,19 @@ source of truth.
 - **Harvesting Dashboard's `createdHere` delete-on-close** — combined with
   preview tabs, browsing history could DELETE sessions. The judge called it the
   highest-consequence bug in the packet.
-- **The artifact-panel hoist** — see the known partial above.
+- **The artifact-panel hoist** — see
+  [Preview panel is not window-pinned in a split](#preview-panel-is-not-window-pinned-in-a-split--open).
+
+## Related documentation
+
+- [UI cohesion redesign spec](ui-cohesion-redesign.html) — the approved visual
+  spec this branch implements, with a Current ⇄ Redesigned toggle.
+- [Chat-groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) —
+  the three candidate designs, the adversarial judge, and the shipped subset that
+  steps 8–10 above execute.
+- [Nested `KnowledgeProvider`: the chat-groups nesting blocker](../chat-groups/knowledge-provider-nesting-blocker.md) —
+  the R7 spike behind the one blocked item in this branch's register.
+- [BioRouter design system](../../../design.md) — the D-NN decision register
+  (Part 6 / 6b) and the drift register (Part 7) that this document cites throughout.
+- [BioRouter logo and wordmark specification](../branding/logo-and-wordmark-spec.md) —
+  the normative geometry and colour for the marks whose rollout is logged here.

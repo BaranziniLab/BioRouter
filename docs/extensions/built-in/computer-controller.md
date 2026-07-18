@@ -1,58 +1,78 @@
-The Computer Controller extension helps automate everyday computer tasks and web interactions such as searching the web, controlling system settings, processing data files, and controlling applications without needing to know how to code.
+# Computer Controller extension
 
-This tutorial covers enabling and using the Computer Controller MCP Server, which is a built-in biorouter extension.
+> **What this is.** User guide to the built-in Computer Controller extension: how to enable it, which tools it provides, and a worked example combining web research with macOS system automation.
+> **Status:** Current — `crates/biorouter-mcp/src/computercontroller/` ships in the product and the tools described below are real. The worked example is macOS-specific.
+> **Audience:** end users.
 
-> **Tip:** Let biorouter complete its tasks without interruption - avoid using your mouse or keyboard until it's done.
+The Computer Controller extension automates everyday computer tasks and web interactions — searching the web, controlling system settings, processing data files, and driving applications — without you having to write code. It is the highest-blast-radius built-in extension, because it acts on your actual desktop rather than on a sandboxed workspace.
+
+> **Warning.** `computer_control` drives your real machine: it can launch and quit applications, click buttons, type text, change system settings, and reorganize files. Before running an unattended automation, decide whether you want BioRouter to ask first — see [permission modes](../../security/permission-modes.md) for how to switch out of Autonomous mode, and the [security guide](../../security/README.md) for the wider picture.
+
+> **Tip.** Let BioRouter complete its tasks without interruption — avoid using your mouse or keyboard until it is done.
+
+## Platform support
+
+The `computer_control` tool exists on every platform, but its automation backend and therefore its capabilities differ:
+
+| Platform | Backend | Notes |
+|----------|---------|-------|
+| macOS | AppleScript | Application control, UI automation, system settings, web and email, media, file operations, Calendar/Reminders/Messages integration. |
+| Windows | PowerShell | PowerShell system control and UI automation, file and system management, Windows-specific features and settings. |
+| Linux | Shell scripting | X11/Wayland window management, D-Bus system services, desktop-environment control (GNOME, KDE), process management, system settings. |
+| Other | System automation | Available features depend on the operating system. |
+
+The `automation_script` tool runs PowerShell or Batch scripts on Windows. The worked example later on this page is **macOS-only** — it uses Safari, Numbers and macOS screen brightness — so Linux and Windows users should read it as an illustration of shape, not as a runnable recipe.
 
 ## Configuration
 
-  
-  
-  
-  
+1. Run the `configure` command:
 
-  1. Run the `configure` command:
-  ```sh
-  biorouter configure
-  ```
+   ```bash
+   biorouter configure
+   ```
 
-  2. Choose to `Toggle Extensions`
-  ```sh
-  ┌   biorouter-configure 
-  │
-  ◇  What would you like to configure?
-  │  Toggle Extensions 
-  │
-  ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
-  // highlight-start    
-  │  ● computercontroller
-  // highlight-end
-  |
-  └  Extension settings updated successfully
-  ```
-  
+2. Choose `Toggle Extensions`, then enable `computercontroller`:
 
-## Example Usage
+   ```text
+   ┌   biorouter-configure
+   │
+   ◇  What would you like to configure?
+   │  Toggle Extensions
+   │
+   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   │  ● computercontroller
+   └  Extension settings updated successfully
+   ```
 
-In this example, I'll show you how biorouter can multitask, handling everything from system controls and music playback to web research and data organization.
+## Available tools
 
-> **Info:** Anthropic's Claude 4 Sonnet was used for this task.
+| Tool | Description | Risk |
+|------|-------------|------|
+| `computer_control` | Control the computer through the platform's automation backend (AppleScript, PowerShell or shell). Launch and quit applications, simulate clicks and typing, manage system settings, open URLs, organize files. Combines well with a screenshot tool for visual assistance. | ⚠️ High — acts on your real desktop |
+| `automation_script` | Create and run small PowerShell or Batch scripts. Also usable for network-aware scripts (web, API, RSS, news searches) when no dedicated search tool exists. The script is saved to a temporary file and executed. | ⚠️ High — runs arbitrary scripts |
+| `web_scrape` | Fetch an HTTP(S) URL for web research, APIs, RSS/Atom feeds, and search-result URLs. Text and JSON are returned inline and a cached copy is saved; large responses are truncated inline but stay complete in the cache. Prefer this over an automation script when you already know the URL. | ✅ Low — read-only fetch |
+| `xlsx_tool` | Read and manipulate Excel workbooks: `list_worksheets`, `get_columns`, `get_range`, `find_text`, `get_cell`, `update_cell`, `save`. | Moderate — can modify workbooks |
+| `docx_tool` | Extract text and structure from DOCX files (`extract_text`), or create/update documents (`update_doc`, with `append`, `replace`, `structured` and `add_image` modes). | Moderate — can modify documents |
+| `pdf_tool` | Extract text (`extract_text`) or embedded images (`extract_images`, saved as PNG) from PDF files. | ✅ Low — read-only extraction |
+| `cache` | Manage cached files and data: `list`, `view`, `delete`, `clear`. | ✅ Low |
 
-  
-   1. Open a new session in biorouter Desktop
-  
-  
+> **Note.** When embedding a multiline script inside `execute_code` (Code Mode), wrap it in a `` String.raw`...` `` JavaScript template literal so backslashes survive intact.
 
-  1. Open a terminal and start a new biorouter session:
+## Example usage
 
-  ```sh
-  biorouter session
-  ```
+This example shows BioRouter multitasking across system controls, music playback, web research and data organization. It was run on macOS.
 
-  
+To follow along, either open a new session in BioRouter Desktop, or start one from a terminal:
 
-### biorouter Prompt
+```bash
+biorouter session
 ```
+
+> **Note.** This transcript was produced with Anthropic's Claude 4 Sonnet. Any tool-capable model can drive the extension; the exact wording of the response will differ by model.
+
+### BioRouter prompt
+
+```text
 biorouter, I need to decompress while researching candidate drugs for tomorrow's lab meeting. Can you create a relaxing environment and help me research?
 
 1. Play classical music in Safari
@@ -66,7 +86,8 @@ biorouter, I need to decompress while researching candidate drugs for tomorrow's
 6. Reset brightness and close Safari
 ```
 
-### biorouter Output
+### BioRouter output
+
 ```md
 I'll help you create a relaxing research environment and gather information about AI models. I'll break this down into steps:
 
@@ -118,4 +139,12 @@ The file is now open in Numbers for your review. The environment has been reset 
 ```
 
 ### Results
-![Computer Controller MCP Output](../assets/guides/computer-controller-csv-result.png)
+
+The run produced `drug-candidates-comparison.csv` on the desktop and opened it in Numbers. (The screenshot that originally accompanied this section is no longer part of the documentation.)
+
+## Related documentation
+
+- [Developer extension](developer.md) — the other high-privilege built-in extension, and the fullest description of BioRouter's layered access controls.
+- [Permission modes](../../security/permission-modes.md) — how to make BioRouter ask before it acts on your machine.
+- [Security guide](../../security/README.md) — using BioRouter safely, including what a high-privilege extension implies.
+- [Computer Controller hardening: test plan and root causes](../../history/computer-controller-hardening/test-plan-and-root-causes.md) — the historical campaign that exercised these tools and the failure modes it found.

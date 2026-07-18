@@ -1,15 +1,41 @@
-# Dashboard Mode — Design Spec
+# Dashboard Mode — design spec (v2)
+
+> **What this is.** The second-generation spec for the multi-conversation
+> workspace. It renames Lab Meeting Mode to **Dashboard Mode** and reworks
+> window sizing, focus-pop, session naming, per-window pickers and the layout
+> engine.
+> **Status:** Superseded, and then removed. The infinite-canvas rework
+> ([v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md)) replaced
+> the board described here, and dashboard mode was removed from the app
+> wholesale on 2026-07-18 — the `/dashboard` route, `DashboardProvider`, both
+> contexts and the whole component tree are deleted (see the
+> [removal record](README.md)). A few incidental changes specified here did
+> survive the removal: `SessionNamePill` was relocated to
+> `ui/desktop/src/components/SessionNamePill.tsx`, and `BaseChat`'s `coherent`
+> default stayed flipped on.
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Section key.** Sections are numbered `§0`–`§15`. The
+> [v2 implementation plan](v2-dashboard-mode-plan.md) cites those numbers
+> (`§7c`, `§8.3`, `§13`), so they are preserved verbatim rather than renumbered.
+> **Who "the requester" is.** This document was written against change requests
+> from the product owner who commissioned the feature. Where the original text
+> said "the user" to mean *that person*, it now says **the requester**; "the
+> user" is reserved throughout for the end user of the app.
 
 **Project:** BioRouter
 **Feature:** Dashboard Mode (renames Lab Meeting Mode; reworks layout, sizing, naming, chat UI)
 **Date:** 2026-05-10
-**Status:** Approved (pending implementation)
+**Original status line:** Approved (pending implementation)
 
 ---
 
 ## 0. Summary
 
-Lab Meeting Mode (v1, 2026-05-08) shipped a working multi-conversation workspace at `/lab-meeting`. This spec covers eight changes the user requested after first-pass testing:
+Lab Meeting Mode (v1, 2026-05-08 — see the [v1 design spec](v1-lab-meeting-mode-design.md)) shipped a working multi-conversation workspace at `/lab-meeting`. This spec covers eight changes the requester asked for after first-pass testing, plus one cross-cutting change from design review.
+
+> **Read §1 first.** The rename table in §1 is the load-bearing artifact of this
+> document — it is the complete old-name → new-name mapping that the whole
+> codebase sweep was driven from. The list below is a change log, not the design.
 
 1. Rename the feature to **Dashboard Mode** everywhere.
 2. Switch the toolbar entry icon from `Users` to `LayoutDashboard`.
@@ -46,7 +72,7 @@ Plus one cross-cutting change requested during design review:
 
 **localStorage migration:** On first hydration, if `biorouter.dashboard.v1` is absent and `biorouter.labmeeting.v1` is present, read the old key, write to the new key, and delete the old one. One-shot, runs at provider mount.
 
-**Documentation:** the original 2026-05-08 spec and plan stay in `docs/superpowers/specs/` and `docs/superpowers/plans/` as historical record (renaming the spec file would lose git history). This new spec replaces them as the source of truth.
+**Documentation:** the original 2026-05-08 spec and plan stay in place as historical record (renaming the spec file would lose git history). This new spec replaces them as the source of truth. They now live alongside this file as [v1 — Lab Meeting Mode design spec](v1-lab-meeting-mode-design.md) and [v1 — Lab Meeting Mode implementation plan](v1-lab-meeting-mode-plan.md).
 
 **Verification:** `grep -rin "lab.meeting\|LabMeeting\|labmeeting" ui/desktop/src` returns zero hits after the sweep.
 
@@ -54,7 +80,7 @@ Plus one cross-cutting change requested during design review:
 
 ## 2. Icon
 
-Add `LayoutDashboard` from `lucide-react` to the import block in [app-icons.tsx](../../../ui/desktop/src/components/icons/app-icons.tsx) and export it (wrapped through the same `light()` helper as siblings). Replace the `Users` icon in [AppLayout.tsx](../../../ui/desktop/src/components/Layout/AppLayout.tsx) with `LayoutDashboard`. Tooltip text becomes "Open Dashboard".
+Add `LayoutDashboard` from `lucide-react` to the import block in [`app-icons.tsx`](../../../ui/desktop/src/components/icons/app-icons.tsx) and export it (wrapped through the same `light()` helper as siblings). Replace the `Users` icon in [`AppLayout.tsx`](../../../ui/desktop/src/components/Layout/AppLayout.tsx) with `LayoutDashboard`. Tooltip text becomes "Open Dashboard".
 
 `Users` import in AppLayout removed if no other consumer in that file.
 
@@ -62,7 +88,7 @@ Add `LayoutDashboard` from `lucide-react` to the import block in [app-icons.tsx]
 
 ## 3. Window sizing — comfortable, not screen-filling
 
-The app's BrowserWindow default is `940 × 800` (from [main.ts:573-574](../../../ui/desktop/src/main.ts#L573-L574)). That is the most comfortable size for a single chat. Dashboard windows use this as their target size — only smaller when crowded.
+The app's BrowserWindow default is `940 × 800` (set in [`ui/desktop/src/main.ts`](../../../ui/desktop/src/main.ts), at lines 573–574 as of this spec's date). That is the most comfortable size for a single chat. Dashboard windows use this as their target size — only smaller when crowded.
 
 Constants in the engine:
 
@@ -114,32 +140,38 @@ The layout engine additionally enforces `EDGE_INSET = 6 px` so that even the un-
 
 ---
 
-## 5. Toolbar polish + Organize/Clear
+## 5. Toolbar polish, and the Organize/Clear investigation
 
-### Buttons
+### 5.1 Buttons
 
 - The Spawn button currently renders `<Plus> Spawn`. Drop the icon; render just the text `Spawn`. Organize and Clear are already text-only — Spawn now matches.
-- Hover treatment: align with the standard ghost button hover used by the sidebar nav items in [AppSidebar.tsx](../../../ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx) — `hover:bg-background-medium transition-colors`. Whatever class is used there is what we use here; do not invent a new hover style.
+- Hover treatment: align with the standard ghost button hover used by the sidebar nav items in [`AppSidebar.tsx`](../../../ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx) — `hover:bg-background-medium transition-colors`. Whatever class is used there is what we use here; do not invent a new hover style.
 - Active/click state: same as the rest of the app — let the `Button` component's variant handle it (we already use `variant="ghost" size="xs"`).
 
-### Organize and Clear bug investigation
+### 5.2 Organize and Clear bug investigation
 
-The user reports both don't work. During Playwright validation in the prior session, both **updated state in storage**, but the visible reflow may not have appeared to do anything because:
+> **Note.** This subsection is a bug investigation, not forward-looking design.
+> It records what was observed in a debugging session and what still had to be
+> confirmed against the running app, and is kept here because the fix landed as
+> part of this spec's work.
+
+The requester reports both don't work. During Playwright validation in the prior session, both **updated state in storage**, but the visible reflow may not have appeared to do anything because:
+
 - **Clear** correctly empties `state.windows` → board shows empty CTA. Looks broken if the user expected an animated dismissal.
 - **Organize** sets `isManuallyPlaced=false` and clears `position/size` for all windows → but if no window had been moved manually, the layout output is unchanged, so nothing visibly happens.
 
-Plan: use Playwright debugger against the running app to reproduce what the user is seeing, then fix the underlying issue. Two specific things to confirm:
+Plan: use Playwright debugger against the running app to reproduce what the requester is seeing, then fix the underlying issue. Two specific things to confirm:
 
-- Clicking Organize after the user has *resized* a window: does the window snap back to the engine-computed size? (Expected yes after this spec — Organize is the canonical "redo layout from scratch with the new engine.")
+- Clicking Organize after a window has been *resized*: does the window snap back to the engine-computed size? (Expected yes after this spec — Organize is the canonical "redo layout from scratch with the new engine.")
 - Clicking Clear: do all on-board and tucked windows disappear, and does the sidebar collapse? (Expected yes.)
 
-Any bug found in the buttons themselves (click handler not bound, state not updating) is fixed here. Any UX mismatch (the user expected Organize to do something visible when no manual placement exists) is addressed by ensuring Organize always re-runs the **new** layout engine, which can produce different output than the current grid only after the engine itself is in place (phase 3). So Organize becomes meaningfully visible once both phases land.
+Any bug found in the buttons themselves (click handler not bound, state not updating) is fixed here. Any UX mismatch (the requester expected Organize to do something visible when no manual placement exists) is addressed by ensuring Organize always re-runs the **new** layout engine, which can produce different output than the current grid only after the engine itself is in place (phase 3). So Organize becomes meaningfully visible once both phases land.
 
 ---
 
 ## 6. Window-size restore on exit (no confirmation modal)
 
-Per user clarification: when the user clicks Home, Chat, or any sidebar destination, the dashboard's windows are **not closed**. Conversations live until the user explicitly closes them via the window `×` button or the toolbar Clear. The user can return to the dashboard via the LayoutDashboard toolbar button or the floating "Back to Dashboard" pill — state is fully preserved.
+Per the requester's clarification: when the user clicks Home, Chat, or any sidebar destination, the dashboard's windows are **not closed**. Conversations live until the user explicitly closes them via the window `×` button or the toolbar Clear. The user can return to the dashboard via the LayoutDashboard toolbar button or the floating "Back to Dashboard" pill — state is fully preserved.
 
 The only thing that changes on navigation is the **BrowserWindow size**:
 
@@ -151,7 +183,7 @@ No confirmation modal. No closing of windows. Just shrink + go.
 
 ---
 
-## 7. Coherent `/pair` + per-window pickers
+## 7. Coherent `/pair` and per-window pickers
 
 ### 7a. `BaseChat` coherent by default
 
@@ -182,7 +214,7 @@ Initial values for these come from the app-level defaults at spawn time (existin
 
 With per-window pickers, the app-level status bar at the bottom of the dashboard route is redundant. Remove the component and its render in `DashboardRoute`. The route's vertical layout becomes:
 
-```
+```tsx
 <DashboardToolbar />
 <DashboardBoard />          // takes remaining height
 ```
@@ -251,6 +283,15 @@ History reads from biorouterd's `session.name`. As long as user renames write th
 
 ## 9. Layout engine — deterministic soft-tile + relaxation
 
+> **What changed from v1.** The function signature is identical to v1's engine
+> (§9.1); only the internals are replaced. v1 computed a clean grid, then placed
+> overflow windows on grid intersection points, and had no notion of respecting
+> a user-resized window. v2 replaces that with the six-stage pipeline in §9.3 —
+> the new parts are comfort-capped cell sizing (Stage 2), treating user-placed
+> windows as *pinned* obstacles to route around (Stage 4), force relaxation to
+> spread residual overlap (Stage 5), and a hard determinism contract with zero
+> RNG (§9.4, §9.7).
+
 ### 9.1 Inputs / outputs
 
 ```ts
@@ -285,7 +326,7 @@ const Z_FOCUSED = 100;
 
 ### 9.3 Pipeline
 
-```
+```text
 1. Partition  → pinned, auto, tucked (tucked skipped entirely)
 2. Cell-size  → cellW × cellH for auto windows (comfort cap, fill-factor 0.7)
 3. Slot       → initial position per auto window
@@ -305,7 +346,7 @@ Zero `Math.random()` calls. Every "perturbation" comes from `hash32(windowId)` (
 
 For each auto rect, against each pinned rect:
 
-```
+```text
 overlap = intersect(autoRect, pinnedRect)
 if overlap.area == 0: continue
 // Choose cardinal exit with the smallest displacement
@@ -322,7 +363,7 @@ apply, clamp to board interior
 
 ### 9.6 Stage 5 — Relaxation
 
-```
+```text
 for pass in 0..RELAX_PASSES:
   delta := {}
   for each pair (A, B) in auto × auto with i < j:
@@ -415,11 +456,17 @@ All `Lab*` and `lab*` modules. Re-export shapes preserved (`index.ts`). All test
 ## 13. Migration plan
 
 - v1 storage key (`biorouter.labmeeting.v1`) is read at provider mount; if present and the new key is absent, contents are copied into the new key (`biorouter.dashboard.v1`) and the old key is deleted. Single shot per install.
-- v1 spec/plan files remain in `docs/superpowers/` (specs and plans) for reference. New documents live alongside them; replacement is communicated via this doc's status header.
+- The v1 spec and plan files stay where they are, for reference. This document replaces them as the source of truth.
+
+> **Note.** The original text here said replacement "is communicated via this
+> doc's status header". It was not — the header of this spec as written said
+> only "Approved (pending implementation)" and never named what it superseded.
+> The superseded-by relationship is now stated explicitly in the context header
+> at the top of both this file and the [v1 design spec](v1-lab-meeting-mode-design.md).
 
 ---
 
-## 14. Testing & validation
+## 14. Testing and validation
 
 - Unit (Vitest): full `layoutEngine.test.ts` rewrite (~22 cases); provider tests updated for renamed surface.
 - Component (Vitest): `DashboardProvider.test.tsx` — `userSetName` flag, biorouterd-name sync, default `Session N` numbering, localStorage migration from v1 key.
@@ -432,3 +479,10 @@ All `Lab*` and `lab*` modules. Re-export shapes preserved (`index.ts`). All test
 - **Coherent `/pair` default flip** — touches the most-used route. Manual smoke test before merging.
 - **biorouterd session-name sync** — depends on biorouterd's existing behavior; if it stops emitting name updates the auto-rename falls silent (user can still rename manually).
 - **localStorage migration** — single-shot, fails gracefully (if old key parse fails, just start fresh on the new key).
+
+## Related documentation
+
+- [Dashboard mode — removal record and archive index](README.md) — what became of this feature, and which parts of this spec survived the removal.
+- [v1 — Lab Meeting Mode design spec](v1-lab-meeting-mode-design.md) — the design this one renames and reworks; §1's table maps its every identifier.
+- [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md) — the 12-task plan that executed this spec and cites its `§N` numbers.
+- [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md) — the direct successor: throws away the bounded board and the `T1`/`T2` tuck system for an infinite canvas.

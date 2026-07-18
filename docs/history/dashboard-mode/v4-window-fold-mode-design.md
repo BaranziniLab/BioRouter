@@ -1,8 +1,24 @@
-# Dashboard Fold Mode — Design
+# Dashboard fold mode — design spec (v4)
+
+> **What this is.** The design for folding dashboard chat windows into compact
+> 240×72 cards — individually or all at once — with a live busy indicator and a
+> new muted accent palette.
+> **Status:** Historical record, then superseded by removal. Fold mode was built
+> and **shipped in v1.85.3**, and was deleted on 2026-07-18 along with the whole
+> dashboard: `FoldedCard`, `DashboardToolbar`, `WindowTitleBar` and `palette.ts`
+> all went with the `ui/desktop/src/components/Dashboard/` tree. See the
+> [removal record](README.md). The original header below said only "Approved for
+> implementation planning" and recorded neither the ship nor the removal.
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Prerequisite.** This spec assumes the infinite canvas built by
+> [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md), which is
+> where `organize()`, `canvasLayout.ts`, the `MIN_WINDOW_W` / `MIN_WINDOW_H`
+> constants and the per-window accent colours come from. Read that first if any
+> of those are unfamiliar.
 
 **Date:** 2026-05-29
-**Status:** Approved for implementation planning
-**Area:** `ui/desktop/src/components/Dashboard/*`
+**Original status line:** Approved for implementation planning
+**Area:** `ui/desktop/src/components/Dashboard/*` (deleted 2026-07-18)
 
 ## Problem
 
@@ -25,7 +41,7 @@ The dashboard's full-size chat windows take a lot of canvas real estate. Users r
 - Bulk multi-select fold (e.g., "fold these 3 only"). Only single-window and global fold/unfold.
 - Adding fold state to the CLI/REST API. This is a UI-only concern.
 
-## State Model
+## State model
 
 ### `DashboardWindow` (extend in `ui/desktop/src/contexts/DashboardContext.tsx`)
 
@@ -106,12 +122,16 @@ Add an effect that observes the inner chat's streaming flag (from `useChatStream
 
 ### `FoldedCard.tsx` (new)
 
+> **Button key for the mock below.** `─` is Fold/unfold (lucide `Minus`), `▭` is
+> Shrink (`Minimize2`), `◻` is Enlarge (`Maximize2`), `✕` is Close (`X`). The
+> same four are itemised under "Buttons" further down.
+
 Layout (240×72, `rounded-lg`):
 
-```
+```text
 ┌──────────────────────────────────────────┐
 │ ◉  Conversation title…       ─ ▭ ◻ ✕    │  ← row 1, ~28px
-│    /Users/wgu/Desktop/project            │  ← row 2, cwd, text-xs, mono, truncated
+│    ~/Desktop/project                     │  ← row 2, cwd, text-xs, mono, truncated
 └──────────────────────────────────────────┘
 ```
 
@@ -168,9 +188,12 @@ Same `pickAccentColor()` cycling logic; only the values change. Existing assigne
 
 Single small addition: if rendered inside a dashboard window (detect via the existing dashboard context or via a `windowId` prop already passed by `ChatWindow.tsx`), add a `useEffect` that calls `dashboard.setWindowBusy(windowId, isLoading)` whenever `useChatStream`'s loading flag changes. Outside a dashboard window, this is a no-op.
 
-## Data Flow
+## Data flow
 
-```
+Two independent flows feed the fold feature. The first carries streaming state
+from a chat up to its card's status indicator:
+
+```text
 useChatStream.isLoading (per chat)
         │
         ▼
@@ -183,7 +206,9 @@ BaseChat useEffect ──► DashboardContext.setWindowBusy(id, bool)
                     FoldedCard status indicator
 ```
 
-```
+The second carries a toolbar click down to every window's render branch:
+
+```text
 Toolbar Fold button click
         │
         ▼
@@ -200,7 +225,7 @@ ChatWindow renders FoldedCard vs full chat
 
 `folded` is included in the existing window serialization (same path as `position`, `size`, `accentColor`). `isBusy` is **not** persisted — on hydrate it defaults to `false` and is rewritten by the next streaming effect tick.
 
-## Edge Cases
+## Edge cases
 
 - **Folding the focused window**: focus survives — `focusedWindowId` is unchanged. Card click on a non-focused folded window focuses it as part of unfold.
 - **Unfolding to off-screen position**: the stored `position` is preserved, so unfold renders at the original spot. If the prior `size` would extend the window past current viewport, the existing `organize()` doesn't auto-trigger — accept that (matches today's behavior for resized windows).
@@ -211,7 +236,13 @@ ChatWindow renders FoldedCard vs full chat
 
 ## Testing
 
-Manual smoke (no automated tests proposed — UI feature, existing dashboard has no test harness for layout interactions):
+> **Warning.** This spec deliberately proposed **no automated tests** — the
+> stated reason was that this is a UI feature and the existing dashboard had no
+> test harness for layout interactions. That gap was never closed and no owner
+> was named for closing it; the feature shipped in v1.85.3 covered only by the
+> manual walkthrough below.
+
+Manual smoke:
 
 1. Spawn 3 windows; verify accent colors come from the new muted palette.
 2. Click the title-bar `−` button on one → folds to 240×72 card, position preserved.
@@ -224,7 +255,12 @@ Manual smoke (no automated tests proposed — UI feature, existing dashboard has
 9. Resize buttons on a folded card (`▭`, `◻`) → unfolds to shrink/enlarge dimensions.
 10. Close button (`✕`) on a folded card → removes the window from the dashboard.
 
-## Files Touched
+## Files touched
+
+> **Note.** Every path below under `ui/desktop/src/components/Dashboard/` and
+> `ui/desktop/src/contexts/DashboardContext.tsx` was deleted on 2026-07-18. They
+> are recorded here as written; only the `BaseChat.tsx` and `main.css`
+> touchpoints still exist.
 
 - `ui/desktop/src/contexts/DashboardContext.tsx` — extend `DashboardWindow`, extend context API.
 - `ui/desktop/src/components/Dashboard/DashboardProvider.tsx` — implement `foldWindow`, `foldAll`, `unfoldAll`, `setWindowBusy`, `allFolded`; add `CARD_W`/`CARD_H`; ensure organize uses effective rect.
@@ -233,7 +269,14 @@ Manual smoke (no automated tests proposed — UI feature, existing dashboard has
 - `ui/desktop/src/components/Dashboard/WindowTitleBar.tsx` — add `Minus` button.
 - `ui/desktop/src/components/Dashboard/FoldedCard.tsx` — new component.
 - `ui/desktop/src/components/Dashboard/palette.ts` — replace `ACCENT_PALETTE`.
-- `ui/desktop/src/components/BaseChat.tsx` — pipe `isLoading` to `setWindowBusy` when inside a dashboard window.
+- [`ui/desktop/src/components/BaseChat.tsx`](../../../ui/desktop/src/components/BaseChat.tsx) — pipe `isLoading` to `setWindowBusy` when inside a dashboard window.
 - `ui/desktop/src/index.css` (or Tailwind config) — add `breathe` keyframes.
 
 No backend (Rust) changes. No OpenAPI changes.
+
+## Related documentation
+
+- [Dashboard mode — removal record and archive index](README.md) — the record of fold mode shipping in v1.85.3 and coming out on 2026-07-18.
+- [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md) — defines the canvas, `organize()`, `canvasLayout.ts` and the accent palette this spec builds on.
+- [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md) — the 13-task plan that executed this spec, including the `onBusyChange` prop on `BaseChat`.
+- [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md) — where `MIN_WINDOW_W`-style sizing and the per-window window model were established.

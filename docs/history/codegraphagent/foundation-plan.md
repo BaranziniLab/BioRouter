@@ -1,4 +1,16 @@
-# CodeGraphAgent Foundation Implementation Plan
+# CodeGraphAgent foundation plan
+
+> **What this is.** The task-by-task implementation plan for scaffolding the CodeGraphAgent repository — a Python MCP proxy shim plus a vendored CodeGraph engine — and shipping `codegraphagent.brxt v0.1.0-rc1` with engine bundles downloaded from GitHub Releases.
+> **Status:** Historical record — this work was completed. CodeGraphAgent ships today as a live marketplace extension, and this document's own closing section records the finished state as verified end-to-end against a real BioRouter session. The unticked checkboxes below are the plan as authored, not an indication of outstanding work.
+> **Audience:** agents executing the plan, and developers tracing how CodeGraphAgent was originally built.
+
+This plan describes work in a **separate repository**, [`Broccolito/CodeGraphAgent`](https://github.com/Broccolito/CodeGraphAgent), not in the BioRouter tree. It is filed under BioRouter's docs because BioRouter is the consuming application — the `.brxt` extension format, the install location and the MCP wiring are all BioRouter-side concerns. For the current state of the code, the extension repository is authoritative.
+
+This is the first of two plans derived from [the CodeGraphAgent extension design](extension-design.md). It builds the scaffold, shim and release pipeline; [the bio-language extractors plan](bio-language-extractors-plan.md) ("Plan 2") then adds the R, Julia, MATLAB and Perl extractors on top.
+
+> **How to read the identifiers.** Work is grouped into lettered **phases** (`Phase A` … `Phase L`), and each phase contains numbered **tasks** carrying the phase letter (`Task A1`, `Task C4`, `Task L2`, …). Tasks in turn contain numbered **steps**. The letters carry no meaning beyond the sequence in which the phases appear here.
+
+> **Note.** Every command block below hardcodes the original author's checkout path, `/Users/wgu/Desktop/CodeGraphAgent/`. Read it as "your CodeGraphAgent checkout". Several tasks also embed files destined for that repository verbatim — the MIT `LICENSE`, the `.gitignore`, workflow YAML — so that the plan is executable without reference to another source; they are reproduced here as authored.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -6,9 +18,9 @@
 
 **Architecture:** Monorepo (`Broccolito/CodeGraphAgent`) containing a Python proxy shim (`.brxt` payload) and a vendored CodeGraph engine (`engine/`) we build ourselves. The `.brxt` is ~20 KB and downloads the ~50 MB engine tarball from our own GitHub Releases on first use. Engine releases tagged `engine-vX.Y.Z`; `.brxt` releases tagged `vX.Y.Z`. No language additions in this plan — that's Plan 2.
 
-**Tech Stack:** Python 3.11+, fastmcp, httpx, pytest, hatchling. Engine: Node 22.5+, TypeScript, tree-sitter, vitest (all vendored from upstream unchanged). Build: bash scripts + GitHub Actions.
+**Tech stack:** Python 3.11+, fastmcp, httpx, pytest, hatchling. Engine: Node 22.5+, TypeScript, tree-sitter, vitest (all vendored from upstream unchanged). Build: bash scripts + GitHub Actions.
 
-**Spec:** [docs/superpowers/specs/2026-05-29-codegraphagent-extension-design.md](../specs/2026-05-29-codegraphagent-extension-design.md)
+**Spec:** [CodeGraphAgent BioRouter extension design](extension-design.md)
 
 **Working directory throughout:** `/Users/wgu/Desktop/CodeGraphAgent/` (separate from BioRouter)
 
@@ -32,7 +44,7 @@ git status
 ```
 
 Expected output:
-```
+```text
 On branch main
 No commits yet
 nothing to commit (create/copy files and use "git add" to track)
@@ -102,7 +114,7 @@ engine/dist/
 
 Create `/Users/wgu/Desktop/CodeGraphAgent/LICENSE`:
 
-```
+```text
 MIT License
 
 Copyright (c) 2026 Wanjun Gu and contributors
@@ -3130,7 +3142,7 @@ cat SHA256SUMS
 ```
 
 Expected output (example — actual SHAs will differ):
-```
+```text
 abc123... codegraph-darwin-arm64.tar.gz
 def456... codegraph-darwin-x64.tar.gz
 ...
@@ -3372,7 +3384,7 @@ Expected: release `v0.1.0-rc1` with `codegraphagent.brxt` asset.
 
 - [ ] **Step 4: Update BioRouter spec status**
 
-In the BioRouter repo, edit [docs/superpowers/specs/2026-05-29-codegraphagent-extension-design.md](../specs/2026-05-29-codegraphagent-extension-design.md) and change the status line from `Draft, pending implementation` to `Foundation released as v0.1.0-rc1; bio languages pending (Plan 2)`.
+In the BioRouter repo, edit [the CodeGraphAgent BioRouter extension design](extension-design.md) and change the status line from `Draft, pending implementation` to `Foundation released as v0.1.0-rc1; bio languages pending (Plan 2)`.
 
 Run:
 ```bash
@@ -3380,6 +3392,8 @@ cd /Users/wgu/Desktop/biorouter && \
 git add docs/superpowers/specs/2026-05-29-codegraphagent-extension-design.md && \
 git commit -m "docs(specs): mark CodeGraphAgent foundation released"
 ```
+
+> **Note.** This step appears never to have been carried out: the design document retained its `Draft, pending implementation` status line long after both plans shipped. The status is corrected in the current version of that document. The design document has also since moved — the path in the command above is its pre-reorganization location.
 
 ---
 
@@ -3396,6 +3410,8 @@ git commit -m "docs(specs): mark CodeGraphAgent foundation released"
 
 ## What's next (Plan 2 — bio languages)
 
+> **Note.** This section is a forward-looking sketch written before Plan 2 existed. The authoritative version is [the bio-language extractors plan](bio-language-extractors-plan.md), which supersedes the outline below wherever the two differ.
+
 The follow-on plan adds R, Julia, MATLAB, and Perl extractors to `engine/`, cuts `engine-v0.2.0`, and releases `.brxt v0.1.0`. Each language is ~6-8 tasks:
 
 1. Vendor the WASM grammar into `engine/wasm/`.
@@ -3407,3 +3423,11 @@ The follow-on plan adds R, Julia, MATLAB, and Perl extractors to `engine/`, cuts
 7. Document in `engine/PATCHES.md`.
 
 MATLAB additionally needs a content-heuristic for `.m` disambiguation against Objective-C (per spec § "Engine fork — language additions"). Plan 2 will spell out the disambiguation logic.
+
+## Related documentation
+
+- [CodeGraphAgent BioRouter extension design](extension-design.md) — the design this plan implements, and the source of its architecture, naming and error-handling decisions.
+- [CodeGraphAgent bio-language extractors plan](bio-language-extractors-plan.md) — the follow-on plan ("Plan 2") that adds the R/Julia/MATLAB/Perl extractors sketched at the end of this document.
+- [Extensions and skills guide](../../extensions/extensions-and-skills-guide.md) — how BioRouter installs, enables and configures the `.brxt` this plan produces.
+- [Extension manager](../../extensions/built-in/extension-manager.md) — the built-in MCP server that manages extension lifecycle at runtime.
+- [Bundled skills in `.brxt` design](../skills-packaging/brxt-bundled-skills-design.md) — the neighbouring design for shipping skills inside a `.brxt`, sharing this plan's packaging format.

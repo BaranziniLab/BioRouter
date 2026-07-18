@@ -1,13 +1,19 @@
-# Hooks
+# Hooks reference
 
-Hooks let you run your own shell commands — or an LLM judge — at specific
-points in Biorouter's agent lifecycle: before a tool runs, after a prompt is
-submitted, around context compaction, when a session starts or ends, and more.
-Use them to enforce guardrails, inject context, log activity, or trigger
-notifications.
+> **What this is.** The full reference for Biorouter's hook system: the lifecycle
+> events you can hook, how matchers select them, the two hook types (`command` and
+> `prompt`), the stdin/exit-code/JSON contract, and the blocking and rewriting
+> semantics.
+> **Status:** Current.
+> **Audience:** end users configuring hooks, and developers working on the agent loop.
 
-Hooks work everywhere the agent runs: the desktop app, the CLI, scheduled
-runs, and subagents.
+Hooks let you run your own shell commands — or an LLM judge — at specific points in
+Biorouter's agent lifecycle: before a tool runs, after a prompt is submitted, around
+context compaction, when a session starts or ends, and more. Use them to enforce
+guardrails, inject context, log activity, or trigger notifications.
+
+Hooks work everywhere the agent runs: the desktop app, the CLI, scheduled runs, and
+subagents.
 
 ## Configuration
 
@@ -29,18 +35,28 @@ hooks:
           command: "cp ~/.config/biorouter/sessions/* ~/backups/ 2>/dev/null || true"
 ```
 
-Projects can ship their own hooks in `.biorouter/hooks.yaml` at the session
-working directory, using the same schema under a top-level `hooks:` key.
-**Project hooks are disabled by default** — a repository should not be able to
-run commands on your machine just because you opened it. Opt in globally with:
+The `shell-guard.sh` referenced above is written out in full under
+[Worked examples](#worked-examples).
+
+Projects can ship their own hooks in `.biorouter/hooks.yaml` at the session working
+directory, using the same schema under a top-level `hooks:` key. **Project hooks are
+disabled by default** — a repository should not be able to run commands on your
+machine just because you opened it. Opt in globally with:
 
 ```yaml
 hooks:
   allow_project_hooks: true
 ```
 
-(or `BIOROUTER_ALLOW_PROJECT_HOOKS=1`). Project hooks run *in addition to*
-global hooks, never instead of them.
+(or `BIOROUTER_ALLOW_PROJECT_HOOKS=1`). Project hooks run *in addition to* global
+hooks, never instead of them.
+
+> **Note.** An administrator can deploy a managed policy that adds mandatory hooks
+> which cannot be disabled, and that forces or forbids project hooks org-wide.
+> Managed config wins over everything on this page — the precedence is
+> `Default < User (global config) < Project (opt-in) < Managed (admin)`. If a hook
+> you did not configure is running, or your `allow_project_hooks` setting appears to
+> be ignored, check [Managed / enterprise policy](../../security/managed-policy.md).
 
 ## Events
 
@@ -58,14 +74,14 @@ global hooks, never instead of them.
 | `PreCompact` / `PostCompact` | around context compaction | no | `manual` \| `auto` |
 | `SubagentStart` / `SubagentStop` | around a subagent task | no | — |
 
-Matchers: omit (or use `""` / `"*"`) to match everything; otherwise exact
-match, `a|b` alternation, or a full regex (anchored). Tool names follow the
+Matchers: omit (or use `""` / `"*"`) to match everything; otherwise exact match,
+`a|b` alternation, or a full regex (anchored). Tool names follow the
 `extension__tool` convention, e.g. `developer__shell`, `developer__.*`.
 
 ### Matching on the tool input
 
-A `matcher` only sees the tool *name*, so a shell guard would run on every
-shell call. Add an optional `input_matcher` to narrow a group to specific tool
+A `matcher` only sees the tool *name*, so a shell guard would run on every shell
+call. Add an optional `input_matcher` to narrow a group to specific tool
 **arguments** — "only guard `rm -rf`", "only writes under `/etc`":
 
 ```yaml
@@ -89,27 +105,27 @@ hooks:
 ```
 
 - Field paths are dotted and may index arrays: `path`, `params.path`, `argv.0`.
-  Non-string values (numbers, booleans, nested objects) are matched against
-  their JSON text.
+  Non-string values (numbers, booleans, nested objects) are matched against their
+  JSON text.
 - Unlike the tool-name matcher, `input_matcher` patterns are **searched, not
-  anchored** — `rm\s+-rf` hits anywhere in the value. Anchor explicitly with
-  `^…$` when you mean the whole value.
-- A missing field never matches, and a group with an `input_matcher` never runs
-  on an event that carries no tool input (`Stop`, `UserPromptSubmit`, …).
-  An `input_matcher` can only *narrow* a group, never widen it.
+  anchored** — `rm\s+-rf` hits anywhere in the value. Anchor explicitly with `^…$`
+  when you mean the whole value.
+- A missing field never matches, and a group with an `input_matcher` never runs on
+  an event that carries no tool input (`Stop`, `UserPromptSubmit`, …). An
+  `input_matcher` can only *narrow* a group, never widen it.
 - An invalid regex is logged once and treated as non-matching.
 
 ## Hook types
 
-**`command`** — a shell command. It receives the event as JSON on stdin and
-runs in the session working directory with `BIOROUTER_HOOK_EVENT`,
-`BIOROUTER_SESSION_ID`, and `BIOROUTER_PROJECT_DIR` set. Default timeout 60s
-(`timeout` overrides, in seconds).
+**`command`** — a shell command. It receives the event as JSON on stdin and runs in
+the session working directory with `BIOROUTER_HOOK_EVENT`, `BIOROUTER_SESSION_ID`,
+and `BIOROUTER_PROJECT_DIR` set. Default timeout 60s (`timeout` overrides, in
+seconds).
 
 **`prompt`** — an LLM judge. The rule you write is evaluated against the event
-payload by your configured provider (its fast model when available, or an
-explicit `provider:` + `model:` pair). The judge answers
-`{"ok": true|false, "reason": "..."}`; `ok: false` blocks. Default timeout 30s.
+payload by your configured provider (its fast model when available, or an explicit
+`provider:` + `model:` pair). The judge answers `{"ok": true|false, "reason": "..."}`;
+`ok: false` blocks. Default timeout 30s.
 
 ```yaml
 hooks:
@@ -122,7 +138,7 @@ hooks:
 
 ## Command hook contract
 
-Input on stdin (snake_case, Claude Code-compatible):
+Input on stdin, with snake_case keys:
 
 ```json
 {
@@ -137,14 +153,14 @@ Input on stdin (snake_case, Claude Code-compatible):
 Exit codes:
 
 - **0** — success. stdout may contain a JSON decision (below). For
-  `UserPromptSubmit` and `SessionStart`, plain (non-JSON) stdout is injected
-  as context for the model.
-- **2** — block. stderr is used as the reason: for `PreToolUse` it is fed back
-  to the model, for `UserPromptSubmit` it is shown to the user, for `Stop` it
-  becomes feedback the agent must address before finishing.
+  `UserPromptSubmit` and `SessionStart`, plain (non-JSON) stdout is injected as
+  context for the model.
+- **2** — block. stderr is used as the reason: for `PreToolUse` it is fed back to
+  the model, for `UserPromptSubmit` it is shown to the user, for `Stop` it becomes
+  feedback the agent must address before finishing.
 - anything else — non-blocking error; the event proceeds (failure-open).
 
-Optional JSON on stdout (camelCase, Claude Code-compatible):
+Optional JSON on stdout, with camelCase keys:
 
 ```json
 {
@@ -160,17 +176,17 @@ Optional JSON on stdout (camelCase, Claude Code-compatible):
 }
 ```
 
-When several hooks match one event they run in parallel and the most
-restrictive decision wins (`deny` > `ask` > `allow`).
+When several hooks match one event they run in parallel and the most restrictive
+decision wins (`deny` > `ask` > `allow`).
 
 ### Rewriting a tool call (`updatedInput`)
 
 A `PreToolUse` hook does not have to choose between allowing and denying: it can
 return `hookSpecificOutput.updatedInput` — the tool's **complete** replacement
-argument object — to sandbox a path, redact a payload, or normalize a command.
-The rewritten call is what executes and what the transcript records, and the
-model is told (as injected context) that its arguments were changed, so it never
-silently works from a call it did not make.
+argument object — to sandbox a path, redact a payload, or normalize a command. The
+rewritten call is what executes and what the transcript records, and the model is
+told (as injected context) that its arguments were changed, so it never silently
+works from a call it did not make.
 
 ```bash
 #!/bin/bash
@@ -187,66 +203,100 @@ esac
 
 Rules worth knowing:
 
-- `updatedInput` is honored **only on `PreToolUse`** (elsewhere the tool has
-  already run, or the call is already recorded); on any other event it is
-  ignored and logged. Codex's `updated_input` and Gemini CLI's `tool_input`
-  spellings are accepted as aliases.
-- It must be a JSON **object** (the full argument map, not a patch) and is
-  capped at 256 KB. A malformed rewrite is a non-blocking error — failure-open,
-  like every other hook mistake.
+- `updatedInput` is honored **only on `PreToolUse`** (elsewhere the tool has already
+  run, or the call is already recorded); on any other event it is ignored and
+  logged.
+- It must be a JSON **object** (the full argument map, not a patch) and is capped at
+  256 KB. A malformed rewrite is a non-blocking error — failure-open, like every
+  other hook mistake.
 - The rewritten input is **re-validated**: every other inspector (the
-  catastrophic-command denylist, the permission gate) re-runs on the new
-  arguments, so a rewrite cannot smuggle a call past the safety gates. The hook
-  inspector itself is not re-run — a rewrite cannot trigger another rewrite.
-- A hook that both denies *and* rewrites is treated as a deny (the call never
-  runs, so there is nothing to rewrite). Hooks run concurrently, so rewrites do
-  not chain: if two hooks return `updatedInput` for the same call, the last one
-  (in config order) wins and the conflict is logged.
+  catastrophic-command denylist, the permission gate) re-runs on the new arguments,
+  so a rewrite cannot smuggle a call past the safety gates. The hook inspector
+  itself is not re-run — a rewrite cannot trigger another rewrite.
+- A hook that both denies *and* rewrites is treated as a deny (the call never runs,
+  so there is nothing to rewrite). Hooks run concurrently, so rewrites do not chain:
+  if two hooks return `updatedInput` for the same call, the last one (in config
+  order) wins and the conflict is logged.
 
 ### Blocking a tool *result* (`PostToolUse`)
 
 `PostToolUse` / `PostToolUseFailure` hooks can `block` (exit 2, or
-`{"decision":"block"}`) — e.g. reject a write that fails lint. The tool has
-already run, so its side effects stand and its output is preserved; the hook's
-reason is appended to the tool result, the result is marked as an error, and the
-agent keeps working on the correction. Consecutive blocks are capped at **3** per
-session (the model typically retries the tool, so an unconditional blocker would
-otherwise wedge the turn); past the cap the result is delivered anyway with a
-notice.
+`{"decision":"block"}`) — e.g. reject a write that fails lint. The tool has already
+run, so its side effects stand and its output is preserved; the hook's reason is
+appended to the tool result, the result is marked as an error, and the agent keeps
+working on the correction. Consecutive blocks are capped at **3** per session (the
+model typically retries the tool, so an unconditional blocker would otherwise wedge
+the turn); past the cap the result is delivered anyway with a notice.
 
-## Semantics worth knowing
+## Compatibility with other agents' hook formats
 
-- **Failure-open everywhere.** A crashing, timing-out, or misconfigured hook
-  never blocks the agent; only explicit decisions do.
-- **PreToolUse `deny`** turns the tool call into an error result containing
-  your reason, so the model can adapt. **`ask`** routes the call through the
-  normal approval dialog with your reason attached. **`updatedInput`** rewrites
-  the call instead of refusing it (see above).
-- **PermissionRequest `allow`** auto-approves a call that would otherwise
-  prompt the user — useful for trusted commands in trusted projects.
-- **`additionalContext` and `systemMessage` work on every tool-path event.**
-  `PreToolUse` and `PermissionRequest` used to drop them (only the decision was
-  read); their context now reaches the model — wrapped in the same
-  `<hook-context untrusted="true">` frame as all injected hook output — and
-  their `systemMessage` surfaces as a yellow inline notice.
-- **Stop blocks are capped** at 5 consecutive blocks per session; the payload
-  field `stop_hook_active` is `true` on re-checks so well-behaved hooks can
-  exit early.
-- **Observe-only events run detached, but are not discarded.** `Notification`,
-  `SubagentStart` / `SubagentStop` and `PreCompact` / `PostCompact` cannot block,
-  so they are dispatched in the background rather than on the agent's critical
-  path. Their `systemMessage` still reaches you — it is collected at the next
-  turn boundary, where any outstanding hook is also joined. A hook slower than
-  the boundary's short wait is never waited on; it simply surfaces one boundary
-  later, and is joined at session end.
-- **GUI sessions do not fire `SessionEnd`** in v1 (there is no reliable
-  session-close signal in the desktop app).
-- Hook activity (blocks, judge verdicts, `systemMessage`s) appears as yellow
-  inline notices in both the CLI and the desktop app chat.
+The wire format is deliberately Claude Code-compatible, so most hook scripts written
+for it run unchanged. Where other agents spell a field differently, the alternate
+spelling is accepted as an alias.
 
-## Examples
+| Surface | Biorouter spelling | Also accepted |
+|---|---|---|
+| stdin event payload | snake_case (`hook_event_name`, `tool_name`, `tool_input`) | Claude Code uses the same keys |
+| stdout decision payload | camelCase (`decision`, `systemMessage`, `hookSpecificOutput`) | Claude Code uses the same keys |
+| rewritten tool arguments | `hookSpecificOutput.updatedInput` | Codex `updated_input`, Gemini CLI `tool_input` |
 
-Block destructive shell commands:
+## Runtime semantics
+
+### Safety guarantees
+
+- **Failure-open everywhere.** A crashing, timing-out, or misconfigured hook never
+  blocks the agent; only explicit decisions do.
+- **Rewrites are re-validated.** See
+  [Rewriting a tool call](#rewriting-a-tool-call-updatedinput) — a rewritten call
+  still passes through the denylist and the permission gate.
+
+### Decision semantics
+
+- **PreToolUse `deny`** turns the tool call into an error result containing your
+  reason, so the model can adapt. **`ask`** routes the call through the normal
+  approval dialog with your reason attached. **`updatedInput`** rewrites the call
+  instead of refusing it (see above).
+- **PermissionRequest `allow`** auto-approves a call that would otherwise prompt the
+  user — useful for trusted commands in trusted projects.
+- **`additionalContext` and `systemMessage` work on every tool-path event**,
+  `PreToolUse` and `PermissionRequest` included. The context reaches the model
+  wrapped in the `<hook-context untrusted="true">` frame used for all injected hook
+  output, and the `systemMessage` surfaces as a yellow inline notice.
+
+### Limits on repeated blocking
+
+- **Stop blocks are capped** at 5 consecutive blocks per session; the payload field
+  `stop_hook_active` is `true` on re-checks so well-behaved hooks can exit early.
+- **PostToolUse blocks are capped** at 3 consecutive blocks per session (see
+  [Blocking a tool result](#blocking-a-tool-result-posttooluse)).
+
+### Scheduling of observe-only events
+
+**Observe-only events run detached, but are not discarded.** `Notification`,
+`SubagentStart` / `SubagentStop` and `PreCompact` / `PostCompact` cannot block, so
+they are dispatched in the background rather than on the agent's critical path.
+Their `systemMessage` still reaches you — it is collected at the next turn boundary,
+where any outstanding hook is also joined. A hook slower than the boundary's short
+wait is never waited on; it simply surfaces one boundary later, and is joined at
+session end.
+
+### What you see in the interface
+
+Hook activity (blocks, judge verdicts, `systemMessage`s) appears as yellow inline
+notices in both the CLI and the desktop app chat.
+
+### Known limitations
+
+- **GUI sessions do not fire `SessionEnd`.** The desktop app has no reliable
+  session-close signal, so `SessionEnd` fires only on CLI exit, headless completion,
+  and scheduled-run completion.
+
+## Worked examples
+
+Block destructive shell commands — this is the `shell-guard.sh` referenced from
+[Configuration](#configuration), and it guards on the command text inside the
+script. To do the same filtering in config instead, use an
+[`input_matcher`](#matching-on-the-tool-input).
 
 ```bash
 #!/bin/bash
@@ -279,3 +329,20 @@ hooks:
         - type: command
           command: "cat ~/.config/biorouter/lab-context.md 2>/dev/null"
 ```
+
+For a ready-made, maintained version of the "don't finish until it builds and is
+committed" pattern, see the
+[verify-and-checkpoint Stop hook](verify-and-checkpoint-stop-hook.md).
+
+## Related documentation
+
+- [Verify-and-checkpoint Stop hook](verify-and-checkpoint-stop-hook.md) — a shipped
+  Stop hook that applies this contract to build/test verification and git commits.
+- [Managed / enterprise policy](../../security/managed-policy.md) — how an admin tier
+  adds mandatory hooks that override everything on this page.
+- [Permission modes](../../security/permission-modes.md) — the approval gate that
+  `PermissionRequest` hooks and `updatedInput` rewrites are re-validated against.
+- [Config file reference](../../configuration/config-file-reference.md) — the
+  structure and location of `config.yaml`, the file the `hooks:` block lives in.
+- [Subagents](../subagents.md) — the tasks that `SubagentStart` / `SubagentStop`
+  wrap.

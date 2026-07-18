@@ -1,10 +1,12 @@
-# UCSF Biorouter — Schedulers
+# Scheduled jobs
 
-Biorouter includes a built-in scheduler that lets you run workflows on a schedule — automatically, without manual intervention. This is useful for recurring analysis jobs, nightly data processing, periodic report generation, or any task you want to run at regular intervals.
+> **What this is.** A guide to Biorouter's built-in cron scheduler: how to register a workflow to run unattended, the cron syntax it accepts, and what a workflow must contain to survive running headless.
+> **Status:** Current.
+> **Audience:** end users running recurring analysis or reporting jobs.
 
----
+Biorouter includes a built-in scheduler that lets you run workflows on a schedule — automatically, without manual intervention. This is useful for recurring analysis jobs, nightly data processing, periodic report generation, or any task you want to run at regular intervals. Everything the scheduler runs is a workflow file, so read [the workflows index](README.md) first if you have not written one yet.
 
-## Overview
+## What the scheduler does
 
 The scheduler lets you:
 
@@ -15,11 +17,9 @@ The scheduler lets you:
 
 Scheduled jobs are stored persistently in an SQLite database, so they survive application restarts.
 
----
+## Creating a scheduled job
 
-## Creating a Scheduled Job
-
-### Desktop UI
+### From the Desktop UI
 
 1. Open the sidebar.
 2. Navigate to the **Schedule** section.
@@ -29,7 +29,7 @@ Scheduled jobs are stored persistently in an SQLite database, so they survive ap
 6. Optionally fill in workflow parameters.
 7. Save the schedule.
 
-### CLI
+### From the CLI
 
 Use the `schedule` command or ask Biorouter directly in a session:
 
@@ -43,13 +43,13 @@ biorouter session
 
 Biorouter will create the scheduled job and confirm the cron expression.
 
----
+> **Note.** To register a job non-interactively, use `biorouter schedule add`. Its flags and a worked example are in [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) and the [`schedule` command reference](../cli/command-reference.md#schedule).
 
-## Cron Expression Format
+## Cron expression format
 
 Scheduled jobs use standard cron syntax:
 
-```
+```text
 ┌─────── minute (0–59)
 │ ┌───── hour (0–23)
 │ │ ┌─── day of month (1–31)
@@ -69,11 +69,9 @@ Common examples:
 | `*/30 * * * *` | Every 30 minutes |
 | `0 0 1 * *` | First day of every month at midnight |
 
----
+## Managing scheduled jobs
 
-## Managing Scheduled Jobs
-
-### Desktop UI
+### From the Desktop UI
 
 The Schedule panel shows all active and paused jobs with:
 - Workflow name and description
@@ -81,7 +79,7 @@ The Schedule panel shows all active and paused jobs with:
 - Last run status
 - Controls to pause, resume, edit, or delete
 
-### CLI
+### From the CLI
 
 ```sh
 # List all scheduled jobs
@@ -91,9 +89,7 @@ biorouter schedule list
 biorouter schedule delete <job-id>
 ```
 
----
-
-## Headless (Non-Interactive) Mode
+## Headless (non-interactive) mode
 
 Scheduled jobs always run in headless mode — Biorouter executes the workflow without any user interaction. For this to work correctly, your workflow must:
 
@@ -113,9 +109,7 @@ settings:
   biorouter_model: "claude-sonnet-4-20250514"
 ```
 
----
-
-## Environment and Credentials
+## Environment and credentials
 
 Scheduled jobs run in the same environment as the Biorouter server process. Make sure:
 
@@ -123,17 +117,15 @@ Scheduled jobs run in the same environment as the Biorouter server process. Make
 - Any extensions the workflow uses are installed and configured.
 - File paths referenced in the workflow are accessible at the time the job runs.
 
----
-
-## Output and Logging
+## Output and logging
 
 - Scheduled job output is logged and visible in the session history.
 - You can review past runs in the Desktop's session list or via `biorouter sessions`.
 - Errors during a scheduled run are captured and stored — the job will attempt to run again at the next scheduled time unless deleted.
 
----
+## Example workflows worth scheduling
 
-## Use Cases
+Each block below is a **workflow file**, not a schedule. Save it, then register it with the scheduler using the Desktop or CLI steps above; the cron expression lives on the schedule, not in the file. Each one includes a `prompt`, as headless mode requires.
 
 **Recurring research workflows:**
 ```yaml
@@ -149,7 +141,7 @@ extensions:
     timeout: 60
 ```
 
-**Automated data reports:**
+**Automated data reports** — no extensions or settings, so it runs against your configured defaults:
 ```yaml
 # weekly-cohort-stats.yaml
 title: "Weekly Cohort Statistics"
@@ -157,7 +149,7 @@ description: "Computes summary statistics for the study cohort"
 prompt: "Generate a weekly statistics report from the cohort database and save to /reports/week-{{ week_number }}.md"
 ```
 
-**Pipeline monitoring:**
+**Pipeline monitoring** — adds a `retry` block so a failed run is re-attempted before the next scheduled slot:
 ```yaml
 # pipeline-health-check.yaml
 title: "Pipeline Health Check"
@@ -169,3 +161,11 @@ retry:
     - type: shell
       command: "test -f /tmp/health-check-complete"
 ```
+
+## Related documentation
+
+- [Workflows](README.md) — the file format everything the scheduler runs is written in.
+- [Creating and sharing workflows](creating-and-sharing-workflows.md#schedule-a-workflow) — the Desktop Scheduler view and the `biorouter schedule add` CLI path in detail.
+- [Workflow schema reference](workflow-schema-reference.md#retry) — the full `retry` and `response` schemas the examples above use.
+- [biorouter CLI command reference](../cli/command-reference.md#schedule) — every `schedule` subcommand and flag.
+- [Headless Linux deployment](../deployment/headless-linux.md) — running Biorouter on a server where scheduled jobs have no GUI to fall back on.

@@ -1,6 +1,12 @@
-# .brxt Skills Integration Implementation Plan
+# .brxt bundled skills implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The task-by-task implementation plan that executed the [.brxt bundled skills design](brxt-bundled-skills-design.md): bundling skills inside `.brxt` extension packages so installing an extension installs its skills and removing it removes them, plus ZIP import in the Add Skill modal.
+> **Status:** Historical record — written 2026-05-07 and completed. The work shipped: `brxt:uninstall` and `skills:extract-zip` are IPC handlers in `ui/desktop/src/main.ts`, `brxt:validate-and-read` returns `skillsPreview`, and `crates/biorouter/src/agents/skills_extension.rs` scans `~/.config/biorouter/extensions/*/skills/`. The `- [ ]` checkboxes below were never ticked off in the file — read them as the original task list, not as outstanding work.
+> **Audience:** agents and developers tracing how extension-bundled skill discovery was built.
+
+This plan was written to be executed by an agent, task by task, in test-driven order: write a failing test, run it, implement, re-run, commit. Each `## Task N` heading is one commit-sized unit. The code blocks are the literal patches proposed at authoring time; where the shipped code diverged, the repository is authoritative.
+
+> **Note.** The original file opened with a machine-directed banner naming the `superpowers:subagent-driven-development` and `superpowers:executing-plans` skills as the intended execution harnesses. That instruction is recorded here for provenance and is no longer actionable — the plan is complete.
 
 **Goal:** Bundle skills inside `.brxt` extension packages so that installing an extension auto-installs its skills, removing an extension removes its skills, and the standalone skill import UI gains ZIP file support.
 
@@ -10,7 +16,7 @@
 
 ---
 
-## File Map
+## File map
 
 | File | Change |
 |------|--------|
@@ -63,15 +69,15 @@
   }
   ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the test, then add the one that actually fails**
 
   ```bash
   cargo test -p biorouter test_discover_extension_skills -- --nocapture
   ```
 
-  Expected: FAIL (test_discover_extension_skills function doesn't exist yet — add it, it will now pass on first run since `discover_skills_in_directories` already works on any dir. This is correct: the test validates the function can discover skills from an extensions subdir structure.)
+  Expected: PASS, not FAIL. `discover_skills_in_directories` already accepts arbitrary directories, so it discovers skills under an `extensions/<name>/skills/` layout without any change. That makes `test_discover_extension_skills` a characterization test — worth keeping, but it does not drive the new code.
 
-  Actually this test will already pass because `discover_skills_in_directories` accepts arbitrary dirs. The real test for the new code is that `get_default_skill_directories` includes the extension skills dirs. Add this second test to verify the integration:
+  The behaviour that is genuinely missing is that `get_default_skill_directories()` includes the extension skills directories at all. Add this second test, which does fail before the change, to cover the integration:
 
   ```rust
   #[test]
@@ -988,23 +994,34 @@
 
 ---
 
-## Self-Review
+## Self-review against the design spec
 
-**Spec coverage check:**
-- ✅ `.brxt` format extension (skills/ dir + manifest.json skills array) → Tasks 2, 3, 5
-- ✅ Skills storage strategy (extensions/<name>/skills/) → Task 1 (Rust discovery)
-- ✅ `brxt:validate-and-read` extended → Task 3
-- ✅ `brxt:install` unchanged (zip extraction already lands skills naturally) → no task needed
-- ✅ `brxt:uninstall` new handler → Task 3
-- ✅ `BrxtInstallModal` skills preview → Task 5
-- ✅ Extension removal uninstalls filesystem → Task 6
-- ✅ Skill import ZIP support → Task 7
-- ✅ Test fixtures (4 SKILL.md files) → Task 8
-- ✅ E2E test for skillsPreview → Task 8
+Every element of the [design spec](brxt-bundled-skills-design.md) maps to a task in this plan:
 
-**Placeholder scan:** No TBDs or incomplete steps found.
+| Design element | Covered by |
+|---|---|
+| `.brxt` format extension (`skills/` dir + `manifest.json` skills array) | Tasks 2, 3, 5 |
+| Skills storage strategy (`extensions/<name>/skills/`) | Task 1 (Rust discovery) |
+| `brxt:validate-and-read` extended | Task 3 |
+| `brxt:install` unchanged (zip extraction already lands skills naturally) | No task needed |
+| `brxt:uninstall` new handler | Task 3 |
+| `BrxtInstallModal` skills preview | Task 5 |
+| Extension removal uninstalls filesystem | Task 6 |
+| Skill import ZIP support | Task 7 |
+| Test fixtures (4 `SKILL.md` files) | Task 8 |
+| E2E test for `skillsPreview` | Task 8 |
 
-**Type consistency:**
+Placeholder scan: no TBDs or incomplete steps found.
+
+Type consistency:
+
 - `skillsPreview: Array<{ slug: string; name: string; description: string }>` used consistently across Tasks 3, 4, 5.
 - `{ success: true as const }` in `brxt:uninstall` matches `{ success: true }` in the preload type.
 - `files: [string, string][]` in `skills:extract-zip` matches `Preview.files` in `AddSkillModal.tsx`.
+
+## Related documentation
+
+- [.brxt bundled skills design](brxt-bundled-skills-design.md) — the approved spec this plan executes; read it first for the rationale behind extension-local skill storage.
+- [Skill bundles implementation plan](skill-bundles-plan.md) — the sibling plan from the same day; it later extends the `skills:extract-zip` handler added in Task 3 to detect multi-skill bundle ZIPs.
+- [Skill bundles design](skill-bundles-design.md) — defines what a skill *bundle* is, the concept layered on top of this work.
+- [Skills extension](../../extensions/built-in/skills.md) — the user-facing view of the skill discovery paths this plan extended.

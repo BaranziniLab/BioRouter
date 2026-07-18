@@ -1,16 +1,73 @@
-# BR-70 — Cross-platform CI verification gate
+# Cross-platform CI verification gate (BR-70)
 
-**Lens:** R (robustness). **Status:** proposed; not implemented.
+> **What this is.** The design for the project's first Rust CI: one shared cross-compile
+> recipe (`scripts/cross-env.sh`) sourced by the release pipeline, the `Justfile` and CI
+> alike, plus drift and glibc-floor guards, so the Windows and Linux `cfg` surface is
+> compiled on every pull request.
+> **Status:** Historical record — implemented as commit `ab721780` and verified in the
+> Wave 3 cross-platform pass dated 2026-07-13. `.github/workflows/rust.yml`,
+> `scripts/{cross-env,check-glibc-floor,check-no-cross-drift}.sh` and the
+> `check-cross` / `check-cross-linux` / `check-cross-windows` Justfile recipes all exist
+> today, and the glibc-floor pin is documented in `CLAUDE.md`.
+> **Audience:** developers working on the build, release and CI pipelines.
+
+Several proposals in the agent-loop fix campaign shipped `#[cfg]`-gated code for Windows
+and Linux, on a repository where nothing compiled those arms until a human ran the release
+pipeline on their own Mac. This design closes that hole without adding a third copy of the
+cross-compile recipe: it extracts the one recipe the release already uses, has CI and the
+`Justfile` source it, and guards the pin so the glibc floor cannot drift.
+
+**Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list —
+BR-70 is this one; BR-20, BR-21, BR-37 and BR-64 are the proposals it protects. All are
+defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+*Lens* tags which review raised a proposal: **R** = robustness, P = performance, U = ux.
+*D1*–*D5* below are this document's own labels for its five design decisions, cross-referenced
+from the slice table and the workflow.
+
 **Depends on / protects:** BR-20 (catastrophic denylist), BR-21 (policy engine),
 BR-37 (background-job process-group kill), BR-64 (OS sandbox). Each of those
 shipped `#[cfg]`-gated code on a platform **no machine in the project has ever
 compiled outside a release**.
 
----
+## Contents
+
+- [Where the shipped implementation lives](#where-the-shipped-implementation-lives)
+- [Problem](#problem-grounded-in-code-with-fileline)
+- [Goal](#goal)
+- [Design](#design) — D1 one recipe, D2 what to check, D3 caching, D4 native test matrix, D5 the glibc floor
+- [The Justfile recipe](#the-justfile-recipe)
+- [The CI workflow](#the-ci-workflow)
+- [Implementation slices](#implementation-slices)
+- [Risks](#risks)
+- [Test plan](#test-plan)
+- [Related documentation](#related-documentation)
+
+## Where the shipped implementation lives
+
+The shell and YAML listings in this document are the *design* drafts. The versions that
+actually run live in the repository, and they are the authority — read them first, and
+treat anything here that disagrees as superseded.
+
+| Design artifact | Shipped as |
+|---|---|
+| `scripts/cross-env.sh` (D1) | `scripts/cross-env.sh` |
+| Anti-drift guard (D1) | `scripts/check-no-cross-drift.sh` |
+| Symbol-floor assertion (D5) | `scripts/check-glibc-floor.sh` |
+| `check-cross` recipes | `check-cross`, `check-cross-linux`, `check-cross-windows` in the `Justfile` |
+| The CI workflow | `.github/workflows/rust.yml` |
+
+The glibc floor rationale (the 2.31 / bullseye pin), the winpthread link-order fix and
+`LZMA_API_STATIC` are also recorded in `CLAUDE.md` and in `scripts/cross-env.sh` itself —
+three places that must be kept in step.
 
 ## Problem (grounded in code, with file:line)
 
-### 1. There is no Rust CI. At all.
+> **Note.** This section describes the repository as it stood *before* the gate shipped.
+> Its claims — including "there is no Rust CI at all" and the two-workflow inventory —
+> were true then and are not true now. Read it as the motivation for the design, not as a
+> description of the current tree.
+
+### There is no Rust CI at all
 
 `.github/workflows/` contains exactly two workflows:
 
@@ -26,7 +83,7 @@ the workspace compiles for Windows or Linux until someone runs
 `scripts/release.sh backends` — i.e. **at ship time, on the release-cutter's
 machine, with the release already half-cut.**
 
-### 2. Even the release does not compile most of the code for Windows/Linux.
+### Even the release does not compile most of the code for Windows or Linux
 
 Both cross recipes in `scripts/release.sh` build **two binaries only**:
 
@@ -50,7 +107,7 @@ in. It does **not** compile:
 Platform breaks hide in exactly those places, because test code is where people
 write `use std::os::unix::fs::PermissionsExt` without a second thought.
 
-### 3. The `cfg` surface is large and growing, and BR-20/BR-37/BR-64 all touched it.
+### The `cfg` surface is large and growing, and BR-20, BR-37 and BR-64 all touched it
 
 `grep -rl 'cfg(unix)\|cfg(windows)\|cfg(target_os\|cfg(target_family' crates` →
 **33 files**, plus four crates with target-conditional *dependency tables*, which
@@ -105,7 +162,7 @@ Verified state of the three recent platform-sensitive changes:
 > test can actually execute, and a compile gate that stops the Windows arm of
 > BR-37/BR-64 rotting. Without BR-70 there is nowhere to run the proof.
 
-### 4. The glibc floor is protected by a comment and a release-time smoke test.
+### The glibc floor is protected only by a comment and a release-time smoke test
 
 `scripts/release.sh:146` pins `LINUX_RUST_IMG="rust:1.92-bullseye"` (glibc 2.31)
 with a good comment explaining that rolling `rust:latest` (trixie, glibc 2.39)
@@ -256,7 +313,7 @@ echo "OK — one cross recipe, floor intact."
 
 ### D2. What to check: `--workspace --all-targets --locked`
 
-```
+```bash
 cargo check --workspace --all-targets --locked
 ```
 
@@ -608,6 +665,12 @@ exists to expose.
 
 ## Test plan
 
+> **Note.** This plan was written before implementation, in the future tense. The gate
+> evidence that was actually collected for the cluster is in the
+> [cross-platform cluster verification report](parity-verification-report.md), which does
+> not record these five steps individually — so whether each deliberate-break check below
+> was ever run is not documented anywhere.
+
 1. `just check-cross` green on a clean tree.
 2. Introduce a deliberate break — e.g. call `libc::kill` in `background.rs`
    *outside* the `#[cfg(unix)]` block, or use `tikv_jemalloc_ctl` unconditionally
@@ -619,3 +682,11 @@ exists to expose.
    at PR time and `check-glibc-floor.sh` fails nightly.
 5. Confirm `release.sh backends` still produces byte-comparable binaries after
    the `cross-env.sh` extraction (same flags ⇒ same output).
+
+## Related documentation
+
+- [Platform parity audit](platform-parity-audit.md) — the audit whose "what CI should run on every PR" recommendation this design answers.
+- [Cross-platform cluster verification report](parity-verification-report.md) — the Wave 3 gate record covering commit `ab721780`, which shipped this design.
+- [Cross-platform command safety (BR-68)](command-safety.md) — one of the `cfg`-heavy proposals this gate exists to keep compiling.
+- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the Landlock work that had no compile venue until this gate landed.
+- [Local cross-compilation guide](../../releases/local-cross-compilation.md) — running the same cross builds by hand outside CI.

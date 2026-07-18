@@ -1,15 +1,30 @@
-# BioRouter logo redesign — wordmark + BR monogram
+# BioRouter logo and wordmark specification
 
-**Date:** 2026-07-17
-**Status:** Geometry, colour and lockups **approved** in the specimen.
-**Blocked:** the typeface. SF Pro is **licence-prohibited for a logo** (§8.1, verified against
-Apple's licence text) — a substitute must be picked before any SVG/PNG is generated. Nothing
-else in this spec changes when it is.
-**Specimen:** `logo-specimen.html` (interactive; served at `localhost:5177` during the session)
+> **What this is.** The normative specification for two BioRouter brand assets: a two-colour
+> `BioRouter` wordmark with a split navy/coral rule, and a `BR` monogram derived from it for the
+> square app icon. It fixes geometry, colour tokens and lockups, and records the licence blocker
+> that ruled out the originally chosen typeface.
+> **Status:** Current for geometry, colour and lockups, which were approved in the specimen on
+> 2026-07-17. The typeface was still open when this was written; it was resolved afterwards —
+> [UI overhaul execution status](../ui-overhaul/execution-status.md) records that Inter (SIL Open
+> Font License) was chosen and shipped on 2026-07-18. Treat that document as authoritative on the
+> typeface and on the values re-tuned in Inter; everything else here still stands.
+> **Audience:** designers and developers regenerating or reviewing BioRouter brand assets.
+
+The BioRouter identity was previously a router glyph. This spec retires it in favour of a
+typographic mark. Two terms recur below. **D-06** is a numbered decision in the BioRouter design
+system (decisions run D-01…D-37); it is the rule that the app fetches no webfont and renders in the
+native font stack only. **The client** is the design's approver — the stakeholder who reviewed the
+interactive specimen and signed off on each value.
+
+> **Note.** The specimen was an interactive HTML page served locally during the design session. It
+> is not checked into this repository, so the readouts it produced are quoted here rather than
+> reproducible from it. The interactive branding studios that live beside this spec are
+> [the wordmark studio](logo-wordmark-studio.html) and [the icon centring studio](logo-icon-studio.html).
 
 ---
 
-## 1. Summary
+## Summary
 
 Retire the router glyph. The BioRouter identity becomes **typographic**: a two-colour
 wordmark set in the app's own font, plus a **BR monogram** derived from it for the
@@ -27,14 +42,14 @@ wordmark, which is what binds the two together.
 
 ---
 
-## 2. Decisions and why
+## Decisions and why
 
-### 2.1 Typeface: bold, outlined — but **not SF Pro** (see §8.1)
+### Typeface: a bold outlined grotesque
 
-> ⚠️ **Superseded in part.** The reasoning below (why the letters must be *outlined*) still
-> holds and drives the design. The *choice of SF Pro* does not survive §8.1 — Apple's
-> licence prohibits using the font in artwork or on non-Apple platforms. Read this section
-> as "a bold grotesque, outlined"; the specific face is pending.
+The letters are set in a **bold grotesque and converted to outlined paths**. The specific face was
+originally SF Pro; that choice does not survive the licence analysis in
+[SF Pro cannot be used for this logo](#sf-pro-cannot-be-used-for-this-logo). The reasoning for
+*outlining* below is independent of the face and drives the design either way.
 
 The app's `--font-sans` (`ui/desktop/src/styles/main.css:526`) is a **native stack** —
 `ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, …` — and the block
@@ -42,14 +57,14 @@ is explicit that no webfont is fetched (D-06). That stack resolves to **SF Pro o
 Segoe UI on Windows, Roboto on Linux**.
 
 A logo set in live text would therefore be *a different logo on every OS*, and the PNG
-exports would not match the SVG. So the letters are **converted to outlined paths**. The
-logo then looks exactly like the app's font on macOS and renders identically everywhere,
-with no font dependency and no `@font-face` — which also keeps D-06 intact.
+exports would not match the SVG. Outlining the letters to paths removes the font
+dependency: the logo renders identically everywhere with no `@font-face`, which also keeps
+D-06 intact.
 
 Cost accepted: the text is no longer editable or selectable. Re-generating from source is
 the only way to change it.
 
-### 2.2 The square icon is a BR monogram, not the wordmark
+### Why the square icon is a BR monogram
 
 This decision was made **from measurement, not taste.** The specimen renders each lockup
 at true icon sizes and reads the cap height from the rasteriser
@@ -63,12 +78,15 @@ at true icon sizes and reads the cap height from the rasteriser
 | 32px | **15.5px** | 5.2px | 3.4px |
 | **16px (favicon)** | **7.8px** | **2.6px** | **1.7px** |
 
+> **Note.** The 0.7046em cap-height ratio is a measurement of SF Pro Bold, so every absolute pixel
+> value in this table is typeface-dependent and changes with the substitute face.
+
 At 16px the monogram has **3× the stacked cap height and 4.6× the one-line's**. Six letters
 cannot render into 1.7px of cap; two letters into 7.8px can, and the favicon mock confirms
 `BR` is genuinely readable. The stacked and one-line squares are retained in the specimen
 as the evidence for this decision, not as live options.
 
-### 2.3 Colour
+### Colour
 
 | Role | Token | Hex |
 |---|---|---|
@@ -91,15 +109,15 @@ disappears into the ground and the underline reads as orange-only-starting-midwa
 
 ---
 
-## 3. Wordmark specification
+## Wordmark specification
 
-```
+```text
 BioRouter
 ```
 
 | Property | Value |
 |---|---|
-| Font | SF Pro Display **Bold** (weight 700), outlined |
+| Font | SF Pro Display **Bold** (weight 700), outlined — **superseded**, see [SF Pro cannot be used for this logo](#sf-pro-cannot-be-used-for-this-logo) |
 | Tracking | **0** |
 | `Bio` | `#052049` |
 | `Router` | `#a94f2a` |
@@ -107,34 +125,34 @@ BioRouter
 | Rule — end | right edge of the **`R`** in `Router` |
 | Rule — colour split | at the `Bio`\|`Router` advance boundary |
 | Rule — weight | **0.15em** |
-| Rule — gap below baseline | **0.21em** (see §3.1) |
+| Rule — gap below baseline | **0.21em** (see [Recording the baseline gap](#recording-the-baseline-gap)) |
 | Rule — corner radius | **0** (square terminals) |
 
 The rule's colour split lands on the same x as the letters' colour split, so the bar reads
 as an echo of the word above it rather than an independent graphic.
 
-### 3.1 On the 0.21em gap — a correction worth recording
+### Recording the baseline gap
 
 The client approved this geometry with the specimen's **"Bar gap" reading `.00em`**. That
 readout was **wrong**. `layoutBar()` offset the rule from `bioRect.bottom`, which under
 `line-height:1` is the *font box* bottom — already **0.209em below the baseline** — not the
-baseline. So the control's entire 0–0.22 travel actually spanned **0.209em–0.429em**, and
+baseline. The control's entire 0–0.22 travel therefore spanned **0.209em–0.429em**, and
 no setting could produce a tight underline.
 
-The specimen now measures the **true baseline** (zero-height inline-block probe) and the
-readout is honest. The approved value is recorded here as **0.21em** because that is what
+The specimen was corrected to measure the **true baseline** (a zero-height inline-block probe),
+making the readout honest. The approved value is recorded here as **0.21em** because that is what
 the client actually saw and approved — not `0`.
 
-**Open:** the client's own BR reference image has a gap of roughly **0.09em**, a
-conventional underline distance the broken control could not reach. `0.21em` may have been
-"as tight as the slider allowed" rather than a preference. **Re-confirm the gap against the
-now-honest control before outlining.**
+> **Open.** The client's own BR reference image has a gap of roughly **0.09em**, a
+> conventional underline distance the broken control could not reach. `0.21em` may have been
+> "as tight as the slider allowed" rather than a preference. Re-confirm the gap against the
+> now-honest control before outlining.
 
 ---
 
-## 4. BR monogram specification
+## BR monogram specification
 
-```
+```text
 BR
 ```
 
@@ -154,7 +172,7 @@ specimen exposes an **R size** control (55–100%) if this wants re-tuning.
 
 ---
 
-## 5. Deliverables
+## Deliverables
 
 **SVG** (letters as `<path>`, no font dependency):
 
@@ -170,33 +188,42 @@ specimen exposes an **R size** control (55–100%) if this wants re-tuning.
 
 ---
 
-## 6. Scope — files this touches
+## Scope: files this touches
 
 Replacing the glyph is **not** a two-file change. `scripts/check-brand-consistency.sh`
 hard-asserts the glyph path `M 125 220` across 8 locations and will fail CI on day one.
 
 **Canonical assets**
+
 - `ui/desktop/src/images/icon.svg` ← canonical, `rect fill="#faf8f3" rx="205"`
 - `ui/desktop/src/images/glyph.svg` ← canonical mark
 - `ui/desktop/src/images/icon-light.svg`
 
 **Copies the script byte-compares against the canonical**
+
 - `landing/icon.svg`, `landing/video/icon.svg`, `landing/video/assets/icon.svg`, `landing/video/reel/icon.svg`
 - `crates/biorouter-cli/static/img/logo_dark.png`, `logo_light.png` (compared to `landing/icon.png`)
 
 **Hard-coded glyph assertions to rewrite**
+
 - `scripts/check-brand-consistency.sh` — `grep -q 'M 125 220'` on `glyph.svg` + `icon.svg`,
   and on `docs/agentic-system.html`, `docs/design-system.html`, `docs/theme-system.html`
 - `ui/desktop/src/components/icons/BioRouter.tsx` — script asserts it references `glyph.svg`
 
 **Components**
+
 - `ui/desktop/src/components/BioRouterLogo.tsx` — currently composes `BioRouter` + `Rain`
   with a hover reveal. The `Rain` overlay is glyph-era; decide whether it survives.
 - `ui/desktop/src/components/WelcomeBioRouterLogo.tsx`
 
+> **Note.** The three `docs/*.html` paths asserted by `check-brand-consistency.sh` have since
+> moved: `docs/agentic-system.html` is now [`docs/design/agentic-system-explorer.html`](../agentic-system-explorer.html),
+> `docs/design-system.html` is now [`docs/design/design-system-gallery.html`](../design-system-gallery.html),
+> and `docs/theme-system.html` is now [`docs/design/theming/theme-system-explorer.html`](../theming/theme-system-explorer.html).
+
 ---
 
-## 7. Verification
+## Verification
 
 - `./scripts/check-brand-consistency.sh` must pass after the rewrite.
 - Render the favicon at a true 16px and confirm `BR` is legible (not a smudge).
@@ -206,11 +233,12 @@ hard-asserts the glyph path `M 125 220` across 8 locations and will fail CI on d
 
 ---
 
-## 8. Open risks
+## Open risks
 
-### 8.1 SF Pro **cannot be used for this logo** — licence blocker 🚩 VERIFIED
+### SF Pro cannot be used for this logo
 
-This was checked against Apple's licence text on 2026-07-17, not assumed.
+> **Warning.** This is a verified licence blocker, checked against Apple's licence text on
+> 2026-07-17, not assumed.
 
 **Apple San Francisco font licence** (the separate agreement referenced by §1.B of the
 Design Resources licence, accepted on download from `developer.apple.com/fonts`):
@@ -240,14 +268,14 @@ And §2.D *No Reverse Engineering; Limitations*:
 
 **Why every clause bites this specific project:**
 
-| What we planned | Clause it hits |
+| What was planned | Clause it hits |
 |---|---|
 | A **logo** — not a UI mock-up | "solely for creating mock-ups of user interfaces" |
 | Ships on **Windows + Linux** | "running on any non-Apple operating system software" |
 | Ships on the public **landing site** | "may not … distribute any … website content" |
 | **Outlining the glyphs to paths** | "may not … create derivative works" |
 
-The outlining step, which I proposed as the portability fix, is itself the clearest
+The outlining step proposed above as the portability fix is itself the clearest
 violation. **SF Pro is out for the logo.** No legal review is needed to reach that
 conclusion — it is unambiguous on the face of the licence.
 
@@ -270,23 +298,26 @@ naturally beside SF Pro:
 | **IBM Plex Sans** | More character; reads less "system default" |
 
 Everything else in this spec — the colour split, the rule geometry, the monogram, and
-every measurement in §2.2 — carries over unchanged. **Next step: re-render the specimen
-with these candidates and pick.**
+every measurement in [Why the square icon is a BR monogram](#why-the-square-icon-is-a-br-monogram) —
+carries over unchanged. The next step recorded at the time was to re-render the specimen with these
+candidates and pick; [UI overhaul execution status](../ui-overhaul/execution-status.md) records the
+outcome of that step.
 
-### 8.2 `coral-700` is a theme token, not a brand constant
+### `coral-700` is a theme token, not a brand constant
 
 `--color-coral-700` is re-defined by the **Alma Mater** theme family
 (`main.css:286`), which recolours Parchment's coral to UCSF Violet/Eggplant. The logo must
 use the **literal hex `#a94f2a`**, not `var(--color-coral-700)`, or the wordmark will turn
 purple under that theme.
 
-### 8.3 The gap value
+### The unconfirmed gap value
 
-See §3.1 — re-confirm 0.21em vs ~0.09em against the fixed control.
+See [Recording the baseline gap](#recording-the-baseline-gap) — re-confirm 0.21em vs ~0.09em
+against the fixed control.
 
 ---
 
-## 9. Rejected alternatives
+## Rejected alternatives
 
 | Option | Why rejected |
 |---|---|
@@ -295,3 +326,16 @@ See §3.1 — re-confirm 0.21em vs ~0.09em against the fixed control.
 | One-line `BioRouter` squeezed into the square | 1.7px cap at 16px — the worst option measured. |
 | Live `<text>` in the system stack | A different logo per OS; PNG ≠ SVG on Windows. |
 | An embedded webfont | Violates D-06 (no webfont), and would not be the app's font anyway. |
+
+---
+
+## Related documentation
+
+- [UI overhaul execution status](../ui-overhaul/execution-status.md) — records how the typeface
+  blocker above was resolved, which values were re-tuned, and how the assets were shipped.
+- [Wordmark studio](logo-wordmark-studio.html) — the interactive studio for tuning the wordmark's
+  weight, tracking, underline gap and vertical position.
+- [Icon centring studio](logo-icon-studio.html) — the interactive studio for the BR mark's size and
+  placement inside the square icon.
+- [Alma Mater theme tokens](../theming/alma-mater-theme-tokens.md) — the theme family that
+  re-defines `--color-coral-700`, which is why this spec pins the literal hex.

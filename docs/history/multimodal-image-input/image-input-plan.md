@@ -1,12 +1,20 @@
-# Multimodal Image Input Implementation Plan
+# Image input and vision-flag implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The task-by-task implementation plan for the image-input feature: adding a `supports_vision` flag to `ModelInfo`, fixing Gemini's silent image drop, and replacing path-in-text attachments with structured base64 `ImageContent` blocks at send time.
+> **Status:** Historical record — written and executed 2026-05-30; the work shipped in **v1.76.1** (released 2026-06-01), with follow-up fixes on 2026-05-31. `supports_vision` is present throughout `crates/biorouter/src/providers/base.rs`, and `ui/desktop/src/components/InlineImage.tsx` and `ui/desktop/src/types/message.test.ts` both exist. The checkboxes below are left in their original unticked state — they record the plan as authored, not remaining work.
+> **Audience:** developers and agents reading how the image-input feature was built.
+
+This plan implements [the image input design](image-input-design.md). Read that first for the problem statement, the rejected alternatives, and the non-goals; this document is the execution sequence.
+
+**Identifier scheme.** Work is grouped into **Phases** (1–6, roughly one per layer: model metadata, Gemini wire format, IPC and message construction, chat input, renderer, verification) and numbered **Tasks** (1–20) inside them. Task numbers are referenced by the commit sequence and are stable; they are not cited outside this folder. Steps use checkbox (`- [ ]`) syntax because the plan was executed by an agent under the `superpowers:subagent-driven-development` workflow (alternative: `superpowers:executing-plans`), which tracks progress by ticking them.
 
 **Goal:** Let users drop a screenshot or image into the chat and have the active multimodal model see the image directly (no OCR).
 
 **Architecture:** Frontend reads attached temp files as base64 only at send time and builds a structured `content[]` with `TextContent` + `ImageContent` blocks. Backend `MessageContent::Image` path already works for Anthropic / OpenAI / Bedrock / Databricks; this plan adds Gemini support and a per-model `supports_vision` flag so the UI can hide the attach button on text-only models.
 
-**Tech Stack:** Rust (axum/sqlx/utoipa), TypeScript / React 19 / Electron (Forge + Vite), Vitest + Playwright. Spec: [docs/superpowers/specs/2026-05-30-multimodal-image-input-design.md](../specs/2026-05-30-multimodal-image-input-design.md).
+**Tech stack:** Rust (axum/sqlx/utoipa), TypeScript / React 19 / Electron (Forge + Vite), Vitest + Playwright.
+
+> **Note on line numbers.** The original plan pinned each edit to exact line numbers in the files it touched. Those line numbers no longer resolve and have been replaced by the named item to edit (struct, function, match arm). Every code sample, command, and commit message is unchanged.
 
 ---
 
@@ -16,11 +24,11 @@
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/base.rs:40-84`
+- Modify: `crates/biorouter/src/providers/base.rs` — the `ModelInfo` struct and its `impl` block
 
 - [ ] **Step 1: Add field to `ModelInfo` struct**
 
-In `crates/biorouter/src/providers/base.rs`, replace the struct definition starting at line 40:
+In `crates/biorouter/src/providers/base.rs`, replace the `ModelInfo` struct definition:
 
 ```rust
 /// Information about a model's capabilities
@@ -46,7 +54,7 @@ pub struct ModelInfo {
 
 - [ ] **Step 2: Default the field in all constructors**
 
-Update `ModelInfo::new` (line 57) and `ModelInfo::with_cost` (line 69) to set `supports_vision: None`:
+Update `ModelInfo::new` and `ModelInfo::with_cost` to set `supports_vision: None`:
 
 ```rust
     pub fn new(name: impl Into<String>, context_limit: usize) -> Self {
@@ -93,7 +101,7 @@ After the `with_cost` method in `impl ModelInfo`, add:
 
 - [ ] **Step 4: Default in `ProviderMetadata::new` map closure**
 
-Update the closure on line 131-141 to include the new field:
+Update the `known_models` map closure in `ProviderMetadata::new` to include the new field:
 
 ```rust
             known_models: model_names
@@ -112,7 +120,7 @@ Update the closure on line 131-141 to include the new field:
 
 - [ ] **Step 5: Update existing ModelInfo struct literals in tests**
 
-In `crates/biorouter/src/providers/base.rs` lines 694-740 there are three direct `ModelInfo` struct literals in tests. Add `supports_vision: None,` to each (after `supports_cache_control`).
+The tests module in `crates/biorouter/src/providers/base.rs` has three direct `ModelInfo` struct literals. Add `supports_vision: None,` to each (after `supports_cache_control`).
 
 - [ ] **Step 6: Write a unit test for `with_vision()`**
 
@@ -150,7 +158,7 @@ git commit -m "feat(providers): add supports_vision to ModelInfo"
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/anthropic.rs:167-191`
+- Modify: `crates/biorouter/src/providers/anthropic.rs` — the `Provider::metadata()` impl
 
 - [ ] **Step 1: Find the const that lists Anthropic model names**
 
@@ -160,7 +168,7 @@ Note the file/lines where `ANTHROPIC_KNOWN_MODELS: &[&str]` is defined (likely a
 
 - [ ] **Step 2: Update `Provider::metadata()` to mark Claude 3+ as vision**
 
-All currently shipped Claude models are 3.x or 4.x and support vision. Replace the `models` builder at line 168-171:
+All currently shipped Claude models are 3.x or 4.x and support vision. Replace the `models` builder inside `metadata()`:
 
 ```rust
         let models: Vec<ModelInfo> = ANTHROPIC_KNOWN_MODELS
@@ -198,7 +206,7 @@ git commit -m "feat(anthropic): declare vision support on Claude models"
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/openai.rs:236+`
+- Modify: `crates/biorouter/src/providers/openai.rs` — the `Provider::metadata()` impl
 
 - [ ] **Step 1: Read the OpenAI `metadata()` block**
 
@@ -262,7 +270,7 @@ git commit -m "feat(openai): declare vision support on GPT-4o/4.1/o-series model
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/google.rs:114-150`
+- Modify: `crates/biorouter/src/providers/google.rs` — the `Provider::metadata()` impl
 
 - [ ] **Step 1: Read the Google `metadata()` block**
 
@@ -313,8 +321,8 @@ git commit -m "feat(google): declare vision support on Gemini models"
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/bedrock.rs:213+`
-- Modify: `crates/biorouter/src/providers/databricks.rs:240+`
+- Modify: `crates/biorouter/src/providers/bedrock.rs` — the `Provider::metadata()` impl
+- Modify: `crates/biorouter/src/providers/databricks.rs` — the `Provider::metadata()` impl
 
 - [ ] **Step 1: Bedrock — selectively flag Claude / Llama vision variants**
 
@@ -482,12 +490,12 @@ mod tests {
     }
 ```
 
-(The exact `with_image` signature is verified at [crates/biorouter/src/conversation/message.rs:246](../../../crates/biorouter/src/conversation/message.rs#L246) — adjust args if it takes `(data, mime_type)` in a different order.)
+(The exact `with_image` signature is verified in [`crates/biorouter/src/conversation/message.rs`](../../../crates/biorouter/src/conversation/message.rs) — adjust args if it takes `(data, mime_type)` in a different order.)
 
 - [ ] **Step 3: Run the test and verify it fails**
 
 Run: `cargo test -p biorouter --lib providers::formats::google::tests::format_messages_emits_inline_data_for_user_image`
-Expected: FAIL — the assertion fires because the current catch-all `_ => {}` at line 215 swallows `MessageContent::Image`.
+Expected: FAIL — the assertion fires because the current catch-all `_ => {}` swallows `MessageContent::Image`.
 
 ---
 
@@ -495,11 +503,11 @@ Expected: FAIL — the assertion fires because the current catch-all `_ => {}` a
 
 **Files:**
 
-- Modify: `crates/biorouter/src/providers/formats/google.rs:206-216`
+- Modify: `crates/biorouter/src/providers/formats/google.rs` — the `MessageContent` match in `format_messages`
 
 - [ ] **Step 1: Add an explicit `MessageContent::Image` arm**
 
-The existing `MessageContent::Thinking` arm ends at line 213 and is followed by the `_ => {}` catch-all on line 215. Insert a new arm between them so the catch-all only swallows unknown variants:
+The existing `MessageContent::Thinking` arm is followed directly by the `_ => {}` catch-all. Insert a new arm between them so the catch-all only swallows unknown variants:
 
 ```rust
                     MessageContent::Thinking(thinking) => {
@@ -522,7 +530,7 @@ The existing `MessageContent::Thinking` arm ends at line 213 and is followed by 
                     _ => {}
 ```
 
-(The wire shape matches the existing `RawContent::Image` arm at line 126 of the same file, which already emits this format for tool-returned images.)
+(The wire shape matches the existing `RawContent::Image` arm earlier in the same file, which already emits this format for tool-returned images.)
 
 - [ ] **Step 2: Run the test and verify it passes**
 
@@ -549,8 +557,8 @@ git commit -m "fix(google): emit inline_data for user-attached images"
 
 **Files:**
 
-- Modify: `ui/desktop/src/main.ts` (alongside existing temp-image handlers, near line 1617)
-- Modify: `ui/desktop/src/preload.ts:296-307`
+- Modify: `ui/desktop/src/main.ts` — alongside the existing temp-image IPC handlers
+- Modify: `ui/desktop/src/preload.ts` — the `window.electron` object literal
 - Modify: `ui/desktop/src/types/electron.d.ts` or wherever `Window['electron']` is typed (find with `grep -n "saveDataUrlToTemp" ui/desktop/src/`)
 
 - [ ] **Step 1: Locate the existing temp-image handlers**
@@ -724,7 +732,7 @@ Expected: FAIL — `createUserMessage` is currently sync and doesn't accept atta
 
 **Files:**
 
-- Modify: `ui/desktop/src/types/message.ts:10-18`
+- Modify: `ui/desktop/src/types/message.ts` — the `createUserMessage` function
 
 - [ ] **Step 1: Replace `createUserMessage`**
 
@@ -781,12 +789,12 @@ git commit -m "feat(message): async createUserMessage with structured image bloc
 
 **Files:**
 
-- Modify: `ui/desktop/src/hooks/useChatStream.ts:487` (and the `createUserMessage` import at line 27)
-- Modify: `ui/desktop/src/hooks/useWorkflowManager.ts:265`
+- Modify: `ui/desktop/src/hooks/useChatStream.ts` — the `createUserMessage` call site and its import
+- Modify: `ui/desktop/src/hooks/useWorkflowManager.ts` — the `createUserMessage` call site
 
 - [ ] **Step 1: Update `useChatStream.ts`**
 
-Read line 480-495 first to see the surrounding context:
+Read the surrounding context first:
 
 ```bash
 sed -n '480,495p' ui/desktop/src/hooks/useChatStream.ts
@@ -802,9 +810,9 @@ const msg = typeof userMessage === 'string'
 
 The exact shape depends on the surrounding expression — preserve it; just add `await`. If the call is inside `useMemo` or similar sync hook, that hook needs to move into a `useEffect` + state pattern. Verify before editing.
 
-- [ ] **Step 2: Update `useWorkflowManager.ts:265`**
+- [ ] **Step 2: Update the `useWorkflowManager.ts` call site**
 
-Read line 260-275 first:
+Read the surrounding context first:
 
 ```bash
 sed -n '260,275p' ui/desktop/src/hooks/useWorkflowManager.ts
@@ -909,8 +917,8 @@ Run: `grep -n "handlePaste\|useFileDrop\|selectFileOrDirectory\|Attach" ui/deskt
 
 Identify:
 
-- The attach button JSX (around line ~1098 per spec).
-- The `handlePaste` function (around line 656-766).
+- The attach button JSX.
+- The `handlePaste` function.
 - The `useFileDrop` hook call site.
 
 - [ ] **Step 2: Pull the flag**
@@ -981,7 +989,7 @@ Identify where the user prompt is currently merged with image paths (the existin
 
 The component sends to `reply()` (from `useChatStream`). The current call shape (per spec research): `reply(stringifiedPromptIncludingPaths)`. Change `reply` and its callers to accept an attachments array:
 
-In `useChatStream.ts`, where `reply` is defined (line ~502):
+In `useChatStream.ts`, where `reply` is defined:
 
 ```ts
 async function reply(text: string, attachments: UserAttachment[] = []): Promise<void> {
@@ -1144,7 +1152,7 @@ In each renderer's content-block map (or equivalent loop), insert a case:
 })}
 ```
 
-- [ ] **Step 3: Backward-compat with pre-v-next sessions**
+- [ ] **Step 3: Backward-compat with pre-v1.76.1 sessions**
 
 `imageUtils.ts` already extracts paths from text and renders via the path-based `ImagePreview`. Keep that code unchanged. It runs only on `TextContent` blocks; new messages send their image paths through the structured route, so the regex matches nothing and the renderer is a no-op for them.
 
@@ -1164,7 +1172,7 @@ git commit -m "feat(renderer): display ImageContent blocks in user and assistant
 
 ---
 
-## Phase 6 — E2E + manual verification
+## Phase 6 — End-to-end tests and manual verification
 
 ### Task 18: Playwright golden-path e2e test
 
@@ -1270,50 +1278,37 @@ git commit -m "test(e2e): attach hidden for non-vision model"
 
 ---
 
-### Task 20: Manual verification checklist
+### Task 20: Manual verification in the running app
 
 **Files:** None — this is a runtime check.
 
-- [ ] **Step 1: Start the app**
+> **This is human QA, not an automatable task.** Every other task in this plan ends in a command an agent runs and a commit it makes. This one requires a person driving the GUI with real provider credentials, and it is the gate the design spec named as decisive: if any of these checks fail, the implementation is not done regardless of unit-test status.
 
-Run: `just run-ui`
-Expected: BioRouter window opens.
+1. **Start the app.** Run `just run-ui`. Expected: BioRouter window opens.
+2. **Paste a screenshot to Claude Sonnet.** Select Claude Sonnet as the model. Take a screenshot (Cmd+Shift+4 on macOS) and paste (Cmd+V) into the chat box. Confirm thumbnail appears, then send "What do you see?" Expected: Model describes the screenshot content (not the file path).
+3. **Drop a PNG to GPT-4o.** Switch model to gpt-4o. Drag a `.png` file from Finder onto the chat box. Send "Describe this image." Expected: Model describes the image.
+4. **Pick a JPEG via attach on Gemini.** Switch to gemini-1.5-pro (or 2.5-flash). Click the attach button, pick a `.jpg`. Send "What is this?" Expected: Model describes the image. (Pre-fix this would silently strip the image.)
+5. **Switch to a text-only Ollama model.** Switch to any Ollama model whose `supports_vision` was not declared `true`. Expected: Attach button disappears. Paste of an image is ignored. Paste of text still works.
+6. **Reload a session containing images.** Quit BioRouter. Relaunch (`just run-ui`). Open the session from step 2 (or any of 2–4) from the recent sessions list. Expected: The transcript renders the images inline. The text is intact.
+7. **Tag the work as complete.** If all six checks pass, this plan is done. If any fail, the failure mode goes back to the relevant task and gets fixed before the plan is marked complete.
 
-- [ ] **Step 2: Paste a screenshot to Claude Sonnet**
-
-Select Claude Sonnet as the model. Take a screenshot (Cmd+Shift+4 on macOS) and paste (Cmd+V) into the chat box. Confirm thumbnail appears, then send "What do you see?"
-Expected: Model describes the screenshot content (not the file path).
-
-- [ ] **Step 3: Drop a PNG to GPT-4o**
-
-Switch model to gpt-4o. Drag a `.png` file from Finder onto the chat box. Send "Describe this image."
-Expected: Model describes the image.
-
-- [ ] **Step 4: Pick a JPEG via attach on Gemini**
-
-Switch to gemini-1.5-pro (or 2.5-flash). Click the attach button, pick a `.jpg`. Send "What is this?"
-Expected: Model describes the image. (Pre-fix this would silently strip the image.)
-
-- [ ] **Step 5: Switch to a text-only Ollama model**
-
-Switch to any Ollama model whose `supports_vision` was not declared `true`.
-Expected: Attach button disappears. Paste of an image is ignored. Paste of text still works.
-
-- [ ] **Step 6: Reload a session containing images**
-
-Quit BioRouter. Relaunch (`just run-ui`). Open the session from step 2 (or any of 2-4) from the recent sessions list.
-Expected: The transcript renders the images inline. The text is intact.
-
-- [ ] **Step 7: Tag the work as complete**
-
-If all six checks pass, this plan is done. If any fail, the failure mode goes back to the relevant task and gets fixed before the plan is marked complete.
+> **Outcome.** No pass/fail record was written back into this plan. The feature shipped in v1.76.1, and three follow-up fixes landed on 2026-05-31 — `fix(image-input): drag-dropped images now actually reach the model`, `fix(image-input): per-session vision gating + parent-drop filter + banner restyle`, and `fix(openai-responses): include image content blocks in responses-API requests` — which indicates the checklist was exercised and the defects it surfaced were repaired.
 
 ---
 
-## Self-Review Notes (for the agent executing this plan)
+## Implementation notes and semantics
+
+These notes were written as a self-review for the agent executing the plan. They record design decisions that outlive the plan itself, so read them as reference material for the shipped behaviour.
 
 - **Type names:** TS `ImageContent` is `{ data: string; mimeType: string }` (camelCase). Rust `ImageContent` uses `mime_type`. Serde maps automatically via `#[serde(rename_all = "camelCase")]` on the relevant struct — verify if a wire-format issue appears.
 - **`supports_vision` is `Option<bool>`.** `None` → treated as `false` in the UI (`info?.supportsVision === true`). Don't compare to `false` directly.
 - **Path-embed legacy code path stays.** `imageUtils.ts` keeps extracting paths from text for backward-compat with old sessions. It's a no-op for new messages.
 - **No new fetch.** `currentModelSupportsVision` is derived from already-loaded provider metadata. Don't add a fetch.
-- **Databricks coverage caveat from the spec:** if the manual checklist on a Databricks-served Claude model fails, treat that as a separate sub-task — likely a missing image-format branch in `databricks.rs`. Out of scope unless it actually fails.
+- **Databricks coverage caveat from the spec:** if the manual checklist on a Databricks-served Claude model fails, treat that as a separate sub-task — likely a missing image-format branch in `databricks.rs`. Out of scope unless it actually fails. (Databricks vision flagging did land: `crates/biorouter/src/providers/databricks.rs` chains `.with_vision()` in its `metadata()` impl.)
+
+## Related documentation
+
+- [Image input design](image-input-design.md) — the spec this plan executes, with the problem statement, rejected alternatives, and non-goals.
+- [Choosing a model provider](../../getting-started/choosing-a-model-provider.md) — the providers whose `metadata()` impls Tasks 2–5 edit.
+- [Sessions](../../sessions/README.md) — how transcripts are persisted, which is what the pre-/post-v1.76.1 rendering split in Task 17 depends on.
+- [System overview](../../architecture/system-overview.md) — the renderer → `biorouterd` → provider path that this plan threads `ImageContent` blocks through.

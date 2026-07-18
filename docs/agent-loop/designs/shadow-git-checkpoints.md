@@ -1,21 +1,59 @@
-# BR-43 — Shadow-git checkpoints + `/rewind` (three-axis restore: files / conversation / both)
+# Shadow-git checkpoints and `/rewind` (BR-43)
 
-**Lens:** R + U (robustness P-12, ux P-1). "The single starkest deficit vs every
-current-gen agent" (`docs/agent-loop-review/PROPOSALS.md:504-512`).
-**Inspired by (primary mechanism):** OpenCode's *private git-object DB* snapshot model —
-capture the worktree before/after each model step into a separate Git object database in
-the app's data dir, **no commits, no branch moves, no touching the user's Git index**
-(`docs/agent-loop-review/external/opencode.md:64`, "Ideas worth stealing" #2 at line 74).
-Cline supplies the three restore *modes* (files / conversation / both); Claude Code /
-Gemini CLI the `/rewind` affordance (`external/claude-code.md:226-229, 288-291`).
+> **What this is.** The design for capturing the workspace into a private git object database
+> at turn boundaries, so a user can rewind files, conversation, or both — the recovery net
+> BioRouter lacked entirely.
+> **Status:** Current, partially shipped. Slice 1 landed —
+> `crates/biorouter/src/checkpoint/{mod,manager,store}.rs` exist and the feature is flag-gated
+> behind `BIOROUTER_CHECKPOINTS`. Slices 2–3 (GUI rewind affordance in `BaseChat.tsx`, redo,
+> GC on session delete, default-on) are **not done**, so this document remains the plan for
+> that work.
+> **Audience:** developers working on BioRouter's checkpointing, session persistence, and the
+> chat transcript UI.
+
+Restore has three axes, and this design covers all of them: **files** (check out a captured
+tree into the working directory), **conversation** (truncate history at the turn anchor), and
+**both**. The mechanism is a shadow git repository per session whose object database lives in
+the app data dir and whose work-tree is the user's own folder — so nothing is ever committed
+to, or read from, the user's real `.git`.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). Numbered "gaps" (#2, #9, #10) are the
+> gap list at the end of the
+> [state-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md).
+> `GAP-N` identifiers (distinct from those) are the cross-platform findings in the
+> [platform parity audit](../cross-platform/platform-parity-audit.md). This document is BR-43,
+> raised under both the robustness lens (P-12) and the ux lens (P-1).
+
+| Field | Value |
+|---|---|
+| Proposal | BR-43 |
+| Lens | R + U (robustness P-12, ux P-1) |
+| Why it ranked first | "The single starkest deficit vs every current-gen agent" — see the [improvement proposals](../../history/agent-loop-review/improvement-proposals.md) |
+| Primary mechanism | OpenCode's *private git-object DB* snapshot model: capture the worktree before/after each model step into a separate Git object database in the app's data dir — **no commits, no branch moves, no touching the user's Git index**. See the [OpenCode research note](../../research/coding-agent-landscape/opencode.md). |
+| Restore modes | Cline supplies the three modes (files / conversation / both); Claude Code and Gemini CLI the `/rewind` affordance — see the [Claude Code research note](../../research/coding-agent-landscape/claude-code.md). |
+| Shipped | Slice 1, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, checkpoints cluster) |
+
+> **Warning — Windows restore has known defects.** The cross-platform audit recorded
+> **GAP-8** against this feature: on Windows, executable bits are dropped on restore, and
+> locked files defeat `CheckoutBuilder::force`. Neither is addressed by this design. See the
+> [platform parity audit](../cross-platform/platform-parity-audit.md) before enabling
+> checkpoints on a Windows fleet.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter has **no checkpointing of the agent's own edits and no session-level undo**.
-The internal review states this plainly (`internal/state-awareness.md:133-170`, gap #2 at
-`:313-318`): *"No git checkpointing, no shadow git, no session-level undo of edits. This
+The [state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md)
+states it plainly in its gap #2: *"No git checkpointing, no shadow git, no session-level undo of edits. This
 is a clear absence."*
 
 1. **The only rollback is `text_editor`'s in-memory, per-file, per-process LIFO.**
@@ -26,7 +64,7 @@ is a clear absence."*
    pops one and writes it back (`text_editor.rs:1052-1085`). Its limits, per the review:
    it dies with the process, is never persisted, covers **only** files touched via
    `text_editor` (shell redirects, `write_file`, and other extensions are invisible), and
-   offers no cross-file atomic "revert the whole task" (`state-awareness.md:152-164`).
+   offers no cross-file atomic "revert the whole task".
 
 2. **`git2` is already in-tree but never applied to the workspace.** It is a dependency of
    exactly one crate for exactly one purpose — the Knowledge-base wiki
@@ -57,10 +95,10 @@ is a clear absence."*
 
 5. **Message ids are positional and unstable.** `get_conversation` re-derives synthetic ids
    `msg_<session>_<idx>` on every load (`session_manager.rs:1810-1841`), so any history
-   rewrite renumbers them (gap #10, `state-awareness.md:360-362`). A checkpoint must **not**
+   rewrite renumbers them (gap #10). A checkpoint must **not**
    anchor on these; it anchors on the message `created_timestamp` (`message.rs:588`, the same
    key `truncate_conversation` uses), which is stable within a session and survives the
-   eventual BR-45 UUID migration.
+   eventual [BR-45 UUID migration](session-branching.md).
 
 Net: aggressive autonomy on a scientist's working tree is intolerable with only a
 per-process, per-file, `text_editor`-only undo. BR-43 supplies the missing safety net.
@@ -88,7 +126,7 @@ axes:
 **Shadow repo location** (mirrors the KB layout, respects the `BIOROUTER_PATH_ROOT` test
 override in `config/paths.rs:8-13`):
 
-```
+```text
 <Paths::data_dir()>/checkpoints/<session_id>/
     git/            # GIT_DIR — objects, refs/biorouter/checkpoints, our own index file
     (work-tree = the session's working_dir, set via core.worktree / workdir_path)
@@ -118,7 +156,7 @@ We deliberately **do not** widen `MessageMetadata` (`message.rs:509-514`, a fixe
 generated TS client. The checkpoint↔message link lives entirely in this side table, keyed by
 `anchor_ts`.
 
-### Module layout (files to create)
+### Module layout: files to create
 
 `crates/biorouter/src/checkpoint/` (new; `pub mod checkpoint;` added to
 `crates/biorouter/src/lib.rs` alongside the existing modules at `lib.rs:1-34`):
@@ -154,7 +192,7 @@ generated TS client. The checkpoint↔message link lives entirely in this side t
   - `async fn list(&self, session_id) -> Result<Vec<CheckpointRecord>>`
   - `async fn restore(&self, session_id, checkpoint_id, axis) -> Result<RestoreOutcome>` —
     first takes a `pre_restore` snapshot (so restore is itself reversible — OpenCode's redo
-    baseline, `opencode.md:64`), then:
+    baseline), then:
       - `Files`/`Both`: `store.restore_files(commit_sha)`.
       - `Conversation`/`Both`: `self.session_manager.truncate_conversation(session_id,
         anchor_ts)` (existing, `session_manager.rs:2302`) and signal the caller to emit
@@ -167,9 +205,9 @@ generated TS client. The checkpoint↔message link lives entirely in this side t
 `crates/biorouter/Cargo.toml` (git2 with the same `vendored-libgit2` feature the workspace
 already builds for `biorouter-mcp/Cargo.toml:77`; `ignore` is already a transitive dep).
 
-### Wiring into the agent turn boundary (files to change)
+### Wiring into the agent turn boundary
 
-`crates/biorouter/src/agents/agent.rs`:
+Changes to `crates/biorouter/src/agents/agent.rs`:
 
 - Add `pub(super) checkpoints: Option<Arc<CheckpointManager>>` to `struct Agent`
   (`agent.rs:142-173`), constructed in `Agent::new` from `Paths::data_dir()` +
@@ -191,9 +229,10 @@ already builds for `biorouter-mcp/Cargo.toml:77`; `ignore` is already a transiti
 write, plus any extension flagged as filesystem-writing); when in doubt we snapshot — the
 dedup absorbs false positives.
 
-### Server routes (files to change)
+### Server routes
 
-`crates/biorouter-server/src/routes/session.rs` — add siblings to `diverge`/`edit_message`
+Changes to `crates/biorouter-server/src/routes/session.rs` — add siblings to
+`diverge`/`edit_message`
 (router wiring at `session.rs:650-666`), all utoipa-annotated so `just generate-openapi`
 regenerates the TS client:
 
@@ -205,18 +244,18 @@ regenerates the TS client:
 The `CheckpointManager` is reachable from `AppState` (the same handle that owns
 `session_manager()`, used throughout `session.rs`).
 
-### `/rewind` slash command + GUI
+### The `/rewind` slash command and GUI
 
 - **Slash command:** `/rewind` in `crates/biorouter/src/slash_commands/` — lists recent
   turns (from `list`), lets the user pick a checkpoint and an axis. CLI renders a picker;
   bare `/rewind` defaults to the previous turn, `both` axis.
 - **GUI:** a per-turn rewind affordance in `ui/desktop/src/components/BaseChat.tsx` (the file
-  BR-43 names in PROPOSALS) that calls the restore route and, for conversation/both, reloads
-  the transcript via the existing history-refresh path.
+  BR-43 names in the improvement proposals) that calls the restore route and, for
+  conversation/both, reloads the transcript via the existing history-refresh path.
 
-### Control flow (one restore)
+### Control flow: one restore
 
-```
+```text
 user clicks "Rewind to turn N (files+conversation)"
   → POST /sessions/{id}/checkpoints/{cid}/restore {axis:"both"}
       → CheckpointManager::restore
@@ -229,19 +268,19 @@ user clicks "Rewind to turn N (files+conversation)"
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 1. **Commit into the user's real repo (Aider's commit-per-edit).** Rejected: pollutes the
    user's history, competes with their own `git` operations, and fails outright when the
    working dir is not a git repo — common for a scientist's data folder. OpenCode explicitly
-   avoids this (`opencode.md:74`).
+   avoids this (see the [OpenCode research note](../../research/coding-agent-landscape/opencode.md)).
 2. **Persist whole-file snapshots in SQLite (extend `text_editor` undo — that is BR-44).**
    Rejected as the *primary* mechanism: no content-addressed dedup, no cross-file atomicity,
-   and it bloats the session DB (gap #9, `state-awareness.md:354-358`). BR-44 is the
+   and it bloats the session DB (gap #9). BR-44 is the
    incremental cousin (persist per-path undo, cover shell/`write_file`) explicitly framed as
-   "a step toward BR-43" (`PROPOSALS.md:517`); shadow-git is the durable, deduped answer.
+   "a step toward BR-43"; shadow-git is the durable, deduped answer.
 3. **Tar/copy the worktree per step.** Rejected: no dedup, slow, space-heavy — exactly the
-   risk flagged in the proposal (`PROPOSALS.md:512`). Git's content-addressed store gives free
+   risk flagged in the proposal. Git's content-addressed store gives free
    dedup across steps.
 4. **`git stash` on the user's repo.** Rejected: mutates the user's index/refs and only works
    inside a git repo.
@@ -254,7 +293,7 @@ user clicks "Rewind to turn N (files+conversation)"
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **SQLite:** bump `CURRENT_SCHEMA_VERSION` 10 → 11 (`session_manager.rs:21`) and add a
   migration-11 arm to `apply_migration` (`session_manager.rs:1325`; the existing arms, e.g.
@@ -266,7 +305,7 @@ user clicks "Rewind to turn N (files+conversation)"
   under the user's project. `delete_session` calls `CheckpointManager::gc` to remove the dir.
 - **Config flags:** `BIOROUTER_CHECKPOINTS=on|off` (auto-skip when the worktree exceeds
   `BIOROUTER_CHECKPOINT_MAX_TREE_MB`), `BIOROUTER_CHECKPOINT_MAX_FILE_MB` (default 2, matching
-  OpenCode's >2 MiB exclusion, `opencode.md:64`), `BIOROUTER_CHECKPOINT_IGNORE` (extra globs).
+  OpenCode's >2 MiB exclusion), `BIOROUTER_CHECKPOINT_IGNORE` (extra globs).
   First ship gated behind `ALPHA=true` so the perf/space profile is validated before default-on.
 - **Dependencies:** add `git2 = { …, features = ["vendored-libgit2"] }` and `ignore` to
   `crates/biorouter/Cargo.toml` (the workspace already vendors libgit2 for `biorouter-mcp`).
@@ -274,7 +313,8 @@ user clicks "Rewind to turn N (files+conversation)"
   restore + routes + `/rewind`; (3) GUI affordance + redo. Reversible at each step by the
   config flag.
 - **BR-45 interaction:** anchoring on `created_timestamp` (not the positional
-  `msg_<session>_<idx>` id) means checkpoints survive the future stable-UUID migration.
+  `msg_<session>_<idx>` id) means checkpoints survive the future
+  [stable-UUID migration](session-branching.md).
 
 ## Test plan
 
@@ -304,28 +344,36 @@ user clicks "Rewind to turn N (files+conversation)"
 - **Perf/space smoke:** snapshotting a large tree stays within a time budget and the caps
   trigger a skip (returns `None`, no row).
 
-## Effort & phasing
+## Effort and phasing
 
-Overall **L** (per `PROPOSALS.md:511`).
+Overall **L**.
 
-- **Slice 1 (first mergeable):** `checkpoint/` module (`store.rs` + `manager.rs`), git2/ignore
+- **Slice 1 (first mergeable). Shipped.** `checkpoint/` module (`store.rs` + `manager.rs`), git2/ignore
   deps, migration 11, turn-boundary snapshot (dirty-gated + `tree_sha` dedup + caps), and the
   `restore(Files|Conversation|Both)` API with full unit + one agent-integration test. No UI,
   gated behind `ALPHA`/config. This alone delivers a durable, all-writers safety net and
   programmatic three-axis restore — the core of BR-43.
-- **Slice 2:** server routes (list/restore/manual) + `just generate-openapi` + TS client, and
+- **Slice 2. Not built.** Server routes (list/restore/manual) + `just generate-openapi` + TS client, and
   the `/rewind` slash command (CLI).
-- **Slice 3:** GUI per-turn rewind affordance in `BaseChat.tsx`, redo, `gc` on session delete,
+- **Slice 3. Not built.** GUI per-turn rewind affordance in `BaseChat.tsx`, redo, `gc` on session delete,
   docs, and default-on after perf validation.
 
-## Open questions for the human (only genuine product decisions)
+## Open questions, and how the campaign answered them
+
+> **Note.** These are genuine product decisions, recorded as open when the design was
+> written. On 2026-07-13 the campaign owner signed off with a blanket "proceed with all of
+> the default options" (logged in the
+> [campaign README](../../history/agent-loop-campaign/README.md)), and Slice 1 answered
+> questions 1 and 2 by construction: checkpoints shipped **flag-gated behind
+> `BIOROUTER_CHECKPOINTS`, not default-on**, with snapshots taken at mutating-tool turn
+> boundaries. Questions 3–6 remain open because the restore UI is unbuilt.
 
 1. **Default posture:** ship default-on, or `ALPHA`-only until the space/time cost on a
    scientist's large data dir is measured? (A worktree of BAM/FASTQ files could be huge even
-   with the per-file cap.)
+   with the per-file cap.) *Answered: flag-gated, off by default.*
 2. **Snapshot granularity:** every model step, only turns that ran a mutating tool (proposed),
    or only user-visible turn boundaries? This trades storage/CPU against how finely a user can
-   rewind.
+   rewind. *Answered: the proposed mutating-tool gating shipped.*
 3. **Retention/GC:** keep the last N checkpoints or M days per session, or keep all and only
    GC on session delete?
 4. **Conversation-axis semantics:** does restore **truncate** (destructive, like
@@ -335,3 +383,13 @@ Overall **L** (per `PROPOSALS.md:511`).
 6. **External side effects:** DB writes, network calls, and files written *outside* the
    `working_dir` cannot be reverted. Do we surface a clear "files + conversation only" caveat
    on the rewind control (as OpenCode does)?
+
+---
+
+## Related documentation
+
+- [Session branching (BR-45)](session-branching.md) — the stable message ids this design deliberately does *not* anchor on, and the fork tree that shares the restore UX surface.
+- [Wave 1 checkpoints report](../../history/agent-loop-campaign/wave-reports/wave-1-checkpoints.md) — the implementation record for Slice 1.
+- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-8, the Windows exec-bit and locked-file defects in restore.
+- [State-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md) — gaps #2 and #9, the source of this proposal.
+- [Verify-and-checkpoint Stop hook](../hooks/verify-and-checkpoint-stop-hook.md) — the shipped, opt-in alternative that commits to the user's *real* repo at turn end, and so makes the opposite trade-off from this design.

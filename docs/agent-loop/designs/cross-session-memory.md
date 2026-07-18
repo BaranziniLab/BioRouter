@@ -1,12 +1,58 @@
-# BR-17 — Unified, auto-promoted cross-session memory
+# Cross-session memory (BR-17)
 
-**Status:** design (implementation not started)
-**Lens:** U (ux P-28); `state-awareness.md` gaps #5/#6; `compaction.md` context.
-**Inspired by:** Codex `~/.codex/memories/` (distilled, ranked, self-maintained), Claude Code auto-memory (`MEMORY.md` first 200 lines auto-loaded every session), Gemini CLI Auto Memory (idle-session mining + a `/memory inbox` review queue).
+> **What this is.** The design for replacing BioRouter's three disjoint memory stores with
+> one system: an FTS5-ranked chat index, auto-distillation of durable facts into a knowledge
+> base, and a bounded always-on memory digest injected into every session's context.
+> **Status:** Current, partially shipped. Piece 1 (FTS5 chat recall) is live —
+> `crates/biorouter/src/session/chat_fts.rs` exists and the FTS5 migration landed. Pieces 2
+> (auto-distillation) and 3 (always-on digest) are **not built**: there is no `memory` module
+> under `crates/biorouter/src`. This document remains the plan of record for that unbuilt
+> work. See [What shipped and what remains](#what-shipped-and-what-remains).
+> **Audience:** developers working on BioRouter's session, memory and knowledge subsystems.
+
+Cross-session memory in BioRouter is three separate stores — chat recall, knowledge bases,
+and manual conversation ingest — with no shared index and no way for durable facts to
+accumulate on their own. A user has to know which store to ask, and a fact learned in one
+session is invisible in the next. This document specifies one unified path: better recall on
+the read side, automatic promotion of durable facts on the write side, and a small, bounded
+digest of what the agent remembers injected into every session.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). This document is BR-17, raised
+> under the ux lens as P-28.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-17 |
+| Lens | U (ux P-28) |
+| Source gaps | Gaps #5 and #6 in the [state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md); context from the [compaction review](../../history/agent-loop-review/subsystem-reviews/compaction-and-context-management.md) |
+| Inspired by | Codex `~/.codex/memories/` (distilled, ranked, self-maintained); Claude Code auto-memory (`MEMORY.md` first 200 lines auto-loaded every session); Gemini CLI Auto Memory (idle-session mining + a `/memory inbox` review queue) |
+| Shipped | Piece 1 only, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, compaction cluster) |
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
+
+## What shipped and what remains
+
+| Piece | Scope | State |
+|---|---|---|
+| Piece 1 — FTS5 chat recall | `chat_fts.rs`, FTS5 virtual table + backfill, `bm25()` ranking, `LIKE` fallback | **Shipped** |
+| Piece 2 — auto-distillation | `memory::promote`, `distill_memory.md`, idle-session scan, writes to the Soul KB | Not built |
+| Piece 3 — memory digest injection | `memory::digest`, `SystemPromptBuilder::with_memory_digest` | Not built |
+| Piece 4 — review surface | Gemini-style review inbox, precise `usage_count` accounting | Not built |
+
+> **Warning — migration number.** This document specifies the FTS5 table as **migration 11**
+> throughout. At integration time it was **renumbered to 13** (`CURRENT_SCHEMA_VERSION=13`),
+> recorded in the [campaign README](../../history/agent-loop-campaign/README.md) log entry for
+> 2026-07-12. Read "migration 11" below as "migration 13" when comparing against the code.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 Cross-session memory today is **three disjoint stores with no shared index and no auto-promotion**. The user must know which one to ask for, and durable facts never accumulate on their own.
 
@@ -41,9 +87,10 @@ Cross-session memory today is **three disjoint stores with no shared index and n
    `knowledge::conversation_ingest::ingest_conversation`. Nothing triggers it
    automatically at session end.
 
-The three never share an index (`state-awareness.md:200-203`) and there is no
-"promote useful facts automatically" step (`state-awareness.md:331-340`). Net
-effect: strong-but-siloed stores, poor recall, no accumulation of lab know-how.
+The three never share an index, and there is no "promote useful facts automatically" step —
+both recorded in the
+[state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md).
+Net effect: strong-but-siloed stores, poor recall, no accumulation of lab know-how.
 
 **Where injection can happen.** The system prompt is assembled once per turn by
 `SystemPromptBuilder::build` (`prompt_manager.rs:104-176`) at
@@ -61,7 +108,9 @@ plug into.
 Three cooperating pieces behind one config flag. Nothing is destructive; every
 piece degrades to today's behavior when disabled.
 
-### Piece 1 — FTS5 index for chat recall (read path, quality)
+### Piece 1 — FTS5 index for chat recall
+
+This is the read path, and a pure quality change.
 
 **Data model.** Add SQLite FTS5 (already compiled into the bundled sqlite; used
 by the KB's BM25 search, `crates/biorouter-mcp/src/knowledge/store.rs:172-219`)
@@ -69,6 +118,7 @@ as a contentless external-content table mirroring `messages`:
 
 ```sql
 -- migration 11 (crates/biorouter/src/session/session_manager.rs apply_migration)
+-- NOTE: renumbered to migration 13 at integration time.
 CREATE VIRTUAL TABLE messages_fts USING fts5(
     text,                       -- extracted plain text of content_json
     session_id UNINDEXED,
@@ -93,10 +143,11 @@ the two write sites that already own message lifecycle:
   `DELETE FROM messages_fts WHERE session_id=?` then re-insert the surviving
   **user-visible** messages, so a compacted session stays searchable but does not
   double-count. (Note: compaction flips messages `agent_invisible` but keeps them
-  `user_visible`, `compaction.md:83-84` — recall should search what the *user*
-  saw, so index on `user_visible`.)
+  `user_visible`, per the
+  [compaction review](../../history/agent-loop-review/subsystem-reviews/compaction-and-context-management.md)
+  — recall should search what the *user* saw, so index on `user_visible`.)
 
-**Backfill.** Migration 11 populates `messages_fts` from existing `messages` in a
+**Backfill.** The migration populates `messages_fts` from existing `messages` in a
 single pass inside the migration transaction (extract text row-by-row, skip empty).
 For very large DBs this is O(n) once; acceptable as a one-time upgrade cost and
 consistent with the existing token_events backfill philosophy (`migration 10`).
@@ -127,18 +178,20 @@ The public struct/method surface (`ChatHistorySearch::new/execute`,
 recency to relevance; the `chatrecall` extension is switched to
 `default_enabled: true` (`extension.rs:63`) now that it is worth always having.
 
-### Piece 2 — Auto-distillation into a unified memory store (promotion path)
+### Piece 2 — Auto-distillation into a unified memory store
+
+This is the promotion path.
 
 **Store = the Knowledge subsystem (no new store).** Unification means one durable
 home: distilled facts land in the **Soul** KB (`kb_id="soul"`), the same store
 `kb_search`/`ingest_conversation` already read/write
 (`biorouter-mcp/src/knowledge/service.rs`). This reuses git history, provenance,
 and the existing UI instead of inventing a fourth silo. A dedicated hidden
-`auto-memory` KB is a config-selectable alternative (see Open Questions).
+`auto-memory` KB is a config-selectable alternative (see the open questions below).
 
-**Metadata for ranking** (Codex-style `usage_count`/`last_usage`,
-`codex-cli.md:30`). Distilled memory pages carry YAML frontmatter fields the KB
-already tolerates:
+**Metadata for ranking** (Codex-style `usage_count`/`last_usage`, per the
+[Codex CLI research note](../../research/coding-agent-landscape/codex-cli.md)).
+Distilled memory pages carry YAML frontmatter fields the KB already tolerates:
 
 ```yaml
 source_session_id: <id>
@@ -149,8 +202,9 @@ auto_promoted: true
 confidence: low|medium|high
 ```
 
-**Trigger — idle-session scan** (Gemini model: idle ≥ N hours, ≥ M user
-messages, `gemini-cli.md:94-98`). New module
+**Trigger — idle-session scan** (the Gemini model: idle ≥ N hours, ≥ M user
+messages, per the
+[Gemini CLI research note](../../research/coding-agent-landscape/gemini-cli.md)). New module
 `crates/biorouter/src/memory/promote.rs`:
 
 ```rust
@@ -195,11 +249,16 @@ slice.
 Distillation never blocks a user turn and never mutates the source session's
 messages — it only writes memory pages and stamps `extension_data`.
 
-### Piece 3 — Always-on, bounded memory digest (auto-injection)
+### Piece 3 — Always-on, bounded memory digest
+
+This is the auto-injection path.
 
 **Read-back into every session** (Claude "first 200 lines of MEMORY.md load into
-every session", `claude-code.md:107-112`; Codex injects memories as developer
-instructions, `codex-cli.md:30`). New builder step on `SystemPromptBuilder`:
+every session", per the
+[Claude Code research note](../../research/coding-agent-landscape/claude-code.md); Codex
+injects memories as developer instructions, per the
+[Codex CLI research note](../../research/coding-agent-landscape/codex-cli.md)). New builder
+step on `SystemPromptBuilder`:
 
 ```rust
 // prompt_manager.rs
@@ -229,7 +288,7 @@ memory page is a hit, bump its `usage_count`/`last_used_at`. Simplest first slic
 bump on inclusion in the digest (a memory that keeps getting injected is proven
 useful); precise per-hit accounting is a follow-up.
 
-### Module layout & files
+### Module layout and files
 
 Create:
 - `crates/biorouter/src/session/chat_fts.rs` — query sanitization + text extraction helpers.
@@ -245,9 +304,9 @@ Change:
 - `agent.rs:1240` — spawn the detached idle-scan at `reply` start; memoize digest.
 - `crates/biorouter/src/config` / env — new params (below).
 
-### Control flow (one distillation + one recall)
+### Control flow: one distillation and one recall
 
-```
+```text
 new user turn (agent.rs:1240)
   └─ spawn detached: memory::promote::scan_and_promote
         └─ for each idle User session not yet distilled:
@@ -264,7 +323,7 @@ new user turn (agent.rs:1240)
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 - **Embeddings / vector index for recall instead of FTS5.** Higher recall on
   paraphrase, but needs an embedding provider, a vector store, and background
@@ -295,12 +354,12 @@ new user turn (agent.rs:1240)
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
-- **Schema.** One additive migration (11): `CREATE VIRTUAL TABLE messages_fts` +
+- **Schema.** One additive migration (11, shipped as 13): `CREATE VIRTUAL TABLE messages_fts` +
   one-time backfill. Additive and idempotent (`CREATE ... IF NOT EXISTS`
   pattern, `apply_migration` style at `:1325`). Downgrade tolerance: an older
-  binary opening a v11 DB simply ignores `messages_fts` (it still `LIKE`-queries
+  binary opening the migrated DB simply ignores `messages_fts` (it still `LIKE`-queries
   `messages`); the guard is that `chat_history_search` only issues `MATCH` when it
   detects the table, else it falls back to the current `LIKE` SQL — so a partially
   migrated or trigger-failed DB never errors, it degrades.
@@ -315,6 +374,7 @@ new user turn (agent.rs:1240)
   - `BIOROUTER_MEMORY_MIN_USER_MSGS` (default 10, Gemini's value).
   - `BIOROUTER_MEMORY_DIGEST_TOP_N` (default 8), `BIOROUTER_MEMORY_DIGEST_MAX_CHARS` (default 2000).
   - `BIOROUTER_MEMORY_TARGET_KB` (default `soul`).
+
   Piece 1 (FTS5 recall) ships **on** — it is a pure quality improvement with the
   `LIKE` fallback as a safety net. Pieces 2+3 ship behind the flag (opt-in), then
   flip to default-on once the review surface lands.
@@ -366,27 +426,35 @@ new user turn (agent.rs:1240)
 
 ---
 
-## Effort & phasing
+## Effort and phasing
 
 Proposal effort **L**; slice it:
 
-- **Phase 1 (first mergeable slice, ~M) — FTS5 recall only.** Migration 11 +
+- **Phase 1 (first mergeable slice, ~M) — FTS5 recall only. Shipped.** The migration +
   backfill, `chat_fts.rs`, rewrite `build_sql` to `MATCH`/`bm25()` with `LIKE`
   fallback, keep public API, flip `chatrecall` to default-enabled. Pure quality
   win, no auto-injection, no LLM cost, low risk. Ships on.
-- **Phase 2 — promotion pipeline (behind `BIOROUTER_MEMORY_AUTO_PROMOTE`).**
+- **Phase 2 — promotion pipeline (behind `BIOROUTER_MEMORY_AUTO_PROMOTE`). Not built.**
   `memory::promote` + `distill_memory.md` + `complete_fast`, write to Soul with
   provenance, `extension_data[memory.v0]` bookkeeping, session-start detached scan.
   No injection yet — validate distillation quality against real sessions first.
-- **Phase 3 — bounded digest injection.** `with_memory_digest`, memoized
+- **Phase 3 — bounded digest injection. Not built.** `with_memory_digest`, memoized
   `memory::digest`, framing + caps. Turn on for opt-in users.
-- **Phase 4 — review surface + usage feedback.** A Gemini-style review inbox in
+- **Phase 4 — review surface + usage feedback. Not built.** A Gemini-style review inbox in
   the Knowledge UI (accept/prune auto-promoted pages), precise `usage_count`
   accounting on `kb_search` hits, then flip the flag default-on.
 
 ---
 
-## Open questions for the human (only genuine product decisions)
+## Open questions, and how the campaign answered them
+
+> **Note.** These are genuine product decisions, recorded as open when the design was
+> written. On 2026-07-13 the campaign owner signed off with a blanket "proceed with all of
+> the default options" (logged in the
+> [campaign README](../../history/agent-loop-campaign/README.md)), so each question's stated
+> recommendation is the answer of record. Because Pieces 2–4 are unbuilt, none of these have
+> been settled by shipped code — question 4 in particular deserves a fresh decision before
+> distillation is implemented.
 
 1. **Soul vs. a dedicated `auto-memory` KB.** Write auto-promoted facts straight
    into Soul (unified, but mixes user-curated and machine-generated facts), or a
@@ -405,3 +473,13 @@ Proposal effort **L**; slice it:
 5. **Scope of a memory: global vs. per-project.** Claude auto-memory is per-repo;
    Codex is global. Should the digest be filtered by the current `working_dir`
    (project-scoped) or always global (user-scoped, like Soul today)?
+
+---
+
+## Related documentation
+
+- [Wave 1 compaction and memory report](../../history/agent-loop-campaign/wave-reports/wave-1-compaction.md) — the implementation record for Piece 1, including the migration renumber.
+- [State-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md) — gaps #5 and #6, the source of this proposal.
+- [Compaction and context-management review](../../history/agent-loop-review/subsystem-reviews/compaction-and-context-management.md) — why compacted messages stay `user_visible`, which sets the FTS indexing rule.
+- [Data privacy and PHI guide](../../security/data-privacy-and-phi.md) — relevant to open question 4 before any distillation is built.
+- [Session branching (BR-45)](session-branching.md) — the other design that touches message identity and the same `session_manager.rs` write paths.

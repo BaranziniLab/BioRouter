@@ -1,21 +1,60 @@
-# BR-54 — SharedMcpPool: share MCP server processes across agents/sessions + one daemon per app
+# Shared MCP server pool (BR-54)
 
-Status: design (no code changed)
-Lens: Performance (P-26, P-27). Inspired by: jcode `mcp/pool.rs` — *"one process that owns
-all sessions"*, `Arc<OnceCell<Arc<SharedMcpPool>>>` (`docs/jcode-comparison-perf-analysis.md:59-90`).
+> **What this is.** The design for eliminating the two axes of MCP process multiplication —
+> one process tree per `Agent`, and one `biorouterd` daemon per app window — by pooling MCP
+> servers behind a shared, fingerprint-keyed registry.
+> **Status:** Current. Both slices shipped: Slice A (one daemon per app) as commit `4cdf3f86`
+> and Slice B (`SharedMcpPool`, flag-gated) as `d856a00e`; `crates/biorouter/src/agents/mcp_pool.rs`
+> is on main. This document is now the architecture reference for that live pooling code, and
+> the plan of record for the one decision still open — whether Slice B flips on by default.
+> **Audience:** developers working on BioRouter's extension manager, MCP client, and the
+> Electron main process.
+
+BioRouter multiplies MCP child processes on two independent axes that compound: every `Agent`
+builds its own `ExtensionManager` and spawns its own copy of every enabled server, and every
+Electron window spawns a whole additional `biorouterd`. With 100 cached agents and a handful
+of 40–150 MB `uvx`/Node servers, this is the dominant RAM story. The hard part is not sharing
+the process — it is keeping per-session isolation on working directory, environment, provider
+and notification routing once the process *is* shared.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). This document is BR-54, raised under
+> the performance lens as P-26 and P-27.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-54 |
+| Lens | Performance (P-26, P-27) |
+| Inspired by | jcode's `mcp/pool.rs` — *"one process that owns all sessions"*, `Arc<OnceCell<Arc<SharedMcpPool>>>`. See the [jcode comparison analysis](../../history/performance-2026-06/jcode-comparison-analysis.md). |
+| Shipped | Slice A as `4cdf3f86`, Slice B (flag-gated) as `d856a00e`, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) |
+
+> **Warning — a neighbouring document disagrees.** The
+> [mid-flight review index](../../history/agent-loop-campaign/mid-flight-review-index.md) still
+> describes BR-54 as "designed, not implemented". That snapshot was taken before Slice B
+> landed and is stale. This document and `crates/biorouter/src/agents/mcp_pool.rs` are
+> authoritative.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter multiplies MCP child processes on **two independent axes**, and both are the
-dominant RAM story (`docs/jcode-comparison-perf-analysis.md:71-90`).
+dominant RAM story (see the
+[jcode comparison analysis](../../history/performance-2026-06/jcode-comparison-analysis.md)).
 
-**Axis 1 — one MCP process tree per Agent (backend).**
+### Axis 1 — one MCP process tree per Agent (backend)
+
 Every `Agent` builds its own `ExtensionManager`:
 `crates/biorouter/src/agents/agent.rs:248` — `extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager))`
-(inside `Agent::with_config`, which starts at `agent.rs:237`; the proposal's "236" is
-this constructor). `ExtensionManager` owns `extensions: Mutex<HashMap<String, Extension>>`
+(inside `Agent::with_config`, which starts at `agent.rs:237`; the source proposal cites line
+"236", which is this constructor). `ExtensionManager` owns `extensions: Mutex<HashMap<String, Extension>>`
 (`extension_manager.rs:99`), and every enabled server is spawned into that map by
 `add_extension` (`extension_manager.rs:518`). For a stdio/uvx server this reaches
 `child_process_client` (`extension_manager.rs:225`) which does a real
@@ -28,7 +67,8 @@ minting a fresh `Agent` (`manager.rs:100`). Worst case: **100 live agents × M s
 servers**, each server a 40–150 MB OS process (a `uvx` Python or Node `@playwright/mcp`
 child). Grep confirms **no shared pool exists** — there is no `SharedMcpPool` type today.
 
-**Axis 2 — one whole `biorouterd` daemon per Electron window (frontend).**
+### Axis 2 — one whole `biorouterd` daemon per Electron window (frontend)
+
 `createChat` (`ui/desktop/src/main.ts:862`) calls `startBiorouterd`
 (`ui/desktop/src/biorouterd.ts:99`) unconditionally for **every** window;
 `startBiorouterd` picks a fresh port (`biorouterd.ts:121`, `findAvailablePort`) and
@@ -37,13 +77,15 @@ keyed by `mainWindow.id` and a ref-counted backend (`main.ts:958-959`,
 `retainBackend`/`releaseBackend` at `main.ts:831-849`). N windows = N tokio runtimes + N
 `AgentManager`s + N SQLite pools + N×(everything on Axis 1). This is pure waste: the
 daemon is **already** a session-keyed singleton — `AgentManager` is a process-global
-`OnceCell` (`manager.rs:16,53-67`), the server routes by `session_id`
-(`server-flow.md:30,62-63`), and the secret key is a stable module-level constant
+`OnceCell` (`manager.rs:16,53-67`), the server routes by `session_id` (see the
+[server reply-flow review](../../history/agent-loop-review/subsystem-reviews/server-reply-flow-and-session-lifecycle.md)),
+and the secret key is a stable module-level constant
 (`main.ts:795-805`, `GENERATED_SECRET`). Only the Electron spawn path assumes per-window.
 
-**Why sharing is non-trivial (the isolation surface).** A shared MCP process cannot be
-naively reused across sessions because per-session state is baked into the spawn and the
-client:
+### Why sharing is non-trivial: the isolation surface
+
+A shared MCP process cannot be naively reused across sessions because per-session state is
+baked into the spawn and the client:
 
 1. **Working directory.** `child_process_client` sets `command.current_dir(dir)` and
    `command.env("BIOROUTER_WORKING_DIR", dir)` (`extension_manager.rs:249-251`), where
@@ -69,8 +111,9 @@ client:
    progress token is assigned today, so there is nothing to route by yet.
 5. **Elicitation** already crosses sessions: `create_elicitation` uses the global
    `ActionRequiredManager` with one shared `request_rx` and no per-session addressing
-   (`mcp_client.rs:250-267`; `long-running.md:336-342`). Pre-existing, but the pool must
-   not make it worse.
+   (`mcp_client.rs:250-267`; see the
+   [long-running tasks review](../../history/agent-loop-review/subsystem-reviews/long-running-tasks-and-scheduling.md)).
+   Pre-existing, but the pool must not make it worse.
 
 Net: the design must **share the OS process while keeping per-session isolation** on cwd,
 env, provider, and notification routing.
@@ -79,7 +122,7 @@ env, provider, and notification routing.
 
 ## Design
 
-Two loosely-coupled slices that ship independently (the proposal's own "Note: groups two
+Two loosely-coupled slices that ship independently (the proposal's own note: "groups two
 closely-related RAM redesigns; can ship independently").
 
 ### Slice A — One daemon per app (frontend, no Rust change)
@@ -167,6 +210,7 @@ their full spawn tuple.
 
 **Notification isolation (the correctness core).** Assign a **per-dispatch progress token**
 and route by it:
+
 - `dispatch_tool_call` (`extension_manager.rs:1288`) generates a unique token, sets it in
   `CallToolRequestParams.meta.progressToken` (currently `meta: None`,
   `mcp_client.rs:479-486` — wire it through `call_tool`), and registers a bounded
@@ -176,7 +220,7 @@ and route by it:
   and send to that one subscriber." MCP requires the server to echo the request's progress
   token on progress notifications, so this is spec-clean.
 - `on_logging_message` (`mcp_client.rs:155-174`) has **no** token binding. Options
-  (Open Question): (a) drop shared-client logging notifications to the caller and rely on
+  (see open question 1): (a) drop shared-client logging notifications to the caller and rely on
   server stderr logs, or (b) keep a per-session broadcast only among sessions sharing the
   key and accept low-stakes log text bleed. Recommend (a) for first slice — logging
   notifications are diagnostic, not user-facing progress.
@@ -206,7 +250,8 @@ explicitly excluded from `get_extension_configs` (`extension_manager.rs:796-799`
 pool only covers registry-spawnable configs.
 
 **Control flow (call path, shared):**
-```
+
+```text
 Agent::reply → dispatch_tool_call(session_id, call, cancel)
   → get_client_for_tool(prefix)                 [unchanged: extension_manager.rs:973]
   → PooledClient.inner (shared Arc)
@@ -219,7 +264,7 @@ Agent::reply → dispatch_tool_call(session_id, call, cancel)
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 - **Per-session process, just cap the LRU harder.** Lowering `DEFAULT_MAX_SESSION` (100)
   trims worst case but doesn't fix the M multiplier and evicts live sessions the user
@@ -243,7 +288,7 @@ Agent::reply → dispatch_tool_call(session_id, call, cancel)
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **Config:** no schema change. `ExtensionConfig` gains a derived `pool_key()`; the
   persisted `EnabledExtensionsState` and `~/.config/biorouter/config.yaml` are untouched.
@@ -296,26 +341,35 @@ Agent::reply → dispatch_tool_call(session_id, call, cancel)
 
 ---
 
-## Effort & phasing
+## Effort and phasing
 
-- **Phase 1 (first mergeable slice) — Slice A, one daemon per app.** Frontend-only,
+- **Phase 1 (first mergeable slice) — Slice A, one daemon per app. Shipped as `4cdf3f86`.**
+  Frontend-only,
   ~1 file, no isolation hazards (server is already singleton), biggest per-user multiplier
   (windows). Ships behind a trivial revert. This is the recommended first PR.
-- **Phase 2 — `SharedMcpPool` for in-process built-ins + HTTP servers.** These are
+- **Phase 2 — `SharedMcpPool` for in-process built-ins + HTTP servers. Shipped as `d856a00e`
+  (flag-gated).** These are
   stateless w.r.t. cwd and low isolation risk; validates the pool + progress-token router
   end to end behind `BIOROUTER_SHARED_MCP_POOL`.
 - **Phase 3 — extend the pool to stdio/uvx/InlinePython** (the 40–150 MB processes, the
   real RAM prize), now that keying + notification routing are proven. Includes the
   provider-per-call sampling seam.
 - **Phase 4 — flip the flag on by default** after soak; delete the per-window
-  `retainBackend` ref-count.
+  `retainBackend` ref-count. **Still pending** — see open question 4.
 
 Overall effort **L**, matching the proposal, but the first slice is **S** and independently
 valuable.
 
 ---
 
-## Open questions for the human (product decisions only)
+## Open questions, and how the campaign answered them
+
+> **Note.** These are genuine product decisions, recorded as open when the design was
+> written. On 2026-07-13 the campaign owner signed off with a blanket "proceed with all of
+> the default options" (logged in the
+> [campaign README](../../history/agent-loop-campaign/README.md)), which settled question 4
+> for the shipping release: Slice B **shipped flag-gated, not on by default**. The default-on
+> flip is still an open decision for a future release, and questions 1–3 remain open.
 
 1. **Logging-notification bleed on shared clients.** Drop MCP `logging` notifications to
    the caller entirely (rely on server stderr), or keep them and accept that sessions
@@ -329,4 +383,14 @@ valuable.
    (current design), or also idle-unload a process after T seconds even while referenced,
    to bound RAM on long-lived-but-idle sessions (jcode idle-unloads its embedder)?
 4. **Default-on timing.** Is a flagged opt-in for one release acceptable, or should Slice B
-   ship on by default given the RAM urgency?
+   ship on by default given the RAM urgency? *Answered for this release: flagged opt-in.*
+
+---
+
+## Related documentation
+
+- [jcode comparison analysis](../../history/performance-2026-06/jcode-comparison-analysis.md) — the source measurement and the `mcp/pool.rs` design this borrows from.
+- [Campaign outcome report](../../history/agent-loop-campaign/outcome-report.md) — records `SharedMcpPool` as built and flag-gated.
+- [Long-running tasks and scheduling review](../../history/agent-loop-review/subsystem-reviews/long-running-tasks-and-scheduling.md) — the pre-existing cross-session elicitation leak this design must not worsen.
+- [Server reply-flow and session-lifecycle review](../../history/agent-loop-review/subsystem-reviews/server-reply-flow-and-session-lifecycle.md) — why the daemon is already session-keyed, which is what makes Slice A safe.
+- [Extension manager reference](../../extensions/built-in/extension-manager.md) — the subsystem this pool sits behind.

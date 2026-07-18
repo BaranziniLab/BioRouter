@@ -1,13 +1,33 @@
 # Headless Linux deployment
 
-This flow builds Biorouter on the Mac, deploys the Linux artifact to an
-Ubuntu 22.04/24.04 host, and serves the browser UI from that host while
-`biorouterd` does the compute locally on the server.
+> **What this is.** The end-to-end procedure for building the Linux headless
+> artifact on a Mac, verifying it carries no credentials, deploying it to an
+> Ubuntu host, migrating secrets, and smoke-testing the browser UI that host
+> serves.
+> **Status:** Current — last verified at the 1.88.2 release; every script named
+> below exists in `scripts/`.
+> **Audience:** developers and operators deploying Biorouter to a shared Linux
+> host, plus coding agents asked to build the headless artifact.
 
-## Agent quickstart
+Headless mode exists for the case where you want Biorouter's compute to run on a
+server rather than on a laptop: `biorouterd` executes the agent loop on the Ubuntu
+host, and users reach it through an ordinary browser instead of the Electron
+desktop app. The build happens on macOS, the artifact is a portable tarball, and
+the deployment target is **Ubuntu 22.04 or 24.04 on x86_64** — the Ubuntu setup
+script verifies the OS version and refuses anything else.
 
-For a future coding agent that is asked to "build the app" or "compile the
-headless Debian binary", run this from the repository root:
+Three binaries ship in the artifact:
+
+| Binary | Role |
+|---|---|
+| `biorouter` | The CLI. |
+| `biorouterd` | The daemon that does the agent compute. |
+| `biorouter-headless` | The front door: serves the static browser UI, proxies `/api/*` to `biorouterd`, exposes `/headless/*`, and supervises the `biorouterd` process. |
+
+## Build the artifact in one command
+
+If you have been asked simply to "build the app" or "compile the headless Debian
+binary" — this is the whole job. Run it from the repository root:
 
 ```bash
 source bin/activate-hermit
@@ -23,7 +43,10 @@ does not contain local profiles or credential material, and writes:
 Use the tarball as the portable Debian/Ubuntu release artifact. Use the
 directory for deployment and inspection.
 
-## Build locally
+The remaining sections unpack that one command into the individual operator
+steps, and cover deployment, secrets, and verification on the host.
+
+## Build the artifact locally
 
 ```bash
 source bin/activate-hermit
@@ -40,18 +63,22 @@ The artifact is written to `dist/headless-linux-x64/`:
 
 The build intentionally packages app deliverables only. It copies the three
 Linux binaries from the Docker build output and the static browser bundle from
-Vite. It must not copy any of the following into `dist/headless-linux-x64/`:
+Vite.
 
-- `~/.config/biorouter/`
-- `~/.aws/`
-- `~/.ssh/`
-- `~/Library/Application Support/`
-- `secrets.yaml`, `config.yaml`, or `sessions.db`
-- local `.env` files, OpenRouter keys, AWS keys, SSH keys, or downloaded access
-  key CSV files
-
-Keep credential setup as a runtime concern. A deployment can point Biorouter at
-a server-side config directory, but release artifacts must stay profile-free.
+> **Warning.** A release artifact must stay profile-free. The build must never
+> copy any of the following into `dist/headless-linux-x64/`:
+>
+> - `~/.config/biorouter/`
+> - `~/.aws/`
+> - `~/.ssh/`
+> - `~/Library/Application Support/`
+> - `secrets.yaml`, `config.yaml`, or `sessions.db`
+> - local `.env` files, OpenRouter keys, AWS keys, SSH keys, or downloaded
+>   access key CSV files
+>
+> Keep credential setup as a runtime concern. A deployment can point Biorouter
+> at a server-side config directory, but release artifacts must stay
+> profile-free.
 
 ## Verify and package
 
@@ -105,9 +132,9 @@ Biorouter macOS Keychain item and sends it over SSH into the Ubuntu file-backed
 secret store at `~/.config/biorouter/secrets.yaml`. Secret values are not
 printed. The service uses `BIOROUTER_DISABLE_KEYRING=true` on headless Linux.
 
-Do not run this script when creating a release artifact for users. A user who
-starts headless Biorouter without credentials should be prompted by the app to
-configure providers in the browser UI.
+> **Warning.** Do not run this script when creating a release artifact for
+> users. A user who starts headless Biorouter without credentials should be
+> prompted by the app to configure providers in the browser UI.
 
 ## Get the browser URL
 
@@ -121,7 +148,7 @@ The URL is clean; `biorouter-headless` injects the local `X-Secret-Key` header
 when proxying browser requests to `biorouterd`, so the secret is not carried in
 the browser URL.
 
-## Smoke checks
+## Run the smoke checks
 
 ```bash
 scripts/test-headless-linux.sh ubuntu@HOST /path/to/key.pem
@@ -139,11 +166,15 @@ built-in skills are visible, and fails on relevant browser console warnings or
 errors. The `--live` mode additionally sends short completion requests through
 low-cost providers.
 
-Provider-specific failures can still be external to Biorouter. For example,
-an institutional provider may reject a new EC2 public IP until it is allowlisted,
-and a provider account can reject requests for billing reasons.
+> **Note.** Provider-specific failures can still be external to Biorouter. For
+> example, an institutional provider may reject a new EC2 public IP until it is
+> allowlisted, and a provider account can reject requests for billing reasons.
 
-## UI synchronization notes
+## Keep the browser UI in sync with the desktop UI
+
+This section is not part of the deployment flow. It covers the drift you have to
+watch for afterwards, because the headless browser UI and the Electron desktop
+shell are built from one shared renderer.
 
 The headless app uses the same `ui/desktop` renderer as the desktop shell, built
 with `vite.renderer.config.mts`. UI changes for browser readability should be
@@ -155,3 +186,11 @@ checking for drift between desktop and headless, inspect the shared source first
 and then validate the deployed browser DOM rather than relying on an unauthenticated
 local Vite renderer, which may fall into onboarding without the daemon/config
 state needed for data-backed routes.
+
+## Related documentation
+
+- [Secret storage](../security/secret-storage.md) — what `BIOROUTER_DISABLE_KEYRING=true` switches to, and why headless Linux uses the file-backed store.
+- [Environment variables](../configuration/environment-variables.md) — the full set of variables the daemon and the headless service read.
+- [Config file reference](../configuration/config-file-reference.md) — the server-side config directory a deployment points Biorouter at.
+- [Local cross-compilation](../releases/local-cross-compilation.md) — building Linux binaries on macOS outside the headless packaging scripts.
+- [Agent browser debugging](../desktop-ui/agent-browser-debugging.md) — driving the renderer in a real browser when the headless UI check fails.

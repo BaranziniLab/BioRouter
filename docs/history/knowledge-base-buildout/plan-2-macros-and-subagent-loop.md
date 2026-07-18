@@ -1,23 +1,54 @@
-# Knowledge Macros + Sub-Agent Loop Implementation Plan
+# Plan 2 — knowledge macros and the sub-agent loop
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 2 of the six-plan Knowledge buildout: the `kb_ingest_source` / `kb_query` / `kb_lint` macros running over a bounded sub-agent loop, plus the primitives Plan 1 deferred (`kb_search`, `kb_set_active` / `kb_get_active`, `kb_append_log`, the MCP-exposed transaction tools) and the real agentic credibility fallback.
+> **Status:** Historical record — executed and shipped. The sub-agent loop lives at `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs`; `CLAUDE.md` documents the three macros, the per-KB concurrency mutex, and BM25 search as shipped behaviour. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge subsystem, and agents tracing how the macro engine came to be shaped this way.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, executed in order against the design in
+> [`founding-design.md`](founding-design.md).
+
+Plan 1 built the storage, git, conversion, credibility and graph layers behind a shared `KnowledgeService`. This plan puts an agent on top of them: a bounded LLM loop whose only tools are the KB primitives, wrapped by three macros that each commit as a single logical change.
+
+> **Note — this plan was written against unverified APIs.** Its "Open risks"
+> section, at the end, records that the `SubAgent` loop was written against
+> assumed shapes for `Message::user()`, `Message::tool_result()` and
+> `Message.tool_calls()`, and that the BM25 snippet in Task 1 targets
+> `bm25 = "2.3"` while [Plan 1](plan-1-storage-git-and-graph.md) pins `bm25 = "2.2"`.
+> Treat every code snippet here as the intent, not as verified-compiling source,
+> and read those risks before following a task literally.
+
+> **Note — worktree paths and expected test counts are point-in-time.** Commands
+> below `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated git
+> worktree the Knowledge branch was developed in; read it as your own checkout
+> root. The baseline gates ("expect: 81 passed (Plan 1's baseline)", "≈ 94+")
+> record the suite as it stood when this plan was written. The Knowledge library
+> suite is roughly 122 tests today, so a higher number is expected, not a failure.
+> Source line anchors such as `factory.rs#L125`, `base.rs#L360` and
+> `session_manager.rs#L102` have long since moved — use the symbol names, not the
+> line numbers.
+
+## Scope and approach
 
 **Goal:** Layer high-level macro tools (`kb_ingest_source`, `kb_query`, `kb_lint`) and an in-process sub-agent loop on top of Plan 1's primitives, plus fill in the missing primitive surface (`kb_search`, `kb_set_active` / `kb_get_active`, `kb_append_log`, MCP-exposed transaction tools), and replace the Plan-1 agentic-credibility stub with the real bounded-agent implementation.
+
+**Explicitly out of scope:** streaming progress. MCP `CallToolResult` is request/response only in rmcp 0.14, so macros return a single final result. SSE-streamed progress lands in [Plan 3](plan-3-http-routes-and-export.md) when the HTTP routes wrap these macros. Everything else deferred is listed under "What this plan does NOT cover" near the end.
 
 **Architecture:**
 - A `SubAgent` runs an LLM in a bounded loop (max steps, max wall time, max tokens) with the KB primitives as its tool surface and the per-KB `schema.md` + a macro-specific operating procedure as its system prompt. It uses `biorouter::providers::factory::create()` to instantiate the user-chosen provider.
 - Macros (`ingest`, `query`, `lint`) wrap the sub-agent: they open a git transaction, run the sub-agent against a tailored procedure, then commit the txn on success or abort on failure.
-- Session-scoped "active KB" lives in [`Session::extension_data["knowledge"]["v0"]`](crates/biorouter/src/session/session_manager.rs) and is read/written by `kb_set_active` / `kb_get_active`. When a tool omits `kb_id`, the active KB is the default.
+- Session-scoped "active KB" lives in `Session::extension_data["knowledge"]["v0"]` (see `crates/biorouter/src/session/session_manager.rs`) and is read/written by `kb_set_active` / `kb_get_active`. When a tool omits `kb_id`, the active KB is the default.
 - Per-KB concurrency is guarded by a `DashMap<String, Arc<tokio::Mutex<()>>>` on `KnowledgeService` so two concurrent macros against the same KB serialize cleanly.
-- Streaming progress is **out of scope for Plan 2** — MCP `CallToolResult` is request/response only in rmcp 0.14, so macros return a single final result. SSE-streamed progress lands in Plan 3 when the HTTP routes wrap these macros.
 
-**Tech Stack:** Rust 1.92, tokio, dashmap, `biorouter::providers::Provider`, `bm25` crate (already added in Plan 1 deps), rmcp 0.14, wiremock + recorded LLM cassettes for tests.
+**Tech stack:** Rust 1.92, tokio, dashmap, `biorouter::providers::Provider`, `bm25` crate (already added in Plan 1 deps), rmcp 0.14, wiremock + recorded LLM cassettes for tests.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md).
+**Source spec:** [`founding-design.md`](founding-design.md).
 
-**This is Plan 2 of ~6.** Plan 1 (backend foundation) is complete. Plan 3 will add HTTP routes + SSE streaming. Plans 4-6 add the frontend (sidebar route, KB selector, graph view, change log drawer, chat-side KB chip).
+**Series position:** Plan 2 of 6. Plan 1 (backend foundation) is complete. Plan 3 adds HTTP routes + SSE streaming. Plans 4-6 add the frontend (sidebar route, KB selector, graph view, change log drawer, chat-side KB chip).
 
 **TDD note:** Same convention as Plan 1 — most tasks combine "write tests" + "write impl" into single steps for brevity. Read the test code first, mentally verify it would fail against an empty impl, then proceed. Verification steps gate each task.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
@@ -34,16 +65,16 @@ cargo test -p biorouter-mcp --lib knowledge 2>&1 | tail -3
 ```
 
 - [ ] **Pre-step B: skim the integration points** so the file paths below make sense:
-  - LLM provider factory at [`biorouter::providers::factory::create(name, model)`](crates/biorouter/src/providers/factory.rs#L125) returning `Arc<dyn Provider>`.
-  - Provider trait at [`biorouter::providers::base::Provider`](crates/biorouter/src/providers/base.rs#L360) with `complete()` + `stream()`.
-  - Session state API at [`SessionManager::update().extension_data(...).apply()`](crates/biorouter/src/session/session_manager.rs#L102).
+  - LLM provider factory `biorouter::providers::factory::create(name, model)` in `crates/biorouter/src/providers/factory.rs`, returning `Arc<dyn Provider>`.
+  - Provider trait `biorouter::providers::base::Provider` in `crates/biorouter/src/providers/base.rs`, with `complete()` + `stream()`.
+  - Session state API `SessionManager::update().extension_data(...).apply()` in `crates/biorouter/src/session/session_manager.rs`.
   - Knowledge module at `crates/biorouter-mcp/src/knowledge/` (Plan 1 lives here; everything new in Plan 2 lands here too).
 
 ---
 
 ## File structure (decomposition map)
 
-```
+```text
 crates/biorouter-mcp/src/knowledge/
 ├── service.rs              — extended: per-KB Mutex, set_active/get_active hooks
 ├── store.rs                — extended: kb_search (BM25 over knowledge/ + raw/source.md)
@@ -1450,3 +1481,10 @@ git commit -m "docs(claude): document Plan 2 macros + sub-agent loop"
 - **`provider.complete()` tool-call schema**: rmcp `Tool` is the schema rmcp speaks; biorouter's `Provider::complete()` might want a different `Tool` type. Adapt as needed.
 - **Mock provider in tests**: writing a `Provider` impl for tests requires implementing every method on the trait. If the trait is large, use `unimplemented!()` for unused methods or extract a smaller `Completer` trait. Note any such refactor in the executor's report.
 - **bm25 crate API**: the snippet in Task 1 was written against `bm25 = "2.3"`. If the actual installed version's API differs, adapt.
+
+## Related documentation
+
+- [Knowledge founding design](founding-design.md) — the macro and sub-agent-loop design this plan implements, including the step and time budgets.
+- [Plan 1 — storage, git and graph](plan-1-storage-git-and-graph.md) — the primitives and git transactions this plan builds on, and the source of the "81 passed" baseline quoted above.
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — takes up the SSE streaming this plan explicitly deferred.
+- [Plan 6 — chat integration and closeout](plan-6-chat-integration-and-closeout.md) — completes the session-scoped active-KB binding this plan implements with a process-local mutex.

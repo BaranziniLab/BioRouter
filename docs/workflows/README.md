@@ -1,24 +1,32 @@
-# UCSF Biorouter — Workflows
+# Workflows
 
-Workflows are reusable, shareable Biorouter configurations. A workflow packages instructions, prompts, extension requirements, parameters, and model settings into a single file that anyone can load to launch a reproducible, pre-configured Biorouter session.
+This folder documents Biorouter **workflows** — reusable, shareable configurations that package instructions, prompts, extension requirements, parameters, and model settings into a single file, so anyone can load it to launch a reproducible, pre-configured Biorouter session. It also covers the built-in scheduler that runs those workflow files unattended.
 
 Common use cases: automated analysis pipelines, code review workflows, data processing routines, multi-step research tasks, scheduled jobs.
 
----
+## Documents in this folder
 
-## Workflow File Format
+| Document | What it covers |
+|---|---|
+| [Creating and sharing workflows](creating-and-sharing-workflows.md) | The task-oriented lifecycle: turn a live session into a workflow, edit it, run it, validate it, share it by link or file, and schedule it. |
+| [Workflow schema reference](workflow-schema-reference.md) | The exhaustive field-by-field specification — every field's type and rules, input types, template support, validation rules, and a complete worked example. |
+| [Workflow storage and discovery](workflow-storage-and-discovery.md) | Where workflow files live (global vs project-local), how to save and import them, and how to list and find them from the Desktop library or the CLI. |
+| [Subworkflows](subworkflows.md) | How a workflow delegates sub-tasks to other workflow files: the `sub_workflows` schema, parameter handling, isolation rules, and three worked pipelines. |
+| [Scheduled jobs](scheduled-jobs.md) | The built-in cron scheduler: creating jobs in the GUI and CLI, cron syntax, headless requirements, and use cases. |
+
+The rest of this page is a quick orientation to the workflow file format. It is a summary — where it and [the schema reference](workflow-schema-reference.md) disagree, the schema reference is authoritative.
+
+## Workflow file format
 
 Workflows are written in YAML (recommended) or JSON.
 
-```
+```text
 my-workflow.yaml     ← recommended
-my-workflow.yml      ← supported by Desktop only
+my-workflow.yml      ← Desktop only; not supported by the biorouter CLI
 my-workflow.json     ← supported
 ```
 
----
-
-## Workflow Locations
+## Workflow locations
 
 Biorouter discovers workflows from:
 
@@ -26,9 +34,9 @@ Biorouter discovers workflows from:
 2. Paths listed in the `BIOROUTER_WORKFLOW_PATH` environment variable
 3. A configured GitHub repository (`BIOROUTER_WORKFLOW_GITHUB_REPO`) — requires the `gh` CLI to be installed and authenticated
 
----
+> **Note.** [Workflow storage and discovery](workflow-storage-and-discovery.md) documents a longer search order that also includes the global library `~/.config/biorouter/workflows/` and project-local `./.biorouter/workflows/`. Read both before relying on discovery order.
 
-## Core Schema
+## Core schema
 
 | Field | Required | Description |
 |---|---|---|
@@ -47,9 +55,9 @@ Biorouter discovers workflows from:
 
 *At least one of `instructions` or `prompt` is required.
 
----
+Full field specifications, including types and validation rules, are in the [workflow schema reference](workflow-schema-reference.md#core-workflow-schema).
 
-## Minimal Example
+## Minimal example
 
 ```yaml
 version: "1.0.0"
@@ -58,8 +66,6 @@ description: "Reads a PDF and produces a structured summary"
 instructions: "You are a biomedical research assistant."
 prompt: "Please summarize the key findings, methods, and conclusions of the attached paper."
 ```
-
----
 
 ## Parameters
 
@@ -105,11 +111,9 @@ parameters:
 prompt: "Analyze {{ gene_name }} and return {{ max_results }} results in {{ output_format }} format."
 ```
 
----
+## Extensions in workflows
 
-## Extensions in Workflows
-
-Workflows can declare which MCP extensions they need:
+Workflows can declare which MCP (Model Context Protocol) extensions they need:
 
 ```yaml
 extensions:
@@ -138,9 +142,7 @@ extensions:
 
 If an extension requires a secret (listed in `env_keys`) that is not in the system keyring, Biorouter will prompt the user to enter it at launch and store it securely.
 
----
-
-## Model/Provider Settings
+## Model and provider settings
 
 Override the default provider and model for a specific workflow:
 
@@ -150,8 +152,6 @@ settings:
   biorouter_model: "claude-sonnet-4-20250514"
   temperature: 0.7
 ```
-
----
 
 ## Activities (Desktop only)
 
@@ -167,9 +167,7 @@ activities:
 
 The `message:` prefix creates an info box. All other activities become clickable buttons that send their text as the first user message.
 
----
-
-## Structured Output
+## Structured output
 
 Use `response` to enforce a specific JSON output structure — useful for automation pipelines:
 
@@ -194,9 +192,7 @@ response:
       - genes_identified
 ```
 
----
-
-## Retry Logic
+## Retry logic
 
 Workflows can retry automatically if success criteria are not met:
 
@@ -218,7 +214,7 @@ Retry flow:
 3. If any check fails and retries remain, `on_failure` runs, message history resets, and the workflow restarts.
 4. Stops when all checks pass or `max_retries` is exhausted.
 
----
+The full retry schema, including `on_failure_timeout_seconds` and the governing environment variables, is in the [schema reference](workflow-schema-reference.md#retry).
 
 ## Subworkflows
 
@@ -236,11 +232,9 @@ sub_workflows:
     sequential_when_repeated: false   # allow parallel execution
 ```
 
-Set `sequential_when_repeated: false` to allow multiple instances of a subworkflow to run in parallel.
+Set `sequential_when_repeated: false` to allow multiple instances of a subworkflow to run in parallel. Worked examples are in [Subworkflows](subworkflows.md).
 
----
-
-## Template Inheritance
+## Template inheritance
 
 Workflows support Jinja-style template inheritance so you can share common structure across related workflows:
 
@@ -266,9 +260,7 @@ Perform a survival analysis on the provided clinical dataset.
 {% endblock %}
 ```
 
----
-
-## Saving and Running Workflows
+## Saving and running workflows
 
 **Desktop:**
 - Open a workflow file via File > Open Workflow, or load from the Workflow Library in the sidebar.
@@ -280,9 +272,7 @@ biorouter run --workflow my-workflow.yaml
 biorouter run --workflow my-workflow.yaml --param gene_name=BRCA1
 ```
 
----
-
-## Workflow Validation
+## Workflow validation
 
 Biorouter validates workflows on load. Common errors:
 
@@ -296,3 +286,11 @@ Validate a workflow explicitly:
 ```sh
 biorouter workflow validate my-workflow.yaml
 ```
+
+## Related documentation
+
+- [Workflow schema reference](workflow-schema-reference.md) — the authoritative field-by-field spec when this summary is not enough.
+- [Creating and sharing workflows](creating-and-sharing-workflows.md) — how to produce a workflow file from a session you already ran.
+- [Scheduled jobs](scheduled-jobs.md) — run any of these workflow files unattended on a cron schedule.
+- [biorouter CLI command reference](../cli/command-reference.md#workflow) — the `run`, `workflow`, and `schedule` subcommands that consume these files.
+- [Environment variables](../configuration/environment-variables.md#workflow-configuration) — `BIOROUTER_WORKFLOW_PATH`, `BIOROUTER_WORKFLOW_GITHUB_REPO`, and the retry timeouts.

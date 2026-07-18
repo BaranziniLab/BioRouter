@@ -1,11 +1,32 @@
-# Core agent loop & tool dispatch — architecture review
+# Core agent loop and tool dispatch — architecture review
 
-Subsystem: the reasoning loop that turns a user message into LLM calls, tool
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It walks the reasoning loop end to end — one reply turn, tool dispatch and result flow, the `Conversation` invariant, provider retries, oversized responses and streaming — and records ten gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Its headline finding, gap #1 (the Anthropic streaming format never setting `finish_reason`, leaving length-truncation continuation as dead code), was fixed by BR-46; the oversized-response gap #4 by BR-6; and the two-attempt overflow cliff, gap #6, by BR-13. The architecture narrative below is still broadly useful; the gap list is spent.
+> **Audience:** developers working on the agent loop, tool dispatch, or provider integrations.
+
+This is the longest of the ten subsystem reviews. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews and the [review README](../README.md) cite as `core-loop.md gap #N` (the file's former name).
+
+Contents:
+
+- [Overview](#overview) — the loop in one diagram
+- [How one reply turn works end to end](#how-one-reply-turn-works-end-to-end)
+- [How the agent calls tools; how results get back](#how-the-agent-calls-tools-how-results-get-back)
+- [Contexts across turns; the `Conversation` invariant](#contexts-across-turns-the-conversation-invariant)
+- [Provider/API error retries; context-length-exceeded](#providerapi-error-retries-context-length-exceeded)
+- [Oversized tool responses](#oversized-tool-responses)
+- [Streaming and how partial events reach the client](#streaming-and-how-partial-events-reach-the-client)
+- [Notable design choices](#notable-design-choices-worth-keeping) and [Gaps and weaknesses](#gaps-and-weaknesses)
+
+## Scope and files reviewed
+
+The subsystem is the reasoning loop that turns a user message into LLM calls, tool
 calls, tool results, and final text. Primary code lives in
-`crates/biorouter/src/agents/agent.rs` (the heart, 2725 lines),
+`crates/biorouter/src/agents/agent.rs` (the heart — 2,725 lines at review time),
 `agents/tool_execution.rs`, `agents/reply_parts.rs`, `agents/retry.rs`,
 `agents/large_response_handler.rs`, `agents/types.rs`, `providers/base.rs`,
 `providers/anthropic.rs`, and the `conversation/` module.
+
+> **Note.** Line numbers in the citations below are as-read at review time and have drifted since; treat them as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -17,7 +38,7 @@ mirrored in memory.
 
 Text data-flow for one reply:
 
-```
+```text
 reply(user_message) [agent.rs:1240]
   ├─ elicitation short-circuit / hooks (SessionStart, UserPromptSubmit) [1248-1332]
   ├─ slash-command execution [1344]
@@ -44,7 +65,7 @@ Streaming is real: provider SSE deltas become `MessageStream` items
 `AgentEvent` to the SSE consumer (`routes/reply.rs`), which relays to the
 Electron GUI over its own HTTP/WS channel.
 
-## Answers
+## Review questions answered
 
 ### How one reply turn works end to end
 
@@ -230,7 +251,9 @@ notice (`agent.rs:1967-1976`). The Anthropic provider detects this error by
 string-matching "too long"/"too many" in a 400 body
 (`providers/anthropic.rs:143-157`).
 
-### Oversized tool responses (`large_response_handler.rs`)
+### Oversized tool responses
+
+Handled by `large_response_handler.rs`.
 
 `process_tool_response` (`large_response_handler.rs:9`) runs on every successful
 tool result (`agent.rs:981`). For each **text** content item whose
@@ -303,7 +326,10 @@ turns `AgentEvent`s into SSE frames.
   loop injection — the top-of-file note (`agent.rs:80-91`) shows this was a
   deliberate correction of a past runaway-loop bug.
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These ten items fed the improvement phase. They are what other documents in this
+review cite as `core-loop.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **`finish_reason` is never set by the native Anthropic streaming format**, so
    the length-truncation auto-continue is effectively dead code for the default
@@ -382,3 +408,11 @@ turns `AgentEvent`s into SSE frames.
     `large_response_handler.rs:26` vs test `:137`), so the test's path-extraction
     branch is effectively dead — the file-content assertion never runs. Minor,
     but indicates the happy path is under-tested.
+
+## Related documentation
+
+- [Server reply flow and session lifecycle](server-reply-flow-and-session-lifecycle.md) — what sits in front of this loop: the SSE `/reply` route that drives it.
+- [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector gauntlet every tool request passes through inside step 6 of the loop.
+- [Loop detection, repetition and stuck states](loop-and-stuck-detection.md) — the caps and cancellation paths that bound this loop.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this dispatch design measures against nine other coding agents.
+- [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-6, BR-13, BR-46) these gaps became.

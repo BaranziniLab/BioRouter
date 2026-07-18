@@ -1,4 +1,31 @@
-# Terminal UI Reliability Review — July 2026
+# Terminal UI stability audit — July 2026
+
+> **What this is.** An audit of whether the July 2026 desktop and provider hardening work destabilized the CLI's interactive terminal UI, recording two fixes — a retry-budget correction for permanent provider errors, and a narrow-terminal status layout fix — plus a live tmux verification matrix.
+> **Status:** Historical record — both findings were fixed in July 2026 and the verification section closes with passing CLI and library suites. This is a point-in-time audit against one change batch, not living reference for the terminal UI.
+> **Audience:** maintainers working on `biorouter-cli` and on the shared provider and agent-loop code.
+
+BioRouter ships two interfaces over one shared core: the Electron desktop
+application and the interactive terminal UI in the `biorouter-cli` crate. When the
+July 2026 desktop batch changed provider error classification, retry policy, OpenAI
+request routing and conversation persistence, those changes landed in the shared
+core — so they reach terminal sessions even though no CLI code was edited. This
+audit asked whether they broke anything there.
+
+**Date:** July 2026.
+
+## Terms used here
+
+- **Reply loop** — the CLI-side loop that issues model calls within a single turn;
+  its *recovery* budget is how many additional attempts one turn may make after a
+  failure.
+- **Wrapped error** — a provider failure whose HTTP-level cause (a `401`
+  authentication rejection, an `insufficient_quota` response) is carried inside an
+  outer `ProviderError::ExecutionError` or `ProviderError::UsageError` variant
+  rather than being the variant itself.
+- **Classified kind** — the underlying category the provider layer derives from a
+  wrapped error's preserved details: `server`, `network` or `unknown` (transient,
+  worth retrying) versus authentication, quota, invalid-request and other permanent
+  kinds.
 
 ## Scope
 
@@ -24,6 +51,11 @@ No unbounded retry, recursive input-loop re-entry, duplicate submission, or
 terminal-mode leak was observed.
 
 ## Findings and fixes
+
+| Finding | Fix |
+| --- | --- |
+| Wrapped permanent provider errors received an extra agent-loop attempt | The reply loop retries `ExecutionError`/`UsageError` only when the classified kind is server, network or unknown. |
+| Narrow terminals could concatenate status regions | The status renderer picks full or compact labels from measured display width, and omits the right section when it cannot fit with separation. |
 
 ### Wrapped permanent provider errors received an extra agent-loop attempt
 
@@ -71,6 +103,11 @@ traffic.
 
 ## Automated verification
 
+> **Note.** The `biorouter --lib` count recorded here (1,396) differs from the
+> 1,400 recorded in the tool-discovery hardening review. The two runs were taken
+> against different trees at different points in July 2026; neither figure
+> supersedes the other.
+
 - `cargo test -p biorouter-cli`: all 192 tests passed.
 - `cargo test -p biorouter --lib`: all 1,396 tests passed.
 - The CLI suite covers TUI rendering, resize-sensitive layout, streaming previews,
@@ -79,3 +116,11 @@ traffic.
 - `cargo fmt --check`, `git diff --check`, and the complete
   `scripts/clippy-lint.sh` workflow passed, including baseline-rule and banned-TLS
   checks.
+
+## Related documentation
+
+- [Desktop reliability defects — July 2026](desktop-reliability-defects.md) — the desktop-side record of the same change batch this audit checked the CLI against.
+- [Agent tool discovery hardening — July 2026](tool-discovery-hardening.md) — a sibling July 2026 review whose verification section records the differing library test count noted above.
+- [CLI QA checklist](../../cli/qa-checklist.md) — the living manual checklist for exercising the terminal UI.
+- [CLI command reference](../../cli/command-reference.md) — what `/help` and the other slash commands exercised in the tmux matrix actually do.
+- [Agent error model](../../architecture/agent-error-model.md) — the provider error taxonomy behind "classified kind".

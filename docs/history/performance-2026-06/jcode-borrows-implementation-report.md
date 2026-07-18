@@ -1,45 +1,32 @@
-# jcode-borrows: implementation & benchmark report
+# Borrowing from jcode: implementation and benchmark report
 
-**Branch:** `perf/jcode-borrows` (a git worktree off `main@0f9bb71`).
-**Date:** 2026-06-24.
-**Scope:** implement the First Wave + Second Wave changes from
-[docs/jcode-comparison-perf-analysis.md](jcode-comparison-perf-analysis.md), one
-commit per change, and benchmark/verify each one.
+> **What this is.** The completion report for the First Wave and Second Wave changes taken from the jcode comparison analysis — jemalloc, Cargo profiles, `spawn_blocking`, HTTP client hardening, scheduler and subagent caps, AWS feature gating, and the soft interrupt — with per-change verification and an honest verdict on each, including the ones whose gain for BioRouter turned out to be small.
+> **Status:** Historical record — implemented on 2026-06-24 on branch `perf/jcode-borrows`, one commit per change. The changes are visibly in the tree today: `Cargo.toml` carries `tikv-jemallocator` and the `[profile.release]` / `release-dist` / `quick` profiles exactly as described here (verified 2026-07-18).
+> **Audience:** maintainers working on BioRouter performance and build configuration.
 
-> **Recoverability.** All work is on the `perf/jcode-borrows` branch in a separate
-> worktree at `/Users/wanjun/Desktop/biorouter-perf`. `main`'s uncommitted WIP is
-> untouched and fully intact. Every change is its own commit, so any of them can be
-> reverted individually (`git revert <hash>`) or the whole branch dropped. The
-> shared `target/` build cache was reused for speed; main's source is unaffected
-> (rebuild main any time to regenerate its binaries).
+**Branch:** `perf/jcode-borrows` (a git worktree off `main@0f9bb71`). **Date:** 2026-06-24. **Scope:** implement the First Wave and Second Wave changes from [the jcode comparison analysis](jcode-comparison-analysis.md), one commit per change, and benchmark or verify each one.
 
----
+**Identifier key.** `FW1`–`FW5` are First Wave changes and `SW1`–`SW6` are Second Wave changes, in the wave grouping proposed by the [prioritized roadmap in the comparison analysis](jcode-comparison-analysis.md). Each ID is defined by its own row in the per-change results table below — that table is the index for this scheme; the analysis uses a separate numbered scheme (`#1`–`#24`) for the same proposals. Commit hashes cited throughout live on the `perf/jcode-borrows` branch.
+
+This is the second of two independent performance efforts in June 2026. The first, driven by an internal review rather than an external comparison, is recorded in [the performance fixes implementation log](implementation-log.md).
+
+> **Recoverability (as of 2026-06-24).** All work is on the `perf/jcode-borrows` branch in a separate worktree at `/Users/wanjun/Desktop/biorouter-perf`. `main`'s uncommitted work-in-progress is untouched and fully intact. Every change is its own commit, so any of them can be reverted individually (`git revert <hash>`) or the whole branch dropped. The shared `target/` build cache was reused for speed; main's source is unaffected (rebuild main any time to regenerate its binaries).
+
+> **Warning.** That worktree no longer exists, so the recoverability commands recorded in this report are a historical record of how the work was organized, not instructions that run today. The report refers to the same worktree by two spellings, `biorouter-perf` and `../BioRouter-perf`; both mean the one path above.
 
 ## How to read this report
 
-The proposed changes fall into three honest verification buckets, because not all
-are numerically benchmarkable in this environment (no live LLM provider, no GUI
-profiler):
+The proposed changes fall into three honest verification buckets, because not all are numerically benchmarkable in this environment (no live LLM provider, no GUI profiler):
 
 - **Numeric** — measured a real number (RAM, binary size, crate count).
-- **Structural / compile** — verified it compiles + integrates and is correct by
-  construction; the runtime gain is real but only observable under load that needs
-  a live provider or interactive use.
-- **Typecheck / reasoning** — GUI changes verified by `tsc` + first-principles
-  analysis; empirical render gain needs the in-app React profiler.
+- **Structural / compile** — verified it compiles + integrates and is correct by construction; the runtime gain is real but only observable under load that needs a live provider or interactive use.
+- **Typecheck / reasoning** — GUI changes verified by `tsc` + first-principles analysis; empirical render gain needs the in-app React profiler.
 
-A key finding up front: **several proposals target gaps that BioRouter mostly does
-not have.** BioRouter's baseline is already good where jcode/Claude Code were bad
-(idle RSS ~21 MB, server startup ~99 ms warm, conversation offloaded to SQLite,
-tools stable across turns within a process). So for those, the honest result is
-"implemented, but the gain for BioRouter is small/conditional" — which is itself a
-valuable finding.
-
----
+A key finding up front: **several proposals target gaps that BioRouter mostly does not have.** BioRouter's baseline is already good where jcode/Claude Code were bad (idle RSS ~21 MB, server startup ~99 ms warm, conversation offloaded to SQLite, tools stable across turns within a process). So for those, the honest result is "implemented, but the gain for BioRouter is small/conditional" — which is itself a valuable finding.
 
 ## Baseline (clean HEAD, release, this machine)
 
-| metric | value |
+| Metric | Value |
 |---|---:|
 | biorouter (release) | 137.8 MB |
 | biorouterd (release) | 123.7 MB |
@@ -47,8 +34,6 @@ valuable finding.
 | biorouter dep-graph crates | 795 |
 | biorouterd idle RSS | ~21.3 MB (±0.5%) |
 | biorouterd startup (warm) | 34–99 ms |
-
----
 
 ## Per-change results
 
@@ -68,13 +53,11 @@ valuable finding.
 | SW1 | Soft interrupt (queue + inject at safe boundary + `/interrupt` route) | `56d6a7e` | **Compile + structural** | Mechanism implemented end-to-end (backend); injects mid-turn user input at the next loop boundary instead of cancel-and-resend. UX latency gain is qualitative (needs live LLM + GUI wiring follow-up). |
 | SW6 | GUI render-before-/status + scheduler off bind | **documented** | **Reasoning** | **Limited value for BioRouter:** backend starts ~99 ms warm (vs the multi-second gap that motivated the proposal); render-before-ready risks startup breakage unless the React app tolerates a not-ready backend. Not worth the risk for the small gain — see rationale below. |
 
-### Cumulative build & numbers
-All commits compile and integrate: the cumulative `cargo build --release`
-(default features = AWS on) **exited 0** (re-confirmed by a from-scratch cold
-restore build), validating SW1 + SW2 + SW5-CLI with every prior change. Clean
-3-run benchmark of the cumulative binaries vs the baseline:
+### Cumulative build and numbers
 
-| metric | baseline | cumulative (all changes) | Δ |
+All commits compile and integrate: the cumulative `cargo build --release` (default features = AWS on) **exited 0** (re-confirmed by a from-scratch cold restore build), validating SW1 + SW2 + SW5-CLI with every prior change. Clean 3-run benchmark of the cumulative binaries vs the baseline:
+
+| Metric | Baseline | Cumulative (all changes) | Δ |
 |---|---:|---:|---:|
 | biorouterd (release) | 123.7 MB | **107.7 MB** | **−13.0%** |
 | biorouter (release) | 137.8 MB | **120.6 MB** | **−12.5%** |
@@ -82,82 +65,54 @@ restore build), validating SW1 + SW2 + SW5-CLI with every prior change. Clean
 | biorouterd startup (warm) | 34–99 ms | 32–87 ms | ~same |
 | Cargo.lock crates | 988 | 991 (−42 buildable via `--no-default-features`) | +3 / −42 |
 
-The idle RSS is **+4.9 MB** (jemalloc arena metadata dominates, ~+2.3 MB of it) —
-the deliberate trade for the **4.4× lower peak RSS under churn** (FW1), which is
-what a busy daemon actually pays. Startup is unchanged despite jemalloc init.
-**SW1 `/interrupt` verified live:** returns 202 with the secret, 401 without.
-
-> **Build-artifact note.** During final benchmarking the shared `target/` cache was
-> wiped by an external disk-pressure cleanup (disk had climbed to ~95%). This is
-> **build cache only — all source and all 13 commits are intact in git**, and the
-> binaries regenerate with `cargo build --release`. The cumulative build had
-> already exited 0 (compilation of every change verified) and the size/RSS numbers
-> above were captured before the wipe. A fresh restore build is running. Lesson for
-> a constrained machine: a dedicated/cleaned `CARGO_TARGET_DIR` per worktree (jcode
-> sizes its build host deliberately) — the shared 86 GB target on a 95%-full disk
-> was the fragility.
-
----
+The idle RSS is **+4.9 MB** (jemalloc arena metadata dominates, ~+2.3 MB of it) — the deliberate trade for the **4.4× lower peak RSS under churn** (FW1), which is what a busy daemon actually pays. Startup is unchanged despite jemalloc init. **SW1 `/interrupt` verified live:** returns 202 with the secret, 401 without.
 
 ## Detailed findings
 
 ### The clear numeric wins
-- **FW1 jemalloc** — the standout. A standalone churn microbench
-  (`benchmarks/alloc-churn`, mimicking BioRouter's per-turn transcript
-  clone-and-drop) shows jemalloc holds peak RSS at **3.3 MB vs the system
-  allocator's ~14 MB (~4.4×)** and settles tighter. The cost is **+2.3 MB at idle**
-  (one-time arena metadata) — so it's a net win for a *busy* daemon (the real
-  workload), a slight loss for a *purely idle* one. Behind a default-on feature,
-  so trivially disabled. On Linux (glibc) the win is expected to be larger.
-- **FW2 strip** — `[profile.release] strip = true` removes the symbol table from
-  every shipped binary (debug info was already off): **−13%** with no runtime cost
-  and no release-pipeline rewiring (the pipeline already uses `--release`).
-  `release-dist` (thin LTO) and `quick` (fast compile) are opt-in extras.
-- **SW4 AWS gating** — `--no-default-features` drops **42 crates** from biorouter's
-  graph (incl. the `aws-lc-sys` C/asm build). Default builds unchanged; the headless
-  CLI-only Linux package is the natural beneficiary. tree-sitter/doc-conversion/boa
-  follow the same documented pattern.
 
-### The structural / safety wins
-- **FW3 token** + **FW3/SW3 HTTP** — remove a runtime-blocking BPE pass on the cold
-  path; add a per-read stall timeout, a connect timeout, keep-alive connection
-  reuse, and a higher overall cap so healthy long streams aren't killed.
-- **FW4** — a global semaphore + in-flight ceiling turn unbounded subagent spawning
-  into a bounded fork-bomb-safe pool; the scheduler now defers background jobs while
-  a user is active or a provider is rate-limited.
-- **SW1 soft interrupt** — the backend mechanism is complete: a per-agent queue, a
-  `POST /interrupt` route, and injection at the safe loop boundary (after the
-  previous turn's tools, before the next provider call), so a mid-turn user message
-  is incorporated without a cancel-and-resend round trip.
+- **FW1 jemalloc** — the standout. A standalone churn microbench (`benchmarks/alloc-churn`, mimicking BioRouter's per-turn transcript clone-and-drop) shows jemalloc holds peak RSS at **3.3 MB vs the system allocator's ~14 MB (~4.4×)** and settles tighter. The cost is **+2.3 MB at idle** (one-time arena metadata) — so it's a net win for a *busy* daemon (the real workload), a slight loss for a *purely idle* one. Behind a default-on feature, so trivially disabled. On Linux (glibc) the win is expected to be larger.
+- **FW2 strip** — `[profile.release] strip = true` removes the symbol table from every shipped binary (debug info was already off): **−13%** with no runtime cost and no release-pipeline rewiring (the pipeline already uses `--release`). `release-dist` (thin LTO) and `quick` (fast compile) are opt-in extras.
+- **SW4 AWS gating** — `--no-default-features` drops **42 crates** from biorouter's graph (incl. the `aws-lc-sys` C/asm build). Default builds unchanged; the headless CLI-only Linux package is the natural beneficiary. tree-sitter/doc-conversion/boa follow the same documented pattern.
 
-### The conditional / small-gain ones (honest)
-- **FW5 backgroundThrottling** — Electron already defaults this to `true`; set
-  explicitly for intent, but **no measurable change**. (The CDN-default half *is* a
-  real win for figure-heavy sessions.)
-- **SW2** — within a process the tool list is already stable across turns (the
-  source HashMap iterates consistently for an unchanged map), so the prompt cache
-  already holds. The deterministic sort fixes only the *cross-process* case
-  (resumed sessions) — real but conditional on resuming within the cache TTL.
-- **SW6** — BioRouter's backend startup is ~99 ms warm, so the render-before-ready
-  decoupling that gives jcode/Claude Code seconds buys BioRouter little, while
-  risking startup breakage. Documented and deliberately not implemented.
+### The structural and safety wins
 
----
+- **FW3 token** + **FW3/SW3 HTTP** — remove a runtime-blocking BPE pass on the cold path; add a per-read stall timeout, a connect timeout, keep-alive connection reuse, and a higher overall cap so healthy long streams aren't killed.
+- **FW4** — a global semaphore + in-flight ceiling turn unbounded subagent spawning into a bounded fork-bomb-safe pool; the scheduler now defers background jobs while a user is active or a provider is rate-limited.
+- **SW1 soft interrupt** — the backend mechanism is complete: a per-agent queue, a `POST /interrupt` route, and injection at the safe loop boundary (after the previous turn's tools, before the next provider call), so a mid-turn user message is incorporated without a cancel-and-resend round trip.
 
-## Reverting / recoverability
+### The conditional and small-gain ones (honest)
 
-- Whole branch: `git -C /Users/wanjun/Desktop/biorouter checkout main` (main is
-  untouched); delete the worktree with `git worktree remove ../BioRouter-perf`.
+- **FW5 backgroundThrottling** — Electron already defaults this to `true`; set explicitly for intent, but **no measurable change**. (The CDN-default half *is* a real win for figure-heavy sessions.)
+- **SW2** — within a process the tool list is already stable across turns (the source HashMap iterates consistently for an unchanged map), so the prompt cache already holds. The deterministic sort fixes only the *cross-process* case (resumed sessions) — real but conditional on resuming within the cache TTL.
+- **SW6** — BioRouter's backend startup is ~99 ms warm, so the render-before-ready decoupling that gives jcode/Claude Code seconds buys BioRouter little, while risking startup breakage. Documented and deliberately not implemented.
+
+## Build-environment incident during benchmarking
+
+> **Note.** During final benchmarking the shared `target/` cache was wiped by an external disk-pressure cleanup (disk had climbed to ~95%). This is **build cache only — all source and all 13 commits are intact in git**, and the binaries regenerate with `cargo build --release`. The cumulative build had already exited 0 (compilation of every change verified) and the size/RSS numbers above were captured before the wipe. A fresh restore build is running.
+
+Lesson for a constrained machine: use a dedicated or cleaned `CARGO_TARGET_DIR` per worktree (jcode sizes its build host deliberately) — the shared 86 GB target directory on a 95%-full disk was the fragility.
+
+## Reverting and recoverability
+
+- Whole branch: `git -C /Users/wanjun/Desktop/biorouter checkout main` (main is untouched); delete the worktree with `git worktree remove ../BioRouter-perf`.
 - Single change: `git revert <hash>` (commits are 1:1 with changes).
-- All new behavior is **off-switchable at runtime**: `--no-default-features` (FW1
-  jemalloc, SW4 AWS), `BIOROUTER_SCHEDULER_PAUSE_ON_ACTIVE=0`,
-  `BIOROUTER_SUBAGENT_MAX_CONCURRENT/INFLIGHT`, `BIOROUTER_HTTP_*_TIMEOUT_SECS`,
-  `BIOROUTER_AUTOVIS_CDN=0`.
+- All new behavior is **off-switchable at runtime**: `--no-default-features` (FW1 jemalloc, SW4 AWS), `BIOROUTER_SCHEDULER_PAUSE_ON_ACTIVE=0`, `BIOROUTER_SUBAGENT_MAX_CONCURRENT/INFLIGHT`, `BIOROUTER_HTTP_*_TIMEOUT_SECS`, `BIOROUTER_AUTOVIS_CDN=0`.
 
 ## Follow-ups (documented, not done)
-- Wire `just release-binary`/`scripts/release.sh` to `release-dist` after a macOS
-  notarized-packaging smoke test.
+
+These were the open items as of 2026-06-24.
+
+- Wire `just release-binary`/`scripts/release.sh` to `release-dist` after a macOS notarized-packaging smoke test.
 - Feature-gate tree-sitter / doc-conversion / boa (same pattern as SW4).
-- SW5-GUI full message memoization (needs the toolResponsesMap hoist) + React
-  profiler verification; SW5-CLI slice-on-scroll to drop the per-frame Vec clone.
+- SW5-GUI full message memoization (needs the toolResponsesMap hoist) + React profiler verification; SW5-CLI slice-on-scroll to drop the per-frame Vec clone.
 - SW1 GUI/CLI wiring (call `/interrupt` on mid-turn input) + OpenAPI regen.
+
+> **Warning.** The first follow-up is contradicted by the current tree and needs a human to settle it. `Cargo.toml`'s own comment on `[profile.release-dist]` asserts that "`just release-binary` uses it", but the `Justfile`'s `release-binary` recipe still runs `cargo build --release`, and no build script references `release-dist` (checked 2026-07-18). One of the two is wrong.
+
+## Related documentation
+
+- [Performance and efficiency comparison: jcode vs BioRouter](jcode-comparison-analysis.md) — the analysis that proposed every `FW*`/`SW*` change reported here, with the evidence behind each.
+- [Performance fixes: implementation log and benchmarks](implementation-log.md) — the other June 2026 performance wave, from an internal review rather than this comparison.
+- [Shared MCP server pool design](../../agent-loop/designs/shared-mcp-server-pool.md) — the strategic proposal this wave deliberately did not attempt.
+- [Environment variables reference](../../configuration/environment-variables.md) — current documentation for the `BIOROUTER_*` switches listed under recoverability.

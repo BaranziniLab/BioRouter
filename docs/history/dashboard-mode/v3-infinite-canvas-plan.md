@@ -1,18 +1,37 @@
-# Canvas Dashboard Implementation Plan
+# Canvas dashboard — implementation plan (v3)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The 13-task plan for converting the dashboard from a
+> tile/tuck board into an infinite pannable canvas: camera offsets, spiral spawn
+> placement, and Shrink/Enlarge window chrome.
+> **Status:** Superseded, and then removed. Every file this plan modifies —
+> `DashboardContext.tsx`, `DashboardProvider.tsx`, `canvasLayout.ts`,
+> `TuckSidebar.tsx` — has been deleted along with the whole dashboard;
+> `ui/desktop/src/components/Dashboard/` no longer exists. See the
+> [removal record](README.md). The unticked `- [ ]` checkboxes below were ticked
+> during execution in a working copy; they are not a record of unfinished work.
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Checkbox key.** Two conventions coexist below and mean opposite things. Task
+> steps use `- [ ]` — work to be done by the executing agent. The closing
+> "Self-review checklist" uses `- [x]` — checks the plan's *author* had already
+> run before handing the plan over.
+
+**Date:** 2026-05-10
+**Spec:** [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md)
 
 **Goal:** Convert the dashboard from a tile/tuck board into an infinite pannable canvas. Remove tucking entirely. Add window Shrink/Enlarge chrome. Move the `>` picker collapse from horizontal-inline to a vertical popup. Restyle Spawn/Organize/Clear buttons as tab-style.
 
 **Architecture:** Camera-offset model — windows live in world coordinates, the viewport applies a `translate` to a world layer. Spawn places windows non-overlappingly via spiral search; Organize is iterative minimum-move overlap resolution; both recenter camera on the focused/new window.
 
-**Tech Stack:** React 19 + TypeScript, Tailwind, Radix Popover, Vitest.
+**Tech stack:** React 19 + TypeScript, Tailwind, Radix Popover, Vitest.
 
-**Spec:** [2026-05-10-canvas-dashboard-design.md](../specs/2026-05-10-canvas-dashboard-design.md)
+> **Note for agentic workers.** REQUIRED SUB-SKILL: use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
-## File Structure
+## File structure
 
 **Files to modify:**
 - `ui/desktop/src/contexts/DashboardContext.tsx` — types: drop tuck/T1/T2, add cameraOffset + pan/center API
@@ -1256,12 +1275,18 @@ If no changes, skip the commit.
 **Files:**
 - No code changes; this is the end-to-end check.
 
+> **Note.** This task is not reproducible from the document alone. It depends on
+> a live Electron app driven over CDP through the Playwright MCP tools, and its
+> final step writes a screenshot to a throwaway `/tmp` path that existed only
+> for the original review. Read it as a record of what was checked, not as a
+> runnable script.
+
 - [ ] **Step 1: Kill any old Electron and start fresh**
 
 ```bash
 killall -9 Electron "Electron Helper" "Electron Helper (GPU)" "Electron Helper (Renderer)" 2>/dev/null
 osascript -e 'tell application "Terminal" to activate' \
-          -e 'tell application "Terminal" to do script "cd /Users/wgu/Desktop/biorouter/ui/desktop && ENABLE_PLAYWRIGHT=1 npm run start-gui 2>&1 | tee /tmp/biorouter-start.log"'
+          -e 'tell application "Terminal" to do script "cd <repo-root>/ui/desktop && ENABLE_PLAYWRIGHT=1 npm run start-gui 2>&1 | tee /tmp/biorouter-start.log"'
 ```
 
 Wait for CDP via Monitor until `curl -sf http://localhost:9222/json/version` returns 200.
@@ -1304,8 +1329,15 @@ Validation only.
 
 ---
 
-## Self-Review Checklist (already run)
+## Self-review checklist (already run by the plan's author)
 
 - [x] Spec coverage: every requirement (taller MIN, shrink/enlarge, no-tuck, canvas pan, organize-recenter, spawn-non-overlap, auto-rename, vertical popup, tab-style toolbar) has at least one task.
 - [x] Placeholder scan: no TBDs, no "add error handling later", every code block is complete.
 - [x] Type consistency: `DashboardWindow.position` is `{ x, y }` everywhere (non-nullable); `cameraOffset` is `{ x, y }` everywhere; `Rect` type lives in `canvasLayout.ts` and is used consistently.
+
+## Related documentation
+
+- [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md) — the spec this plan implements, including the organize algorithm and spawn placement.
+- [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md) — builds the tile/tuck board and layout engine that this plan tears out.
+- [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md) — the direct successor, which folds windows on the canvas this plan creates.
+- [Dashboard mode — removal record and archive index](README.md) — records the deletion of `canvasLayout.ts` and the rest of the canvas.

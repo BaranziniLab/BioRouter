@@ -1,9 +1,46 @@
-# Computer Controller — Executed Test Results
+# Computer Controller — executed test results
 
-Companion to `computer-controller-test-plan.md`. All live runs used **Xiaomi MiMo**
-(`mimo-v2.5-pro` for non-vision; `mimo-v2-omni` where the model must *see* a
-screenshot — see the vision finding below). Sandboxed config under
+> **What this is.** The executed outcomes of the 2026-06-20 Computer Controller hardening pass: the code changes made, the automated tests added, the live Xiaomi MiMo run results, and the finding that MiMo vision is endpoint-specific.
+> **Status:** Historical record — the pass completed on 2026-06-20, and every change listed here (honest `osascript` errors, primary-display default, substring window match, MiMo `with_vision()`) shipped in that commit.
+> **Audience:** maintainers working on the Computer Controller extension.
+
+This is the results half of a two-document pair. The plan half — the reported user
+problems, their root causes, and the ~60-case test matrix — is
+[the Computer Controller test plan and root causes](./test-plan-and-root-causes.md).
+Case identifiers used below (`A1`, `A2`, `B6`, `B8`, `C4`, `H4`) refer to that plan's
+matrix, where section letters group cases by area (A = screenshots and vision,
+B = basic UI interaction, C = application control, H = error and permission handling).
+One identifier below, `FIX2`, does not appear in the plan's matrix and has no
+definition in either document.
+
+Fix categories are carried over from the plan: **P** = prompt / context-engineering fix,
+**T** = tool-hardening fix in Rust, **E** = environment or out-of-scope (OS permissions,
+hardware, model capability).
+
+All live runs used **Xiaomi MiMo** — `mimo-v2.5-pro` for non-vision cases, and
+`mimo-v2-omni` where the model must *see* a screenshot. Runs used a sandboxed config at
 `XDG_CONFIG_HOME=/tmp/ceexec-sandbox` so the real `~/.config/biorouter` was untouched.
+
+> **Note.** The environment details in this record are specific to the machine that ran
+> the pass — a macOS host with the MiMo Token-Plan SGP endpoint configured — and are not
+> expected to generalize. Treat host names, display models, and endpoint behaviour as
+> observations from one session, not as properties of the system.
+
+## MiMo vision is model- and endpoint-specific
+
+> **Warning.** This is the most reusable fact in this document. Vision worked with
+> `mimo-v2-omni` and returned HTTP 404 with `mimo-v2.5-pro` on the endpoint under test.
+
+- The harness vision path is **correct and verified**: screenshots are sent in the
+  standard OpenAI vision format and a vision-capable MiMo model receives and
+  interprets them end-to-end.
+- **`mimo-v2.5-pro` on the configured Token-Plan SGP host returns `404: No endpoints
+  found that support image input`** — that deployment does not serve image input.
+- **`mimo-v2-omni` works** for vision (it described the live screen correctly).
+- Recommendation: for Computer Controller or any screenshot-driven task, use
+  `mimo-v2-omni` (or a MiMo vision endpoint that serves v2.5-pro images). The
+  `with_vision()` declaration is kept for the MiMo family (capability is intrinsic;
+  the SGP route's 404 is a deployment gap), but the working vision route today is omni.
 
 ## Code changes made
 
@@ -19,7 +56,9 @@ screenshot — see the vision finding below). Sandboxed config under
 | Rename | `computercontroller/mod.rs` `get_info` | MCP server `title` = "Computer Controller" | P |
 | MiMo vision | `providers/xiaomi_mimo.rs` | declare models `with_vision()` so the harness/UI treat MiMo as image-capable (GUI image-upload was gated off before) | T |
 
-## Automated tests added (all pass)
+## Automated tests added
+
+All of the following pass.
 
 - `macos.rs`: `successful_script_returns_stdout`, `empty_output_script_still_succeeds`, `failing_script_returns_err_with_reason`
 - `mod.rs` (`computer_control_tests`): `computer_control_reports_failure_instead_of_fake_success`, `computer_control_no_output_success_guides_to_verify`
@@ -28,7 +67,7 @@ screenshot — see the vision finding below). Sandboxed config under
 
 Full suites green: `biorouter-mcp` lib (68 computercontroller/developer tests), `biorouter` lib (xiaomi_mimo + vision + code_execution regression: 31).
 
-## Live runs (MiMo)
+## Live runs across both MiMo models
 
 | Case | Model | Result |
 |------|-------|--------|
@@ -41,7 +80,7 @@ Full suites green: `biorouter-mcp` lib (68 computercontroller/developer tests), 
 | GUI backend: failing control | (GUI biorouterd) | ✅ HTTP 500 (tool `Err` surfaced; in the `/reply` agent loop this becomes a model-visible error, as the TUI run confirms) |
 | GUI backend: no-output success | (GUI biorouterd) | ✅ HTTP 200 + verify-guidance |
 
-## Live runs — mimo-v2-omni (vision model, full Computer Controller flow)
+## Live runs on mimo-v2-omni, full Computer Controller flow
 
 | Case | Task | Result |
 |------|------|--------|
@@ -57,23 +96,10 @@ verification** (act → screenshot → confirm), **no circling on failure** (hon
 drive adaptation, not blind retries), and **clickability awareness** (discover elements /
 prefer keystrokes over brittle named-button clicks).
 
-## ⚠️ Critical finding: MiMo vision is model/endpoint-specific
+## Failure-mode classification
 
-- The harness vision path is **correct and verified**: screenshots are sent in the
-  standard OpenAI vision format and a vision-capable MiMo model receives and
-  interprets them end-to-end.
-- **`mimo-v2.5-pro` on the configured Token-Plan SGP host returns `404: No endpoints
-  found that support image input`** — that deployment does not serve image input.
-- **`mimo-v2-omni` works** for vision (it described the live screen correctly).
-- Recommendation: for Computer Controller / any screenshot-driven task, use
-  `mimo-v2-omni` (or a MiMo vision endpoint that serves v2.5-pro images). The
-  `with_vision()` declaration is kept for the MiMo family (capability is intrinsic;
-  the SGP route's 404 is a deployment gap), but the working vision route today is omni.
-
-## Failure-mode classification (per the user's request)
-
-- **Prompt/context-fixable (P):** the circling/non-progressive behavior is largely
-  driven by (a) the fake-success bug below and (b) missing operating principles —
+- **Prompt/context-fixable (P):** the circling/non-progressive behavior was largely
+  driven by (a) the fake-success bug and (b) missing operating principles —
   both now addressed. Clickability/app-navigation is improved by guidance to prefer
   app-native automation and named elements over coordinate clicks.
 - **Tool-hardening (T):** the root cause of "circling and burning tokens" was the
@@ -83,3 +109,10 @@ prefer keystrokes over brittle named-button clicks).
 - **Environment (E):** OS Accessibility/Screen-Recording/Automation permissions and
   the MiMo vision endpoint availability are outside the code; the tools now surface
   these clearly so the agent (and user) can act instead of looping.
+
+## Related documentation
+
+- [Computer Controller test plan and root causes](./test-plan-and-root-causes.md) — the case matrix and the K1–K5 root-cause table these results were run against.
+- [Multi-app orchestration run](./multi-app-orchestration-run.md) — the sibling run record covering Slack, web literature and Word workflows, and the watchdog/playbook fixes that came out of it.
+- [Computer Controller extension reference](../../extensions/built-in/computer-controller.md) — the current user-facing documentation for the tools exercised here.
+- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup and model list, including which MiMo models accept image input.

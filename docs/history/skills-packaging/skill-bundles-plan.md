@@ -1,6 +1,12 @@
-# Skill Bundles Implementation Plan
+# Skill bundles implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The task-by-task implementation plan that executed the [skill bundles design](skill-bundles-design.md): treating a parent folder of sub-skill directories as one installable bundle with a single toggle, across the React UI, Electron IPC, and Rust skill discovery.
+> **Status:** Historical record — written 2026-05-07 and completed. The work shipped: `SkillBundle` is defined in `ui/desktop/src/components/skills/skillUtils.ts` and `bundle_name` filtering is in `crates/biorouter/src/agents/skills_extension.rs`. The `- [ ]` checkboxes below were never ticked off in the file — read them as the original task list, not as outstanding work.
+> **Audience:** agents and developers tracing how skill bundle support was built.
+
+This plan was written to be executed by an agent, one `## Task N` at a time, in test-driven order: write a failing test, run it, implement, re-run, commit. It is unusually code-heavy — several steps say "replace the entire file with" and then inline the whole proposed source. Those blocks are a snapshot of the intended code at authoring time, not a mirror of the current tree; **read the repository, not this document, for what the code does today.** The value that survives is the ordering, the reasoning, and the test cases.
+
+> **Note.** The original file opened with a machine-directed banner naming the `superpowers:subagent-driven-development` and `superpowers:executing-plans` skills as the intended execution harnesses. That instruction is recorded here for provenance and is no longer actionable — the plan is complete.
 
 **Goal:** Add support for skill bundles — a parent folder containing multiple sub-skill directories each with their own `SKILL.md` — treated as a single installable unit with a single toggle.
 
@@ -10,7 +16,7 @@
 
 ---
 
-## File Structure
+## File structure
 
 **Modified:**
 - `ui/desktop/src/components/skills/skillUtils.ts` — add `SkillBundle` interface, add `bundleName?` to `Skill`, update `loadSkillsFromDirs` return type + discovery
@@ -26,6 +32,8 @@
 ---
 
 ## Task 1: TypeScript — `SkillBundle` interface + updated `loadSkillsFromDirs`
+
+Teaches the frontend scanner two-level discovery: `loadSkillsFromDirs` stops returning a flat `Skill[]` and returns `{ singles, bundles }` instead, which forces every caller to be updated in Tasks 2 and 3.
 
 **Files:**
 - Modify: `ui/desktop/src/components/skills/skillUtils.ts`
@@ -85,6 +93,8 @@ cd ui/desktop && npm run test:run -- skillUtils
 ```
 
 Expected: all tests pass (these are pure functions already implemented).
+
+> **Note.** These tests are characterization tests, not red-phase tests — `parseSkillFrontmatter` and `toSlug` already exist and already behave this way, so nothing here can fail. Their job is to pin the existing behaviour before Step 3 rewrites the whole file around them. The genuine test-driven cycle in this plan starts at Task 5, where the Rust tests fail to compile until `bundle_name` exists.
 
 - [ ] **Step 3: Update `skillUtils.ts` — add `bundleName` to `Skill`, add `SkillBundle`, update `loadSkillsFromDirs`**
 
@@ -238,6 +248,8 @@ git commit -m "feat(skills): add SkillBundle interface and two-level discovery i
 ---
 
 ## Task 2: Update `SkillsView.tsx` — render bundle rows
+
+Adapts the settings page to the new return shape and adds an inline `BundleItem` row: bundle name, sub-skill count, a read-only list of sub-skill names, one `Switch`, and a delete confirmation that names how many skills will be removed.
 
 **Files:**
 - Modify: `ui/desktop/src/components/skills/SkillsView.tsx`
@@ -634,6 +646,8 @@ git commit -m "feat(skills): render bundle rows in SkillsView with single toggle
 
 ## Task 3: Update `BottomMenuSkillSelection.tsx` — bundle entries in dropdown
 
+Introduces a `SkillEntry` union (`single` | `bundle`) so the chat-bar dropdown can list, search, sort, and toggle bundles alongside single skills, with each bundle counting as one toward the active-skill badge.
+
 **Files:**
 - Modify: `ui/desktop/src/components/bottom_menu/BottomMenuSkillSelection.tsx`
 
@@ -957,6 +971,8 @@ git commit -m "feat(skills): render bundle entries in BottomMenuSkillSelection d
 ---
 
 ## Task 4: Bundle install — `main.ts` + `AddSkillModal.tsx`
+
+Makes bundles installable from both entry points. Sub-task 4a teaches `write-file` to create parent directories (needed for nested bundle paths) and extends `skills:extract-zip` to recognise a three-level `<bundle>/<sub>/SKILL.md` ZIP. Sub-task 4b adds the matching folder-upload detection and the bundle preview UI.
 
 **Files:**
 - Modify: `ui/desktop/src/main.ts`
@@ -1581,6 +1597,8 @@ git commit -m "feat(skills): AddSkillModal detects and installs skill bundles fr
 
 ## Task 5: Rust — bundle discovery in `skills_extension.rs`
 
+Brings the agent runtime in line with the UI: adds `bundle_name: Option<String>` to the `Skill` struct, threads it through `parse_skill_file`, rewrites `discover_skills_in_directories` for two-level detection, and makes the disabled-skills filter honour a disabled bundle name. This is the only task with genuinely failing tests up front — the three new tests will not compile until the struct field exists.
+
 **Files:**
 - Modify: `crates/biorouter/src/agents/skills_extension.rs`
 
@@ -1888,7 +1906,9 @@ git commit -m "feat(skills): Rust bundle discovery — two-level SKILL.md detect
 
 ---
 
-## Final check
+## Final verification
+
+Not a task — a closing gate. Re-runs both sides of the build once Tasks 1 to 5 have landed, to confirm the TypeScript and Rust halves agree.
 
 - [ ] **Run frontend type-check and tests one more time**
 
@@ -1905,3 +1925,11 @@ cargo test -p biorouter 2>&1 | tail -10
 ```
 
 Expected: all tests pass.
+
+## Related documentation
+
+- [Skill bundles design](skill-bundles-design.md) — the spec this plan executes; read it first for the detection rule and the single-toggle rationale.
+- [.brxt bundled skills implementation plan](brxt-bundled-skills-plan.md) — the sibling plan from the same day; it created the `skills:extract-zip` handler that Task 4a here extends with bundle detection.
+- [.brxt bundled skills design](brxt-bundled-skills-design.md) — the design behind that handler and extension-local skill storage.
+- [Desktop bug fix batch v1.72.1](../desktop-ui-fixes/v1-72-1-bug-fix-batch.md) — a later plan that builds on the `bundle_name` filtering landed in Task 5.
+- [Skills extension](../../extensions/built-in/skills.md) — the user-facing view of the skill discovery this plan changed.

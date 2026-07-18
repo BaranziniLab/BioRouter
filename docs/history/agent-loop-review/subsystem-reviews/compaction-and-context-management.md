@@ -1,10 +1,20 @@
-# Compaction & Context Management — Architecture Review
+# Compaction and context management — architecture review
 
-Subsystem owner files: `crates/biorouter/src/context_mgmt/mod.rs`,
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents the summarize-everything compaction strategy — the 0.8 trigger, the visibility-flag mechanism that makes compaction non-destructive, token counting, tool-pair edge cases and persistence — and records thirteen gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gap #1 (no verbatim window) was fixed by BR-10, gap #3 (the single over-window message dead end) by BR-11, gaps #4 and #5 (tokenizer and cold-path undercount) by BR-15, gaps #2, #9 and #11 (weak-model summary, no summary validation, the `Role::User` mislabel) by BR-14, and gap #12 (the compaction race) by BR-16 and BR-33. Read it as a record of why those changes were made, not as current documentation of the compaction code.
+> **Audience:** developers working on the agent loop, context management, or session persistence.
+
+"Context management" in this title means the compaction path only — how an over-long conversation is shrunk. How the system prompt and per-turn context are *assembled* is a separate subsystem with its own review, [Context injection and system prompt construction](context-injection-and-system-prompt.md). Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews and the [review README](../README.md) cite as `compaction.md gap #N` (the file's former name).
+
+## Scope and files reviewed
+
+The subsystem's owner files are `crates/biorouter/src/context_mgmt/mod.rs`,
 `crates/biorouter/src/token_counter.rs`, `crates/biorouter/src/conversation/{mod.rs,message.rs}`,
 `crates/biorouter/src/prompts/summarize_oneshot.md`, plus the trigger sites in
 `crates/biorouter/src/agents/{agent.rs,reply_parts.rs,execute_commands.rs}` and persistence in
 `crates/biorouter/src/session/session_manager.rs`.
+
+> **Note.** Line numbers in the citations below are as-read at review time and have drifted since; treat them as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -24,7 +34,7 @@ these two flags rather than deleting content.
 
 Data flow (auto path):
 
-```
+```text
 reply() [agent.rs:1424]
   └─ load full Conversation from session (all messages, all metadata)
   └─ check_if_compaction_needed(provider, conv, None, session)  [mod.rs:168]
@@ -50,7 +60,7 @@ There is a **second, reactive** compaction inside the tool loop that fires when 
 returns `ContextLengthExceeded` mid-turn (`agent.rs:1964-2019`), and a **manual** path via
 `/compact`, `/summarize`, or "Please compact this conversation" (`execute_commands.rs:10-11`).
 
-## Answers
+## Review questions answered
 
 ### How does compaction work: trigger threshold, summarize vs truncate vs drop, prompt?
 
@@ -228,7 +238,10 @@ conversation (`execute_commands.rs:138-158`).
 - **`fix_conversation` shadow-map** (`conversation/mod.rs:164-200`) fixes only the agent-visible slice
   while keeping invisible messages positionally intact — well-tested (many cases in `mod.rs` tests).
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These thirteen items fed the improvement phase. They are what other documents in this
+review cite as `compaction.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **Summarize-everything, no recent-turn verbatim window.** Unlike Claude Code / modern coding
    agents that keep the last N turns verbatim and summarize only the older prefix, BioRouter collapses
@@ -294,3 +307,11 @@ conversation (`execute_commands.rs:138-158`).
 13. **Manual `/compact` preserves *no* user message** (`mod.rs:94-109` gated on `!manual_compact`),
     so a user who compacts mid-thought loses their verbatim last message into the summary — arguably
     fine, but undocumented behavioral asymmetry vs the auto path.
+
+## Related documentation
+
+- [Context injection and system prompt construction](context-injection-and-system-prompt.md) — the other half of context handling: how the prompt and message array are assembled each turn.
+- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how this summarize-everything design measures against nine other coding agents.
+- [State, awareness, todos, goals and version control](state-awareness-and-version-control.md) — the SQLite session schema and the `extension_data` state that survives compaction.
+- [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-10, BR-11, BR-14, BR-15, BR-16) that these gaps became.
+- [Wave 1 compaction report](../../agent-loop-campaign/wave-reports/wave-1-compaction.md) — what was actually built and merged in response.

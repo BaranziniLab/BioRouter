@@ -1,49 +1,68 @@
-The Todo extension helps biorouter stay organized by breaking complex work into a series of steps and keeping you updated as it completes each step.
+# Todo extension
 
-biorouter automatically knows to use the Todo extension if it has to do tasks that have 2 or more steps, involve multiple files/components, or have an uncertain scope.
+> **What this is.** User guide to the built-in Todo extension, which makes BioRouter break multi-step work into a tracked checklist and report progress as it goes.
+> **Status:** Current — but note the correction below: the extension is enabled by default, so no manual setup is normally needed.
+> **Audience:** end users.
 
-At the start of the task, biorouter will create an internal checklist, read and update progress as it works, and verify that all tasks are completed.
+The Todo extension keeps BioRouter organized on long tasks. BioRouter reaches for it automatically when a task has two or more steps, touches multiple files or components, or has uncertain scope. At the start it creates a checklist, updates the checklist as it works, and verifies at the end that every item is done — so you can see where it is rather than waiting for a single opaque answer.
 
-This tutorial will cover enabling and using the Todo extension.
+> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `todo` as a platform extension with `default_enabled: true`, matching the default-enabled list in the [installation guide](../../getting-started/installation.md). The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
-  
-  
-  
-  
+1. Run the `configure` command:
 
-  1. Run the `configure` command:
-  ```sh
-  biorouter configure
-  ```
+   ```bash
+   biorouter configure
+   ```
 
-  2. Choose to `Toggle Extensions`
-  ```sh
-  ┌   biorouter-configure 
-  │
-  ◇  What would you like to configure?
-  │  Toggle Extensions 
-  │
-  ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
-  // highlight-start    
-  │  ● todo
-  // highlight-end  
-  └  Extension settings updated successfully
-  ```
-  
+2. Choose `Toggle Extensions`, then confirm `todo` is enabled:
 
-## Example Usage
+   ```text
+   ┌   biorouter-configure
+   │
+   ◇  What would you like to configure?
+   │  Toggle Extensions
+   │
+   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   │  ● todo
+   └  Extension settings updated successfully
+   ```
 
-In this example, I'm going to have biorouter help me fix formatting inconsistencies in documentation files. This demonstrates how the Todo extension helps biorouter stay organized when working through systematic improvements.
+## Available tools
 
-### biorouter Prompt
+| Tool | Description |
+|------|-------------|
+| `todo_write` | Replace the entire checklist with a markdown checklist. Used to seed the initial list. |
+| `todo_add` | Append one or more pending items without rewriting the existing ones. Each new item gets a fresh `#N` id. |
+| `todo_update` | Update a single item by its `#N` id — change its status, its text, or both — without touching the rest of the list. |
+| `plan_write` | Set or update the living plan: a step-by-step plan kept current as work proceeds, re-injected into the model's context each turn alongside the checklist. An empty string clears it. |
 
-```
+## Checklist item states
+
+Items carry one of three states, written in the familiar markdown checkbox syntax:
+
+| Marker | State |
+|--------|-------|
+| `- [ ] task` | pending |
+| `- [~] task` | in progress |
+| `- [x] task` | completed |
+
+The `[~]` in-progress marker is what makes the checklist useful while a long task is still running: it shows you which single item BioRouter is working on right now.
+
+## Example usage
+
+In this example BioRouter fixes formatting inconsistencies across two documentation files, and uses the Todo extension to work through them systematically.
+
+> **Note.** This example is self-referential — it shows BioRouter editing BioRouter's own documentation, so its checklist items refer to an internal docs style guide ("reference pattern", "reference format") that you do not need to know. Read it for the *shape* of the checklist, not for its content. Note also that every item is already ticked `[x]`, because the transcript was captured after the task finished; during a real run you would see a mix of `[ ]`, `[~]` and `[x]`.
+
+### BioRouter prompt
+
+```text
 I need to update our documentation to fix formatting inconsistencies between two tutorial files. There are several sections that don't match the expected pattern. Can you help me systematically work through these issues and track our progress?
 ```
 
-### biorouter Output
+### BioRouter output
 
 ```md
 I'll help you fix the documentation inconsistencies systematically. Let me break this down into organized tasks and track our progress.
@@ -94,3 +113,10 @@ All tutorial inconsistencies have been resolved:
 
 The documentation now follows a consistent pattern and provides a clear, organized experience for users.
 ```
+
+## Related documentation
+
+- [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
+- [Installation](../../getting-started/installation.md) — the list of extensions enabled out of the box.
+- [Subagents](../../agent-loop/subagents.md) — the other mechanism for structuring long, multi-step work.
+- [Context engineering](../../agent-loop/context-engineering.md) — how the checklist and living plan are re-injected into the model's context each turn.

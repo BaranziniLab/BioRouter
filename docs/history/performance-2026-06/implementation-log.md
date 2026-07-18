@@ -1,16 +1,20 @@
-# Performance Fixes — Implementation Log & Benchmarks
+# Performance fixes: implementation log and benchmarks
 
-Companion to [performance-review-2026-06-22.md](performance-review-2026-06-22.md).
-Records the 9 performance fixes that shipped to `main`, their validation, and
-the benchmark numbers that justify each one.
+> **What this is.** The implementation log for the nine performance fixes that came out of the 2026-06-22 performance review — one commit per fix, with the behaviour-preservation evidence, the before/after benchmark numbers, the observable-behaviour caveats, and the list of items deliberately left undone.
+> **Status:** Historical record — all nine fixes were implemented on 2026-06-23 and merged and pushed to `origin/main`; the deferred items listed at the end were not implemented in this pass. Verified against the repository on 2026-07-18: the commit graph below is a snapshot of `main` as it stood on 2026-06-23 and will not match today's history after later merges and rebases.
+> **Audience:** maintainers working on BioRouter performance.
+
+Work dated **2026-06-23**, the day after the review it implements ([review findings](review-findings.md), dated 2026-06-22). The review covered **v1.86.0**, which is several minor versions behind the current line, so treat the `file:line` references inherited from it as a snapshot rather than a map of today's tree.
+
+**Identifier key.** Fix references such as `E1`, `D3`, `C1`, `H2` are finding IDs from [the review](review-findings.md): the letter names the subsystem section (`A` agent loop, `B` providers, `C` extension manager/MCP, `D` session persistence, `E` server, `F` built-in MCP servers, `G` Electron main process, `H` React rendering, `I` frontend fetching, `J` frontend bundle, `K` CLI/TUI, `L` cross-boundary and scheduler) and the number is the row within that section's table. The review is the index for all of them.
+
+A second, separate wave of performance work — borrowed from a comparison against the third-party jcode harness — followed the day after and is recorded in [the jcode borrows implementation report](jcode-borrows-implementation-report.md). The two efforts are independent; this log covers only the review's fixes.
 
 ## Final state on `main`
 
-All fixes are merged and pushed (`origin/main`). They sit cleanly on top of the
-finished Agent Drafter feature (PR #6) — the perf work was rebased onto
-`origin/main` so nothing of that feature was disturbed:
+All fixes were merged and pushed to `origin/main` as of 2026-06-23. They sit cleanly on top of the finished Agent Drafter feature — pull request **#6**, which landed the BioRouter Apps platform — because the perf work was rebased onto `origin/main` so nothing of that feature was disturbed:
 
-```
+```text
 v1.86.0
   └─ feat(agent-drafter): BioRouter Apps platform (PR #6)
        ├─ 2b0e661  perf(regex): compile per-call regexes once via Lazy statics
@@ -24,9 +28,7 @@ v1.86.0
        └─ 0f9bb71  docs(perf): review report + implementation log
 ```
 
-Every fix was built, tested for behavior-preservation, and committed separately.
-A full backup of the original pre-rebase branch (including the unrelated local
-WIP snapshot) is preserved at branch `perf/streaming-and-latency`.
+Every fix was built, tested for behavior-preservation, and committed separately. A full backup of the original pre-rebase branch — including the unrelated local work-in-progress snapshot that was present at the time — is preserved at branch `perf/streaming-and-latency`.
 
 ## The fixes
 
@@ -43,9 +45,7 @@ WIP snapshot) is preserved at branch `perf/streaming-and-latency`.
 
 ## Benchmark validation
 
-Each result below is **before vs after, measured side-by-side**. The DB numbers
-use the **real async `sqlx` code paths and the real `add_message` transaction**
-(`BEGIN; INSERT message; UPDATE sessions; COMMIT`), 9 runs, median reported.
+Each result below is **before vs after, measured side-by-side**. The DB numbers use the **real async `sqlx` code paths and the real `add_message` transaction** (`BEGIN; INSERT message; UPDATE sessions; COMMIT`), 9 runs, median reported.
 
 | Fix | Benchmark | Before → After | Result |
 |---|---|---|---|
@@ -60,39 +60,38 @@ use the **real async `sqlx` code paths and the real `add_message` transaction**
 | Streaming throttle | 600-token reply, fast stream | 600 → 60 renders | **up to 10× fewer** full-list renders (neutral for slow streams — it caps render rate to the display, never adds work) |
 | `spawn_blocking` / `tokio::fs` | concurrent task during heavy work | task starved for the whole op → stays responsive | **responsiveness** win (not a single-op speedup): a blocking PDF parse or large file write no longer freezes every other async task for its full duration |
 
-### A note on benchmark rigor (why two results changed)
+### Why two benchmark results changed
 
-An initial pass benchmarked the search-N+1 and `max_connections` changes with
-**synchronous `rusqlite` and single-statement inserts**, and they looked like
-non-wins (0.8× and "1.19× slower"). Re-running against the **real async `sqlx`
-path and the real 2-statement transaction** reversed both: the async per-query
-overhead makes N+1 genuinely expensive (→ GROUP BY is **4.6× faster**), and with
-real transactions a smaller write pool contends less on the SQLite write lock
-(→ `max_connections=4` is **1.20× faster**). Lesson baked into the table above:
-benchmark the *actual* code path, not a simplified stand-in.
+An initial pass benchmarked the search-N+1 and `max_connections` changes with **synchronous `rusqlite` and single-statement inserts**, and they looked like non-wins (0.8× and "1.19× slower"). Re-running against the **real async `sqlx` path and the real 2-statement transaction** reversed both: the async per-query overhead makes N+1 genuinely expensive (→ GROUP BY is **4.6× faster**), and with real transactions a smaller write pool contends less on the SQLite write lock (→ `max_connections=4` is **1.20× faster**).
 
-## Honest behavior caveats
+> **Why.** Benchmark the *actual* code path, not a simplified stand-in. The table above reports only measurements taken against the real path.
 
-No change alters chat content, tool results, or normal workflows. The few
-genuinely observable differences, named explicitly:
+## Observable behaviour caveats
 
-- **Streaming throttle (I1):** chat repaints at ~60 fps instead of once per
-  token. Final text is identical; at very high token rates the animation is
-  slightly frame-batched rather than strictly one-token-at-a-time.
-- **`synchronous=NORMAL` (D3):** changes a *failure-mode* — on an OS crash or
-  power loss (not a normal app quit) the last DB commit can be lost. Standard
-  WAL trade-off; invisible in normal use.
-- **Settings cache (G3):** an *external* edit to `settings.json` while the app
-  is running isn't seen until restart (in-app changes write through the cache).
-- **gzip (E2):** the HTTP wire format changed; the client decompresses
-  transparently.
+No change alters chat content, tool results, or normal workflows. The few genuinely observable differences, named explicitly:
 
-## Deferred (not implemented — see review for full rationale)
+- **Streaming throttle (I1):** chat repaints at ~60 fps instead of once per token. Final text is identical; at very high token rates the animation is slightly frame-batched rather than strictly one-token-at-a-time.
+- **`synchronous=NORMAL` (D3):** changes a *failure-mode* — on an OS crash or power loss (not a normal app quit) the last DB commit can be lost. Standard WAL trade-off; invisible in normal use.
+- **Settings cache (G3):** an *external* edit to `settings.json` while the app is running isn't seen until restart (in-app changes write through the cache).
+- **gzip (E2):** the HTTP wire format changed; the client decompresses transparently.
 
-Higher-risk or behavior-sensitive items left for a focused, test-backed pass:
-H1/H2/H4 (React message `memo` refactor), J1 (route code-splitting — transient
-Suspense flash), J2 (syntax-highlighter slimming — would drop highlighting for
-unregistered languages), C3 (tool-catalog Arc sharing — wide ripple), B1
-(RequestLog), F1/F3/F5 (autovis CDN, knowledge BM25 / tree-sitter caches), K1/K2
-(TUI render redesign), A1/A2/A4 (agent-loop clone/batch-write), I2 (delta SSE
-protocol).
+## Deferred items
+
+Higher-risk or behavior-sensitive items were left for a focused, test-backed pass. They were **not** implemented here; see [the review](review-findings.md) for each one's full rationale.
+
+- **H1 / H2 / H4** — React message `memo` refactor.
+- **J1** — route code-splitting; deferred because of the transient Suspense flash it introduces.
+- **J2** — syntax-highlighter slimming; would drop highlighting for unregistered languages.
+- **C3** — tool-catalog `Arc` sharing; wide ripple through the call graph.
+- **B1** — `RequestLog` off the hot path.
+- **F1 / F3 / F5** — Auto Visualiser CDN assets, knowledge BM25 cache, tree-sitter query cache.
+- **K1 / K2** — TUI render redesign.
+- **A1 / A2 / A4** — agent-loop clone and batch-write changes.
+- **I2** — delta SSE protocol.
+
+## Related documentation
+
+- [Performance and responsiveness review findings](review-findings.md) — the review this log implements, and the index for every `A1`–`L` finding ID cited above.
+- [Borrowing from jcode: implementation and benchmark report](jcode-borrows-implementation-report.md) — the second wave of performance work, run the following day against a different source of proposals.
+- [Performance and efficiency comparison: jcode vs BioRouter](jcode-comparison-analysis.md) — the analysis that produced that second wave, including several items deferred here.
+- [Auto Visualiser extension](../../extensions/built-in/auto-visualiser.md) — current behaviour of the figure assets referenced by the deferred `F1` item.

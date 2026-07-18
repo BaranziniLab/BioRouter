@@ -1,10 +1,50 @@
-# BR-68: Cross-platform command safety (Windows + Linux parity for the denylist and policy engine)
+# Cross-platform command safety (BR-68)
 
-Design doc. Status: proposed. Lens: Security / Robustness. Depends on BR-20
-(catastrophic floor), BR-21 (policy engine), and coordinates with BR-64 (OS
-sandbox) and BR-37 (process-group kill).
+> **What this is.** The design that made the catastrophic denylist and the command policy
+> engine work off POSIX: platform × dialect applicability on every rule, PowerShell alias
+> and abbreviation normalization, dialect-aware tokenizers, and per-platform baseline rule
+> sets for Windows, Linux and macOS.
+> **Status:** Historical record — shipped in full as commit `651acff0` in Wave 3.
+> `crates/biorouter/src/security/policy/{target,pwsh,cmd_shell}.rs`, all four
+> `baseline.{,linux.,macos.,windows.}policy.yaml` files and `tests_platform.rs` exist
+> today. This document is now the rationale record for shipped code, not a live plan.
+> **Audience:** developers working on the security policy engine and the catastrophic
+> command floor.
 
----
+BioRouter hands the model a PowerShell prompt on Windows and then screened the result
+with a denylist and a policy engine that only understand `sh`. This design makes platform
+and shell dialect first-class dimensions of the existing rule model — no parallel rule
+system — so Windows and Linux rules can be authored against a dialect-aware parser and,
+critically, tested on a macOS or Linux machine.
+
+**Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list,
+defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md);
+this design is BR-68. *Lens* records which review raised a proposal — this one is tagged
+**Security / Robustness**. *GAP-N* findings cited below are defined in the
+[platform parity audit](platform-parity-audit.md).
+
+**Depends on:** BR-20 (catastrophic floor) and BR-21 (policy engine, designed in
+[the command policy engine](../designs/command-policy-engine.md)). **Coordinates with:**
+BR-64 (macOS Seatbelt sandbox, designed in
+[macOS Seatbelt sandbox](../designs/macos-seatbelt-sandbox.md)) and BR-37
+(process-group kill).
+
+**Overlaps to be aware of.** The Problem section below restates GAP-1 and GAP-3 from the
+[platform parity audit](platform-parity-audit.md) at length; the audit is the original
+finding. [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) restates
+this document's premise in its own Problem section — the two are companion designs, one
+covering rules and one covering containment, and neither supersedes the other.
+
+## Contents
+
+- [Problem](#problem-grounded-in-code-with-fileline)
+- [Design](#design) — applicability, rule model, path discriminator, PowerShell normalization, the three rule sets
+- [Alternatives considered](#alternatives-considered)
+- [Migration and compatibility](#migration-and-compatibility)
+- [Test plan](#test-plan)
+- [Effort and phasing](#effort-and-phasing-effort-l-overall)
+- [Open questions](#open-questions)
+- [Related documentation](#related-documentation)
 
 ## Problem (grounded in code, with file:line)
 
@@ -13,7 +53,7 @@ command-safety control it has assumes a POSIX shell. On Windows the safety net i
 effectively absent, and the parts that *look* portable are worse than absent —
 they are load-bearing code that silently no-ops on one third of the install base.
 
-### 1. The non-bypassable floor (BR-20) has zero Windows coverage
+### The non-bypassable floor (BR-20) has zero Windows coverage
 
 `CATASTROPHIC_RULES` (`crates/biorouter/src/security/patterns.rs:463-514`) is
 eight rules — `rm_rf_root`, `mkfs_device`, `dd_raw_disk`, `fork_bomb`,
@@ -35,7 +75,7 @@ Grepping the whole workspace for the Windows destructive vocabulary
 returns **zero hits outside of prose**. A Windows user in `Auto` mode has *no*
 floor: `Remove-Item -Recurse -Force C:\` is an `InspectionAction::Allow`.
 
-### 2. The BR-21 baseline rules are POSIX-shaped too
+### The BR-21 baseline rules are POSIX-shaped too
 
 `baseline.policy.yaml:18-232` has ten rules. Their `path_glob`s are POSIX
 absolute paths (`/etc/**`, `/usr/**`, `/dev/**`, `/`) and their `binary` lists are
@@ -60,7 +100,7 @@ picks `pwsh` → `powershell` → `cmd.exe` on Windows
 (`shell.rs:34-67`) and `$SHELL -c` elsewhere. So BioRouter knowingly hands the
 model a PowerShell prompt and then screens the result with a bash denylist.
 
-### 3. The argv parser is not dialect-aware, and its path logic is target-OS-dependent
+### The argv parser is not dialect-aware, and its path logic is target-OS-dependent
 
 `ParsedCommand::parse` (`policy/command.rs:58-76`) is the choke point both BR-21
 and (via `command_text_from`, `security/mod.rs:271`) the floor's text extraction
@@ -92,7 +132,7 @@ feed off. Three concrete cross-platform defects:
   whose inner command is never parsed — the mirror image of the `sh -c` unwrap the
   POSIX path already does (`command.rs:235-239`).
 
-### 4. Containment does not exist off macOS either
+### Containment does not exist off macOS either
 
 BR-64's sandbox is macOS-only by construction: `seatbelt::available()` is
 `cfg!(target_os = "macos") && Path::new(SANDBOX_EXEC).exists()`
@@ -102,7 +142,7 @@ on every other host. It is also opt-in (`BIOROUTER_SHELL_SANDBOX`, default off).
 So on Windows and Linux there is neither a denylist nor a sandbox. That is the
 whole security posture for two of three shipped platforms: nothing.
 
-### 5. BR-37's process kill is dual-armed but its Windows half is not equivalent (verified)
+### BR-37's process kill is dual-armed but its Windows half is not equivalent (verified)
 
 Confirmed as claimed: `kill_process_group` (`shell.rs:210-258`) and
 `background.rs:343-359` both `#[cfg(unix)] libc::kill(-pid, SIGTERM/SIGKILL)` /
@@ -525,7 +565,7 @@ Change:
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **No behavior change on macOS/Linux for existing rules.** Both new `Rule` fields
   default to "all", so every rule in the current `baseline.policy.yaml` keeps its
@@ -571,7 +611,8 @@ and each is a thing the current code does *not* have:
 2. `target.rs` is **pure string logic with no `std::path`**. `normalize_for(
    Platform::Windows, "C:\\Windows\\System32", cwd, env)` yields the same
    `c:/windows/system32` on every host. (Today `normalize_path` would produce
-   `/home/user/project/C:\Windows\System32` — see Problem §3.)
+   `/home/user/project/C:\Windows\System32` — see
+   [the argv parser problem](#the-argv-parser-is-not-dialect-aware-and-its-path-logic-is-target-os-dependent).)
 3. `EnvFacts` (home dir, systemroot, cwd, drive) is an injected struct, not
    `std::env`. A Windows test case supplies `EnvFacts { home:
    "C:\\Users\\me", cwd: "C:\\Users\\me\\proj", systemroot: "C:\\Windows", … }`.
@@ -685,7 +726,7 @@ runs. Record it in the release checklist next to the notarization steps.
 
 ---
 
-## Effort & phasing (Effort: L overall)
+## Effort and phasing (Effort: L overall)
 
 **Slice 1 — the first mergeable slice (M). "Windows users get a floor."**
 1. `target.rs` (`Platform`, `Dialect`, `TargetPath`, `normalize_for`, `classify`) —
@@ -722,6 +763,11 @@ containment, and the Open Questions push for this to be scheduled.
 
 ## Open questions
 
+> **Note.** These were recorded at design time and are preserved as written. The design
+> shipped in full without them being resolved in this document, so each is still an open
+> judgement call rather than a settled decision — check the code and the release notes
+> before assuming any of them was answered.
+
 1. **Is a denylist the right investment for Windows at all, or should the effort go
    straight to a BR-64 Windows/Linux sandbox?** My recommendation is both, in this
    order — the denylist is the only thing that protects the *default* install (BR-64
@@ -752,3 +798,11 @@ containment, and the Open Questions push for this to be scheduled.
    a counter (`counter.biorouter.catastrophic_command_blocked` already exists,
    `security/mod.rs:107`) with the rule id, so we can see in aggregate whether any
    rule is firing on legitimate work?
+
+## Related documentation
+
+- [Platform parity audit](platform-parity-audit.md) — the original GAP-1 and GAP-3 findings this design remediates.
+- [Linux and Windows sandboxing (BR-69)](linux-and-windows-sandboxing.md) — the companion containment design; this one covers rules, that one covers the sandbox.
+- [Cross-platform cluster verification report](parity-verification-report.md) — the gate record for commit `651acff0`, including the clippy regression the tokenizers introduced.
+- [Command policy engine (BR-21)](../designs/command-policy-engine.md) — the rule model this design extends with `platforms` and `shells`.
+- [Permission modes](../../security/permission-modes.md) — how `Auto` mode and the non-bypassable floor relate from a user's point of view.

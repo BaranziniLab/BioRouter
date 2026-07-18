@@ -1,22 +1,69 @@
-# Hooks, Permissions, Guardrails & Loop Detection
+# Hooks, permissions, guardrails and loop detection
 
-How BioRouter's safety surface — lifecycle hooks, the permission/approval flow, LLM
-judges, sandboxing, dangerous-command detection, and repetition/stuck detection —
-compares against nine open-source coding agents.
+> **What this is.** Chapter 4 of the four-part competitive comparison in the
+> 2026-07 agentic-loop review: how BioRouter's safety surface — lifecycle hooks,
+> the permission/approval flow, LLM judges, sandboxing, dangerous-command
+> detection, and repetition/stuck detection — compared against nine other
+> open-source coding agents.
+> **Status:** Superseded — the "computed-but-discarded / dead-code" thesis this
+> chapter is built on has been resolved, so most "behind" rows are now wrong. BR-18
+> revived read-only auto-approve and per-action risk grading (SmartApprove no longer
+> equals Approve), BR-19 added PreToolUse input rewrite and PostToolUse blocking,
+> BR-20 added the always-on catastrophic-command denylist, and BR-29/BR-30 replaced
+> the single-deny exact-duplicate guard with staged, semantic loop detection. For
+> what shipped, read [the agent-loop campaign outcome report](../../agent-loop-campaign/outcome-report.md),
+> [the wave-2 hooks and permissions report](../../agent-loop-campaign/wave-reports/wave-2-hooks-and-permissions.md)
+> and [the wave-2 loop-detection report](../../agent-loop-campaign/wave-reports/wave-2-loop-detection.md).
+> **Audience:** developers and maintainers working on permissions, hooks and
+> agent safety.
 
-All BioRouter claims are grounded in the internal reviews `internal/hooks.md`,
-`internal/guardrails-permissions.md`, and `internal/loop-detection.md`; the notable
-finding across all three is a recurring **"computed-but-discarded / dead-code" gap** —
-BioRouter has ported the *shape* of a state-of-the-art safety layer from Claude Code and
-Goose but several of the load-bearing pieces are inert at the reviewed commit.
+This chapter was written on 2026-07-12 as part of the agentic-loop review. Its
+subject is everything that stands between the model deciding to act and the act
+happening: hook events, permission modes, sandboxes, command denylists, and the
+detectors that notice an agent has stopped making progress. Read it as a snapshot
+of the state of the art at that date and of BioRouter's position in it — not as a
+description of current BioRouter behaviour.
 
-## Comparison table
+The recurring finding across the three grounding reviews was a
+**"computed-but-discarded / dead-code" gap**: BioRouter had ported the *shape* of
+a state-of-the-art safety layer from Claude Code and Goose, but several
+load-bearing pieces were inert at the reviewed commit. That commit was not
+recorded in the original document.
 
-Columns: **BR** = BioRouter, **Goose** = Goose upstream, **Cline**, **OC** = OpenCode,
-**Pi**, **Aider**, **OH** = OpenHands, **Codex** = Codex CLI, **Gem** = Gemini CLI,
-**CC** = Claude Code.
+Four conventions used throughout:
 
-| Aspect | BR | Goose | Cline | OC | Pi | Aider | OH | Codex | Gem | CC |
+- **`BR-NN` identifiers** are proposal numbers from the same review.
+  [The improvement proposals register](../improvement-proposals.md) defines
+  BR-1…BR-67 with Problem / Proposal / Affected code / Impact / Effort / Risk.
+- **Gap citations** take the form *(hooks review, gap #7)* or *(guardrails review,
+  Q2)*. They name the subsystem review that established the finding and its
+  numbered gap or question. The three grounding reviews for this chapter are
+  [the hooks-system review](../subsystem-reviews/hooks-system.md)
+  ("hooks review"),
+  [the guardrails and permissions review](../subsystem-reviews/guardrails-and-permissions.md)
+  ("guardrails review"), and
+  [the loop and stuck-detection review](../subsystem-reviews/loop-and-stuck-detection.md)
+  ("loop-detection review").
+- **The numbered items** in "Where BioRouter was behind" are themselves citation
+  anchors: other documents in this review refer to them as
+  `safety-and-guardrails.md behind #1` … `behind #9`. The numbering is stable —
+  do not renumber it.
+- **External claims** are grounded in that tool's report under
+  [the coding-agent landscape research](../../../research/coding-agent-landscape/).
+
+## Comparison across ten agents
+
+The table has one column per agent, in this order: BioRouter, Goose upstream,
+Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
+wide and scrolls horizontally.
+
+> **Note.** The BioRouter column is superseded — see the status header. The nine
+> competitor columns are a 2026-07 snapshot and have not been re-verified since.
+> Bold in the table marks a cell the review singled out — sometimes a
+> best-in-class implementation, sometimes a BioRouter gap. Which is which is
+> settled by the prose sections below, not by the formatting.
+
+| Aspect | BioRouter | Goose upstream | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Lifecycle hook events | 13 (all wired) | 11 | ~11 | broad plugin bus | huge typed bus | none | 6 | 7 | 11 | ~30 |
 | Hook can block | yes (4 events) | yes (PreTool/Stop) | yes | yes (throw) | yes | no | yes | yes | yes (exit 2) | yes |
@@ -43,10 +90,10 @@ Columns: **BR** = BioRouter, **Goose** = Goose upstream, **Cline**, **OC** = Ope
 | Max-turns / iteration cap | 100 (soft) | 1000 | maxIterations | via overflow | **none** | 3 reflections | 500 (hard) | token budget | maxSessionTurns | subagent caps |
 | Budget cap (tokens/$/wall) | **no** | no | resource-limiter | no | no | no | **yes ($/run)** | **yes (token budget)** | no | no |
 
-## Where BioRouter is ahead
+## Where BioRouter was ahead
 
 1. **Hook event coverage is a genuine superset of Claude Code's documented set, and every
-   enum arm is actually wired.** `internal/hooks.md` counts **13 event variants** — all of
+   enum arm is actually wired.** The hooks review counts **13 event variants** — all of
    Claude Code's public events plus `PostToolUseFailure`, `PermissionRequest`,
    `SubagentStart`, and `PostCompact` — with no dead enum arms (each has a real fire site).
    Only Claude Code (~30 events) and Pi (a very large typed bus) expose more. Goose (11),
@@ -56,9 +103,9 @@ Columns: **BR** = BioRouter, **Goose** = Goose upstream, **Cline**, **OC** = Ope
 
 2. **Supply-chain malware gating at extension install is nearly unique.** BioRouter's
    `extension_malware_check.rs` does an OSV.dev lookup when launching a stdio MCP extension
-   and denies any package flagged with a `MAL-*` advisory (`internal/guardrails-permissions.md`
-   Q5). None of the nine comparators ships an equivalent published-package malware check;
-   this is a defensible edge for an agent that one-click-installs marketplace extensions.
+   and denies any package flagged with a `MAL-*` advisory (guardrails review, Q5). None of
+   the nine comparators ships an equivalent published-package malware check; this is a
+   defensible edge for an agent that one-click-installs marketplace extensions.
 
 3. **On-device PII/PHI detection with checksum validation.** `guardrails/pii.rs` is a fully
    local regex+checksum detector (Luhn for cards, structural SSN validity, keyword-anchored
@@ -69,21 +116,25 @@ Columns: **BR** = BioRouter, **Goose** = Goose upstream, **Cline**, **OC** = Ope
 4. **Most-restrictive-wins, escalation-only inspector merge.** The inspector chain
    (`security → permission → repetition → hooks`) with a monotonic "raise the bar, never
    lower it" override and a "no verdict → needs_approval" default is fail-closed by
-   construction (`internal/guardrails-permissions.md` Q1). This is cleaner than Aider's or
-   Pi's ad-hoc gating and comparable to OpenHands' `ConfirmationPolicy`.
+   construction (guardrails review, Q1). This is cleaner than Aider's or Pi's ad-hoc gating
+   and comparable to OpenHands' `ConfirmationPolicy`.
 
 5. **Stop-hook block cap.** `STOP_HOOK_BLOCK_CAP = 5` bounds runaway "keep-working" loops
-   while `stop_hook_active` lets well-behaved judges exit early (`internal/hooks.md`). Goose
-   caps at 8; Claude Code publishes no numeric cap. This is a small correctness win over the
+   while `stop_hook_active` lets well-behaved judges exit early (hooks review). Goose caps
+   at 8; Claude Code publishes no numeric cap. This is a small correctness win over the
    reference design.
 
-## Where BioRouter is behind
+## Where BioRouter was behind
+
+> **Warning.** Most findings below were fixed after this review — see the status
+> header. They are preserved as the record of what the review found. The item
+> numbers are citation anchors used elsewhere in this review; do not renumber them.
 
 Ranked by how load-bearing the gap is for autonomous safety.
 
 1. **No hook can rewrite tool input — and the best-in-class mechanism is small and
    concrete.** BioRouter hooks can only allow/deny/ask/inject; there is no rewrite path
-   anywhere (`internal/hooks.md` Q2, gap #7). **Claude Code, Codex CLI, and Gemini CLI all
+   anywhere (hooks review, Q2 and gap #7). **Claude Code, Codex CLI, and Gemini CLI all
    do this**, and Codex is the cleanest to reimplement: a `PreToolUse` handler returns a
    `PreToolUseOutcome` with three optional fields — `should_block` + `block_reason`,
    `additional_contexts` (model-visible), and **`updated_input`** (the rewritten tool args,
@@ -93,7 +144,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
    payload, normalize a shell command — without touching the Rust loop.
 
 2. **The LLM permission judge and read-only auto-approve are dead code, so SmartApprove ≡
-   Approve.** `internal/guardrails-permissions.md` Q2/#1/#2 is blunt: `check_tool_permissions`
+   Approve.** The guardrails review (Q2, gaps #1–#2) is blunt: `check_tool_permissions`
    has zero callers, `detect_read_only_tools` is only reachable through it, and the live
    `PermissionInspector`'s `readonly_tools`/`regular_tools` sets are constructed empty with
    no setter. So the "smart" tier never consults the model and never auto-approves reads —
@@ -105,9 +156,9 @@ Ranked by how load-bearing the gap is for autonomous safety.
    `auto`-mode classifier are the other two working references.
 
 3. **No OS-level sandbox at all.** BioRouter's guardrail is permission gating, not process
-   isolation (`internal/guardrails-permissions.md` — no comparator note needed; the reviews
-   describe only inspectors and `.biorouterignore`). **Codex CLI is best-in-class**: it
-   cleanly separates *what is technically possible* (OS sandbox) from *when to ask* (approval
+   isolation (per the guardrails review — no comparator note needed; the reviews describe
+   only inspectors and `.biorouterignore`). **Codex CLI is best-in-class**: it cleanly
+   separates *what is technically possible* (OS sandbox) from *when to ask* (approval
    policy), and enforces the sandbox natively and deny-by-default — macOS Seatbelt via
    `sandbox-exec -p` with writable-roots injected and network-outbound denied; Linux via a
    `codex-linux-sandbox` helper combining **Landlock** (filesystem) + **seccomp** (blocks
@@ -120,8 +171,8 @@ Ranked by how load-bearing the gap is for autonomous safety.
    ever asks.** `security/patterns.rs` is a 40+ entry regex table; even when enabled it
    never hard-blocks (`should_ask_user: true`), and it is trivially evadable (`r''m -rf`,
    `$(printf …)`, env-var indirection, a different tool wrapper), with no argv parsing or
-   path canonicalization (`internal/guardrails-permissions.md` Q3/#3/#4). **Codex's
-   `execpolicy` is best-in-class**: a Starlark policy engine of
+   path canonicalization (guardrails review, Q3 and gaps #3–#4). **Codex's `execpolicy` is
+   best-in-class**: a Starlark policy engine of
    `prefix_rule(pattern=…, decision=allow|prompt|forbidden, justification=…)` with
    `match`/`not_match` self-tests and `host_executable` path pinning — auditable and
    testable, not a fragile signature list. **Gemini CLI's declarative TOML policy engine** is
@@ -137,7 +188,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
    *consecutive* calls; a one-char arg change, an `A/B/A/B` oscillation, or a repeated failing
    *result* all bypass it, and on trigger the model is told the generic `DECLINED_RESPONSE`
    ("the user declined") rather than the true "exceeded max repetitions" — actively misleading
-   (`internal/loop-detection.md` #1/#2). Three references beat it:
+   (loop-detection review, gaps #1–#2). Three references beat it:
    - **Gemini CLI's `LoopDetectionService` (best-in-class)** is a three-layer real-time
      detector fed every streaming event: (1) SHA-256 of `"${name}:${args}"`, threshold **5**
      consecutive identical calls; (2) content-"chanting" via 50-char sliding-window chunk
@@ -163,7 +214,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
 
 7. **No global token / wall-clock / dollar budget per reply.** Only the 100-turn iteration
    count bounds a turn, and 429 backoff (~2 min/call) compounds inside it, so a throttled
-   session can run far longer than a user expects (`internal/loop-detection.md` #6). **Codex's
+   session can run far longer than a user expects (loop-detection review, gap #6). **Codex's
    goals token-budget** (`tokens_used`/`token_budget`/`remaining_tokens` re-injected each
    continuation, with `budget_limit.md` telling the model to wrap up) and **OpenHands'
    `max_budget_per_run` ($ cap → `MaxBudgetReached`)** are the two references.
@@ -171,9 +222,9 @@ Ranked by how load-bearing the gap is for autonomous safety.
 8. **Guardrails are scoped to BRSDK apps, not the main loop; PostToolUse cannot block.** PII
    masking, `Block`, and `run_state` HITL only run on the Agent Drafter app socket; the
    CLI/GUI loop has no PII stage and never scans tool *output* — the classic injection vector
-   (`internal/guardrails-permissions.md` #6). And PostToolUse is observe-only although the
-   decision is already computed (`internal/hooks.md` #2), so "reject a write that fails lint"
-   is impossible. Claude Code, Cline, OpenHands, Codex, and Gemini all let PostToolUse block.
+   (guardrails review, gap #6). And PostToolUse is observe-only although the decision is
+   already computed (hooks review, gap #2), so "reject a write that fails lint" is
+   impossible. Claude Code, Cline, OpenHands, Codex, and Gemini all let PostToolUse block.
 
 9. **No native checkpoint/undo.** Every modern comparator (Cline shadow-git, OpenCode private
    git-object DB, Gemini/Claude Code shadow-repo + rewind, Aider commit-per-edit) has an undo
@@ -215,30 +266,40 @@ Ranked by how load-bearing the gap is for autonomous safety.
 - **Supply-chain / PII:** *Best* — BioRouter (only agent with OSV malware gating and a local
   PII detector). *Worst* — essentially everyone else (no equivalent).
 
-## Implications
+## Implications and where they landed
+
+The recommendations below were the chapter's own. All of them were consolidated
+into [the improvement proposals register](../improvement-proposals.md), which is
+the authoritative list — read this section as the argument behind the proposals,
+not as an open work queue. The register's BR-NN number is noted where the mapping
+is one-to-one.
 
 BioRouter's safety layer is architecturally ahead of most of the field on *surface area*
 (13 wired hook events, a fail-closed escalation-only inspector chain, unique OSV + PII
 guards) but **is undermined by inert implementations of exactly the pieces that do the
 work**. The internal reviews name three that should be treated as bugs, not roadmap:
 
-1. **Revive the read-only auto-approve path and either wire or delete the LLM judge.**
-   Populate `readonly_tools`/`regular_tools` from the extension manager's `read_only_hint`
-   annotations (the comment says this was intended), so SmartApprove stops behaving
-   identically to Approve. Adopt OpenHands' per-action `security_risk` + `ConfirmRisky`
-   shape rather than resurrecting the dead `check_tool_permissions`.
+1. **Revive the read-only auto-approve path and either wire or delete the LLM judge**
+   (became **BR-18**). Populate `readonly_tools`/`regular_tools` from the extension
+   manager's `read_only_hint` annotations (the comment says this was intended), so
+   SmartApprove stops behaving identically to Approve. Adopt OpenHands' per-action
+   `security_risk` + `ConfirmRisky` shape rather than resurrecting the dead
+   `check_tool_permissions`.
 
-2. **Add a rewrite path to PreToolUse hooks and let PostToolUse block.** Copy Codex's
-   `PreToolUseOutcome` (`should_block` / `additional_contexts` / `updated_input`) and stop
-   silently dropping PreToolUse `additionalContext`/`systemMessage` (`internal/hooks.md` #1).
-   Honoring the already-computed PostToolUse decision unlocks "reject a write that fails lint."
+2. **Add a rewrite path to PreToolUse hooks and let PostToolUse block** (became
+   **BR-19**). Copy Codex's `PreToolUseOutcome` (`should_block` / `additional_contexts` /
+   `updated_input`) and stop silently dropping PreToolUse
+   `additionalContext`/`systemMessage` (hooks review, gap #1). Honoring the
+   already-computed PostToolUse decision unlocks "reject a write that fails lint."
 
 3. **Replace exact-duplicate repetition with a staged, semantic loop detector, and surface
-   the reason.** Minimum viable: Cline/OpenCode's soft-warn-at-3 / hard-stop-at-5 with the
-   REP-001 reason forwarded to the model (fixing the misleading `DECLINED_RESPONSE`). Higher
-   value: add OpenHands' alternating-pattern and action-*error* heuristics and Gemini's
-   periodic LLM loop check, and bring the good `/goal` stall logic (`reason_similarity`,
-   `GOAL_STALL_LIMIT`) to ordinary chat where most stuck loops actually occur.
+   the reason** (became **BR-29** for the staged stop and honest reason, and **BR-30** for
+   semantic/near-duplicate/oscillation detection). Minimum viable: Cline/OpenCode's
+   soft-warn-at-3 / hard-stop-at-5 with the REP-001 reason forwarded to the model (fixing
+   the misleading `DECLINED_RESPONSE`). Higher value: add OpenHands' alternating-pattern and
+   action-*error* heuristics and Gemini's periodic LLM loop check, and bring the good `/goal`
+   stall logic (`reason_similarity`, `GOAL_STALL_LIMIT`) to ordinary chat where most stuck
+   loops actually occur.
 
 Two further deployment-shaped upgrades follow from the lab context: a **Gemini-style
 tiered/admin policy engine** (declarative, ownership-verified, outside the binary) would give
@@ -248,3 +309,11 @@ two-axis sandbox×approval model) would make autonomy bounded by the kernel rath
 prompt compliance and the currently-off regex scanner. Finally, add a **global token/wall-clock
 budget per reply** so a throttled or pathological session terminates on cost, not just on the
 loose 100-iteration count.
+
+## Related documentation
+
+- [The hooks-system review](../subsystem-reviews/hooks-system.md) — the internal review behind the 13-event count and the PreToolUse/PostToolUse gaps cited above.
+- [Guardrails and permissions](../subsystem-reviews/guardrails-and-permissions.md) — the internal review behind the dead-code permission-judge thesis, the regex scanner and the OSV/PII findings.
+- [Loop and stuck detection](../subsystem-reviews/loop-and-stuck-detection.md) — the internal review behind the repetition, mistake-streak and budget-cap findings.
+- [The command policy engine design](../../../agent-loop/designs/command-policy-engine.md) and [the managed policy tier design](../../../agent-loop/designs/managed-policy-tier.md) — the designs that answered this chapter's two deployment-shaped recommendations.
+- [Tool loop, long-running tasks, checkpoints and verification](execution-and-verification.md) — the sibling chapter that covers checkpoints and undo in depth, which item #9 above only points at.

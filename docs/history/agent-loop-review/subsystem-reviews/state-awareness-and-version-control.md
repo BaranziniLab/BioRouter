@@ -1,10 +1,16 @@
-# State, Awareness, Todos, Goals & Version Control
+# State, awareness, todos, goals and version control — architecture review
 
-Review of BioRouter's agentic feedback loop, subsystem: **how the agent knows
-where it is, what it is doing, what it has done, and whether it is going wrong.**
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents how the agent knows where it is and what it is doing — working-directory propagation, the todo blob, `/goal` state, cross-session memory, mistake signals, and the SQLite session schema — and records ten gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, and the review whose findings the current code contradicts most. Gap #1 (no repo map) was fixed by BR-1 (`agents/workspace_summary.rs`), gap #2 (which this review calls "the single biggest gap" — no version control of the agent's own edits) by BR-43 (`crates/biorouter/src/checkpoint/`), gap #4 (the full-overwrite todo blob) by the structured-todo proposal, gaps #5 and #6 (three disjoint memory stores) by BR-17, and gap #9 (large payloads stored inline in `content_json`) by BR-7. Every "absence finding" below should be read as "absent at review time".
+> **Audience:** developers working on session state, memory, checkpoints, or workspace awareness.
 
-All paths relative to repo root (`/Users/wanjun/Desktop/biorouter`). Reviewed at
-branch `ui-hardening-a11y-tests`.
+Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews and the [review README](../README.md) cite as `state-awareness.md gap #N` (the file's former name).
+
+## Scope and files reviewed
+
+The subsystem question is **how the agent knows where it is, what it is doing, what it has done, and whether it is going wrong.** All paths below are repository-relative.
+
+> **Warning.** The review recorded its reviewed state as branch `ui-hardening-a11y-tests`, which is unrelated to the rest of the corpus and disagrees with the only commit-pinning sibling ([guardrails and permissions](guardrails-and-permissions.md), at `24cdc3a2` on `main`). The review corpus therefore contradicts itself about what was reviewed. Treat line numbers as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -38,7 +44,7 @@ stack of a modern coding agent:
 
 Text data-flow for one turn:
 
-```
+```text
 user msg ──► add_message() ──► SQLite messages table
                                      │
 agent loop iteration:                ▼
@@ -59,9 +65,9 @@ There is **no repo map, no file tree in the prompt, no post-edit diagnostics,
 and no git checkpointing of the agent's own edits.** Those absences are detailed
 below.
 
-## Answers
+## Review questions answered
 
-### 1. How does the agent understand its surroundings?
+### How the agent understands its surroundings
 
 **Working directory propagation.** Each `Session` carries `working_dir: PathBuf`
 (`session_manager.rs:70`), stored as a `TEXT NOT NULL` column
@@ -94,7 +100,7 @@ only by actively calling shell/`text_editor view`/glob tools.
 > the prompt. Grepping `repo`, `file_list`, `list_files`, `project structure`
 > across `agent.rs`/`prompt_manager.rs` returns nothing relevant.
 
-### 2. How does the agent track what it is working on (todos, goals)?
+### How the agent tracks what it is working on — todos and goals
 
 **Todo extension** (`todo_extension.rs`). A platform MCP server exposing one tool,
 `todo_write`, which **overwrites the entire todo content** (`todo_extension.rs:132-154`;
@@ -130,7 +136,7 @@ Persistence contrast worth noting: **goal state is in-memory only** —
 keyed by session id, held on the `Agent`. Unlike todos, a goal does **not**
 survive a daemon restart. Todos persist to SQLite; goals do not.
 
-### 3. Does the agent do ANY version control of its own edits?
+### Version control of the agent's own edits
 
 **No git checkpointing, no shadow git, no session-level undo of edits.** This is
 a clear absence.
@@ -169,7 +175,7 @@ a clear absence.
 > `undo_edit` file-by-file, in-memory, only for `text_editor` edits, only within
 > the life of one developer-server process.
 
-### 4. How does cross-session memory work?
+### How cross-session memory works
 
 Three unrelated mechanisms:
 
@@ -201,7 +207,7 @@ KB resolution is explicit-id → new-by-name → active (`knowledge_tool.rs:94-1
 > indexes raw chat unless the user explicitly ingests. There is no unified
 > "memory" store.
 
-### 5. How does the agent know when it is making a mistake?
+### How the agent knows when it is making a mistake
 
 Feedback signals are thin and almost entirely **tool-result-driven**:
 
@@ -235,7 +241,7 @@ Feedback signals are thin and almost entirely **tool-result-driven**:
   referenced `goal.rs:20-22`). There is no general "you called the same failing
   tool 5 times" guard in the main loop.
 
-### 6. How does session state persist (SQLite schema, per-message)?
+### How session state persists — the SQLite schema
 
 One SQLite DB per data dir, schema built in `create_schema`
 (`session_manager.rs:1054-1165`), version-tracked in a `schema_version` table
@@ -301,7 +307,10 @@ wholesale (`replace_conversation_inner` deletes + re-inserts,
   forward-compatible way to bolt per-extension session state on without schema
   churn.
 
-## Gaps & weaknesses (feeds improvement phase)
+## Gaps and weaknesses
+
+These ten items fed the improvement phase. They are what other documents in this
+review cite as `state-awareness.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **No repo map / workspace awareness.** The model gets one line ("Working
    directory: …") and nothing else about project structure
@@ -360,3 +369,11 @@ wholesale (`replace_conversation_inner` deletes + re-inserts,
 10. **`msg_<session>_<idx>` synthetic ids** (`session_manager.rs:1836`) are
     positional, so any history rewrite renumbers messages — fragile for anything
     that wants stable per-message references (e.g. UI anchors, edit provenance).
+
+## Related documentation
+
+- [Context injection and system prompt construction](context-injection-and-system-prompt.md) — the sibling review covering MOIM assembly and hint files; the two overlap on what the model is told about its surroundings.
+- [Compaction and context management](compaction-and-context-management.md) — why todos stored in `extension_data` survive a compaction that discards the message history.
+- [Shadow git checkpoints design](../../../agent-loop/designs/shadow-git-checkpoints.md) — the BR-43 design that answers gap #2, this review's "single biggest gap".
+- [Cross-session memory design](../../../agent-loop/designs/cross-session-memory.md) — the BR-17 design that answers the disjoint-memory gaps #5 and #6.
+- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how BioRouter's memory stack measures against nine other coding agents.

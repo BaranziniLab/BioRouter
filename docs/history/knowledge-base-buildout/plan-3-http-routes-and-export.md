@@ -1,6 +1,35 @@
-# Knowledge HTTP Routes + Export/Import Implementation Plan
+# Plan 3 — knowledge HTTP routes and `.brkb` export/import
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 3 of the six-plan Knowledge buildout: exposing the Knowledge backend over HTTP from `biorouter-server` with SSE-streamed macros, adding the `.brkb` export/import format, and regenerating the TypeScript client.
+> **Status:** Historical record — executed and shipped. `crates/biorouter-server/src/routes/knowledge.rs` exists with the `/knowledge/*` routes, and `CLAUDE.md` documents the `ProviderCompleter` adapter and `.brkb` export/import as designed here. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge HTTP surface, and agents tracing why a route or the export format is shaped the way it is.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, executed in order against the design in
+> [`founding-design.md`](founding-design.md).
+
+Plans 1 and 2 built the Knowledge backend — storage, git, conversion, credibility, graph derivation, and the three macros over a bounded sub-agent loop — reachable only from Rust and from MCP tools. This plan puts it behind HTTP so the desktop UI in Plans 4 through 6 can call every operation without further backend work.
+
+> **Note — worktree paths, versions and test counts are point-in-time.** Commands
+> below `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated git
+> worktree the Knowledge branch was developed in; read it as your own checkout
+> root. The baseline gates ("expect 105 passed", "14 passed") record the suite as
+> it stood when this plan was written; the Knowledge library suite is roughly 122
+> tests today, so a higher number is expected, not a failure. The `zip 0.6` pin in
+> the tech stack has since diverged across crates — `biorouter-server` is now on
+> `zip 8.6.0` while `biorouter-mcp` remains on `0.6`. Source line anchors such as
+> `routes/mod.rs:24-40`, `config_management.rs:150-169`, `reply.rs:86-118` and
+> `state.rs:17-39` have all moved — use the symbol names, not the line numbers.
+
+> **Note — the shipped route list differs from "17 routes".** The decomposition
+> map below describes `knowledge.rs` as hosting 17 routes. `CLAUDE.md` enumerates
+> the shipped set as `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`,
+> `/preview`, `/restore`, `/page`, `/active`, `/export` and `/import`. No
+> reconciliation was recorded between the two. Treat
+> `crates/biorouter-server/src/routes/knowledge.rs` as authoritative for what
+> actually exists.
+
+## Scope and approach
 
 **Goal:** Expose the Knowledge backend (Plan 1 primitives + Plan 2 macros) over HTTP from `biorouter-server`, add `.brkb` export/import, and refresh the auto-generated TypeScript client. After Plan 3, the desktop UI (Plans 4-6) can call every operation the spec promises — including SSE-streamed macros — without further backend work.
 
@@ -11,13 +40,15 @@
 - SSE for the three macro endpoints reuses the existing `SseResponse` pattern from `reply.rs`. The Plan-2 `SubAgent::run` is extended with an optional `mpsc::Sender<SubAgentEvent>` so events stream live instead of only landing in the final `SubAgentResult.events` vector.
 - `.brkb` is a zip of the KB directory (including `.git/`) implemented with the existing `zip` crate dep. Export streams the bytes to the response; import accepts a multipart upload.
 
-**Tech Stack:** axum, utoipa, zip 0.6, tokio_stream, the existing `biorouter` provider factory.
+**Tech stack:** axum, utoipa, zip 0.6, tokio_stream, the existing `biorouter` provider factory.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md).
+**Source spec:** [`founding-design.md`](founding-design.md).
 
-**This is Plan 3 of ~6.** Plans 4-6 (frontend route, graph view, change log drawer, chat KB chip) consume what Plan 3 ships.
+**Series position:** Plan 3 of 6. Plans 4-6 (frontend route, graph view, change log drawer, chat KB chip) consume what Plan 3 ships.
 
 **TDD note:** Same convention as Plans 1-2 — most tasks combine "write tests" + "write impl" into single steps. Verification commands gate each task.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
@@ -33,17 +64,17 @@ cargo test -p biorouter-mcp --lib knowledge 2>&1 | tail -3  # expect 105 passed
 
 - [ ] **Pre-step B:** skim the integration points from the recon.
 
-  - Route composition at [`crates/biorouter-server/src/routes/mod.rs:24-40`](crates/biorouter-server/src/routes/mod.rs#L24).
-  - Reference handler style at [`config_management.rs:150-169`](crates/biorouter-server/src/routes/config_management.rs#L150).
-  - Custom SSE response at [`reply.rs:86-118`](crates/biorouter-server/src/routes/reply.rs#L86) — events are written as `data: {json}\n\n` to a `mpsc::Sender<String>` that the response stream drains.
-  - `AppState` at [`state.rs:17-39`](crates/biorouter-server/src/state.rs#L17).
-  - OpenAPI doc derive at [`openapi.rs`](crates/biorouter-server/src/openapi.rs).
+  - Route composition in `crates/biorouter-server/src/routes/mod.rs`.
+  - Reference handler style in `crates/biorouter-server/src/routes/config_management.rs`.
+  - Custom SSE response in `crates/biorouter-server/src/routes/reply.rs` — events are written as `data: {json}\n\n` to a `mpsc::Sender<String>` that the response stream drains.
+  - `AppState` in `crates/biorouter-server/src/state.rs`.
+  - OpenAPI doc derive in `crates/biorouter-server/src/openapi.rs`.
 
 ---
 
 ## File structure (decomposition map)
 
-```
+```text
 crates/biorouter/src/knowledge/
 └── provider_completer.rs           — NEW: ProviderCompleter adapter (Arc<Provider> → Completer)
 
@@ -73,7 +104,7 @@ ui/desktop/src/api/                  — REGENERATED via `just generate-openapi`
 
 Check whether `crates/biorouter/src/knowledge.rs` exists or `crates/biorouter/src/knowledge/mod.rs` exists. If the former, create `crates/biorouter/src/knowledge/` directory, move its single line into `mod.rs`, delete the old file. Result:
 
-```
+```text
 crates/biorouter/src/knowledge/
 └── mod.rs   ← contains: pub use biorouter_mcp::knowledge::*; + pub mod provider_completer;
 ```
@@ -1343,10 +1374,17 @@ git commit -m "docs(claude): document Plan 3 HTTP routes + .brkb"
 
 ---
 
-## Risks worth flagging up front
+## Risks to watch during execution
 
 - **`provider_completer.rs` Message conversion** is the highest-risk wiring. Batch B already mapped the rmcp `CallToolRequestParams.name/arguments` ↔ `LlmToolCall` layout; Task 1 needs to inspect the actual biorouter `Message`/`MessageContent` types to fill in the two `todo!()`s. Allocate buffer time.
 - **`axum::extract::Multipart` API** varies across axum minor versions. Inspect the workspace's axum version (`grep '^axum' crates/biorouter-server/Cargo.toml`) and adapt.
 - **SSE stream lifecycle**: the macro task drops the event sender when it finishes; the forwarder task's `event_rx.recv()` then returns `None` and the forwarder exits, which drops `tx`, which closes the SSE stream. Make sure not to hold `tx` clones longer than needed.
 - **TypeScript client regen** can produce a large `ui/desktop/src/api/*.gen.ts` diff. That's expected; CLAUDE.md says never hand-edit those files. Just commit the generated diff.
 - **`utoipa::ToSchema` derives** propagate through every type used in route signatures. If you discover a type that doesn't have it (e.g., a deeply nested option), you may need to add `ToSchema` to types in `biorouter::knowledge::types`. This is a small chore but multiplies across types — budget for it.
+
+## Related documentation
+
+- [Knowledge founding design](founding-design.md) — the designed endpoint list and the `.brkb` layout this plan implements.
+- [Plan 1 — storage, git and graph](plan-1-storage-git-and-graph.md) — the `KnowledgeService` these handlers are a thin shell over.
+- [Plan 2 — macros and sub-agent loop](plan-2-macros-and-subagent-loop.md) — the macros wrapped by the SSE routes, and the `SubAgent::run` signature Task 2 retrofits.
+- [Plan 4 — Knowledge view and ingest panel](plan-4-knowledge-view-and-ingest.md) — the first consumer of the routes and regenerated TypeScript client shipped here.

@@ -1,10 +1,17 @@
+# Subworkflows
+
+> **What this is.** How one workflow delegates sub-tasks to other workflow files — the `sub_workflows` schema, how parameters reach a subworkflow, the isolation rules, and three worked pipelines.
+> **Status:** Current — but the feature itself is experimental and in active development; behaviour and configuration may change in future releases.
+> **Audience:** end users composing multi-step workflows.
+
+> **Warning.** Subworkflows are an experimental feature in active development. Behaviour and configuration may change in future releases. Read this before building anything you depend on.
+
 Subworkflows are workflows that are used by another workflow to perform specific tasks. They enable:
-- **Multi-step workflows** - Break complex tasks into distinct phases with specialized expertise
-- **Reusable components** - Create common tasks that can be used in various workflows
 
-> **Warning:** Subworkflows are an experimental feature in active development. Behavior and configuration may change in future releases.
+- **Multi-step workflows** — break complex tasks into distinct phases with specialized expertise
+- **Reusable components** — create common tasks that can be used in various workflows
 
-## How Subworkflows Work
+## How subworkflows work
 
 The "main workflow" registers its subworkflows in the `sub_workflows` field, which contains the following fields:
 
@@ -12,14 +19,17 @@ The "main workflow" registers its subworkflows in the `sub_workflows` field, whi
 - `path`: File path to the subworkflow file (relative or absolute)
 - `values`: (Optional) Pre-configured parameter values that are always passed to the subworkflow
 
-When the main workflow is run, biorouter generates a tool for each subworkflow that:
+When the main workflow is run, Biorouter generates a tool for each subworkflow that:
+
 - Accepts parameters defined by the subworkflow
 - Executes the subworkflow in a separate session with its own context
 - Returns output to the main workflow
 
-Sub-workflow sessions run in isolation - they don't share conversation history, memory, or state with the main workflow or other subworkflows. Additionally, subworkflows cannot define their own subworkflows (no nesting allowed).
+Subworkflow sessions run in isolation — they don't share conversation history, memory, or state with the main workflow or other subworkflows. Additionally, subworkflows cannot define their own subworkflows (no nesting allowed).
 
-### Parameter Handling
+The complete `sub_workflows` field schema, including `sequential_when_repeated` and `description`, is in the [workflow schema reference](workflow-schema-reference.md#subworkflows).
+
+### Parameter handling
 
 Parameters received by subworkflows can be used in prompts and instructions using `{{ parameter_name }}` syntax. Subworkflows receive parameters in two ways:
 
@@ -28,20 +38,28 @@ Parameters received by subworkflows can be used in prompts and instructions usin
 
 Pre-set values take precedence over context-based parameters. If both the conversation context and `values` field provide the same parameter, the `values` version is used.
 
-> **Tip:** Use the `indent()` filter to maintain valid YAML format when passing multi-line parameter values to subworkflows, for example: `{{ content | indent(2) }}`. See [Template Support](/docs/guides/workflows/reference#template-support) for more details.
+> **Tip.** Use the `indent()` filter to maintain valid YAML format when passing multi-line parameter values to subworkflows, for example: `{{ content | indent(2) }}`. See [Template support](workflow-schema-reference.md#template-support) for more details.
 
 ## Examples
 
-### Sequential Processing
+The three examples below each illustrate one pattern. They are named after their domain in the YAML, so the mapping is:
 
-This Code Review Pipeline example shows a main workflow that uses two subworkflows to perform a comprehensive code review:
+| Pattern | Example workflow |
+|---|---|
+| Sequential processing | `code-review-pipeline.yaml` |
+| Conditional processing | `smart-analyzer.yaml` |
+| Context-based parameter passing | `drug-repurposing.yaml` |
+
+### Sequential processing: the code review pipeline
+
+This Code Review Pipeline example shows a main workflow that uses two subworkflows to perform a comprehensive code review. The main workflow's instructions fix the order: security first, then quality.
 
 **Usage:**
 ```bash
 biorouter run --workflow code-review-pipeline.yaml --params repository_path=/path/to/repo
 ```
 
-**Main Workflow:**
+**Main workflow:**
 
 ```yaml
 # code-review-pipeline.yaml
@@ -78,9 +96,8 @@ prompt: |
   Run security scan first, then quality analysis.
 ```
 
-**Subworkflows:**
+**Subworkflow `security_scan`** — note that `scan_level` is supplied by the main workflow's `values`, so its `default` never applies here:
 
-**security_scan**
 ```yaml
   # subworkflows/security-analysis.yaml
   version: "1.0.0"
@@ -111,9 +128,10 @@ prompt: |
   prompt: |
     Perform a {{ scan_level }} security analysis on the code at {{ repository_path }}.
     Report any security vulnerabilities found with severity levels and recommendations.
-  ```
+```
 
-**quality_check**
+**Subworkflow `quality_check`** — takes only `repository_path`, which the agent carries over from the main workflow's context:
+
 ```yaml
   # subworkflows/quality-analysis.yaml
   version: "1.0.0"
@@ -138,20 +156,20 @@ prompt: |
   prompt: |
     Analyze the code quality at {{ repository_path }}.
     Check for code smells, complexity issues, and suggest improvements.
-  ```
+```
 
-> **Tip:** For faster execution when subworkflows are independent, see [Running Subworkflows In Parallel](/docs/tutorials/subworkflows-in-parallel) to execute multiple subworkflows concurrently.
+> **Tip.** For faster execution when subworkflows are independent, multiple subworkflows can be executed concurrently — set `sequential_when_repeated: false` on the subworkflow entry.
 
-### Conditional Processing
+### Conditional processing: the smart project analyzer
 
-This Smart Project Analyzer example shows conditional logic that chooses between different subworkflows based on analysis:
+This Smart Project Analyzer example shows conditional logic that chooses between different subworkflows based on analysis. Both subworkflows are registered, but the instructions tell the agent to run only one.
 
 **Usage:**
 ```bash
 biorouter run --workflow smart-analyzer.yaml --params repository_path=/path/to/project
 ```
 
-**Main Workflow:**
+**Main workflow:**
 
 ```yaml
 # smart-analyzer.yaml
@@ -194,9 +212,8 @@ prompt: |
   Then run the appropriate subworkflow tool based on your findings.
 ```
 
-**Subworkflows:**
+**Subworkflow `web_security_audit`** — the `{% if %}` blocks in the prompt branch on the `values` the main workflow pinned to `"true"`:
 
-**web_security_audit**
 ```yaml
   # subworkflows/web-security.yaml
   version: "1.0.0"
@@ -235,9 +252,10 @@ prompt: |
     {% if check_cors == "true" %}Check CORS configuration for security issues.{% endif %}
     {% if check_csrf == "true" %}Verify CSRF protection is properly implemented.{% endif %}
     Focus on web-specific vulnerabilities like XSS, authentication flaws, and session management.
-  ```
+```
 
-**api_documentation**
+**Subworkflow `api_documentation`** — the alternative branch, taking its output `format` from the main workflow's `values`:
+
 ```yaml
   # subworkflows/api-docs.yaml
   version: "1.0.0"
@@ -269,18 +287,18 @@ prompt: |
     Generate {{ format }} documentation for the code at {{ repository_path }}.
     Include API endpoints, function signatures, usage examples, and installation instructions.
     Focus on making it easy for developers to understand and use this code.
-  ```
+```
 
-### Context-Based Parameter Passing
+### Context-based parameter passing: the drug repurposing explorer
 
-This Drug Repurposing example shows how subworkflows can receive parameters from conversation context, including results from previous subworkflows:
+This Drug Repurposing example shows how subworkflows can receive parameters from conversation context, including results from previous subworkflows. Neither subworkflow entry declares `values` — every parameter is inferred by the agent from the conversation.
 
 **Usage:**
 ```bash
 biorouter run --workflow drug-repurposing.yaml
 ```
 
-**Main Workflow:**
+**Main workflow** — the drug name appears only in the prompt text, never as a declared parameter:
 
 ```yaml
 # drug-repurposing.yaml
@@ -309,9 +327,8 @@ extensions:
     bundled: true
 ```
 
-**Subworkflows:**
+**Subworkflow `target_data`** — runs first, and adds a `stdio` extension of its own that the main workflow does not have:
 
-**target_data**
 ```yaml
   # subworkflows/target-data.yaml
   version: "1.0.0"
@@ -344,9 +361,10 @@ extensions:
     Retrieve the known protein targets for {{ drug_name }}.
     Include target gene symbols, mechanism of action,
     and any relevant pathway context.
-  ```
+```
 
-**repurposing_suggestions**
+**Subworkflow `repurposing_suggestions`** — runs second, consuming the first subworkflow's output as `known_targets`:
+
 ```yaml
   # subworkflows/repurposing-suggestions.yaml
   version: "1.0.0"
@@ -372,17 +390,23 @@ extensions:
     Based on these drug targets: {{ known_targets }}, 
     suggest candidate diseases for repurposing along with the
     biological rationale and supporting evidence for each.
-  ```
+```
 
 In this example:
+
 - The `target_data` subworkflow gets the drug name from the prompt context (the AI extracts "metformin" from the natural language prompt)
 - The `repurposing_suggestions` subworkflow gets the known targets from the conversation context (the AI uses the target results from the first subworkflow)
 
-## Best Practices
+## Best practices
+
 - **Single responsibility**: Each subworkflow should have one clear purpose
 - **Clear parameters**: Use descriptive names and descriptions
 - **Pre-set fixed values**: Use `values` for parameters that don't change
 - **Test independently**: Verify subworkflows work alone before combining
 
-## Learn More
-Check out the [Workflows](/docs/guides/workflows) guide for more docs, tools, and resources to help you master biorouter workflows.
+## Related documentation
+
+- [Workflows](README.md) — the workflow file format a subworkflow is written in.
+- [Workflow schema reference](workflow-schema-reference.md#subworkflows) — the full `sub_workflows` field schema and the `indent()` template filter.
+- [Subagents](../agent-loop/subagents.md) — the other way a Biorouter run delegates work to a nested agent; read alongside this page when deciding which mechanism fits.
+- [biorouter CLI command reference](../cli/command-reference.md#run-options) — the `run --workflow` and `--params` flags the examples above use.

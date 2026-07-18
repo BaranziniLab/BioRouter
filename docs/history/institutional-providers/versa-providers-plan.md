@@ -1,4 +1,16 @@
-# Institutional Providers & Sectioned Provider Configuration
+# Versa institutional providers implementation plan
+
+> **What this is.** The task-by-task implementation plan for adding the two UCSF Versa providers (Versa API Azure and Versa API Bedrock) and splitting the desktop Provider Configuration grid into labeled sections. It carries the full original source of both provider files.
+> **Status:** Historical record — planned 2026-05-07 and completed. `crates/biorouter/src/providers/versa_azure.rs` and `crates/biorouter/src/providers/versa_bedrock.rs` both exist in the tree and are registered in `factory.rs`, and the sectioned provider grid shipped. The `- [ ]` checkboxes below are the plan's original tracking state, **not** open work.
+> **Audience:** agents and developers reconstructing how the Versa providers were built.
+
+This plan executes the spec in [the Versa providers design](versa-providers-design.md); read that first for the reasoning behind each decision. The two documents are deliberately separate: the design states *what* and *why*, this plan states *how*, step by step, and quotes the code as first written.
+
+> **Note.** The Rust and TypeScript source quoted below is a snapshot from 2026-05-07 and has since evolved. Notably the Azure deployment constant (`gpt-5.2-2025-12-11`), the Azure API version (`2024-10-21`), and the Bedrock model list have all been revised in the shipping code. Read `crates/biorouter/src/providers/versa_azure.rs` and `crates/biorouter/src/providers/versa_bedrock.rs` for current values — never copy constants out of this document.
+
+> **Note.** The section order specified here (Institutional, Local, Commercial) is superseded. The shipping `ProviderGrid.tsx` renders **Local Models first**, and a Llama Server card that post-dates this plan now leads the grid.
+
+> **Warning.** Credential *values* have been removed from the validation steps in Task 7 and replaced with placeholders. UCSF-issued Versa credentials are obtained from UCSF and entered through the app's provider modal; they are never recorded in this repository. See [secret storage](../../security/secret-storage.md) for where the app keeps them.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -6,11 +18,9 @@
 
 **Architecture:** Two new Rust provider files duplicate the commercial Azure/Bedrock providers with UCSF-specific hardcoded defaults and separately namespaced credential keys. The frontend ProviderGrid splits providers into three sections using a static category map — no API changes required. Playwright validation runs against the app built with `just dev-ui-playwright`.
 
-**Tech Stack:** Rust (async_trait, anyhow, aws-config, aws-sdk-bedrockruntime), React 19 + TypeScript, Tailwind CSS, Playwright MCP via CDP on port 9222.
+**Tech stack:** Rust (async_trait, anyhow, aws-config, aws-sdk-bedrockruntime), React 19 + TypeScript, Tailwind CSS, Playwright MCP via CDP on port 9222.
 
----
-
-## Files Changed
+## Files changed
 
 | File | Action |
 |------|--------|
@@ -22,12 +32,9 @@
 | `ui/desktop/src/components/settings/providers/modal/subcomponents/forms/DefaultProviderSetupForm.tsx` | Modify — add PROVIDER_KEY_DEFAULTS entries |
 | `ui/desktop/src/utils/dependencyChecker.ts` | Modify — add non-blocking AWS CLI check |
 
----
-
 ## Task 1: Create `versa_azure.rs`
 
-**Files:**
-- Create: `crates/biorouter/src/providers/versa_azure.rs`
+**Files:** create `crates/biorouter/src/providers/versa_azure.rs`.
 
 - [ ] **Step 1: Create the file**
 
@@ -228,14 +235,12 @@ impl Provider for VersaAzureProvider {
 ```bash
 wc -l crates/biorouter/src/providers/versa_azure.rs
 ```
-Expected: ~165 lines.
 
----
+Expected: ~165 lines.
 
 ## Task 2: Create `versa_bedrock.rs`
 
-**Files:**
-- Create: `crates/biorouter/src/providers/versa_bedrock.rs`
+**Files:** create `crates/biorouter/src/providers/versa_bedrock.rs`.
 
 - [ ] **Step 1: Create the file**
 
@@ -515,15 +520,12 @@ impl Provider for VersaBedrockProvider {
 ```bash
 wc -l crates/biorouter/src/providers/versa_bedrock.rs
 ```
+
 Expected: ~200 lines.
 
----
+## Task 3: Register the providers in `mod.rs` and `factory.rs`
 
-## Task 3: Register Providers in `mod.rs` and `factory.rs`
-
-**Files:**
-- Modify: `crates/biorouter/src/providers/mod.rs`
-- Modify: `crates/biorouter/src/providers/factory.rs`
+**Files:** modify `crates/biorouter/src/providers/mod.rs` and `crates/biorouter/src/providers/factory.rs`.
 
 - [ ] **Step 1: Add module exports to `mod.rs`**
 
@@ -535,6 +537,7 @@ pub mod versa_bedrock;
 ```
 
 The file should now include (among others):
+
 ```rust
 pub mod azure;
 pub mod azureauth;
@@ -570,7 +573,7 @@ registry.register::<VersaBedrockProvider, _>(|m| Box::pin(VersaBedrockProvider::
 cargo build -p biorouter 2>&1 | tail -20
 ```
 
-Expected: `Finished` line, no errors. Fix any compile errors before proceeding.
+Expected: a `Finished` line, no errors. Fix any compile errors before proceeding.
 
 - [ ] **Step 4: Run factory tests to verify both providers are registered**
 
@@ -596,12 +599,9 @@ git add crates/biorouter/src/providers/versa_azure.rs \
 git commit -m "feat(providers): add Versa API Azure and Versa API Bedrock institutional providers"
 ```
 
----
+## Task 4: Pre-populate institutional fields in `DefaultProviderSetupForm.tsx`
 
-## Task 4: Update `DefaultProviderSetupForm.tsx` — Pre-populate Institutional Fields
-
-**Files:**
-- Modify: `ui/desktop/src/components/settings/providers/modal/subcomponents/forms/DefaultProviderSetupForm.tsx`
+**Files:** modify `ui/desktop/src/components/settings/providers/modal/subcomponents/forms/DefaultProviderSetupForm.tsx`.
 
 - [ ] **Step 1: Add `versa_azure` and `versa_bedrock` to `PROVIDER_KEY_DEFAULTS`**
 
@@ -628,7 +628,7 @@ const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
 };
 ```
 
-- [ ] **Step 2: Run frontend type-check**
+- [ ] **Step 2: Run the frontend type-check**
 
 ```bash
 cd ui/desktop && npm run lint:check 2>&1 | tail -20
@@ -643,12 +643,9 @@ git add ui/desktop/src/components/settings/providers/modal/subcomponents/forms/D
 git commit -m "feat(ui): pre-populate Versa Azure and Versa Bedrock institutional provider defaults"
 ```
 
----
+## Task 5: Restructure `ProviderGrid.tsx` into three sections
 
-## Task 5: Restructure `ProviderGrid.tsx` into Three Sections
-
-**Files:**
-- Modify: `ui/desktop/src/components/settings/providers/ProviderGrid.tsx`
+**Files:** modify `ui/desktop/src/components/settings/providers/ProviderGrid.tsx`.
 
 - [ ] **Step 1: Add the category sets and section-render helper**
 
@@ -778,7 +775,7 @@ return (
 );
 ```
 
-- [ ] **Step 2: Run type-check**
+- [ ] **Step 2: Run the type-check**
 
 ```bash
 cd ui/desktop && npm run lint:check 2>&1 | tail -20
@@ -786,7 +783,7 @@ cd ui/desktop && npm run lint:check 2>&1 | tail -20
 
 Expected: no TypeScript errors.
 
-- [ ] **Step 3: Run frontend unit tests**
+- [ ] **Step 3: Run the frontend unit tests**
 
 ```bash
 cd ui/desktop && npm run test:run 2>&1 | tail -20
@@ -801,12 +798,9 @@ git add ui/desktop/src/components/settings/providers/ProviderGrid.tsx
 git commit -m "feat(ui): split Provider Configuration into Institutional/Local/Commercial sections"
 ```
 
----
+## Task 6: Add an AWS CLI check to `dependencyChecker.ts`
 
-## Task 6: Add AWS CLI Check to `dependencyChecker.ts`
-
-**Files:**
-- Modify: `ui/desktop/src/utils/dependencyChecker.ts`
+**Files:** modify `ui/desktop/src/utils/dependencyChecker.ts`.
 
 - [ ] **Step 1: Extend the `DependencyInfo.name` type**
 
@@ -824,7 +818,7 @@ export interface DependencyInfo {
 }
 ```
 
-- [ ] **Step 2: Add `'aws'` case to `buildInstallInfo`**
+- [ ] **Step 2: Add an `'aws'` case to `buildInstallInfo`**
 
 The function signature currently takes `dep: 'git' | 'python' | 'uv' | 'npm'`. Update it to also accept `'aws'` and add platform cases:
 
@@ -871,7 +865,7 @@ if (dep === 'aws') {
 }
 ```
 
-- [ ] **Step 3: Add AWS CLI to `checkAllDependencies`**
+- [ ] **Step 3: Add the AWS CLI to `checkAllDependencies`**
 
 Find the `checks` array in `checkAllDependencies` (around line 255). Add one new entry at the end of the array:
 
@@ -883,7 +877,7 @@ Find the `checks` array in `checkAllDependencies` (around line 255). Add one new
 },
 ```
 
-- [ ] **Step 4: Run type-check**
+- [ ] **Step 4: Run the type-check**
 
 ```bash
 cd ui/desktop && npm run lint:check 2>&1 | tail -20
@@ -898,15 +892,13 @@ git add ui/desktop/src/utils/dependencyChecker.ts
 git commit -m "feat(deps): add non-blocking AWS CLI check to dependency checker"
 ```
 
----
+## Task 7: Set up the Playwright debugger and validate live
 
-## Task 7: Set Up Playwright Debugger and Validate Live
-
-**Files:** No code changes — validation only.
+**Files:** none — validation only.
 
 - [ ] **Step 1: Start the app in dev mode with Playwright CDP enabled**
 
-Run in a separate terminal (keep it running):
+Run in a separate terminal and keep it running:
 
 ```bash
 just dev-ui-playwright
@@ -924,41 +916,42 @@ Expected: JSON with `"Browser"` and `"webSocketDebuggerUrl"` keys. If this fails
 
 - [ ] **Step 3: Invoke the playwright-debug skill**
 
-Use the `playwright-debug` skill (or `debug-ui` skill) to connect Playwright MCP to the running app. The `.mcp.json` at repo root already points to `http://localhost:9222`.
+Use the `playwright-debug` skill (or `debug-ui` skill) to connect Playwright MCP to the running app. The `.mcp.json` at the repo root already points to `http://localhost:9222`.
 
 - [ ] **Step 4: Navigate to Provider Configuration and verify three sections**
 
 Using Playwright MCP tools:
-1. Take a screenshot — confirm the app is running
-2. Navigate to Settings → Provider Configuration
-3. Take a snapshot — verify the page contains "Institutional Models", "Local Models", "Commercial Models" headings
-4. Verify "Versa API Azure" and "Versa API Bedrock" appear under Institutional Models
-5. Verify "Ollama" appears under Local Models
-6. Verify "Azure OpenAI" and "Amazon Bedrock" appear under Commercial Models
+
+- [ ] Take a screenshot — confirm the app is running.
+- [ ] Navigate to Settings → Provider Configuration.
+- [ ] Take a snapshot — verify the page contains "Institutional Models", "Local Models", and "Commercial Models" headings.
+- [ ] Verify "Versa API Azure" and "Versa API Bedrock" appear under Institutional Models.
+- [ ] Verify "Ollama" appears under Local Models.
+- [ ] Verify "Azure OpenAI" and "Amazon Bedrock" appear under Commercial Models.
 
 - [ ] **Step 5: Configure Versa API Azure with UCSF credentials**
 
-1. Click the "Versa API Azure" row — the config modal opens
-2. Take a snapshot — verify only "API Key" (VERSA_AZURE_API_KEY) is shown above the fold
-3. Click "Show N options" — verify the collapsible shows endpoint, deployment, and API version pre-filled
-4. Enter the API key: `Y2EzNTgyZjUxOGNhNGZkZjlhYmYxNDExMjBhYjBlNTY6OUYyMjA3Q2VCY0QxNDAzZDkyMTZEOTQxOGQyNzk5QmY=`
-5. Save the configuration
-6. Verify "Configured" badge appears on the Versa API Azure row
+- [ ] Click the "Versa API Azure" row — the config modal opens.
+- [ ] Take a snapshot — verify only "API Key" (`VERSA_AZURE_API_KEY`) is shown above the fold.
+- [ ] Click "Show N options" — verify the collapsible shows endpoint, deployment, and API version pre-filled.
+- [ ] Enter the UCSF-issued Versa Azure API key (value not recorded here — obtain it from UCSF).
+- [ ] Save the configuration.
+- [ ] Verify a "Configured" badge appears on the Versa API Azure row.
 
 - [ ] **Step 6: Configure Versa API Bedrock with UCSF credentials**
 
-1. Click the "Versa API Bedrock" row — the config modal opens
-2. Take a snapshot — verify only "Access Key ID" (VERSA_BEDROCK_ACCESS_KEY_ID) and "Secret Access Key" (VERSA_BEDROCK_SECRET_ACCESS_KEY) are shown above the fold
-3. Click "Show N options" — verify AWS_PROFILE is pre-filled as `default` and AWS_REGION as `us-west-2`
-4. Enter Access Key ID: `ca3582f518ca4fdf9abf141120ab0e56`
-5. Enter Secret Access Key: `9F2207CeBcD1403d9216D9418d2799Bf`
-6. Save the configuration
-7. Verify "Configured" badge appears on the Versa API Bedrock row
+- [ ] Click the "Versa API Bedrock" row — the config modal opens.
+- [ ] Take a snapshot — verify only "Access Key ID" (`VERSA_BEDROCK_ACCESS_KEY_ID`) and "Secret Access Key" (`VERSA_BEDROCK_SECRET_ACCESS_KEY`) are shown above the fold.
+- [ ] Click "Show N options" — verify `AWS_PROFILE` is pre-filled as `default` and `AWS_REGION` as `us-west-2`.
+- [ ] Enter the UCSF-issued Versa Bedrock access key ID (value not recorded here — obtain it from UCSF).
+- [ ] Enter the matching secret access key (value not recorded here — obtain it from UCSF).
+- [ ] Save the configuration.
+- [ ] Verify a "Configured" badge appears on the Versa API Bedrock row.
 
 - [ ] **Step 7: Verify commercial providers are unaffected**
 
-1. Click "Azure OpenAI" in the Commercial section — verify it opens normally and its credentials are not pre-populated with UCSF values
-2. Click "Amazon Bedrock" in the Commercial section — verify AWS_PROFILE/AWS_REGION are shown (not VERSA_BEDROCK_* keys)
+- [ ] Click "Azure OpenAI" in the Commercial section — verify it opens normally and its credentials are not pre-populated with UCSF values.
+- [ ] Click "Amazon Bedrock" in the Commercial section — verify `AWS_PROFILE` / `AWS_REGION` are shown, not the `VERSA_BEDROCK_*` keys.
 
 - [ ] **Step 8: Final commit**
 
@@ -969,12 +962,17 @@ git status  # confirm clean working tree
 
 If the validation revealed any bugs, fix them before this step and commit the fixes.
 
----
-
-## Post-Implementation Checklist
+## Post-implementation checklist
 
 - [ ] `cargo test -p biorouter` passes
 - [ ] `cd ui/desktop && npm run test:run` passes
 - [ ] `cd ui/desktop && npm run lint:check` passes
-- [ ] Both Versa providers show "Configured" in live Playwright session
+- [ ] Both Versa providers show "Configured" in a live Playwright session
 - [ ] Commercial Azure OpenAI and Bedrock credentials are unaffected
+
+## Related documentation
+
+- [Versa providers design](versa-providers-design.md) — the approved spec this plan implements, with the rationale for the namespaced credential keys and the section split.
+- [Choosing a model provider](../../getting-started/choosing-a-model-provider.md) — the user-facing provider reference and where the Versa providers fit.
+- [Secret storage](../../security/secret-storage.md) — how the app stores the credentials these tasks enter through the modal.
+- [Debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md) — the current approach to driving the desktop app, alongside the `just dev-ui-playwright` path used in Task 7.

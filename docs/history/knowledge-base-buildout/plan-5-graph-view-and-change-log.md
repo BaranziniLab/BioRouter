@@ -1,24 +1,47 @@
-# Knowledge Graph View + Change Log Drawer Implementation Plan
+# Plan 5 — knowledge graph view and change-log drawer
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 5 of the six-plan Knowledge buildout: replacing the Plan-4 right-column placeholder with a `react-force-graph-2d` credibility-coloured graph, and a git-history change-log drawer with preview and restore.
+> **Status:** Historical record — executed and shipped. `ui/desktop/src/components/knowledge/` contains the `graph/` and `changelog/` directories this plan's decomposition map specifies, and `CLAUDE.md` describes the force-graph and change-log drawer as shipped. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge desktop UI, and agents tracing why the graph or the history drawer behaves the way it does.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, executed in order against the design in
+> [`founding-design.md`](founding-design.md).
+
+Plan 4 shipped the Knowledge route with a live ingest panel and a placeholder where the graph belonged. This plan fills that column in, and fixes a verified defect found by the Plan 4 end-to-end run: knowledge bases were producing 11 nodes and 0 edges, because the default schema never told the sub-agent to emit `[[knowledge-link]]` cross-references.
+
+> **Warning — the UI mockup this plan depends on is unrecoverable.** Visual
+> decisions below reference a mockup at `/Users/wgu/Downloads/biorouter_knowledge.html`.
+> That is a personal Downloads path, never committed to the repo, and no copy
+> survives. The shipped components under `ui/desktop/src/components/knowledge/` are
+> the only remaining record of what was meant. A later redesign of this surface is
+> captured in [`docs/design/ui-overhaul/knowledge-view-redesign.md`](../../design/ui-overhaul/knowledge-view-redesign.md).
+
+> **Note — worktree paths and line anchors are point-in-time.** Commands below
+> `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated git worktree the
+> Knowledge branch was developed in; read it as your own checkout root. Line
+> references into source files (for example `IngestPanel.tsx` "line 97-99") have
+> long since moved — use the symbol names quoted alongside them.
 
 **Goal:** Replace the Plan-4 `RightSidePlaceholder` in `KnowledgeView` with (a) a live `KnowledgeGraph` rendered via `react-force-graph-2d` (credibility-coloured nodes, hover dimming, click → side preview), and (b) a `ChangeLogDrawer` (slide-in sheet listing git history, click → preview at SHA, "Restore" → POST `/restore`). The graph auto-refreshes after every ingest. Also tighten `schema_default.md` so the sub-agent reliably emits `[[knowledge-link]]` cross-references (the verified gap from Plan 4 e2e: 11 nodes, 0 edges).
 
 **Architecture:**
 - **Two new panels** mounted in `KnowledgeView`'s right column: a `KnowledgeGraphPanel` (default) and a `ChangeLogDrawer` (a Radix `Sheet` overlay). A "Change log" button in the panel header opens the drawer.
-- **Graph data flow:** `useKnowledgeGraph(kbId)` fetches `GET /knowledge/bases/:id/graph` via the generated SDK, exposes `{ graph, loading, error, refresh }`. The `IngestPanel` calls `refresh()` after each successful ingest by reading the new `useKnowledgeGraph()` from a shared `GraphRefreshContext` (or — simpler — by exposing a `refreshGraph` ref on the `KnowledgeContext`).
+- **Graph data flow:** `useKnowledgeGraph(kbId)` fetches `GET /knowledge/bases/:id/graph` via the generated SDK, exposes `{ graph, loading, error, refresh }`. The `IngestPanel` calls `refresh()` after each successful ingest. Two options were weighed — a shared `GraphRefreshContext`, or the simpler route of exposing a `refreshGraph` ref on the existing `KnowledgeContext`. **The plan takes the second:** Pre-step B and Task 5 both wire a `refreshGraphRef` onto `KnowledgeContext`.
 - **Force-directed render:** `react-force-graph-2d`, with custom `nodeCanvasObject` (filled circle in credibility colour for sources, neutral fill for other kinds; bold ring + larger radius for the top-N degree-centrality "hub" nodes; red `!` badge for `retracted`). `linkCanvasObject` toggles solid vs dashed by source credibility. Hover dims non-neighbours to 0.35 opacity, highlights neighbour edges in `--cred-peer`.
 - **Side preview:** Clicking a node opens an absolutely-positioned `NodePreview` card on the right of the panel showing the page's title, kind, credibility tier, and raw markdown body (fetched on demand via `kb_read_page` exposed as `GET /knowledge/bases/:id/page?path=...`). For source pages, it links to "Open raw" / "Open derived markdown".
 - **Change log drawer:** Lists `HistoryEntry[]` (from `GET /history`) newest-first. Each row shows the relative time, `ChangeKind` chip, and summary. Clicking a row enters **preview mode** (graph header gets a banner "Previewing <sha-short> — read-only"). "Restore this state" calls `POST /restore`; the restore commit appears as a new `restore` log entry. Filter chips (`ingest|query|lint|restore`) operate client-side.
 - **Schema fix for edges:** Append explicit `[[knowledge-link]]`-emission rules to `schema_default.md`. We do NOT auto-edit existing schemas (those are per-KB and user-owned).
 
-**Tech Stack:** React 19, TypeScript, the existing auto-generated TS API client at `ui/desktop/src/api/`, Tailwind utility classes, Radix `Sheet`. Two new npm deps in `ui/desktop/`: `react-force-graph-2d` and `d3-force` (peer of `react-force-graph-2d`). One new HTTP route on the backend: `GET /knowledge/bases/:id/page`.
+**Tech stack:** React 19, TypeScript, the existing auto-generated TS API client at `ui/desktop/src/api/`, Tailwind utility classes, Radix `Sheet`. Two new npm deps in `ui/desktop/`: `react-force-graph-2d` and `d3-force` (peer of `react-force-graph-2d`). One new HTTP route on the backend: `GET /knowledge/bases/:id/page`.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md). UI mockup: `/Users/wgu/Downloads/biorouter_knowledge.html`. Prior plans: Plan 1 (backend foundation), Plan 2 (macros + sub-agent), Plan 3 (HTTP routes + export), Plan 4 (frontend route + ingest panel).
+**Source spec:** [`founding-design.md`](founding-design.md). UI mockup: `/Users/wgu/Downloads/biorouter_knowledge.html` (no longer available — see the warning above). Prior plans: [Plan 1](plan-1-storage-git-and-graph.md) (backend foundation), [Plan 2](plan-2-macros-and-subagent-loop.md) (macros + sub-agent), [Plan 3](plan-3-http-routes-and-export.md) (HTTP routes + export), [Plan 4](plan-4-knowledge-view-and-ingest.md) (frontend route + ingest panel).
 
-**This is Plan 5 of ~6.** Plan 6 = chat-side KB chip + slash commands + polish + docs.
+**Series position:** Plan 5 of 6. [Plan 6](plan-6-chat-integration-and-closeout.md) = chat-side KB chip + slash commands + polish + docs.
 
 **TDD note:** Same convention as Plans 1-4. Backend tasks add Rust integration tests under `crates/biorouter-server/tests/`. Frontend tasks rely on `npm run typecheck` + a Playwright smoke at the end (no unit-test culture in this repo for components). One task is a manual visual QA with the dev server.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
@@ -40,16 +63,16 @@ If any baseline fails, fix that first — don't proceed on broken main.
 
 - [ ] **Pre-step B:** familiarise yourself with the Plan-5 integration points.
 
-  - Spec sections: "Graph rendering" (~L490), "Change log + revert" (~L513), "History and revert" (~L369), credibility palette (~L195).
-  - Existing graph derivation: [`crates/biorouter-mcp/src/knowledge/graph.rs`](crates/biorouter-mcp/src/knowledge/graph.rs) (regex `\[\[([^\]]+)\]\]` matches labels case-insensitively).
-  - Existing HTTP: `get_graph`, `list_history`, `preview_state`, `restore_state` in [`crates/biorouter-server/src/routes/knowledge.rs`](crates/biorouter-server/src/routes/knowledge.rs).
-  - Existing TS SDK methods (already generated): `getGraph`, `listHistory`, `previewState`, `restoreState` in [`ui/desktop/src/api/sdk.gen.ts`](ui/desktop/src/api/sdk.gen.ts).
-  - Existing types in [`ui/desktop/src/api/types.gen.ts`](ui/desktop/src/api/types.gen.ts): `Graph`, `GraphNode`, `GraphEdge`, `HistoryEntry`, `ChangeKind`, `CredibilityTier`, `PageKind`.
-  - Right-side placeholder to replace: [`ui/desktop/src/components/knowledge/RightSidePlaceholder.tsx`](ui/desktop/src/components/knowledge/RightSidePlaceholder.tsx).
-  - Existing `KnowledgeContext`: [`ui/desktop/src/components/knowledge/KnowledgeContext.tsx`](ui/desktop/src/components/knowledge/KnowledgeContext.tsx) (we will add a `refreshGraphRef` to it).
-  - Existing ingest completion point: [`ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx`](ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx) line 97-99 (`update(item.id, { status: 'done' });`) — this is where we'll trigger graph refresh.
-  - Existing `Sheet` primitive: [`ui/desktop/src/components/ui/sheet.tsx`](ui/desktop/src/components/ui/sheet.tsx).
-  - Existing `Button` primitive: [`ui/desktop/src/components/ui/button.tsx`](ui/desktop/src/components/ui/button.tsx).
+  - Spec sections in [`founding-design.md`](founding-design.md): "Graph rendering", "Change log and revert", "History and revert", and "Color tokens" for the credibility palette.
+  - Existing graph derivation: `crates/biorouter-mcp/src/knowledge/graph.rs` (regex `\[\[([^\]]+)\]\]` matches labels case-insensitively).
+  - Existing HTTP: `get_graph`, `list_history`, `preview_state`, `restore_state` in `crates/biorouter-server/src/routes/knowledge.rs`.
+  - Existing TS SDK methods (already generated): `getGraph`, `listHistory`, `previewState`, `restoreState` in `ui/desktop/src/api/sdk.gen.ts`.
+  - Existing types in `ui/desktop/src/api/types.gen.ts`: `Graph`, `GraphNode`, `GraphEdge`, `HistoryEntry`, `ChangeKind`, `CredibilityTier`, `PageKind`.
+  - Right-side placeholder to replace: `ui/desktop/src/components/knowledge/RightSidePlaceholder.tsx`.
+  - Existing `KnowledgeContext`: `ui/desktop/src/components/knowledge/KnowledgeContext.tsx` (we will add a `refreshGraphRef` to it).
+  - Existing ingest completion point: the `update(item.id, { status: 'done' });` call in `ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx` — this is where we'll trigger graph refresh.
+  - Existing `Sheet` primitive: `ui/desktop/src/components/ui/sheet.tsx`.
+  - Existing `Button` primitive: `ui/desktop/src/components/ui/button.tsx`.
   - Confirm 11-node / 0-edge gap on disk:
     ```bash
     find ~/.config/biorouter/knowledge -name 'graph-cache.json' -exec jq '.nodes | length, .edges | length' {} \;
@@ -61,7 +84,7 @@ If any baseline fails, fix that first — don't proceed on broken main.
 
 **Backend (new + modified):**
 
-```
+```text
 crates/biorouter-mcp/src/knowledge/
 ├── store.rs                         — MODIFY: add `read_page_body(kb_root, rel_path)` helper (already exists as resolve_readable_path; expose Read trail)
 ├── service.rs                       — MODIFY: add `read_page(kb_id, path) -> Result<String>`
@@ -77,7 +100,7 @@ ui/desktop/src/api/types.gen.ts      — REGEN via `npm run generate-api`
 
 **Frontend (new):**
 
-```
+```text
 ui/desktop/src/components/knowledge/
 ├── graph/                           — NEW directory
 │   ├── KnowledgeGraphPanel.tsx      — header + ForceGraph + side preview composition
@@ -97,7 +120,7 @@ ui/desktop/src/components/knowledge/
 
 **Frontend (modified):**
 
-```
+```text
 ui/desktop/src/components/knowledge/RightSidePlaceholder.tsx        — DELETE
 ui/desktop/src/components/knowledge/KnowledgeView.tsx               — swap placeholder for KnowledgeGraphPanel
 ui/desktop/src/components/knowledge/IngestPanel/IngestPanel.tsx     — call triggerGraphRefresh() after each successful ingest
@@ -1707,23 +1730,32 @@ Expected: one commit per Plan-5 task, in roughly the order above. No "WIP" / "fi
 
 ## Spec coverage cross-check
 
-Tracking each spec requirement to the task that implements it:
+Tracking each spec requirement to the task that implements it. **Status** is one of
+*Implemented*, *Implemented with variation*, or *Deferred*; **Task** cites the task
+number in this plan.
 
-| Spec requirement | Task |
-|---|---|
-| `react-force-graph-2d` with custom node/link canvas objects | 3, 6 |
-| Hub treatment (top-N degree centrality, larger + bold label) | 6 |
-| Hover dims non-neighbours, highlights edges to neighbours | 6 |
-| Tooltip on hover with title + tier + reasoning + neighbour count | 7 (NodePreview replaces transient tooltip — richer than a hover card) |
-| Click source node → side preview (original + derived + meta.yaml) | 7 (preview shows derived markdown; "original file" is link-only — see CLAUDE.md note) |
-| Credibility palette (peer, book, preprint, gray_lit, web, personal, retracted) | 4 |
-| Edge styling reflects credibility (solid widths + dashed for web/personal) | 4, 6 |
-| Retracted overlays red `!` badge | Not yet — visualised via `retractedColor` only; deferred to Plan 6 polish since no retracted source in current test fixtures. **Listed as a known gap.** |
-| Change log drawer with timeline + filter chips | 9 |
-| Click entry → graph enters preview mode (read-only banner) | 9, 10 |
-| Future-state nodes drawn dashed and faded | **Deferred to Plan 6.** Banner indicates preview mode; ghosting future-state nodes requires a tree-at-SHA diff API we don't have yet (`kb_preview_state` exists per-file, but a "list pages at SHA" call doesn't). Adding to the Plan-6 polish task. |
-| `POST /restore` creates a revert commit, log entry kind = `restore` | 9, 11 |
-| Graph subscribes to macro SSE stream so nodes pop in during ingest | 5, 10 (refresh after each ingest — a simpler take than per-event SSE coupling; spec said "subscribes to the macro SSE stream" but practical UX is refetch-on-done) |
-| `[[link]]`-based edge derivation | Task 2 fix (schema makes sub-agent reliably emit links) |
+| Spec requirement | Task | Status | Notes |
+|---|---|---|---|
+| `react-force-graph-2d` with custom node/link canvas objects | 3, 6 | Implemented | — |
+| Hub treatment (top-N degree centrality, larger + bold label) | 6 | Implemented | — |
+| Hover dims non-neighbours, highlights edges to neighbours | 6 | Implemented | — |
+| Tooltip on hover with title + tier + reasoning + neighbour count | 7 | Implemented with variation | `NodePreview` replaces the transient tooltip — richer than a hover card. |
+| Click source node → side preview (original + derived + `meta.yaml`) | 7 | Implemented with variation | Preview shows derived markdown; "original file" is link-only — see the `CLAUDE.md` note. |
+| Credibility palette (peer, book, preprint, gray_lit, web, personal, retracted) | 4 | Implemented | — |
+| Edge styling reflects credibility (solid widths + dashed for web/personal) | 4, 6 | Implemented | — |
+| Retracted overlays red `!` badge | — | Deferred | Visualised via `retractedColor` only. Deferred to Plan 6 polish because no retracted source exists in the current test fixtures. Known gap. |
+| Change log drawer with timeline + filter chips | 9 | Implemented | — |
+| Click entry → graph enters preview mode (read-only banner) | 9, 10 | Implemented | — |
+| Future-state nodes drawn dashed and faded | — | Deferred | Deferred to Plan 6. The banner indicates preview mode; ghosting future-state nodes needs a tree-at-SHA diff API that does not exist yet — `kb_preview_state` works per file, but a "list pages at SHA" call does not exist. Added to the Plan-6 polish task. |
+| `POST /restore` creates a revert commit, log entry kind = `restore` | 9, 11 | Implemented | — |
+| Graph subscribes to macro SSE stream so nodes pop in during ingest | 5, 10 | Implemented with variation | Refresh after each ingest — a simpler take than per-event SSE coupling. The spec said "subscribes to the macro SSE stream"; the practical UX is refetch-on-done. |
+| `[[link]]`-based edge derivation | 2 | Implemented | The schema fix makes the sub-agent reliably emit links. |
 
 Open gaps documented above are intentionally deferred to Plan 6 polish.
+
+## Related documentation
+
+- [Knowledge founding design](founding-design.md) — the graph rendering, change log and credibility palette sections this plan cross-checks itself against.
+- [Plan 4 — Knowledge view and ingest panel](plan-4-knowledge-view-and-ingest.md) — builds the `RightSidePlaceholder` this plan replaces, and the ingest completion point that triggers graph refresh.
+- [Plan 6 — chat integration and closeout](plan-6-chat-integration-and-closeout.md) — picks up the two gaps deferred in the cross-check table above.
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — the `/graph`, `/history`, `/preview` and `/restore` routes consumed here, plus where the new `/page` route slots in.

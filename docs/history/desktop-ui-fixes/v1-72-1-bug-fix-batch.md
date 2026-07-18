@@ -1,16 +1,29 @@
-# Bug Fixes Batch — v1.72.1 Implementation Plan
+# v1.72.1 bug fix batch
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The implementation plan for the four fixes batched into the BioRouter v1.72.1 release: runtime enforcement of disabled skills in the Rust agent, plus a drop-zone-only redesign of the Import Session, Import Workflow, and Add Skill modals.
+> **Status:** Historical record — all four fixes were implemented and shipped in v1.72.1 (May 2026). The runtime disabled-skill check is present in `crates/biorouter/src/agents/skills_extension.rs` today, and the three modals are drop-zone-only in the current desktop build. The repository has since moved well past v1.72.1, so treat the code samples below as a record of what was written then, not as current source.
+> **Audience:** agents and maintainers reconstructing why the skills-enforcement and import-modal code looks the way it does.
 
-**Goal:** Fix four bugs: disabled skills still usable in chat; Import Session, Import Workflow, and Add Skill modals should use the BrxtInstallModal drop-zone UI pattern (no path input text area).
+The four items in this batch share nothing but a release train. Two unrelated concerns are batched here because they were the outstanding bug reports when v1.72.1 was cut: one Rust change in the skills extension, and three React modal refactors in the desktop UI. Read the tasks independently — Task 1 stands alone, and Tasks 2 through 4 apply the same drop-zone pattern to three different modals.
 
-**Architecture:** Backend skill enforcement via runtime `get_disabled_skills()` checks in `skills_extension.rs`. Frontend UI refactor to remove the `"or"` divider + path input block from three modals, making click-on-drop-zone the only file selector.
+Version numbers here (`v1.72.1`) are BioRouter release tags; release notes for later versions live in `docs/releases/notes/`. No `v1.72.1.md` was ever written there, so the release-notes block at the end of Task 5 is the only surviving record of what that release announced.
 
-**Tech Stack:** Rust (tokio/async), React 19/TypeScript, Electron IPC
+**Goal.** Fix four bugs:
 
----
+1. Disabled skills remain loadable in chat mid-session.
+2. The Import Session modal offers a path input alongside its drop zone.
+3. The Import Workflow modal offers a path input alongside its drop zone.
+4. The Add Skill modal offers separate browse buttons alongside its drop zone.
 
-## Files Modified
+Items 2 through 4 should all use the `BrxtInstallModal` drop-zone UI pattern, with no path input text area.
+
+> **Note.** The v1.72.1 release also shipped two fixes that this plan does not cover — a GPT-5.5 routing fix and institutional provider visibility — plus a Current Model re-render fix. All three appear only in the release-notes block in Task 5.
+
+**Architecture.** Backend skill enforcement via runtime `get_disabled_skills()` checks in `skills_extension.rs`. Frontend UI refactor to remove the `"or"` divider and path input block from three modals, making click-on-drop-zone the only file selector.
+
+**Tech stack.** Rust (tokio/async), React 19/TypeScript, Electron IPC.
+
+## Files modified
 
 | File | Change |
 |---|---|
@@ -19,20 +32,18 @@
 | `ui/desktop/src/components/workflows/ImportWorkflowForm.tsx` | Remove path input section; keep only drop zone |
 | `ui/desktop/src/components/skills/AddSkillModal.tsx` | Remove browse button row; clicking drop area triggers file picker |
 
----
-
-## Task 1: Backend — Disabled Skills Runtime Enforcement
+## Task 1: Enforce disabled skills at runtime in the backend
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/skills_extension.rs`
 
 ### Context
 
-`SkillsClient::new()` currently filters out disabled skills at init time. But mid-session, if the user disables a skill, the running `SkillsClient` still has it. The LLM can still call `loadSkill` to retrieve it.
+`SkillsClient::new()` filters out disabled skills at init time. But mid-session, if the user disables a skill, the running `SkillsClient` still has it. The LLM can still call `loadSkill` to retrieve it.
 
 Fix: Keep ALL discovered skills in `self.skills` at init. Filter disabled skills (1) in `generate_instructions` at session-start time (so new sessions get correct instructions) and (2) in `handle_load_skill` at call time (so mid-session disabling is enforced).
 
-- [ ] **Step 1: Remove the disabled filter from `SkillsClient::new()`**
+**Step 1: Remove the disabled filter from `SkillsClient::new()`**
 
 In `crates/biorouter/src/agents/skills_extension.rs`, find the `new()` function (around line 69) and change:
 
@@ -57,7 +68,7 @@ To (remove the filter, keep all skills):
 let skills = Self::discover_skills_in_directories(&directories);
 ```
 
-- [ ] **Step 2: Add disabled filter to `generate_instructions`**
+**Step 2: Add disabled filter to `generate_instructions`**
 
 Find `generate_instructions` (around line 256). Change it to dynamically filter:
 
@@ -90,7 +101,7 @@ fn generate_instructions(&self) -> String {
 }
 ```
 
-- [ ] **Step 3: Add runtime disabled check in `handle_load_skill`**
+**Step 3: Add runtime disabled check in `handle_load_skill`**
 
 Find `handle_load_skill` (around line 273). Add a disabled check before returning skill content:
 
@@ -144,7 +155,7 @@ async fn handle_load_skill(
 }
 ```
 
-- [ ] **Step 4: Also update `list_tools` to exclude disabled skills**
+**Step 4: Also update `list_tools` to exclude disabled skills**
 
 The `list_tools` returns only a `loadSkill` tool (no per-skill tools), but we should also hide that tool entirely if all skills are disabled:
 
@@ -172,7 +183,7 @@ async fn list_tools(
 }
 ```
 
-- [ ] **Step 5: Build and verify**
+**Step 5: Build and verify**
 
 ```bash
 source bin/activate-hermit
@@ -181,7 +192,7 @@ cargo build -p biorouter 2>&1 | tail -5
 
 Expected: `Finished` with no errors.
 
-- [ ] **Step 6: Run existing tests to confirm no regressions**
+**Step 6: Run existing tests to confirm no regressions**
 
 ```bash
 source bin/activate-hermit
@@ -190,25 +201,23 @@ cargo test -p biorouter --lib agents::skills_extension 2>&1 | tail -10
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit**
+**Step 7: Commit**
 
 ```bash
 git add crates/biorouter/src/agents/skills_extension.rs
 git commit -m "fix(skills): enforce disabled skills at runtime in backend loadSkill handler"
 ```
 
----
-
-## Task 2: UI — Import Session Modal Redesign
+## Task 2: Redesign the Import Session modal
 
 **Files:**
 - Modify: `ui/desktop/src/components/sessions/ImportSessionModal.tsx`
 
 ### Context
 
-Current modal has: drop zone + divider + path input field + Load button. The user wants only the drop zone (click to browse). Remove the `"or"` divider, path input, and the browse/Load buttons below it.
+The modal has a drop zone, a divider, a path input field, and a Load button. The user wants only the drop zone (click to browse). Remove the `"or"` divider, path input, and the browse/Load buttons below it.
 
-- [ ] **Step 1: Remove path state, browse handler, path import handler**
+**Step 1: Remove path state, browse handler, path import handler**
 
 Replace the entire file with this content:
 
@@ -346,7 +355,7 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
 }
 ```
 
-- [ ] **Step 2: Run type-check**
+**Step 2: Run type-check**
 
 ```bash
 cd ui/desktop && npm run typecheck 2>&1 | tail -10
@@ -354,25 +363,23 @@ cd ui/desktop && npm run typecheck 2>&1 | tail -10
 
 Expected: no errors.
 
-- [ ] **Step 3: Commit**
+**Step 3: Commit**
 
 ```bash
 git add ui/desktop/src/components/sessions/ImportSessionModal.tsx
 git commit -m "fix(ui): simplify Import Session modal — drop zone only, no path input"
 ```
 
----
-
-## Task 3: UI — Import Workflow Modal Redesign
+## Task 3: Redesign the Import Workflow modal
 
 **Files:**
 - Modify: `ui/desktop/src/components/workflows/ImportWorkflowForm.tsx`
 
 ### Context
 
-Same treatment as Import Session: remove the `"or"` divider + path input section. Keep only the drop zone.
+Same treatment as the Import Session modal in Task 2: remove the `"or"` divider and path input section. Keep only the drop zone.
 
-- [ ] **Step 1: Rewrite the ImportWorkflowForm component**
+**Step 1: Rewrite the `ImportWorkflowForm` component**
 
 Replace the function body of `ImportWorkflowForm` (lines 39–232) with:
 
@@ -505,7 +512,7 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
 
 Also remove unused imports: `Folder` from `app-icons`. Keep `Upload`, `Download`, `Button`, Dialog parts, `toastSuccess`, `saveWorkflow`, `parseWorkflow`, `Workflow`.
 
-- [ ] **Step 2: Run type-check**
+**Step 2: Run type-check**
 
 ```bash
 cd ui/desktop && npm run typecheck 2>&1 | tail -10
@@ -513,37 +520,35 @@ cd ui/desktop && npm run typecheck 2>&1 | tail -10
 
 Expected: no errors.
 
-- [ ] **Step 3: Commit**
+**Step 3: Commit**
 
 ```bash
 git add ui/desktop/src/components/workflows/ImportWorkflowForm.tsx
 git commit -m "fix(ui): simplify Import Workflow modal — drop zone only, no path input"
 ```
 
----
-
-## Task 4: UI — Add Skill Modal Redesign
+## Task 4: Redesign the Add Skill modal
 
 **Files:**
 - Modify: `ui/desktop/src/components/skills/AddSkillModal.tsx`
 
 ### Context
 
-Current modal has separate folder picker and ZIP file picker buttons. The user wants clicking the drop area to be the only way to trigger the file picker — no separate "Browse folder" / "Browse ZIP" buttons. Keep the drag-and-drop + click-to-open-picker pattern, matching BrxtInstallModal.
+The modal has separate folder picker and ZIP file picker buttons. The user wants clicking the drop area to be the only way to trigger the file picker — no separate "Browse folder" / "Browse ZIP" buttons. Keep the drag-and-drop plus click-to-open-picker pattern, matching `BrxtInstallModal`.
 
-- [ ] **Step 1: Read the current AddSkillModal to identify the browse buttons**
+**Step 1: Read the current `AddSkillModal` to identify the browse buttons**
 
 ```bash
 grep -n "Browse\|button\|onClick.*picker\|selectFolder\|openFile" ui/desktop/src/components/skills/AddSkillModal.tsx | head -30
 ```
 
-- [ ] **Step 2: Remove the separate Browse/picker button row**
+**Step 2: Remove the separate browse/picker button row**
 
-In [AddSkillModal.tsx](ui/desktop/src/components/skills/AddSkillModal.tsx), find the section that renders standalone browse buttons (separate from the drop zone). Remove that section. The drop zone's `onClick` handler already triggers the file picker — no separate buttons needed.
+In `ui/desktop/src/components/skills/AddSkillModal.tsx`, find the section that renders standalone browse buttons (separate from the drop zone). Remove that section. The drop zone's `onClick` handler already triggers the file picker — no separate buttons needed.
 
 After removing the buttons, verify the drop zone still has `onClick={() => fileInputRef.current?.click()}` (or equivalent for both folder and ZIP inputs).
 
-- [ ] **Step 3: Run type-check**
+**Step 3: Run type-check**
 
 ```bash
 cd ui/desktop && npm run typecheck 2>&1 | tail -10
@@ -551,18 +556,18 @@ cd ui/desktop && npm run typecheck 2>&1 | tail -10
 
 Expected: no errors.
 
-- [ ] **Step 4: Commit**
+**Step 4: Commit**
 
 ```bash
 git add ui/desktop/src/components/skills/AddSkillModal.tsx
 git commit -m "fix(ui): simplify Add Skill modal — remove separate browse buttons, click drop zone to pick"
 ```
 
----
+## Task 5: Build and release v1.72.1
 
-## Task 5: Build and Release v1.72.1
+Run every command in this task from the repository root unless a step says otherwise.
 
-- [ ] **Step 1: Build macOS ARM64 release binary**
+**Step 1: Build macOS ARM64 release binary**
 
 ```bash
 source bin/activate-hermit
@@ -574,13 +579,13 @@ cp target/release/biorouterd ui/desktop/src/bin/biorouterd
 
 Expected: binaries around 97MB and 86MB.
 
-- [ ] **Step 2: Push all commits to main**
+**Step 2: Push all commits to main**
 
 ```bash
 git push origin main
 ```
 
-- [ ] **Step 3: Build and notarize macOS ARM64 package**
+**Step 3: Build and notarize macOS ARM64 package**
 
 ```bash
 cd ui/desktop
@@ -588,7 +593,7 @@ APPLE_ID=<apple-id> APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> npm run 
 cd out/BioRouter-darwin-arm64 && ditto -c -k --sequesterRsrc --keepParent BioRouter.app BioRouter.zip
 ```
 
-- [ ] **Step 4: Build macOS Intel package**
+**Step 4: Build macOS Intel package**
 
 ```bash
 source bin/activate-hermit
@@ -600,23 +605,23 @@ cd ui/desktop
 APPLE_ID=<apple-id> APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> npm run make -- --arch=x64 --targets @electron-forge/maker-zip
 ```
 
-- [ ] **Step 5: Build Linux packages (Docker)**
+**Step 5: Build Linux packages (Docker)**
 
 Restore ARM64 binaries first, then build Linux:
 
 ```bash
-cp /Users/wgu/Desktop/biorouter/target/release/biorouter ui/desktop/src/bin/biorouter
-cp /Users/wgu/Desktop/biorouter/target/release/biorouterd ui/desktop/src/bin/biorouterd
-cd /Users/wgu/Desktop/biorouter && just make-ui-linux
+cp target/release/biorouter ui/desktop/src/bin/biorouter
+cp target/release/biorouterd ui/desktop/src/bin/biorouterd
+just make-ui-linux
 ```
 
-- [ ] **Step 6: Build Windows package**
+**Step 6: Build Windows package**
 
 ```bash
 cd ui/desktop && npm run bundle:windows
 ```
 
-- [ ] **Step 7: Create GitHub release v1.72.1**
+**Step 7: Create GitHub release v1.72.1**
 
 ```bash
 gh release create v1.72.1 \
@@ -634,3 +639,13 @@ gh release create v1.72.1 \
 EOF
 )"
 ```
+
+> **Note.** Later releases record their notes as a file under `docs/releases/notes/` rather than inline in a `gh release create` heredoc. This block is preserved because no `v1.72.1.md` was ever written there.
+
+## Related documentation
+
+- [Skill bundles plan](../skills-packaging/skill-bundles-plan.md) — the bundle packaging work that introduced the `bundle_name` field this task's disabled-skill filter checks.
+- [BRXT bundled skills plan](../skills-packaging/brxt-bundled-skills-plan.md) — how skills reach the Add Skill modal in the first place, via `.brxt` extension bundles.
+- [Skills extension reference](../../extensions/built-in/skills.md) — the current behaviour of the skills extension, superseding the code samples in Task 1.
+- [Versa institutional providers plan](../institutional-providers/versa-providers-plan.md) — the UCSF Versa provider work whose fix also shipped in v1.72.1.
+- [Desktop reliability defects](../subsystem-reviews-2026/desktop-reliability-defects.md) — a later, broader sweep of desktop UI defects in the same subsystem.

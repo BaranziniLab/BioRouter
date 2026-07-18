@@ -1,19 +1,43 @@
-# BioRouter Agent Drafter SDK — Comprehensive Plan
+# BioRouter App SDK strategy RFC and OpenAI comparison (June 2026)
 
-> Status: **planning / RFC**. Authored 2026-06-23. Compares OpenAI's Agents SDK
-> (the `openai-agents-js` / `openai-agents-python` repos + the April-2026
-> "next evolution" sandbox/harness/memory work + the Oct-2025 AgentKit suite)
-> against BioRouter's existing infrastructure, then proposes a layered SDK for
-> the Agent Drafter so generated apps have a well-defined way to access files,
-> work on databases, orchestrate agentic workflows, encrypt/sandbox files, run
-> sandboxed compute, run guardrailed/stop-hooked harnesses that always reach the
-> goal, and recover/compact/share context.
->
-> Decide-from-here document: each section ends with **Decisions for you**.
+> **What this is.** The strategy RFC that benchmarked OpenAI's Agents SDK against
+> BioRouter's existing primitives and proposed a layered App SDK — files, databases,
+> orchestration, vault, sandboxed compute, guardrails, context — with a phased roadmap and
+> a list of open decisions for the maintainer.
+> **Status:** Historical record — authored 2026-06-23, and superseded by the 2026-07-12
+> [Apps SDK v2 design spec](../../apps-sdk/v2-design.md) plus the code that shipped: the
+> `biorouter-sandbox` crate now exists, and `agent_drafter` now carries `manifest.rs`,
+> `vault.rs`, `control.rs` and `declare.rs`. The "open decisions" below were settled by
+> what was built; the OpenAI comparison is a snapshot of a competitor SDK on that date.
+> **Audience:** maintainers and developers working on the Agent Drafter / Apps SDK who want
+> the reasoning behind the shipped design.
+
+**Document date: 2026-06-23.** It is the "why and what" half of a pair; the code-level
+"how" is [the implementation design RFC](implementation-design.md), authored one day later,
+which turns this inventory into concrete Rust types, WebSocket frames and hook points. Read
+that one for the implementation; read this one for the competitive framing, the seven
+capability areas, and the ADOPT/CONSIDER/SKIP inventory.
+
+> **Warning.** Figures in this document describe the tree as of 2026-06-23 and some were
+> already stale a day later — see the inline notes on session schema version and the Auto
+> Visualiser tool count. The OpenAI product descriptions in the announcement-level rows
+> were never directly verified (see §1.4 and Appendix B).
+
+## Terms used here
+
+| Term | Meaning |
+|---|---|
+| **BRSDK** | BioRouter App SDK — the proposed client library (`templates/sdk.ts`) plus the server-side runner (`routes/apps.rs`) that a generated app talks to. |
+| **HITL** | Human-in-the-loop: the agent pauses before a sensitive tool call and waits for a person to approve or decline it. |
+| **`RunState`** | OpenAI's serializable snapshot of a paused agent run (pending tool calls, approvals, turn count) that can be written to disk and resumed, even in another process. |
+| **Tripwire** | A guardrail outcome that fires when a check fails, blocking the tool call or failing the turn. |
+| **AgentKit** | OpenAI's hosted product tier announced October 2025 (Agent Builder, ChatKit, Connector Registry, Evals). |
+| **ChatKit** | OpenAI's embeddable, themeable chat UI component. |
+| **RFT** | Reinforcement fine-tuning — OpenAI's hosted model-tuning offering. |
 
 ---
 
-## 0. TL;DR
+## 0. Summary
 
 **The key insight:** BioRouter already owns, *inside the `biorouter` crate*, almost
 every primitive OpenAI exposes through its SDK — a bounded agent loop
@@ -62,6 +86,10 @@ biggest advantage: it runs against *any* provider the user configures.
 | Connector Registry (governed data/tool catalog) | BAAM marketplace + `registry.json` (extensions/skills) | **Adjacent** (catalog exists; not credential-governed) |
 | ChatKit + Widgets (embeddable UI, charts/tables) | Agent Drafter App SDK `mountChat`, `renderMarkdown`, `renderChart`; autovisualiser `ui://` figures | **Exists**, arguably ahead for science viz |
 
+> **Note.** The "schema v7" figure in the Sessions row was corrected the following day: the
+> [implementation design RFC](implementation-design.md) records `CURRENT_SCHEMA_VERSION = 8`
+> as of 2026-06-24, and the schema has advanced further since.
+
 ### 1.2 Similarities
 
 - **Both are bounded tool-calling loops** over a model, with a max-turns cap,
@@ -79,6 +107,7 @@ biggest advantage: it runs against *any* provider the user configures.
 ### 1.3 Differences (and where each is ahead)
 
 **OpenAI is ahead on:**
+
 - **Sandboxed, capability-scoped execution.** `SandboxAgent` + `Manifest` give a
   clean control-plane (agent loop, in trusted infra) vs compute-plane (isolated
   filesystem/shell, narrow creds) split, with pluggable backends
@@ -99,6 +128,7 @@ biggest advantage: it runs against *any* provider the user configures.
   `MEMORY.md` with progressive disclosure.
 
 **BioRouter is ahead on / differentiated by:**
+
 - **Provider-agnosticism is the core, not an afterthought.** OpenAI's SDK is
   multi-provider-capable but OpenAI-centric (hosted tools, Responses API,
   Conversations API). BioRouter runs the *same* agent against Anthropic / OpenAI
@@ -113,6 +143,9 @@ biggest advantage: it runs against *any* provider the user configures.
 - **Apps as a product**: the Agent Drafter already serves runnable apps, exports
   standalone runnable folders, and lists them in an Applications panel. OpenAI
   has Agent Builder (graph authoring) + ChatKit but not "export a portable app."
+
+> **Note.** The Auto Visualiser tool count of 33 above is the figure as of 2026-06-23; the
+> extension has since grown past it.
 
 ### 1.4 Sourcing caveats
 
@@ -134,7 +167,7 @@ cloning them exactly.
 Borrow OpenAI's **layering discipline** (`@openai/agents-core` engine +
 provider packages + extensions) but apply it to what BioRouter already has.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │  Generated app (TypeScript, browser)                           │
 │  import { createApp, defineTool, useFiles, useData, ... }      │
@@ -204,7 +237,8 @@ knowledge_base, max_turns }` in `agent_drafter/store.rs`. Extend it to a
 }
 ```
 
-**Decisions for you:**
+**Open decisions:**
+
 - (a) Manifest format above as the single source of truth? (vs splitting
   guardrails/capabilities into separate files.)
 - (b) Deny-by-default capabilities (recommended, OpenAI-style) vs the current
@@ -215,7 +249,7 @@ knowledge_base, max_turns }` in `agent_drafter/store.rs`. Extend it to a
 ## 3. The seven capability areas
 
 For each: *what exists in BioRouter*, *how OpenAI does it*, *proposed BRSDK
-design* (client TS API + server/engine work), and *decisions for you*.
+design* (client TS API + server/engine work), and *open decisions*.
 
 ### 3.1 File access
 
@@ -231,11 +265,13 @@ paths relative to the sandbox workspace root) declared in a `Manifest`
 vector stores for *retrieval*.
 
 **Proposed BRSDK:**
+
 - **Server**: a `files` capability backed by `developer`'s editor but **scoped to
   the app's workspace root** (`~/.config/biorouter/agent_drafter/<id>/workspace/`
   by default, or a manifest-mounted dir). The scope is a *hard* jail enforced in
   Rust (canonicalize + prefix check), layered on top of `.biorouterignore`.
 - **Client** (`br.files`):
+
   ```ts
   br.files.list(glob?)            // → FileRef[]
   br.files.read(path)            // → string (text) | Blob
@@ -243,12 +279,13 @@ vector stores for *retrieval*.
   br.files.upload(File)          // browser file → workspace (replaces ad-hoc fileToImageInput for non-images)
   br.files.url(path)             // signed, short-lived GET under /apps/<id>/files/*
   ```
+
 - **Retrieval**: expose the knowledge store's BM25 as `br.files.search(query)`
   for in-workspace search (distinct from KB search).
 - **Manifest mounts**: `workspace.entries` → mount host dirs read-only/rw at
   app start (mirrors OpenAI `Manifest`).
 
-**Decisions for you:** workspace root default location; whether to allow
+**Open decisions:** workspace root default location; whether to allow
 manifest mounts of arbitrary host dirs (powerful but a sandbox-escape vector —
 see §3.5).
 
@@ -265,22 +302,25 @@ tabular analysis.
 
 **Proposed BRSDK** (follow OpenAI: DB = governed MCP/connector, not a bespoke
 layer):
+
 - **`data` capability**: a manifest list of allowed sources. Each source is
   either (a) an existing MCP extension (SPOKE/OMOP/CDW/knowledge), or (b) a new
   **bundled lightweight SQL MCP** (DuckDB/SQLite over a workspace file) for
   app-local tabular work — the BioRouter analog of code-interpreter-for-data.
 - **Client** (`br.data`):
+
   ```ts
   br.data.sources()                       // → ["spoke","duckdb:local",...]
   br.data.query(source, sql_or_cypher)    // → rows (read-only by default)
   br.data.table(source, name)             // → typed columns for rendering
   ```
+
 - **Governance (Connector-Registry analog)**: extend `registry.json` / BAAM so a
   data source carries an auth scope + read-only flag + audit hook; the app can
   only name sources the *user* has authorized. Credentials stay in the keyring
   (§3.4), never in the app.
 
-**Decisions for you:** ship a bundled DuckDB SQL MCP for app-local data? Which
+**Open decisions:** ship a bundled DuckDB SQL MCP for app-local data? Which
 external DB agents to expose to apps by default (probably none — opt-in per app).
 
 ### 3.3 Agentic workflow orchestration
@@ -299,6 +339,7 @@ ownership). Both are just fields on `Agent`. Plus `outputType` as the completion
 contract and `RunState` for pause/resume.
 
 **Proposed BRSDK:**
+
 - **Generalize the sub-agent loop** out of `knowledge/` into a reusable
   `biorouter::agents::subagent` the App SDK can drive — this gives
   agents-as-tools for free.
@@ -307,11 +348,13 @@ contract and `RunState` for pause/resume.
   graphs but **code-first + manifest-first**, not a visual canvas (a canvas can
   come later in the GUI).
 - **Client** (`br.workflow`):
+
   ```ts
   br.workflow.run(name, input)            // run a manifest-defined workflow
   br.agent("summarizer").asTool()         // expose a sub-agent as a tool
   br.run(prompt, target, { outputType })  // structured-output contract (Zod-style schema)
   ```
+
 - **Structured outputs**: add `output_type` (JSON Schema) to `SessionConfig`;
   validate the final message against it and re-prompt on mismatch (mirror
   OpenAI's strict mode). This makes ` ```chart ` blocks a *typed contract*
@@ -319,7 +362,7 @@ contract and `RunState` for pause/resume.
 - **Handoffs**: optional later — model as "swap the active manifest agent."
   Lower priority than agents-as-tools + structured outputs.
 
-**Decisions for you:** how much workflow-graph authoring to expose to apps now
+**Open decisions:** how much workflow-graph authoring to expose to apps now
 (manifest steps) vs defer to a GUI canvas; adopt JSON-Schema structured outputs
 as a first-class contract (recommended).
 
@@ -336,6 +379,7 @@ explicitly given"); Connector Registry stores **encrypted credentials** with
 RBAC + audit; sandbox manifests map Unix permissions.
 
 **Proposed BRSDK:**
+
 - **Per-app encrypted vault**: `workspace/.vault/` whose entries are encrypted at
   rest with a key from the OS keyring (reuse `config/base.rs`). Manifest
   `workspace.vault.encrypted` lists logical secret names. The agent gets secrets
@@ -347,7 +391,7 @@ RBAC + audit; sandbox manifests map Unix permissions.
   credentials (already the design); the vault travels **encrypted** and is
   re-bound to the new machine's keyring on first run (`run.sh` prompts once).
 
-**Decisions for you:** vault crypto (recommend: OS-keyring-wrapped data key +
+**Open decisions:** vault crypto (recommend: OS-keyring-wrapped data key +
 AES-GCM file encryption via an audited crate, not hand-rolled); whether secrets
 are *ever* allowed into tool args vs always resolved by reference.
 
@@ -367,7 +411,9 @@ Runloop as extras. `Manifest` stages inputs; `Snapshot` (Local/Remote/Noop)
 saves workspace; sessions reconnect.
 
 **Proposed BRSDK** (adopt OpenAI's split almost verbatim):
+
 - **New `biorouter::sandbox` module** with a `SandboxClient` trait:
+
   ```rust
   trait SandboxClient {
       async fn exec(&self, cmd, cwd, env, limits) -> ExecResult;
@@ -375,6 +421,7 @@ saves workspace; sessions reconnect.
       async fn snapshot(&self) -> SnapshotSpec;   // Local|Remote|Noop
   }
   ```
+
   Implementations, in priority order:
   1. **`LocalProcessSandbox`** (today's behavior) — *clearly labeled unsafe*, for
      trusted single-user desktop use; the migration target, not the end state.
@@ -387,13 +434,15 @@ saves workspace; sessions reconnect.
   apps default to `none` (no shell) and must opt in. `network`, `timeout_s`,
   `max_mem` from the manifest.
 - **Client** (`br.compute`):
+
   ```ts
   br.compute.run(cmd, { timeout })   // only if capability granted
   br.compute.python(code)            // code-interpreter analog (Docker + python)
   ```
+
 - **Snapshots** for long tasks → reuse for context recovery (§3.7).
 
-**Decisions for you:** Docker as the default isolation backend (needs Docker
+**Open decisions:** Docker as the default isolation backend (needs Docker
 present — fallback to `local` with a loud warning)? Or invest in a lighter OS
 sandbox (macOS `sandbox-exec`, Linux namespaces/seccomp) to avoid the Docker
 dependency? **Recommendation:** Docker first (portable, well-understood), native
@@ -402,6 +451,7 @@ OS-sandbox as a later optimization.
 ### 3.6 Agentic harness: guardrails + stop-hooks → always reach the goal
 
 **Exists — and this is BioRouter's hidden strength:**
+
 - **Hook system** (`hooks/`): `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
   `PermissionRequest`, `UserPromptSubmit`, **`Stop`** (block turn-exit),
   `SubagentStart/Stop`, `SessionStart/End`, `PreCompact/PostCompact`. Stop hook
@@ -422,6 +472,7 @@ completion contract.
 
 **Proposed BRSDK** — expose what exists as *app-declarable*, and add the missing
 serializable resume:
+
 - **Declarative guardrails in the manifest** (§2.1 `guardrails`), compiled to:
   - input/output guardrails → run an LLM-judge or regex/builtin check around the
     app's turn (reuse the goal-judge machinery);
@@ -439,13 +490,14 @@ serializable resume:
   `state.approve()/run(agent,state)` adapted to BioRouter's session store.
 - **Client** (`br.on('guardrail'|'approval', …)`, `br.approve/reject(id)`).
 
-**Decisions for you:** (a) make `guardrails.goal` opt-in per app (recommended on
+**Open decisions:** (a) make `guardrails.goal` opt-in per app (recommended on
 for "workflow" apps); (b) build the `RunState` snapshot/resume now (enables
 headless approvals + crash recovery) vs defer.
 
 ### 3.7 Context: recovery, compaction, sharing
 
 **Exists:**
+
 - **Auto-compaction** (`context_mgmt/`): triggers at
   `DEFAULT_COMPACTION_THRESHOLD=0.8 × context_limit`; summarizes older messages;
   marks them `user_visible` but `agent_invisible`; inserts an `agent_only`
@@ -463,13 +515,16 @@ processes, and **sandbox memory** (lessons → searchable `MEMORY.md` with
 progressive disclosure, two-phase distill).
 
 **Proposed BRSDK:**
+
 - **Expose compaction + recovery to apps** rather than keeping it transparent:
+
   ```ts
   br.context.tokens()                 // current usage vs limit
   br.context.compact()                // force a compaction (manual)
   br.on('compaction', e => …)         // PreCompact/PostCompact surfaced
   br.context.snapshot() / .restore(id)// RunState save/restore (crash recovery)
   ```
+
 - **Durable per-app sessions**: today a browser disconnect can lose the
   per-connection session. Bind each app session to a stable
   `session_id = app_id + client_id`, persisted via `session_manager` so a reload
@@ -490,14 +545,14 @@ progressive disclosure, two-phase distill).
   keep a compact running summary injected at the top + a searchable archive,
   instead of all-or-nothing compaction.
 
-**Decisions for you:** (a) make app sessions durable+resumable by default
+**Open decisions:** (a) make app sessions durable+resumable by default
 (recommended); (b) use the knowledge base as the app-memory substrate
 (recommended — reuses git/BM25/credibility) vs a new store; (c) build `RunState`
 now (it underpins both recovery and headless approvals).
 
 ---
 
-## 4. Cross-cutting: tracing & observability
+## 4. Cross-cutting: tracing and observability
 
 **Exists:** hook events + per-session token rollups (`SessionTokenCounts`).
 **OpenAI:** a spanned trace tree (`withTrace`, agent/generation/tool/guardrail
@@ -509,7 +564,7 @@ and streamable to the app as `{type:"trace", span}` frames — powering an
 in-GUI "what did the agent do" timeline (an Evals/trace-grading foundation
 later). Keep it provider-agnostic; no external exporter required initially.
 
-**Decisions for you:** in-GUI trace timeline now, or defer until after the
+**Open decision:** in-GUI trace timeline now, or defer until after the
 capability work.
 
 ---
@@ -549,7 +604,7 @@ This is what lets an app **define its own tools** (`defineTool`) — the agent
 calls back into the browser, the app executes JS and returns a result — closing
 the "apps can't define tools" gap without a server round-trip.
 
-**Decisions for you:** allow app-defined (browser-executed) tools? Powerful for
+**Open decision:** allow app-defined (browser-executed) tools? Powerful for
 UI-driven tools, but the browser becomes a tool provider — needs the same
 guardrail/approval treatment.
 
@@ -630,7 +685,12 @@ visualization; and "apps as exportable, runnable products."
 
 ---
 
-## 10. Decisions summary (what I need from you)
+## 10. Decisions summary (the maintainer questions posed on 2026-06-23)
+
+> **Note.** These questions were open when the RFC was written and this document records
+> no answers to them. They were settled by what was subsequently built — see
+> [the Apps SDK v2 design spec](../../apps-sdk/v2-design.md) and
+> [the Apps SDK reference](../../apps-sdk/sdk-reference.md) for the design that shipped.
 
 1. **Manifest shape** (§2.1) — single extended `manifest.json` as proposed?
 2. **Deny-by-default capabilities** (§2.1) — adopt the OpenAI-style explicit-grant
@@ -647,15 +707,19 @@ visualization; and "apps as exportable, runnable products."
 
 ---
 
-## 11. Features beyond your original seven asks — inventory & recommendations
+## 11. Features beyond the original seven asks — inventory and recommendations
 
-Your seven asks (files, databases, workflow orchestration, encrypt/sandbox
+The original seven asks (files, databases, workflow orchestration, encrypt/sandbox
 files, sandboxed compute, guardrailed/stop-hooked harness, context
 recovery/compaction/sharing) map to the SDK's *infrastructure* core. An
 exhaustive sweep of the actual `openai-agents-js` / `openai-agents-python` repos,
 the developer docs, and the AgentKit product tier turned up **whole feature
-categories you did not name.** Below: what each is, where BioRouter stands, and a
+categories that were not named.** Below: what each is, where BioRouter stands, and a
 blunt **Adopt / Consider / Skip** call with rationale.
+
+> **Note.** The verdicts in this section are the recommendations made on 2026-06-23. They
+> are a historical record of what was proposed, not live guidance — several were adopted,
+> and the shipped scope is described in [the Apps SDK v2 design spec](../../apps-sdk/v2-design.md).
 
 > Legend — **ADOPT**: high value-per-effort, recommend building. **CONSIDER**:
 > valuable but a real investment or a strategic bet. **SKIP/DEFER**: low ROI for
@@ -663,28 +727,28 @@ blunt **Adopt / Consider / Skip** call with rationale.
 
 ### Priority table
 
-| # | Feature (not in your asks) | Rec | One-line why |
+| # | Feature (beyond the original asks) | Rec | One-line why |
 |---|---|---|---|
 | 11.1 | Reliability & control primitives | **ADOPT** | Cheap, makes apps not break; some already half-built |
 | 11.2 | Structured outputs as contracts | **ADOPT** | Turns ` ```chart ` guessing into typed guarantees |
 | 11.3 | Safety guardrails: **PII/PHI, prompt-injection, groundedness** | **ADOPT ★** | The biggest miss — mandatory for biomedical/clinical data |
-| 11.4 | Handoffs + agents-as-tools + deferred tools | **ADOPT** | Real multi-agent orchestration; you have the loop already |
+| 11.4 | Handoffs + agents-as-tools + deferred tools | **ADOPT** | Real multi-agent orchestration; the loop already exists |
 | 11.5 | Human-in-the-loop approvals + serializable resume | **ADOPT** | Already in the plan (§3.6); reinforced here |
-| 11.6 | Spanned tracing + GUI timeline (+ optional exporters) | **ADOPT** | Observability; you already emit the hook events |
+| 11.6 | Spanned tracing + GUI timeline (+ optional exporters) | **ADOPT** | Observability; the hook events are already emitted |
 | 11.7 | Per-app model-routing surface + ModelSettings + usage | **ADOPT** | Doubles down on BioRouter's provider-agnostic headline |
-| 11.8 | Lifecycle hooks exposed to apps | **CONSIDER** | App-level telemetry/control; you have them internally |
+| 11.8 | Lifecycle hooks exposed to apps | **CONSIDER** | App-level telemetry/control; they exist internally |
 | 11.9 | Interactive widgets (forms/tables that call back) | **CONSIDER** | Extends charts to real UI round-trips |
 | 11.10 | Voice / realtime agents (speech-to-speech, STT→agent→TTS) | **CONSIDER** | Compelling for hands-free lab/clinic; big build |
 | 11.11 | Governed connector registry (RBAC + audit + creds) | **CONSIDER** | Becomes blocking for multi-user/clinical deployment |
 | 11.12 | Durable execution (Temporal-style) | **DEFER** | Crash-proof long workflows; RunState+scheduler covers most |
 | 11.13 | Visual workflow canvas (Agent-Builder-style) | **DEFER** | Nice GUI authoring — but OpenAI *retired theirs* |
-| 11.14 | ChatKit embeddable UI / Apps-in-ChatGPT | **SKIP** | You already own the app UI + export; niche |
+| 11.14 | ChatKit embeddable UI / Apps-in-ChatGPT | **SKIP** | BioRouter already owns the app UI + export; niche |
 | 11.15 | Hosted Evals platform + Reinforcement Fine-Tuning | **SKIP** | OpenAI is *shutting both down* (see §12) |
 
-### 11.1 Reliability & execution-control primitives — **ADOPT**
+### 11.1 Reliability and execution-control primitives — **ADOPT**
 
 A cluster of small knobs that separately look minor but together are why an
-SDK-built agent "just works." None of these were in your asks; most are cheap:
+SDK-built agent "just works." None of these were in the original asks; most are cheap:
 
 - **Error-to-final-output handlers** (`errorHandlers`/`error_handlers`, keys
   `maxTurns`/`modelRefusal`/`default`) — convert a blown turn-limit or a model
@@ -717,13 +781,13 @@ guardrail work). High reliability ROI, low surface area.
 
 `outputType`/`output_type` (Zod/Pydantic → JSON Schema, `strict:true`) makes the
 final answer a *typed object*, not prose. Already proposed in §3.3 — restated
-here because it's squarely "a feature you didn't ask for." For BioRouter it
+here because it's squarely "a feature that was not asked for." For BioRouter it
 upgrades the heuristic ` ```chart ` block into a validated contract and lets apps
 declare "the agent must return `{gene, pathways[], citations[]}`."
 
 ### 11.3 Safety guardrails: PII/PHI, prompt-injection, groundedness — **ADOPT ★ (the standout)**
 
-You said "guardrails" generically (the harness/stop-hook ask, §3.6). But OpenAI
+The original ask said "guardrails" generically (the harness/stop-hook ask, §3.6). But OpenAI
 ships a **separate open-source guardrails package** (`openai-guardrails-python`/
 `-js`, MIT) with *specific content checks* that BioRouter has **no equivalent
 for**, and that matter enormously for a biomedical tool:
@@ -743,7 +807,7 @@ for**, and that matter enormously for a biomedical tool:
 
 BioRouter's `SecurityInspector` only matches *malware command patterns*; it does
 nothing for PHI, injection, or grounding. This is the **single most valuable
-thing the research surfaced that you didn't mention.**
+thing the research surfaced that was not mentioned in the original asks.**
 
 **Recommendation:** add a **content-guardrail pipeline** (pre-flight → input →
 output stages, tripwires, config-driven like the manifest `guardrails` block in
@@ -817,7 +881,7 @@ renderer. Good fit, medium effort; pairs naturally with structured outputs
 
 ### 11.10 Voice / realtime agents — **CONSIDER (strategic)**
 
-Two subsystems neither you nor my first plan mentioned: **realtime speech-to-
+Two subsystems that neither the original asks nor the first plan mentioned: **realtime speech-to-
 speech** (`RealtimeAgent`/`RealtimeSession` over WebRTC/WebSocket, barge-in/turn
 detection, tools + handoffs + guardrails *in* the audio loop) and the **Python
 voice pipeline** (STT→agent→TTS). For a lab/clinic, hands-free dictation and
@@ -887,6 +951,7 @@ SDK** (incl. tracing), **ChatKit** (frontend), and **Guardrails** alive. The
 durable bet is the **code-first SDK primitives**, not the hosted products.
 
 **What this means for BioRouter:**
+
 - BioRouter already *is* the durable, code-first, provider-agnostic layer OpenAI
   is steering people back toward. Lean into that — it's the right side of this
   trend.
@@ -898,7 +963,9 @@ durable bet is the **code-first SDK primitives**, not the hosted products.
 
 ---
 
-## 13. Updated decisions for you (extends §10)
+## 13. Updated decisions (extends §10)
+
+These continue the numbering of §10 and, like it, were left unanswered in this document.
 
 9. **Content guardrails (11.3)** — adopt a PII/PHI + prompt-injection +
    groundedness pipeline, PII/PHI on-by-default for clinical-data apps? *(Strong
@@ -918,6 +985,7 @@ durable bet is the **code-first SDK primitives**, not the hosted products.
     and a hosted evals/RFT platform (per §12)?
 
 ### Updated roadmap deltas
+
 - **Phase 2** absorbs: structured outputs (11.2), reliability cluster (11.1),
   **and the content-guardrail pipeline (11.3)** — elevate guardrails to a Phase-2
   headline, not just the goal-hook.
@@ -930,7 +998,7 @@ durable bet is the **code-first SDK primitives**, not the hosted products.
 
 ---
 
-### Appendix A — Key BioRouter files referenced
+## Appendix A — key BioRouter files referenced
 
 - Agent loop / turns: `crates/biorouter/src/agents/agent.rs`
 - Hooks: `crates/biorouter/src/hooks/` (`mod.rs`, `event.rs`)
@@ -949,7 +1017,7 @@ durable bet is the **code-first SDK primitives**, not the hosted products.
   `bundle.rs`, `render.rs`, `templates/sdk.ts`)
 - App Runner: `crates/biorouter-server/src/routes/apps.rs`
 
-### Appendix B — OpenAI sources (grounded)
+## Appendix B — OpenAI sources (grounded)
 
 - `github.com/openai/openai-agents-js` (README, docs guides, `examples/docs/
   sandbox-agents/basic.ts`, `human-in-the-loop/index.ts`, package.json's)
@@ -960,3 +1028,11 @@ durable bet is the **code-first SDK primitives**, not the hosted products.
   outputs)
 - Announcement-level (AgentKit / Agent Builder / ChatKit / Connector Registry /
   Evals): secondary coverage — **verify in a browser before quoting**.
+
+## Related documentation
+
+- [App SDK implementation design RFC](implementation-design.md) — the code-level companion written one day later, which turns this inventory into Rust types, WebSocket frames and hook points.
+- [Apps SDK v2 design](../../apps-sdk/v2-design.md) — the 2026-07-12 spec that superseded this RFC and answered its open decisions.
+- [Apps SDK reference](../../apps-sdk/sdk-reference.md) — what the `br.*` surface and manifest actually look like as shipped.
+- [Apps SDK v2 phase roadmap](../../apps-sdk/v2-phase-roadmap.md) — the phase plan that replaced §7's roadmap.
+- [Agent Drafter apps platform design](../../agent-drafter/apps-platform-design.md) — the app platform this SDK was designed to extend.

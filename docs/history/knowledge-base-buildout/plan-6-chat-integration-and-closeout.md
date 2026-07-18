@@ -1,6 +1,29 @@
-# Knowledge Chat Integration + Polish Implementation Plan
+# Plan 6 — knowledge chat integration and closeout
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 6 of the six-plan Knowledge buildout, and the last: persisting the active KB to disk, a chat-side KB chip in `ChatInput`, a `/knowledge` slash command, the retracted-node badge Plan 5 deferred, and the closing `CLAUDE.md` documentation.
+> **Status:** Historical record — executed and shipped. `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx` and the `~/.config/biorouter/knowledge/.active-kb` persistence file are both documented in `CLAUDE.md` as shipped behaviour. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge subsystem, and agents tracing how active-KB state reaches a chat session.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, executed in order against the design in
+> [`founding-design.md`](founding-design.md). "Phase *N*" refers to the fifteen-row
+> implementation-phasing table in that design document.
+
+Plans 1 through 5 built the Knowledge backend and its own top-level UI route. This plan connects it to chat — where most users will actually reach it — and closes the feature out.
+
+> **Note — worktree paths, line anchors and test counts are point-in-time.**
+> Commands below `cd` into `/Users/wgu/Desktop/biorouter-knowledge`, the isolated
+> git worktree the Knowledge branch was developed in; read it as your own checkout
+> root. The baseline gates ("`knowledge_routes`: 18 passed", "`knowledge::`: 120
+> passed") record the suite as it stood when this plan was written; the Knowledge
+> library suite is roughly 122 tests today, so a higher number is expected, not a
+> failure. Line anchors such as `server.rs:15-46`, `ChatInput.tsx:21-23` and
+> `types.rs:88-104` have moved — use the symbol names quoted alongside them.
+
+> **Note — "no Playwright runs in this plan" was a one-off session constraint.**
+> The TDD note below records an instruction given for this execution session only.
+> It is not a standing policy: Playwright end-to-end tests remain part of the
+> desktop test strategy, and [Plan 5](plan-5-graph-view-and-change-log.md) uses one.
 
 **Goal:** Close out the Knowledge feature by tying the chat side to the Knowledge view (active-KB picker chip in `ChatInput`, persistent active-KB across chat sessions, a `/knowledge` slash-command palette entry), wrap up the polish items that Plan 5 explicitly deferred (retracted-source `!` badge in the graph), and ship `CLAUDE.md` + release-notes guidance. After Plan 6 the feature ships.
 
@@ -9,15 +32,24 @@
 - **UI ↔ server sync:** `KnowledgeContext` (frontend) calls the new `POST /knowledge/active` when the user picks a KB in either the Knowledge view OR the chat-side chip. The MCP server picks up the change next time it spawns. (Same-process live sync from HTTP into a running MCP stdio process is out of scope — chat sessions read from the file at boot.)
 - **Chat chip:** a new `BottomMenuKnowledgeSelection.tsx` in `ui/desktop/src/components/bottom_menu/` mirrors the existing `BottomMenuSkillSelection.tsx` pattern. The chip shows the active KB's name (or "No KB") and opens a small popover listing all KBs. Mounted in `ChatInput.tsx` alongside the existing `BottomMenuModeSelection` / `BottomMenuExtensionSelection` / `BottomMenuSkillSelection` chips.
 - **Slash command palette:** there is already a slash-command popover (`/`-triggered) wired through `MentionPopover`. Add one entry: `/knowledge`. Selecting it inserts a small templated prompt that nudges the model to use the `kb_*` tools (e.g. "Using the Knowledge extension, … ").
-- **Retracted badge:** `ForceGraphCanvas` already has the `retractedColor` constant imported but unused. Read `node.credibility_tier` is wrong shape for retraction (it's tier, not a flag); the retraction lives in `raw/<id>/meta.yaml` and is surfaced via graph node credibility derivation — confirm the GraphNode schema actually carries the retraction signal, or extend `graph.rs` to write it. Render a small red "!" overlay on retracted nodes.
+- **Retracted badge:** `ForceGraphCanvas` already imports the `retractedColor` constant but never uses it. Render a small red "!" overlay on retracted nodes.
 
-**Tech Stack:** Rust (axum, utoipa) for the new HTTP route; React 19 + Tailwind for the chip + slash-entry; CSS-only badge.
+  > **Open question, to resolve in Task 6.** `node.credibility_tier` is the wrong
+  > shape to drive this: it carries a tier, not a retraction flag. Retraction is
+  > recorded in `raw/<id>/meta.yaml` and reaches the graph through credibility
+  > derivation. Before building the badge, confirm whether the `GraphNode` schema
+  > already carries the retraction signal; if it does not, extend `graph.rs` to
+  > write it.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md). Prior plans: 1-5 covered phases 1-13. Plan 6 covers phases 14 (chat integration) and 15 (polish + docs). The spec's scope notes on retracted nodes are at ~L195-210; on chat integration at "Acceptance plan #14".
+**Tech stack:** Rust (axum, utoipa) for the new HTTP route; React 19 + Tailwind for the chip + slash-entry; CSS-only badge.
 
-**This is Plan 6 of 6.** After Plan 6 there is no Plan 7 — every spec phase has a task.
+**Source spec:** [`founding-design.md`](founding-design.md) — see its "Credibility tiers" section for the retracted-node rules and its "Implementation phasing" table for the phase numbering. Prior plans: 1-5 covered phases 1-13. Plan 6 covers phase 14 (chat integration) and phase 15 (polish + docs).
 
-**TDD note:** Backend tasks add Rust integration tests. Frontend tasks rely on `npm run typecheck` + `npm run lint:check`. Per user instruction: **no Playwright runs in this plan.** Use cargo tests + lint + tsc for smoke.
+**Series position:** Plan 6 of 6. After Plan 6 there is no Plan 7 — every spec phase has a task.
+
+**TDD note:** Backend tasks add Rust integration tests. Frontend tasks rely on `npm run typecheck` + `npm run lint:check`. For this execution session only, no Playwright runs (see the note above); use cargo tests + lint + tsc for smoke.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
@@ -43,14 +75,13 @@ Expected:
 
 - [ ] **Pre-step B:** integration points to know.
 
-  - `crates/biorouter-mcp/src/knowledge/server.rs:15-46` — `ActiveKbState` (Tokio `RwLock<Option<String>>`).
-  - `crates/biorouter-mcp/src/knowledge/server.rs:450-470` — `kb_set_active` / `kb_get_active` MCP tools.
+  - `crates/biorouter-mcp/src/knowledge/server.rs` — `ActiveKbState` (Tokio `RwLock<Option<String>>`), and the `kb_set_active` / `kb_get_active` MCP tools.
   - `crates/biorouter-server/src/routes/knowledge.rs` — existing route module.
-  - `ui/desktop/src/components/ChatInput.tsx:21-23` — existing bottom-menu chip imports.
+  - `ui/desktop/src/components/ChatInput.tsx` — existing bottom-menu chip imports.
   - `ui/desktop/src/components/bottom_menu/BottomMenuSkillSelection.tsx` — reference style for the new chip.
   - `ui/desktop/src/components/MentionPopover.tsx` — slash-command list and selection.
   - `ui/desktop/src/components/knowledge/KnowledgeContext.tsx` — frontend active-KB state.
-  - `crates/biorouter-mcp/src/knowledge/types.rs:88-104` — `GraphNode` schema (does it carry `retracted: bool`?).
+  - `crates/biorouter-mcp/src/knowledge/types.rs` — the `GraphNode` schema (does it carry `retracted: bool`?).
 
 ---
 
@@ -58,7 +89,7 @@ Expected:
 
 **Backend:**
 
-```
+```text
 crates/biorouter-mcp/src/knowledge/
 ├── service.rs                   — MODIFY: add get_active_persisted / set_active_persisted
 ├── server.rs                    — MODIFY: ActiveKbState reads/writes the persisted file
@@ -73,7 +104,7 @@ ui/desktop/openapi.json + sdk.gen.ts + types.gen.ts — REGEN
 
 **Frontend:**
 
-```
+```text
 ui/desktop/src/components/bottom_menu/
 └── BottomMenuKnowledgeSelection.tsx                — NEW: KB chip + popover
 
@@ -868,6 +899,9 @@ git commit -m "docs(claude.md): document Knowledge feature module + key invarian
 
 ## Spec coverage cross-check
 
+Mapping each of the fifteen phases in the founding design's "Implementation
+phasing" table to the plan that delivered it.
+
 | Spec phase | Plan |
 |---|---|
 | 1. Backend skeleton | 1 |
@@ -891,3 +925,11 @@ All 15 phases covered.
 **Deliberately deferred** (would be a Plan 7 if scoped):
 - Future-state ghost-node rendering in change-log preview mode. Requires a new `GET /knowledge/bases/:id/state-at?sha=…` returning the full graph at that SHA. The current Plan-5 "preview" mode shows a banner only; the graph keeps showing current data. If the user wants it, write Plan 7.
 - Server-side stored layout positions for >500-node KBs (graph perf risk noted in the spec's Risks section). Not needed until a real user hits the limit.
+
+## Related documentation
+
+- [Knowledge founding design](founding-design.md) — the fifteen-phase table this plan closes out, and the chat-integration and credibility-tier sections it implements.
+- [Plan 5 — graph view and change log](plan-5-graph-view-and-change-log.md) — deferred the retracted badge and the ghost-node preview that this plan picks up and re-defers.
+- [Plan 2 — macros and sub-agent loop](plan-2-macros-and-subagent-loop.md) — introduced the in-memory `ActiveKbState` that Task 1 makes persistent.
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — the route module Task 2 extends with `GET` / `POST /knowledge/active`.
+- [Knowledge ingestion format roadmap](../../knowledge-base/ingestion-format-roadmap.md) — the Knowledge work that came after this series closed.

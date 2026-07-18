@@ -1,22 +1,60 @@
-# BioRouter App SDK (BRSDK) — Implementation-Level Design
+# BioRouter App SDK implementation design (RFC, June 2026)
 
-> Status: **implementation design / RFC**. Authored 2026-06-24. Companion to
-> [docs/agent-drafter-sdk-plan.md](agent-drafter-sdk-plan.md) (the strategy +
-> feature inventory). This doc is the code-level "how": concrete Rust
-> types/traits/signatures, the TypeScript client surface, the WebSocket protocol
-> v2, manifest schema, the exact hook points in the existing code (with
-> `file:line`), new files/crates, schema migrations, a phased build order, and a
-> consolidated test plan.
->
-> Scope = everything in the original seven asks **plus** the "✅ worth adding"
-> set (content guardrails incl. PII/PHI, structured outputs, the reliability
-> cluster, handoffs/agents-as-tools/lazy tools, HITL + serializable RunState,
-> spanned tracing + GUI timeline, per-app model surface) **plus** interactive
-> widgets (agent-emitted forms/tables that call back into the loop).
->
-> It was produced by reading the real tree. Where an agent's assumption was
-> corrected by the code, the correction is folded in (e.g. schema version is
-> **8**, the resume primitive is `get_session`, not `load_session`).
+> **What this is.** The code-level companion RFC to the App SDK strategy plan: concrete
+> Rust types and traits, the unified app manifest, WebSocket protocol v2 frames, the exact
+> hook points in the tree at the time of writing, schema migration v9, a phased build
+> order, and a consolidated test plan.
+> **Status:** Historical record — authored 2026-06-24 and largely built. The
+> `biorouter-sandbox` leaf crate it recommended in open question 1 now exists, and the
+> manifest, capabilities and orchestration blocks it proposes are the ones documented as
+> shipping in [the Apps SDK reference](../../apps-sdk/sdk-reference.md). The current
+> authority on behaviour is [the Apps SDK v2 design spec](../../apps-sdk/v2-design.md)
+> (2026-07-12) and that reference, not this document.
+> **Audience:** developers working on the Agent Drafter / Apps SDK, and anyone tracing why
+> the shipped design looks the way it does.
+
+**BRSDK** — used throughout this document — is the **BioRouter App SDK**: the client
+library (`agent_drafter/templates/sdk.ts`) plus the server-side runner
+(`biorouter-server/src/routes/apps.rs`) that together give a generated BioRouter app a
+defined way to reach the agent engine. This RFC is the "how" half of a pair; the "why and
+what" half is [the strategy RFC and OpenAI comparison](strategy-and-openai-comparison.md),
+authored one day earlier. Read that one for the competitive framing and the feature
+inventory; read this one for the types, frames and hook points.
+
+> **Warning.** Every `file:line` anchor below was verified against the tree **as of
+> 2026-06-24 only**. The repository has been refactored since; treat the line numbers as a
+> snapshot that locates the *concept*, not as coordinates you can jump to today. The file
+> paths are far more durable than the line numbers.
+
+## Numbering key
+
+The document carries two parallel schemes for the same material, and cross-references use
+both. They map as follows:
+
+| Section | Cluster | Subject |
+|---|---|---|
+| §1 | — | Shared backbone (manifest, frames, client shape, hook map) |
+| §2 | Cluster 1 | Files · databases · sandboxed compute · vault |
+| §3 | Cluster 2 | Content guardrails · goal harness · HITL + RunState |
+| §4 | Cluster 3 | Orchestration · structured outputs · reliability · model surface |
+| §5 | Cluster 4 | Context recovery/compaction/sharing · tracing · lifecycle |
+| §6 | Cluster 5 | TypeScript client · interactive widgets · GUI |
+| §7–§10 | — | Conflict resolutions, build order, test strategy, open questions |
+
+## Scope and provenance
+
+Scope = everything in the original seven asks **plus** the "✅ worth adding" set (content
+guardrails incl. PII/PHI, structured outputs, the reliability cluster, handoffs /
+agents-as-tools / lazy tools, HITL + serializable RunState, spanned tracing + GUI timeline,
+per-app model surface) **plus** interactive widgets (agent-emitted forms/tables that call
+back into the loop).
+
+It was produced by reading the real tree. Where an agent's assumption was corrected by the
+code, the correction is folded in — for example the session schema version is **8**, and
+the resume primitive is `get_session`, not `load_session`.
+
+> **Note.** The companion strategy RFC still states session schema **v7**; this document's
+> §1.1 supersedes that figure for the June 2026 tree.
 
 ---
 
@@ -158,6 +196,7 @@ new apps degrade gracefully against an old server. `ClientFrame`
 (`routes/apps.rs:214`) and the server emitter gain the additive variants.
 
 **Server → client**
+
 | type | payload | source |
 |---|---|---|
 | `ready` | `{protocol:2, capabilities:[…], sessionId?, clientKey?, resumed?, messageCount?}` | §5a |
@@ -177,6 +216,7 @@ new apps degrade gracefully against an old server. `ClientFrame`
 | `data_result` / `compute_result` | per §2 | §2 |
 
 **Client → server**
+
 | type | payload | source |
 |---|---|---|
 | `prompt` | `{text, images?, output_type?}` | v1 + §4b |
@@ -202,7 +242,7 @@ single **frame-dispatch table** routes every server frame to a typed event +
 built-in side-effect; unknown frames are forwarded by name (forward-compat) and
 never throw. New namespaces (capability-gated via `br.has(cap)`):
 
-```
+```text
 br.files.{list,read,write,upload,url,search}          §2.1
 br.data.{sources,query,table}                         §2.2
 br.compute.{run,python,cancel}                        §2.3
@@ -236,21 +276,25 @@ br.on('guardrail'|'approval'|'output'|'usage'|'trace'|'compaction'|'handoff'|'to
 ### 1.6 New crates / modules / files (master list)
 
 **Engine (`crates/biorouter/src/`)**
-- `sandbox/{mod.rs,local.rs,docker.rs}` — `SandboxClient` trait + impls (placement caveat §7.3).
+
+- `sandbox/{mod.rs,local.rs,docker.rs}` — `SandboxClient` trait + impls (placement caveat §7.4).
 - `guardrails/{mod.rs,pii.rs,checks.rs,run_state.rs}` — pipeline, local PII/PHI, LLM-judge checks, serializable RunState.
 - `agents/subagent/{mod.rs,extension_dispatch.rs}`, `agents/agent_as_tool.rs`, `agents/lazy_tools.rs`, `agents/app_workflow.rs`, `agents/structured_output.rs`, `agents/reliability.rs`.
 - `observability/{mod.rs,trace.rs,processors/…}` — `ObsBus`, span tree, optional Langfuse/Phoenix/OTLP adapters.
 
 **MCP (`crates/biorouter-mcp/src/`)**
+
 - `developer/jail.rs` — `Jail` (canonicalize + prefix + symlink-hardened).
 - `datasql/mod.rs` — `DataSqlServer` (DuckDB/SQLite, read-only-by-default) registered in `BUILTIN_EXTENSIONS`.
 - `agent_drafter/vault.rs` — DK gen/wrap via keyring, `.vault/` AES-GCM, `{{vault:NAME}}` resolver.
 
 **Server (`crates/biorouter-server/src/`)**
+
 - `apps/distill.rs` — two-phase KB lesson distillation job.
 - routes/handlers in `apps.rs` (files HTTP, session backlog, models, v2 frames).
 
 **Frontend (`ui/desktop/src/`)**
+
 - `components/applications/{AppCapabilityBadges,ApprovalPrompt,TraceTimeline}.tsx`, `hooks/useAppAgentSocket.ts`, `sdk/__tests__/sdk.test.ts` (+ `vitest.config.ts` alias to the real `sdk.ts`).
 
 **New deps**: `aes-gcm`, `rand`, `aho-corasick`, `duckdb` (or `rusqlite`), `hmac`,
@@ -274,15 +318,17 @@ CREATE INDEX idx_run_states_session ON agent_run_states(session_id);
 
 ---
 
-## 2. Cluster 1 — Files · Databases · Sandboxed compute · Vault (data plane)
+## 2. Cluster 1 — files, databases, sandboxed compute and vault (data plane)
 
 ### 2.1 File access (workspace jail)
 
-Manifest:
+The manifest shape for the capability:
+
 ```rust
 pub struct FilesCapability { pub entries: Vec<WorkspaceEntry>, pub max_file_bytes: Option<u64> }
 pub struct WorkspaceEntry { pub name: String, pub local_dir: Option<String>, pub mode: String /*ro|rw*/, pub out_dir: bool }
 ```
+
 Default root `~/.config/biorouter/agent_drafter/<id>/workspace/`; `entries` mount
 extra host dirs ro/rw.
 
@@ -310,11 +356,14 @@ signed GET URL for `<img src>`/downloads; `search` uses the workspace BM25.
 
 ### 2.2 Databases
 
+The capability declares a list of allowed sources:
+
 ```rust
 pub struct DataCapability { pub sources: Vec<DataSource> }
 pub struct DataSource { pub name:String, pub kind:String /*knowledge|spoke|omop|cdw|sql*/,
                         pub file:Option<String>, pub ref_id:Option<String>, pub read_only:bool }
 ```
+
 New bundled `DataSqlServer` (`crates/biorouter-mcp/src/datasql/`, registered in
 `BUILTIN_EXTENSIONS`), DuckDB preferred (native CSV/Parquet) / SQLite fallback,
 opened read-only unless `read_only=false`; db file path resolved through the same
@@ -326,11 +375,15 @@ own extension tools. Client `br.data.{sources,query,table}`.
 
 ### 2.3 Sandboxed compute
 
+The capability selects a backend and its resource envelope:
+
 ```rust
 pub struct ComputeCapability { pub sandbox:String /*none|local|docker*/, pub timeout_s:u64,
                                pub network:String /*none|host*/, pub max_mem:Option<String>, pub image:Option<String> }
 ```
-New `crates/biorouter/src/sandbox/`:
+
+New `crates/biorouter/src/sandbox/` defines the backend trait and its factory:
+
 ```rust
 #[async_trait] pub trait SandboxClient: Send + Sync {
     fn label(&self) -> &'static str;
@@ -340,6 +393,7 @@ New `crates/biorouter/src/sandbox/`:
 }
 pub fn create(spec: SandboxSpec, kind:&str) -> Result<Arc<dyn SandboxClient>>;
 ```
+
 - `LocalProcessSandbox` — today's behavior, `label()="local(unsafe)"`, logs a
   warning on construction.
 - `DockerSandbox` — `docker run --rm --network none -v <ws>:/work:rw -w /work
@@ -354,11 +408,14 @@ Wire at the real shell choke points: `DeveloperServer::execute_shell_command`
 `cancellation_token`. `compute=none` (default) ⇒ no sandbox ⇒ those extensions
 aren't granted. Client `br.compute.{run,python}`.
 
-### 2.4 Encryption / vault
+### 2.4 Encryption and vault
+
+The capability names the secrets an app may reference:
 
 ```rust
 pub struct VaultCapability { pub encrypted: Vec<String> } // secret names referenceable
 ```
+
 `crates/biorouter-mcp/src/agent_drafter/vault.rs`: per-app 32-byte data key (DK)
 stored as a normal keyring secret via `Config::set_secret("agent_drafter.<id>.vault_dk", …)`
 (`config/base.rs:845`, transparently OS-keyring or file-fallback). Secret values
@@ -381,9 +438,11 @@ plaintext, export sidecar re-bind).
 
 ---
 
-## 3. Cluster 2 — Content guardrails · Goal harness · HITL + RunState
+## 3. Cluster 2 — content guardrails, goal harness, HITL and RunState
 
 ### 3.1 Guardrail pipeline
+
+The pipeline is a staged trait with three verdict kinds:
 
 ```rust
 pub enum GuardrailStage { PreFlight, Input, ToolInput, ToolOutput, Output }
@@ -393,9 +452,11 @@ pub enum GuardrailVerdict { Pass, Mask{masked_text:String, finding:String}, Trip
     async fn check(&self, ctx:&GuardrailContext<'_>) -> Result<GuardrailVerdict>;
 }
 ```
+
 `GuardrailPipeline` runs stage-matching guards (fail-open on `Err`, matching the
 existing `inspect_tools` doctrine). Stage wiring (cluster A found the exact
 sites):
+
 - **ToolInput** → a new `GuardrailInspector` in the existing `ToolInspector`
   chain (`agent.rs:284`/`:1404`): `Trip{blocked}`→`Deny`, `Trip{!blocked}`→
   `RequireApproval`, `Mask`→rewrite args + `Allow`. Inherits "most-restrictive
@@ -408,6 +469,7 @@ sites):
   mid-stream suppression — open Q).
 
 Checks (`guardrails/checks.rs` + `pii.rs`):
+
 - **`PiiGuard`** (LOCAL, `pii.rs`): regex + Luhn + keyword-anchored detectors for
   SSN/MRN/DOB/phone/email/address/credit-card + an `aho-corasick` name
   dictionary; `scan()`/`mask()`. `scan()` is the single seam where a Presidio/ONNX
@@ -419,7 +481,8 @@ Checks (`guardrails/checks.rs` + `pii.rs`):
   **Provider-agnostic by construction** — they use the app's configured provider
   (`agent.provider().await`), fail-open when none.
 
-Manifest:
+The manifest block that configures them:
+
 ```rust
 pub struct GuardrailsConfig { pub goal:Option<String>, pub business_scope:Option<String>,
   pub pii:PiiModeCfg /*off|mask|block*/, pub checks:Vec<GuardrailCheckCfg>,
@@ -427,6 +490,7 @@ pub struct GuardrailsConfig { pub goal:Option<String>, pub business_scope:Option
 pub struct GuardrailCheckCfg { pub kind:String /*injection|groundedness|moderation*/,
   pub stages:Vec<String>, pub on_trip:String /*block|fail|warn*/ }
 ```
+
 Tripwire → always emit `guardrail{}` frame; then Block/Fail/Warn per config.
 
 ### 3.2 Goal/Stop-hook harness (one-liner)
@@ -436,7 +500,10 @@ Tripwire → always emit `guardrail{}` frame; then Block/Fail/Warn per config.
 existing iteration-cap (`GOAL_MAX_ITERATIONS=20`), stall detection, and graceful
 give-up. One field, zero new engine code. Auto-`clear_goal` on socket close.
 
-### 3.3 HITL approvals + serializable RunState
+### 3.3 HITL approvals and serializable RunState
+
+Human-in-the-loop (HITL) approval means the agent pauses before a tool call and waits
+for a person to allow or decline it.
 
 Per-tool `needs_approval` → `update_permission_manager(tool, AskBefore)` so the
 existing `PermissionInspector` yields `RequireApproval` (`agent.rs:1448`).
@@ -444,12 +511,14 @@ Interactive path reuses `ActionRequiredManager` (`action_required_manager.rs:39`
 + new `approval{}` frame ↔ `br.approve/reject`. Non-interactive path
 (`approvals_require_persistence` or a client-advertised non-interactive flag):
 snapshot to a serializable `RunState` (`guardrails/run_state.rs`):
+
 ```rust
 pub struct RunState { pub version:u32, pub run_id:String, pub session_id:String, pub app_id:String,
   pub status:RunStatus, pub pending_tool:PendingTool, pub reason:String,
   pub conversation:Conversation, pub session_config:SessionConfig,
   pub remaining_turns:u32, pub goal:Option<GoalState> }
 ```
+
 (`Conversation`/`SessionConfig` already derive serde; add derives to `GoalState`.)
 Persist in the v9 `agent_run_states` table (`save/load/update/list_pending_run_states`).
 `Agent::resume_run(run_id, approved, reason)`: on approve → dispatch the pending
@@ -470,7 +539,7 @@ emits `approval{}`, approve resumes to `done`, PII-block emits `guardrail{blocke
 
 ---
 
-## 4. Cluster 3 — Orchestration · Structured outputs · Reliability · Model surface
+## 4. Cluster 3 — orchestration, structured outputs, reliability and model surface
 
 ### 4.1 Multi-agent orchestration
 
@@ -515,12 +584,15 @@ resolves with the typed object and skips markdown scraping.
 
 ### 4.3 Reliability cluster
 
-`SessionConfig.reliability: Option<ReliabilityConfig>`:
+`SessionConfig.reliability: Option<ReliabilityConfig>` gathers the execution-control
+knobs:
+
 ```rust
 pub struct ReliabilityConfig { pub tool_timeout_s:Option<u64>, pub tool_timeout_behavior:ToolTimeoutBehavior,
   pub tool_not_found_behavior:ToolNotFoundBehavior, pub tool_use_behavior:ToolUseBehavior,
   pub error_to_output:bool, pub parallel_tools:bool, pub reset_tool_choice:bool }
 ```
+
 Mapped to real sites: **timeout** wraps the awaited tool future in
 `dispatch_tool_call` (`agent.rs:660`) → `ErrorAsResult` returns an `is_error`
 `CallToolResult` (model self-corrects) or `Raise`; **concurrency** spawns each
@@ -554,7 +626,7 @@ fields; manifest serde back-compat; WS variant roundtrips.
 
 ---
 
-## 5. Cluster 4 — Context recovery/compaction/sharing · Tracing · Lifecycle
+## 5. Cluster 4 — context recovery, compaction, sharing, tracing and lifecycle
 
 ### 5.a Durable, resumable sessions (the recovery fix)
 
@@ -583,10 +655,13 @@ archive to `knowledge/_context/<session>/…` via `write_page`, add
 
 ### 5.c Context sharing (KB-backed)
 
+The memory capability picks the knowledge base and the access mode:
+
 ```rust
 pub struct MemoryCapability { pub kb:Option<String>, pub mode:MemoryMode /*off|read|read_write*/,
   pub shared_kb:Option<String>, pub distill:bool }
 ```
+
 Within-app scratch: `br.memory.{note,recall}` → `write_page`/scoped `search`
 under `knowledge/scratch/{app_id}/`. **Two-phase distillation** (`apps/distill.rs`)
 on session end (WS read-loop exit, detached `tokio::task` since the session is now
@@ -611,6 +686,7 @@ default** (`tracing.redact=true` ⇒ names+timings only, no args/text). Persist 
 Langfuse/Phoenix/OTLP (feature-gated; in-GUI path needs no external dep). WS route
 adds a `tokio::select!` arm draining `ObsBus.subscribe()` filtered by session →
 `trace{span}` frames (+ `trace{snapshot}` on resume).
+
 ```rust
 pub struct TracingCapability { pub enabled:bool, pub redact:bool /*default true*/, pub processor:Option<String> }
 ```
@@ -631,7 +707,7 @@ agent.
 
 ---
 
-## 6. Cluster 5 — TS client · Interactive widgets · GUI
+## 6. Cluster 5 — TypeScript client, interactive widgets and GUI
 
 ### 6.a Client refactor (one IIFE, back-compatible)
 
@@ -647,6 +723,7 @@ only; generics confined to signatures.
 
 Widget tree (terse discriminator `t`, every node maps 1:1 to existing `br-*`
 theme classes ⇒ **zero new CSS**, passes `lint_app`):
+
 ```ts
 type WidgetNode =
  | {t:"card";title?;children} | {t:"row";children} | {t:"col";children}
@@ -656,6 +733,7 @@ type WidgetNode =
  | {t:"checkbox";name;label?;checked?} | {t:"form";children}
  | {t:"button";label;action;variant?;submit?;payload?};
 ```
+
 **Emission = a `render_widget` MCP tool** (autovisualiser-style: validate +
 escape, `common.rs` pattern), whose result `apps.rs` translates into a
 `widget{id,tree}` frame — chosen over a structured-output contract because it
@@ -780,7 +858,14 @@ touched) `cd ui/desktop && npm run test:run`; after route changes
 
 ---
 
-## 10. Consolidated open questions / decisions
+## 10. Consolidated open questions and decisions
+
+> **Note.** These were the questions left open on 2026-06-24. This RFC records no
+> answers to them; the design that actually shipped is described in
+> [the Apps SDK v2 design spec](../../apps-sdk/v2-design.md) and
+> [the Apps SDK reference](../../apps-sdk/sdk-reference.md). Question 1 in particular
+> was settled in favour of the recommended leaf crate: `crates/biorouter-sandbox`
+> exists in the tree today.
 
 1. **`SandboxClient` crate placement** (§7.4) — leaf crate `biorouter-sandbox`
    (recommended) vs trait in `biorouter-mcp`.
@@ -811,7 +896,7 @@ touched) `cd ui/desktop && npm run test:run`; after route changes
 
 ---
 
-### Appendix — primary `file:line` anchors (verified)
+## Appendix: primary `file:line` anchors (verified 2026-06-24)
 
 `agents/agent.rs`: reply loop `1245`, per-turn loop `1257`, max_turns `1277`,
 dispatch `549`/`617`/`660`, list_tools `872`, tool-result drain `1487`, Stop/goal
@@ -831,3 +916,11 @@ events `44`, listeners `74`, handleFrame `149`, renderMarkdown `432`, renderChar
 `318`, mountChat `561`, createApp `655`. `developer/rmcp_developer.rs`: resolve_path
 `1545`, execute_shell_command `1229`. `config/base.rs`: set_secret `845`.
 `biorouter-mcp/src/lib.rs`: BUILTIN_EXTENSIONS `53`.
+
+## Related documentation
+
+- [App SDK strategy RFC and OpenAI comparison](strategy-and-openai-comparison.md) — the companion "why and what" RFC from one day earlier, whose feature inventory this document turns into types and frames.
+- [Apps SDK v2 design](../../apps-sdk/v2-design.md) — the 2026-07-12 spec that superseded this RFC and is the current authority on behaviour.
+- [Apps SDK reference](../../apps-sdk/sdk-reference.md) — the human-facing reference for the `br.*` surface and manifest schema as shipped.
+- [Apps SDK v2 phase roadmap](../../apps-sdk/v2-phase-roadmap.md) — the phase plan that replaced §8's build order.
+- [Agent Drafter apps platform design](../../agent-drafter/apps-platform-design.md) — the surrounding platform this SDK plugs into.

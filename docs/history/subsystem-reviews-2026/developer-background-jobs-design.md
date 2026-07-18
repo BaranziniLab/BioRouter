@@ -1,15 +1,34 @@
-# Biorouter Background-Process Monitor — Investigation, Design & Checklist
+# Developer extension background jobs — design record
 
-**Date:** 2026-06-14
+> **What this is.** The investigation, competitive survey, and shipped design for background process supervision in BioRouter: why the agent could not watch a long-running command, how other agents solve it, and the `shell background` / `shell_output` / `shell_wait` / `shell_kill` contract that was built in response — with its verification checklist and results.
+> **Status:** Historical record — the design shipped on 2026-06-14 as part of the **developer** extension. The supervisor lives in `crates/biorouter-mcp/src/developer/background.rs`, the checklist below is filled in with passing results, and a live agentic run on 2026-06-14 confirmed the start → wait → report loop end to end.
+> **Audience:** maintainers working on the developer extension and the agent loop.
 
-## 1. The problem
+A capable agent that starts a dev server, build, test suite, training run or deploy
+should keep watching it and resume when it finishes — without killing the job and
+without declaring it done early. Before this work BioRouter could do neither. This
+document records the investigation into why, the survey of how comparable agents
+solve it, and the design that shipped.
 
-When Biorouter launches something that finishes in minutes (a dev server, build,
+> **Note.** The title of this document is *background jobs*, not *monitor*. The
+> feature was prototyped as a standalone `monitor` extension and that extension was
+> removed; the shipped artefact is background job support inside the developer
+> extension. Earlier references to a "background-process monitor" mean this.
+
+> **Reading order.** If you only want the shipped tool contract, skip to
+> [Chosen design](#chosen-design). The problem statement, codebase investigation and
+> competitive survey record how that contract was arrived at.
+
+**Date:** 2026-06-14.
+
+## The problem
+
+When BioRouter launches something that finishes in minutes (a dev server, build,
 test suite, training run, deploy), a good agent should keep watching it and
 resume work when it's done — *without* killing the job or prematurely declaring
-it finished. Today Biorouter does neither well.
+it finished. Today BioRouter does neither well.
 
-## 2. What the codebase does today (investigation)
+## What the codebase did at the time
 
 - **Shell tool has no timeout and no tracking.** `developer` shell runs a
   command to completion (`crates/biorouter-mcp/src/developer/rmcp_developer.rs`),
@@ -30,12 +49,17 @@ it finished. Today Biorouter does neither well.
   (`crates/biorouter/src/providers/llamacpp_sidecar.rs`): spawn + `kill_on_drop`,
   deadline-based `/health` poll, `SidecarStatus` snapshots with a rolling
   log-tail, and a cross-process PID-file orphan reaper. This is the template the
-  monitor reuses.
+  background-job supervisor reuses.
 
-**Conclusion:** no built-in monitor exists; the primitives to build one
+**Conclusion:** no built-in supervisor exists; the primitives to build one
 (subprocess supervision, status snapshots, log tailing) do.
 
-## 3. How other agents do it (research synthesis)
+## How other agents do it
+
+> **Provenance.** This is a synthesis of published behaviour of other agent
+> products as of June 2026. The underlying sourced reports were archived in the
+> originating task transcript and are not available in this repository, so the
+> individual claims below are not independently citable from here.
 
 The serious implementations converge on one shape:
 
@@ -58,9 +82,7 @@ The serious implementations converge on one shape:
   listen for speed"; suspend-and-resume with a durable timer (LangGraph
   `interrupt()`, Temporal `sleep`/`wait_condition`) for long waits.
 
-Full sourced reports archived in the task transcript.
-
-## 4. Chosen design (shipped — merged into the developer extension)
+## Chosen design
 
 Implemented as part of the **developer** extension (the default coding surface),
 following the Claude Code / Codex shape where background tasks are a property of
@@ -83,7 +105,8 @@ foreground shell's hardened command builder (`configure_shell_command`) with
 | `shell_wait{job_id,timeout_secs}` | Watch up to `timeout_secs` (default 120, max 600). Return the moment the job **exits**, or at timeout with `status=running` and guidance to call again. **Never kills the job**; the loop continues. |
 | `shell_kill{job_id}` | SIGTERM then SIGKILL the whole process group; status → `killed`. |
 
-**Invariants:**
+### Invariants
+
 - Done-vs-running is decided from the **OS exit code** (`child.wait()`), never
   from log text — this is exactly the failure mode that makes Windsurf hang.
 - `shell_wait` returning `running` is the "report back without killing the
@@ -92,6 +115,8 @@ foreground shell's hardened command builder (`configure_shell_command`) with
 - Output is capped (400 KB) with an explicit truncation marker; whole process
   **group** is killed (not just the parent), reused from the shell-kill idiom.
 
+## Open item: cross-turn suspend-and-resume
+
 **Out of scope for the MVP (documented phase-2 path):** true cross-turn
 suspend-and-resume (checkpoint the session, register a one-shot scheduler wakeup
 that resumes the *same* session). That needs: a one-shot/delayed job in
@@ -99,7 +124,10 @@ that resumes the *same* session). That needs: a one-shot/delayed job in
 agent-loop yield point. The MVP's bounded `shell_wait` covers the common
 minutes-scale case without that surgery.
 
-## 5. Verification checklist (results)
+This item was not delivered with the MVP. Treat it as outstanding unless a later
+document supersedes it.
+
+## Verification checklist and results
 
 Backend unit tests — **all green** (`cargo test -p biorouter-mcp --lib developer::background::`, 6/6):
 
@@ -121,7 +149,7 @@ Integration / prompt:
       status, and to prefer `shell background=true` over `cmd &` (the `INSTRUCTIONS` const).
 - [x] Available by default via the developer extension; the standalone monitor extension and its catalog entries were removed.
 
-Verification history:
+### Verification history
 
 - The original standalone `monitor` extension was Playwright-verified in the dev
   app on 2026-06-14 (appeared as a BUILT-IN, enabled without error, and all five
@@ -132,3 +160,11 @@ Verification history:
   report when it finished. The model called `shell(background=true)` then
   `shell_wait` and reported `exited(0)` with the job's output — start → wait →
   report, without running inline or killing the job.
+
+## Related documentation
+
+- [Developer extension](../../extensions/built-in/developer.md) — the living reference for the shell tools this design added to.
+- [Long-running tasks and scheduling review](../agent-loop-review/subsystem-reviews/long-running-tasks-and-scheduling.md) — the broader review of the synchronous agent loop and cron-only scheduler that constrain the phase-2 path.
+- [Scheduled jobs](../../workflows/scheduled-jobs.md) — the cron scheduler that a one-shot wakeup would have to extend.
+- [Claude Code (agent landscape)](../../research/coding-agent-landscape/claude-code.md) — the background-task shape this design follows.
+- [Core loop and tool dispatch review](../agent-loop-review/subsystem-reviews/core-loop-and-tool-dispatch.md) — where the agent-loop yield point discussed under the open item would live.

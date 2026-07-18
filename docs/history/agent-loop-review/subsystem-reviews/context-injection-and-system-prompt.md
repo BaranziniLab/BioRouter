@@ -1,12 +1,22 @@
-# Context Injection & System Prompt Construction — Architecture Review
+# Context injection and system prompt construction — architecture review
 
-Subsystem owner files reviewed in full: `crates/biorouter/src/agents/prompt_manager.rs`,
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents how the agent assembles the system prompt and the message array — the three injection cadences, the MOIM ambient-context block, hint files and `@import`, and MCP instruction rendering — and critiques the text of `system.md` and `desktop_prompt.md`.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gap #1 (no context budget) was fixed by BR-2, gaps #2 and #3 (the frozen clock and MOIM accumulation) by BR-5, gap #7 (uncapped skill inlining) by BR-8, gap #10 (one prompt for 43+ providers) by BR-3, and the missing repo map by BR-1. Read it as the record behind those changes, not as current prompt documentation.
+> **Audience:** developers working on prompt construction, context injection, or extension instructions.
+
+**MOIM** is BioRouter's per-action ambient-context block — a fresh `<info-msg>` user message carrying the current time, working directory and each platform extension's contribution, re-injected before every provider call. The acronym is never expanded in the codebase; this review treats it as "message of the moment" and describes it fully under "What MOIM is, where and why it injects". Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `context-injection.md gap #N` (the file's former name).
+
+## Scope and files reviewed
+
+Read in full: `crates/biorouter/src/agents/prompt_manager.rs`,
 `crates/biorouter/src/agents/moim.rs`, `crates/biorouter/src/prompt_template.rs`,
 `crates/biorouter/src/hints/{load_hints.rs,import_files.rs,mod.rs}`, `crates/biorouter/src/system.rs`,
 `crates/biorouter/src/session_context.rs`, `crates/biorouter/src/slash_commands.rs`,
 `crates/biorouter/src/agents/{resource_refs.rs,vault_refs.rs}`, the six `prompts/*.md` files,
 plus the call sites in `crates/biorouter/src/agents/{agent.rs,reply_parts.rs,extension_manager.rs}`
 and `crates/biorouter-server/src/routes/agent.rs`, `crates/biorouter-cli/src/session/{builder.rs,prompt.rs}`.
+
+> **Note.** Line numbers in the citations below are as-read at review time and have drifted since; treat them as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -20,7 +30,7 @@ The agent's context is assembled from two independent streams:
 
 Text data-flow for one turn:
 
-```
+```text
 reply_internal (agent.rs:1520)
  └─ prepare_reply_context (agent.rs:417)
      ├─ fix_conversation() → validated message list
@@ -43,9 +53,9 @@ loop (per agent action):
 the `PromptManager` so the *next* `build()` picks them up — that is how the desktop and CLI prompts,
 workflow prompts, and `--system` overrides get in.
 
-## Answers
+## Review questions answered
 
-### WHEN are contexts injected (every injection point)
+### When contexts are injected (every injection point)
 
 Context is injected at **session/agent construction**, **per user turn**, and **per agent action
 inside a turn** — enumerated:
@@ -119,14 +129,14 @@ There are no other per-provider prompt variants.
 orientation); CLI appends `get_cli_prompt()` (`biorouter-cli/src/session/prompt.rs:2`) with terminal
 terseness + slash-command list. Both land in the same `# Additional Instructions` block.
 
-### What is MOIM, where and why it injects
+### What MOIM is, where and why it injects
 
 MOIM is a per-action injected **`<info-msg>` block** — a fresh "state of the world" note. The acronym is
 **never expanded anywhere in the codebase** (absence finding); functionally it is the
 message-of-the-moment / ambient-context injection. It is assembled by
 `ExtensionManager::collect_moim` (`extension_manager.rs:1482-1521`):
 
-```
+```text
 <info-msg>
 It is currently 2026-07-12 14:30:00        # chrono::Local, minute granularity (:1488)
 Working directory: /path/to/cwd
@@ -152,8 +162,8 @@ So MOIM lands after all trailing `tool_result`s — never between a `tool_call` 
 two expected "merged consecutive …" ones, the injection is abandoned and the original conversation is
 returned (`moim.rs:43-56`) — a conservative fail-safe. A thread-local `SKIP` flag disables it for tests
 (`moim.rs:8-10`). Minute granularity is a deliberate cost optimization
-(`docs/performance-review-2026-06-22.md:109`): it keeps the conversation hash stable within a minute so
-the block doesn't bust caches every second.
+(recorded in the [June 2026 performance review findings](../../performance-2026-06/review-findings.md)):
+it keeps the conversation hash stable within a minute so the block doesn't bust caches every second.
 
 ### How .biorouterhints / hints files work
 
@@ -198,7 +208,7 @@ and the built-in **Soul** base, and tells the model to load the `about-biorouter
 Discovery is bootstrapped by the Extension-Manager text (`system.md:19-23`): `search_available_extensions`
 then `manage_extensions`. Desktop adds the marketplace pointer (`desktop_prompt.md:12-14`).
 
-### Full text critique of system.md and desktop_prompt.md
+### What system.md and desktop_prompt.md enforce
 
 `system.md` is a compact, modern agent prompt and was clearly hardened by a prior review — a contract
 test (`prompt_manager.rs:368-415`) pins each behavioral clause against silent removal. What it enforces:
@@ -222,7 +232,9 @@ test (`prompt_manager.rs:368-415`) pins each behavioral clause against silent re
 `desktop_prompt.md` is purely orientational (GUI surfaces, sidebar sections, marketplace link) — 15 lines,
 no behavioral content, which is appropriate.
 
-Weaknesses in the prompt text itself: no explicit **planning/todo** guidance in `system.md` (that lives
+### Weaknesses in the prompt text itself
+
+This is a critique of the prose, separate from the architecture above: no explicit **planning/todo** guidance in `system.md` (that lives
 only in the todo extension's MOIM, so a session without that extension never hears it); no guidance on
 **large-output / context-budget** discipline; the biomedical-accuracy clause is a single sentence with no
 citation-format requirement; and "run tests when available" is not backed by any enforcement or
@@ -246,7 +258,10 @@ verification-before-completion norm.
 - **Contract test on behavioral clauses** (`prompt_manager.rs:368-415`) prevents accidental behavior loss.
 - **Single source of truth** for prompts embedded in the binary with a recompile-tracking workaround.
 
-## Gaps & weaknesses (feeds improvement phase)
+## Gaps and weaknesses
+
+These eleven items fed the improvement phase. They are what other documents in this
+review cite as `context-injection.md gap #N`; the numbering below is that scheme and is stable.
 
 1. **No total context budget anywhere.** Hints are concatenated with only a per-file 128 KB *parse* cap
    (`import_files.rs:53`); extension instructions, loaded-skill bodies (`agent.rs:526`), and MOIM are all
@@ -302,3 +317,11 @@ verification-before-completion norm.
 11. **Subagent prompt duplicates almost nothing from `system.md`.** `subagent_system.md` re-states role
     but omits the safety, citation, and biomedical-accuracy clauses, so subagents operate under materially
     weaker guidance than the main agent.
+
+## Related documentation
+
+- [State, awareness, todos, goals and version control](state-awareness-and-version-control.md) — the sibling review that covers what MOIM carries and the missing repo map; the two overlap on workspace awareness.
+- [Compaction and context management](compaction-and-context-management.md) — the other half of context handling: what happens when the assembled context grows too large.
+- [Context and prompts compared with other agents](../competitive-comparison/context-and-prompts.md) — how this prompt architecture measures against nine other coding agents.
+- [Context engineering guide](../../../agent-loop/context-engineering.md) — the current, living guidance on shaping BioRouter's context.
+- [Wave 1 context and prompts report](../../agent-loop-campaign/wave-reports/wave-1-context-and-prompts.md) — what was actually built in response to these gaps.

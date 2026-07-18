@@ -1,18 +1,68 @@
-# Knowledge Backend Foundation Implementation Plan
+# Plan 1 — knowledge storage, git and graph derivation
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** Plan 1 of the six-plan Knowledge buildout: the storage, git, format-conversion, credibility-classification and graph-derivation layers behind a shared `KnowledgeService`. No UI, no macros, no chat integration — those are Plans 2 through 6.
+> **Status:** Historical record — executed and shipped. The Knowledge feature is live; `crates/biorouter-mcp/src/knowledge/` contains the modules this plan specifies, and `CLAUDE.md` documents the on-disk layout, the module surface, and the ~122 backend library tests it now carries. The unticked `- [ ]` checkboxes below are the plan as written, not outstanding work.
+> **Audience:** developers working on the Knowledge subsystem, and agents tracing why a backend module is shaped the way it is.
+>
+> **Plan numbering.** "Plan *N* of 6" refers to the six sibling documents in this
+> folder, `plan-1-…` through `plan-6-…`, which were executed in order. The design
+> they implement is [`founding-design.md`](founding-design.md).
+
+Knowledge gives a user one or more personal, git-backed markdown knowledge bases that an LLM maintains incrementally. This plan builds the layer underneath all of that: enough that a developer, or the MCP tool surface, can create a knowledge base, add a raw source from a file / URL / pasted text, classify its credibility, and read back a derived graph.
+
+> **Warning — module paths in this document are stale.** The plan places the
+> service in `crates/biorouter/src/knowledge/`. In the shipped code the entire
+> module lives in **`crates/biorouter-mcp/src/knowledge/`**, and
+> `crates/biorouter/src/knowledge/mod.rs` is only a re-export
+> (`pub use biorouter_mcp::knowledge::*;`) — implementing it in `biorouter` would
+> have created a circular dependency, since `biorouter` depends on
+> `biorouter-mcp`. Read every `crates/biorouter/src/knowledge/…` path below as
+> `crates/biorouter-mcp/src/knowledge/…`. The `biorouter-mcp` paths in the plan
+> are correct as written.
+
+> **Note — pinned dependency versions are point-in-time.** Version pins such as
+> `git2 = "0.19"`, `pdf-extract = "0.7"` and `bm25 = "2.2"` record what was current
+> when the plan was written. They have since moved, and [Plan 2](plan-2-macros-and-subagent-loop.md)
+> notes its own BM25 snippet was written against `bm25 = "2.3"`. Check `Cargo.toml`
+> for the versions actually in use.
+
+## The plan series
+
+| Plan | Scope |
+|---|---|
+| **Plan 1 (this document)** | Storage, git, conversion, credibility, graph derivation |
+| [Plan 2](plan-2-macros-and-subagent-loop.md) | Macros (`kb_ingest_source` / `kb_query` / `kb_lint`) over a bounded sub-agent loop, `kb_search`, active-KB state, transaction tools |
+| [Plan 3](plan-3-http-routes-and-export.md) | HTTP routes in `biorouter-server` with SSE-streamed macros, `.brkb` export/import |
+| [Plan 4](plan-4-knowledge-view-and-ingest.md) | Sidebar entry, `KnowledgeView` shell, KB selector, ingest panel |
+| [Plan 5](plan-5-graph-view-and-change-log.md) | Force-graph view and the git change-log drawer |
+| [Plan 6](plan-6-chat-integration-and-closeout.md) | Chat-side KB chip, `/knowledge` command, persistence, closeout |
+
+## Scope and approach
 
 **Goal:** Build the storage, git, conversion, credibility, and graph-derivation layers of the Knowledge feature — enough that a developer (or the MCP tool surface) can create a knowledge base, add a raw source from a file / URL / pasted text, classify its credibility, and read back a derived graph. No UI, no macros, no chat integration.
 
 **Architecture:** A shared `KnowledgeService` in `crates/biorouter/src/knowledge/` owns all on-disk operations against `~/.config/biorouter/knowledge/<kb-id>/` (one git repo per KB). A thin `KnowledgeServer` in `crates/biorouter-mcp/src/knowledge/` wraps the service as MCP tools and is registered in `BUILTIN_EXTENSIONS`. Conversion uses pure-Rust crates (htmd, pdf-extract, docx-rs, csv). Credibility classification runs a deterministic ladder (identifiers → Crossref/OpenAlex → host patterns → agentic stub) with results cached on disk.
 
-**Tech Stack:** Rust 1.92, tokio, git2, htmd, pdf-extract, docx-rs, csv, reqwest, serde, serde_yaml, schemars, rmcp; insta + wiremock for testing.
+**Tech stack:** Rust 1.92, tokio, git2, htmd, pdf-extract, docx-rs, csv, reqwest, serde, serde_yaml, schemars, rmcp; insta + wiremock for testing.
 
-**Source spec:** [`docs/superpowers/specs/2026-05-30-knowledge-design.md`](../specs/2026-05-30-knowledge-design.md).
-
-**This is Plan 1 of ~6.** Subsequent plans (Macros + sub-agent loop, History/restore wiring to UI, HTTP routes, Frontend route, Graph view + change-log, Chat integration) come after this one ships.
+**Source spec:** [`founding-design.md`](founding-design.md).
 
 **TDD note:** Many tasks below combine "write the tests" and "write the implementation" into a single step rather than two separate steps. When executing, read the test code first, mentally check it fails against an empty implementation, then proceed with the implementation. The verification step ("Run tests, expect N passed") still gates each task.
+
+**Execution convention:** the plan was written for an agentic worker driving it task-by-task with the `superpowers:subagent-driven-development` or `superpowers:executing-plans` skill. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+## Task index
+
+The 34 tasks group into six stages:
+
+| Stage | Tasks | What it builds |
+|---|---|---|
+| Module scaffolding | 1–6 | Cargo dependencies, core types, path resolution, registry, per-KB manifest, default `schema.md` |
+| Git layer | 7–9 | Init / commit / log, transactions, preview and restore |
+| Service and stores | 10–12 | `KnowledgeService::create_base`, page store CRUD, raw source storage |
+| Conversion pipeline | 13–19 | HTML, PDF, DOCX, CSV, URL fetch, note URL extraction, dispatcher |
+| Credibility classifier | 20–27 | Identifiers, publisher allow-list, Crossref, OpenAlex, host patterns, agentic stub, dispatcher, wiring into `add_raw_source` |
+| Graph, history and MCP | 28–34 | Graph derivation and caching, history + restore, MCP server wrapper, `BUILTIN_EXTENSIONS` registration, end-to-end test, `CLAUDE.md` update |
 
 ---
 
@@ -39,7 +89,7 @@ cargo --version
 
 ## File structure (decomposition map)
 
-```
+```text
 crates/biorouter/src/knowledge/
 ├── mod.rs                       — module root, re-exports, KnowledgeService struct
 ├── types.rs                     — Manifest, RegistryEntry, SourceMeta, Credibility, GraphNode, GraphEdge, …
@@ -114,7 +164,7 @@ mkdir -p crates/biorouter-mcp/src/knowledge
 
 Write each new module file with a single `// placeholder` line so the crate compiles. Files to create with placeholder contents:
 
-```
+```text
 crates/biorouter/src/knowledge/mod.rs
 crates/biorouter/src/knowledge/types.rs
 crates/biorouter/src/knowledge/paths.rs
@@ -4242,4 +4292,9 @@ If clippy / fmt fixed anything, commit those tweaks separately under a `chore(kn
 - HTTP routes under `biorouter-server` — Plan 3.
 - All frontend work — Plans 4, 5, 6.
 
----
+## Related documentation
+
+- [Knowledge founding design](founding-design.md) — the approved design this plan implements, including the data model and credibility tiers it assumes.
+- [Plan 2 — macros and sub-agent loop](plan-2-macros-and-subagent-loop.md) — picks up the deferred items listed above (`kb_search`, `kb_set_active`, the transaction MCP tools, the real agentic classifier).
+- [Plan 3 — HTTP routes and export/import](plan-3-http-routes-and-export.md) — puts this service behind `/knowledge/*` and adds `.brkb`.
+- [Knowledge ingestion format roadmap](../../knowledge-base/ingestion-format-roadmap.md) — the follow-on work extending the conversion pipeline built in Tasks 13–19.

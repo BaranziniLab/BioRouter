@@ -1,9 +1,18 @@
-# Server reply flow & session lifecycle (HTTP/WS)
+# Server reply flow and session lifecycle — architecture review
 
-Reviewer subsystem: `biorouter-server` reply/session/agent/action-required routes and how the
-Electron GUI drives them.
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It traces a GUI message through the `biorouterd` daemon — the SSE `/reply` route, session creation and resume, cancellation, the action-required approval pause, and auth and concurrency — and records eleven gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gap #1 (no server-side single-turn-per-session lock, which this review calls "the single most important gap") was fixed by BR-33, gap #2 (confirmation waits with no TTL) by BR-36, and the orphaned `/interrupt` route and the missing abort endpoint by BR-58 and BR-61-class work.
+> **Audience:** developers working on `biorouter-server` routes or the desktop chat stream.
 
-Primary files reviewed (all under the repo root):
+Despite the subsystem often being described as "HTTP/WS", this review's own finding is that **there is no WebSocket in the chat reply path** — the agent loop streams to the GUI over Server-Sent Events. The only WebSocket in the tree is the per-app Agent Drafter socket, which is out of scope here. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what the [review README](../README.md) and sibling reviews cite as `server-flow.md gap #N` (the file's former name). The answer sections below are deliberately unnumbered so that citation form is unambiguous.
+
+## Scope and files reviewed
+
+The subsystem is the `biorouter-server` reply, session, agent and action-required routes, and how the
+Electron GUI drives them. All paths are repository-relative.
+
+Backend (Rust):
+
 - `crates/biorouter-server/src/routes/reply.rs`
 - `crates/biorouter-server/src/routes/agent.rs`
 - `crates/biorouter-server/src/routes/session.rs`
@@ -11,7 +20,12 @@ Primary files reviewed (all under the repo root):
 - `crates/biorouter-server/src/routes/mod.rs`
 - `crates/biorouter-server/src/state.rs`, `auth.rs`, `commands/agent.rs`
 - `crates/biorouter/src/execution/manager.rs`, `agents/agent.rs`, `agents/tool_execution.rs`
+
+Frontend (TypeScript):
+
 - `ui/desktop/src/hooks/chatStreamStore.tsx`, `hooks/useChatStream.ts`, `components/ToolCallConfirmation.tsx`
+
+> **Note.** The review recorded no commit or branch; line numbers have drifted since and several of the `ui/desktop/src` components have moved. Treat every citation as a pointer to the right function, not an exact location.
 
 ## Overview
 
@@ -23,7 +37,7 @@ only WS in the tree is the per-app Agent Drafter socket in `routes/apps.rs`, out
 
 Text data-flow for one user turn:
 
-```
+```text
 GUI chatStreamStore.submitPreparedMessage
   └─ POST /reply  {session_id, user_message}            (SSE, AbortController.signal)
        reply() spawns a tokio task:
@@ -45,9 +59,9 @@ The reply route never touches the socket directly; it owns an `mpsc::channel(100
 adapted into an SSE body (`reply.rs:86-125`, `247-248`), and a `CancellationToken` shared with the
 agent (`reply.rs:249`, `321-326`).
 
-## Answers
+## Review questions answered
 
-### 1. Full request path: GUI message → route → streamed events → tool-call round-trip
+### Full request path — GUI message, route, streamed events, tool-call round-trip
 
 **Submit.** The GUI builds a `Message` and calls the generated `reply()` client, which issues
 `client.sse.post('/reply', …)` (`ui/desktop/src/api/sdk.gen.ts:447`). The body carries only
@@ -95,7 +109,7 @@ loop matches `req_id`, dispatches the tool if allowed (recording `AlwaysAllow`/`
 permission manager), or writes a `DECLINED_RESPONSE` tool result (`tool_execution.rs:173-229`). The
 resulting tool response streams back over the *same* SSE connection.
 
-### 2. Sessions: created / resumed / listed; route-level vs agent-level context
+### Sessions — created, resumed, listed, and where context is injected
 
 **Create.** `POST /agent/start` (`agent.rs:216-364`). It resolves an optional workflow
 (deeplink/id/inline), validates it, then `session_manager.create_session(working_dir, "New Session",
@@ -133,7 +147,7 @@ handles slash commands (`agent.rs:1344`), and `reply_internal`/`prepare_reply_co
 MOIM context (`super::moim::inject_moim`, `agent.rs:1596-1601`) and drains soft interrupts
 (`agent.rs:1589-1594`).
 
-### 3. Cancellation from the UI
+### Cancellation from the UI
 
 Cancellation is driven by **closing the SSE connection**, not a dedicated cancel endpoint.
 `stopStreaming` bumps `activeStreamId` and calls `abortController.abort()`
@@ -149,13 +163,13 @@ Note `POST /agent/stop` exists (`agent.rs:695-710`) but only removes the agent f
 **not** cancel a running turn. There is no `session_id`-addressed "cancel this turn" HTTP route — the
 client must own the SSE socket to stop generation.
 
-### 4. Action-required (permission ask) pause/resume
+### Action-required pause and resume
 
 Two distinct mechanisms:
 
 - **Tool permission asks** pause the loop by blocking on the `confirmation_rx` mpsc channel inside
   `handle_approval_tool_requests` (`tool_execution.rs:171-172`); resume is the
-  `/action-required/tool-confirmation` POST → `confirmation_tx.send` path in §1. Before prompting, a
+  `/action-required/tool-confirmation` POST → `confirmation_tx.send` path traced in the request path above. Before prompting, a
   `PermissionRequest` hook can auto-allow/deny without any user prompt (`tool_execution.rs:67-131`),
   and a `Notification` hook fires when a prompt is shown (`tool_execution.rs:133-148`).
 
@@ -165,7 +179,7 @@ Two distinct mechanisms:
   message, and returns an **empty** stream (`agent.rs:1248-1269`). The paused elicitation resumes
   inside whatever turn was awaiting it, rather than through the confirmation channel.
 
-### 5. Rate limiting, concurrency control, auth
+### Rate limiting, concurrency control and auth
 
 **Auth.** One middleware, `check_token` (`auth.rs:52-99`), applied to the whole router
 (`commands/agent.rs:54-57`). It requires header `X-Secret-Key` compared in **constant time**
@@ -211,42 +225,53 @@ turns.
   (`reply.rs:351-353`).
 - **Input validation**: `is_valid_session_id` (`session.rs:115-121`), `days` clamp, name length cap.
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
 
-- **No server-enforced single-turn-per-session.** The only guard is the GUI's `abortController` check.
-  A second `/reply` (from a second window, the CLI, a retry, or a raced click) can start a concurrent
-  turn on the same `Arc<Agent>`, sharing `confirmation_rx`/`soft_interrupts` and interleaving output.
-  State-of-the-art agents hold a per-session turn lock/queue server-side. This is the single most
-  important gap. (`reply.rs:257`, `manager.rs:84-116`.)
-- **Confirmation channel is not request-scoped.** `confirmation_rx` is one mpsc per agent
-  (`agent.rs:152-153`). Concurrent turns, or a stale/duplicate `/action-required` POST, can deliver a
-  confirmation to the wrong pending request; the loop just drops non-matching `req_id`s
-  (`tool_execution.rs:172-173`) with no timeout, so a lost confirmation blocks the turn **forever**
-  (until the client disconnects). No TTL, no "prompt expired" path.
-- **Permission wait ignores the cancel token.** `rx.recv().await` (`tool_execution.rs:171-172`) is not
-  in a `select!` with `cancel_token`; a mid-prompt cancel only works because the client closes the
-  socket and the stream is dropped. A programmatic cancel (`/agent/stop`) would not unblock it.
-- **`/agent/stop` does not stop a turn** (`agent.rs:695-710`) — misleadingly named; it evicts the
-  agent from the LRU while the reply task keeps its own `Arc`. There is no addressable
-  "abort the running turn" endpoint independent of owning the SSE socket.
-- **`conversation_so_far` lets the client overwrite server history.** `/reply` will
-  `replace_conversation` with a client-supplied array (`reply.rs:301-318`) via
-  `Conversation::new_unvalidated` — trusting unvalidated client state as the source of truth for a
-  turn. Loopback + secret mitigates, but it is a large, unvalidated trust surface.
-- **`/interrupt` (soft interrupt) is orphaned.** It has no `#[utoipa::path]`, is absent from
-  `openapi.json`, is not in the generated TS client, and the GUI never calls it (verified: no
-  `interrupt` symbol in `api/sdk.gen.ts`). A nice feature is effectively dead for desktop users.
-- **Rate limiting only covers auth failures.** An authenticated client has no request/turn quota; a
-  buggy loop or a shared-key multi-client setup can spawn unbounded concurrent `/reply` tasks
-  (`auth.rs:32-41`).
-- **No idempotency / retry safety on `/reply`.** With `sseMaxRetryAttempts: 1`
-  (`chatStreamStore.tsx:543`), an SSE reconnect re-POSTs and would start a *second* turn (appending the
-  user message again) rather than resuming the first — there is no turn id or resume token.
-- **Per-event DB round-trips.** `get_token_state` runs once **per streamed event**
-  (`reply.rs:363`, `369`, `472`); on a chatty stream this is many small SQLite queries where a cached
-  counter would do.
-- **Fragile client-side conversation merge.** `pushMessage` reconciles streamed deltas with
-  string-prefix/`JSON.stringify` heuristics (`chatStreamStore.tsx:105-144`); brittle versus a
-  server-authoritative message-id/patch protocol.
-- **Global mutable env at startup.** `BIOROUTER_APP_BASE_URL` is set via `std::env::set_var`
-  (`commands/agent.rs:69`) — process-global mutation used as ambient config.
+These eleven items fed the improvement phase. They are what other documents in this
+review cite as `server-flow.md gap #N`; the numbering below is that scheme and is stable.
+
+1. **No server-enforced single-turn-per-session.** The only guard is the GUI's `abortController` check.
+   A second `/reply` (from a second window, the CLI, a retry, or a raced click) can start a concurrent
+   turn on the same `Arc<Agent>`, sharing `confirmation_rx`/`soft_interrupts` and interleaving output.
+   State-of-the-art agents hold a per-session turn lock/queue server-side. This is the single most
+   important gap. (`reply.rs:257`, `manager.rs:84-116`.)
+2. **Confirmation channel is not request-scoped.** `confirmation_rx` is one mpsc per agent
+   (`agent.rs:152-153`). Concurrent turns, or a stale/duplicate `/action-required` POST, can deliver a
+   confirmation to the wrong pending request; the loop just drops non-matching `req_id`s
+   (`tool_execution.rs:172-173`) with no timeout, so a lost confirmation blocks the turn **forever**
+   (until the client disconnects). No TTL, no "prompt expired" path.
+3. **Permission wait ignores the cancel token.** `rx.recv().await` (`tool_execution.rs:171-172`) is not
+   in a `select!` with `cancel_token`; a mid-prompt cancel only works because the client closes the
+   socket and the stream is dropped. A programmatic cancel (`/agent/stop`) would not unblock it.
+4. **`/agent/stop` does not stop a turn** (`agent.rs:695-710`) — misleadingly named; it evicts the
+   agent from the LRU while the reply task keeps its own `Arc`. There is no addressable
+   "abort the running turn" endpoint independent of owning the SSE socket.
+5. **`conversation_so_far` lets the client overwrite server history.** `/reply` will
+   `replace_conversation` with a client-supplied array (`reply.rs:301-318`) via
+   `Conversation::new_unvalidated` — trusting unvalidated client state as the source of truth for a
+   turn. Loopback + secret mitigates, but it is a large, unvalidated trust surface.
+6. **`/interrupt` (soft interrupt) is orphaned.** It has no `#[utoipa::path]`, is absent from
+   `openapi.json`, is not in the generated TS client, and the GUI never calls it (verified: no
+   `interrupt` symbol in `api/sdk.gen.ts`). A nice feature is effectively dead for desktop users.
+7. **Rate limiting only covers auth failures.** An authenticated client has no request/turn quota; a
+   buggy loop or a shared-key multi-client setup can spawn unbounded concurrent `/reply` tasks
+   (`auth.rs:32-41`).
+8. **No idempotency / retry safety on `/reply`.** With `sseMaxRetryAttempts: 1`
+   (`chatStreamStore.tsx:543`), an SSE reconnect re-POSTs and would start a *second* turn (appending the
+   user message again) rather than resuming the first — there is no turn id or resume token.
+9. **Per-event DB round-trips.** `get_token_state` runs once **per streamed event**
+   (`reply.rs:363`, `369`, `472`); on a chatty stream this is many small SQLite queries where a cached
+   counter would do.
+10. **Fragile client-side conversation merge.** `pushMessage` reconciles streamed deltas with
+    string-prefix/`JSON.stringify` heuristics (`chatStreamStore.tsx:105-144`); brittle versus a
+    server-authoritative message-id/patch protocol.
+11. **Global mutable env at startup.** `BIOROUTER_APP_BASE_URL` is set via `std::env::set_var`
+    (`commands/agent.rs:69`) — process-global mutation used as ambient config.
+
+## Related documentation
+
+- [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — what `agent.reply(...)` does once this route hands off to it.
+- [Long-running tasks, background processes and scheduling](long-running-tasks-and-scheduling.md) — the `ActionRequiredManager` elicitation path this review contrasts with tool-permission confirmation.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this reply pipeline measures against nine other coding agents.
+- [Sessions guide](../../../sessions/README.md) — the current, living reference for session creation, resume and export.
+- [Wave 2 server cancellation report](../../agent-loop-campaign/wave-reports/wave-2-server-cancellation.md) — what was actually built in response to gaps #1 to #4.

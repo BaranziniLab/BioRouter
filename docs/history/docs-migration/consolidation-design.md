@@ -1,15 +1,20 @@
----
-date: 2026-05-07
-status: approved
----
+# Docs consolidation design
 
-# Docs Consolidation
+> **What this is.** The design for merging BioRouter's two competing documentation trees — the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site — into a single plain-markdown `docs/` folder, dropping the Docusaurus tooling, purging upstream Goose/Block branding, and renaming `recipe` → `workflow` throughout.
+> **Status:** Historical record — approved 2026-05-07 and executed. `documentation/` no longer exists and the target tree (`docs/getting-started/`, `docs/guides/`, `docs/extensions/`, `docs/troubleshooting/`) was built as specified. The companion task-by-task plan is [docusaurus-to-markdown-plan.md](docusaurus-to-markdown-plan.md).
+> **Audience:** maintainers, and anyone tracing why a documentation page lives where it does.
+
+Three terms this document assumes. **Goose** is the upstream open-source agent project that BioRouter was forked from; **Block** is the company that publishes Goose. Both appear throughout the inherited pages as branding that had to be replaced. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree — its output mixes JSX components into Markdown (MDX) and ships generated HTML, CSS, feeds and media alongside the source, none of which belongs in a plain documentation folder.
+
+Despite the `-design` filename, the body below is a migration checklist: file-by-file move tables, a deletion list, the text transformations to apply, and the verification commands. The executable step-by-step version is the companion plan linked above.
+
+> **Note.** The target paths in the tables below describe the layout as it stood after this migration, in May 2026. `docs/` was reorganized again in July 2026, so those paths are a record of the intended destination at the time rather than links you can follow today.
+
+## Goal
 
 Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` folder. Drop the Docusaurus infrastructure entirely. Purge all Goose/Block branding. Rename `recipe` → `workflow` throughout. Keep only built-in BioRouter extensions; discard all third-party MCP pages.
 
----
-
-## Source Inventory
+## Source inventory
 
 ### `documentation/` — 7 authoritative plain-markdown files (zero Goose references)
 
@@ -23,7 +28,7 @@ Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` 
 | `recipes.md` | `docs/guides/workflows/index.md` (recipe→workflow) |
 | `schedulers.md` | `docs/guides/schedulers.md` |
 
-### `docs/docs/` — Selected pages to carry forward (strip JSX, fix branding)
+### `docs/docs/` — selected pages to carry forward (strip JSX, fix branding)
 
 | Source | Target |
 | --- | --- |
@@ -57,9 +62,7 @@ Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` 
 | `mcp/code-execution-mcp.md` | `docs/extensions/code-execution.md` |
 | `mcp/todo-mcp.md` | `docs/extensions/todo.md` |
 
----
-
-## Target Structure
+## Target structure
 
 ```text
 docs/
@@ -110,9 +113,7 @@ docs/
     specs/
 ```
 
----
-
-## What Gets Deleted
+## What gets deleted
 
 All of the following are removed from `docs/`:
 
@@ -133,13 +134,11 @@ All of the following are removed from `docs/`:
 - `docs/docs/guides/` subdirectories not in the carry-forward list
 - `documentation/` folder entirely (all content merged into `docs/`)
 
----
+## Content transformations
 
-## Content Transformations
+Applied uniformly to every file carried forward.
 
-Applied uniformly to every file carried forward:
-
-### 1. Strip JSX / MDX
+### Strip JSX and MDX
 
 Remove all React component syntax and Docusaurus-specific markup:
 
@@ -150,7 +149,7 @@ Remove all React component syntax and Docusaurus-specific markup:
 
 Replace card grids with plain markdown link lists. Drop embedded videos entirely (link to external resource in text if essential).
 
-### 2. Branding replacements
+### Replace Goose and Block branding
 
 | Find (case-insensitive) | Replace with |
 | --- | --- |
@@ -160,7 +159,7 @@ Replace card grids with plain markdown link lists. Drop embedded videos entirely
 | `sq.github.io/goose` | `https://github.com/BaranziniLab/biorouter` |
 | "Block" as a company name | remove sentence or rewrite without company attribution |
 
-### 3. Recipe → Workflow rename
+### Rename recipe to workflow
 
 | Find | Replace |
 | --- | --- |
@@ -175,25 +174,21 @@ Replace card grids with plain markdown link lists. Drop embedded videos entirely
 | `.biorouter/recipes/` | `.biorouter/workflows/` |
 | `~/.config/biorouter/recipes/` | `~/.config/biorouter/workflows/` |
 
-### 4. Path / link cleanup
+### Clean up paths and links
 
 - Update all internal doc cross-links to reflect new file paths
 - Remove links to deleted pages (blog posts, external tools, Docusaurus-only routes)
 
----
-
-## Out of Scope
+## Out of scope
 
 - Custom/domain-specific extensions: OMOP agent, SPOKE agent, CDW agent — not included
 - Experimental features (`biorouter-mobile`, `vs-code-extension`) — not carried forward
 - Tutorial pages — dropped (can be recreated fresh if needed)
 - `docs/superpowers/` — untouched; plans and specs remain as-is
 
----
+## Verification criteria
 
-## Verification Criteria
-
-After implementation:
+These were written before the migration ran, as the checks it had to satisfy afterwards:
 
 1. `find docs/ -name "*.html"` → zero results
 2. `find docs/ -name "*.mp4" -o -name "*.mp3"` → zero results
@@ -202,3 +197,13 @@ After implementation:
 5. `ls docs/docs/mcp/` → directory does not exist
 6. `ls documentation/` → directory does not exist
 7. Every file in `docs/` (outside `superpowers/`) is a `.md` file
+
+> **Note.** This document does not record the run's output. The seven criteria were encoded as a runnable script, `scripts/verify-docs.sh`, which is still in the repository; see Task 1 of [docusaurus-to-markdown-plan.md](docusaurus-to-markdown-plan.md) for how it was built and Task 5 for how failures were worked through.
+
+## Related documentation
+
+- [Docusaurus-to-markdown migration plan](docusaurus-to-markdown-plan.md) — the task-by-task execution of this design, including the migration script and verification suite
+- [System overview](../../architecture/system-overview.md) — the page `documentation/architecture.md` became
+- [Workflows](../../workflows/README.md) — where `documentation/recipes.md` landed after the recipe→workflow rename
+- [Troubleshooting](../../troubleshooting/README.md) — the carried-forward troubleshooting section
+- [Extension trait design](../legacy-architecture/extension-trait-design.md) — one of the Docusaurus architecture pages carried forward here

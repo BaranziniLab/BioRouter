@@ -1,18 +1,51 @@
-# Dashboard Fold Mode Implementation Plan
+# Dashboard fold mode — implementation plan (v4)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **What this is.** The 13-task plan for a per-window "fold to card" mode in the
+> dashboard: a global Fold toolbar toggle, a live busy/idle indicator driven by
+> a new `onBusyChange` prop on `BaseChat`, and a muted accent palette.
+> **Status:** Superseded by removal. `FoldedCard.tsx`, `DashboardProvider.tsx`,
+> `DashboardContext.tsx` and the rest of the dashboard tree are gone as of
+> 2026-07-18 — see the [removal record](README.md). Only the `BaseChat.tsx`
+> touchpoint survives. The unticked `- [ ]` checkboxes below were ticked during
+> execution in a working copy (fold mode shipped in v1.85.3); they are not a
+> record of unfinished work.
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Cross-reference key.** Two schemes are used below and they are not
+> interchangeable. The body refers to its own steps by **task number**
+> ("Task 4 step 1"). The closing self-review maps back to the spec by **quoted
+> heading** ("Section 'State model · DashboardWindow extensions'"), because the
+> spec numbers no sections.
+
+**Date:** 2026-05-29
+**Spec:** [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md)
+
+> **Warning.** Task steps below pin edits to exact line ranges — for example
+> `DashboardContext.tsx:3-21`, `palette.ts:1-14`, `palette.test.ts:5-13`. Those
+> ranges were accurate against the working tree of 2026-05-29 only. The files
+> themselves have since been deleted, so **no line range in this plan can be
+> resolved against any current file**. Read them as pointers to the code shown
+> inline in each step, which is complete on its own.
 
 **Goal:** Add a per-window "fold to card" mode to the BioRouter dashboard, a global Fold toggle in the toolbar, a live busy/idle status indicator on cards, and replace the accent palette with muted, more cohesive colors.
 
-**Architecture:** Extend the existing `DashboardWindow` shape with `folded` (persisted) and `isBusy` (transient). Add four new actions to `DashboardContext` (`foldWindow`, `foldAll`, `unfoldAll`, `setWindowBusy`) plus a derived `allFolded`. `ChatWindow` keeps its chat subtree mounted at all times and switches between the existing title bar / chat / resize render and a new compact `<FoldedCard>` when `folded === true`. `BaseChat` gets a single `onBusyChange` callback so the dashboard learns when its inner chat is streaming. `organize()` is untouched — it already respects per-window sizes.
+**Architecture.** Five decisions carry the design:
 
-**Tech Stack:** React 19 + TypeScript, Vite, TailwindCSS, Vitest + React Testing Library, lucide-react icons.
+- Extend the existing `DashboardWindow` shape with `folded` (persisted) and `isBusy` (transient).
+- Add four new actions to `DashboardContext` — `foldWindow`, `foldAll`, `unfoldAll`, `setWindowBusy` — plus a derived `allFolded`.
+- `ChatWindow` keeps its chat subtree mounted at all times, switching between the existing title bar / chat / resize render and a new compact `<FoldedCard>` when `folded === true`.
+- `BaseChat` gets a single `onBusyChange` callback so the dashboard learns when its inner chat is streaming.
+- `organize()` is untouched — it already respects per-window sizes.
 
-**Spec reference:** [`docs/superpowers/specs/2026-05-29-dashboard-fold-mode-design.md`](../specs/2026-05-29-dashboard-fold-mode-design.md)
+**Tech stack:** React 19 + TypeScript, Vite, TailwindCSS, Vitest + React Testing Library, lucide-react icons.
+
+> **Note for agentic workers.** REQUIRED SUB-SKILL: use
+> `superpowers:subagent-driven-development` (recommended) or
+> `superpowers:executing-plans` to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
 ---
 
-## File Structure
+## File structure
 
 **New files:**
 - `ui/desktop/src/components/Dashboard/FoldedCard.tsx` — compact card render for a folded window.
@@ -110,7 +143,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/palette.ts ui/desktop/src/components/Dashboard/palette.test.ts
 git commit -m "feat(dashboard): switch accent palette to muted hues"
 ```
@@ -181,7 +214,7 @@ Expected: errors about `DashboardProvider` not implementing the new fields/metho
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/contexts/DashboardContext.tsx
 git commit -m "feat(dashboard): extend DashboardWindow + Api with fold/busy fields"
 ```
@@ -260,7 +293,7 @@ Expected: PASS (no test changes; the new optional field doesn't break existing a
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/dashboardStorage.ts
 git commit -m "feat(dashboard): persist window.folded across reloads"
 ```
@@ -470,7 +503,7 @@ Expected: no errors related to `DashboardProvider.tsx` or `DashboardContext.tsx`
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/DashboardProvider.tsx
 git commit -m "feat(dashboard): implement foldWindow/foldAll/unfoldAll/setWindowBusy"
 ```
@@ -581,7 +614,7 @@ Expected: PASS (the implementation from Task 4 already covers these). If any fai
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/DashboardProvider.test.tsx
 git commit -m "test(dashboard): cover fold/unfold/busy provider actions"
 ```
@@ -623,7 +656,7 @@ Expected: no errors mentioning `app-icons.tsx`.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/icons/app-icons.tsx
 git commit -m "feat(icons): export Minus icon"
 ```
@@ -654,7 +687,7 @@ At the end of `ui/desktop/src/styles/main.css`, append:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/styles/main.css
 git commit -m "style(dashboard): add breathe keyframes for busy indicator"
 ```
@@ -740,7 +773,7 @@ Expected: error on `ChatWindow.tsx` for not passing the new required `onFold` pr
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/WindowTitleBar.tsx
 git commit -m "feat(dashboard): add Fold button to WindowTitleBar"
 ```
@@ -889,7 +922,7 @@ Expected: no errors mentioning `FoldedCard.tsx`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/FoldedCard.tsx
 git commit -m "feat(dashboard): add FoldedCard component"
 ```
@@ -1087,7 +1120,7 @@ Expected: error on `BaseChat` not accepting `onBusyChange` — fixed in Task 11.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/ChatWindow.tsx
 git commit -m "feat(dashboard): render FoldedCard when window.folded is true"
 ```
@@ -1166,7 +1199,7 @@ Expected: no errors mentioning `BaseChat.tsx` or `ChatWindow.tsx`.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/BaseChat.tsx
 git commit -m "feat(chat): emit onBusyChange when chatState leaves Idle"
 ```
@@ -1264,7 +1297,7 @@ Expected: no errors.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add ui/desktop/src/components/Dashboard/DashboardToolbar.tsx
 git commit -m "feat(dashboard): add Fold toggle to toolbar"
 ```
@@ -1294,7 +1327,7 @@ Expected: PASS for everything Dashboard-related. Unrelated failures (if any pre-
 - [ ] **Step 3: Run the GUI**
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 just run-dev
 ```
 
@@ -1320,7 +1353,7 @@ In the running app, navigate to the Dashboard and verify each item below. Note a
 If all 10 smoke checks pass, append a CHANGELOG note or simply commit the existing `Cargo.lock` and `package-lock.json` updates produced by the dev build, with message:
 
 ```bash
-cd /Users/wgu/Desktop/biorouter
+cd <repo-root>
 git add -u
 git commit --allow-empty -m "chore(dashboard): manual fold-mode smoke test passed"
 ```
@@ -1329,9 +1362,9 @@ If any step fails, add a Task 14+ to this plan with the specific fix needed befo
 
 ---
 
-## Self-Review Notes
+## Self-review notes
 
-**Spec coverage** (cross-checked against `docs/superpowers/specs/2026-05-29-dashboard-fold-mode-design.md`):
+**Spec coverage** (cross-checked against the [v4 design spec](v4-window-fold-mode-design.md)):
 
 - Section "State Model · DashboardWindow extensions" → Task 2.
 - Section "State Model · DashboardContext API additions" → Task 2 + Task 4.
@@ -1352,3 +1385,10 @@ If any step fails, add a Task 14+ to this plan with the specific fix needed befo
 **Type consistency check:** new methods named identically across spec, context interface, provider implementation, and toolbar consumer: `foldWindow`, `foldAll`, `unfoldAll`, `setWindowBusy`, `allFolded`. New constants: `CARD_W`, `CARD_H` — used in `DashboardProvider.tsx` (exported) and consumed in `ChatWindow.tsx`. New prop names: `onFold` (WindowTitleBar), `onBusyChange` (BaseChat) — single canonical names, no synonyms.
 
 **Placeholder scan:** clean. Every step has full code blocks; every command has explicit expected output.
+
+## Related documentation
+
+- [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md) — the spec this plan implements, and the target of the self-review's quoted-heading references.
+- [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) — builds the canvas, `canvasLayout.ts` and `organize()` that this plan folds cards onto.
+- [Dashboard mode — removal record and archive index](README.md) — records fold mode shipping in v1.85.3 and its removal on 2026-07-18.
+- [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md) — introduces the `palette.ts` and `DashboardProvider` that Tasks 1 and 4 modify.

@@ -1,54 +1,54 @@
-You don't always need to manually manage extensions. The Extension Manager extension enables biorouter to dynamically discover, enable, and disable extensions during active sessions. Based on the task you give it, biorouter recognizes when it needs a specific extension, enables it when required, and suggests disabling unused extensions if the bloat is eating up your context window.
+# Extension Manager extension
 
-Simply describe your task, and biorouter will handle the extension management automatically.
+> **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small.
+> **Status:** Current — but note the correction below: the extension is enabled by default, so no manual setup is normally needed.
+> **Audience:** end users.
+
+You don't always need to manage extensions by hand. The Extension Manager lets BioRouter discover, enable and disable extensions during an active session. Based on the task you give it, BioRouter recognizes when it needs a specific extension, enables it, and suggests disabling unused ones when the tool bloat starts eating your context window. Describe your task and BioRouter handles the extension management.
+
+> **Note.** This extension is **enabled by default**. `crates/biorouter/src/agents/extension.rs` registers `extensionmanager` as a platform extension with `default_enabled: true`, and its test suite asserts this. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
 ## Configuration
 
-  
-  
-  
-  
+1. Run the `configure` command:
 
-  1. Run the `configure` command:
-  ```sh
-  biorouter configure
-  ```
+   ```bash
+   biorouter configure
+   ```
 
-  2. Choose to `Toggle Extensions`
-  ```sh
-  ┌   biorouter-configure 
-  │
-  ◇  What would you like to configure?
-  │  Toggle Extensions 
-  │
-  ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
-  // highlight-start    
-  │  ● extensionmanager
-  // highlight-end  
-  └  Extension settings updated successfully
-  ```
-  
+2. Choose `Toggle Extensions`, then confirm `extensionmanager` is enabled:
 
-## Why Use Extension Manager?
+   ```text
+   ┌   biorouter-configure
+   │
+   ◇  What would you like to configure?
+   │  Toggle Extensions
+   │
+   ◆  Enable extensions: (use "space" to toggle and "enter" to submit)
+   │  ● extensionmanager
+   └  Extension settings updated successfully
+   ```
 
-biorouter can work with many extensions, but having too many enabled at once can:
+## Why use the Extension Manager
+
+BioRouter can work with many extensions, but having too many enabled at once can:
+
 - Overwhelm the LLM with too many tool choices
 - Reduce the quality of tool selection
 - Slow down response times
-- Exceed recommended limits (5 extensions or 50 tools)
+- Exceed the recommended budget of 5 extensions or 50 tools
 
-The Extension Manager solves this by letting biorouter:
+The Extension Manager addresses this by letting BioRouter:
+
 - **Discover** what extensions are available
-- **Enable** extensions only when needed for specific tasks
+- **Enable** extensions only when needed for a specific task
 - **Disable** extensions when they're no longer required
 
-This creates a more focused, efficient experience where biorouter has access to exactly the tools it needs, when it needs them.
+The result is a more focused session where BioRouter has exactly the tools it needs, when it needs them.
 
-> **Tip:** For optimal performance, aim for **5 or fewer active extensions** with a total of **50 or fewer tools**. The Extension Manager helps you stay within these limits by enabling task-specific extensions only when needed.
+> **Note.** The "5 extensions / 50 tools" figure is a rule of thumb for keeping tool selection sharp, not an enforced limit. Nothing fails when you exceed it; tool-choice quality and response time degrade gradually.
 
-## Available Tools
-
-The Extension Manager provides these tools:
+## Available tools
 
 | Tool | Description | Use Case |
 |------|-------------|----------|
@@ -57,21 +57,32 @@ The Extension Manager provides these tools:
 | `list_resources` | List resources from extensions (if supported) | Discovering available data sources |
 | `read_resource` | Read specific resource content (if supported) | Accessing extension-provided data |
 
-> **Tip:** The resource tools (`list_resources` and `read_resource`) are only available when at least one enabled extension supports resources.
+> **Tip.** The resource tools (`list_resources` and `read_resource`) are only available when at least one enabled extension supports resources.
 
-## Example Usage
+## Malware scanning when an extension is enabled
 
-Let's enable an extension when we need it. In this example, we'll enable the GitHub extension to work with repositories.
+Enabling an extension that launches a package runner triggers a security check before the extension starts. BioRouter infers the ecosystem from the command — a command ending in `npx` is treated as npm, one ending in `uvx` as PyPI — parses the first package argument, and queries the OSV vulnerability database for `MAL-*` advisories. If the package is flagged as malicious, enabling it is denied.
 
-### biorouter Prompt
+Two consequences are worth knowing:
 
-```
+- Commands from other ecosystems are not recognized, and the check **fails open** — it is skipped rather than blocking the extension.
+- The endpoint can be overridden with the `OSV_ENDPOINT` environment variable.
+
+## Example usage
+
+In this example BioRouter enables the GitHub extension — an extension you install separately, rather than one of the built-ins documented in this folder — because the task needs it.
+
+### BioRouter prompt
+
+```text
 List all my GitHub repositories
 ```
 
-### biorouter Output
+### BioRouter output
 
-> **Note:** ```
+> **Note.** The transcript below is stylized. The uppercase `MANAGE_EXTENSIONS` and `LIST_REPOSITORIES` markers stand in for tool calls; they are not real tool names or a real tool-call format. The actual tool is `manage_extensions`, listed in [Available tools](#available-tools) above.
+
+```text
 I'll enable the GitHub extension for you so we can work with repositories.
 
 MANAGE_EXTENSIONS
@@ -92,3 +103,10 @@ Here are your repositories:
 
 Would you like to work with any of these repositories?
 ```
+
+## Related documentation
+
+- [Extensions and skills guide](../extensions-and-skills-guide.md) — installing, configuring and removing extensions yourself.
+- [Code Execution extension](code-execution.md) — the other lever for reducing context pressure, by batching tool calls instead of trimming the tool list.
+- [Context engineering](../../agent-loop/context-engineering.md) — why the active tool count matters to the context window.
+- [Extension trait design](../../history/legacy-architecture/extension-trait-design.md) — historical design record for how extensions are modelled internally.

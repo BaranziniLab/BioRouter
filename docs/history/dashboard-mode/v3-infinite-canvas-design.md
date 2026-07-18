@@ -1,7 +1,25 @@
-# Canvas Dashboard Design
+# Canvas dashboard — design spec (v3)
 
-> **Status:** Approved 2026-05-10. Updates the v1 dashboard mode at
-> [2026-05-10-dashboard-mode-design.md](./2026-05-10-dashboard-mode-design.md).
+> **What this is.** The design for turning the dashboard board into an
+> **infinite pannable canvas**: deleting the tuck sidebar, adding shrink /
+> enlarge window chrome, and replacing the inline picker expansion with a
+> vertical popup.
+> **Status:** Superseded, and then removed. Fold mode
+> ([v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md)) built
+> on the canvas described here, and the entire dashboard was deleted on
+> 2026-07-18 — `canvasLayout`, `DashboardCanvasContext` and the `/dashboard`
+> route are all gone, and the canvas branch was collapsed out of `useDiverge`.
+> See the [removal record](README.md).
+> **Audience:** maintainers reading the dashboard-mode archive.
+> **Lineage note.** The original status line below calls its predecessor "the v1
+> dashboard mode". That document calls *itself* the v2 rework of Lab Meeting
+> Mode. Both are right about different things — it was the first spec to use the
+> name "Dashboard Mode", and the second generation of the feature. This archive
+> numbers the whole lineage consistently: v1 Lab Meeting Mode → v2 Dashboard
+> Mode → **v3 canvas (this file)** → v4 fold mode.
+
+> **Original status line:** Approved 2026-05-10. Updates the dashboard mode
+> defined in [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md).
 
 ## Goal
 
@@ -11,7 +29,7 @@ relative to existing windows. Give each window quick **shrink / enlarge** chrome
 plus a vertical popup for secondary picker controls so narrow windows stay
 usable.
 
-## Non-Goals
+## Non-goals
 
 - Backend changes. The backend already auto-generates session names after the
   first user message — we just keep wiring the existing `syncSessionName` event.
@@ -38,7 +56,7 @@ The dashboard becomes a **viewport + world**:
 - **Picker collapse**: the `>` chevron now opens a vertical pop-up list above
   the toolbar (instead of inline horizontal expansion). Send button stays put.
 
-```
+```text
 ┌──── Viewport (overflow:hidden, drag-to-pan) ─────────────────────┐
 │  ┌── World layer (translate(camera.x, camera.y)) ──────────────┐ │
 │  │   ┌─ Window A ─┐    ┌─ Window B ─┐                          │ │
@@ -51,7 +69,7 @@ The dashboard becomes a **viewport + world**:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Components & Responsibilities
+## Components and responsibilities
 
 ### `DashboardContext` (modify)
 
@@ -103,7 +121,11 @@ eliminate overlap; recenter camera on the focused window after.
 Approach: iterative relaxation, keeping the focused (or oldest, if none
 focused) window anchored.
 
-```
+> **Note.** The block below is language-neutral pseudocode, not the shipping
+> implementation. It uses Python-style `for … in 1..N:` loops; the real module
+> is TypeScript (`canvasLayout.ts`).
+
+```text
 function organize(windows, focusedId):
     pin = focusedId or windows[0].id
     for pass in 1..MAX_PASSES (e.g. 8):
@@ -170,7 +192,7 @@ Icons: `Minimize2` and `Maximize2` from lucide-react (or app-icons re-export).
 
 ## Spawn placement details
 
-```
+```text
 GAP = 16
 MIN_WINDOW_W = 520
 MIN_WINDOW_H = 440   // bumped from 360 to fit the 4 popular-topic cards
@@ -207,21 +229,35 @@ since values are exact).
 
 The backend already calls `provider.generate_session_name(&conversation)` after
 the first user message (see
-[session_manager.rs:347](../../crates/biorouter/src/session/session_manager.rs#L347)).
-Frontend already invokes `dashboard.syncSessionName(...)` from
-[ChatWindow.tsx:160](../../ui/desktop/src/components/Dashboard/ChatWindow.tsx#L160)
-on the `onSessionUpdate` callback. Verify the pipeline still fires after our
-changes — no new code needed unless tests reveal a regression.
+[`session_manager.rs`](../../../crates/biorouter/src/session/session_manager.rs),
+at line 347 as of this spec's date).
+The frontend already invokes `dashboard.syncSessionName(...)` from
+`ui/desktop/src/components/Dashboard/ChatWindow.tsx` (line 160 at the time) on
+the `onSessionUpdate` callback; that file has since been deleted with the rest
+of the dashboard tree. Verify the pipeline still fires after our changes — no
+new code needed unless tests reveal a regression.
 
 ## Removals
 
-- `TuckSidebar.tsx`, `TuckedCard.tsx`, `HiddenChatHolder.tsx` — delete.
-- `DashboardWindow.isTucked` — remove.
-- `DashboardApi.tuckWindow`, `evokeWindow` — remove.
-- `DashboardState.T1`, `T2` — remove.
-- `DashboardApi.setT1`, `setT2` — remove.
-- `enforceT2Pure` helper in `DashboardProvider` — remove.
-- `onTuckByDrag` plumbing in `ChatWindow` and `DashboardBoard` — remove.
+Each of these existed only to serve the tuck system that this spec deletes. The
+`T1` / `T2` thresholds are defined in the
+[v1 design spec, §7.1](v1-lab-meeting-mode-design.md#71-threshold-definitions):
+`T1` was the grid limit, `T2` the board limit beyond which windows were tucked
+into a side panel.
+
+- `TuckSidebar.tsx`, `TuckedCard.tsx`, `HiddenChatHolder.tsx` — delete. These
+  rendered the side panel, one card per tucked window, and the off-board holder
+  that kept tucked chats alive.
+- `DashboardWindow.isTucked` — remove. The per-window flag for "this chat is in
+  the sidebar, not on the board".
+- `DashboardApi.tuckWindow`, `evokeWindow` — remove. The two actions that moved
+  a window into and back out of the sidebar.
+- `DashboardState.T1`, `T2` — remove. The two capacity thresholds.
+- `DashboardApi.setT1`, `setT2` — remove. Their toolbar setters.
+- `enforceT2Pure` helper in `DashboardProvider` — remove. The pure function that
+  tucked the oldest non-focused windows whenever the board exceeded `T2`.
+- `onTuckByDrag` plumbing in `ChatWindow` and `DashboardBoard` — remove. The
+  drop-zone handling that tucked a window dragged into the board's right edge.
 
 ## Testing strategy
 
@@ -240,10 +276,21 @@ Manual via Playwright debugger (final check):
 - Toggle `>` popup; verify Send remains visible and clicking outside dismisses.
 - Click Shrink / Enlarge; verify sizing.
 
-## Open Questions
+## Resolved questions
 
-None — clarifying questions answered:
-- Canvas pan: mouse drag on background AND trackpad scroll
-- `>` popup: click-outside dismisses
-- Auto-rename: LLM summary (already backend-owned)
-- Min size: hard floor on manual resize
+No open questions remained at approval. The clarifying questions raised in
+design review were answered as follows:
+
+| Topic | Decision |
+|---|---|
+| Canvas pan input | Mouse drag on background **and** trackpad scroll. |
+| `>` popup dismissal | Click-outside dismisses. |
+| Auto-rename source | LLM summary, already backend-owned. |
+| Minimum window size | Hard floor on manual resize. |
+
+## Related documentation
+
+- [Dashboard mode — removal record and archive index](README.md) — what became of the canvas, and what was deleted with it.
+- [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md) — the bounded-board design this one replaces; its §9 layout engine is what the canvas retires.
+- [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) — the 13-task plan that executed this spec.
+- [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md) — the successor, which folds windows on this canvas into compact cards.

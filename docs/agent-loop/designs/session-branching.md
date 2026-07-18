@@ -1,12 +1,51 @@
-# BR-45 — Session branching UX (fork/tree) with stable message ids
+# Session branching with stable message ids (BR-45)
 
-**Status:** design (implementation not started)
-**Lens:** UX (ux P-15); best-in-class branching = Pi (`/tree`, `/fork`, `/clone`), rewind = Claude Code.
-**Depends on / unblocks:** stable ids are a prerequisite for BR-53's message-level SSE patch protocol.
+> **What this is.** The design for replacing BioRouter's positional, re-derived message ids
+> with durable per-message UUIDs, and building a real session fork/branch tree on top of them.
+> **Status:** Current, partially shipped. Phase 1 landed — stable per-message ids, plus
+> `branch_point_msg_uid` and `truncate_after_id` on the diverge route (the
+> [wave 1 checkpoints report](../../history/agent-loop-campaign/wave-reports/wave-1-checkpoints.md)
+> records the OpenAPI regeneration). The branching and tree UX itself is **not built**, so
+> this document remains the plan for the remainder.
+> **Audience:** developers working on BioRouter's session persistence, diverge/edit routes,
+> and the chat transcript UI.
+
+Every message BioRouter shows a user is identified by its position in a list, and every
+branch, edit and fork operation anchors on a whole-second timestamp. Both are fragile
+foundations: a history rewrite renumbers every message, and two messages produced in the same
+second are indistinguishable as anchors. This document specifies a durable id that survives
+history rewrites, and the branch tree that becomes possible once it exists.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). Numbered "gaps" (#2, #10) are the
+> gap list at the end of the
+> [state-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md).
+> This document is BR-45, raised under the ux lens as P-15.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-45 |
+| Lens | UX (ux P-15) |
+| Inspired by | Pi for branching (`/tree`, `/fork`, `/clone`); Claude Code for rewind |
+| Depends on / unblocks | Stable ids are a prerequisite for **BR-53**, the proposed message-level SSE patch protocol that would let the server send per-message updates instead of whole-transcript refreshes. BR-53 is not built; see the [improvement proposals](../../history/agent-loop-review/improvement-proposals.md). |
+| Shipped | Phase 1, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, checkpoints cluster) |
+
+> **Note — terminology.** This document uses *diverge*, *fork*, *branch* and *clone* for
+> closely-related operations, because the code says `diverge`/`diverged_from` while the
+> comparators (Pi, Claude Code) say fork/branch/clone. The mismatch is real and unresolved;
+> open question 4 below is exactly the request to settle on one vocabulary. Until it is
+> settled, read `diverge` as the BioRouter name for what Pi calls a fork.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter's message identity is **positional and re-derived on every load**, and every branch/edit operation anchors on a **whole-second timestamp**. Both are fragile foundations for stable UI anchors, an edit/patch protocol, and a real branching tree.
 
@@ -14,8 +53,9 @@ BioRouter's message identity is **positional and re-derived on every load**, and
    `role, content_json, created_timestamp, metadata_json` (no id) and then stamps
    each message with `msg_{session_id}_{idx}` from its *enumerate index*
    (`crates/biorouter/src/session/session_manager.rs:1812-1817,1836`). The id is
-   a function of ordering, not of the message. This is exactly
-   `state-awareness.md` gap #10: "any history rewrite renumbers messages — fragile
+   a function of ordering, not of the message. This is exactly gap #10 in the
+   [state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md):
+   "any history rewrite renumbers messages — fragile
    for anything that wants stable per-message references (UI anchors, edit
    provenance)."
 
@@ -38,6 +78,7 @@ BioRouter's message identity is **positional and re-derived on every load**, and
      (`routes/session.rs:83-96`, doc-comment even mislabels it "(ms)") flows to
      `trim_to_last_complete_answer`, which keeps `m.created <= ts`
      (`session_manager.rs:909-928`).
+
    Because `created` is seconds, **two messages produced in the same second share
    an anchor**: an edit/diverge at one of them silently truncates the other
    (`>=` / `<=` are inclusive). The frontend passes `message.created` as the
@@ -50,7 +91,9 @@ BioRouter's message identity is **positional and re-derived on every load**, and
    session id (`diverge_session`, `:2208-2261`); the only "tree" affordance is
    sibling name numbering (`compute_branch_name`, `:2267-2286`). There is no API
    to fetch a branch forest, no fork-point annotation, and no GUI/CLI tree view —
-   `state-awareness.md` gap #10 and the Pi comparison call this out as the missing
+   gap #10 in the
+   [state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md)
+   and the Pi comparison call this out as the missing
    first-class branching UX.
 
 5. **The frontend already keys off the unstable id.** `BioRouterMessage.tsx:98`
@@ -99,7 +142,7 @@ pub fn new_message_id() -> String { uuid::Uuid::now_v7().to_string() }
 impl Message { pub fn ensure_id(&mut self) { if self.id.is_none() { self.id = Some(new_message_id()); } } }
 ```
 
-### Module layout — files to change
+### Module layout: files to change
 
 - `crates/biorouter/src/conversation/message.rs` — `new_message_id()` / `ensure_id()`.
 - `crates/biorouter/src/session/session_manager.rs` — schema col, migration 11,
@@ -112,7 +155,7 @@ impl Message { pub fn ensure_id(&mut self) { if self.id.is_none() { self.id = So
   message id as anchor; new `SessionTree` view (later phase). Regenerate API client.
 - `crates/biorouter-cli/src/tui/` — `/fork` `/tree` `/clone` commands (later phase).
 
-### Key APIs / signatures
+### Key APIs and signatures
 
 ```rust
 // session_manager.rs — persistence
@@ -164,7 +207,7 @@ struct DivergeSessionRequest{ name: Option<String>, truncate_after: Option<i64>,
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 - **Reuse the DB rowid as the stable id.** Rejected: `replace_conversation_inner`
   DELETEs + re-INSERTs on every compaction/edit (`session_manager.rs:1872-1904`),
@@ -176,8 +219,9 @@ struct DivergeSessionRequest{ name: Option<String>, truncate_after: Option<i64>,
   patch on a positional scheme, not a fix.
 - **Content-hash ids.** Rejected: identical messages collide; editing a message
   changes its id (defeating the point); hashing large tool blobs is wasteful.
-- **Adopt Pi's single-JSONL `parentId` session tree wholesale**
-  (`external/pi.md` §"State tracking & checkpoints"). Rejected: BioRouter persists
+- **Adopt Pi's single-JSONL `parentId` session tree wholesale** (see "State tracking
+  & checkpoints" in the [Pi research note](../../research/coding-agent-landscape/pi.md)).
+  Rejected: BioRouter persists
   to SQLite (one `sessions` row + append-only `messages`), and re-architecting to
   a per-entry parent-tree file is far beyond this item. We instead port Pi's
   *semantics* (a `parentId`/fork-point tree) onto the existing schema via
@@ -188,7 +232,7 @@ struct DivergeSessionRequest{ name: Option<String>, truncate_after: Option<i64>,
 
 ---
 
-## Migration & compatibility (config, persisted state, rollout)
+## Migration and compatibility
 
 - **Migration 11** (`apply_migration`, bump `CURRENT_SCHEMA_VERSION` 10 → 11 at
   `session_manager.rs:21`, forward-only per existing policy):
@@ -211,7 +255,7 @@ struct DivergeSessionRequest{ name: Option<String>, truncate_after: Option<i64>,
 
 ---
 
-## Test plan (unit/integration; what proves no regression)
+## Test plan
 
 **Unit — `cargo test -p biorouter` (session_manager, message):**
 - *Id stability across rewrite:* add N messages, snapshot ids, run
@@ -242,33 +286,53 @@ struct DivergeSessionRequest{ name: Option<String>, truncate_after: Option<i64>,
 
 ---
 
-## Effort & phasing (first mergeable slice)
+## Effort and phasing
 
-- **Phase 1 (first slice, S–M):** migration 11 + mint/persist/read stable
+- **Phase 1 (first slice, S–M). Shipped.** Migration 11 + mint/persist/read stable
   `msg_uid` in `add_message` / `replace_conversation_inner` / `get_conversation`
   with dual-read fallback. **No API or UX change.** This alone delivers stable ids
   and unblocks BR-53; fully unit-testable in `biorouter`. This is the mergeable
   slice.
-- **Phase 2 (M):** switch edit/fork/diverge anchoring to `msg_uid` (new optional
+- **Phase 2 (M). Partially shipped —** `branch_point_msg_uid` and `truncate_after_id`
+  landed on the diverge route. Switch edit/fork/diverge anchoring to `msg_uid` (new optional
   request fields, keep timestamp), add `truncate_conversation_after_uid` and
   `branch_point_msg_uid`; frontend passes `message.id`. Fixes the same-second
   truncation bug.
-- **Phase 3 (L):** first-class tree UX — `GET /sessions/{id}/tree`, a GUI
+- **Phase 3 (L). Not built.** First-class tree UX — `GET /sessions/{id}/tree`, a GUI
   branch/rewind view, and `/fork` `/tree` `/clone` CLI commands. Optional
   Pi-style branch-summary-on-abandon as a follow-up.
 
 ---
 
-## Open questions for the human (only genuine product decisions)
+## Open questions, and how the campaign answered them
+
+> **Note.** These are genuine product decisions, recorded as open when the design was
+> written. On 2026-07-13 the campaign owner signed off with a blanket "proceed with all of
+> the default options" (logged in the
+> [campaign README](../../history/agent-loop-campaign/README.md)). Phase 1 answered question 1
+> by construction — the shipped ids are UUIDv7, the recommended option. Questions 2–5 remain
+> genuinely open because the tree UX is unbuilt.
 
 1. **UUID scheme:** UUIDv7 (time-sortable, debug-friendly) vs plain v4? (Low
-   stakes; recommend v7.)
+   stakes; recommend v7.) *Answered: v7 shipped.*
 2. **Tree UX surface:** a dedicated left-rail session-tree view (Pi `/tree`), an
    inline "rewind to here" affordance per message (Claude Code), or both?
 3. **Fork scope:** conversation-only for v1, or also snapshot workspace files
-   (ties into the separate checkpoint/shadow-git gap, `state-awareness.md` #2)?
+   (this ties into gap #2 in the
+   [state-awareness review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md),
+   addressed by [shadow-git checkpoints](shadow-git-checkpoints.md))?
    Recommend conversation-only now.
 4. **Terminology:** keep `diverge`/`diverged_from`, or rename to `fork`/`branch`
    for consistency with Pi and Claude Code UX vocabulary?
 5. **Branch summaries:** inject a distilled summary of an abandoned branch on
    switch (Pi's `BranchSummaryEntry`) now, or defer?
+
+---
+
+## Related documentation
+
+- [Shadow-git checkpoints (BR-43)](shadow-git-checkpoints.md) — the files axis of restore; its checkpoints deliberately anchor on `created_timestamp` so they survive this document's id migration.
+- [Wave 1 checkpoints report](../../history/agent-loop-campaign/wave-reports/wave-1-checkpoints.md) — the implementation record for Phase 1, including the OpenAPI regeneration.
+- [State-awareness and version-control review](../../history/agent-loop-review/subsystem-reviews/state-awareness-and-version-control.md) — gaps #2 and #10, the source of this proposal.
+- [Cross-session memory (BR-17)](cross-session-memory.md) — the other design touching `replace_conversation_inner` and the same message write paths.
+- [Diverge behavior checklist](../../desktop-ui/diverge-behavior-checklist.md) — the manual QA pass for the diverge UI this design changes.

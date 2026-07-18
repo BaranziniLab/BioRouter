@@ -1,32 +1,80 @@
-# BR-64 — OS-level sandbox for tool execution
+# macOS Seatbelt sandbox for the shell tool (BR-64)
 
-**Lens:** R (robustness P-32). **Status:** proposed; Slice 1 implemented.
-**Inspired by:** Codex CLI (best-in-class) — macOS Seatbelt via `sandbox-exec -p`
-with writable-roots injected and network-outbound denied
-(`docs/agent-loop-review/external/codex-cli.md:44`), Linux `codex-linux-sandbox`
-= Landlock (filesystem) + seccomp (blocks network syscalls) + bubblewrap
-namespaces (`:45`); the two-axis model that separates *what is technically
-possible* (OS sandbox) from *when to ask* (approval policy) and escalates to an
-approval prompt on a sandbox denial rather than hard-failing (`:68`,
-`compare/safety.md:107-117`). OpenHands (Docker/VM runtime), Gemini CLI
-(Seatbelt/container), Claude Code (Bash sandbox) round out the field.
+> **What this is.** The design for BioRouter's first kernel-enforced containment of the
+> developer shell tool: a macOS Seatbelt profile with injected writable roots and outbound
+> network denied, kept deliberately separate from the approval policy.
+> **Status:** Superseded — historical record. Slice 1 shipped as
+> `crates/biorouter-sandbox/src/seatbelt.rs` during the 2026-07 agent-loop fix campaign, but
+> the forward-looking Slice 3 (Linux and Windows backends) was replaced wholesale by BR-69,
+> which generalized this single-backend model into a `ShellSandbox` trait now living at
+> `crates/biorouter-sandbox/src/shell_sandbox/{macos,linux,windows}.rs`. **The current plan of
+> record is [Linux and Windows sandboxing (BR-69)](../cross-platform/linux-and-windows-sandboxing.md).**
+> Read this document for the Seatbelt profile design and the reasoning behind the two-axis
+> model; do not use its phasing.
+> **Audience:** developers working on BioRouter's sandboxing and tool-execution containment.
 
-Complements — does not replace — **BR-20** (always-on catastrophic denylist),
-**BR-21** (auditable command policy engine), **BR-65** (managed tier). Those are
-the *auditable allow/ask/deny catalog* (what the model is *permitted* to ask
-for); BR-64 is the *kernel-enforced containment* (what the process is
-*technically able* to do). BR-21's own design already calls this out as
-"complementary, not a replacement" (`BR-21-design.md:263-268`).
+Every BioRouter guardrail before this work sat *before* `spawn()` and was advisory: the
+inspector chain could allow, ask, or deny a tool *request*, but once a request was approved
+the shell tool spawned a full-privilege child with the user's uid, environment, network and
+filesystem. This document specifies the first control that is enforced by the kernel rather
+than by prompt compliance — and confines itself to macOS, where Seatbelt needs no new
+dependency.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). This document is BR-64, raised
+> under the robustness lens as P-32.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-64 |
+| Lens | R (robustness P-32) |
+| Scope | macOS only. The H1 of the original document promised "OS-level sandbox for tool execution" generally; the design has always been Seatbelt-specific. |
+| Shipped | Slice 1, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, security cluster) |
+| Superseded by | [Linux and Windows sandboxing (BR-69)](../cross-platform/linux-and-windows-sandboxing.md) |
+
+> **Warning — this design ships on one of three platforms.** The cross-platform audit
+> recorded this as **GAP-4**: the shell sandbox exists on macOS only, so Linux and Windows
+> users get no kernel containment from BR-64 at all. See the
+> [platform parity audit](../cross-platform/platform-parity-audit.md). BR-69 is the response.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
+
+## What this design borrows
+
+The primary model is Codex CLI: macOS Seatbelt via `sandbox-exec -p` with writable roots
+injected and network-outbound denied, and a Linux `codex-linux-sandbox` built from Landlock
+(filesystem) + seccomp (blocks network syscalls) + bubblewrap namespaces. Codex also supplies
+the **two-axis model** that separates *what is technically possible* (the OS sandbox) from
+*when to ask* (the approval policy), and escalates to an approval prompt on a sandbox denial
+rather than hard-failing. See the
+[Codex CLI research note](../../research/coding-agent-landscape/codex-cli.md) and the
+[safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md).
+OpenHands (Docker/VM runtime), Gemini CLI (Seatbelt/container) and Claude Code (Bash sandbox)
+round out the field.
+
+This complements — it does not replace — **BR-20** (always-on catastrophic denylist),
+[**BR-21**](command-policy-engine.md) (auditable command policy engine) and
+[**BR-65**](managed-policy-tier.md) (managed tier). Those are the *auditable allow/ask/deny
+catalog*: what the model is *permitted* to ask for. BR-64 is the *kernel-enforced
+containment*: what the process is *technically able* to do. The BR-21 design says the same
+thing from the other side, calling an OS sandbox "complementary, not a replacement."
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter has **no process isolation at all**. Every guardrail sits *before*
 `spawn()` and is advisory:
 
 1. **The only enforcement is prompt-gated permission.** The tool-call gauntlet
-   (`internal/guardrails-permissions.md` Q6) is Security → Permission →
+   (Q6 in the
+   [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md))
+   is Security → Permission →
    Repetition → Hooks inspectors, all of which run in the agent loop *before*
    the tool executes and can only Allow / Ask / Deny the *request*. Once a
    request is approved (or auto-approved in `Auto` mode), the developer shell
@@ -42,17 +90,19 @@ BioRouter has **no process isolation at all**. Every guardrail sits *before*
 2. **So autonomy is bounded by prompt compliance, not the kernel.** In `Auto`
    mode the `PermissionInspector` returns `Allow` for everything
    (`permission_inspector.rs:121-122`); the regex scanner is
-   `SECURITY_PROMPT_ENABLED=false` by default and, when on, only *asks*
-   (`internal/guardrails-permissions.md:114`, gap #3). A prompt-injected or
+   `SECURITY_PROMPT_ENABLED=false` by default and, when on, only *asks* (gap #3 in the
+   [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md)).
+   A prompt-injected or
    simply mistaken command that slips past the (now BR-20-gated) catastrophic
    denylist runs with the operator's full authority — it can read `~/.ssh`,
    exfiltrate over the network, or write outside the project.
 
-3. **The comparison table is blunt about it.** `compare/safety.md:33` — "OS-level
-   sandbox: **none**" for BioRouter, against Codex (Seatbelt/Landlock/token),
+3. **The comparison table is blunt about it.** The
+   [safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md)
+   records "OS-level sandbox: **none**" for BioRouter, against Codex (Seatbelt/Landlock/token),
    Gemini (Seatbelt/container), OpenHands (Docker/VM), Claude Code (Bash
    sandbox). BioRouter is one of only four comparators (with Goose, Pi, Aider)
-   with zero isolation (`:107-117`).
+   with zero isolation.
 
 There *is* a `biorouter-sandbox` crate, but it is **container/subprocess** level
 (`LocalProcessSandbox` = a path-jail + timeout with *no* isolation, its own
@@ -136,9 +186,9 @@ impl SeatbeltPolicy {
 pub fn available() -> bool;
 ```
 
-### Control flow (shell spawn, revised)
+### Control flow: shell spawn, revised
 
-```
+```text
 execute_shell_command  (rmcp_developer.rs:1283)
   └─ configure_shell_command(shell_config, command, working_dir)   [shell.rs:109]
        gate = BIOROUTER_SHELL_SANDBOX   (default off)
@@ -191,7 +241,7 @@ group, so `kill_process_group` still reaps the whole tree.
 
 ---
 
-## Migration & compatibility
+## Migration and compatibility
 
 - **Default off.** With `BIOROUTER_SHELL_SANDBOX` unset, `configure_shell_command`
   is byte-for-byte the old behavior (same program, same args). Zero migration,
@@ -239,7 +289,11 @@ Shell integration (`cargo test -p biorouter-mcp developer::shell` /
 
 ## Phasing
 
-- **Slice 1 (this change, S/M):** macOS Seatbelt module + shell-spawn wrap,
+> **Note.** Slice 1 shipped as written. Slices 2–4 were **not** executed as described:
+> BR-69 replaced the single-backend model with a `ShellSandbox` trait and its own phasing.
+> Treat everything below Slice 1 as the original intent, not as the current plan.
+
+- **Slice 1 (this change, S/M). Shipped.** macOS Seatbelt module + shell-spawn wrap,
   off-by-default env gate, unit + live-enforcement tests. Independently valuable:
   a macOS user (or a UCSF fleet via env) gets kernel-enforced write-confinement +
   network-deny on the shell tool today.
@@ -247,13 +301,16 @@ Shell integration (`cargo test -p biorouter-mcp developer::shell` /
   two-axis property) — a denial becomes a `RequireApproval("re-run without
   sandbox?")` inspection result instead of an opaque failure; a `SandboxSpec`
   derived from `BioRouterMode`.
-- **Slice 3 (L):** Linux `codex-linux-sandbox`-style backend (Landlock + seccomp
+- **Slice 3 (L). Superseded by BR-69.** Linux `codex-linux-sandbox`-style backend (Landlock + seccomp
   + bubblewrap) behind the same gate; wire the Computer-Controller script exec
   and third-party MCP spawn paths.
 - **Slice 4 (M):** typed `Settings`/`config.yaml` surface + GUI toggle +
-  managed-tier (BR-65) pin so an admin can *force* the sandbox on.
+  managed-tier ([BR-65](managed-policy-tier.md)) pin so an admin can *force* the sandbox on.
 
-## Open questions (recommended option taken; recorded, not blocking)
+## Open questions, with the recommendation that was taken
+
+Each of these was recorded with a recommendation rather than left blocking, and the
+recommendation is what shipped in Slice 1.
 
 1. **Env var vs `config.yaml` for Slice 1.** *Recommendation taken:* env var
    (`BIOROUTER_SHELL_SANDBOX`), matching BR-21's `SECURITY_COMMAND_POLICY` and
@@ -267,3 +324,13 @@ Shell integration (`cargo test -p biorouter-mcp developer::shell` /
    process temp dir only (Codex's `workspace-write` shape). `~/.cache`,
    `~/.config` etc. are deliberately *not* writable by default; a workflow that
    needs them opts out via the flag until Slice 2 adds per-root config.
+
+---
+
+## Related documentation
+
+- [Linux and Windows sandboxing (BR-69)](../cross-platform/linux-and-windows-sandboxing.md) — the successor design that supersedes this one's cross-platform phasing.
+- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-4, which records that this design ships on one of three platforms.
+- [Wave 1 security report](../../history/agent-loop-campaign/wave-reports/wave-1-security.md) — the implementation record for Slice 1.
+- [Command policy engine (BR-21)](command-policy-engine.md) — the auditable allow/ask/deny catalog this containment layer complements.
+- [Safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md) — the table showing BioRouter had zero OS isolation before this work.

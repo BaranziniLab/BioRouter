@@ -1,8 +1,18 @@
-# Hooks System — Architecture Review
+# Hooks system — architecture review
 
-Scope: `crates/biorouter/src/hooks/` (mod, config, event, matcher, inspector, outcome,
-command_runner, prompt_runner) plus every invocation site in `agents/`, `scheduler.rs`,
-`biorouter-cli`. Paths are relative to the review worktree root.
+> **What this is.** One of ten subsystem reviews from the 2026-07 BioRouter agentic-loop review. It documents BioRouter's Claude-Code-compatible hook system — the 13 wired event variants, command versus prompt hooks, the outcome and decision model, configuration and matchers — and records thirteen gaps.
+> **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose findings were then implemented. Gap #1 (`PreToolUse` `additionalContext` silently dropped) and gap #2 (`PostToolUse` observe-only) were fixed by BR-19, #5 (unbounded injected hook stdout) by BR-26, #8 (name-only matchers) by BR-27, #3 (`fire()` aggregates discarded) by BR-28, and #7 (no rewrite path) by BR-19.
+> **Audience:** developers working on hooks, guardrails, or the tool-approval path.
+
+Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md). When other documents cite `hooks.md #N` they mean the numbered items under "Gaps and weaknesses" below (this file's former name), **not** the answer sections — those are deliberately unnumbered here to remove that ambiguity.
+
+## Scope and files reviewed
+
+`crates/biorouter/src/hooks/` (`mod`, `config`, `event`, `matcher`, `inspector`, `outcome`,
+`command_runner`, `prompt_runner`) plus every invocation site in `agents/`, `scheduler.rs`, and
+`biorouter-cli`. Paths are relative to the repository root.
+
+> **Note.** The review recorded no commit or branch, and line numbers in the citations below have drifted since; treat them as pointers to the right function, not exact locations.
 
 ## Overview
 
@@ -19,7 +29,7 @@ JSON, or a prompt-hook `ok:false`) blocks (`crates/biorouter/src/hooks/mod.rs:9`
 
 Data flow (per event):
 
-```
+```text
 agent loop reaches a lifecycle point
   → HooksManager::{pre_tool_use|user_prompt_submit|stop|session_start_once|dispatch|fire}
     → resolved_groups(event, cwd)   = global config groups ++ project groups (if opted-in)
@@ -43,9 +53,9 @@ Blocking decisions reach the agent through three distinct channels:
 inline checks in `tool_execution.rs` for PermissionRequest, and inline checks in `agent.rs`
 for UserPromptSubmit and Stop.
 
-## Answers
+## Review questions answered
 
-### 1. How many hook TYPES/events are there? Where does each fire?
+### How many hook events there are, and where each fires
 
 There are **13 event variants** in the `HookEvent` enum
 (`crates/biorouter/src/hooks/event.rs:13-27`), and — notably — **every one is actually
@@ -74,7 +84,7 @@ caller. Blocking is enforced ad hoc at each call site, not gated by this helper.
 The enum is `#[non_exhaustive]` and config parsing skips unknown event names with a warning
 rather than failing (`config.rs:78-95`), so the schema is forward-compatible.
 
-### 2. Command hooks vs prompt hooks; what a hook can do
+### Command hooks versus prompt hooks, and what a hook can do
 
 **Command hooks** (`HookDefinition::Command`, `config.rs:22-28`) run via
 `command_runner::run_command_hook` (`command_runner.rs:25`): `sh -c <command>` (or
@@ -104,14 +114,14 @@ What a hook **can do**:
 - **Auto-approve** — `allow` on PermissionRequest skips the user prompt and dispatches the
   tool immediately (`tool_execution.rs:81-100`).
 - **Inject context** — `additionalContext` (or raw stdout for UserPromptSubmit/SessionStart)
-  becomes a hidden `<hook-context>` user message (see Q3).
+  becomes a hidden `<hook-context>` user message (see the outcome model below).
 - **Warn** — `systemMessage` surfaces as a yellow inline notice
   (`outcome.rs:23`, rendered at `agent.rs:1889-1898`).
 
 What a hook **cannot do**: mutate `tool_input`/tool output, add tools, or change the model's
 response. There is no rewrite path anywhere.
 
-### 3. Where hooks inject context / enforce guardrails; the outcome model
+### Where hooks inject context and enforce guardrails, and the outcome model
 
 **Guardrail enforcement points:**
 - PreToolUse `Deny` → `InspectionAction::Deny` (tool call becomes an error result fed back
@@ -154,10 +164,10 @@ so even a `systemMessage` from those is lost.
   then top-level `decision` (`block`→Deny, `approve`/`allow`→Allow), then `continue:false`→
   Deny. Unknown decision strings become a recorded error, not a block.
 
-### 4. Configuration (format, scope, matchers)
+### Configuration — format, scope and matchers
 
 Format is YAML under a `hooks:` key: `event → [ {matcher, hooks:[...]} ]`
-(`config.rs:46-62`, docs at `docs/guides/hooks.md`). Two scopes:
+(`config.rs:46-62`; user-facing docs are the [hooks reference](../../../agent-loop/hooks/hooks-reference.md)). Two scopes:
 - **Global** — `~/.config/biorouter/config.yaml` `hooks:` section (env override
   `BIOROUTER_HOOKS`), loaded at `config.rs:111-120`.
 - **Project** — `.biorouter/hooks.yaml` in the session working dir (`config.rs:16`), same
@@ -182,7 +192,7 @@ match (no matcher) and merge after config hooks (`mod.rs:229-230`).
 There is **no HTTP route and no GUI panel** for hooks — configuration is file/env only
 (`grep` for "hook" in `biorouter-server/routes` finds only the unrelated goal Stop-hook).
 
-### 5. Comparison to Claude Code; missing events
+### Comparison to Claude Code, and missing events
 
 BioRouter's hook system is a deliberate, high-fidelity clone of Claude Code (comments say so,
 `event.rs:3`, `outcome.rs:1`), and on **event coverage it is a superset**. Claude Code's
@@ -197,14 +207,14 @@ Where BioRouter is **weaker/divergent**:
   to feed a correction back to the model. Here PostToolUse/Failure are explicitly observe-only
   (`agent.rs:1845-1847`) — the decision is computed but ignored. Context injection is the only
   effect.
-- **PreToolUse `additionalContext` is dropped** (see Q3), whereas Claude Code injects it.
+- **PreToolUse `additionalContext` is dropped** (see the "Critical absence" note above), whereas Claude Code injects it.
 - **No `transcript_path`.** Claude Code hands hooks a path to the full transcript JSONL;
   BioRouter passes only a truncated inline `transcript_tail`, and only for Stop
   (`event.rs:114-117`, `mod.rs:460-485`). No `permission_mode` field either.
 - **Only 2 config tiers.** Claude Code layers enterprise-managed / user / project / local
   settings; BioRouter has just global + (opt-in) project.
 - **SessionEnd never fires in the GUI/daemon** — only CLI and scheduled runs
-  (`docs/guides/hooks.md:140`). Claude Code fires it on every session close.
+  (noted in the [hooks reference](../../../agent-loop/hooks/hooks-reference.md)). Claude Code fires it on every session close.
 - **Notification is single-purpose** — only "permission prompt shown" with matcher key
   `permission_prompt` (`tool_execution.rs:136-147`); no idle/waiting/other notification kinds.
 - **No output/stdin mutation, no dynamic tool injection** (neither product mutates tool_input,
@@ -222,7 +232,7 @@ PreToolUse *input-rewrite* capability. None exist.
 - **Most-restrictive-wins merge** with an explicit `rank()` (`outcome.rs:48-54,101-129`) makes
   concurrent multi-hook semantics deterministic and easy to reason about.
 - **Claude Code payload/decision compatibility** — real portability, not a lookalike.
-- **Project hooks default-off** (`mod.rs:74-79`, `docs/guides/hooks.md:34`): opening a repo
+- **Project hooks default-off** (`mod.rs:74-79`, and the [hooks reference](../../../agent-loop/hooks/hooks-reference.md)): opening a repo
   can't silently run its `.biorouter/hooks.yaml`. Correct threat model.
 - **Concurrent stdin write on a spawned task** (`command_runner.rs:58-66`) prevents a hook
   that ignores stdin from deadlocking the writer — a subtle correctness win.
@@ -235,7 +245,10 @@ PreToolUse *input-rewrite* capability. None exist.
 - **Forward-compatible config parsing** — unknown events/malformed groups are skipped with a
   warning (`config.rs:78-104`), so a newer config never bricks an older binary.
 
-## Gaps & weaknesses (feeds the improvement phase)
+## Gaps and weaknesses
+
+These thirteen items fed the improvement phase. They are what other documents in this
+review cite as `hooks.md #N`; the numbering below is that scheme and is stable.
 
 1. **PreToolUse & PermissionRequest `additionalContext`/`systemMessage` are silently dropped.**
    `HookInspector` and `tool_execution` read only `aggregate.decision`
@@ -257,7 +270,7 @@ PreToolUse *input-rewrite* capability. None exist.
    hook that emits megabytes silently bloats context or blows the window — and it is a
    prompt-injection surface (a project hook's stdout lands in the model's context as a hidden
    user message).
-6. **SessionEnd never fires in the GUI/daemon** (`docs/guides/hooks.md:140`) — the most common
+6. **SessionEnd never fires in the GUI/daemon** (see the [hooks reference](../../../agent-loop/hooks/hooks-reference.md)) — the most common
    deployment. Cleanup/audit hooks are effectively unavailable to desktop users.
 7. **No mutation / rewrite capability.** Hooks can only allow/deny/ask/inject; they cannot
    rewrite `tool_input` (e.g. sandbox a path), redact a payload, or transform tool output.
@@ -281,3 +294,11 @@ PreToolUse *input-rewrite* capability. None exist.
 13. **TOCTOU in project-config caching.** `project_hooks_mtime` then `read_project_hooks` are
     separate stat+read (`mod.rs:171-188`); a coarse filesystem clock can serve a stale config
     (the tests themselves have to force `+2s`, `mod.rs:866-868`).
+
+## Related documentation
+
+- [Hooks reference](../../../agent-loop/hooks/hooks-reference.md) — the current, living user-facing guide to configuring hooks.
+- [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector chain the `HookInspector` is the fourth member of; the two reviews overlap on `PreToolUse`.
+- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how this hook model measures against Claude Code and eight others.
+- [Verify-and-checkpoint stop hook](../../../agent-loop/hooks/verify-and-checkpoint-stop-hook.md) — a worked example of the `Stop` event described here.
+- [Wave 2 hooks and permissions report](../../agent-loop-campaign/wave-reports/wave-2-hooks-and-permissions.md) — what was actually built in response to these gaps.

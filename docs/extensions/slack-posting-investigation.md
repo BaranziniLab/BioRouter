@@ -1,91 +1,90 @@
-# Reliable Slack posting — options & setup burden (investigation, not implemented)
+# Reliable Slack posting from the agent
 
-UI automation of Slack is inherently brittle (Slack exposes almost no AppleScript API,
-and the Electron UI shifts). The robust path is Slack's HTTP API. There are three ways to
-wire that into Biorouter, ranked here by **how much the user has to set up** (lowest
-first), since a complicated setup is not wanted. **Nothing below is implemented yet** —
-this is for you to choose.
+> **What this is.** An options memo comparing three ways to give the agent reliable Slack posting — incoming webhook, a Slack MCP server with a bot token, and a user token or the Slack CLI — ranked by how much setup each asks of the user, with a recommendation.
+> **Status:** Current — an open investigation, first written 2026-06-20. **Nothing described here is implemented.** No `slack_post` tool and no Slack extension exist in the tree; the recommendation has not been accepted or rejected, so treat it as a decision still to be made.
+> **Audience:** maintainers deciding how Biorouter should integrate with Slack.
 
-What Biorouter already provides (relevant facts):
-- The Computer Controller's `automation_script` tool runs shell, so it can already
-  `curl -X POST` to a URL. (Its `web_scrape` tool is GET-only, so it can't post.)
-- External MCP servers can be added via **Settings → Extensions → Add custom extension**
-  (type: Standard IO / Streamable HTTP), with secrets stored in the OS Keychain
-  (`env_keys`). The repo already anticipates a `slack-mcp` stdio extension keyed on
-  `SLACK_TOKEN` (`secret_discovery.rs`).
+UI automation of Slack is inherently brittle: Slack exposes almost no AppleScript API, and its Electron UI shifts between releases. The robust path is Slack's HTTP API. Three routes wire that into Biorouter, and they differ far more in setup burden than in capability, so this memo ranks them by setup cost (lowest first) and then says which one that argues for.
+
+## What Biorouter already provides
+
+Two existing facts shape every option below:
+
+- The Computer Controller extension's `automation_script` tool runs shell, so it can already `curl -X POST` to a URL. Its `web_scrape` tool is GET-only, so `web_scrape` cannot post.
+- External MCP servers can be added via **Settings → Extensions → Add custom extension** (type: Standard IO or Streamable HTTP), with secrets stored in the OS Keychain (`env_keys`). The repo already anticipates a `slack-mcp` stdio extension keyed on `SLACK_TOKEN` — see `crates/biorouter-cli/src/workflows/secret_discovery.rs`.
 
 ---
 
-## Option A — Incoming Webhook (simplest; works with zero new code)
+## Option A — Incoming webhook (simplest; works with zero new code)
 
-**What it is:** a Slack "Incoming Webhook" is one URL tied to one channel. POST
-`{"text":"..."}` to it and the message appears in that channel. Send-only, one channel.
+**What it is:** a Slack "Incoming Webhook" is one URL tied to one channel. POST `{"text":"..."}` to it and the message appears in that channel. Send-only, one channel.
 
 **Biorouter support today:** already works — the agent can post via `automation_script`:
-`curl -s -X POST -H 'Content-type: application/json' -d '{"text":"<msg>"}' <WEBHOOK_URL>`.
-No code change required. (Optional nicety later: store the URL so the agent doesn't need
-it pasted each time — see "Optional polish" below.)
+
+```bash
+curl -s -X POST -H 'Content-type: application/json' -d '{"text":"<msg>"}' <WEBHOOK_URL>
+```
+
+No code change required. Optionally, the URL could be stored so the agent does not need it pasted each time — see [Optional polish](#optional-polish) below.
 
 **One-time user setup (~2–3 min, no scopes, no bot):**
-1. https://api.slack.com/apps → **Create New App** → **From scratch** → pick the
-   Broccolito Lab workspace.
-2. **Incoming Webhooks** → toggle **On**.
-3. **Add New Webhook to Workspace** → choose the channel (e.g. `#spoke-tech`) → **Allow**.
-4. Copy the URL (`https://hooks.slack.com/services/T…/B…/…`).
-5. Hand it to Biorouter (paste in the request, or store it once — see below).
 
-**Good for:** "announce the report in the lab channel." **Limits:** one channel per URL,
-send-only (no reading/searching/threads), can't pick a channel dynamically (you'd add one
-webhook per channel).
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch** → pick the target workspace.
+2. **Incoming Webhooks** → toggle **On**.
+3. **Add New Webhook to Workspace** → choose the destination channel → **Allow**.
+4. Copy the URL (`https://hooks.slack.com/services/T…/B…/…`).
+5. Hand it to Biorouter (paste it in the request, or store it once — see below).
+
+**Good for:** announcing a report in a known channel.
+
+**Limits:** one channel per URL; send-only, with no reading, searching, or threads; the channel cannot be picked dynamically, so covering several channels means one webhook per channel.
 
 ---
 
 ## Option B — Slack MCP server with a bot token (most capable; more setup)
 
-**What it is:** add an external Slack MCP server (a small program that wraps Slack's Web
-API). The agent then gets real tools: list channels, post to **any** channel, read
-history, search, reply in threads, etc.
+**What it is:** add an external Slack MCP server — a small program that wraps Slack's Web API. The agent then gets real tools: list channels, post to **any** channel, read history, search, reply in threads, and so on.
 
-**Biorouter support:** add it in **Settings → Extensions → Add custom extension**
-(type **Standard IO**), set the command to a Slack MCP server, and store the token as an
-env secret. No Biorouter code change — it's a configuration step. Requires `npx` (Node) or
-`uvx` (uv) on the machine to launch the server.
+**Biorouter support:** add it in **Settings → Extensions → Add custom extension** (type **Standard IO**), set the command to a Slack MCP server, and store the token as an env secret. No Biorouter code change — it is a configuration step. Requires `npx` (Node) or `uvx` (uv) on the machine to launch the server.
 
 **One-time user setup (~10–15 min):**
-1. Create a Slack app (From scratch) in the workspace (as above).
-2. **OAuth & Permissions → Bot Token Scopes**: add `chat:write` (post), plus
-   `channels:read` + `channels:history` (and `groups:read`/`groups:history` for private
-   channels, `search:read` to search).
+
+1. Create a Slack app (From scratch) in the workspace, as in Option A.
+2. **OAuth & Permissions → Bot Token Scopes**: add `chat:write` (post), plus `channels:read` and `channels:history`; add `groups:read` and `groups:history` for private channels, and `search:read` to search.
 3. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-…`).
 4. **Invite the bot** to each channel it should use (`/invite @YourBot`).
-5. In Biorouter: add the Slack MCP extension (command + paste the `xoxb-…` token as a
-   secret env var; some servers also want the workspace/team ID).
+5. In Biorouter, add the Slack MCP extension: the command, plus the `xoxb-…` token pasted as a secret env var. Some servers also want the workspace or team ID.
 
-**Good for:** flexible, robust posting/reading across channels with no UI flakiness.
-**Cost:** scopes + install + inviting the bot + needing npx/uvx, and trusting a
-third-party MCP server.
+**Good for:** flexible, robust posting and reading across channels with no UI flakiness.
+
+**Cost:** scopes, app install, inviting the bot, a dependency on `npx`/`uvx`, and trusting a third-party MCP server.
 
 ---
 
-## Option C — User token / Slack CLI
+## Option C — User token or the Slack CLI
 
-More involved (user-token OAuth or the Slack CLI). Not recommended given the "simple
-setup" preference; listed only for completeness.
+**What it is:** authenticate as a *user* rather than a bot, either through user-token OAuth or through the Slack CLI.
+
+**Setup:** more involved than either option above — user-token OAuth carries its own scope grants and consent flow, and the Slack CLI is a further tool to install and keep authenticated.
+
+**Assessment:** not recommended given the preference for simple setup. It is listed only for completeness; this memo did not evaluate it in the depth given to Options A and B.
 
 ---
 
 ## Recommendation
 
-- For the stated need ("post an announcement / message to the Broccolito Lab channel"):
-  **Option A (Incoming Webhook)** — ~2–3 minutes, no scopes, no bot to invite, and it
-  works with the tooling that already ships (no implementation, nothing to maintain).
-- If you later need to post to **multiple channels** or **read/search** Slack from the
-  agent: **Option B**.
+- For the originating need — posting an announcement or message to a single lab channel — **Option A (incoming webhook)**: roughly 2–3 minutes of setup, no scopes, no bot to invite, and it works with the tooling that already ships, so there is no implementation and nothing to maintain.
+- If posting to **multiple channels** or **reading and searching** Slack from the agent becomes a requirement, move to **Option B**.
 
-## Optional polish (only if you later want it — small, would need implementing)
+## Optional polish
 
-To make Option A first-class instead of the agent shelling out `curl`, we could add a tiny
-`slack_post` tool (or a documented config key like `SLACK_WEBHOOK_URL`) so the agent posts
-with a clean tool call and the URL is stored once in the Keychain. This is a small,
-self-contained change — but per your instruction it is **not implemented**; flag it if you
-want it.
+This would need implementing; it is not implemented today.
+
+To make Option A first-class instead of the agent shelling out `curl`, Biorouter could add a small `slack_post` tool, or a documented config key such as `SLACK_WEBHOOK_URL`, so the agent posts with a clean tool call and the URL is stored once in the Keychain. This is a small, self-contained change that was deliberately left undone pending a decision on this memo.
+
+## Related documentation
+
+- [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — how to actually add the custom stdio extension Option B depends on
+- [Computer Controller extension](built-in/computer-controller.md) — the `automation_script` and `web_scrape` tools whose capabilities constrain Option A
+- [Secret storage](../security/secret-storage.md) — how `env_keys` secrets such as `SLACK_TOKEN` reach the OS Keychain
+- [Computer Controller multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around

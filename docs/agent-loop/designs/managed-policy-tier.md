@@ -1,28 +1,80 @@
-# BR-65 — Managed/enterprise policy tier for guardrails and hooks
+# Managed policy tier for guardrails and hooks (BR-65)
 
-**Lens:** R (robustness P-50). **Inspired by:** Gemini CLI tiered policy engine
-(`Default < Extension < Workspace < User < Admin`, admin always wins,
-ownership-verified — `docs/agent-loop-review/external/gemini-cli.md:141-144,248-250`)
-and Claude Code managed settings (`/Library/Application Support/…`,
-`/etc/claude-code/…` read last / highest precedence —
-`docs/agent-loop-review/external/claude-code.md:40-42`, deny/ask always win —
-`:160-162`).
+> **What this is.** The design for a non-overridable admin tier above BioRouter's user and
+> project config: an OS-specific trusted managed-settings location, ownership verification,
+> and a precedence model that BR-20/BR-21 rules and hooks plug into.
+> **Status:** Current, partially shipped. The first mergeable slice is live —
+> `crates/biorouter/src/managed/{mod,settings,trust}.rs`,
+> `crates/biorouter/src/permission/managed_inspector.rs`, and the user-facing
+> [managed policy guide](../../security/managed-policy.md). Later phases remain, and one is
+> load-bearing: `verify_trusted()` is **still a no-op on Windows**. This document is the plan
+> of record for that work.
+> **Audience:** developers working on BioRouter's guardrails, hooks and permission subsystem;
+> administrators deploying BioRouter to a managed fleet should read the guide instead.
 
-Depends on / is the umbrella for: **BR-20** (always-on catastrophic denylist),
-**BR-21** (auditable command policy engine). BR-65 supplies the *tier/precedence
-machinery* those two rule sets plug into; it is designed to land useful on its
-own (managed hooks + managed permission rules) before BR-20/BR-21 exist.
+BioRouter's two governance surfaces — hooks and permissions — each have exactly two
+configuration tiers, both of which the user owns. A lab or UCSF deployment therefore cannot
+enforce any policy the user cannot simply turn off. This document specifies the missing third
+tier: a config file at an admin-owned path, verified by ownership before it is trusted, that
+wins over user and project settings for both surfaces.
+
+> **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
+> [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md).
+> `P-NN` identifiers are the numbered entries in the three lens reviews under
+> [proposal lenses](../../history/agent-loop-review/proposal-lenses/); a lens is one of
+> **P** (performance), **R** (robustness), or **U** (ux). `GAP-N` identifiers are the
+> cross-platform findings in the
+> [platform parity audit](../cross-platform/platform-parity-audit.md). This document is BR-65,
+> raised under the robustness lens as P-50.
+
+| Field | Value |
+|---|---|
+| Proposal | BR-65 |
+| Lens | R (robustness P-50) |
+| Shipped | Phase 1, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) (wave 1, security cluster) |
+| User-facing guide | [Managed policy](../../security/managed-policy.md) |
+
+> **Warning — the Windows trust check is a no-op.** The cross-platform audit recorded
+> **GAP-7**: `verify_trusted()` does nothing on Windows, so the ownership verification that
+> this tier's entire trust claim rests on is absent on that platform. This design anticipated
+> it — the ownership section below defers Windows ACL checks to phase 2 — but the gap is
+> real and shipped. See the
+> [platform parity audit](../cross-platform/platform-parity-audit.md).
+
+> **Warning.** This is security-critical design. The
+> [campaign outcome report](../../history/agent-loop-campaign/outcome-report.md) lists BR-65
+> among the changes that warrant human review regardless of a green test suite, per
+> `HOWTOAI.md`.
+
+> **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
+> the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
+> since moved. Treat the paths as authoritative and the line numbers as historical anchors.
+
+## What this design borrows
+
+Gemini CLI's tiered policy engine (`Default < Extension < Workspace < User < Admin`, admin
+always wins, ownership-verified — see the
+[Gemini CLI research note](../../research/coding-agent-landscape/gemini-cli.md)) and Claude
+Code's managed settings (`/Library/Application Support/…`, `/etc/claude-code/…` read last, so
+highest precedence; deny and ask always win — see the
+[Claude Code research note](../../research/coding-agent-landscape/claude-code.md)).
+
+This tier depends on, and is the umbrella for, **BR-20** (always-on catastrophic denylist)
+and [**BR-21**](command-policy-engine.md) (auditable command policy engine). BR-65 supplies
+the *tier and precedence machinery* those two rule sets plug into; it is designed to land
+useful on its own — managed hooks plus managed permission rules — before either exists.
 
 ---
 
-## Problem (grounded in code, with file:line)
+## The problem, grounded in code
 
 BioRouter's two governance surfaces each have exactly **two** configuration
 tiers — a user-global layer and an opt-in project layer — and **no
 non-overridable admin layer**, so a lab/UCSF deployment cannot enforce a policy
 that a user cannot turn off.
 
-**Hooks (2 tiers, both user-controlled).**
+### Hooks: two tiers, both user-controlled
+
 `HooksManager` resolves only global + (opt-in) project groups:
 
 - `crates/biorouter/src/hooks/mod.rs:159-169` — `resolved_groups()` = global
@@ -35,12 +87,12 @@ that a user cannot turn off.
   **single global boolean** `allow_project_hooks` (or
   `BIOROUTER_ALLOW_PROJECT_HOOKS=1`). It is all-or-nothing and the user owns it,
   so an org cannot *force* a security hook nor *forbid* project hooks.
-- Internal review calls this out directly: `internal/hooks.md:204` ("Only 2
-  config tiers"), `:278-280` (gap #12 "Two config tiers only, no
+- The [hooks-system review](../../history/agent-loop-review/subsystem-reviews/hooks-system.md)
+  calls this out directly: "Only 2 config tiers", and gap #12, "Two config tiers only, no
   managed/enterprise layer — no way for an org to enforce a non-overridable
-  security hook, and project hooks are all-or-nothing").
+  security hook, and project hooks are all-or-nothing".
 
-**Permissions / command policy (also user-controlled, and mostly off).**
+### Permissions and command policy: also user-controlled, and mostly off
 
 - `crates/biorouter/src/permission/permission_inspector.rs:106-188` — the live
   gate. It consults only `PermissionManager.get_user_permission` (a per-user
@@ -51,14 +103,15 @@ that a user cannot turn off.
   is a singleton backed by one user file `~/.config/biorouter/permission.yaml`;
   there is no higher-precedence source.
 - `crates/biorouter/src/security/mod.rs` — the regex scanner is
-  `SECURITY_PROMPT_ENABLED=false` by default and, when on, only *asks*
-  (`internal/guardrails-permissions.md:114`, gap #3). So `Auto` mode = zero
-  command governance and nothing an admin can pin.
+  `SECURITY_PROMPT_ENABLED=false` by default and, when on, only *asks* (gap #3 in the
+  [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md)).
+  So `Auto` mode = zero command governance and nothing an admin can pin.
 
-**Enforcement seam already exists (good).** Non-`permission` inspector results
-are merged as **escalation-only overrides** — any inspector can move a request
-`approved → needs_approval → denied` but an `Allow` override is a no-op
-(`crates/biorouter/src/tool_inspection.rs:217-257`). This means a new
+### The enforcement seam already exists
+
+Non-`permission` inspector results are merged as **escalation-only overrides** — any
+inspector can move a request `approved → needs_approval → denied` but an `Allow` override is
+a no-op (`crates/biorouter/src/tool_inspection.rs:217-257`). This means a new
 managed-policy inspector's `Deny`/`RequireApproval` will win **even over `Auto`
 mode's `Allow`** and cannot be lowered by a later inspector — exactly the
 non-bypassable property a managed tier needs. The gap is purely that no such
@@ -72,13 +125,13 @@ the wiring to load it.
 
 ---
 
-## Design (data model, module layout, key APIs/signatures, control flow)
+## Design
 
 ### Precedence model
 
 Adopt Gemini's ordering, collapsed to BioRouter's surfaces:
 
-```
+```text
 Default(builtin)  <  User(global config)  <  Project(opt-in)  <  Managed(admin)
 ```
 
@@ -98,7 +151,7 @@ merge semantics (this asymmetry is the crux and must be explicit):
   cannot be disabled; managed may also **force** `allow_project_hooks` on/off,
   overriding the user's opt-in.
 
-### Trusted config location + ownership verification
+### Trusted config location and ownership verification
 
 New paths (production, no env override for tamper-resistance — only the existing
 test seam `BIOROUTER_PATH_ROOT` is honored):
@@ -119,7 +172,8 @@ so tests can point at it).
 **Ownership verification** (new `managed/trust.rs`): before parsing, `stat` the
 file and its parent dir and require they are owned by a privileged principal and
 not world-writable — mirroring Gemini's "ownership verification against
-privilege escalation" (`external/gemini-cli.md:143-144`):
+privilege escalation" (see the
+[Gemini CLI research note](../../research/coding-agent-landscape/gemini-cli.md)):
 
 - Unix: `std::os::unix::fs::MetadataExt` — require `uid == 0` (root) **or**
   `uid == <current euid>` for a user-mode dev/test install, and reject if
@@ -129,11 +183,13 @@ privilege escalation" (`external/gemini-cli.md:143-144`):
   surfaced as a startup diagnostic (see BR-67 observability tie-in).
 - Windows (phase 2): verify the ACL owner is `Administrators`/`SYSTEM` via
   `windows` crate; until then, restrict to `%ProgramData%` (already
-  admin-writable-only by default) and skip deep ACL checks.
+  admin-writable-only by default) and skip deep ACL checks. **This deferral
+  shipped**, and is GAP-7 in the
+  [platform parity audit](../cross-platform/platform-parity-audit.md).
 
-### Module layout (new)
+### Module layout
 
-```
+```text
 crates/biorouter/src/managed/
   mod.rs        // ManagedPolicy, load(), resolved accessors
   settings.rs   // on-disk schema (serde) + parse
@@ -173,8 +229,9 @@ pub struct ManagedPermissions {
 }
 ```
 
-`deny` is checked before `ask` before `allow` (deny/ask always win —
-`external/claude-code.md:160-162`). The `command_rules` field is the extension
+`deny` is checked before `ask` before `allow` (deny and ask always win, per the
+[Claude Code research note](../../research/coding-agent-landscape/claude-code.md)).
+The `command_rules` field is the extension
 point BR-20's catastrophic list and BR-21's policy engine deserialize into; BR-65
 ships it as an inert, forward-compatible field (unknown → skipped, matching the
 `HooksConfig` forward-compat pattern at `config.rs:78-104`).
@@ -203,10 +260,10 @@ impl ManagedPolicy {
 pub enum ManagedVerdict { Allow, Ask, Deny }
 ```
 
-### Wiring
+### Wiring the hooks tier
 
-**1. Hooks (`crates/biorouter/src/hooks/mod.rs`).**
-Add `managed: Arc<ManagedPolicy>` field to `HooksManager`. In `new()` load it;
+In `crates/biorouter/src/hooks/mod.rs`, add a `managed: Arc<ManagedPolicy>` field to
+`HooksManager`. In `new()` load it;
 compute effective `allow_project_hooks` = `managed.project_hooks_override()`
 if `Some`, else the current user/env value (`mod.rs:74-79`). In
 `resolved_groups` (`:159-169`) prepend managed groups:
@@ -222,9 +279,10 @@ Merge semantics are unchanged (most-restrictive decision wins,
 a user hook. `HooksConfig`/`HookMatcherGroup` are reused verbatim — no new hook
 schema.
 
-**2. Permissions — new `ManagedPolicyInspector`
-(`crates/biorouter/src/permission/managed_inspector.rs`).**
-A `ToolInspector` named `"managed"` holding `Arc<ManagedPolicy>`. Registered
+### Wiring the permission inspector
+
+A new `ManagedPolicyInspector` in `crates/biorouter/src/permission/managed_inspector.rs`:
+a `ToolInspector` named `"managed"` holding `Arc<ManagedPolicy>`. Registered
 **first**, before `security`, in `Agent::build_tool_inspection_manager`
 (`agents/agent.rs:342-361`):
 
@@ -243,8 +301,10 @@ tool_inspection_manager.add_inspector(Box::new(SecurityInspector::new()));
   including `Auto` `Allow`. It emits **no** result for `allow` tools (allow is
   handled in the baseline, below).
 
-**3. Managed ALLOW baseline (`permission/permission_inspector.rs:123-150`).**
-Give `PermissionInspector` an `Arc<ManagedPolicy>` and check it *first* inside
+### Wiring the managed ALLOW baseline
+
+Give `PermissionInspector` (`permission/permission_inspector.rs:123-150`) an
+`Arc<ManagedPolicy>` and check it *first* inside
 the `Approve | SmartApprove` arm (before the user-permission lookup at `:125`):
 
 ```rust
@@ -260,9 +320,9 @@ if let Some(v) = self.managed.permission_for(tool_name) {
 This makes managed ALLOW win over a user `NeverAllow` (which escalation could not
 achieve) while managed DENY is enforced both here and in the dedicated inspector.
 
-### Control flow (one tool call, managed file present)
+### Control flow: one tool call with a managed file present
 
-```
+```text
 model emits tool requests
  └─ inspect_tools() runs inspectors in order:
      managed  → Deny/Ask for governed tools (escalation, non-bypassable)
@@ -276,12 +336,12 @@ model emits tool requests
 
 ---
 
-## Alternatives considered (and why rejected)
+## Alternatives considered, and why they were rejected
 
 1. **Add a `managed:` section inside the existing user `config.yaml`.** Rejected:
    the user owns and can edit that file, so it provides zero enforcement. A
-   managed tier must live at an admin-owned path the user cannot write
-   (`external/claude-code.md:40-42`).
+   managed tier must live at an admin-owned path the user cannot write (see the
+   [Claude Code research note](../../research/coding-agent-landscape/claude-code.md)).
 2. **One combined "settings tiers" rewrite (managed/user/project/local) for all
    config, à la Claude Code's four-file `settings.json` cascade.** Rejected for
    this BR: far larger blast radius (every config key gains precedence
@@ -304,7 +364,7 @@ model emits tool requests
 
 ---
 
-## Migration & compatibility (config, persisted state, rollout)
+## Migration and compatibility
 
 - **Backward compatible / opt-in by absence.** No managed file → `is_active()`
   false → the managed inspector is skipped and `resolved_groups`/baseline are
@@ -317,18 +377,19 @@ model emits tool requests
   without breaking older binaries that ignore it.
 - **Rollout.** Ship the loader + hooks tier + permission deny/ask/allow first
   (phase 1). Admins deploy the file via MDM/Jamf (macOS), a package
-  postinstall/Ansible (Linux). Document the path + ownership requirement in a new
-  `docs/guides/managed-policy.md`. A `biorouter policy show` CLI subcommand
+  postinstall/Ansible (Linux). The path and ownership requirement are documented in the
+  [managed policy guide](../../security/managed-policy.md), which shipped with phase 1.
+  A `biorouter policy show` CLI subcommand
   (phase 2) prints the resolved managed layer + trust status so an admin can
   verify deployment.
 - **Failure mode.** Untrusted or malformed managed file → ignored with a loud
   `warn!` + (BR-67) observability event; the agent still runs. This is a
-  deliberate availability-over-strictness choice for a research tool; the human
-  Q below asks whether an org should be able to opt into fail-closed.
+  deliberate availability-over-strictness choice for a research tool; open question 1
+  below asks whether an org should be able to opt into fail-closed.
 
 ---
 
-## Test plan (unit/integration; what proves no regression)
+## Test plan
 
 Unit (`crates/biorouter/src/managed/`):
 - `settings.rs`: parse a full managed file; unknown keys skipped; deny>ask>allow
@@ -361,25 +422,34 @@ all key off the `BIOROUTER_PATH_ROOT` fixture so CI never touches real
 
 ---
 
-## Effort & phasing (first mergeable slice)
+## Effort and phasing
 
-**Phase 1 (first PR, ~M):** `managed/{mod,settings,trust}.rs`; `paths.rs`
+**Phase 1 (first PR, ~M). Shipped.** `managed/{mod,settings,trust}.rs`; `paths.rs`
 `managed_policy_path()`; `ManagedPolicyInspector` (deny/ask) + `PermissionInspector`
 managed-allow baseline; `HooksManager` managed-hooks tier + `allow_project_hooks`
-override; Unix ownership check; unit + inspector tests; `docs/guides/managed-policy.md`.
+override; Unix ownership check; unit + inspector tests; the
+[managed policy guide](../../security/managed-policy.md).
 This alone delivers "org can force a non-overridable deny/ask + a mandatory Stop
-hook, and forbid project hooks" — the review's core ask (`hooks.md:278-280`).
+hook, and forbid project hooks" — the review's core ask (gap #12 in the
+[hooks-system review](../../history/agent-loop-review/subsystem-reviews/hooks-system.md)).
 
-**Phase 2:** Windows ACL verification; `biorouter policy show` CLI; BR-67
+**Phase 2. Not built.** Windows ACL verification (GAP-7); `biorouter policy show` CLI; BR-67
 observability events for load/trust-failure/managed-denial.
 
-**Phase 3 (separate BRs, plug into `command_rules`):** BR-20 catastrophic
+**Phase 3 (separate BRs, plug into `command_rules`). Not built.** BR-20 catastrophic
 denylist and BR-21 argv/policy engine deserialize into `ManagedPermissions.command_rules`
 and evaluate inside `ManagedPolicyInspector`.
 
 ---
 
-## Open questions for the human (only genuine product decisions)
+## Open questions, and how the campaign answered them
+
+> **Note.** These are genuine product decisions, recorded as open when the design was
+> written. On 2026-07-13 the campaign owner signed off with a blanket "proceed with all of
+> the default options" (logged in the
+> [campaign README](../../history/agent-loop-campaign/README.md)), and the shipped Phase 1
+> answers several by construction: managed ALLOW exists (question 2, option a), and the
+> Unix-only ownership check shipped with Windows deferred (question 4, "yes").
 
 1. **Fail-open vs fail-closed on an untrusted/corrupt managed file.** Default
    proposed = ignore + warn (availability). Should an org be able to set
@@ -398,3 +468,13 @@ and evaluate inside `ManagedPolicyInspector`.
 4. **Non-Unix ownership story for phase 1.** Is macOS + Linux (`/etc`,
    `/Library`) sufficient for the initial UCSF deployment, deferring Windows ACL
    verification to phase 2 (Windows restricted to `%ProgramData%` until then)?
+
+---
+
+## Related documentation
+
+- [Managed policy guide](../../security/managed-policy.md) — the administrator-facing counterpart: where to put the file and how to verify it is trusted.
+- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-7, the Windows ownership check that is still a no-op.
+- [Command policy engine (BR-21)](command-policy-engine.md) — the rule set that deserializes into this tier's `command_rules` field.
+- [macOS Seatbelt sandbox (BR-64)](macos-seatbelt-sandbox.md) — the containment layer an admin would pin on via this tier in its Slice 4.
+- [Wave 1 security report](../../history/agent-loop-campaign/wave-reports/wave-1-security.md) — the implementation record for Phase 1.
