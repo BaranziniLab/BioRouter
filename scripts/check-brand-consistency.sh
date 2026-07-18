@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 canonical_icon="ui/desktop/src/images/icon.svg"
 canonical_glyph="ui/desktop/src/images/glyph.svg"
 
+# The shipped app-icon SVG must be byte-identical everywhere it is copied
+# (prepare.sh fans it out to the light variant and the landing surfaces).
 for copy in \
   ui/desktop/src/images/icon-light.svg \
   landing/icon.svg \
@@ -18,6 +20,7 @@ for copy in \
   }
 done
 
+# The CLI logos are byte-for-byte copies of the landing raster.
 for copy in \
   crates/biorouter-cli/static/img/logo_dark.png \
   crates/biorouter-cli/static/img/logo_light.png; do
@@ -27,16 +30,22 @@ for copy in \
   }
 done
 
-grep -q 'M 125 220' "$canonical_glyph"
-grep -q 'M 125 220' "$canonical_icon"
-grep -q '"productName": "Biorouter"' ui/desktop/package.json
-grep -q "glyph.svg" ui/desktop/src/components/icons/BioRouter.tsx
-
-for page in docs/agentic-system.html docs/design-system.html docs/theme-system.html; do
-  grep -q 'M 125 220' "$page" || {
-    echo "Brand asset drift: $page does not contain the canonical glyph" >&2
+# The canonical mark is the "BR" monogram (D-38), set in Inter (D-41): a navy B,
+# a coral R, and a split underline. This superseded the abstract circle glyph
+# (D-40), so the old 'M 125 220' path assertion is intentionally gone — the mark
+# is now live text, not a hand-drawn path.
+for svg in "$canonical_glyph" "$canonical_icon"; do
+  { grep -q '>B</text>' "$svg" && grep -q '>R</text>' "$svg"; } || {
+    echo "Brand asset drift: $svg is not the BR mark" >&2
     exit 1
   }
 done
+grep -q "font-family=\"Inter" "$canonical_icon" || {
+  echo "Brand asset drift: $canonical_icon is not set in Inter (D-41)" >&2
+  exit 1
+}
+
+grep -q '"productName": "Biorouter"' ui/desktop/package.json
+grep -q "glyph.svg" ui/desktop/src/components/icons/BioRouter.tsx
 
 echo "Biorouter name and canonical logo assets are consistent"
