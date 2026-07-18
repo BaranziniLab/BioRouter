@@ -78,12 +78,6 @@
 .bw-bar-spacer { flex: 1; }
 .bw-bar-meta { font-size: 11px; color: var(--text-3); white-space: nowrap; }
 
-/* Mini toggle used in dashboard top bar */
-.bw-toggle { width: 26px; height: 15px; border-radius: 8px; background: var(--accent);
-  position: relative; display: inline-block; vertical-align: middle; }
-.bw-toggle::after { content: ""; position: absolute; top: 2px; right: 2px; width: 11px; height: 11px;
-  border-radius: 50%; background: #fff; }
-
 /* ─── Body: sidebar + main ───────────────────────────────────────
    min-height (not a fixed height) so content-tall screens — the Knowledge
    two-pane and the Provider list — grow to show everything instead of
@@ -135,7 +129,7 @@
 .bw-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase;
   color: var(--text-3); }
 
-/* ─── Composer (Home / Chat / Dashboard card) ────────────────── */
+/* ─── Composer (Home / Chat / split pane) ─────────────────────── */
 .bw-composer { margin: 12px 14px 14px; background: var(--bg-2);
   border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
   padding: 12px 14px 10px; }
@@ -206,48 +200,37 @@
   background: linear-gradient(90deg, transparent, rgba(207,109,71,0.18), transparent);
   transform: translateX(-100%); animation: bw-shimmer 1.6s ease-in-out infinite; }
 
-/* ─── Dashboard mode (canvas + windows + folded cards) ───────────
-   Mirrors src/components/Dashboard: a dotted world canvas holding one
-   focused open ChatWindow plus several windows folded into cards, each
-   tinted with its own accent from the ACCENT_PALETTE. */
-.bw-canvas { flex: 1; position: relative; overflow: hidden;
-  background-color: var(--bg);
-  background-image: radial-gradient(circle at 1px 1px, rgba(120,120,120,0.18) 1px, transparent 0);
-  background-size: 16px 16px; }
+/* ─── Chat tabs + split panes ────────────────────────────────────
+   Mirrors src/components/chatGroups: ChatTabStrip renders one strip per
+   group, ChatGroupSplitter divides two leaf groups. Each tab is its own
+   session; a running tab carries the breathing activity dot. */
+.bw-split { flex: 1; min-height: 0; display: flex; align-items: stretch; }
+.bw-splitter { flex: 0 0 5px; background: var(--border);
+  border-left: 1px solid var(--border-2); border-right: 1px solid var(--border-2); }
+.bw-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 
-/* Open / focused window */
-.bw-win { position: absolute; display: flex; flex-direction: column;
-  border: 1px solid var(--border-2); border-radius: 16px; overflow: hidden;
-  background: var(--bg-2); box-shadow: 0 18px 48px rgba(32,25,15,0.18), 0 2px 6px rgba(0,0,0,0.08); }
-.bw-win-bar { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
-  border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.82);
-  backdrop-filter: blur(6px); border-radius: 16px 16px 0 0; }
-.bw-win-bar .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.bw-win-bar .nm { flex: 1; font-size: 12.5px; font-weight: 600; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bw-win-bar .wb, .bw-fold-row .wb { display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border-radius: 5px; color: var(--text-2); }
-.bw-win-bar .wb svg, .bw-fold-row .wb svg { width: 13px; height: 13px; stroke: currentColor;
-  fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.bw-win-body { flex: 1; min-height: 0; display: flex; flex-direction: column;
-  overflow: hidden; background: var(--bg); }
-.bw-win-greet { flex: 1; display: flex; align-items: center; justify-content: center;
-  text-align: center; padding: 18px 30px; font-size: 16px; font-weight: 600;
-  letter-spacing: -0.3px; line-height: 1.35; color: var(--text); }
-
-/* Folded card */
-.bw-fold { position: absolute; display: flex; flex-direction: column; border-radius: 16px;
-  border: 1px solid var(--border); overflow: hidden;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08); animation: bw-float 7s ease-in-out infinite; }
-.bw-fold-row { display: flex; align-items: center; gap: 8px; padding: 9px 12px 0; }
-.bw-fold-row .grow { flex: 1; }
-.bw-ring { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: transparent; }
-.bw-ring.busy { background: currentColor; animation: bw-breathe 1.4s ease-in-out infinite; }
-.bw-fold-name { padding: 6px 12px 0; font-size: 12.5px; font-weight: 600;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bw-fold-cwd { padding: 2px 12px 11px; font-size: 10.5px; color: var(--text-2);
-  font-family: 'Menlo','Consolas',monospace; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; }
+/* Tab strip */
+.bw-tabs { display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg-2); }
+.bw-tab { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 168px;
+  padding: 5px 8px; border-radius: 8px; font-size: 11.5px; color: var(--text-2);
+  background: transparent; }
+.bw-tab.active { background: var(--bg); color: var(--text); font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.07); }
+.bw-tab .ic { display: inline-flex; flex-shrink: 0; }
+.bw-tab .ic svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.bw-tab .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-tab-dot { display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; height: 12px; flex-shrink: 0; color: var(--text-3); }
+.bw-tab-dot svg { width: 11px; height: 11px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; }
+.bw-tab-dot.busy { border-radius: 50%; background: var(--accent);
+  width: 7px; height: 7px; margin: 0 2px; animation: bw-breathe 1.4s ease-in-out infinite; }
+.bw-tab-add { display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0; color: var(--text-3); }
+.bw-tab-add svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; }
 
 /* ─── History rows ───────────────────────────────────────────── */
 .bw-day { font-size: 10px; font-weight: 700; letter-spacing: 0.9px; color: var(--text-3);

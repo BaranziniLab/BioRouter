@@ -59,7 +59,7 @@ import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
-import { SessionNamePill } from './Dashboard/SessionNamePill';
+import { SessionNamePill } from './SessionNamePill';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
@@ -176,12 +176,10 @@ export function shouldAutoRepairArtifact(
  * Session filter for BROADCAST window events.
  *
  * Several chat events are dispatched on `window`, which every mounted BaseChat
- * hears. That is latent on /pair today (one BaseChat) but the Dashboard already
- * mounts N of them (Dashboard/ChatWindow.tsx), and tabbed chat will mount N on
+ * hears. That is latent on /pair today (one BaseChat) but tabbed chat mounts N on
  * /pair — at which point an unfiltered listener lets chat A drive chat B.
  *
- * The predicate is deliberately LENIENT, verbatim from the established idiom at
- * ChatInput.tsx:379-382 ('focus-chat-input'): an event that carries no sessionId
+ * The predicate is deliberately LENIENT: an event that carries no sessionId
  * is treated as a true broadcast and handled by everyone. That keeps any
  * dispatcher we haven't updated (or one outside this repo) working exactly as it
  * does today. Every in-app dispatcher of these events now sets `sessionId`, so
@@ -206,7 +204,7 @@ export const SCROLL_TO_BOTTOM_DELAY_MS = 200;
  * null if it must not resize the window at all.
  *
  * Resizing the window is app-scoped, but BaseChat is session-scoped. When more
- * than one chat is mounted (the Dashboard does this today), only the focused one
+ * than one chat is mounted (tabs and split panes do this), only the focused one
  * may resize — otherwise a background chat opening an artifact yanks the window
  * out from under the chat the user is actually looking at.
  */
@@ -636,24 +634,6 @@ interface BaseChatProps {
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
   onSessionUpdate?: (session: { id: string; name: string; userSetName: boolean } | null) => void;
-  /** Optional accent dot color (dashboard windows pass theirs). */
-  accentColor?: string;
-  /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
-   * because their own WindowTitleBar already shows the editable name. */
-  hideSessionNamePill?: boolean;
-  /** Fires when the inner chat transitions between idle and any non-idle state
-   * (streaming, thinking, tool-running, etc.). Used by DashboardContext to
-   * drive the per-window busy indicator on folded cards. */
-  onBusyChange?: (busy: boolean) => void;
-  /** Fires whenever the last assistant message text changes (including
-   * mid-stream). Receives a tail-truncated string for hover previews on
-   * dashboard folded cards. Null when there's no assistant message yet. */
-  onLatestMessage?: (text: string | null) => void;
-  /** Monotonically increments when the parent wants the chat input refocused
-   * and the conversation scrolled back to the bottom. Used by dashboard
-   * ChatWindow on unfold, because BaseChat stays mounted while folded so
-   * mount-time autofocus / auto-scroll never re-fire on visibility change. */
-  focusTrigger?: number;
   /** Whether this chat may resize the OS window to fit its artifact panel
    * (default true). A BaseChat is a session-scoped component, but
    * ensureArtifactPanelFits reaches for an app-scoped effect: with N chats
@@ -698,7 +678,7 @@ interface BaseChatProps {
    * tab's id, so each tab has its own terminal (its own open/hidden state and
    * its own panes) and switching tabs switches which terminal you see. Falls
    * back to sessionId for the surfaces that mount a single BaseChat with no
-   * TerminalDockProvider (Dashboard, /extensions, the Hub), where it is only
+   * TerminalDockProvider (/extensions, the Hub), where it is only
    * ever compared against itself.
    */
   terminalKey?: string;
@@ -716,11 +696,6 @@ function BaseChatContent({
   coherent = true,
   onRenameSession,
   onSessionUpdate,
-  accentColor,
-  hideSessionNamePill = false,
-  onBusyChange,
-  onLatestMessage,
-  focusTrigger,
   allowWindowResize = true,
   artifactPanelEnabled = true,
   renderSessionTitle,
@@ -732,8 +707,8 @@ function BaseChatContent({
   const scrollRef = useRef<ScrollAreaHandle>(null);
   const { extensionsList, getProviders } = useConfig();
   // Per-session vision capability. The global ModelAndProviderContext tracks
-  // the user's default model, but each chat session (especially in dashboard
-  // mode) can be bound to a different provider/model. Look up vision support
+  // the user's default model, but each chat session (especially with several
+  // open at once) can be bound to a different provider/model. Look up vision support
   // against the session's own provider/model so attach gating reflects what
   // the session will actually use.
   const [sessionSupportsVision, setSessionSupportsVision] = React.useState<boolean | null>(null);
@@ -762,8 +737,8 @@ function BaseChatContent({
   // ---- Terminal dock seam -------------------------------------------------
   // With /pair's shell mounted the terminal is PER CHAT TAB: this chat drives
   // its own terminal through the context, keyed by its tab id (terminalKey), so
-  // opening it here never touches another tab's. Everywhere else (Dashboard,
-  // /extensions, the Hub) there is no provider, useTerminalDock() returns null,
+  // opening it here never touches another tab's. Everywhere else
+  // (/extensions, the Hub) there is no provider, useTerminalDock() returns null,
   // and BaseChat keeps its own local dock exactly as before.
   const terminalDock = useTerminalDock();
   // Falls back to sessionId off /pair, where there is no shell to hand a tab id
@@ -1217,37 +1192,6 @@ function BaseChatContent({
     }
   }, []);
 
-  // Pipe chatState transitions to the parent (dashboard window). Busy = any
-  // non-idle state (Thinking, Streaming, WaitingForUserInput, Compacting, etc.).
-  // ChatState.LoadingConversation counts as busy too — the session is still
-  // resolving and the user should see that as activity.
-  useEffect(() => {
-    if (!onBusyChange) return;
-    onBusyChange(chatState !== ChatState.Idle);
-  }, [chatState, onBusyChange]);
-
-  // Propagate a tail of the most recent assistant message to the parent so
-  // dashboard folded cards can show a hover preview. Updates on every message
-  // mutation — including mid-stream — so the user can watch the AI work
-  // through the popup without expanding the card.
-  useEffect(() => {
-    if (!onLatestMessage) return;
-    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-    if (!lastAssistant) {
-      onLatestMessage(null);
-      return;
-    }
-    const text = getTextContent(lastAssistant).trim();
-    if (!text) {
-      onLatestMessage(null);
-      return;
-    }
-    // Keep the tail short — the popup is ~6 lines of small text.
-    const TAIL = 220;
-    const tail = text.length > TAIL ? '…' + text.slice(-TAIL) : text;
-    onLatestMessage(tail);
-  }, [messages, onLatestMessage]);
-
   // Generate command history from user messages (most recent first)
   const commandHistory = useMemo(() => {
     return messages
@@ -1469,22 +1413,6 @@ function BaseChatContent({
     window.addEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
     return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
   }, [sessionId]);
-
-  // When the parent bumps focusTrigger (e.g. dashboard card unfolded), wait
-  // one animation frame for the display:none→display:flex transition to
-  // settle, then scroll the chat to bottom and ask ChatInput to refocus.
-  // BaseChat stays mounted while folded, so its mount-time autofocus and
-  // auto-scroll-to-bottom never re-fire — without this hook the input would
-  // stay unfocused and the conversation would stay at its pre-fold scroll
-  // position (often leaving the input row visually cut off).
-  useEffect(() => {
-    if (!focusTrigger) return;
-    const raf = requestAnimationFrame(() => {
-      scrollRef.current?.scrollToBottom?.();
-      window.dispatchEvent(new CustomEvent('focus-chat-input', { detail: { sessionId } }));
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [focusTrigger, sessionId]);
 
   // NOTE: as of this writing 'make-agent-from-chat' has NO dispatcher anywhere in
   // ui/desktop (only this listener and the one in hooks/useWorkflowManager.ts:284)
@@ -1901,44 +1829,41 @@ function BaseChatContent({
                   : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
               }
             >
-              {!hideSessionNamePill && (
-                <div
-                  // Opaque, not frosted. The artifact panel's header sits flush
-                  // beside this one; a translucent, blurred fill made the two
-                  // bottom hairlines read at different weights so they never
-                  // visually aligned (D-18).
-                  className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4"
-                  style={
-                    {
-                      WebkitAppRegion: 'drag',
-                      // The tab strip owns its own left reserve (it is the only
-                      // consumer of getSessionTitlePadding once it renders), so
-                      // the header must not apply the reserve twice.
-                      paddingLeft: renderSessionTitle ? 0 : sessionPillPaddingLeft,
-                    } as React.CSSProperties
-                  }
-                >
-                  {/* The strip renders HERE, in place of the pill. Do not move
-                      renderSessionHeaderActions() out of this row — it closes
-                      over BaseChat-local state, and hoisting the strip above
-                      BaseChat instead would produce two 52px bars. */}
-                  {renderSessionTitle ? (
-                    renderSessionTitle()
-                  ) : (
-                    <div className="min-w-0 flex-1">
-                      <SessionNamePill
-                        name={session?.name || 'New Session'}
-                        onRename={handleRename}
-                        onDiverge={handleTitleDiverge}
-                        canDiverge={canDivergeSession}
-                        accentColor={accentColor}
-                        className="w-fit max-w-[min(520px,calc(100%-16px))]"
-                      />
-                    </div>
-                  )}
-                  {renderSessionHeaderActions()}
-                </div>
-              )}
+              <div
+                // Opaque, not frosted. The artifact panel's header sits flush
+                // beside this one; a translucent, blurred fill made the two
+                // bottom hairlines read at different weights so they never
+                // visually aligned (D-18).
+                className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4"
+                style={
+                  {
+                    WebkitAppRegion: 'drag',
+                    // The tab strip owns its own left reserve (it is the only
+                    // consumer of getSessionTitlePadding once it renders), so
+                    // the header must not apply the reserve twice.
+                    paddingLeft: renderSessionTitle ? 0 : sessionPillPaddingLeft,
+                  } as React.CSSProperties
+                }
+              >
+                {/* The strip renders HERE, in place of the pill. Do not move
+                    renderSessionHeaderActions() out of this row — it closes
+                    over BaseChat-local state, and hoisting the strip above
+                    BaseChat instead would produce two 52px bars. */}
+                {renderSessionTitle ? (
+                  renderSessionTitle()
+                ) : (
+                  <div className="min-w-0 flex-1">
+                    <SessionNamePill
+                      name={session?.name || 'New Session'}
+                      onRename={handleRename}
+                      onDiverge={handleTitleDiverge}
+                      canDiverge={canDivergeSession}
+                      className="w-fit max-w-[min(520px,calc(100%-16px))]"
+                    />
+                  </div>
+                )}
+                {renderSessionHeaderActions()}
+              </div>
               {isCleanConversation ? (
                 <div
                   className="biorouter-clean-conversation flex-1 min-h-0 flex items-center justify-center overflow-y-auto px-4 py-10 sm:px-6 sm:py-16"

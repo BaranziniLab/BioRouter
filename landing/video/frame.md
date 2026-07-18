@@ -110,9 +110,9 @@ robustness. Each scene follows the same grammar:
 
 Used by the hero (#1) and the chaptered tour (#3), in this order:
 
-1. **Home** — sessions, tokens, recent chats; the calm dashboard.
+1. **Home** — sessions, tokens, recent chats; the calm overview.
 2. **Chat** — reasoning + live tool calls against data.
-3. **Dashboard mode** — many agents as folded cards on a canvas.
+3. **Tabs and split panes** — many agents running at once, side by side.
 4. **Knowledge** — ingest → LLM-maintained KB + force graph.
 5. **Workflows** — portable Extensions+Skills+Knowledge+Model, federated.
 6. **Models** — Local → Institutional (secure UCSF) → Commercial routing.

@@ -22,7 +22,7 @@ function clampThresholdPct(v: number): number {
 }
 
 /** Inline bar-style context gauge. Used both as a row inside the picker
- * popover (dashboard mode) and as the popover body of the standalone
+ * popover and as the popover body of the standalone
  * indicator (chat-tab mode). Icon stays neutral so it matches the rest of
  * the picker icons; the bar alone goes green → yellow → orange → red as
  * usage climbs. The bar also carries a draggable threshold marker — the
@@ -305,9 +305,9 @@ interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
 
 /** Compact-row variant: a single remaining-context ring button which, on click,
  * opens a popover that renders the same bar-style gauge used in the
- * dashboard picker. For the chat tab the user sees one compact ring and,
+ * picker. For the chat tab the user sees one compact ring and,
  * on click, gets the full real-time gauge with a Compact button — the
- * same UI the dashboard exposes. Ring color reflects remaining headroom. */
+ * same UI the picker exposes. Ring color reflects remaining headroom. */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   totalTokens,
   tokenLimit,

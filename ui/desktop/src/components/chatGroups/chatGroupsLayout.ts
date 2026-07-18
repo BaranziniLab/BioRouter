@@ -7,7 +7,7 @@ import { DropZone } from './dropZones';
  * R4 was MEASURED (plan banner, 2026-07-16): N mounted BaseChats cost ~74 DOM
  * nodes and ~1 MB each, and heap was flat from 3 to 6 chats. So this is not a
  * memory cliff and 4 is not a fear — it is the honest edge of the evidence. The
- * measurement used small dashboard windows and freshly-spawned sessions with
+ * measurement used small chat windows and freshly-spawned sessions with
  * short transcripts; a full-height group with a long transcript and tiktoken
  * counting will cost more than 1 MB. The measurement retires R4 as a blocker; it
  * does not license an unbounded split. Re-measure before raising this.
