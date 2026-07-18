@@ -834,7 +834,7 @@ git commit -m "feat(knowledge): per-KB manifest read/write with atomic rename"
 
 Create the file with the following content:
 
-```markdown
+````markdown
 # Knowledge Base — Maintenance Schema
 
 This document tells the LLM how to maintain *this particular* knowledge base.
@@ -918,7 +918,7 @@ When `kb_lint` is called:
 ## Tone
 
 Concise, scientific, evidence-led. No hype, no certainty without citation.
-```
+````
 
 - [ ] **Step 2: Verify file contents**
 

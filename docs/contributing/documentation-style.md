@@ -35,9 +35,20 @@ and closes with:
 ```
 
 Rules:
-- The blockquote block is the **context header**. It is required on every file except
-  `README.md` index files, which instead open with a one-paragraph description of the
-  folder's scope.
+- The blockquote block is the **context header**. It is required on every file except the
+  two cases below.
+- **Exception 1 — `README.md` index files.** These open with a one-paragraph description
+  of the folder's scope instead, plus a table of the folder's files.
+- **Exception 2 — a dated series whose folder index frames the whole set.** The release
+  notes under [`releases/notes/`](../releases/notes/README.md) are the only current
+  example: each file's purpose is evident from its version-numbered filename, every entry
+  has the same shape, and the folder README already states that all of them are frozen
+  records of a release as it shipped. Repeating a status header 18 times would add noise
+  without adding information. Do not stretch this exception to cover a folder of unlike
+  documents — if the files differ in kind, each needs its own header.
+- This file is itself the third case: a style guide that opens by stating what it is in
+  prose. Prefer the header; deviate only when the document's first paragraph genuinely
+  does the same work better.
 - `Status:` is required on anything dated, planned, or reporting completed work.
   Historical records say so in the header — never leave a reader guessing whether a
   plan was executed.

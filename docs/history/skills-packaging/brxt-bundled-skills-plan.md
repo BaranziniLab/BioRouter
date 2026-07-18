@@ -980,7 +980,7 @@ This plan was written to be executed by an agent, task by task, in test-driven o
   ```
 
   Expected output (newest first):
-  ```
+  ```text
   chore: fix lint warnings from brxt skills integration (if needed)
   test: add sample skills for CDWAgent/UCSFOMOPAgent/SPOKEAgent and brxt skills E2E test
   feat(skills): add ZIP file import to Add Skill modal

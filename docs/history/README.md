@@ -1,0 +1,90 @@
+# Historical records
+
+This folder is BioRouter's archive. Every document in it describes work that is **finished** — designs that were built, plans that were executed, review campaigns that closed, stress tests that ran to completion, and a small number of ideas that were abandoned or later removed. It is kept for the record and for provenance: read it to find out *why* a subsystem is shaped the way it is, never to find out what the code does today. The material spans **May 2026 to July 2026**, and almost all of it shipped.
+
+The two exceptions are worth knowing up front, because they are the ones most likely to mislead. **Dashboard mode** was built through four generations and then removed from the desktop app on 2026-07-18 — nothing in [`dashboard-mode/`](dashboard-mode/README.md) describes a feature that still exists. The **extension trait design** in [`legacy-architecture/`](legacy-architecture/extension-trait-design.md) was never shipped at all; extensions are MCP servers built on the `rmcp` SDK instead. Everywhere else, a document that has been overtaken says so in its own header and names its successor.
+
+Come here when you are tracing a decision, reconstructing what landed in a release, or trying to understand why an identifier like `BR-43` or `H7` appears in a commit message. If instead you want the current behaviour of a subsystem, you are in the wrong folder and should leave quickly: the live working documents live in [`docs/apps-sdk/`](../apps-sdk/README.md), [`docs/agent-loop/`](../agent-loop/README.md), [`docs/knowledge-base/`](../knowledge-base/README.md), [`docs/design/`](../design/README.md) and their siblings. Several of those READMEs point back here deliberately, for exactly the provenance question this folder answers.
+
+> **How to check a document's standing.** Every file here opens with a context header carrying a `Status:` line that states whether the work shipped, was superseded, or was removed, and — where it was superseded — links the document that now holds the truth. Trust that line over the filename.
+
+There are no Markdown files directly in this folder. All content sits in the 23 topic subfolders below.
+
+## Agent Drafter and the Apps SDK
+
+| Folder | What it holds |
+|---|---|
+| [agent-drafter-stress-test](agent-drafter-stress-test/README.md) | The method statement and results of a campaign that drove a real model to build 100 diverse agentic apps with the Agent Drafter. Ran to completion; the eight `H1`–`H8` drafter fixes it produced shipped on 2026-07-11 in commit `679deed5`. |
+| [agent-drafter-testdrive-100](agent-drafter-testdrive-100/README.md) | The archived evidence set for a separate test drive against a 100-app specification corpus — per-app rubrics, three cross-cutting audits, and a six-wave remediation plan. Authoring stopped at spec 025 of 100; the remediation shipped on branch `feat/apps-sdk-v2`. |
+| [apps-sdk-rfc-2026-06](apps-sdk-rfc-2026-06/strategy-and-openai-comparison.md) | The June 2026 strategy RFC that benchmarked OpenAI's Agents SDK and proposed a layered App SDK, plus its code-level companion [implementation design](apps-sdk-rfc-2026-06/implementation-design.md). Largely built, and superseded by the Apps SDK v2 spec of 2026-07-12. |
+
+## The agent loop, performance and subsystem reviews
+
+| Folder | What it holds |
+|---|---|
+| [agent-loop-review](agent-loop-review/README.md) | The executive report of the agentic-loop review — a walkthrough of the loop, answers to 14 review questions, a comparison against nine open-source coding agents, and 28 sub-reports. A point-in-time snapshot read against commit `24cdc3a2` on 2026-07-12, now superseded by the campaign it triggered. |
+| [agent-loop-campaign](agent-loop-campaign/README.md) | The plan of record for the `BR-1`…`BR-70` fix campaign that implemented the review's findings: wave conventions, regression gates, and a dated log of every merge decision. Finished and merged to `main` across 86 `BR-`prefixed commits. |
+| [performance-2026-06](performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 and its [implementation log](performance-2026-06/implementation-log.md), plus a second, independent effort comparing BioRouter against the third-party jcode harness ([analysis](performance-2026-06/jcode-comparison-analysis.md), [report](performance-2026-06/jcode-borrows-implementation-report.md)). Nine fixes merged 2026-06-23 and the jcode waves 2026-06-24; the review's Tier 2 and Tier 3 items were never scheduled. |
+| [subsystem-reviews-2026](subsystem-reviews-2026/desktop-reliability-defects.md) | Five unrelated July-2026 hardening and audit records: desktop reliability defects, the [background jobs design](subsystem-reviews-2026/developer-background-jobs-design.md), the [system-prompt inventory](subsystem-reviews-2026/system-prompt-inventory-and-gaps.md), [terminal UI stability](subsystem-reviews-2026/terminal-ui-stability.md), and [tool discovery hardening](subsystem-reviews-2026/tool-discovery-hardening.md). All resolved and integrated, except one open system-prompt item. |
+
+## Desktop UI
+
+| Folder | What it holds |
+|---|---|
+| [dashboard-mode](dashboard-mode/README.md) | The complete paper trail of dashboard mode — four generations of design specs and plans for spawning many chat windows on a free-floating canvas — and the record of its removal. The feature was deleted from the desktop app on 2026-07-18; the whole folder is an archive. |
+| [chat-groups](chat-groups/design-judgement-and-plan.md) | The adversarial judgement of three competing chat-groups designs and the reduced plan authorised on 2026-07-16. Its scope was overtaken: the branch went on to ship both the tabs and the split with drag and drop zones that this document deferred. |
+| [desktop-menu-and-tray](desktop-menu-and-tray/design.md) | The design for the custom Electron application menu and the system tray's click behaviour, with its [implementation plan](desktop-menu-and-tray/plan.md). Written 2026-05-07 and implemented as `buildApplicationMenu()`; the live menu has since drifted from the listing. |
+| [desktop-ui-fixes](desktop-ui-fixes/v1-72-1-bug-fix-batch.md) | The implementation plan for the four fixes batched into v1.72.1 — runtime enforcement of disabled skills, plus a drop-zone-only redesign of three import modals. All four shipped in May 2026. |
+| [notification-redesign](notification-redesign/notification-surface-design.md) | The design for `NotificationSurface`, a shared primitive owning the layout of both transient toasts and inline alerts. The primitive shipped; the follow-up it deferred — migrating roughly 40 ad-hoc inline banners — should be assumed still open. |
+| [gui-qa-2026-06](gui-qa-2026-06/debug-session-issue-tracker.md) | Two records from one QA session run on 2026-06-24/25 against build 1.86.1: an item-by-item [issue tracker](gui-qa-2026-06/debug-session-issue-tracker.md) and a [regression pass](gui-qa-2026-06/week-commit-regression-pass.md) over the 133 commits of the preceding eight days. Neither is a checklist to re-run. |
+
+## Extensions, providers and packaging
+
+| Folder | What it holds |
+|---|---|
+| [autovis-stress-test](autovis-stress-test/README.md) | The 100-request scenario corpus for stress-testing the Auto Visualiser's `render_dashboard` composite-report tool, with per-run outcomes. Executed against the dev app driven by GPT-5.5 and completed 100/100 on 2026-07-11. |
+| [computer-controller-hardening](computer-controller-hardening/test-plan-and-root-causes.md) | The ~60-case [test plan and root causes](computer-controller-hardening/test-plan-and-root-causes.md) for the Computer Controller, its [executed results](computer-controller-hardening/executed-test-results.md), and a [multi-app orchestration run](computer-controller-hardening/multi-app-orchestration-run.md). The pass completed 2026-06-20 and its fixes shipped in that commit. |
+| [codegraphagent](codegraphagent/extension-design.md) | The design for CodeGraphAgent — a `.brxt` extension wrapping a vendored CodeGraph engine — and the two plans that built it: a [foundation plan](codegraphagent/foundation-plan.md) and a [bio-language extractors plan](codegraphagent/bio-language-extractors-plan.md). Shipped; the extension now covers 23 languages including R, Julia, MATLAB and Perl. Note that the code lives in a separate repository. |
+| [institutional-providers](institutional-providers/versa-providers-design.md) | The design and [plan](institutional-providers/versa-providers-plan.md) for the two UCSF Versa providers and for splitting the provider grid into labeled sections. Both providers shipped and exist in the tree; the section ordering specified here is superseded by the live `ProviderGrid.tsx`. |
+| [multimodal-image-input](multimodal-image-input/image-input-design.md) | The design and [plan](multimodal-image-input/image-input-plan.md) for sending pasted or dropped images to vision-capable models as inline base64 blocks, adding a `supports_vision` flag and fixing Gemini's silent image drop. Shipped in v1.76.1. |
+| [skills-packaging](skills-packaging/brxt-bundled-skills-design.md) | Two design-and-plan pairs from 2026-05-07: [`.brxt` bundled skills](skills-packaging/brxt-bundled-skills-design.md) ([plan](skills-packaging/brxt-bundled-skills-plan.md)), letting an extension package carry its own skills, and [skill bundles](skills-packaging/skill-bundles-design.md) ([plan](skills-packaging/skill-bundles-plan.md)), treating a parent folder of sub-skills as one installable unit. Both shipped. |
+
+## Knowledge
+
+| Folder | What it holds |
+|---|---|
+| [knowledge-base-buildout](knowledge-base-buildout/founding-design.md) | The origin design for the personal knowledge base feature — git-backed markdown KBs maintained by an LLM, credibility classification, graph derivation, the MCP and HTTP surfaces, the `.brkb` format. Approved 2026-05-30; the feature shipped. |
+
+The six implementation plans that built the feature out were executed in order against that design, and this folder has no index of its own, so they are listed here:
+
+| Plan | What it built |
+|---|---|
+| [Plan 1 — storage, git and graph](knowledge-base-buildout/plan-1-storage-git-and-graph.md) | The storage, git, format-conversion, credibility-classification and graph-derivation layers behind a shared `KnowledgeService`. |
+| [Plan 2 — macros and the sub-agent loop](knowledge-base-buildout/plan-2-macros-and-subagent-loop.md) | The `kb_ingest_source` / `kb_query` / `kb_lint` macros over a bounded sub-agent loop, plus the primitives Plan 1 deferred. |
+| [Plan 3 — HTTP routes and export](knowledge-base-buildout/plan-3-http-routes-and-export.md) | The `/knowledge/*` routes with SSE-streamed macros, the `.brkb` export/import format, and the regenerated TypeScript client. |
+| [Plan 4 — Knowledge view and ingest](knowledge-base-buildout/plan-4-knowledge-view-and-ingest.md) | The sidebar entry, the `KnowledgeView` shell, the command-palette KB selector, and the ingest panel with live SSE progress. |
+| [Plan 5 — graph view and change log](knowledge-base-buildout/plan-5-graph-view-and-change-log.md) | The credibility-coloured force graph and the git-history change-log drawer with preview and restore. |
+| [Plan 6 — chat integration and closeout](knowledge-base-buildout/plan-6-chat-integration-and-closeout.md) | Active-KB persistence, the chat-side KB chip, the `/knowledge` slash command, and the closing documentation. |
+
+## Repository and documentation housekeeping
+
+| Folder | What it holds |
+|---|---|
+| [branch-merge-2026-07](branch-merge-2026-07/merge-execution-plan.md) | The execution record of the July 2026 branch and pull-request merge campaign: decisions `D1`–`D10`, conflicts resolved, and a commit-level inventory of everything that landed. Completed 2026-07-13 with all nine examined pull requests merged. |
+| [docs-migration](docs-migration/consolidation-design.md) | The [design](docs-migration/consolidation-design.md) and [plan](docs-migration/docusaurus-to-markdown-plan.md) for merging the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site into one plain-markdown tree, purging upstream Goose/Block branding and renaming `recipe` to `workflow`. Executed in May 2026; `docs/` was reorganized again in July 2026, so the target paths are a record of intent rather than links to follow. |
+| [legacy-architecture](legacy-architecture/extension-trait-design.md) | The original design sketch for an extension framework built around a hand-written `Extension` trait, a `ToolRegistry` and a `#[tool]` proc macro. **Never shipped** — extensions are MCP servers on the `rmcp` SDK instead. |
+
+## Data files and scripts
+
+This folder holds no non-Markdown files at its top level, but four subfolders carry machine-readable evidence and one carries a script. Each is described by its own folder's index.
+
+- [`agent-drafter-stress-test/data/prompts.json`](agent-drafter-stress-test/data/prompts.json) — the 100 app specs that drove the stress test, each with an `id`, `domain`, `interaction`, `patterns` and a prose `requirement`.
+- `agent-drafter-testdrive-100/data/` — the machine-readable authoring ledger, the platform-integration audit output, and the static evidence for the five layout probes. The sibling `app-results/`, `layout-probes/` and `authoring-logs/` folders hold the per-app rubrics and static audits.
+- [`agent-loop-review/generate_review_html.py`](agent-loop-review/generate_review_html.py) — a Python script that stitches the review's Markdown corpus into one self-contained HTML report using pandoc. The generated `review.html` is not checked in; the Markdown corpus remains the source of truth, so you never need to run this to read the review.
+
+## Related documentation
+
+- [Apps SDK](../apps-sdk/README.md) — the current authority on app and SDK behaviour, which supersedes the June 2026 RFC archived here.
+- [The agent loop](../agent-loop/README.md) — the live documentation for the loop that the review and fix campaign in this folder diagnosed and rebuilt.
+- [Knowledge base](../knowledge-base/README.md) — the live working documents for the Knowledge subsystem, whose build record is the `knowledge-base-buildout` folder here.
+- [Design](../design/README.md) — the current design specifications, including the UI overhaul and chat-groups work that overtook the archived chat-groups plan.
