@@ -4,43 +4,44 @@ self-contained, design-system-faithful HTML report. pandoc does md->html;
 this script themes and stitches. Output lands in the task worktree only."""
 import subprocess, re, html, sys, pathlib
 
-SRC = pathlib.Path("/Users/wanjun/Desktop/biorouter/.worktrees/agent-loop-review/docs/agent-loop-review")
-OUT = SRC / "review.html"
+# Resolve the review corpus relative to this script so it works from any checkout.
+SRC = pathlib.Path(__file__).resolve().parent
+OUT = SRC / "review.html"  # generated view; not checked in (the corpus is the source of truth)
 
 # (group, key, relpath, friendly title)
 DOCS = [
     ("Overview", "readme",            "README.md",              "Executive Report"),
-    ("Overview", "proposals-master",  "PROPOSALS.md",           "The 67-Proposal Improvement Program"),
+    ("Overview", "proposals-master",  "improvement-proposals.md",           "The 67-Proposal Improvement Program"),
 
-    ("Internal reviews", "internal-core-loop",             "internal/core-loop.md",             "Core agent loop & tool dispatch"),
-    ("Internal reviews", "internal-context-injection",     "internal/context-injection.md",     "Context injection & system prompt"),
-    ("Internal reviews", "internal-compaction",            "internal/compaction.md",            "Compaction & context management"),
-    ("Internal reviews", "internal-hooks",                 "internal/hooks.md",                 "Hooks system"),
-    ("Internal reviews", "internal-guardrails-permissions","internal/guardrails-permissions.md","Guardrails, security & permissions"),
-    ("Internal reviews", "internal-loop-detection",        "internal/loop-detection.md",        "Loop detection & stuck states"),
-    ("Internal reviews", "internal-long-running",          "internal/long-running.md",          "Long-running tasks & processes"),
-    ("Internal reviews", "internal-state-awareness",       "internal/state-awareness.md",       "State, todos, goals & version control"),
-    ("Internal reviews", "internal-server-flow",           "internal/server-flow.md",           "Server reply flow & session lifecycle"),
-    ("Internal reviews", "internal-verification",          "internal/verification.md",          "Self-verification & quality checkpoints"),
+    ("Internal reviews", "internal-core-loop",             "subsystem-reviews/core-loop-and-tool-dispatch.md",             "Core agent loop & tool dispatch"),
+    ("Internal reviews", "internal-context-injection",     "subsystem-reviews/context-injection-and-system-prompt.md",     "Context injection & system prompt"),
+    ("Internal reviews", "internal-compaction",            "subsystem-reviews/compaction-and-context-management.md",            "Compaction & context management"),
+    ("Internal reviews", "internal-hooks",                 "subsystem-reviews/hooks-system.md",                 "Hooks system"),
+    ("Internal reviews", "internal-guardrails-permissions","subsystem-reviews/guardrails-and-permissions.md","Guardrails, security & permissions"),
+    ("Internal reviews", "internal-loop-detection",        "subsystem-reviews/loop-and-stuck-detection.md",        "Loop detection & stuck states"),
+    ("Internal reviews", "internal-long-running",          "subsystem-reviews/long-running-tasks-and-scheduling.md",          "Long-running tasks & processes"),
+    ("Internal reviews", "internal-state-awareness",       "subsystem-reviews/state-awareness-and-version-control.md",       "State, todos, goals & version control"),
+    ("Internal reviews", "internal-server-flow",           "subsystem-reviews/server-reply-flow-and-session-lifecycle.md",           "Server reply flow & session lifecycle"),
+    ("Internal reviews", "internal-verification",          "subsystem-reviews/self-verification-and-doneness.md",          "Self-verification & quality checkpoints"),
 
-    ("External studies", "external-goose",       "external/goose.md",       "Goose (Block) — upstream fork parent"),
-    ("External studies", "external-cline",       "external/cline.md",       "Cline"),
-    ("External studies", "external-opencode",    "external/opencode.md",    "OpenCode (sst)"),
-    ("External studies", "external-pi",          "external/pi.md",          "Pi (badlogic)"),
-    ("External studies", "external-aider",       "external/aider.md",       "Aider"),
-    ("External studies", "external-openhands",   "external/openhands.md",   "OpenHands"),
-    ("External studies", "external-codex-cli",   "external/codex-cli.md",   "OpenAI Codex CLI"),
-    ("External studies", "external-gemini-cli",  "external/gemini-cli.md",  "Gemini CLI"),
-    ("External studies", "external-claude-code", "external/claude-code.md", "Claude Code"),
+    ("External studies", "external-goose",       "../../research/coding-agent-landscape/goose.md",       "Goose (Block) — upstream fork parent"),
+    ("External studies", "external-cline",       "../../research/coding-agent-landscape/cline.md",       "Cline"),
+    ("External studies", "external-opencode",    "../../research/coding-agent-landscape/opencode.md",    "OpenCode (sst)"),
+    ("External studies", "external-pi",          "../../research/coding-agent-landscape/pi.md",          "Pi (badlogic)"),
+    ("External studies", "external-aider",       "../../research/coding-agent-landscape/aider.md",       "Aider"),
+    ("External studies", "external-openhands",   "../../research/coding-agent-landscape/openhands.md",   "OpenHands"),
+    ("External studies", "external-codex-cli",   "../../research/coding-agent-landscape/codex-cli.md",   "OpenAI Codex CLI"),
+    ("External studies", "external-gemini-cli",  "../../research/coding-agent-landscape/gemini-cli.md",  "Gemini CLI"),
+    ("External studies", "external-claude-code", "../../research/coding-agent-landscape/claude-code.md", "Claude Code"),
 
-    ("Comparisons", "compare-context",   "compare/context.md",   "Context & environment awareness"),
-    ("Comparisons", "compare-memory",    "compare/memory.md",    "Compaction, memory & continuity"),
-    ("Comparisons", "compare-safety",    "compare/safety.md",    "Hooks, permissions, guardrails & loops"),
-    ("Comparisons", "compare-execution", "compare/execution.md", "Tool loop, tasks, checkpoints & verification"),
+    ("Comparisons", "compare-context",   "competitive-comparison/context-and-prompts.md",   "Context & environment awareness"),
+    ("Comparisons", "compare-memory",    "competitive-comparison/compaction-and-memory.md",    "Compaction, memory & continuity"),
+    ("Comparisons", "compare-safety",    "competitive-comparison/safety-and-guardrails.md",    "Hooks, permissions, guardrails & loops"),
+    ("Comparisons", "compare-execution", "competitive-comparison/execution-and-verification.md", "Tool loop, tasks, checkpoints & verification"),
 
-    ("Proposal lenses", "proposals-performance", "proposals/performance.md", "Performance & efficiency lens"),
-    ("Proposal lenses", "proposals-robustness",  "proposals/robustness.md",  "Robustness & safety lens"),
-    ("Proposal lenses", "proposals-ux",          "proposals/ux.md",          "Usability & agent-ergonomics lens"),
+    ("Proposal lenses", "proposals-performance", "proposal-lenses/performance.md", "Performance & efficiency lens"),
+    ("Proposal lenses", "proposals-robustness",  "proposal-lenses/robustness.md",  "Robustness & safety lens"),
+    ("Proposal lenses", "proposals-ux",          "proposal-lenses/ux.md",          "Usability & agent-ergonomics lens"),
 ]
 
 # map source relpath -> in-page anchor, for cross-reference rewriting
