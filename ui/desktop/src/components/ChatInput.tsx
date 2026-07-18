@@ -195,8 +195,8 @@ export default function ChatInput({
     currentModelSupportedInputMimeTypes: globalSupportedInputMimeTypes,
   } = useModelAndProvider();
   // Prefer the session-scoped flag when provided. This matters when several
-  // mode (where each window may be bound to a different model than the user's
-  // global default) and after per-session model switches.
+  // chats are open at once (each may be bound to a different model than the
+  // user's global default) and after per-session model switches.
   const currentModelSupportsVision =
     supportsVisionOverride !== undefined ? supportsVisionOverride : globalSupportsVision;
   const currentModelSupportedInputMimeTypes =

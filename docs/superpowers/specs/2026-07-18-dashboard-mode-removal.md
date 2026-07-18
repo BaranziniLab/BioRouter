@@ -14,14 +14,16 @@ their own moment:
 - [`../plans/2026-05-29-dashboard-fold-mode.md`](../plans/2026-05-29-dashboard-fold-mode.md)
   and [`2026-05-29-dashboard-fold-mode-design.md`](2026-05-29-dashboard-fold-mode-design.md)
 - `docs/design/chat-groups-plan.md`, `docs/design/EXECUTION.md` — the successor design
-- `docs/release-notes/v1.76.0.md` — the release that shipped dashboard mode as a headline feature
+- `docs/release-notes/v1.76.0.md` — the release that shipped dashboard **fold mode** as its
+  headline. Dashboard mode itself shipped in v1.75.0, which has no release-notes file;
+  the `landing/about.html` changelog is the record for it.
 
 ## What dashboard mode was
 
 A free-floating **canvas** at the `/dashboard` route on which the user could
 spawn many chat "boxes" at once: draggable, resizable, foldable cards, each one
 a full chat session with its own agent, laid out on an infinite pannable
-surface. It shipped in v1.76.0 (with fold mode following in v1.85.3) and grew a
+surface. It shipped in v1.75.0 (with fold mode following in v1.76.0) and grew a
 supporting cast: a layout/packing engine, pixel snapping, a colour palette per
 box, keyboard shortcuts, localStorage persistence of box geometry, and a
 window-maximizing IPC pair so entering the canvas gave it the whole screen.
@@ -47,8 +49,8 @@ bug, both of which simply cease to exist with one surface.
 | Two React contexts | `contexts/DashboardContext.tsx` and `contexts/DashboardCanvasContext.tsx` |
 | Route + provider | The `/dashboard` route and the app-wide `DashboardProvider` wrapper in `App.tsx` |
 | Entry points | The two remaining "Add to dashboard" actions — the session-row menu in `SessionListView.tsx` and the workflow-card menu in `WorkflowsView.tsx` (the titlebar control had gone earlier) |
-| Electron IPC | The `dashboard:enter` / `dashboard:exit` handler pair in `main.ts`, its `preDashboardBounds` window-bounds map, and the `dashboardEnter` / `dashboardExit` preload bridge + types |
-| CSS | The `body.dashboard-route-active` rule in `styles/main.css` and the class toggle in `renderer.tsx` |
+| Electron IPC | The `dashboard:enter` / `dashboard:exit` handler pair in `main.ts`, its `preDashboardBounds` window-bounds map, the `dashboardEnter` / `dashboardExit` preload bridge + types, and the matching no-op stubs in `renderer.tsx` |
+| CSS | The `body.dashboard-route-active` rule in `styles/main.css` and the class toggle that set it in `Dashboard/DashboardRoute.tsx` |
 | localStorage | Three keys no longer written: `biorouter.dashboard.v2`, `biorouter.dashboard.v1`, `biorouter.labmeeting.v1` |
 
 **The Rust backend contained zero dashboard-mode code.** Dashboard mode was

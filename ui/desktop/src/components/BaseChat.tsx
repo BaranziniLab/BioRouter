@@ -708,7 +708,7 @@ function BaseChatContent({
   const { extensionsList, getProviders } = useConfig();
   // Per-session vision capability. The global ModelAndProviderContext tracks
   // the user's default model, but each chat session (especially with several
-  // mode) can be bound to a different provider/model. Look up vision support
+  // open at once) can be bound to a different provider/model. Look up vision support
   // against the session's own provider/model so attach gating reflects what
   // the session will actually use.
   const [sessionSupportsVision, setSessionSupportsVision] = React.useState<boolean | null>(null);

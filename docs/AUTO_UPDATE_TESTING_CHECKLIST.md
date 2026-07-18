@@ -67,10 +67,9 @@ notarization creds + real hardware).
 > 35 passing Vitest tests and **0 new failures** (359→394 passed, 32→32 failed).
 >
 > _Snapshot taken at the time of that release; the names above are what was
-> actually observed then. `DashboardProvider` and `App.test.tsx` no longer exist
-> (dashboard mode was removed on 2026-07-18) — left unedited because rewriting a
-> recorded measurement would falsify it. Re-measure rather than read these as
-> current._
+> actually observed then. `DashboardProvider` no longer exists (dashboard mode was
+> removed on 2026-07-18) — left unedited because rewriting a recorded measurement
+> would falsify it. Re-measure rather than read these as current._
 
 ### Live NOTARIZED swap — EXECUTED ✅ (the full one-click update, end-to-end)
 
