@@ -158,6 +158,6 @@ Slash commands (TUI):
 - Voice dictation (Whisper) — GUI-only.
 - Knowledge graph view, history/restore, `.brkb` export/import — server/GUI-only.
 - First-class secrets-management command (keys only via `configure` / per-extension `--secret`).
-- Dashboard canvas, interactive MCP Apps/MCP-UI, session-sharing tunnel, response-style
-  settings — GUI-only.
+- Tabs, chat groups and split panes, interactive MCP Apps/MCP-UI, session-sharing tunnel,
+  response-style settings — GUI-only.
 </content>
