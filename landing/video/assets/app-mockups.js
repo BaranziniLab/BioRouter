@@ -28,7 +28,6 @@
     settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
     plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
     panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
-    grid: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
     cal: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
     chevR: '<path d="m9 18 6-6-6-6"/>',
     chevD: '<path d="m6 9 6 6 6-6"/>',
@@ -111,7 +110,7 @@
     opts = opts || {};
     var lights = '<div class="bw-lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>';
     var icons = opts.icons === false ? '' :
-      '<div class="bw-bar-icons">' + svg(I.plus) + svg(I.panel) + svg(I.grid) + '</div>';
+      '<div class="bw-bar-icons">' + svg(I.plus) + svg(I.panel) + '</div>';
     var center = opts.center ? '<div class="bw-bar-center">' + opts.center + '</div>' : '<div class="bw-bar-spacer"></div>';
     var right = opts.right ? '<div class="bw-bar-meta">' + opts.right + '</div>' : '';
     return '<div class="bw-bar">' + lights + icons + center + right + '</div>';
@@ -143,9 +142,10 @@
       '<span class="grow"></span>' + right + '</div></div>';
   }
 
-  /* Compact composer used inside Dashboard windows. In dashboard mode the app
-     (ChatInput compactPicker) keeps only DirSwitcher / Attach / Extensions /
-     Skills visible and folds the rest (cost, model, mode) behind a chevron. */
+  /* Compact composer used inside a split pane. When a chat is narrower than a
+     full window the app (ChatInput compactPicker) keeps only DirSwitcher /
+     Attach / Extensions / Skills visible and folds the rest (cost, model,
+     mode) behind a chevron. */
   function composerCompact() {
     return '<div class="bw-composer">' +
       '<div class="ph">⌘↑ / ⌘↓ to navigate messages<span class="caret"></span></div>' +
@@ -213,45 +213,62 @@
     return win('chat', {}, main);
   };
 
-  SCREENS.dashboard = function () {
-    /* Window controls: Fold(Minus) · Shrink(Minimize2) · Enlarge(Maximize2) · Close(X),
-       matching WindowTitleBar.tsx / FoldedCard.tsx exactly. */
-    var winBtns = '<span class="wb">' + svg(I.wmin) + '</span><span class="wb">' + svg(I.minimize) +
-      '</span><span class="wb">' + svg(I.wexp) + '</span><span class="wb">' + svg(I.wx) + '</span>';
-    /* One focused, open ChatWindow. */
-    function openWin(accent, x, y, w, h, name) {
-      // Empty new-session state: a centered greeting (common/Greeting.tsx) above
-      // the composer, exactly like a fresh ChatWindow in dashboard mode.
-      var body = '<div class="bw-win-body">' +
-        '<div class="bw-win-greet">What insights will your data reveal today?</div>' +
-        composerCompact() + '</div>';
-      return '<div class="bw-win" style="left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h + 'px">' +
-        '<div class="bw-win-bar"><span class="dot" style="background:' + accent + '"></span>' +
-        '<span class="nm">' + name + '</span>' + winBtns + '</div>' + body + '</div>';
+  SCREENS.tabs = function () {
+    /* Mirrors src/components/chatGroups: a tab strip per group (ChatTabStrip)
+       and a resizable splitter between two leaf groups (ChatGroupSplitter).
+       Each tab is an independent session with its own history and model; a
+       running tab shows the small activity dot. */
+    function tab(name, active, busy) {
+      return '<div class="bw-tab' + (active ? ' active' : '') + '">' +
+        '<span class="ic">' + svg(I.msg) + '</span>' +
+        '<span class="nm">' + name + '</span>' +
+        (busy ? '<span class="bw-tab-dot busy"></span>'
+              : '<span class="bw-tab-dot">' + svg(I.wx) + '</span>') +
+        '</div>';
     }
-    /* A window folded into a card — accent-tinted, status ring + controls. */
-    function fold(accent, x, y, w, h, name, busy, delay) {
-      var tint = accent + '1F';
-      var ring = '<span class="bw-ring' + (busy ? ' busy' : '') + '" style="' +
-        (busy ? 'color:' + accent : 'border:1.5px solid ' + accent) + '"></span>';
-      return '<div class="bw-fold" style="left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h +
-        'px;background:' + tint + ';animation-delay:' + delay + 's">' +
-        '<div class="bw-fold-row" style="color:' + accent + '">' + ring + '<span class="grow"></span>' +
-        winBtns + '</div>' +
-        '<div class="bw-fold-name">' + name + '</div>' +
-        '<div class="bw-fold-cwd">/Users/wgu/Desktop</div></div>';
+    function strip(tabs) {
+      return '<div class="bw-tabs">' + tabs +
+        '<span class="bw-tab-add">' + svg(I.plus) + '</span></div>';
     }
-    var cards =
-      fold('#8b8fc4', 20, 54, 206, 92, 'GWAS · Type 2 Diabetes', false, 0) +
-      fold('#c4a47a', 20, 166, 206, 92, 'OMOP statin cohort', true, 1.1) +
-      fold('#c49096', 20, 278, 206, 92, 'EPAS1 literature scan', false, 0.6) +
-      fold('#a8b884', 782, 78, 190, 92, 'mtcars Shiny app', false, 1.5) +
-      fold('#8ab0c4', 782, 198, 190, 92, 'SPOKE MS query', true, 0.3) +
-      openWin('#7fae9f', 248, 52, 512, 340, 'New Session');
-    var main = '<div class="bw-canvas">' + cards + '</div>';
-    var center = '<span class="x">Spawn</span><span class="x">Organize</span>' +
-      '<span class="x">Fold <span class="bw-toggle"></span></span><span class="x">Clear</span>';
-    return win(null, { center: center, right: '6 on canvas' }, main);
+
+    /* Left pane: a live agent turn. */
+    var leftTools = ['Cdw-search Diagnoses By Code', 'Cdw-search Medications By Code']
+      .map(function (t) {
+        return '<div class="bw-tool bw-stagger"><span class="ic">' + svg(I.db) + '</span>' +
+          '<span class="t"><b>' + t + '</b> <span class="arg">search_term, row_limit</span></span>' +
+          '<span class="chev">' + svg(I.chevR) + '</span></div>';
+      }).join('');
+    var leftBody = '<div class="bw-scroll" style="overflow:hidden">' +
+      '<div class="bw-bubble">How many patients with type 2 diabetes are currently receiving statin therapy?</div>' +
+      '<div class="bw-bubble-time">4:52 PM</div>' + leftTools +
+      '<div class="bw-working"><span class="code">&lt;/&gt;</span> ' +
+      '<span class="shim">biorouter is working on it…</span></div>' +
+      '</div>' + composerCompact();
+    var left = '<div class="bw-pane">' +
+      strip(tab('OMOP statin cohort', true, true) + tab('GWAS · Type 2 Diabetes', false, false) +
+            tab('EPAS1 literature scan', false, true)) +
+      leftBody + '</div>';
+
+    /* Right pane: a second group, running its own session in parallel. */
+    var rightTools = ['Spoke-run Cypher Query', 'Developer-text Editor']
+      .map(function (t) {
+        return '<div class="bw-tool bw-stagger"><span class="ic">' + svg(I.db) + '</span>' +
+          '<span class="t"><b>' + t + '</b></span>' +
+          '<span class="chev">' + svg(I.chevR) + '</span></div>';
+      }).join('');
+    var rightBody = '<div class="bw-scroll" style="overflow:hidden">' +
+      '<div class="bw-bubble">Which genes are linked to multiple sclerosis in SPOKE?</div>' +
+      '<div class="bw-bubble-time">4:53 PM</div>' + rightTools +
+      '<div class="bw-working"><span class="code">&lt;/&gt;</span> ' +
+      '<span class="shim">biorouter is working on it…</span></div>' +
+      '</div>' + composerCompact();
+    var right = '<div class="bw-pane">' +
+      strip(tab('SPOKE MS query', true, true) + tab('mtcars Shiny app', false, false)) +
+      rightBody + '</div>';
+
+    var main = '<div class="bw-split">' + left +
+      '<div class="bw-splitter"></div>' + right + '</div>';
+    return win('chat', {}, main);
   };
 
   SCREENS.history = function () {
