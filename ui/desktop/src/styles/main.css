@@ -1554,11 +1554,6 @@ body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/'] {
   -webkit-app-region: no-drag;
 }
 
-body.dashboard-route-active .titlebar-drag-region {
-  -webkit-app-region: no-drag;
-  pointer-events: none;
-}
-
 body.biorouter-chat-route-active .titlebar-drag-region {
   pointer-events: none;
 }

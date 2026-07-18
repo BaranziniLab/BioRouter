@@ -143,8 +143,6 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     (window as unknown as Record<string, unknown>).electron = {
       getConfig: () => headlessConfig.appConfig,
       hideWindow: () => {},
-      dashboardEnter: async () => {},
-      dashboardExit: async () => {},
       getBiorouterdHostPort: async () => headlessConfig.apiBaseUrl,
       getSecretKey: async () => headlessConfig.secretKey,
       logInfo: console.info,

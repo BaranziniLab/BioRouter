@@ -1737,36 +1737,6 @@ ipcMain.on('react-ready', (event) => {
   log.info('React ready - window is prepared for deep links');
 });
 
-// Per-window snapshot of the bounds we entered dashboard mode from, so the
-// exit handler can restore the user's pre-dashboard window size even if
-// `win.isMaximized()` returns false (which happens when the window was
-// already at max bounds via manual resize, or was launched maximized).
-const preDashboardBounds = new Map<number, Electron.Rectangle>();
-
-ipcMain.handle('dashboard:enter', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return;
-  if (!preDashboardBounds.has(win.id)) {
-    preDashboardBounds.set(win.id, win.getBounds());
-  }
-  if (!win.isMaximized()) win.maximize();
-});
-
-ipcMain.handle('dashboard:exit', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return;
-  // Try the normal path first; if the window is officially maximized this
-  // is the cleanest restore. Then *also* set bounds explicitly so we
-  // recover when isMaximized() returned false (e.g. the window was already
-  // at full bounds before the dashboardEnter call).
-  if (win.isMaximized()) win.unmaximize();
-  const saved = preDashboardBounds.get(win.id);
-  if (saved) {
-    win.setBounds(saved, true);
-    preDashboardBounds.delete(win.id);
-  }
-});
-
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || !Number.isFinite(minWidth)) {
