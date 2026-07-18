@@ -153,10 +153,110 @@ mod tests {
         assert_eq!(p.elapsed_us(), None);
     }
 
+    /// Gates the real constructor. Every other test either hand-builds a
+    /// `Phase` or early-returns, so without this nothing executes the
+    /// `if enabled()` branch inside `Phase::start` — a refactor that dropped
+    /// the check and always stored `None` would silently disable all six
+    /// instrumentation call sites with a fully green suite, and the resulting
+    /// empty logs would read as "this phase is fast" rather than "unmeasured".
+    ///
+    /// Holds in both flag states, so it is meaningful however the suite is run.
+    #[test]
+    fn start_activates_the_guard_exactly_when_the_flag_is_on() {
+        let p = Phase::start("test.start");
+        assert_eq!(
+            p.is_active(),
+            enabled(),
+            "Phase::start must consult enabled(); active={} but enabled()={}",
+            p.is_active(),
+            enabled()
+        );
+        assert_eq!(p.elapsed_us().is_some(), enabled());
+    }
+
+    /// Drop's emission is otherwise untested: an active guard must actually log
+    /// on target "phase" with the name and a duration. Without this, a guard
+    /// could time correctly and emit nothing.
+    #[test]
+    fn active_guard_emits_on_the_phase_target_when_dropped() {
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::subscriber::with_default;
+
+        #[derive(Default)]
+        struct Captured {
+            target: String,
+            phase: String,
+            dur_us: Option<u64>,
+        }
+
+        struct Collector(Arc<Mutex<Vec<Captured>>>);
+
+        impl Visit for Captured {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "phase" {
+                    self.phase = format!("{value:?}").trim_matches('"').to_string();
+                }
+            }
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "dur_us" {
+                    self.dur_us = Some(value);
+                }
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                if field.name() == "phase" {
+                    self.phase = value.to_string();
+                }
+            }
+        }
+
+        impl tracing::Subscriber for Collector {
+            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _s: &tracing::span::Id, _v: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _s: &tracing::span::Id, _f: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut c = Captured {
+                    target: event.metadata().target().to_string(),
+                    ..Default::default()
+                };
+                event.record(&mut c);
+                self.0.lock().unwrap().push(c);
+            }
+            fn enter(&self, _s: &tracing::span::Id) {}
+            fn exit(&self, _s: &tracing::span::Id) {}
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        with_default(Collector(events.clone()), || {
+            // Forced on, so this holds regardless of the process-wide flag.
+            drop(Phase {
+                name: "test.emit",
+                started: Some(Instant::now()),
+            });
+        });
+
+        let events = events.lock().unwrap();
+        let hit = events
+            .iter()
+            .find(|e| e.phase == "test.emit")
+            .expect("dropping an active guard must emit a phase event");
+        assert_eq!(hit.target, "phase", "must log under the `phase` target");
+        assert!(
+            hit.dur_us.is_some(),
+            "the emitted event must carry a dur_us field"
+        );
+    }
+
     #[test]
     fn enabled_guard_measures_elapsed_time() {
-        // Exercise the timing path directly, without depending on the
-        // process-wide flag (a `LazyLock` cannot be re-read per test).
+        // Exercise the timing arithmetic directly, without depending on the
+        // process-wide flag (a `LazyLock` cannot be re-read per test). The
+        // constructor's use of the flag is gated separately, above.
         let p = Phase {
             name: "test.enabled",
             started: Some(Instant::now()),

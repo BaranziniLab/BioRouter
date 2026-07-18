@@ -230,9 +230,20 @@ impl Agent {
         //   OPEN      -> OPENED     : connect + TTFB
         //   OPENED    -> EXHAUSTED  : generation (tokens streaming back)
         //   OPEN      -> EXHAUSTED  : total
+        //
+        // The OPENED -> EXHAUSTED == generation identity holds ONLY on the
+        // streaming path. The non-streaming branch below funnels its single
+        // completed message through `stream_from_single_message` into the same
+        // `try_stream!`, so it also emits EXHAUSTED — but never an OPENED, and
+        // its EXHAUSTED total is the same span FULL_GENERATION_END already
+        // reported. Every marker therefore carries `streaming=<bool>` so a log
+        // that mixes both paths (which a single session does — see the
+        // investigation, §0) can be partitioned without inferring anything from
+        // line adjacency. Pair OPENED with EXHAUSTED only within streaming=true.
+        let streaming = provider.supports_streaming();
         let stream_open_start = std::time::Instant::now();
-        let stream_result = if provider.supports_streaming() {
-            debug!("WAITING_LLM_STREAM_OPEN");
+        let stream_result = if streaming {
+            debug!(streaming, "WAITING_LLM_STREAM_OPEN");
             let result = provider
                 .stream(
                     system_prompt.as_str(),
@@ -241,6 +252,7 @@ impl Agent {
                 )
                 .await;
             debug!(
+                streaming,
                 open_ms = stream_open_start.elapsed().as_millis() as u64,
                 "WAITING_LLM_STREAM_OPENED"
             );
@@ -248,7 +260,7 @@ impl Agent {
         } else {
             // Non-streaming: this pair brackets the FULL generation (request +
             // connect + all tokens), unlike the streaming OPEN/OPENED pair.
-            debug!("WAITING_LLM_FULL_GENERATION_START");
+            debug!(streaming, "WAITING_LLM_FULL_GENERATION_START");
             let complete_result = provider
                 .complete(
                     system_prompt.as_str(),
@@ -257,6 +269,7 @@ impl Agent {
                 )
                 .await;
             debug!(
+                streaming,
                 total_ms = stream_open_start.elapsed().as_millis() as u64,
                 "WAITING_LLM_FULL_GENERATION_END"
             );
@@ -300,7 +313,14 @@ impl Agent {
             // the marker the old instrumentation lacked entirely, which is why
             // generation time was invisible and prior investigations attributed
             // the whole model wait to the (tiny) stream-open span.
+            //
+            // Emitted on BOTH paths — on the non-streaming path this is a
+            // one-element stream and the total duplicates FULL_GENERATION_END.
+            // `streaming` is what makes the two distinguishable; it also lets a
+            // report count OPENED vs EXHAUSTED per path, which is how a turn
+            // aborted before the stream drained (no EXHAUSTED) shows up.
             debug!(
+                streaming,
                 total_ms = stream_open_start.elapsed().as_millis() as u64,
                 "WAITING_LLM_STREAM_EXHAUSTED"
             );
