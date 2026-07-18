@@ -13,10 +13,14 @@ use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use rmcp::model::Tool;
 use serde_json::Value;
 
+use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as ConverseStreamResponse;
+
+use super::base::MessageStream;
 // Import the migrated helper functions from providers/formats/bedrock.rs
 use super::formats::bedrock::{
-    classify_bedrock_converse_error, from_bedrock_message, from_bedrock_usage, to_bedrock_message,
-    to_bedrock_tool_config,
+    bedrock_message_stream, classify_bedrock_converse_error,
+    classify_bedrock_converse_stream_error, from_bedrock_message, from_bedrock_usage,
+    to_bedrock_message, to_bedrock_tool_config,
 };
 
 pub const BEDROCK_DOC_LINK: &str =
@@ -196,6 +200,39 @@ impl BedrockProvider {
             )),
         }
     }
+
+    /// Open a `ConverseStream` response. Mirrors [`Self::converse`] exactly —
+    /// same system prompt, messages and tool config — so the streaming and
+    /// blocking paths cannot drift in what they send.
+    async fn converse_stream(
+        &self,
+        model_name: &str,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<ConverseStreamResponse, ProviderError> {
+        let mut request = self
+            .client
+            .converse_stream()
+            .system(bedrock::SystemContentBlock::Text(system.to_string()))
+            .model_id(model_name.to_string())
+            .set_messages(Some(
+                messages
+                    .iter()
+                    .filter(|m| m.is_agent_visible())
+                    .map(to_bedrock_message)
+                    .collect::<Result<_>>()?,
+            ));
+
+        if !tools.is_empty() {
+            request = request.tool_config(to_bedrock_tool_config(tools)?);
+        }
+
+        request
+            .send()
+            .await
+            .map_err(classify_bedrock_converse_stream_error)
+    }
 }
 
 #[async_trait]
@@ -277,5 +314,41 @@ impl Provider for BedrockProvider {
 
         let provider_usage = ProviderUsage::new(model_name.to_string(), usage);
         Ok((message, provider_usage))
+    }
+
+    /// Stream a turn via Bedrock `ConverseStream`.
+    ///
+    /// Only opening the stream is retried (via `with_retry`, so the existing
+    /// Bedrock retry budget and error classification are preserved). Once events
+    /// start arriving, a failure is terminal: partial output has already reached
+    /// the agent and replaying the request would duplicate it.
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let model_name = self.model.model_name.clone();
+
+        let debug_payload = serde_json::json!({
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "stream": true
+        });
+        let mut log = RequestLog::start(&self.model, &debug_payload)?;
+
+        let response = self
+            .with_retry(|| self.converse_stream(&model_name, system, messages, tools))
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        Ok(bedrock_message_stream(response, model_name, log))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
     }
 }
