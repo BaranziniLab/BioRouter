@@ -268,8 +268,15 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
     }
   };
 
+  // 'make-agent-from-chat' is a window broadcast, so every mounted chat hears it.
+  // Match by sessionId (the ChatInput.tsx:379-382 idiom) so it can only ever
+  // drive the chat it was meant for. NOTE: this event currently has no dispatcher
+  // anywhere in ui/desktop — see the matching comment in BaseChat.tsx.
   useEffect(() => {
-    const handleMakeAgent = async () => {
+    const handleMakeAgent = async (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+      if (detail?.sessionId && detail.sessionId !== chat.sessionId) return;
+
       if (window.isCreatingWorkflow) {
         return;
       }

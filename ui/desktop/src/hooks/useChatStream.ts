@@ -29,6 +29,12 @@ interface UseChatStreamReturn {
   sessionLoadError?: string;
   turnError?: ChatTurnErrorData;
   tokenState: TokenState;
+  /**
+   * Whether the session's model + extensions have finished loading. The
+   * transcript is up well before this — anything reading AGENT state must gate
+   * on it rather than on `session`.
+   */
+  agentReady: boolean;
   notifications: Map<string, NotificationEvent[]>;
   onMessageUpdate: (
     messageId: string,
@@ -82,6 +88,7 @@ export function useChatStream({
     steer: controller.steer,
     setWorkflowUserParams: controller.setWorkflowUserParams,
     tokenState: snapshot.tokenState,
+    agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     onMessageUpdate: controller.onMessageUpdate,
   };

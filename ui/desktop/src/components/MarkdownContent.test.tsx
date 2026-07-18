@@ -527,7 +527,152 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       const markdownContainer = document.querySelector('.prose');
       expect(markdownContainer).toBeInTheDocument();
       expect(markdownContainer).toHaveClass('prose-a:break-all');
-      expect(markdownContainer).toHaveClass('prose-a:overflow-wrap-anywhere');
+      // `prose-a:overflow-wrap-anywhere` used to be asserted here. It is not a
+      // Tailwind v4 utility and generated no CSS at all, so the assertion only
+      // ever proved the string was in the class attribute.
+      expect(markdownContainer?.className).not.toContain('overflow-wrap-anywhere');
+    });
+  });
+
+  // These assert the class list rather than computed styles because jsdom does
+  // not run Tailwind, so no `prose-*` variant resolves to real CSS here. The
+  // rendered result was verified separately in a browser against the compiled
+  // stylesheet; these guard the contract that produces it.
+  describe('Prose treatment (design.md §3.2 / §4.17)', () => {
+    const proseContainer = () => document.querySelector('.prose');
+
+    it('steps h4 down from h3 instead of repeating it', async () => {
+      render(<MarkdownContent content={'### H3 Heading\n\n#### H4 Heading'} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { level: 3, name: 'H3 Heading' })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 4, name: 'H4 Heading' })).toBeInTheDocument();
+      });
+
+      const container = proseContainer();
+      // h4 previously had no rule at all and inherited h3's 14px/600.
+      expect(container).toHaveClass('prose-h3:text-[15px]');
+      expect(container).toHaveClass('prose-h4:text-[13px]');
+      // h4 is a muted label, not a heading.
+      expect(container).toHaveClass('prose-h4:text-text-muted');
+      expect(container).toHaveClass('prose-h4:tracking-[0.02em]');
+    });
+
+    it('pins an explicit leading on every heading level', () => {
+      render(<MarkdownContent content="# H1" />);
+
+      const container = proseContainer();
+      // text-lg/text-base/text-sm each ship their own line-height, which
+      // collided with the typography plugin's in a source-order-dependent way.
+      for (const leading of [
+        'prose-h1:leading-[26px]',
+        'prose-h2:leading-[24px]',
+        'prose-h3:leading-[22px]',
+        'prose-h4:leading-[18px]',
+      ]) {
+        expect(container).toHaveClass(leading);
+      }
+    });
+
+    it('suppresses the curly quotes the typography plugin injects into blockquotes', async () => {
+      render(<MarkdownContent content="> Confidence is an edge attribute." />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Confidence is an edge attribute.')).toBeInTheDocument();
+      });
+
+      const container = proseContainer();
+      // The plugin emits `content: open-quote` on `blockquote p:first-of-type`
+      // and `close-quote` on `p:last-of-type` (NOT first-of-type). Both need
+      // suppressing or stray “ ” marks render around every quote.
+      expect(container).toHaveClass('[&_blockquote_p:first-of-type]:before:content-none');
+      expect(container).toHaveClass('[&_blockquote_p:last-of-type]:after:content-none');
+    });
+
+    it('renders tables as hairline rows, not a boxed grid with a filled header', async () => {
+      const content = `| Compound | Edges |
+| --- | ---: |
+| Fingolimod | 318 |`;
+
+      render(<MarkdownContent content={content} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Fingolimod')).toBeInTheDocument();
+      });
+
+      const className = proseContainer()?.className ?? '';
+      // §4.17: no vertical rules, no header fill. The hairline-between-rows,
+      // caps header and row heights live in main.css (structural selectors a
+      // `prose-*` variant cannot express).
+      expect(className).not.toContain('prose-td:border');
+      expect(className).not.toContain('prose-th:border');
+      expect(className).not.toContain('prose-thead:bg-background-medium');
+      // prose-sm sets the table to 12px (the Caption role); §3.2 puts table
+      // text at the 13px Secondary/metadata step.
+      expect(proseContainer()).toHaveClass('prose-table:text-[13px]');
+      // Digits line up whether or not the model authored a `---:` column.
+      expect(proseContainer()).toHaveClass('prose-td:tabular-nums');
+      expect(proseContainer()).toHaveClass('prose-th:tabular-nums');
+    });
+
+    it('gives links a single accent-token treatment', async () => {
+      render(<MarkdownContent content="[edge documentation](https://example.com/docs)" />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('link', { name: 'edge documentation' })).toBeInTheDocument();
+      });
+
+      const container = proseContainer();
+      // Ink comes from --tw-prose-links (main.css points it at --text-accent);
+      // the underline is the accent at 40%.
+      expect(container).toHaveClass('prose-a:decoration-text-accent/40');
+      expect(container).toHaveClass('prose-a:underline-offset-2');
+      expect(container).toHaveClass('prose-a:font-medium');
+      // The neutral `decoration-border-strong` treatment is retired.
+      expect(container?.className).not.toContain('decoration-border-strong');
+    });
+
+    it('gives artifact links the same accent treatment as plain links', async () => {
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content="See `/Users/wgu/project/analysis.sql` for the query."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const button = await screen.findByRole('button', { name: '/Users/wgu/project/analysis.sql' });
+      // A <button> is not an <a>, so `prose-a:*` cannot reach it — it must
+      // restate the one treatment rather than invent a third.
+      expect(button).toHaveClass('text-text-accent');
+      expect(button).toHaveClass('decoration-text-accent/40');
+      expect(button).toHaveClass('underline-offset-2');
+      expect(button).not.toHaveClass('decoration-border-strong');
+    });
+
+    it('uses one inline-code size across the code element and the artifact button', async () => {
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent content="Open `dist/index.html` now." onOpenArtifact={onOpenArtifact} />
+      );
+
+      const button = await screen.findByRole('button', { name: 'dist/index.html' });
+      // The two ArtifactLinkButton variants used to disagree (0.9em vs 0.95em)
+      // for the same widget; inline code was 0.9em (12.6px) against the fenced
+      // block's 13px. All three are now the 13px "Code / terminal" step.
+      expect(button).toHaveClass('text-[13px]');
+      expect(proseContainer()).toHaveClass('prose-code:text-[13px]');
+    });
+
+    it('leaves inline code a single fill and drops the competing bg-inline-code class', async () => {
+      render(<MarkdownContent content="Use `console.log()` to debug." />);
+
+      const code = await screen.findByText('console.log()');
+      expect(code.tagName).toBe('CODE');
+      // Two fills (`bg-inline-code` on the element, `prose-code:bg-*` on the
+      // wrapper) were reconciled only by a specificity ladder in main.css.
+      expect(code).not.toHaveClass('bg-inline-code');
+      expect(proseContainer()).toHaveClass('prose-code:bg-background-medium');
     });
   });
 
@@ -559,6 +704,37 @@ for the result.`;
         const katexDisplay = container.querySelector('.katex-display');
         expect(katexDisplay).toBeInTheDocument();
       });
+    });
+
+    it('leaves display-math centring, margin and overflow to the .katex-display CSS', async () => {
+      const content = `Calculate
+
+$$
+x^2 + y^2
+$$
+
+for the result.`;
+
+      const { container } = render(<MarkdownContent content={content} />);
+
+      const display = await waitFor(() => {
+        const el = container.querySelector('.katex-display');
+        expect(el).toBeInTheDocument();
+        return el!;
+      });
+
+      // remark-math emits display math as a BLOCK sibling, so KaTeX's
+      // `.katex-display` is a direct child of the prose root and never sits
+      // inside a paragraph at all.
+      expect(display.closest('p')).toBeNull();
+
+      // main.css's `.katex-display` is the single source of truth for centring,
+      // margin and overflow. MarkdownParagraph used to restate all three on a
+      // `flex justify-center my-3 overflow-x-auto` wrapper; nothing in the
+      // rendered tree may carry them any more.
+      for (const dup of ['justify-center', 'my-3', 'overflow-x-auto']) {
+        expect(container.querySelector(`[class*="${dup}"]`)).toBeNull();
+      }
     });
 
     it('handles shell commands without triggering math mode', async () => {

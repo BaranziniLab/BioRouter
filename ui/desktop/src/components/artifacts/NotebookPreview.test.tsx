@@ -41,8 +41,11 @@ describe('NotebookPreview', () => {
       </ThemeProvider>
     );
 
-    expect(screen.getByText('Jupyter notebook')).toBeInTheDocument();
-    expect(screen.getByText(/2 cells · Python 3/)).toBeInTheDocument();
+    // The status strip: shared label + path + cell count + kernel (design spec H).
+    expect(screen.getByText('Notebook')).toBeInTheDocument();
+    expect(screen.getByText('analysis.ipynb')).toBeInTheDocument();
+    expect(screen.getByText('2 cells')).toBeInTheDocument();
+    expect(screen.getByText('Python 3')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Expression analysis' })).toBeInTheDocument();
     expect(screen.getByText('ready')).toBeInTheDocument();
     expect(screen.getByAltText('Notebook output')).toHaveAttribute(

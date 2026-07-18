@@ -67,10 +67,10 @@ describe('ProviderGuard commercial onboarding', () => {
       </ProviderGuard>
     );
 
-    expect(await screen.findByRole('img', { name: 'Biorouter logo' })).toHaveAttribute(
-      'viewBox',
-      '110 55 380 330'
-    );
+    // The brand mark renders in both the checking loader and the onboarding
+    // header; assert it appears without re-checking document attachment, since
+    // the loader's mark detaches the instant `isChecking` flips to the header.
+    expect(await screen.findByRole('img', { name: 'BioRouter' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Complete detection' }));
 
     await waitFor(() => {

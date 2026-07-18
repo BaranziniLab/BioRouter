@@ -219,5 +219,245 @@ fn dump_file_previews() {
     }
     image.save(out.join("volcano.png")).unwrap();
 
-    println!("wrote {} file preview fixtures", fixtures.len() + 1);
+    // A Jupyter notebook fixture that exercises every branch of NotebookPreview:
+    // markdown + code + raw cells, a stdout stream, an HTML DataFrame, a plain
+    // execute_result, an application/json result, an image/png plot, and an
+    // error traceback. The image is a real (small) volcano-style scatter encoded
+    // in-memory to PNG, so the image output renders a genuine figure rather than
+    // a 1x1 placeholder.
+    let mut plot = RgbImage::from_pixel(480, 320, Rgb([255, 253, 248]));
+    for x in 40..450 {
+        plot.put_pixel(x, 280, Rgb([120, 116, 108]));
+    }
+    for y in 30..281 {
+        plot.put_pixel(40, y, Rgb([120, 116, 108]));
+    }
+    for index in 0..140u32 {
+        let x = 55 + (index * 53 % 380);
+        let y = 45 + (index * 97 % 220);
+        let colour = if index % 7 == 0 {
+            Rgb([207, 109, 71])
+        } else {
+            Rgb([120, 140, 170])
+        };
+        for dx in 0..4 {
+            for dy in 0..4 {
+                if x + dx < 480 && y + dy < 320 {
+                    plot.put_pixel(x + dx, y + dy, colour);
+                }
+            }
+        }
+    }
+    let mut png = std::io::Cursor::new(Vec::<u8>::new());
+    image::DynamicImage::ImageRgb8(plot)
+        .write_to(&mut png, image::ImageOutputFormat::Png)
+        .unwrap();
+    let plot_png_b64 = STANDARD.encode(png.into_inner());
+
+    let notebook = json!({
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    "# Differential expression walkthrough\n",
+                    "\n",
+                    "Compare **paired tumour and normal** samples: load the per-gene\n",
+                    "statistics, flag hits at `FDR < 0.05`, and plot the volcano.\n",
+                    "See [`report.md`](report.md) for the written summary."
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 1,
+                "metadata": {},
+                "source": [
+                    "import numpy as np\n",
+                    "import pandas as pd\n",
+                    "\n",
+                    "genes = pd.read_csv(\"genes.csv\")\n",
+                    "print(f\"Loaded {len(genes)} genes across {genes.shape[1]} columns\")"
+                ],
+                "outputs": [
+                    {
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": ["Loaded 3 genes across 3 columns\n"]
+                    }
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 2,
+                "metadata": {},
+                "source": [
+                    "hits = genes[genes[\"fdr\"] < 0.05].sort_values(\"fdr\")\n",
+                    "hits"
+                ],
+                "outputs": [
+                    {
+                        "output_type": "execute_result",
+                        "execution_count": 2,
+                        "metadata": {},
+                        "data": {
+                            "text/html": [
+                                "<table border=\"1\" class=\"dataframe\">\n",
+                                "  <thead>\n",
+                                "    <tr style=\"text-align: right;\">\n",
+                                "      <th></th><th>gene</th><th>log2_fold_change</th><th>fdr</th>\n",
+                                "    </tr>\n",
+                                "  </thead>\n",
+                                "  <tbody>\n",
+                                "    <tr><th>0</th><td>MYC</td><td>2.81</td><td>0.0004</td></tr>\n",
+                                "    <tr><th>1</th><td>CDK4</td><td>1.92</td><td>0.0030</td></tr>\n",
+                                "  </tbody>\n",
+                                "</table>"
+                            ],
+                            "text/plain": [
+                                "   gene  log2_fold_change     fdr\n",
+                                "0   MYC              2.81  0.0004\n",
+                                "1  CDK4              1.92  0.0030"
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 3,
+                "metadata": {},
+                "source": ["hits[\"gene\"].tolist()"],
+                "outputs": [
+                    {
+                        "output_type": "execute_result",
+                        "execution_count": 3,
+                        "metadata": {},
+                        "data": {
+                            "text/plain": ["['MYC', 'CDK4']"]
+                        }
+                    }
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 4,
+                "metadata": {},
+                "source": [
+                    "from IPython.display import JSON\n",
+                    "\n",
+                    "JSON({\n",
+                    "    \"cohort\": \"paired-tumour-normal\",\n",
+                    "    \"fdr_threshold\": 0.05,\n",
+                    "    \"n_hits\": int((genes[\"fdr\"] < 0.05).sum()),\n",
+                    "})"
+                ],
+                "outputs": [
+                    {
+                        "output_type": "execute_result",
+                        "execution_count": 4,
+                        "metadata": {},
+                        "data": {
+                            "application/json": {
+                                "cohort": "paired-tumour-normal",
+                                "fdr_threshold": 0.05,
+                                "n_hits": 2
+                            }
+                        }
+                    }
+                ]
+            },
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": ["## Volcano plot\n", "\nSignificant genes are highlighted in orange."]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 5,
+                "metadata": {},
+                "source": [
+                    "import matplotlib.pyplot as plt\n",
+                    "\n",
+                    "plt.figure(figsize=(5, 3.2))\n",
+                    "plt.scatter(genes[\"log2_fold_change\"], -np.log10(genes[\"fdr\"]))\n",
+                    "plt.axhline(-np.log10(0.05), ls=\"--\", color=\"grey\")\n",
+                    "plt.xlabel(\"log2 fold change\")\n",
+                    "plt.ylabel(\"-log10 FDR\")\n",
+                    "plt.show()"
+                ],
+                "outputs": [
+                    {
+                        "output_type": "display_data",
+                        "metadata": {},
+                        "data": {
+                            "image/png": plot_png_b64,
+                            "text/plain": ["<Figure size 500x320 with 1 Axes>"]
+                        }
+                    }
+                ]
+            },
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    "## A cell that fails\n",
+                    "\n",
+                    "The next cell references a column that does not exist, so it raises."
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": 6,
+                "metadata": {},
+                "source": ["genes[\"pvalue\"]  # column does not exist -> KeyError"],
+                "outputs": [
+                    {
+                        "output_type": "error",
+                        "ename": "KeyError",
+                        "evalue": "'pvalue'",
+                        "traceback": [
+                            "---------------------------------------------------------------------------",
+                            "KeyError                                  Traceback (most recent call last)",
+                            "Cell In[6], line 1",
+                            "----> 1 genes[\"pvalue\"]  # column does not exist -> KeyError",
+                            "",
+                            "File ~/env/lib/python3.11/site-packages/pandas/core/frame.py:3805, in DataFrame.__getitem__(self, key)",
+                            "   3804     return self._getitem_multilevel(key)",
+                            "-> 3805 indexer = self.columns.get_loc(key)",
+                            "",
+                            "KeyError: 'pvalue'"
+                        ]
+                    }
+                ]
+            },
+            {
+                "cell_type": "raw",
+                "metadata": {},
+                "source": [
+                    "This is a raw cell: nbconvert passes it through verbatim\n",
+                    "(for example a LaTeX or reStructuredText block)."
+                ]
+            }
+        ],
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3 (ipykernel)",
+                "language": "python",
+                "name": "python3"
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.6"
+            }
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5
+    });
+    std::fs::write(
+        out.join("notebook.ipynb"),
+        serde_json::to_string_pretty(&notebook).unwrap(),
+    )
+    .unwrap();
+
+    println!("wrote {} file preview fixtures", fixtures.len() + 2);
 }

@@ -5,12 +5,21 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, Terminal as TerminalIcon, X } from './icons/app-icons';
 import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
+import { registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
 
 interface InAppTerminalDockProps {
   open: boolean;
   workingDir?: string;
+  /** Hide the dock — the header X or the parent toggle. Panes stay alive. */
   onClose: () => void;
+  /**
+   * The user closed the LAST pane, so this terminal is now empty. Distinct from
+   * onClose (hide): the parent should DESTROY the terminal here, not just hide
+   * it. Falls back to onClose when omitted, which is the local (non-/pair) dock's
+   * behaviour — there hiding and emptying are the same "set open false".
+   */
+  onEmptied?: () => void;
 }
 
 type TerminalPane = {
@@ -123,9 +132,20 @@ const TERMINAL_THEMES = {
 
 /**
  * Alma Mater (UCSF) terminal palette — the same design as TERMINAL_THEMES but on
- * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted
- * (light #f2f3f4) and the navy card (dark #08213f); every colour clears WCAG AA
- * (4.5:1) on its own ground (D-11). See docs/design/alma-mater-theme.md.
+ * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted for
+ * the family: light #f2f3f4, dark #0d2a50.
+ *
+ * The dark ground used to be stated as #08213f. That is wrong twice over: it is
+ * --background-default (the navy *card*, two steps darker than --background-muted),
+ * and it is this palette's own `black`. The ratios were therefore measured against
+ * a surface the dock never paints. Corrected here, which forced two follow-ons:
+ * `black` was #0d2a50 — now the ground itself, i.e. invisible — so it moves to
+ * --background-strong, and `cursor` fell to 4.06:1 on the true ground so it lifts
+ * from the orchid accent to --background-accent-hover (5.29:1).
+ *
+ * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
+ * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
+ * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/alma-mater-theme.md.
  */
 const ALMA_TERMINAL_THEMES = {
   light: {
@@ -152,12 +172,12 @@ const ALMA_TERMINAL_THEMES = {
     brightWhite: '#052049',
   },
   dark: {
-    background: '#08213f',
-    foreground: '#e1e3e5',
-    cursor: '#c45ed8', // orchid accent
-    cursorAccent: '#08213f',
+    background: '#0d2a50', // --background-muted, alma-mater dark
+    foreground: '#e1e3e5', // 11.15:1
+    cursor: '#d07ee0', // --background-accent-hover orchid, 5.29:1
+    cursorAccent: '#0d2a50',
     selectionBackground: '#163864',
-    black: '#0d2a50',
+    black: '#1e477f', // --background-strong — the ANSI dim slot, 1.55:1
     red: '#f5768a',
     green: '#5fbf74',
     yellow: '#feb80a',
@@ -394,9 +414,16 @@ const TerminalPaneView: React.FC<{
           event.preventDefault();
           focusTerminal();
         }}
-        // xterm paints its own ground from TERMINAL_THEMES; the viewport must stay
-        // transparent so the theme — not a hardcoded cream — shows through.
-        className="h-full min-h-0 w-full flex-1 overflow-hidden rounded-md border border-border-subtle bg-background-muted px-2 py-2 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:bg-transparent!"
+        // The ground is painted ONCE, by the dock's terminal region (bg-background-muted).
+        // This host is transparent and contributes only the inset xterm needs to
+        // breathe, so the token — not a hex — is what actually reaches the screen;
+        // the theme `background` above is the forced mirror xterm needs internally
+        // (it cannot read a CSS var). The bg-transparent! overrides are what keep
+        // the token authoritative: without them xterm's own layers would repaint
+        // the ground and any drift between hex and token would show as a seam.
+        // No border and no radius here — the dock's border-t is the only hairline
+        // the terminal needs (D-11).
+        className="h-full min-h-0 w-full flex-1 overflow-hidden px-2 py-1.5 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:bg-transparent!"
       />
     </div>
   );
@@ -406,6 +433,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   open,
   workingDir,
   onClose,
+  onEmptied,
 }) => {
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
@@ -462,8 +490,20 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   useEffect(() => {
     if (!open || panes.length !== 0 || !pendingDockCloseRef.current) return;
     pendingDockCloseRef.current = false;
-    onClose();
-  }, [onClose, open, panes.length]);
+    // The last pane closed: DESTROY, don't merely hide. onEmptied lets the
+    // per-tab shell drop this terminal entirely (disposing it); the local dock
+    // has no onEmptied and falls back to onClose, its "set open false".
+    (onEmptied ?? onClose)();
+  }, [onClose, onEmptied, open, panes.length]);
+
+  // While this dock is the VISIBLE one, own the "new terminal pane" gesture:
+  // focus-aware Cmd+T (routed in App.tsx) adds a pane here instead of a chat
+  // tab. Only the open dock registers, and the shell keeps exactly one open at a
+  // time, so last-write-wins in the registry is correct.
+  useEffect(() => {
+    if (!open) return;
+    return registerNewTerminalPane(addPane);
+  }, [open, addPane]);
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
@@ -484,60 +524,64 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       )}
       style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
     >
-      <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-border-subtle bg-background-muted px-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          <div
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-            role="tablist"
-            aria-label="Terminal sessions"
-          >
-            {panes.map((pane) => {
-              const active = pane.id === activePaneId;
-              return (
-                <div
-                  key={pane.id}
-                  className={cn(
-                    'relative flex h-7 w-32 min-w-28 max-w-[190px] flex-shrink-0 items-center overflow-hidden rounded-md text-xs transition-colors before:transition-[background-color] before:duration-[var(--motion-base)] before:ease-[var(--ease-out)]',
-                    active
-                      ? 'bg-background-default text-text-default before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent-bar'
-                      : 'text-text-muted hover:bg-background-default/70 hover:text-text-default'
-                  )}
+      {/* Safari-style tab strip (Ω/Ψ). .br-tabstrip owns the flex layout, the gap,
+          the padding, the sidebar-coloured ground and the bottom hairline;
+          .br-tab owns the tabs, the active pill and the divider between them.
+          Nothing here may restyle any of that — the only additions are h-10 (the
+          class leaves height to the host; the dock's strip is 40px) and
+          flex-shrink-0, so the strip holds its height in the dock's flex column. */}
+      <div className="br-tabstrip br-tabstrip--sm h-10 flex-shrink-0">
+        <div
+          className="flex min-w-0 flex-1 items-center overflow-x-auto"
+          role="tablist"
+          aria-label="Terminal sessions"
+        >
+          {panes.map((pane) => {
+            const active = pane.id === activePaneId;
+            return (
+              <div
+                key={pane.id}
+                // .br-tab already caps at 190px and lets the label ellipsis;
+                // flex-shrink-0 is the only addition, so a full strip scrolls
+                // rather than crushing every tab.
+                className="br-tab flex-shrink-0"
+                data-active={active}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActivePaneId(pane.id)}
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => setActivePaneId(pane.id)}
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
-                  >
-                    <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                    <span className="truncate">{pane.title}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closePane(pane.id);
-                    }}
-                    className="mr-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-                    aria-label={`Close terminal tab ${pane.title}`}
-                    title={`Close ${pane.title}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          <Button
+                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="br-tab__label">{pane.title}</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePane(pane.id);
+                  }}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                  aria-label={`Close terminal tab ${pane.title}`}
+                  title={`Close ${pane.title}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+          {/* Left-aligned "+", immediately to the right of the last tab and
+              scrolling WITH the tabs — the same placement (and the chat strip's
+              .br-tab-new styling) as the chat tabs' new-tab button. It used to be
+              pushed to the far right of the strip. */}
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
-            shape="round"
             onClick={addPane}
             disabled={panes.length >= MAX_TERMINAL_PANES}
-            className="h-7 w-7 flex-shrink-0 p-0 text-text-muted hover:bg-background-default/70 hover:text-text-default"
+            className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
             aria-label="New terminal session"
             title={
               panes.length >= MAX_TERMINAL_PANES
@@ -545,8 +589,8 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                 : 'New terminal session'
             }
           >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+            <Plus className="h-4 w-4" />
+          </button>
         </div>
         <span className="hidden min-w-0 max-w-[38%] truncate text-xs text-text-muted sm:block">
           {formatCwd(workingDir)}
@@ -564,7 +608,9 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background-muted p-2">
+      {/* The single painted terminal ground. No gutter padding: the terminal
+          bleeds to the dock edges, and the panes' own inset does the breathing. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background-muted">
         {panes.map((pane) => (
           <TerminalPaneView
             key={pane.id}

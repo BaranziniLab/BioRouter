@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BookOpen } from 'lucide-react';
+import { BookOpen } from '../icons/app-icons';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,

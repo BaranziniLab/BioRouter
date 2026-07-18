@@ -20,6 +20,10 @@ const MAX_UI_PROMPT_BYTES = 64 * 1024;
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
+  /** The chat this resource is rendered inside. Used to scope the
+   * 'scroll-chat-to-bottom' broadcast so a prompt action here doesn't scroll
+   * every other mounted chat. */
+  sessionId?: string | null;
   appendPromptToChat?: (value: string) => void;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
@@ -66,6 +70,7 @@ enum UIActionErrorCode {
 
 export default function MCPUIResourceRenderer({
   content,
+  sessionId,
   appendPromptToChat,
   onOpenArtifact,
 }: MCPUIResourceRendererProps) {
@@ -430,7 +435,7 @@ export default function MCPUIResourceRenderer({
             onClick={() => {
               try {
                 appendPromptToChat?.(pendingPrompt);
-                window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom'));
+                window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } }));
                 setPendingPrompt(null);
               } catch (error) {
                 toastError({

@@ -15,6 +15,13 @@ import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import { injectArtifactBrowserCsp } from '../../utils/artifactSecurity';
 import {
+  isTabCycleEvent,
+  tabCycleOffset,
+  nextTabIndex,
+  isWithinArtifactPanel,
+  ARTIFACT_PANEL_ATTR,
+} from '../../utils/tabCycle';
+import {
   ChevronDown,
   ChevronRight,
   Code,
@@ -31,6 +38,13 @@ import {
   X,
 } from '../icons/app-icons';
 import MarkdownContent from '../MarkdownContent';
+import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import DocumentPreview from './DocumentPreview';
 import NotebookPreview from './NotebookPreview';
 import type {
@@ -49,6 +63,10 @@ import {
   languageFromPath,
   languageLabel,
   parseDelimitedTable,
+  splitPathForStrip,
+  STRIP_IDENT_CLASS,
+  STRIP_LABEL_CLASS,
+  STRIP_META_CLASS,
   withHostTheme,
 } from './artifactUtils';
 
@@ -72,6 +90,16 @@ function countLines(text: string): number {
 
 /** The one mono stack (design.md §3.2), shared with chat code blocks and the terminal. */
 const CODE_FONT = CODE_FONT_FAMILY;
+
+// The panel's status-strip typography (STRIP_LABEL/IDENT/META_CLASS) and
+// splitPathForStrip now live in artifactUtils so every preview — including
+// NotebookPreview — shares the one status-strip voice and can never drift.
+
+// Geometry mirrored from BaseChat's HEADER_ACTION_BUTTON_CLASS so the panel's
+// expand/close read as the same control as the chat header's actions. That file
+// is owned elsewhere; these values are kept in sync by hand.
+const HEADER_ACTION_BUTTON_CLASS =
+  'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
 
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
@@ -269,6 +297,14 @@ export default function ArtifactViewer({
   const suppressTabClickRef = useRef(false);
   const suppressTabClickTimerRef = useRef<number | null>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement | null>(null);
+  const tabListRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Rung 3 (D-32) for the panel's strip, through the SAME rule the chat strip
+   * uses — card Z's "one tab, three surfaces" is only true if the rule is shared
+   * too. Called up here with the other hooks: the component early-returns below
+   * when there is no active artifact.
+   */
+  const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
   const activeSourceKey = activeArtifact ? artifactSourceKey(activeArtifact) : null;
@@ -325,21 +361,21 @@ export default function ArtifactViewer({
         return;
       }
 
-      if (
-        event.key !== 'Tab' ||
-        !event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        tabState.tabs.length < 2
-      ) {
-        return;
-      }
+      if (!isTabCycleEvent(event)) return;
+
+      // Ctrl+Tab belongs to whichever strip has focus. Without this the panel
+      // cycled previews from ANYWHERE the moment it was open — including with
+      // the cursor in the composer, where the user means their chat tabs. The
+      // chat strip consults the same predicate and takes the other branch, so
+      // the two cannot both answer regardless of listener order.
+      if (!isWithinArtifactPanel(event.target)) return;
+
+      const activeIndex = tabState.tabs.findIndex((tab) => tab.id === tabState.activeTabId);
+      const nextIndex = nextTabIndex(tabState.tabs.length, activeIndex, tabCycleOffset(event));
+      if (nextIndex === null) return;
 
       event.preventDefault();
       event.stopPropagation();
-      const activeIndex = tabState.tabs.findIndex((tab) => tab.id === tabState.activeTabId);
-      const offset = event.shiftKey ? -1 : 1;
-      const nextIndex = (activeIndex + offset + tabState.tabs.length) % tabState.tabs.length;
       const nextTab = tabState.tabs[nextIndex];
       pendingNavigationKeyRef.current = artifactSourceKey(nextTab.artifact);
       dispatchTabAction({ type: 'activate', tabId: nextTab.id });
@@ -595,6 +631,11 @@ export default function ArtifactViewer({
   return (
     <aside
       data-testid="artifact-viewer"
+      // The anchor Ctrl+Tab arbitrates on: a keystroke landing inside this
+      // subtree is aimed at the preview's tabs, anything else at the chat's.
+      // Deliberately not the testid above — behaviour must not hang off a
+      // promise we only made to tests.
+      {...{ [ARTIFACT_PANEL_ATTR]: '' }}
       style={{
         ...style,
         contain: 'layout paint',
@@ -626,27 +667,44 @@ export default function ArtifactViewer({
         </div>
       )}
 
-      <div className="no-drag relative z-50 flex h-[52px] flex-shrink-0 items-center gap-1.5 border-b border-border-subtle bg-background-muted px-2">
+      {/* The tab strip is `br-tabstrip` (shared, styles/main.css): its ground is the
+          sidebar colour, so the window's whole 52px top edge is one continuous
+          surface. Height is set here; the paint belongs to the class. */}
+      <div className="br-tabstrip no-drag relative z-50 h-[52px] flex-shrink-0">
+        {/* The tablist nests inside the strip for a11y, so it repeats the strip's
+            own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
+            only lands in the gap if the tabs are spaced the way the class expects. */}
         <div
+          ref={tabListRef}
           role="tablist"
           aria-label="Open artifact previews"
           aria-keyshortcuts="Meta+W Control+W Control+Tab Control+Shift+Tab"
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden py-1.5"
+          // Rung 3 of the yield ladder (D-32): shrink to the floor, then SCROLL,
+          // then collapse into a ▾ — never wrap. This was `overflow-hidden`, so
+          // the panel's tabs did neither: past the floor they were clipped and
+          // simply unreachable, which is the failure the rung exists to prevent
+          // and which the panel feels first — it is the narrowest strip in the
+          // window, and rung 2 makes it narrower still.
+          className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
         >
           {tabState.tabs.map((tab) => {
             const TabIcon = iconForArtifact(tab.artifact);
             const isActive = tab.id === tabState.activeTabId;
             return (
+              // `br-tab` (shared) paints the Safari tab: only the active one is a
+              // filled pill, none carry a border, and the divider between two tabs
+              // is drawn by `.br-tab + .br-tab::before` — never added here.
               <div
                 key={tab.id}
                 data-artifact-tab-id={tab.id}
+                data-active={isActive ? 'true' : undefined}
+                data-dragging={draggedTabId === tab.id ? 'true' : undefined}
+                data-dragover={dragOverTabId === tab.id ? 'true' : undefined}
                 className={cn(
-                  'group flex h-8 min-w-0 max-w-[220px] flex-1 basis-[175px] items-center rounded-lg border px-1 transition-[background-color,border-color,box-shadow,color,opacity,transform] duration-[var(--motion-fast)]',
-                  isActive
-                    ? 'border-border-subtle bg-background-default text-text-default shadow-sm'
-                    : 'border-transparent text-text-muted hover:bg-background-medium hover:text-text-default',
-                  draggedTabId === tab.id && 'scale-[0.98] opacity-50',
-                  dragOverTabId === tab.id && 'border-accent bg-background-medium'
+                  'br-tab group',
+                  // Drag affordances only — state feedback, not base styling.
+                  draggedTabId === tab.id && 'opacity-50',
+                  dragOverTabId === tab.id && 'bg-background-medium'
                 )}
               >
                 <button
@@ -658,10 +716,10 @@ export default function ArtifactViewer({
                   onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
                   onClick={() => activateTabFromPointer(tab)}
                   title={artifactHoverTitle(tab.artifact)}
-                  className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 px-1.5 text-left active:cursor-grabbing"
+                  className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                 >
                   <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  <span className="br-tab__label min-w-0 flex-1 truncate">
                     {tab.artifact.title}
                   </span>
                 </button>
@@ -671,10 +729,10 @@ export default function ArtifactViewer({
                   aria-label={`Close ${tab.artifact.title}`}
                   title={`Close ${tab.artifact.title}`}
                   className={cn(
-                    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-text-muted transition-[background-color,color,opacity] hover:bg-background-medium hover:text-text-default',
+                    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-text-subtle transition-[background-color,color,opacity] hover:bg-background-medium hover:text-text-default',
                     isActive
-                      ? 'opacity-70 hover:opacity-100'
-                      : 'opacity-0 group-hover:opacity-70 group-focus-within:opacity-70'
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
                   )}
                 >
                   <X className="h-3 w-3" aria-hidden="true" />
@@ -683,53 +741,83 @@ export default function ArtifactViewer({
             );
           })}
         </div>
+        {showTabOverflowMenu && (
+          // Outside the scroll box, for the reason ChatTabStrip's wrap documents:
+          // inside it, the button's own width would keep alive the overflow that
+          // summoned it.
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Show all previews"
+                data-testid="artifact-tab-overflow-trigger"
+                className="br-tabstrip__overflow"
+              >
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
+              {tabState.tabs.map((tab) => {
+                const TabIcon = iconForArtifact(tab.artifact);
+                return (
+                  <DropdownMenuItem
+                    key={tab.id}
+                    data-testid={`artifact-tab-overflow-item-${tab.id}`}
+                    onSelect={() => activateTab(tab)}
+                    className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                  >
+                    <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         {activeArtifact.kind !== 'mcpResource' && (
           <button
             type="button"
             onClick={openStandalone}
-            className="no-drag relative z-50 ml-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium hover:text-text-default"
+            className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 ml-0.5 shrink-0')}
             aria-label="Open active artifact outside preview"
             title="Open active artifact outside preview"
           >
             {activeArtifact.kind === 'html' ? (
-              <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <Maximize2 className="h-4 w-4" aria-hidden="true" />
             ) : (
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
             )}
           </button>
         )}
         <button
           type="button"
           onClick={onClose}
-          className="no-drag relative z-50 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium hover:text-text-default"
+          className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 shrink-0')}
           aria-label="Close artifact viewer"
           title="Close preview panel"
         >
-          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
-      <div className="relative z-0 flex min-h-0 flex-1 flex-col p-3">
-        <div
-          id="artifact-preview-content"
-          className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-background-default shadow-popover"
-        >
-          {isResizing && (
-            <div
-              data-testid="artifact-resize-shield"
-              aria-hidden="true"
-              className="absolute inset-3 z-50 cursor-col-resize"
-            />
-          )}
-          <ArtifactPreviewBody
-            preview={visiblePreview}
-            artifact={activeArtifact}
-            resolvedTheme={resolvedTheme}
-            isResizing={isResizing}
-            trustedFrameRef={trustedFrameRef}
-            onOpenArtifactInTab={openArtifactInTab}
+      {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
+          preview sits directly on the panel ground — panel → strip → content. */}
+      <div id="artifact-preview-content" className="relative z-0 min-h-0 flex-1 overflow-hidden">
+        {isResizing && (
+          <div
+            data-testid="artifact-resize-shield"
+            aria-hidden="true"
+            className="absolute inset-0 z-50 cursor-col-resize"
           />
-        </div>
+        )}
+        <ArtifactPreviewBody
+          preview={visiblePreview}
+          artifact={activeArtifact}
+          resolvedTheme={resolvedTheme}
+          isResizing={isResizing}
+          trustedFrameRef={trustedFrameRef}
+          onOpenArtifactInTab={openArtifactInTab}
+        />
       </div>
     </aside>
   );
@@ -820,13 +908,11 @@ function ArtifactPreviewBody({
   }
 
   if (file.kind === 'image') {
+    // The image is the content, so it sits on the panel ground with a gutter —
+    // no tinted well behind it, no radius pretending it is a card.
     return (
-      <div className="flex h-full items-center justify-center overflow-auto bg-background-medium p-4">
-        <img
-          src={file.dataUrl}
-          alt={file.title}
-          className="max-h-full max-w-full rounded-md object-contain"
-        />
+      <div className="flex h-full items-center justify-center overflow-auto p-4">
+        <img src={file.dataUrl} alt={file.title} className="max-h-full max-w-full object-contain" />
       </div>
     );
   }
@@ -1031,8 +1117,10 @@ function DirectoryTreePreview({
   }, []);
 
   return (
-    <div className="flex h-full min-h-0 bg-background-default">
-      <div className="flex w-[42%] min-w-[205px] max-w-[280px] shrink-0 flex-col border-r border-border-subtle bg-background-muted">
+    // The rail is real structure, so it keeps its hairline — but not a second
+    // ground: both halves sit on the panel's, divided by the one border.
+    <div className="flex h-full min-h-0">
+      <div className="flex w-[42%] min-w-[205px] max-w-[280px] shrink-0 flex-col border-r border-border-subtle">
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="flex min-w-0 items-center gap-2 px-1 pb-2">
             {isGitRepository ? (
@@ -1044,7 +1132,7 @@ function DirectoryTreePreview({
               {directory.title}
             </span>
             {directory.kind === 'gitDirectory' && (
-              <span className="max-w-24 truncate rounded bg-background-medium px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
+              <span className={cn(STRIP_IDENT_CLASS, 'max-w-24 truncate rounded-sm px-1.5 py-0.5')}>
                 {directory.branch}
               </span>
             )}
@@ -1105,10 +1193,9 @@ function DirectoryTreePreview({
                   });
                 }}
                 className={cn(
-                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded border px-1.5 text-left text-xs transition-colors',
-                  selected
-                    ? 'border-border-focus bg-background-focus font-medium shadow-sm'
-                    : 'border-transparent hover:bg-background-medium'
+                  // A row in a list, not a card: selection is a fill, never a lift.
+                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-xs transition-colors',
+                  selected ? 'bg-background-focus font-medium' : 'hover:bg-background-medium'
                 )}
                 style={{ paddingLeft: `${6 + depth * 13}px` }}
               >
@@ -1168,10 +1255,7 @@ function DirectoryTreePreview({
             {(Object.keys(gitStatusPresentation) as ArtifactGitStatus[]).map((statusKey) => {
               const status = gitStatusPresentation[statusKey];
               return (
-                <span
-                  key={statusKey}
-                  className="flex items-center gap-1.5 text-[9.5px] text-text-muted"
-                >
+                <span key={statusKey} className={cn(STRIP_META_CLASS, 'flex items-center gap-1.5')}>
                   <span className={cn('h-1.5 w-1.5 rounded-full', status.dotClass)} />
                   {status.label}
                 </span>
@@ -1280,7 +1364,7 @@ function CopyButton({ text }: { text: string }) {
           // Clipboard unavailable (denied permission); leave the label alone.
         }
       }}
-      className="rounded px-2 py-0.5 text-xs text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+      className="rounded-sm px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
     >
       {copied ? 'Copied' : 'Copy'}
     </button>
@@ -1315,21 +1399,32 @@ function TextFilePreview({
     />
   );
 
+  const { directory, name } = splitPathForStrip(file.path);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-shrink-0 items-center gap-2 border-b border-border-subtle px-2.5 py-1.5">
-        <span className="text-[10.5px] font-medium uppercase tracking-wider text-text-muted">
+      {/* The one status strip (design spec H): 34px, a bottom hairline, and the
+          content below it sits on the panel ground — no sub-header, no card. */}
+      <div
+        data-testid="artifact-status-strip"
+        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
+      >
+        <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
           {languageLabel(file.path, file.mimeType)}
         </span>
+        <span className={cn(STRIP_IDENT_CLASS, 'min-w-0 truncate')} title={file.path}>
+          <span className="text-text-subtle">{directory}</span>
+          <span className="text-text-default">{name}</span>
+        </span>
         {showingCode && (
-          <span className="text-[11px] tabular-nums text-text-muted/70">
+          <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
             {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           <CopyButton text={file.text} />
           {renderable && (
-            <div className="inline-flex rounded-md border border-border-subtle p-0.5 text-xs">
+            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle">
               {[
                 { label: delimited ? 'Table' : 'Preview', raw: false },
                 { label: 'Raw', raw: true },
@@ -1340,7 +1435,7 @@ function TextFilePreview({
                   onClick={() => setShowRaw(option.raw)}
                   aria-pressed={showRaw === option.raw}
                   className={cn(
-                    'rounded px-2 py-0.5 transition-colors',
+                    'px-2 py-0.5 text-[11px] transition-colors',
                     showRaw === option.raw
                       ? 'bg-background-medium text-text-default'
                       : 'text-text-muted hover:text-text-default'

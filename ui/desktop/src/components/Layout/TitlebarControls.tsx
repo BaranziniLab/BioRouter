@@ -1,12 +1,27 @@
 import type { CSSProperties, PointerEvent } from 'react';
-import { LayoutDashboard, Plus } from '../icons/app-icons';
+import { NewWindow } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { SidebarTrigger } from '../ui/sidebar';
 
 const MACOS_TRAFFIC_LIGHT_RESERVE = 100;
 const NON_MACOS_TITLEBAR_INSET = 16;
-const TITLEBAR_CONTROL_STRIP_WIDTH = 96;
+/**
+ * Width of the floating control strip: TWO 32px controls (sidebar toggle +
+ * new window). Keep this in lockstep with the buttons rendered below — the
+ * reserve derived from it is what stops the session title/tabs from sliding
+ * under the strip (and, on macOS, under the traffic lights) when the sidebar
+ * is collapsed. TitlebarControls.test.tsx asserts the resulting numbers.
+ */
+const TITLEBAR_CONTROL_STRIP_WIDTH = 64;
 const TITLEBAR_CONTROL_GAP = 8;
+
+/**
+ * Below this width the sidebar overlays rather than pushes, so the session
+ * title / tab strip must reserve room for the floating control strip. Lives
+ * here with the rest of the titlebar geometry because BaseChat and the chat tab
+ * strip both derive their left padding from it and must not drift apart.
+ */
+export { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './yieldLadder';
 
 export const TITLEBAR_CONTROL_RESERVE_PROPERTY = '--biorouter-titlebar-control-reserve';
 
@@ -24,7 +39,11 @@ export function getSessionTitlePadding(
 ): string {
   if (isCompactSidebarOverlayOpen) return 'calc(var(--sidebar-width) + 8px)';
   if (reserveTitlebarControls) {
-    return `var(${TITLEBAR_CONTROL_RESERVE_PROPERTY}, 204px)`;
+    // Derived, never hardcoded: AppLayout sets the custom property from the
+    // same function, so the fallback can never drift away from the real strip
+    // width the way a literal did. macOS is the fallback case because that is
+    // the only platform where the reserve is load-bearing (traffic lights).
+    return `var(${TITLEBAR_CONTROL_RESERVE_PROPERTY}, ${getTitlebarControlReserve(true)}px)`;
   }
   return '16px';
 }
@@ -32,18 +51,10 @@ export function getSessionTitlePadding(
 interface TitlebarControlsProps {
   hidden: boolean;
   isMacOS: boolean;
-  isDashboard: boolean;
   onNewWindow: () => void;
-  onToggleDashboard: () => void;
 }
 
-export function TitlebarControls({
-  hidden,
-  isMacOS,
-  isDashboard,
-  onNewWindow,
-  onToggleDashboard,
-}: TitlebarControlsProps) {
+export function TitlebarControls({ hidden, isMacOS, onNewWindow }: TitlebarControlsProps) {
   if (hidden) return null;
 
   const stopTitlebarDrag = (event: PointerEvent<HTMLDivElement>) => event.stopPropagation();
@@ -75,20 +86,7 @@ export function TitlebarControls({
         shape="round"
         title="Start a new session in a new window"
       >
-        <Plus className="h-4 w-4" />
-      </Button>
-      <Button
-        data-testid="titlebar-dashboard-toggle"
-        onClick={onToggleDashboard}
-        className={`no-drag hover:!bg-background-medium ${
-          isDashboard ? 'bg-background-medium' : ''
-        }`}
-        variant="ghost"
-        size="sm"
-        shape="round"
-        title={isDashboard ? 'Exit Dashboard' : 'Open Dashboard'}
-      >
-        <LayoutDashboard className="h-4 w-4" />
+        <NewWindow className="h-4 w-4" />
       </Button>
     </div>
   );

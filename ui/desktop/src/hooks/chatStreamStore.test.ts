@@ -574,6 +574,11 @@ describe('ChatStreamRegistry', () => {
     });
     expect(onDiverged).toHaveBeenCalledTimes(1);
     expect((onDiverged.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      // The ORIGIN session. 'session-diverged' is a window broadcast heard by
+      // every mounted chat, and newSessionId names a session that doesn't exist
+      // in the UI yet — so listeners identify the single chat that should
+      // navigate by the session the user diverged FROM.
+      sessionId: sourceSessionId,
       newSessionId: 's2',
       shouldStartAgent: true,
       editedMessage: 'updated prompt',
@@ -653,5 +658,222 @@ describe('ChatStreamRegistry', () => {
 
     controlled.close();
     await submit;
+  });
+});
+
+/**
+ * Progressive conversation loading.
+ *
+ * A resume used to take ~5.1s on a real 355-message session, of which ~4.6s was
+ * starting 9 extensions that contribute 359 bytes to what the user reads. The
+ * transcript now paints first and the agent follows. These tests pin the two
+ * things that makes fragile: the ORDER, and the fact that a submit landing in
+ * the gap must not be eaten.
+ */
+describe('ChatStreamRegistry — progressive loading', () => {
+  /** A resume mock whose model+extension phase we can hold open on demand. */
+  function stagedResume(sessionId = 's1') {
+    let releaseAgent: (() => void) | null = null;
+    const agentGate = new Promise<void>((resolve) => {
+      releaseAgent = resolve;
+    });
+
+    vi.mocked(resumeAgent).mockImplementation(async (opts: unknown) => {
+      const body = (opts as { body: { load_model_and_extensions: boolean } }).body;
+      if (!body.load_model_and_extensions) {
+        // Phase 1: the transcript. Fast.
+        return { data: { session: session(sessionId) } } as never;
+      }
+      // Phase 2: the slow half.
+      await agentGate;
+      return {
+        data: {
+          session: session(sessionId),
+          extension_results: [{ name: 'developer', success: true, error: null }],
+        },
+      } as never;
+    });
+
+    return { releaseAgent: () => releaseAgent!() };
+  }
+
+  it('paints the transcript without waiting for the model and extensions', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('prog-paint');
+
+    const controller = registry.getController('prog-paint');
+    await controller.loadSession();
+
+    // The conversation is up and interactive while the agent is still loading.
+    expect(controller.getSnapshot().session).toMatchObject({ id: 'prog-paint' });
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
+    expect(controller.getSnapshot().agentReady).toBe(false);
+
+    releaseAgent();
+    await flush();
+    expect(controller.getSnapshot().agentReady).toBe(true);
+  });
+
+  it('fetches the transcript alone first, then the agent — in that order', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('prog-order');
+
+    const controller = registry.getController('prog-order');
+    await controller.loadSession();
+
+    const flags = vi
+      .mocked(resumeAgent)
+      .mock.calls.map(
+        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
+          .load_model_and_extensions
+      );
+    expect(flags[0]).toBe(false);
+    expect(flags).toContain(true);
+
+    releaseAgent();
+    await flush();
+  });
+
+  // THE one that matters. A snappy UI that eats your first message is a
+  // downgrade, not an upgrade.
+  it('HOLDS a submit made before the agent is ready — never drops it', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('prog-hold');
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'stop' } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('prog-hold');
+    await controller.loadSession();
+    expect(controller.getSnapshot().agentReady).toBe(false);
+
+    // The user types into a transcript whose agent is still starting.
+    const submit = controller.handleSubmit('the first thing I typed');
+    await flush();
+
+    // Not dropped, and not invisible: the message is already in the transcript
+    // and the chat reads as working, so the user has feedback.
+    const painted = controller.getSnapshot().messages;
+    expect(painted[painted.length - 1]).toMatchObject({ role: 'user' });
+    expect(controller.getSnapshot().chatState).not.toBe(ChatState.Idle);
+    // ...but it has NOT been sent to an agent that cannot serve it yet.
+    expect(reply).not.toHaveBeenCalled();
+
+    releaseAgent();
+    await submit;
+
+    // It went out the moment the agent landed, intact.
+    expect(reply).toHaveBeenCalledTimes(1);
+    const body = vi.mocked(reply).mock.calls[0][0].body as { user_message: Message };
+    expect(body.user_message.content).toMatchObject([
+      { type: 'text', text: 'the first thing I typed' },
+    ]);
+  });
+
+  it('lets the user Stop a turn parked on a slow agent load, without sending it', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('prog-stop');
+
+    const controller = registry.getController('prog-stop');
+    await controller.loadSession();
+
+    const submit = controller.handleSubmit('never mind');
+    await flush();
+    controller.stopStreaming();
+
+    releaseAgent();
+    await submit;
+
+    // Cancelled while parked: the request must never reach the model.
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('loads the agent even when the transcript came from cache', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('cached-1');
+
+    // Prime the module-level LRU by loading once...
+    const first = registry.getController('cached-1');
+    await first.loadSession();
+    releaseAgent();
+    await flush();
+    vi.mocked(resumeAgent).mockClear();
+
+    // ...then reach the session through a brand new controller, which takes the
+    // cache fast-path. It must STILL load the agent: this path previously could
+    // reach a submit having never started a single extension.
+    const { releaseAgent: release2 } = stagedResume('cached-1');
+    const fresh = new ChatStreamRegistry().getController('cached-1');
+    await fresh.loadSession();
+
+    const agentCalls = vi
+      .mocked(resumeAgent)
+      .mock.calls.filter(
+        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
+          .load_model_and_extensions
+      );
+    expect(agentCalls.length).toBeGreaterThan(0);
+    release2();
+    await flush();
+  });
+
+  it('only loads the agent once, however many callers ask', async () => {
+    const registry = new ChatStreamRegistry();
+    const { releaseAgent } = stagedResume('prog-once');
+
+    const controller = registry.getController('prog-once');
+    await Promise.all([
+      controller.loadSession(),
+      controller.loadSession(),
+      controller.loadSession(),
+    ]);
+    releaseAgent();
+    await flush();
+    await controller.loadSession();
+
+    const agentCalls = vi
+      .mocked(resumeAgent)
+      .mock.calls.filter(
+        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
+          .load_model_and_extensions
+      );
+    expect(agentCalls).toHaveLength(1);
+  });
+
+  // A failed agent load must not park submits forever — readiness means
+  // "settled", not "succeeded".
+  it('becomes ready, with an inline error, when the agent fails to load', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockImplementation(async (opts: unknown) => {
+      const body = (opts as { body: { load_model_and_extensions: boolean } }).body;
+      if (!body.load_model_and_extensions) {
+        return { data: { session: session('prog-agentfail') } } as never;
+      }
+      throw new Error('extension manager unavailable');
+    });
+
+    const controller = registry.getController('prog-agentfail');
+    await controller.loadSession();
+    await flush();
+
+    // The transcript survived a failed agent load...
+    expect(controller.getSnapshot().session).toMatchObject({ id: 'prog-agentfail' });
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+    // ...and the failure is visible rather than silent.
+    expect(controller.getSnapshot().agentReady).toBe(true);
+    expect(controller.getSnapshot().turnError).toMatchObject({ code: 'agent_load_failed' });
+  });
+
+  it('still reports a full resume failure as a session-level error', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockRejectedValue(new Error('session database unavailable'));
+
+    const controller = registry.getController('prog-resumefail');
+    await controller.loadSession();
+
+    expect(controller.getSnapshot().sessionLoadError).toContain('session database unavailable');
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
   });
 });

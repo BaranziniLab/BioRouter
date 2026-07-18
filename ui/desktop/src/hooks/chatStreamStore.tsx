@@ -150,6 +150,15 @@ export interface ChatStreamSnapshot {
   turnError?: ChatTurnErrorData;
   tokenState: TokenState;
   notifications: NotificationEvent[];
+  /**
+   * Whether this session's agent — model provider + extensions — has finished
+   * loading on the backend. The transcript paints before this flips (see
+   * `loadSession`), so anything that reads AGENT state rather than SESSION
+   * state (the tool count, for one) must wait for it or it will read an empty
+   * world and cache the emptiness. `false` means "not yet", never "failed";
+   * a failed load still ends at `true` with `turnError` set.
+   */
+  agentReady: boolean;
 }
 
 function clientTurnError(
@@ -194,6 +203,7 @@ class ChatStreamController {
     chatState: ChatState.Idle,
     tokenState: EMPTY_TOKEN_STATE,
     notifications: [],
+    agentReady: false,
   };
   private listeners = new Set<() => void>();
   private finishListeners = new Set<() => void>();
@@ -202,6 +212,13 @@ class ChatStreamController {
   private activeStreamId = 0;
   private lastInteractionTime = Date.now();
   private loadPromise: Promise<void> | null = null;
+  /**
+   * The in-flight (or settled) model+extension load. Unlike `loadPromise` this
+   * is never nulled on completion: it is the memo that makes `ensureAgentLoaded`
+   * idempotent across the several call sites that can reach it (cold load,
+   * cached load, controller reuse, a submit that got there first).
+   */
+  private agentLoadPromise: Promise<void> | null = null;
   private lastSubmittedTitle: string | null = null;
 
   constructor(
@@ -291,10 +308,97 @@ class ChatStreamController {
     }));
   };
 
+  /**
+   * Load the agent — model provider + extensions — for this session, once.
+   *
+   * This is the slow half of resuming a chat: on a real session it is ~4.6s of
+   * extension startup against ~0.5s to fetch the transcript, and it is
+   * per-session, so every tab re-pays it. `loadSession` therefore paints the
+   * transcript first and leaves this running in the background; anything that
+   * genuinely needs the agent awaits `whenAgentReady()` instead of blocking the
+   * paint.
+   *
+   * Never rejects: a failed agent load is reported through `turnError` and the
+   * toast, and still resolves, so a submit parked on it can proceed and produce
+   * a real error rather than hanging forever.
+   */
+  private ensureAgentLoaded(): Promise<void> {
+    if (!this.sessionId) return Promise.resolve();
+    if (this.agentLoadPromise) return this.agentLoadPromise;
+
+    this.agentLoadPromise = (async () => {
+      try {
+        const response = await resumeAgent({
+          body: {
+            session_id: this.sessionId,
+            load_model_and_extensions: true,
+          },
+          throwOnError: true,
+        });
+        const resumeData = response.data;
+        const initializationError = resumeData?.initialization_error;
+
+        showExtensionLoadResults(resumeData?.extension_results, this.sessionId);
+
+        if (initializationError) {
+          this.updateSnapshot((prev) => ({
+            ...prev,
+            turnError: {
+              message: initializationError.message,
+              technicalDetails: initializationError.message,
+              code: initializationError.code,
+              scope: 'session',
+              retryable: initializationError.retryable,
+            },
+          }));
+        }
+
+        // Binds the session's model/provider onto the agent. Previously
+        // fire-and-forget on the assumption the agent was already up; now it is
+        // part of readiness, so a submit that waits for the agent also waits for
+        // its model to be bound instead of racing it.
+        if (resumeData?.session) {
+          try {
+            await updateFromSession({
+              body: { session_id: resumeData.session.id },
+              throwOnError: true,
+            });
+          } catch (err) {
+            console.warn('Failed to update agent from session:', err);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load model and extensions:', error);
+        this.updateSnapshot((prev) => ({
+          ...prev,
+          // Do not clobber a turn error the user is already looking at.
+          turnError: prev.turnError ?? clientTurnError(error, 'agent_load_failed', 'session'),
+        }));
+      } finally {
+        this.updateSnapshot((prev) => ({ ...prev, agentReady: true }));
+      }
+    })();
+
+    return this.agentLoadPromise;
+  }
+
+  /**
+   * Resolves once the agent is loaded (or has failed to load). Kicks the load
+   * off if nothing has yet — the cached-transcript path reaches submit without
+   * ever having gone through `loadSession`'s cold path.
+   */
+  whenAgentReady(): Promise<void> {
+    if (this.snapshot.agentReady) return Promise.resolve();
+    return this.ensureAgentLoaded();
+  }
+
   async loadSession(onSessionLoaded?: () => void): Promise<void> {
     if (!this.sessionId) return;
 
     if (this.snapshot.session) {
+      // Session already painted, but the agent may still be missing entirely on
+      // the controller-reuse path. Idempotent.
+      void this.ensureAgentLoaded();
       onSessionLoaded?.();
       return;
     }
@@ -316,6 +420,12 @@ class ChatStreamController {
         },
         chatState: this.isRunning() ? prev.chatState : ChatState.Idle,
       }));
+      // The cache is a process-lifetime LRU with no TTL, so this path could
+      // previously reach a submit having NEVER loaded the agent for this
+      // session — the transcript looked live while the backend had no
+      // extensions. Kick the load off here; `whenAgentReady` is what makes the
+      // submit safe.
+      void this.ensureAgentLoaded();
       onSessionLoaded?.();
       return;
     }
@@ -332,19 +442,21 @@ class ChatStreamController {
 
       this.loadPromise = (async () => {
         try {
+          // PHASE 1 — the transcript, and nothing else. `load_model_and_extensions:
+          // false` skips agent construction, provider restore and extension
+          // startup, which is ~4.6s of the ~5.1s a resume used to take while
+          // contributing a few hundred bytes to what the user reads. The user
+          // came here to read the conversation; give them the conversation.
           const response = await resumeAgent({
             body: {
               session_id: this.sessionId,
-              load_model_and_extensions: true,
+              load_model_and_extensions: false,
             },
             throwOnError: true,
           });
           const resumeData = response.data;
           const loadedSession = resumeData?.session;
-          const extensionResults = resumeData?.extension_results;
-          const initializationError = resumeData?.initialization_error;
 
-          showExtensionLoadResults(extensionResults);
           this.messagesRef = loadedSession?.conversation || [];
           this.updateSnapshot((prev) => ({
             ...prev,
@@ -360,16 +472,12 @@ class ChatStreamController {
             },
             chatState: this.abortController ? prev.chatState : ChatState.Idle,
             sessionLoadError: undefined,
-            turnError: initializationError
-              ? {
-                  message: initializationError.message,
-                  technicalDetails: initializationError.message,
-                  code: initializationError.code,
-                  scope: 'session',
-                  retryable: initializationError.retryable,
-                }
-              : undefined,
+            turnError: undefined,
           }));
+
+          // PHASE 2 — model + extensions, off the paint path. Deliberately not
+          // awaited: `loadSession` resolves as soon as the transcript is up.
+          void this.ensureAgentLoaded();
 
           listApps({
             throwOnError: true,
@@ -377,15 +485,6 @@ class ChatStreamController {
           }).catch((err) => {
             console.warn('Failed to populate apps cache:', err);
           });
-
-          if (loadedSession) {
-            updateFromSession({
-              body: {
-                session_id: loadedSession.id,
-              },
-              throwOnError: true,
-            }).catch((err) => console.warn('Failed to update agent from session:', err));
-          }
         } catch (error) {
           this.updateSnapshot((prev) => ({
             ...prev,
@@ -579,6 +678,22 @@ class ChatStreamController {
     const turnId = newTurnId();
 
     try {
+      // The transcript paints before the agent's model + extensions are up, so
+      // the user can submit into a session whose backend agent is not ready.
+      // HOLD the turn here rather than dropping or blocking it:
+      //  - not dropped: the message is already appended to the transcript above
+      //    and goes out the instant the agent lands, so the composer never eats
+      //    the first thing you type.
+      //  - not blocked: we are already in a Streaming state with a live
+      //    abortController, so the user sees their message and a working
+      //    indicator, and Stop works throughout.
+      // Resolves immediately (a microtask) once the agent is ready, which is the
+      // overwhelmingly common case.
+      await this.whenAgentReady();
+      if (this.abortController?.signal.aborted || this.activeStreamId !== streamId) {
+        return;
+      }
+
       const { stream } = await reply({
         body: {
           session_id: this.sessionId,
@@ -806,6 +921,11 @@ class ChatStreamController {
       if (editType === 'diverge') {
         const event = new CustomEvent('session-diverged', {
           detail: {
+            // The session diverged FROM. 'session-diverged' is a window
+            // broadcast, and newSessionId names a session that doesn't exist in
+            // the UI yet — so listeners identify the one chat that should
+            // navigate by the ORIGIN session, which is this controller's own.
+            sessionId: this.sessionId,
             newSessionId: targetSessionId,
             shouldStartAgent: true,
             editedMessage: newContent,

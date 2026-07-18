@@ -5,6 +5,12 @@ import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import MarkdownContent from '../MarkdownContent';
 import type { ArtifactFilePreview } from './artifactTypes';
+import {
+  splitPathForStrip,
+  STRIP_IDENT_CLASS,
+  STRIP_LABEL_CLASS,
+  STRIP_META_CLASS,
+} from './artifactUtils';
 
 type NotebookFile = Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
 
@@ -178,81 +184,99 @@ export default function NotebookPreview({
   const language =
     notebook.metadata?.language_info?.name || notebook.metadata?.kernelspec?.language || 'python';
   const kernel = notebook.metadata?.kernelspec?.display_name;
+  const { directory, name } = splitPathForStrip(file.path);
+  const cellCount = notebook.cells.length;
 
   return (
-    <div className="h-full overflow-auto bg-background-medium">
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border-subtle bg-background-muted/95 px-4 py-2 backdrop-blur">
-        <span className="text-xs font-semibold text-text-default">Jupyter notebook</span>
-        <span className="text-xs text-text-muted">
-          {notebook.cells.length} cell{notebook.cells.length === 1 ? '' : 's'}
-          {kernel ? ` · ${kernel}` : ''}
+    <div className="flex h-full min-h-0 flex-col">
+      {/* The one status strip (design spec H): a 34px row on the panel ground
+          with a bottom hairline — the same strip every other file preview uses,
+          so the notebook reads in the panel's voice instead of its own. */}
+      <div
+        data-testid="artifact-status-strip"
+        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
+      >
+        <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>Notebook</span>
+        <span className={cn(STRIP_IDENT_CLASS, 'min-w-0 truncate')} title={file.path}>
+          <span className="text-text-subtle">{directory}</span>
+          <span className="text-text-default">{name}</span>
         </span>
+        <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
+          {cellCount.toLocaleString()} cell{cellCount === 1 ? '' : 's'}
+        </span>
+        {kernel && (
+          <span className={cn(STRIP_META_CLASS, 'min-w-0 shrink truncate')} title={kernel}>
+            {kernel}
+          </span>
+        )}
       </div>
-      <div className="mx-auto max-w-5xl space-y-3 p-4">
-        {notebook.cells.map((cell, index) => {
-          const source = joined(cell.source);
-          const executionLabel = cell.execution_count ?? ' ';
-          if (cell.cell_type === 'markdown') {
-            return (
-              <section
-                key={index}
-                aria-label={`Markdown cell ${index + 1}`}
-                className="rounded-lg border border-border-subtle bg-background-default px-4 py-3"
-              >
-                <MarkdownContent content={source} />
-              </section>
-            );
-          }
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto max-w-5xl space-y-3 p-4">
+          {notebook.cells.map((cell, index) => {
+            const source = joined(cell.source);
+            const executionLabel = cell.execution_count ?? ' ';
+            if (cell.cell_type === 'markdown') {
+              return (
+                <section
+                  key={index}
+                  aria-label={`Markdown cell ${index + 1}`}
+                  className="rounded-lg border border-border-subtle bg-background-default px-4 py-3"
+                >
+                  <MarkdownContent content={source} />
+                </section>
+              );
+            }
 
-          if (cell.cell_type === 'code') {
-            return (
-              <section
-                key={index}
-                aria-label={`Code cell ${index + 1}`}
-                className="overflow-hidden rounded-lg border border-border-subtle bg-background-default"
-              >
-                <div className="flex min-w-0">
-                  <div className="w-[72px] shrink-0 px-2 py-3 text-right font-mono text-[11px] text-text-muted">
-                    In [{executionLabel}]:
-                  </div>
-                  <div className="min-w-0 flex-1 overflow-auto border-l border-border-subtle">
-                    <SyntaxHighlighter
-                      style={codeThemesByFamily[themeFamily][resolvedTheme]}
-                      language={language}
-                      PreTag="div"
-                      customStyle={{ margin: 0, padding: '12px 14px', background: 'transparent' }}
-                      codeTagProps={{ style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' } }}
-                    >
-                      {source.replace(/\r?\n$/, '')}
-                    </SyntaxHighlighter>
-                  </div>
-                </div>
-                {(cell.outputs?.length ?? 0) > 0 && (
-                  <div className="border-t border-border-subtle">
-                    {cell.outputs?.map((output, outputIndex) => (
-                      <div
-                        key={outputIndex}
-                        className={cn(outputIndex > 0 && 'border-t border-border-subtle')}
+            if (cell.cell_type === 'code') {
+              return (
+                <section
+                  key={index}
+                  aria-label={`Code cell ${index + 1}`}
+                  className="overflow-hidden rounded-lg border border-border-subtle bg-background-default"
+                >
+                  <div className="flex min-w-0">
+                    <div className="w-[72px] shrink-0 px-2 py-3 text-right font-mono text-[11px] text-text-muted">
+                      In [{executionLabel}]:
+                    </div>
+                    <div className="min-w-0 flex-1 overflow-auto border-l border-border-subtle">
+                      <SyntaxHighlighter
+                        style={codeThemesByFamily[themeFamily][resolvedTheme]}
+                        language={language}
+                        PreTag="div"
+                        customStyle={{ margin: 0, padding: '12px 14px', background: 'transparent' }}
+                        codeTagProps={{ style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' } }}
                       >
-                        <NotebookOutputView output={output} resolvedTheme={resolvedTheme} />
-                      </div>
-                    ))}
+                        {source.replace(/\r?\n$/, '')}
+                      </SyntaxHighlighter>
+                    </div>
                   </div>
-                )}
+                  {(cell.outputs?.length ?? 0) > 0 && (
+                    <div className="border-t border-border-subtle">
+                      {cell.outputs?.map((output, outputIndex) => (
+                        <div
+                          key={outputIndex}
+                          className={cn(outputIndex > 0 && 'border-t border-border-subtle')}
+                        >
+                          <NotebookOutputView output={output} resolvedTheme={resolvedTheme} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            }
+
+            return (
+              <section
+                key={index}
+                aria-label={`Raw cell ${index + 1}`}
+                className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-background-default p-4 font-mono text-xs"
+              >
+                {source}
               </section>
             );
-          }
-
-          return (
-            <section
-              key={index}
-              aria-label={`Raw cell ${index + 1}`}
-              className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-background-default p-4 font-mono text-xs"
-            >
-              {source}
-            </section>
-          );
-        })}
+          })}
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Brain, Check, ChevronDown, LoaderCircle } from 'lucide-react';
+import { Brain, Check, ChevronDown, LoaderCircle } from '../../icons/app-icons';
 import type { ProviderDetails } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';

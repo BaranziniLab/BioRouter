@@ -58,6 +58,7 @@ import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
+import { useTerminalDock } from '../contexts/TerminalDockContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
@@ -86,13 +87,26 @@ import type {
   RawResource,
   ResourceContents,
 } from '../api';
+import {
+  PREVIEW_MIN_WIDTH,
+  PreviewPanelMode,
+  previewPanelMode,
+  SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
+} from './Layout/yieldLadder';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
 export const useCurrentModelInfo = () => useContext(CurrentModelContext);
 
-const ARTIFACT_PANEL_MIN_WIDTH = 360;
+// Rung 2 of the yield ladder (D-32). The floor is shared with the ladder rather
+// than re-declared, so the number the rule reasons about and the number the
+// panel clamps to cannot drift apart.
+const ARTIFACT_PANEL_MIN_WIDTH = PREVIEW_MIN_WIDTH;
 const ARTIFACT_PANEL_MAX_WIDTH = 920;
+// The chat's PREFERRED width — what the panel gives up first. Below this the
+// panel keeps narrowing toward its own 360px floor (the clamp in
+// getMaxArtifactPanelWidth), and at ARTIFACT_PANEL_MIN_WIDTH + CHAT_MIN_WIDTH
+// there is nothing left to give and rung 2 fires. See previewPanelMode.
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
 const ARTIFACT_PANEL_DEFAULT_WIDTH_RATIO = 0.48;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
@@ -101,7 +115,8 @@ const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
 // Matches the panel's close transition (--motion-fast); exit is a tier faster
 // than the --motion-base entrance so the panel unmounts as the slide completes.
 const ARTIFACT_PANEL_EXIT_MS = 120;
-const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+// Imported, not re-declared — see SIDEBAR_COMPACT_WIDTH. This file held the
+// third copy of 1120.
 // How long after the agent last worked a render failure is still treated as part
 // of the current exchange (and worth auto-fixing). A figure the agent just made
 // usually errors within a second or two of finishing; a failure that surfaces
@@ -155,6 +170,117 @@ export function shouldAutoRepairArtifact(
     return true;
   }
   return now - lastAgentActiveAt < ARTIFACT_REPAIR_ACTIVE_GRACE_MS;
+}
+
+/**
+ * Session filter for BROADCAST window events.
+ *
+ * Several chat events are dispatched on `window`, which every mounted BaseChat
+ * hears. That is latent on /pair today (one BaseChat) but the Dashboard already
+ * mounts N of them (Dashboard/ChatWindow.tsx), and tabbed chat will mount N on
+ * /pair — at which point an unfiltered listener lets chat A drive chat B.
+ *
+ * The predicate is deliberately LENIENT, verbatim from the established idiom at
+ * ChatInput.tsx:379-382 ('focus-chat-input'): an event that carries no sessionId
+ * is treated as a true broadcast and handled by everyone. That keeps any
+ * dispatcher we haven't updated (or one outside this repo) working exactly as it
+ * does today. Every in-app dispatcher of these events now sets `sessionId`, so
+ * the lenient branch is a back-compat path, not the normal one.
+ *
+ * @param detail the CustomEvent detail, if any
+ * @param sessionId the listening BaseChat's own session
+ */
+export function isEventForSession(
+  detail: { sessionId?: string | null } | null | undefined,
+  sessionId: string
+): boolean {
+  if (detail?.sessionId && detail.sessionId !== sessionId) return false;
+  return true;
+}
+
+/** Delay before scrolling, so appended content has rendered first. */
+export const SCROLL_TO_BOTTOM_DELAY_MS = 200;
+
+/**
+ * The OS-window content width this chat needs to fit its artifact panel, or
+ * null if it must not resize the window at all.
+ *
+ * Resizing the window is app-scoped, but BaseChat is session-scoped. When more
+ * than one chat is mounted (the Dashboard does this today), only the focused one
+ * may resize — otherwise a background chat opening an artifact yanks the window
+ * out from under the chat the user is actually looking at.
+ */
+export function artifactPanelTargetContentWidth(opts: {
+  isMobile: boolean;
+  allowWindowResize: boolean;
+  windowWidth: number;
+  splitPaneWidth: number;
+}): number | null {
+  if (opts.isMobile) return null;
+  if (!opts.allowWindowResize) return null;
+  return getArtifactPanelExpansionContentWidth(opts.windowWidth, opts.splitPaneWidth) || null;
+}
+
+/**
+ * Builds the 'scroll-chat-to-bottom' listener for one chat. Extracted from the
+ * effect so two of them can be registered on a real window in a test without
+ * mounting two whole BaseChats — the exported factory IS what the effect uses,
+ * so the guard under test cannot drift from the guard that ships.
+ */
+export function createScrollToBottomHandler(deps: {
+  sessionId: string;
+  scrollToBottom: () => void;
+}): (event: Event) => void {
+  return (event: Event) => {
+    const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+    if (!isEventForSession(detail, deps.sessionId)) return;
+    setTimeout(() => deps.scrollToBottom(), SCROLL_TO_BOTTOM_DELAY_MS);
+  };
+}
+
+export interface SessionDivergedDetail {
+  /** The session diverged FROM — see createSessionDivergedHandler. */
+  sessionId?: string | null;
+  newSessionId: string;
+  shouldStartAgent?: boolean;
+  editedMessage?: string;
+}
+
+/**
+ * Builds the 'session-diverged' listener for one chat.
+ *
+ * The predicate matches on the ORIGIN session (detail.sessionId), NOT on
+ * detail.newSessionId: diverging mints a brand-new session, so newSessionId
+ * belongs to no currently-mounted BaseChat and matching on it would select
+ * nobody. The chat that should navigate is the one the user diverged from,
+ * which is the dispatching ChatStreamController's own session
+ * (chatStreamStore.tsx, ChatStreamController.onMessageUpdate).
+ *
+ * Without the guard, every mounted BaseChat calls navigate() to the same URL —
+ * N racing navigations once more than one chat is on screen.
+ */
+export function createSessionDivergedHandler(deps: {
+  sessionId: string;
+  navigate: (to: string, options: { state: Record<string, unknown> }) => void;
+}): (event: Event) => void {
+  return (event: Event) => {
+    const detail = (event as CustomEvent<SessionDivergedDetail>).detail;
+    if (!isEventForSession(detail, deps.sessionId)) return;
+    const { newSessionId, shouldStartAgent, editedMessage } = detail;
+
+    const params = new URLSearchParams();
+    params.set('resumeSessionId', newSessionId);
+    if (shouldStartAgent) {
+      params.set('shouldStartAgent', 'true');
+    }
+
+    deps.navigate(`/pair?${params.toString()}`, {
+      state: {
+        disableAnimation: true,
+        initialMessage: editedMessage,
+      },
+    });
+  };
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
@@ -462,11 +588,31 @@ function collectCodeDelta(messages: Message[]) {
   return { added, removed };
 }
 
-function SummaryMetric({ label, value }: { label: string; value: string }) {
+/**
+ * A metric readout, per design.md §4.13: a 30/34 mono-light value over an
+ * 11px caps label. It used to be a filled `rounded-md bg-background-medium/60`
+ * tile with a 14px semibold sans value — four boxes nested inside an already
+ * rounded popover, which is the "box inside a box" this pass exists to remove.
+ * The fill goes; the number does the work. `children` lets a caller compose a
+ * richer value (e.g. the +/- code diff) without duplicating this component.
+ */
+function SummaryMetric({
+  label,
+  value,
+  children,
+}: {
+  label: string;
+  value?: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-text-muted">{label}</div>
-      <div className="mt-1 truncate text-sm font-medium text-text-default">{value}</div>
+    <div className="min-w-0 py-2">
+      <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
+        {label}
+      </div>
+      <div className="mt-0.5 truncate font-mono text-[30px] font-light leading-[34px] tracking-[-0.02em] text-text-default tabular-nums">
+        {children ?? value}
+      </div>
     </div>
   );
 }
@@ -508,6 +654,54 @@ interface BaseChatProps {
    * ChatWindow on unfold, because BaseChat stays mounted while folded so
    * mount-time autofocus / auto-scroll never re-fire on visibility change. */
   focusTrigger?: number;
+  /** Whether this chat may resize the OS window to fit its artifact panel
+   * (default true). A BaseChat is a session-scoped component, but
+   * ensureArtifactPanelFits reaches for an app-scoped effect: with N chats
+   * mounted, a BACKGROUND chat opening an artifact would resize the whole
+   * Electron window out from under the focused one. Callers that mount more
+   * than one BaseChat pass false for every chat that isn't focused. */
+  allowWindowResize?: boolean;
+  /**
+   * Whether this chat may render its artifact preview panel (default true).
+   *
+   * "The preview panel follows the ACTIVE group" (spec §4). With N groups
+   * mounted, every background group would otherwise render its own panel and the
+   * window would fill with previews of chats nobody is looking at. Callers that
+   * mount more than one BaseChat pass true for the focused chat only.
+   *
+   * This GATES THE RENDER, it does not clear the state: `presentedArtifact` and
+   * the panel's tab stack live on untouched while the group is in the
+   * background, so switching back restores the panel exactly as it was. That is
+   * the whole reason the panel stays per-pane instead of being hoisted to a
+   * window-level surface keyed by session — a hoist drops the artifact tab stack
+   * on every group switch, and that regression is not acceptable.
+   */
+  artifactPanelEnabled?: boolean;
+  /**
+   * Renders the left-hand content of the existing 52px session header in place
+   * of the SessionNamePill. The chat tab strip comes through HERE rather than
+   * being mounted above BaseChat, and that is deliberate:
+   *
+   * renderSessionHeaderActions() (below, in this same header row) closes over
+   * isTerminalDockOpen / reviewOpen / session — BaseChat-local state — and
+   * cannot be hoisted cheaply. Threading the strip through the seam means the
+   * actions never have to move. Mount a strip ABOVE BaseChat instead and you
+   * get a strip row AND an actions row: two 52px bars.
+   *
+   * The header is WebkitAppRegion:'drag'; anything interactive rendered here
+   * must declare no-drag on itself (R1, measured 2026-07-16 — the gesture does
+   * reach the DOM, but only for no-drag children).
+   */
+  renderSessionTitle?: () => React.ReactNode;
+  /**
+   * Scopes the in-app terminal to THIS chat tab. The /pair shell passes the
+   * tab's id, so each tab has its own terminal (its own open/hidden state and
+   * its own panes) and switching tabs switches which terminal you see. Falls
+   * back to sessionId for the surfaces that mount a single BaseChat with no
+   * TerminalDockProvider (Dashboard, /extensions, the Hub), where it is only
+   * ever compared against itself.
+   */
+  terminalKey?: string;
 }
 
 function BaseChatContent({
@@ -527,6 +721,10 @@ function BaseChatContent({
   onBusyChange,
   onLatestMessage,
   focusTrigger,
+  allowWindowResize = true,
+  artifactPanelEnabled = true,
+  renderSessionTitle,
+  terminalKey,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -552,10 +750,40 @@ function BaseChatContent({
   const [isArtifactPanelOpen, setIsArtifactPanelOpen] = useState(false);
   const [isArtifactPanelResizing, setIsArtifactPanelResizing] = useState(false);
   const [artifactPanelWidth, setArtifactPanelWidth] = useState<number | null>(null);
+  // Rung 2 of the yield ladder. Derived from the PANE's measured width through
+  // previewPanelMode — never stored as a raw width, so the state only changes on
+  // the 720px crossing and a splitter drag does not re-render the whole chat
+  // once per frame.
+  const [previewMode, setPreviewMode] = useState<PreviewPanelMode>('side');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
+
+  // ---- Terminal dock seam -------------------------------------------------
+  // With /pair's shell mounted the terminal is PER CHAT TAB: this chat drives
+  // its own terminal through the context, keyed by its tab id (terminalKey), so
+  // opening it here never touches another tab's. Everywhere else (Dashboard,
+  // /extensions, the Hub) there is no provider, useTerminalDock() returns null,
+  // and BaseChat keeps its own local dock exactly as before.
+  const terminalDock = useTerminalDock();
+  // Falls back to sessionId off /pair, where there is no shell to hand a tab id
+  // and the key is only ever compared against itself.
+  const terminalDockKey = terminalKey ?? sessionId;
+  const [localTerminalDockOpen, setLocalTerminalDockOpen] = useState(false);
+  const isTerminalDockOpen = terminalDock
+    ? terminalDock.isOpenFor(terminalDockKey)
+    : localTerminalDockOpen;
+  // sessionWorkingDir is computed far below (it needs `session`), but the setter
+  // must be stable and defined here. A ref, assigned at the definition site, is
+  // the seam: the dock only ever reads a cwd at the instant it opens.
+  const sessionWorkingDirRef = useRef<string | undefined>(undefined);
+  const setIsTerminalDockOpen = useCallback(
+    (next: boolean) => {
+      if (terminalDock) terminalDock.setOpen(terminalDockKey, next, sessionWorkingDirRef.current);
+      else setLocalTerminalDockOpen(next);
+    },
+    [terminalDock, terminalDockKey]
+  );
   const splitPaneRef = useRef<HTMLDivElement>(null);
   const artifactPanelCloseTimerRef = useRef<number | null>(null);
   const artifactPanelOpenFrameRef = useRef<number | null>(null);
@@ -603,7 +831,12 @@ function BaseChatContent({
   }, []);
 
   const contentClassName = cn(
-    'pr-1 pb-10',
+    // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
+    // scrollbar, but as a right-only inset it made the scroll viewport 4px
+    // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
+    // true centre. Padding the gutter symmetrically costs 4px of width and buys
+    // an actually centred column. Measured in Electron: 198/202 -> 200/200.
+    'px-1 pb-10',
     (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
   );
 
@@ -626,7 +859,10 @@ function BaseChatContent({
     artifactPanelWidthUserSetRef.current = false;
     setDiagnosticsOpen(false);
     setReviewOpen(false);
-    setIsTerminalDockOpen(false);
+    // Only the LOCAL dock. The /pair terminal is keyed by tab id in the context,
+    // not by session, so an empty tab binding a real session (its only in-place
+    // sessionId change) must NOT close the terminal that belongs to the tab.
+    setLocalTerminalDockOpen(false);
     setShowEditWorkflowModal(false);
     knownArtifactKeysRef.current.clear();
     artifactInitialScanDoneRef.current = false;
@@ -648,13 +884,32 @@ function BaseChatContent({
   }, []);
 
   const ensureArtifactPanelFits = useCallback(async () => {
-    if (isMobile) return;
-
-    const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-    const targetWidth = getArtifactPanelExpansionContentWidth(window.innerWidth, splitPaneWidth);
+    const targetWidth = artifactPanelTargetContentWidth({
+      isMobile,
+      allowWindowResize,
+      windowWidth: window.innerWidth,
+      splitPaneWidth: splitPaneRef.current?.clientWidth ?? window.innerWidth,
+    });
     if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
 
     await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
+  }, [isMobile, allowWindowResize]);
+
+  /**
+   * Rung 2: ask the PANE, not the window, whether the preview panel can have a
+   * column.
+   *
+   * The shipped rule was `isMobile` — window < 930 — which is right for one group
+   * and blind the moment there are two: in a split the pane is decoupled from the
+   * window, so a 2-up split in a 1000px window left the panel's 360px floor
+   * sitting next to a 140px transcript. isMobile survives inside previewPanelMode
+   * as an override, so nothing between 720 and 930 changes.
+   */
+  const measurePreviewMode = useCallback(() => {
+    const paneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    // Same value → React bails out. This runs from a ResizeObserver, so it must
+    // be free at rest.
+    setPreviewMode(previewPanelMode({ isMobile, paneWidth }));
   }, [isMobile]);
 
   const handleOpenArtifact = useCallback(
@@ -673,6 +928,11 @@ function BaseChatContent({
         await ensureArtifactPanelFits();
       }
 
+      // Prime the rung BEFORE the panel exists: the observer below only starts
+      // once presentedArtifact is set, so without this the first frame would
+      // paint the panel in whichever mode the last artifact left behind. Measured
+      // after ensureArtifactPanelFits, which may have grown the OS window.
+      measurePreviewMode();
       setPresentedArtifact(artifact);
 
       if (presentedArtifact) {
@@ -686,7 +946,7 @@ function BaseChatContent({
         setIsArtifactPanelOpen(true);
       });
     },
-    [ensureArtifactPanelFits, presentedArtifact]
+    [ensureArtifactPanelFits, measurePreviewMode, presentedArtifact]
   );
 
   const handleCloseArtifactPanel = useCallback(() => {
@@ -725,9 +985,16 @@ function BaseChatContent({
 
   useEffect(() => {
     const splitPane = splitPaneRef.current;
-    if (!splitPane || !presentedArtifact || isMobile) return;
+    // Gated on `presentedArtifact` only. `isMobile` used to gate this too, but
+    // rung 2 has to keep watching the PANE at every window width — a split can
+    // starve the transcript in a window the mobile rule calls roomy. The width
+    // bookkeeping below stays a no-op in overlay mode, where the panel takes no
+    // width from anything.
+    if (!splitPane || !presentedArtifact) return;
 
-    const updateArtifactPanelWidth = () => {
+    const sampleSplitPane = () => {
+      measurePreviewMode();
+      if (isMobile) return;
       setArtifactPanelWidth((currentWidth) => {
         const maxWidth = getMaxArtifactPanelWidth();
         if (currentWidth === null || !artifactPanelWidthUserSetRef.current) {
@@ -738,21 +1005,34 @@ function BaseChatContent({
       });
     };
 
-    updateArtifactPanelWidth();
+    sampleSplitPane();
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateArtifactPanelWidth);
-      return () => window.removeEventListener('resize', updateArtifactPanelWidth);
+      window.addEventListener('resize', sampleSplitPane);
+      return () => window.removeEventListener('resize', sampleSplitPane);
     }
 
-    const resizeObserver = new ResizeObserver(updateArtifactPanelWidth);
+    // No feedback loop: this observes the split pane, which is sized by the
+    // GROUP above it, and rung 2 only ever moves the panel between a column and
+    // an overlay INSIDE that pane. Neither mode can change the observed box, so
+    // the callback cannot retrigger itself — no hysteresis needed, and none
+    // added on spec.
+    const resizeObserver = new ResizeObserver(sampleSplitPane);
     resizeObserver.observe(splitPane);
     return () => resizeObserver.disconnect();
-  }, [getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile, presentedArtifact]);
+  }, [
+    getInitialArtifactPanelWidth,
+    getMaxArtifactPanelWidth,
+    isMobile,
+    measurePreviewMode,
+    presentedArtifact,
+  ]);
 
   const handleArtifactPanelResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (isMobile) return;
+      // A yielded panel has no column to resize. The handle is already unwired at
+      // the render site; this is the second lock on the same door.
+      if (previewMode === 'overlay') return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -844,7 +1124,7 @@ function BaseChatContent({
       window.addEventListener('blur', handleWindowBlur);
       resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
     },
-    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
+    [artifactPanelWidth, getInitialArtifactPanelWidth, getMaxArtifactPanelWidth, previewMode]
   );
 
   const {
@@ -861,6 +1141,7 @@ function BaseChatContent({
     turnError,
     setWorkflowUserParams,
     tokenState,
+    agentReady,
     notifications: toolCallNotifications,
     onMessageUpdate,
   } = useChatStream({
@@ -1132,8 +1413,13 @@ function BaseChatContent({
     }
   }, [messages.length]);
 
-  const toolCount = useToolCount(sessionId);
+  // Gated on agentReady: tools do not exist until the extensions do, and this
+  // hook has no other reason to refetch.
+  const toolCount = useToolCount(sessionId, agentReady);
   const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+  // Feed the terminal-dock seam declared at the top of this component. Assigned
+  // on every render; only ever READ at the instant the dock opens.
+  sessionWorkingDirRef.current = sessionWorkingDir;
   // The working dir anchors relative paths a tool call names (`results/plot.png`).
   const sessionArtifacts = useMemo(
     () => collectArtifactsFromMessages(messages, sessionWorkingDir),
@@ -1170,20 +1456,19 @@ function BaseChatContent({
     }
   }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
 
-  // Listen for global scroll-to-bottom requests (e.g., from MCP UI prompt actions)
+  // Listen for scroll-to-bottom requests (e.g. from MCP UI prompt actions).
+  // Dispatched by MCPUIResourceRenderer / McpAppRenderer, both of which render
+  // INSIDE a chat — so match by sessionId, or an artifact in chat A scrolls
+  // chat B.
   useEffect(() => {
-    const handleGlobalScrollRequest = () => {
-      // Add a small delay to ensure content has been rendered
-      setTimeout(() => {
-        if (scrollRef.current?.scrollToBottom) {
-          scrollRef.current.scrollToBottom();
-        }
-      }, 200);
-    };
+    const handleGlobalScrollRequest = createScrollToBottomHandler({
+      sessionId,
+      scrollToBottom: () => scrollRef.current?.scrollToBottom?.(),
+    });
 
     window.addEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
     return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
-  }, []);
+  }, [sessionId]);
 
   // When the parent bumps focusTrigger (e.g. dashboard card unfolded), wait
   // one animation frame for the display:none→display:flex transition to
@@ -1201,44 +1486,37 @@ function BaseChatContent({
     return () => cancelAnimationFrame(raf);
   }, [focusTrigger, sessionId]);
 
+  // NOTE: as of this writing 'make-agent-from-chat' has NO dispatcher anywhere in
+  // ui/desktop (only this listener and the one in hooks/useWorkflowManager.ts:284)
+  // — it appears to be dead code. It is session-scoped here for consistency with
+  // the other two broadcast listeners rather than deleted, because removing it is
+  // out of scope; without a dispatcher the filter is inert either way.
   useEffect(() => {
-    const handleMakeAgent = () => {
+    const handleMakeAgent = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+      if (!isEventForSession(detail, sessionId)) return;
       setIsCreateWorkflowModalOpen(true);
     };
 
     window.addEventListener('make-agent-from-chat', handleMakeAgent);
     return () => window.removeEventListener('make-agent-from-chat', handleMakeAgent);
-  }, []);
+  }, [sessionId]);
 
+  // Match on the ORIGIN session, not detail.newSessionId. Diverging creates a
+  // brand-new session, so newSessionId belongs to no mounted BaseChat — filtering
+  // on it would match nobody. detail.sessionId is the session the user actually
+  // diverged FROM (ChatStreamController.sessionId, chatStreamStore.tsx), i.e. the
+  // one chat that should navigate. Without this every mounted BaseChat fires its
+  // own navigate() to the same URL: N racing navigations.
   useEffect(() => {
-    const handleSessionDiverged = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        newSessionId: string;
-        shouldStartAgent?: boolean;
-        editedMessage?: string;
-      }>;
-      const { newSessionId, shouldStartAgent, editedMessage } = customEvent.detail;
-
-      const params = new URLSearchParams();
-      params.set('resumeSessionId', newSessionId);
-      if (shouldStartAgent) {
-        params.set('shouldStartAgent', 'true');
-      }
-
-      navigate(`/pair?${params.toString()}`, {
-        state: {
-          disableAnimation: true,
-          initialMessage: editedMessage,
-        },
-      });
-    };
+    const handleSessionDiverged = createSessionDivergedHandler({ sessionId, navigate });
 
     window.addEventListener('session-diverged', handleSessionDiverged);
 
     return () => {
       window.removeEventListener('session-diverged', handleSessionDiverged);
     };
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, sessionId]);
 
   const handleWorkflowCreated = (workflow: Workflow) => {
     toastSuccess({
@@ -1329,7 +1607,7 @@ function BaseChatContent({
   };
 
   const handleOpenTerminal = () => {
-    setIsTerminalDockOpen((open) => !open);
+    setIsTerminalDockOpen(!isTerminalDockOpen);
   };
 
   const handleWorkflowReviewAction = () => {
@@ -1415,7 +1693,7 @@ function BaseChatContent({
                 {session?.name || 'Current conversation'}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-x-4">
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
               <SummaryMetric
                 label="Billed tokens"
@@ -1424,18 +1702,21 @@ function BaseChatContent({
                 }
               />
               <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
-              <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
-                <div className="text-[11px] uppercase tracking-wide text-text-muted">Code</div>
-                <div className="mt-1 flex items-center gap-2 text-sm font-medium">
-                  <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>
-                  <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
-                </div>
-              </div>
+              {/* Composed rather than copy-pasted: this used to duplicate
+                  SummaryMetric's markup, so the two diverged on every edit. */}
+              <SummaryMetric label="Code">
+                <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
+                <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
+              </SummaryMetric>
             </div>
+            {/* `secondary`, not `outline`: a 1px box drawn around the quietest
+                actions was the heaviest line in the panel. design.md §4.1
+                already specifies a fill here — outline is only for a secondary
+                action on an already-tinted ground. */}
             <div className="flex gap-2 border-t border-border-subtle pt-3">
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleWorkflowReviewAction}
@@ -1445,7 +1726,7 @@ function BaseChatContent({
               </Button>
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleDiagnosticsReviewAction}
@@ -1592,7 +1873,16 @@ function BaseChatContent({
   }
 
   return (
-    <div className="relative z-[60] h-full flex flex-col min-h-0">
+    // `w-full min-w-0 flex-1` is load-bearing, not decoration. BaseChat used to
+    // mount only inside AppLayout's flex COLUMN, where align-items:stretch gave
+    // it the full width for free. The chat-groups shell mounts it inside a flex
+    // ROW (ChatGroupPane), where width is the MAIN axis: without flex-grow the
+    // root defaulted to `flex: 0 1 auto` and hugged its content — 808px (the
+    // 760px readable column + 48px of px-6) — then sat at the group's left edge.
+    // The transcript's `mx-auto` centred inside THAT 808px box, not the group,
+    // so the column read ~134px left-of-centre in a 942px group. min-w-0 is what
+    // lets it shrink when the artifact panel takes its share of the row.
+    <div className="relative z-[60] h-full flex flex-col min-h-0 w-full min-w-0 flex-1">
       <MainPanelLayout
         backgroundColor={'bg-background-muted'}
         removeTopPadding={true}
@@ -1621,20 +1911,31 @@ function BaseChatContent({
                   style={
                     {
                       WebkitAppRegion: 'drag',
-                      paddingLeft: sessionPillPaddingLeft,
+                      // The tab strip owns its own left reserve (it is the only
+                      // consumer of getSessionTitlePadding once it renders), so
+                      // the header must not apply the reserve twice.
+                      paddingLeft: renderSessionTitle ? 0 : sessionPillPaddingLeft,
                     } as React.CSSProperties
                   }
                 >
-                  <div className="min-w-0 flex-1">
-                    <SessionNamePill
-                      name={session?.name || 'New Session'}
-                      onRename={handleRename}
-                      onDiverge={handleTitleDiverge}
-                      canDiverge={canDivergeSession}
-                      accentColor={accentColor}
-                      className="w-fit max-w-[min(520px,calc(100%-16px))]"
-                    />
-                  </div>
+                  {/* The strip renders HERE, in place of the pill. Do not move
+                      renderSessionHeaderActions() out of this row — it closes
+                      over BaseChat-local state, and hoisting the strip above
+                      BaseChat instead would produce two 52px bars. */}
+                  {renderSessionTitle ? (
+                    renderSessionTitle()
+                  ) : (
+                    <div className="min-w-0 flex-1">
+                      <SessionNamePill
+                        name={session?.name || 'New Session'}
+                        onRename={handleRename}
+                        onDiverge={handleTitleDiverge}
+                        canDiverge={canDivergeSession}
+                        accentColor={accentColor}
+                        className="w-fit max-w-[min(520px,calc(100%-16px))]"
+                      />
+                    </div>
+                  )}
                   {renderSessionHeaderActions()}
                 </div>
               )}
@@ -1735,17 +2036,26 @@ function BaseChatContent({
             )}
           </div>
 
-          {presentedArtifact && (
+          {presentedArtifact && artifactPanelEnabled && (
             <ArtifactViewer
               artifact={presentedArtifact}
               isOpen={isArtifactPanelOpen}
               isResizing={isArtifactPanelResizing}
               onClose={handleCloseArtifactPanel}
               onOpenArtifact={handleOpenArtifact}
-              onResizeStart={isMobile ? undefined : handleArtifactPanelResizeStart}
+              // Rung 2. 'overlay' means the panel has YIELDED ITS COLUMN: it is
+              // absolutely positioned inside the split pane, so it takes no width
+              // from the transcript at all and there is no edge to drag. The
+              // pane's full width stays the chat's, and closing the panel reveals
+              // it untouched. This is the treatment a mobile-width window has
+              // always got; rung 2 only changes WHEN it applies — a pane that
+              // cannot seat a 360px chat beside a 360px panel, at any window size.
+              onResizeStart={
+                previewMode === 'overlay' ? undefined : handleArtifactPanelResizeStart
+              }
               onRenderError={handleArtifactRenderError}
               style={
-                isMobile
+                previewMode === 'overlay'
                   ? undefined
                   : {
                       width: artifactPanelWidth ?? getInitialArtifactPanelWidth(),
@@ -1753,18 +2063,24 @@ function BaseChatContent({
                     }
               }
               className={
-                isMobile
+                previewMode === 'overlay'
                   ? 'absolute inset-x-2 bottom-2 top-16 z-[70] rounded-lg border border-border-subtle'
                   : 'min-w-[360px] flex-shrink-0'
               }
             />
           )}
         </div>
-        <InAppTerminalDock
-          open={isTerminalDockOpen}
-          workingDir={sessionWorkingDir}
-          onClose={() => setIsTerminalDockOpen(false)}
-        />
+        {/* The global dock renders ONCE in the shell, below all the groups. When
+            it exists this chat must not render a second one — N groups would
+            mean N docks stacked inside N panes, which is the opposite of "the
+            panel stays global, spans all groups". */}
+        {!terminalDock && (
+          <InAppTerminalDock
+            open={isTerminalDockOpen}
+            workingDir={sessionWorkingDir}
+            onClose={() => setIsTerminalDockOpen(false)}
+          />
+        )}
       </MainPanelLayout>
 
       {workflow && (

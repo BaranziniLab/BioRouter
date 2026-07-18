@@ -1,36 +1,20 @@
-import 'react-toastify/dist/ReactToastify.css';
-
-import { ChatType } from '../types/chat';
 import { UserAttachment } from '../types/message';
-import BaseChat from './BaseChat';
 
+/**
+ * The route-state contract for /pair.
+ *
+ * The `Pair` component that used to live here was a 34-line pass-through to
+ * BaseChat, and it retired when /pair became tabbed: ChatGroupsShell now mounts
+ * BaseChat per group, and the tab strip renders through BaseChat's own header
+ * seam. Only the route-state shape survives, because the navigations that carry
+ * it (Hub composer submit, diverge, the sidebar's new-chat and recents) are
+ * unchanged — they remain the deep-link inbox the ChatGroups URL adapter reads.
+ */
 export interface PairRouteState {
   newChat?: boolean;
   resumeSessionId?: string;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
-}
-
-interface PairProps {
-  setChat: (chat: ChatType) => void;
-  sessionId: string;
-  initialMessage?: string;
-  initialAttachments?: UserAttachment[];
-}
-
-export default function Pair({
-  setChat,
-  sessionId,
-  initialMessage,
-  initialAttachments,
-}: PairProps) {
-  return (
-    <BaseChat
-      setChat={setChat}
-      sessionId={sessionId}
-      initialMessage={initialMessage}
-      initialAttachments={initialAttachments}
-      suppressEmptyState={false}
-    />
-  );
+  /** Set by the sidebar's recents: a single click opens a preview tab. */
+  preview?: boolean;
 }

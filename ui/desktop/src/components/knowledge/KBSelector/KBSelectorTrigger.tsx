@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { useKnowledge } from '../KnowledgeContext';
 import { KBSelectorPalette } from './KBSelectorPalette';

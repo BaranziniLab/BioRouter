@@ -340,6 +340,7 @@ function ToolCallWithResponseContent({
               <div key={index} className="mt-3">
                 <MCPUIResourceRenderer
                   content={resourceContent}
+                  sessionId={sessionId}
                   appendPromptToChat={append}
                   onOpenArtifact={onOpenArtifact}
                 />

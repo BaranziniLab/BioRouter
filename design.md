@@ -1,6 +1,6 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile: 40px content rows and 32px sidebar navigation/session rows.**
@@ -1164,6 +1164,52 @@ changing the established type scale, icon sizes, or hit-target clarity.
 
 ---
 
+## Part 6b · UI cohesion pass — 2026-07-16
+
+> **Companion artifact:** [`docs/design/ui-cohesion-redesign.html`](docs/design/ui-cohesion-redesign.html) —
+> renders each item below on real BioRouter chrome, in both themes, with a
+> **Current ⇄ Redesigned** toggle. Implemented; gates: `tsc` clean, `eslint` 0
+> warnings, **140/140** contrast assertions, **1004/1004** unit tests.
+
+The through-line is not new. **D-15** made focus a surface shift rather than a
+ring, **D-17** made tool calls lines rather than cards, **D-18** collapsed
+hairlines to one value. Outlined tabs and bordered buttons were the outliers.
+The rule, stated plainly: **BioRouter signals state with fills, not outlines.**
+
+| ID | Decision | Resolved value |
+|---|---|---|
+| D-19 | **Prose tokens** | `--tw-prose-*` remap to the Parchment tokens. Nothing had ever remapped them, so every element the class list forgot fell back to Tailwind's **cold blue-grey** on the warm ground: `<strong>`/h3/h4 at `#101828`, `<hr>` and table hairlines at **`#e5e7eb`** — a hex [Part 1's anti-patterns](#anti-patterns--what-biorouter-must-never-look-like) names a *"foreign body"*. A bold word was literally a different hue than the sentence around it. |
+| D-20 | **The code ground** | New `--background-code` (light `#faf8f3` / dark `#16120c`; alma `#f2f3f4` / `#08213f`). The syntax palettes in [§5.1](#51--code-blocks) are verified against those values, but code blocks painted `--background-muted`, which is `#282217` in dark — so dark code rendered on a ground its palette was never measured on and `comment` sat at **4.15:1, under AA**. Not expressible with existing tokens (light wants `muted`, dark wants `default`), which is exactly why the value was duplicated across `codeTheme.ts`, `main.css` and `InAppTerminalDock`. `check-contrast.mjs` now guards it (128 → 140 assertions). |
+| D-21 | **Tables** | [§4.17](#417--tables) enforced: hairline rows, no vertical rules, no header fill, 11px caps header, 13px body, `tabular-nums`, header and body both `middle`. They previously drew a 1px box on all four sides of every cell. |
+| D-22 | **Heading scale** | h1 18/26 · h2 16/24 · h3 15/22 · h4 13/18 muted. h3 and h4 were both 14/600 — the same object twice. Leadings pinned, since `text-lg/base/sm` each ship a line-height that collided with the plugin's, source-order-dependently. Blockquotes no longer inject the plugin's curly quotes. |
+| D-23 | **Document tabs** | Shared `.br-tabstrip` / `.br-tab`, after Safari. The strip is `--sidebar` — the **same** surface as the sidebar's titlebar band — so the window's top edge is one continuous ground and never a dark slab. Only the ACTIVE tab is painted (a floating `--background-default` pill); inactive tabs are plain text; the divider is a hairline **in the gap** that retracts around the cursor; no tab carries an outline. **Qualifies D-07:** underline stays for *navigation* tabs (settings sections); the pill is for *document* tabs (preview, terminal, and later chat groups) — things you switch between, as in Safari and VS Code. **Tab labels are `--font-sans` at 13px** (§3.2 metadata) — see D-31. |
+| D-24 | **One floating surface** | `.biorouter-popover-surface` takes a **full-strength** `--border-subtle` hairline (it diluted it to 44%, breaking D-18) and the `--shadow-popover` token instead of a hand-rolled shadow — which let a bespoke Alma Mater shadow override be deleted, since it existed only to compensate for bypassing the token. Popover/dropdown radius **16 → 12px** ([§4.5](#45--dropdown-menus--popovers)); `sideOffset` 4 → 6. |
+| D-25 | **Buttons** | `outline` → `secondary` on the Session-review popover: a 1px box drawn around the panel's quietest actions was the heaviest line in it. [§4.1](#41--buttons) already specified a fill. `outline` survives only for a secondary action on an already-tinted ground. |
+| D-26 | **Metric tiles** | [§4.13](#413--cards)'s 30/34 mono-light readout; the fills are gone (four boxes inside an already-rounded popover). |
+| D-27 | **Toast** | **The code wins; this spec changes.** [§4.3](#43--toasts-and-inline-alerts) asked for a 3px left status bar. The shipped toast carries a **tinted icon chip** on a neutral surface and is better: it reads at a glance, survives both themes, and doesn't paint a coloured stripe on a calm surface. Radius **12px**, matching every other floating surface, not §4.3's 8px. One geometry, two densities: the chip and close stay optically centred on the **first line**, so a title-only toast is a tidy 48px bar and a two-line one grows downward from the same top edge. |
+| D-28 | **Titlebar** | The Dashboard control is removed (the mode is being discontinued): the strip narrows **96 → 64px** and the session-title reserve **204 → 172px**, now *derived* from `getTitlebarControlReserve()` rather than a second magic literal. The strip stays a floating `no-drag` layer **outside** the sidebar — inside it, collapsing would take the un-collapse button with it. New-window gets its own glyph; `Plus` now means only New Session. |
+| D-29 | **Sidebar** | The wordmark leaves its floating `pt-10` position for a 32px row aligned (measured, not eyeballed) to the nav labels' text edge; a `Menu` section label; a full-width divider and an inset Recents well; Recents gains a disclosure so the rail can be folded away. **Amends [§4.11](#411--sidebar--navigation):** history rows now carry a leading glyph — the "no leading icon" rule is overridden deliberately, because a wall of identical text is what made history unreadable. Branch detection is title string-sniffing: `SessionSummary` exposes no kind/branch field. A real field is the right fix. |
+| D-30 | **Panels de-boxed** | The preview went *panel → p-3 → bordered card → header → code*; it is now *panel → status strip → content on the ground*. The terminal's xterm host was a `rounded-md` bordered box painted `bg-background-muted` sitting inside a gutter **also** painted `bg-background-muted` — a hairline between a surface and itself. |
+| D-31 | **Tab labels: sans, not mono** | **Overrides D-23's first cut, 2026-07-16, on user review.** Tab labels shipped in `--font-mono` at 12px — borrowed from otty.sh, which sets its UI labels in JetBrains Mono, and defended as on-thesis because [P6](#p6--the-monospace-layer-is-part-of-the-design-system) calls monospace "a first-class citizen". In the running app it read as *a special thin font that belongs to nothing else on screen*: the sidebar, the nav, the chat and the session title are all `--font-sans`, so the tab strip — sharing the same 52px bar with all of them — was the only element speaking a different language. **That is precisely the incoherence this pass exists to remove**, so the rule is now: `--font-sans` at 13px (§3.2 "Secondary / metadata"), normal tracking. P6 is unchanged and still right — the monospace layer keeps the jobs it earns (code, the terminal, paths, aligned figures). A tab label is none of those; it is a name. Mono for *data*, sans for *chrome*. |
+| D-32 | **The yield ladder** | **The active chat always wins. Everything else yields, in a fixed order, and the order is the design.** The app already had two isolated rules — the sidebar auto-collapses under 1120px (`AppLayout.tsx:15`) and the artifact panel overlays under `MOBILE_BREAKPOINT` 930px (`use-mobile.ts:3`) — but nothing said what should happen between them, so a narrow window squeezed the chat instead of shedding chrome. The ladder, widest-yields-first: **(1)** the sidebar collapses to an overlay (< 1120, already shipped and correct); **(2)** the preview panel narrows to its 360px floor, then yields entirely rather than starve the transcript; **(3)** tab labels shrink to their 88px floor, then scroll, then collapse into a ▾ overflow menu — **never wrap** (a wrapped second row moves every tab under the cursor); **(4)** a split merges back to one group rather than render two useless slivers. Floors, not guesses: a chat pane below ~360px cannot hold a 68ch measure and stops being a chat. Nothing in this ladder is new chrome — each rung is a thing the app can already do; the decision is only *what order they let go in*. |
+| D-33 | **Mono for data, sans for chrome** | **Generalises D-31 from tab labels to every surface, 2026-07-17, after the user reported the "wrong font" still present in the chat *and preview*.** D-31 fixed the tab strips (both of them — the preview panel shares chat's `.br-tabstrip`/`.br-tab__label`, so one line covered both). But the preview's status strip still set *all* of its text in mono, so the panel's chrome kept reading in a different voice from the chat beside it: the same drift, one surface over. The rule that resolves it, and the test to apply per-usage rather than per-file: **monospace is a claim that the glyphs matter** — either you will read this character by character, or the digits must not jitter. Under that test, in `ArtifactViewer`: the file path (`l` vs `1` vs `I`), the git ref, and a `tabular-nums` count all **keep** mono; the language chip ("TYPESCRIPT") and the git-status legend ("Modified") are prose that names a thing, and go **sans**. `STRIP_META_CLASS` had been doing double duty for both kinds, which is how the drift hid — it split into `STRIP_IDENT_CLASS` (mono, earned) and `STRIP_META_CLASS` (sans). [P6](#p6--the-monospace-layer-is-part-of-the-design-system) is unchanged and still right; this is what "the jobs it earns" means in practice. |
+| D-34 | **A tab opens already named** | **2026-07-17, on user report:** clicking a chat in Recents opened a tab titled "New Session", which sat there ~1s and then popped to the real name. The name was never missing — the sidebar is *rendering it on the row being clicked*. It simply wasn't handed over, so the tab was born with a placeholder and waited for `BaseChat` to fetch the session and fire `onSessionUpdate` → `renameTab`: a round-trip to the server for a string already on screen. **The name now travels with the click** (`RecentChats.onOpen(id, name)` → route state → `UrlOpenRequest.title` → the `openTab` payload). The late rename **stays** and is not a fallback nobody hits: a deep link, a reload, a fresh chat and any external nav carry no state and still open on the placeholder; a session renamed mid-turn still has to propagate; and `SessionSummary`, the list payload, has no `user_set_name`, so the load remains the only authority on that flag. **This removes the flash, not the correction.** The general rule: *if the opener already knows a value, hand it over — don't make the openee re-derive it and repaint.* |
+| D-35 | **The tab model is a browser's, and so is the keyboard** | **2026-07-17, on user request:** once the chat area became tabs (D-23), the tabs had to *behave* like the ones everyone already knows. Four bindings, no invention: **Cmd/Ctrl+T** new tab = new chat (a tab with no session — which is already exactly what the centered empty composer renders), **Cmd/Ctrl+N** new window, **Cmd/Ctrl+W** close tab with **Shift+Cmd+W** close window (Safari's split, landed earlier), **Ctrl+Tab / Ctrl+Shift+Tab** cycle left-to-right, wrapping. The preview panel cycles its own stack on the same key, and **focus decides which strip answers** — one predicate consulted by both, because both listen on `window` in the capture phase and capture order is *mount* order, which is no basis for a keyboard contract. **Why Ctrl+Tab and not Cmd+Tab, on a Mac:** Cmd+Tab is the macOS application switcher. The window server claims it before any application is consulted, so it is not ours to take — Safari and Chrome both cycle tabs with Ctrl+Tab on macOS for that exact reason. Ctrl+Tab is not a Windows habit leaking onto the Mac; it *is* the Mac convention. **And the trap this pass exists to record:** an Electron menu accelerator is consumed by the menu *before the renderer ever sees the keydown*, so a key the menu owns cannot be answered in React no matter how the listener is written. Cmd+W was silently owned by `role: 'close'` (no visible `accelerator:` line); Cmd+T was silently owned by "Go → New Chat", which merely navigated Home. Both had to move to menu item + IPC, with the renderer deciding what the key *means*. Ctrl+Tab is the opposite case — a dump of the built menu shows nothing claims it — so it is an honest DOM listener. The rule, and it is cheap: **dump the built menu before writing a renderer key handler**; a unit test cannot see a menu and will pass while the key never arrives. Ctrl+Tab takes **no text-input guard** — it has no editing meaning in a text field, and a browser switches tabs whether or not you are typing; guarding on "focus is in a textarea" would kill the shortcut exactly where the user lives. Plain Tab still moves focus, because the predicate requires Ctrl. |
+| D-36 | **The yield ladder's floors are on the PANE, and the 68ch rationale was aspirational** | **Corrects D-32's own arithmetic, 2026-07-17, on measurement.** D-32 justified its floor with "a chat pane below ~360px cannot hold a 68ch measure and stops being a chat". Implementation measured the thing D-32 only asserted: **a pane spends ~56px on chrome**, so the 360px floor delivers a **~304px column**, and a *column* of 360 would need a *pane* of ~416. Worse for the stated reason: 68ch of the body face is ~500px, so **no floor near 360 was ever going to hold a 68ch measure** — the rationale was reasoning backwards from a number that felt right. The floor stays at 360 (rung 2 yields the preview's column entirely at pane < 720 = 360 + 360, which measures well and is what shipped), but it is now defended honestly: **below ~360 a pane stops being usable, which is not the same claim as "holds 68ch"**. Recorded rather than quietly re-numbered — the fix for a wrong rationale is a right one, not a silent edit. |
+| D-37 | **A split the user made by hand is never merged away** | **2026-07-17, decided on implementation.** Rung 4 merges a split back to one group when the window shrinks past what the layout needs — but only on a **crossing**. A split *created* at a narrow width is left alone, so a 4-up dragged out at 1400px sits at 169px panes and stays there. This is D-32's own wording ("merges *back*") and the [sidebar bug](#the-sidebar-bug)'s lesson applied: a watcher that dissolved a split the instant you made it would be **fighting the drop that just happened**, and the user would lose an argument they never knew they were having. If slivers should never exist at all, the fix belongs in the **drop** — refuse the split, at the moment of the gesture, where the user can see why — not in a watcher that undoes it afterwards. Not implemented; a deliberate open question, not an oversight. |
+| D-38 | **A composite mark is centered by its UNION, not its type** | **2026-07-17, on the BR app-icon.** The proposed `BR` monogram (navy `#052049` B, coral `#b85a32` R, a split navy/coral underline on the `#faf8f3` plate) read as *sitting low*. Cause: the **letters** were centered and the underline hung **below** them, so the mark's real mass dropped — the underline was never counted. The rule: **when a mark is more than its letters, center the union of every part as one body.** Corollary for sizing: express size as the union's **share of the plate**, not a font-size in px — a px size means different footprints in different faces, but a *share* is font-independent and survives the round-trip from a mock to the real asset. Both are computed live from rendered geometry (`getBBox`), so the "center" and "size" defaults are **measured, not guessed**, and self-calibrate to whatever font renders. The interactive studio is [`docs/design/logo-icon-studio.html`](docs/design/logo-icon-studio.html) (dials: vertical position, mark size, underline gap; text export/import). **This BR mark is now the shipped identity** — the abstract circle glyph is retired (D-40). Finalized square icon: mark size 70%, vertical offset −20, underline gap 2%, on the cream plate. |
+| D-39 | **The BioRouter wordmark** | **2026-07-17, approved.** The horizontal logo, same family as the D-38 square mark: **`Bio`** in UCSF navy `#052049`, **`Router`** in coral `#b85a32`, over a **short** two-tone bar that sits **between the o and the R** (underlining the "oR" pair, split navy/coral at the o\|R seam) — *not* a rule under the whole word. Approved ratios: **weight 600, letter-spacing 0, underline gap 2% of cap height, thickness 10%, width 100% (the oR pair).** On a dark app surface UCSF navy all but vanishes, so the navy role — the `Bio` letters + the navy half of the bar — becomes **UCSF teal `#18A3AC`**; `Router` stays coral. On a light *plate* the letters stay navy regardless of theme (the plate is its own light ground). Shipped as `<BioRouterWordmark>` / `<BioRouterMark>` (`components/icons/`), which **measure their geometry at runtime** (`getBBox` + `getStartPositionOfChar`) rather than baking coordinates, so the underline stays right in any font. Studio: [`docs/design/logo-wordmark-studio.html`](docs/design/logo-wordmark-studio.html). **Runtime-measurement gotcha (learned the hard way):** measuring in a dependency-less `useLayoutEffect` loops forever — `getBBox` jitters sub-pixel between calls, so a stringify guard never matches; measure **once** on mount + on `fonts.ready`, never per render. jsdom has no `getBBox` at all, so this bug is invisible to unit tests and only shows in a real engine. |
+| D-40 | **The abstract circle glyph is retired** | **2026-07-17.** The old mark was an abstract circle-and-nodes glyph, rendered as a mono `currentColor` mask (`glyph.svg`) and rasterized into the app icon. It is replaced everywhere: the **app icon** (`icon.icns`/`.ico`/`.png`) is now the BR mark on the cream plate, **inset to the macOS icon safe-area** (the plate is 824/1024 ≈ 79% of the tile, ~100px transparent margin, so it doesn't read oversized next to native icons — a full-bleed plate looked bigger than Chrome); the **menu-bar template** (`glyph.svg` → 22px `iconTemplate`) is a **monochrome BR**; and every in-app lockup (sidebar brand row, welcome, loader) flies the two-tone `<BioRouterWordmark>`/`<BioRouterMark>`. Rasters are built by resizing a **browser-rendered** PNG master, never by `sips`-rasterizing the text SVG — `sips` flattens font-weight, turning the heavy 800 mark medium. |
+
+**Deferred, and specified:** the tabbed + splittable chat area (Y/Z/Æ/Ø in the
+companion) maps BioRouter onto VS Code's layout — primary sidebar → the rail,
+editor group → chat group, panel → terminal dock, secondary side bar → preview
+panel; the preview follows the **active** group, the terminal stays global. It
+needs multi-session state and drag/drop, so it is a feature, not a re-skin. The
+shared tab component it will use is already in place (D-23).
+
+---
+
 ## Part 7 · Drift register
 
 > ### Implementation status — 2026-07-09
@@ -1198,70 +1244,79 @@ changing the established type scale, icon sizes, or hit-target clarity.
 >   focus trap and `role="dialog"`.
 > - `DR-52` — content max-width still varies (1120 / 1280 / 1440 / uncapped).
 
+> **The register carries a status column, and it is load-bearing.** This table
+> was written as a point-in-time audit with no status, so it kept reading as
+> *live* long after items were fixed — `DR-07`, `DR-32`, `DR-41` and `DR-48`
+> were all closed months before anyone noticed the register still indicted
+> them, and their `file:line` evidence now points at unrelated code. A backlog
+> that cannot say "done" sends people chasing ghosts. **Every row must carry a
+> status; every status must be re-verified against the code, not against this
+> document.** Statuses below were re-verified on **2026-07-16**.
+
 The original backlog, as audited:
 
-| ID | Sev | What | Evidence |
-|---|---|---|---|
-| `DR-01` | High | Primary button fill is near-black, not the documented coral | `main.css:47`, `button.tsx:12` |
-| `DR-02` | Med | `--color-block-teal` holds a coral (`#cf6d47`); `--color-block-orange` holds a deep coral | `main.css:20–21` |
-| `DR-03` | **High** | All four light-mode status text colours fail AA (1.85–3.65:1) | `main.css:88–91` |
-| `DR-04` | High | `--text-muted` on the sidebar is 4.01:1 — fails AA | `main.css:85`, `main.css:104` |
-| `DR-05` | High | `--text-subtle` is 3.28:1 on white — fails AA everywhere in light mode | `main.css:86` |
-| `DR-06` | High | `--border-default`, `--border-input`, `--border-strong` are all `neutral-100` in light mode | `main.css:78–80` |
-| `DR-07` | Low | Terminal font (`Menlo` 12.5px) ≠ code-block font (`monospace`) | `InAppTerminalDock.tsx:176` |
-| `DR-08` | Low | `<Input>` is 16px below 930px, 14px above; `Select` is always 14px | `input.tsx:11` |
-| `DR-09` | Med | `.biorouter-page-header` nulls the documented hairline and adds a shadow | `main.css:519` |
-| `DR-10` | Med | Seven border radii in TSX; no `--radius` token exists | 280 usages |
-| `DR-11` | **High** | `--shadow-*: initial` makes `shadow-sm/md/lg/xl` dead — 22 usages render nothing | `main.css:15` (verified by compiling Tailwind) |
-| `DR-12` | Med | `inset 0 1px 0 rgba(255,255,255,.42)` glare line on dark panels | `main.css:494`, `529` |
-| `DR-13` | Low | Six transition durations; `prefers-reduced-motion` covers only 2 of 8 animations | 107 usages |
-| `DR-14` | **High** | `react-select` portals to `z-[9999]`, above the modal at `z-[1210]` | `Select.tsx:27`, `dialog.tsx:52` |
-| `DR-15` | **High** | Focus ring is 1.14:1 (light) / 1.72:1 (dark) — invisible | `main.css:95`, `input.tsx:11` |
-| `DR-16` | High | Six competing focus treatments across 131 usages | app-wide |
-| `DR-17` | Low | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | `package.json` |
-| `DR-18` | Med | 96 inline `<svg>` literals in view components | app-wide |
-| `DR-19` | Med | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/Biorouter.tsx` |
-| `DR-20` | Med | Button `outline` variant has no border; identical to `secondary` | `button.tsx:15–18` |
-| `DR-21` | Low | `shape="pill"` renders `rounded-md`; `shape="round"` also renders `rounded-md` | `button.tsx:28–31` |
-| `DR-22` | **High** | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `button.tsx:14`, 8 call sites |
-| `DR-23` | Low | `![&_svg…]` uses Tailwind v3 important syntax under v4 | `button.tsx:23` |
-| `DR-24` | High | 103 raw `<button>` in 58 files bypass `<Button>` | app-wide |
-| `DR-25` | High | Diagnostics panel is white-on-cream in dark mode | `main.css:447–466` |
-| `DR-26` | Low | `ring-offset-background` undefined (3 usages) | `dialog.tsx:58` |
-| `DR-27` | Low | Native `title=` tooltips coexist with `Tooltip.tsx` | app-wide |
-| `DR-28` | Med | Select control 6px radius, its own menu 12px | `Select.tsx:14,26` |
-| `DR-29` | Low | `placeholder:font-light` diverges from `Select`'s placeholder | `input.tsx:11` |
-| `DR-30` | Med | Selected select-option fills near-black | `Select.tsx:33` |
-| `DR-31` | Med | Radix tab trigger radius (8px) > list radius (6px); `shadow-sm` and `text-muted-foreground` both dead | `tabs.tsx:25,41` |
-| `DR-32` | Med | Terminal tabs use hardcoded `#b98b52` | `InAppTerminalDock.tsx:415` |
-| `DR-33` | Low | Staggered per-`nth-child` sidebar entrance animation | `main.css:338–372` |
-| `DR-34` | Med | Two list-row radii (8px vs 12px) coexist | `main.css:543` vs doc |
-| `DR-35` | Low | `Pill.tsx` ships glass/gradient/glow + 6 decorative colours; zero call sites | `ui/Pill.tsx` |
-| `DR-36` | Low | `Dot.tsx` renders `size * 2` px | `ui/Dot.tsx` |
-| `DR-37` | Low | `Bird1–6.tsx` decorative marks | `components/icons/` |
-| `DR-38` | Med | `::-webkit-scrollbar-thumb` declared twice with different values | `main.css:704` & `740` |
-| `DR-39` | **High** | Code blocks are `oneLight` in **both** themes; no dark theme imported | `MarkdownContent.tsx:9` |
-| `DR-40` | Low | `.bg-inline-code` injects backticks via `::before`/`::after` | `main.css:868–905` |
-| `DR-41` | **High** | Terminal has one hardcoded light theme applied unconditionally | `InAppTerminalDock.tsx:180` |
-| `DR-42` | Med | Terminal `blue` 4.45:1; `brightBlack` (dim text) 4.32:1; 6 bright colours fail AA | `InAppTerminalDock.tsx:94` |
-| `DR-43` | Med | 88 distinct hardcoded hex values in TSX | app-wide |
-| `DR-44` | Med | Twelve ad-hoc z-index layers | app-wide |
-| `DR-45` | Med | Global `* { @apply border-border-default }` paints every element's border colour | `main.css:246` |
-| `DR-46` | **High** | **Code renders in Arial.** Fenced blocks, the wrapper, inline code and `prose-code` are all `font-sans` | `MarkdownContent.tsx:110,125,155,209`; `main.css:872` |
-| `DR-47` | High | Base `Card` ships `[box-shadow:var(--shadow-default)]`; every card is elevated by default | `card.tsx:10` |
-| `DR-48` | High | Toast is a static `text-white bg-neutral-800/95` — hardcoded dark in both themes, raw neutral, 12px radius | `App.tsx:575` |
-| `DR-49` | **High** | ~17 hand-rolled modals with no focus trap, no `role="dialog"`, no `aria-modal` | `BaseModal.tsx:17` + 16 others |
-| `DR-50` | High | `<Input>` is `border-0`, so caller-supplied `border-*` colours never paint — validation borders are no-ops | `input.tsx:11` |
-| `DR-51` | High | `--border-strong` is *lighter* than `--border-subtle`; hover **weakens** the border | `main.css:75–77,120` |
-| `DR-52` | Med | Content max-width varies 1120 / 1280 / 1440 / uncapped; tabs reflow the column | `ReadableContent.tsx:9`, `AppsView.tsx:133` |
-| `DR-53` | Med | ~15 direct `lucide-react` imports bypass the `light()` wrapper → `strokeWidth` 2 vs 1.5 | `app-icons.tsx:1`, 15 files |
-| `DR-54` | Med | Undefined tokens referenced app-wide: `--color-primary`, `--color-textPlaceholder`, `--color-background-subtle`, `--color-background-app` (`bg-app`), `animate-indeterminate` | `ToolCallWithResponse.tsx:858,862`; `PasteTextBox.tsx:36`; `ProviderSelector.tsx:89` |
-| `DR-55` | Med | `search.css` references `--text-standard` / `--text-prominent`, defined nowhere; highlight is a hardcoded yellow with no dark variant | `search.css:4,12` |
-| `DR-56` | Med | Two accent utility families: `bg-accent` (constant `#16120c`, never flips) vs `bg-background-accent` (flips per theme) | `main.css:48` vs `main.css:200` |
-| `DR-57` | Low | `--breakpoint-md` is 930px, but hardcoded `768px`/`767px` media queries remain | `main.css:6,660,805` |
-| `DR-58` | Med | `InAppTerminalDock` carries 9+ raw warm-beige hex literals where sidebar tokens already encode the palette | `InAppTerminalDock.tsx:302,396,401,415,416,424,436,474` |
-| `DR-59` | Med | Empty / loading / error states hand-rolled in all 7 list views; icon sizes, alignment, text sizes and heights all differ | `WorkflowsView.tsx:651`, `SessionListView.tsx:763`, +5 |
-| `DR-60` | Med | Light-mode `--text-default/-muted/-subtle` are raw hex outside the neutral ramp; dark mode derives from it — asymmetric | `main.css:83–86` vs `151–153` |
+| ID | Sev | Status | What | Evidence |
+|---|---|---|---|---|
+| `DR-01` | High | open | Primary button fill is near-black, not the documented coral | `main.css:47`, `button.tsx:12` |
+| `DR-02` | Med | open | `--color-block-teal` holds a coral (`#cf6d47`); `--color-block-orange` holds a deep coral | `main.css:20–21` |
+| `DR-03` | **High** | open | All four light-mode status text colours fail AA (1.85–3.65:1) | `main.css:88–91` |
+| `DR-04` | High | open | `--text-muted` on the sidebar is 4.01:1 — fails AA | `main.css:85`, `main.css:104` |
+| `DR-05` | High | open | `--text-subtle` is 3.28:1 on white — fails AA everywhere in light mode | `main.css:86` |
+| `DR-06` | High | open | `--border-default`, `--border-input`, `--border-strong` are all `neutral-100` in light mode | `main.css:78–80` |
+| `DR-07` | Low | ✅ fixed | Terminal font (`Menlo` 12.5px) ≠ code-block font (`monospace`) | Both are `--font-mono` at 13/20 — `InAppTerminalDock.tsx:60` vs `codeTheme.ts:21`. |
+| `DR-08` | Low | open | `<Input>` is 16px below 930px, 14px above; `Select` is always 14px | `input.tsx:11` |
+| `DR-09` | Med | open | `.biorouter-page-header` nulls the documented hairline and adds a shadow | `main.css:519` |
+| `DR-10` | Med | open | Seven border radii in TSX; no `--radius` token exists | 280 usages |
+| `DR-11` | **High** | open | `--shadow-*: initial` makes `shadow-sm/md/lg/xl` dead — 22 usages render nothing | `main.css:15` (verified by compiling Tailwind) |
+| `DR-12` | Med | open | `inset 0 1px 0 rgba(255,255,255,.42)` glare line on dark panels | `main.css:494`, `529` |
+| `DR-13` | Low | open | Six transition durations; `prefers-reduced-motion` covers only 2 of 8 animations | 107 usages |
+| `DR-14` | **High** | open | `react-select` portals to `z-[9999]`, above the modal at `z-[1210]` | `Select.tsx:27`, `dialog.tsx:52` |
+| `DR-15` | **High** | open | Focus ring is 1.14:1 (light) / 1.72:1 (dark) — invisible | `main.css:95`, `input.tsx:11` |
+| `DR-16` | High | open | Six competing focus treatments across 131 usages | app-wide |
+| `DR-17` | Low | open | `react-icons` + `@radix-ui/react-icons` in `package.json`, zero imports | `package.json` |
+| `DR-18` | Med | open | 96 inline `<svg>` literals in view components | app-wide |
+| `DR-19` | Med | open | Logo gradient uses `#EC5D2A`/`#57B9AF`, in no token | `icons/Biorouter.tsx` |
+| `DR-20` | Med | open | Button `outline` variant has no border; identical to `secondary` | `button.tsx:15–18` |
+| `DR-21` | Low | open | `shape="pill"` renders `rounded-md`; `shape="round"` also renders `rounded-md` | `button.tsx:28–31` |
+| `DR-22` | **High** | open | `destructive` is undefined: `bg-destructive` (8×), `text-destructive`, `border-destructive`, `ring-destructive` all dead. Error banners render unstyled. | `button.tsx:14`, 8 call sites |
+| `DR-23` | Low | open | `![&_svg…]` uses Tailwind v3 important syntax under v4 | `button.tsx:23` |
+| `DR-24` | High | open | 103 raw `<button>` in 58 files bypass `<Button>` | app-wide |
+| `DR-25` | High | open | Diagnostics panel is white-on-cream in dark mode | `main.css:447–466` |
+| `DR-26` | Low | open | `ring-offset-background` undefined (3 usages) | `dialog.tsx:58` |
+| `DR-27` | Low | open | Native `title=` tooltips coexist with `Tooltip.tsx` | app-wide |
+| `DR-28` | Med | open | Select control 6px radius, its own menu 12px | `Select.tsx:14,26` |
+| `DR-29` | Low | open | `placeholder:font-light` diverges from `Select`'s placeholder | `input.tsx:11` |
+| `DR-30` | Med | open | Selected select-option fills near-black | `Select.tsx:33` |
+| `DR-31` | Med | open | Radix tab trigger radius (8px) > list radius (6px); `shadow-sm` and `text-muted-foreground` both dead | `tabs.tsx:25,41` |
+| `DR-32` | Med | ✅ fixed | Terminal tabs use hardcoded `#b98b52` | Tab indicator uses `bg-accent-bar`; `grep -r b98b52 src` → 0 hits. |
+| `DR-33` | Low | open | Staggered per-`nth-child` sidebar entrance animation | `main.css:338–372` |
+| `DR-34` | Med | open | Two list-row radii (8px vs 12px) coexist | `main.css:543` vs doc |
+| `DR-35` | Low | open | `Pill.tsx` ships glass/gradient/glow + 6 decorative colours; zero call sites | `ui/Pill.tsx` |
+| `DR-36` | Low | open | `Dot.tsx` renders `size * 2` px | `ui/Dot.tsx` |
+| `DR-37` | Low | open | `Bird1–6.tsx` decorative marks | `components/icons/` |
+| `DR-38` | Med | open | `::-webkit-scrollbar-thumb` declared twice with different values | `main.css:704` & `740` |
+| `DR-39` | **High** | ✅ fixed | Code blocks are `oneLight` in **both** themes; no dark theme imported | `codeTheme.ts` ships per-family light+dark palettes. |
+| `DR-40` | Low | open | `.bg-inline-code` injects backticks via `::before`/`::after` | `main.css:868–905` |
+| `DR-41` | **High** | ✅ fixed | Terminal has one hardcoded light theme applied unconditionally | Four themes (2 families × 2 modes) switched via `useResolvedTheme` + `useThemeFamily`; `grep -r fffdf7 src` → 0 hits. |
+| `DR-42` | Med | open | Terminal `blue` 4.45:1; `brightBlack` (dim text) 4.32:1; 6 bright colours fail AA | `InAppTerminalDock.tsx:94` |
+| `DR-43` | Med | open | 88 distinct hardcoded hex values in TSX | app-wide |
+| `DR-44` | Med | open | Twelve ad-hoc z-index layers | app-wide |
+| `DR-45` | Med | open | Global `* { @apply border-border-default }` paints every element's border colour | `main.css:246` |
+| `DR-46` | **High** | ✅ fixed | **Code renders in Arial.** Fenced blocks, the wrapper, inline code and `prose-code` are all `font-sans` | Code renders in `var(--font-mono)` (`codeTheme.ts:20`). |
+| `DR-47` | High | open | Base `Card` ships `[box-shadow:var(--shadow-default)]`; every card is elevated by default | `card.tsx:10` |
+| `DR-48` | High | ✅ fixed | Toast is a static `text-white bg-neutral-800/95` — hardcoded dark in both themes, raw neutral, 12px radius | `App.tsx` uses `TOAST_SURFACE_CLASS_NAME` (`alerts/NotificationSurface.tsx`) — tokenised + theme-aware; `grep -r "bg-neutral-800/95" src` → 0 hits. |
+| `DR-49` | **High** | open | ~17 hand-rolled modals with no focus trap, no `role="dialog"`, no `aria-modal` | `BaseModal.tsx:17` + 16 others |
+| `DR-50` | High | open | `<Input>` is `border-0`, so caller-supplied `border-*` colours never paint — validation borders are no-ops | `input.tsx:11` |
+| `DR-51` | High | open | `--border-strong` is *lighter* than `--border-subtle`; hover **weakens** the border | `main.css:75–77,120` |
+| `DR-52` | Med | open | Content max-width varies 1120 / 1280 / 1440 / uncapped; tabs reflow the column | `ReadableContent.tsx:9`, `AppsView.tsx:133` |
+| `DR-53` | Med | ✅ fixed | ~15 direct `lucide-react` imports bypass the `light()` wrapper → `strokeWidth` 2 vs 1.5 | The 15 direct `lucide-react` importers now route through `app-icons`' `light()` wrapper; the 2 remaining are the wrapper itself and a type-only import. |
+| `DR-54` | Med | open | Undefined tokens referenced app-wide: `--color-primary`, `--color-textPlaceholder`, `--color-background-subtle`, `--color-background-app` (`bg-app`), `animate-indeterminate` | `ToolCallWithResponse.tsx:858,862`; `PasteTextBox.tsx:36`; `ProviderSelector.tsx:89` |
+| `DR-55` | Med | open | `search.css` references `--text-standard` / `--text-prominent`, defined nowhere; highlight is a hardcoded yellow with no dark variant | `search.css:4,12` |
+| `DR-56` | Med | open | Two accent utility families: `bg-accent` (constant `#16120c`, never flips) vs `bg-background-accent` (flips per theme) | `main.css:48` vs `main.css:200` |
+| `DR-57` | Low | open | `--breakpoint-md` is 930px, but hardcoded `768px`/`767px` media queries remain | `main.css:6,660,805` |
+| `DR-58` | Med | open | `InAppTerminalDock` carries 9+ raw warm-beige hex literals where sidebar tokens already encode the palette | `InAppTerminalDock.tsx:302,396,401,415,416,424,436,474` |
+| `DR-59` | Med | open | Empty / loading / error states hand-rolled in all 7 list views; icon sizes, alignment, text sizes and heights all differ | `WorkflowsView.tsx:651`, `SessionListView.tsx:763`, +5 |
+| `DR-60` | Med | open | Light-mode `--text-default/-muted/-subtle` are raw hex outside the neutral ramp; dark mode derives from it — asymmetric | `main.css:83–86` vs `151–153` |
 
 **Totals:** 60 items — **18 high, 26 medium, 16 low.**
 

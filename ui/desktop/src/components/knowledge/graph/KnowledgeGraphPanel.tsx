@@ -1,6 +1,6 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useEffect, useState } from 'react';
-import { Download, FolderOpen, History, RefreshCw } from 'lucide-react';
+import { Download, FolderOpen, History, RefreshCw } from '../../icons/app-icons';
 import { getLocation } from '../../../api';
 import type { GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';

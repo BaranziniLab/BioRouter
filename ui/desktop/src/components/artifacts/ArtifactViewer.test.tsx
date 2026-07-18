@@ -66,7 +66,11 @@ describe('artifact title helpers', () => {
   });
 });
 
-describe('ArtifactViewer', () => {
+// These specs drive the real panel through many sequential userEvent round trips
+// in jsdom, and several land within a few hundred ms of vitest's 5s default — so
+// which one trips the limit depends on machine load, not on the code. The suite
+// gets a timeout that reflects how long it honestly takes.
+describe('ArtifactViewer', { timeout: 20_000 }, () => {
   it('shows external URLs as a click-only preview without loading them in an iframe', async () => {
     installElectronMock();
 
@@ -503,6 +507,49 @@ describe('ArtifactViewer', () => {
     expect(
       screen.getByTestId('artifact-viewer').querySelectorAll('span.token').length
     ).toBeGreaterThan(0);
+
+    // One status strip carries the language, the path (dir dimmed, filename not)
+    // and the toggle — there is no second per-preview sub-header.
+    const strip = screen.getByTestId('artifact-status-strip');
+    expect(strip).toHaveTextContent('R');
+    expect(strip).toHaveTextContent('/work/');
+    expect(strip).toHaveTextContent('analysis.R');
+    expect(strip.querySelector('[title="/work/analysis.R"]')).toBeInTheDocument();
+  });
+
+  it('sits the preview directly on the panel ground: panel → strip → content', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'text',
+      title: 'analysis.R',
+      path: '/work/analysis.R',
+      mimeType: 'text/x-r',
+      text: 'library(ggplot2)\n',
+      size: 20,
+      found: true,
+    });
+
+    const { container } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.R', path: '/work/analysis.R' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('artifact-status-strip')).toBeInTheDocument());
+
+    // The complaint was "a box inside a box inside a box": the content host must
+    // carry no gutter, no card fill, no border and no shadow of its own — the
+    // panel edge is the only edge.
+    const content = container.querySelector('#artifact-preview-content');
+    expect(content).not.toBeNull();
+    const boxy = ['p-3', 'border', 'rounded-lg', 'shadow-popover', 'bg-background-default'];
+    for (const className of boxy) {
+      expect(content!.classList.contains(className)).toBe(false);
+    }
   });
 
   it('does not lay code lines out as flex rows, which shreds long lines', async () => {
@@ -770,18 +817,32 @@ describe('ArtifactViewer', () => {
     expect(chartTab).toHaveAttribute('title', '/work/charts/chart-a.html');
     expect(summaryTab).toHaveAttribute('title', '/work/reports/summary.md');
     expect(summaryTab).toHaveAttribute('aria-selected', 'true');
+    // Rung 3 of the yield ladder (D-32): "shrink to a floor, then SCROLL, then
+    // collapse into a ▾ — never wrap." This asserted `overflow-hidden`, which is
+    // none of those: past the floor the panel's tabs were clipped and simply
+    // unreachable. The strip scrolls now, and `.br-tabstrip__scroll` keeps the
+    // scrollbar out of a 52px bar.
     expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).toHaveClass(
+      'overflow-x-auto'
+    );
+    expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).not.toHaveClass(
       'overflow-hidden'
     );
-    expect(chartTab.closest('[data-artifact-tab-id]')).toHaveClass(
-      'min-w-0',
-      'max-w-[220px]',
-      'flex-1',
-      'basis-[175px]'
-    );
+    // Tabs are painted by the shared `br-tab` class (styles/main.css), not by
+    // per-tab utilities: sizing, the active pill and the Safari divider all live
+    // there, so the panel can never drift from the sidebar's tabs.
+    const chartChip = chartTab.closest('[data-artifact-tab-id]');
+    const summaryChip = summaryTab.closest('[data-artifact-tab-id]');
+    expect(chartChip).toHaveClass('br-tab');
+    expect(summaryChip).toHaveClass('br-tab');
+    // Only the active tab is painted, and no tab carries a border of its own.
+    expect(summaryChip).toHaveAttribute('data-active', 'true');
+    expect(chartChip).not.toHaveAttribute('data-active');
+    expect(chartTab.querySelector('.br-tab__label')).toHaveTextContent('chart-a.html');
 
     await user.click(chartTab);
     expect(chartTab).toHaveAttribute('aria-selected', 'true');
+    expect(chartTab.closest('[data-artifact-tab-id]')).toHaveAttribute('data-active', 'true');
     expect(onOpenArtifact).toHaveBeenLastCalledWith({
       kind: 'file',
       title: 'chart-a.html',
@@ -870,13 +931,28 @@ describe('ArtifactViewer', () => {
       'true'
     );
 
-    const nextShortcut = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    window.dispatchEvent(nextShortcut);
+    // Dispatch from INSIDE the panel. Ctrl+Tab is answered by whichever strip
+    // has focus, so the event's target is the whole question — the panel's own
+    // tab is a truthful stand-in for "the user is in the preview". This used to
+    // fire at `window`, which asserted nothing about focus and would keep
+    // passing even if the panel hijacked the key from the composer.
+    // The init type is spelled via the constructor rather than as a bare
+    // `KeyboardEventInit`: that name is type-only, so eslint's no-undef (which
+    // only knows runtime globals) flags it, while `KeyboardEvent` is a real
+    // global. Same type, no eslint-disable.
+    const fromPanel = (over: ConstructorParameters<typeof KeyboardEvent>[1] = {}) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+        ...over,
+      });
+      screen.getByRole('tab', { name: 'three.txt' }).dispatchEvent(event);
+      return event;
+    };
+
+    const nextShortcut = fromPanel();
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'one.txt' })).toHaveAttribute('aria-selected', 'true')
     );
@@ -889,7 +965,7 @@ describe('ArtifactViewer', () => {
       bubbles: true,
       cancelable: true,
     });
-    window.dispatchEvent(previousShortcut);
+    screen.getByRole('tab', { name: 'one.txt' }).dispatchEvent(previousShortcut);
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'three.txt' })).toHaveAttribute(
         'aria-selected',
@@ -907,6 +983,48 @@ describe('ArtifactViewer', () => {
       title: 'three.txt',
       path: '/work/three.txt',
     });
+  });
+
+  it('leaves Ctrl+Tab alone when focus is OUTSIDE the panel — the chat strip owns it there', async () => {
+    // The arbitration, from the preview's side. The panel's listener is on
+    // window, so before focus scoping it cycled previews from anywhere the
+    // panel happened to be open — including with the cursor in the composer,
+    // where Ctrl+Tab means "my other chat". The chat strip consults the same
+    // predicate and takes the other branch, so exactly one strip answers.
+    installElectronMock();
+    const renderViewer = (title: string) => (
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title, path: `/work/${title}` }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    const { rerender } = render(renderViewer('one.txt'));
+    rerender(renderViewer('two.txt'));
+    expect(await screen.findByRole('tab', { name: 'two.txt' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+
+    // A composer-ish element that is emphatically not in the panel.
+    const outside = document.createElement('textarea');
+    document.body.appendChild(outside);
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    outside.dispatchEvent(event);
+
+    // Unchanged, and — just as important — NOT swallowed: the panel must leave
+    // the key for the chat strip rather than preventDefault-ing it into a hole.
+    expect(screen.getByRole('tab', { name: 'two.txt' })).toHaveAttribute('aria-selected', 'true');
+    expect(event.defaultPrevented).toBe(false);
+    outside.remove();
   });
 
   it('reorders tabs with a pointer drag without changing the active file', async () => {
@@ -1054,7 +1172,8 @@ describe('ArtifactViewer', () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Jupyter notebook')).toBeInTheDocument();
+    expect(await screen.findByText('Notebook')).toBeInTheDocument();
+    expect(screen.getByText('1 cell')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Notebook result' })).toBeInTheDocument();
   });
 });
@@ -1119,5 +1238,92 @@ describe('artifact render-error provenance', () => {
   it('does not grant the artifact frame popup capability', async () => {
     const frame = await renderHtmlArtifact(vi.fn());
     expect(frame.getAttribute('sandbox') ?? '').not.toContain('allow-popups');
+  });
+});
+
+/**
+ * Rung 3 of the yield ladder (D-32) for the PREVIEW panel's strip.
+ *
+ * The panel feels this rung first: it is the narrowest strip in the window, and
+ * rung 2 narrows it further. As with the chat strip, jsdom computes no layout —
+ * these stub the MEASUREMENT and test the wiring. The rule is unit-tested in
+ * Layout/yieldLadder.test.ts and the geometry is verified by driving the app.
+ */
+describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
+  function stubTabListMetrics(content: number, box: number) {
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get');
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get');
+    const isTabList = (el: HTMLElement) => el.getAttribute('role') === 'tablist';
+    scroll.mockImplementation(function (this: HTMLElement) {
+      return isTabList(this) ? content : 0;
+    });
+    client.mockImplementation(function (this: HTMLElement) {
+      return isTabList(this) ? box : 0;
+    });
+    return () => {
+      scroll.mockRestore();
+      client.mockRestore();
+    };
+  }
+
+  const viewer = (artifact: ArtifactSource) => (
+    <ThemeProvider>
+      <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
+    </ThemeProvider>
+  );
+  const file = (title: string): ArtifactSource => ({
+    kind: 'file',
+    title,
+    path: `/work/${title}`,
+  });
+
+  it('reaches a clipped preview tab: the ▾ lists them and selecting one activates it', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('chart-b.html')));
+      rerender(viewer(file('summary.md')));
+
+      const trigger = await screen.findByTestId('artifact-tab-overflow-trigger');
+      fireEvent.pointerDown(trigger);
+      const item = await screen.findByText('chart-a.html', {
+        selector: '[data-testid^="artifact-tab-overflow-item"] span',
+      });
+      fireEvent.click(item);
+      await waitFor(() => {
+        expect(screen.getByRole('tab', { name: 'chart-a.html' })).toHaveAttribute(
+          'aria-selected',
+          'true'
+        );
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('stays away while the tabs fit', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(300, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('summary.md')));
+      await screen.findByRole('tab', { name: 'summary.md' });
+      expect(screen.queryByTestId('artifact-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('never offers a menu for a single preview', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 20);
+    try {
+      render(viewer(file('chart-a.html')));
+      await screen.findByRole('tab', { name: 'chart-a.html' });
+      expect(screen.queryByTestId('artifact-tab-overflow-trigger')).toBeNull();
+    } finally {
+      restore();
+    }
   });
 });

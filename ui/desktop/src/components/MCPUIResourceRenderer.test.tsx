@@ -18,7 +18,7 @@ vi.mock('@mcp-ui/client', () => ({
 
 function renderSubject(
   uri = 'ui://chart/visualization',
-  appendPromptToChat?: (value: string) => void
+  extraProps: { sessionId?: string; appendPromptToChat?: (value: string) => void } = {}
 ) {
   const html = '<!doctype html><html><body><h1>Chart</h1></body></html>';
   const blob = window.btoa(html);
@@ -59,7 +59,7 @@ function renderSubject(
 
   const result = render(
     <ThemeProvider>
-      <MCPUIResourceRenderer content={content} appendPromptToChat={appendPromptToChat} />
+      <MCPUIResourceRenderer content={content} {...extraProps} />
     </ThemeProvider>
   );
 
@@ -194,7 +194,7 @@ describe('MCPUIResourceRenderer', () => {
 
   it('requires a host-controlled click before submitting prompts requested by embedded HTML', async () => {
     const appendPromptToChat = vi.fn();
-    renderSubject('ui://chart/prompt-action', appendPromptToChat);
+    renderSubject('ui://chart/prompt-action', { appendPromptToChat });
     const calls = vi.mocked(UIResourceRenderer).mock.calls;
     const props = calls[calls.length - 1]?.[0] as unknown as {
       onUIAction: (action: unknown) => Promise<unknown>;
@@ -287,5 +287,33 @@ describe('MCPUIResourceRenderer', () => {
         html,
       })
     );
+  });
+
+  // This renderer lives INSIDE a chat, but 'scroll-chat-to-bottom' is a window
+  // broadcast heard by every mounted BaseChat. Without a sessionId on the
+  // payload, a prompt action in chat A scrolls chat B.
+  it('scopes its scroll-to-bottom request to the chat it is rendered inside', async () => {
+    const dispatch = vi.spyOn(window, 'dispatchEvent');
+    const appendPromptToChat = vi.fn();
+    renderSubject('ui://chart/visualization', {
+      sessionId: 'session-aaa',
+      appendPromptToChat,
+    });
+
+    const calls = vi.mocked(UIResourceRenderer).mock.calls;
+    const { onUIAction } = calls[calls.length - 1][0] as unknown as {
+      onUIAction: (e: unknown) => Promise<unknown>;
+    };
+    await onUIAction({ type: 'prompt', payload: { prompt: 'plot residuals' } });
+    // main defers the append behind a "Send prompt" confirmation; the scoped
+    // scroll fires there, not on the action itself.
+    fireEvent.click(await screen.findByRole('button', { name: 'Send prompt' }));
+
+    expect(appendPromptToChat).toHaveBeenCalledWith('plot residuals');
+    const scrollEvent = dispatch.mock.calls
+      .map((c) => c[0] as CustomEvent)
+      .find((e) => e?.type === 'scroll-chat-to-bottom');
+    expect(scrollEvent?.detail).toEqual({ sessionId: 'session-aaa' });
+    dispatch.mockRestore();
   });
 });

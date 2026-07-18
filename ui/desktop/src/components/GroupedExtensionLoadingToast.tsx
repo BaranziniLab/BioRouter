@@ -49,7 +49,11 @@ export function GroupedExtensionLoadingToast({
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
   // than a count (many built-ins are now capabilities, so a number is
-  // misleading). On failure we name which extensions failed and how many.
+  // misleading). On PARTIAL failure a bare "N failed" hides how much still
+  // works, so we lead with what landed — "3 of 4 extensions loaded" — and name
+  // the casualties underneath. `extensions.length` is the number actually
+  // attempted for this session, so the ratio is honest even though the
+  // all-success case has no meaningful denominator.
   const getSummaryText = () => {
     if (!isComplete) {
       return 'Loading extensions…';
@@ -57,7 +61,8 @@ export function GroupedExtensionLoadingToast({
     if (errorCount === 0) {
       return 'All extensions loaded';
     }
-    return `${errorCount} extension${errorCount !== 1 ? 's' : ''} failed to load`;
+    const loadedCount = extensions.length - errorCount;
+    return `${loadedCount} of ${extensions.length} extension${extensions.length !== 1 ? 's' : ''} loaded`;
   };
 
   // Show the per-extension detail / toggle only when something failed — a clean

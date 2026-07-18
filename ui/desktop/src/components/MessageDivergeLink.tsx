@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitBranch } from 'lucide-react';
+import { GitBranch } from './icons/app-icons';
 import { useDiverge } from '../hooks/useDiverge';
 
 interface MessageDivergeLinkProps {

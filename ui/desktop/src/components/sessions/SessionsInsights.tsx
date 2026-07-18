@@ -19,6 +19,15 @@ import {
 
 const RECENT_LIMIT = 3;
 
+// The Home view sheds its lower sections as it gets short, in a fixed order:
+// the recent-chats list folds away FIRST, then the usage heatmap — so the
+// greeting + composer are the last things standing. Thresholds are the available
+// height (the scroll area above the composer), tuned on screen. Hysteresis is
+// unnecessary: hiding a section only frees height (pushes further from the
+// threshold) and showing one only consumes it, so the states cannot chase.
+const FOLD_RECENTS_BELOW_PX = 660;
+const FOLD_HEATMAP_BELOW_PX = 470;
+
 export function SessionInsights() {
   const initialActivity = useRef(getCachedHomeActivity()).current;
   const initialSessions = useRef(
@@ -30,6 +39,31 @@ export function SessionInsights() {
   const [isLoadingSessions, setIsLoadingSessions] = useState(initialSessions === null);
   const navigate = useNavigate();
   const setView = useNavigation();
+
+  // Watch the height the Home view is given (its parent scroll area) and decide
+  // which lower sections fit — recents fold before the heatmap.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [availableHeight, setAvailableHeight] = useState(Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    const host = rootRef.current?.parentElement;
+    if (!host) return;
+    // clientHeight is 0 in jsdom (no layout) and briefly during mount — treat
+    // that as "unknown, show everything", never as "too short, fold it all".
+    const measure = () => {
+      const h = host.clientHeight;
+      if (h > 0) setAvailableHeight(h);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+  const showHeatmap = availableHeight >= FOLD_HEATMAP_BELOW_PX;
+  const showRecents = availableHeight >= FOLD_RECENTS_BELOW_PX;
 
   useEffect(() => {
     // The heatmap carries the usage story now, so there is no separate insights
@@ -89,29 +123,33 @@ export function SessionInsights() {
   };
 
   return (
-    <div className="flex min-h-full flex-col bg-background-muted">
+    <div ref={rootRef} className="flex min-h-full flex-col bg-background-muted">
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
       <ReadableContent size="chat" className="biorouter-home-hero px-4 pb-6 pt-16 sm:px-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
       </ReadableContent>
 
-      {/* Usage heatmap — the single source of the usage story. */}
-      <ReadableContent size="chat" className="biorouter-home-activity px-4 pb-8 sm:px-6">
-        {activity ? (
-          <div className="page-transition">
-            <UsageHeatmap window={activity} />
-          </div>
-        ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
-          <UsageHeatmapLoading />
-        )}
-      </ReadableContent>
+      {/* Usage heatmap — the single source of the usage story. Folds away only
+          after recents, when the window is too short for both. */}
+      {showHeatmap && (
+        <ReadableContent size="chat" className="biorouter-home-activity px-4 pb-8 sm:px-6">
+          {activity ? (
+            <div className="page-transition">
+              <UsageHeatmap window={activity} />
+            </div>
+          ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
+            <UsageHeatmapLoading />
+          )}
+        </ReadableContent>
+      )}
 
-      {/* Recent chats */}
-      <ReadableContent
-        size="chat"
-        className="biorouter-home-recents page-transition px-4 pb-8 sm:px-6"
-      >
+      {/* Recent chats — the first section to fold when the window gets short. */}
+      {showRecents && (
+        <ReadableContent
+          size="chat"
+          className="biorouter-home-recents page-transition px-4 pb-8 sm:px-6"
+        >
         <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -170,7 +208,8 @@ export function SessionInsights() {
             )}
           </div>
         </div>
-      </ReadableContent>
+        </ReadableContent>
+      )}
     </div>
   );
 }

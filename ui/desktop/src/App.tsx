@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState, useRef } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
@@ -21,8 +21,13 @@ import { createSession } from './sessions';
 
 import { ChatType } from './types/chat';
 import Hub from './components/Hub';
-import Pair, { PairRouteState } from './components/Pair';
-import type { UserAttachment } from './types/message';
+import { PairRouteState } from './components/Pair';
+import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
+import { closeActiveTab } from './components/chatGroups/closeActiveTabRegistry';
+import { requestNewTab } from './components/chatGroups/newTabRegistry';
+import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
+import { TerminalDockProvider } from './contexts/TerminalDockContext';
+import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
 import SessionsView from './components/sessions/SessionsView';
 import SharedSessionView from './components/sessions/SharedSessionView';
@@ -62,27 +67,45 @@ const HubRouteWrapper = () => {
   return <Hub setView={setView} />;
 };
 
-const PairRouteWrapper = ({
-  chat,
-  setChat,
-}: {
-  chat: ChatType;
-  setChat: (chat: ChatType) => void;
-}) => {
+/**
+ * TerminalDockProvider wraps /pair ONLY.
+ *
+ * It holds the PER-CHAT-TAB terminals, keyed by tab id, above the tab switch so
+ * a tab's shell survives switching away from it (BaseChat, keyed by tab id,
+ * remounts on every switch). Its scope is deliberately this route and no wider:
+ * every other surface (the Dashboard's N chat windows, /extensions' mini-chat,
+ * the Hub) has no provider, so useTerminalDock() returns null there and BaseChat
+ * keeps its own local per-chat dock exactly as it does today. Hoisting this to
+ * the app root would let those surfaces share terminal state across windows.
+ */
+const PairRouteWrapper = ({ setChat }: { setChat: (chat: ChatType) => void }) => (
+  <ChatGroupsProvider>
+    <TerminalDockProvider>
+      <PairRouteContent setChat={setChat} />
+    </TerminalDockProvider>
+  </ChatGroupsProvider>
+);
+
+/**
+ * The URL adapter, and nothing else.
+ *
+ * This used to own /pair's session identity (and mirror it into the URL from an
+ * effect of its own). ChatGroupsProvider is now the ONLY writer of
+ * ?resumeSessionId= — two writers is precisely the mutual recursion R2 warns
+ * about — so the old sync effect here is deleted. What remains are the entry
+ * points that must create a session BEFORE anything can be opened: the Hub
+ * composer's initialMessage, a workflow deeplink, and the sidebar's new-chat.
+ * Each of them lands back here as a normal ?resumeSessionId= navigation, which
+ * the provider consumes exactly once.
+ */
+const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) => {
   const { extensionsList } = useConfig();
   const location = useLocation();
   const navigate = useNavigate();
+  const groups = useChatGroups();
   const routeState = (location.state as PairRouteState) || {};
   const [searchParams] = useSearchParams();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
-
-  // Capture initialMessage in local state to survive route state being cleared
-  const [capturedInitialMessage, setCapturedInitialMessage] = useState<string | undefined>(
-    undefined
-  );
-  const [capturedInitialAttachments, setCapturedInitialAttachments] = useState<
-    UserAttachment[] | undefined
-  >(undefined);
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
   const workflowId = searchParams.get('workflowId') ?? undefined;
@@ -91,44 +114,29 @@ const PairRouteWrapper = ({
     | undefined;
   const isNewChat = routeState.newChat === true;
 
-  // Session ID and initialMessage come from route state (Hub, diverge) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
-  const sessionId = isNewChat
-    ? undefined
-    : sessionIdFromState || resumeSessionId || chat.sessionId || undefined;
+  // Identity comes from the URL and the route state only. The old
+  // `|| chat.sessionId` fallback reached into the App-level singleton, which is
+  // no longer /pair's identity: the focused tab is.
+  const sessionId = isNewChat ? undefined : sessionIdFromState || resumeSessionId || undefined;
+  const initialMessage = isNewChat ? undefined : routeState.initialMessage;
+  const initialAttachments = isNewChat ? undefined : routeState.initialAttachments;
 
-  // Use route state if available, otherwise use captured state
-  const initialMessage = isNewChat
-    ? undefined
-    : routeState.initialMessage || capturedInitialMessage;
-  const initialAttachments = isNewChat
-    ? undefined
-    : routeState.initialAttachments || capturedInitialAttachments;
+  const dispatch = groups?.dispatch;
 
-  // Capture initialMessage when it comes from route state
+  // The sidebar's new-chat button: open ONE empty tab per navigation. The tab
+  // carries sessionId '' until BaseChat's pre-session submit creates a real
+  // session; that navigation then ADOPTS this tab in place (see the reducer's
+  // empty-tab branch) rather than orphaning it beside a second one.
+  const newChatKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (isNewChat) {
-      setCapturedInitialMessage(undefined);
-      setCapturedInitialAttachments(undefined);
-      return;
-    }
+    if (!isNewChat || !dispatch) return;
+    if (newChatKeyRef.current === location.key) return;
+    newChatKeyRef.current = location.key;
+    dispatch({ type: 'openTab', payload: { sessionId: '' } });
+  }, [isNewChat, location.key, dispatch]);
 
-    console.log(
-      '[PairRouteWrapper] capture effect:',
-      JSON.stringify({
-        routeStateInitialMessage: routeState.initialMessage,
-        routeStateInitialAttachmentsCount: routeState.initialAttachments?.length,
-      })
-    );
-    if (routeState.initialMessage) {
-      setCapturedInitialMessage(routeState.initialMessage);
-    }
-    if (routeState.initialAttachments) {
-      setCapturedInitialAttachments(routeState.initialAttachments);
-    }
-  }, [isNewChat, routeState.initialMessage, routeState.initialAttachments]);
-
-  // Create session if we have an initialMessage, workflowId, or workflowDeeplink but no sessionId
+  // Create a session when we have something to say but nothing to say it in.
   useEffect(() => {
     if (
       !isNewChat &&
@@ -168,43 +176,7 @@ const PairRouteWrapper = ({
     navigate,
   ]);
 
-  // Sync URL with session ID for refresh support (only if not already in URL)
-  useEffect(() => {
-    if (sessionId && sessionId !== resumeSessionId) {
-      navigate(`/pair?resumeSessionId=${sessionId}`, {
-        replace: true,
-        state: { resumeSessionId: sessionIdFromState, initialMessage, initialAttachments },
-      });
-    }
-  }, [
-    sessionId,
-    resumeSessionId,
-    navigate,
-    sessionIdFromState,
-    initialMessage,
-    initialAttachments,
-  ]);
-
-  // Clear captured initialMessage when session changes (to prevent re-sending on navigation)
-  useEffect(() => {
-    if (sessionId && capturedInitialMessage && sessionIdFromState) {
-      const timer = setTimeout(() => {
-        setCapturedInitialMessage(undefined);
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
-  }, [sessionId, capturedInitialMessage, sessionIdFromState]);
-
-  return (
-    <Pair
-      key={isNewChat ? location.key : sessionId}
-      setChat={setChat}
-      sessionId={sessionId ?? ''}
-      initialMessage={initialMessage}
-      initialAttachments={initialAttachments}
-    />
-  );
+  return <ChatGroupsShell onChatChange={setChat} />;
 };
 
 const SettingsRoute = () => {
@@ -550,6 +522,53 @@ export function AppInner() {
     return window.electron.on('set-view', handleSetView);
   }, [navigate]);
 
+  // Cmd+W (Ctrl+W off mac). Sent by the File menu's "Close Tab" item — see
+  // main.ts, where the accelerator had to be taken off `role: 'close'` so it
+  // stops closing the whole window.
+  //
+  // This listener lives at the ROOT, not in ChatGroupsProvider, because it must
+  // answer everywhere: the provider is mounted only under /pair, and Cmd+W on
+  // Settings must still close the window like any other macOS app. The provider
+  // registers a claim while it is mounted; if it claims nothing (not on /pair,
+  // or the last tab is already gone) the window closes.
+  //
+  // No text-input guard: Cmd+W has no native editing behaviour to steal, and the
+  // key never reaches the DOM anyway — the menu consumes it.
+  useEffect(
+    () =>
+      window.electron.on('close-active-tab', () => {
+        if (closeActiveTab()) return;
+        window.electron.closeWindow();
+      }),
+    []
+  );
+
+  // Cmd+T / Ctrl+T — a new tab. Sent by the Go menu's "New Chat" item; like
+  // Cmd+W it can only be a menu item, because the menu already owned the key and
+  // would have eaten any renderer listener.
+  //
+  // What "new tab" MEANS is focus-aware: when the cursor is in the in-app
+  // terminal, Cmd+T adds a new terminal PANE (the reflex a terminal user has);
+  // otherwise it opens a new CHAT tab. isTerminalFocused only sees the visible
+  // dock (a hidden one is display:none and cannot hold focus), and
+  // requestNewTerminalPane returns false when no terminal is open — either way
+  // we fall through to the chat path, so a chat-focused Cmd+T is unchanged.
+  //
+  // The chat path keeps the same root-level reasoning as Cmd+W: the tab surface
+  // is mounted only under /pair, so off that route requestNewTab() finds no
+  // handler. It then REMEMBERS the request and we navigate — the mounting
+  // provider consumes it and opens the tab. Cmd+T on Settings therefore lands
+  // you on a fresh chat, as the key does in a browser from any page.
+  useEffect(
+    () =>
+      window.electron.on('new-chat-tab', () => {
+        if (isTerminalFocused() && requestNewTerminalPane()) return;
+        if (requestNewTab()) return;
+        navigate('/pair');
+      }),
+    [navigate]
+  );
+
   useEffect(() => {
     const handleFocusInput = (_event: IpcRendererEvent, ..._args: unknown[]) => {
       const inputField = document.querySelector('input[type="text"], textarea') as HTMLInputElement;
@@ -628,7 +647,7 @@ export function AppInner() {
                   }
                 >
                   <Route index element={<HubRouteWrapper />} />
-                  <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
+                  <Route path="pair" element={<PairRouteWrapper setChat={setChat} />} />
                   <Route path="settings" element={<SettingsRoute />} />
                   <Route
                     path="extensions"

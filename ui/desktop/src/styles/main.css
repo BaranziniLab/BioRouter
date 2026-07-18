@@ -105,6 +105,17 @@
   --background-default: var(--color-white);
   --background-card: var(--color-white);
   --background-muted: var(--color-neutral-50);
+
+  /* The code ground (design.md §5.1). The syntax palettes in codeTheme.ts are
+     VERIFIED against these exact values — parchment "on #faf8f3 / #16120c",
+     alma "on #F2F3F4 / #08213F" — but the value is not expressible with the
+     existing tokens: light wants --background-muted while dark wants
+     --background-default. That mismatch is why the ground got duplicated
+     across codeTheme.ts, main.css and InAppTerminalDock, and why dark code
+     blocks were painting --background-muted (#282217) while their palette was
+     tuned for #16120c — `comment` rendered at 4.15:1, under AA. One token,
+     one ground, matching what the palette was measured on. */
+  --background-code: var(--color-neutral-50);
   --background-medium: var(--color-neutral-100);
   --background-strong: var(--color-neutral-300);
   --background-inverse: var(--color-black);
@@ -216,6 +227,7 @@
   --background-default: var(--color-neutral-900);
   --background-card: var(--color-neutral-900);
   --background-muted: var(--color-neutral-800);
+  --background-code: var(--color-neutral-900);
   --background-medium: var(--color-neutral-700);
   --background-strong: var(--color-neutral-600);
   --background-inverse: var(--color-neutral-200);
@@ -345,6 +357,7 @@
   --background-default: #ffffff;
   --background-card: #ffffff;
   --background-muted: #f2f3f4;
+  --background-code: #f2f3f4;
   --background-medium: #e1e3e5;
   --background-strong: #d1d3d3;
   --background-inverse: #052049; /* UCSF Navy, not black */
@@ -424,6 +437,7 @@
   --background-default: #08213f; /* navy card */
   --background-card: #08213f;
   --background-muted: #0d2a50;
+  --background-code: #08213f;
   --background-medium: #143563;
   --background-strong: #1e477f;
   --background-inverse: #f2f3f4;
@@ -488,6 +502,7 @@
 
   --color-background-default: var(--background-default);
   --color-background-muted: var(--background-muted);
+  --color-background-code: var(--background-code);
   --color-background-medium: var(--background-medium);
   --color-background-strong: var(--background-strong);
   --color-background-inverse: var(--background-inverse);
@@ -882,31 +897,378 @@
   box-shadow: none;
 }
 
+/* ============================================================
+   DOCUMENT TABS — chat groups, the preview panel, the terminal dock.
+   One component, three surfaces. After Safari.
+
+   The strip is NOT a darker slab: it is painted `--sidebar`, the SAME
+   surface as the sidebar's titlebar band, so the whole 52px top edge of
+   the window is one continuous ground and no part of the chrome reads
+   heavier than another. Only the ACTIVE tab is painted — a floating pill
+   in `--background-default`. Inactive tabs are plain text, divided by a
+   hairline that lives in the GAP (never a border on the tab) and retracts
+   around whatever the cursor is on.
+
+   No tab carries an outline: fills do the work, exactly as D-15 (focus is
+   a surface shift, not a ring) and D-17 (tool calls are lines, not cards)
+   already decided everywhere else.
+
+   D-07 chose an underline for horizontal tabs — that decision was about
+   NAVIGATION tabs (settings sections). These are document tabs: objects
+   you switch between, as in Safari and VS Code. The pill is right here;
+   D-07's underline stands for nav.
+   ============================================================ */
+.br-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 8px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+  /* Overflow: shrink to a floor, then scroll — NEVER wrap. A wrapped second row
+     moves every tab under the cursor, which is why no tabbed app does it. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.br-tabstrip::-webkit-scrollbar {
+  display: none;
+}
+
+/* The preview panel nests its tablist inside the strip for a11y, so the scroll
+   box is the tablist rather than `.br-tabstrip` itself. Same rule, same look:
+   scroll past the floor, never wrap, and never show a scrollbar in a 52px bar. */
+.br-tabstrip__scroll {
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+
+.br-tabstrip__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rung 3's last step (D-32): "…then collapse into a ▾ menu — never wrap."
+   The button is a SIBLING of the strip, not a child: inside the scroll box it
+   would count toward the strip's own scrollWidth and latch the overflow it was
+   summoned by. See ChatTabStrip's comment on the wrap. */
+.br-tabstrip__overflow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.br-tabstrip__overflow:hover,
+.br-tabstrip__overflow[data-state='open'] {
+  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  color: var(--text-default);
+}
+
+/* The chat strip is threaded THROUGH BaseChat's existing 52px header (which
+   already paints the ground and draws the bottom hairline) rather than mounted
+   above it. Painting a second ground and a second hairline inside that row
+   would give the top edge two weights where the spec asks for one — and the
+   artifact panel's header sits flush beside it, so a mismatch there is exactly
+   the D-18 misalignment the header comment warns about. The tab language is
+   unchanged; only the strip's own slab is suppressed. */
+.br-tabstrip--inline {
+  background: transparent;
+  border-bottom: 0;
+  padding-right: 0;
+}
+
+.br-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  /* Shrink to a floor, then the strip scrolls. `min-width: 0` let a tab shrink
+     to nothing; 88px is the floor at which a glyph + a few characters + the
+     close control still read. */
+  flex: 0 1 auto;
+  min-width: 88px;
+  max-width: 190px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  /* D-31: sans, not mono. These labels shipped in --font-mono, borrowed from
+     otty.sh (which sets its UI labels in a monospace) and defended with P6
+     ("the monospace layer is part of the design system"). In the running app it
+     read as a special thin font that belonged to nothing else on screen — the
+     sidebar, the nav, the chat and the session title are all --font-sans, so
+     the strip, sitting on the SAME 52px bar as all of them, was the only
+     element speaking a different language. That is the exact incoherence this
+     pass exists to remove.
+     P6 stands: mono keeps the jobs it EARNS — code, the terminal, paths,
+     figures where columns must align. A tab label is none of those; it is a
+     name. Mono for data, sans for chrome. 13px = §3.2 "Secondary / metadata";
+     the -0.01em tracking was a mono-only correction and goes with it. */
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.br-tabstrip--sm .br-tab {
+  height: 28px;
+}
+
+.br-tab:hover {
+  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  color: var(--text-default);
+}
+
+.br-tab[data-active='true'] {
+  background: var(--background-default);
+  color: var(--text-default);
+  font-weight: 500;
+  box-shadow: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
+}
+
+.dark .br-tab[data-active='true'] {
+  box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
+}
+
+/* Active group. Only the FOCUSED group's active tab is the painted pill; an
+   unfocused group's active tab keeps a neutral fill and drops the pill shadow.
+   Spec: "Focus costs zero extra chrome" — the unfocused group is not decorated
+   with a marker, it simply stops claiming the emphasis. Two lit pills in one
+   window would be two answers to "where am I typing?".
+
+   The attribute is only ever 'false' on a strip that knows it is unfocused;
+   default (absent) reads as active, so a bare strip — and every strip in the
+   single-group case — is unchanged. */
+.br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
+  background: color-mix(in srgb, var(--background-default) 45%, transparent);
+  color: var(--text-muted);
+  font-weight: 400;
+  box-shadow: none;
+}
+
+.dark .br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
+  box-shadow: none;
+}
+
+/* Safari's divider: a hairline in the gap, not a border on the tab. */
+.br-tab + .br-tab::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 9px;
+  bottom: 9px;
+  width: 1px;
+  background: var(--border-strong);
+  opacity: 0.5;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+/* …and it retracts around whatever you are pointing at, so the thing under
+   the cursor is never boxed in. */
+.br-tab:hover::before,
+.br-tab[data-active='true']::before,
+.br-tab:hover + .br-tab::before,
+.br-tab[data-active='true'] + .br-tab::before {
+  opacity: 0;
+}
+
+.br-tab__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* VS Code's preview-tab convention: opened with a single click, reused, and
+   italic until you commit to it. */
+.br-tab--preview .br-tab__label {
+  font-style: italic;
+}
+
+/* Drag state. These finally give rules to `data-dragging` / `data-dropbefore`,
+   which the artifact panel has been writing into the DOM with NO CSS reading
+   them — its drag visuals were Tailwind at the call site.
+
+   The source tab STAYS IN FLOW at 35%. That much is a CSS contract, not a taste
+   call: `.br-tab`'s divider is adjacent-sibling based (`.br-tab + .br-tab::before`),
+   so pulling the real tab out of the DOM re-flows every divider mid-drag.
+
+   The lifted tab under the cursor is therefore a SEPARATE element (.br-tab-ghost,
+   below) rather than the tab itself moving — which is what lets the spec's "the
+   tab lifts under the cursor at 2deg… the one it left dims to 35%" (card ∇) and
+   the divider contract both hold at once. An earlier revision of this comment
+   said there was no ghost at all; that was the reorder-only scope, where the tab
+   never leaves its own strip and a ghost buys nothing. Once a tab can be carried
+   to another group, dimming-in-place alone leaves the user dragging an invisible
+   nothing across the window. */
+.br-tab[data-dragging='true'] {
+  opacity: 0.35;
+}
+
+/* The tab in the air. POINTER-EVENTS:NONE IS LOAD-BEARING — the ghost sits
+   directly under the cursor by construction, so if it took events
+   document.elementFromPoint would return the ghost on every move, the drop
+   target would be null for the whole drag, and nothing would ever land. See
+   dropZones.ts. */
+.br-tab-ghost {
+  position: fixed;
+  z-index: 400;
+  pointer-events: none;
+  /* No translate: the ghost's top-left is positioned in JS so the cursor lands
+     on the exact grab point (useTabDragReorder). A translate here would shift it
+     back off the cursor — the bug this replaced. Just the 2deg lift. */
+  transform: rotate(2deg);
+  background: var(--background-default);
+  color: var(--text-default);
+  box-shadow: var(--shadow-popover);
+  opacity: 0.95;
+}
+
+/* The insertion hairline — where the tab will land. */
+.br-tab[data-dropbefore='true']::after {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-accent);
+}
+
+/* Running: the coral pulse sits exactly where the close control would be, and
+   the control returns on hover. VS Code swaps the close x for a dirty dot; we
+   already own this vocabulary, so it is one glyph with one meaning. */
+.br-tab__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-accent);
+  animation: br-tab-pulse 1.8s var(--ease-out) infinite;
+}
+
+@keyframes br-tab-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.78);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-tab__dot {
+    animation: none;
+  }
+}
+
+/* ============================================================
+   CHAT GROUPS · the split
+   ============================================================ */
+
+/* The landing half, tinted WHILE THE TAB IS STILL IN THE AIR (spec card ∇:
+   "you aim, then commit — never commit, then discover"). The inset is set
+   inline per zone; this rule owns everything that does not vary.
+
+   POINTER-EVENTS:NONE IS LOAD-BEARING, NOT COSMETIC. The zone is resolved with
+   document.elementFromPoint, which returns the TOPMOST element at the cursor. An
+   overlay that accepted events would become that element the instant it
+   appeared — the hit test would resolve to the half that tinted first and the
+   zone would LATCH there, so you could never aim at the other half and never
+   leave the group. Same rule, same reason, in ChatDropOverlay.tsx. */
+.br-dropzone {
+  position: absolute;
+  z-index: 300;
+  pointer-events: none;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-bar) 16%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent-bar) 55%, transparent);
+  outline-offset: -4px;
+  /* No opacity/inset transition: the tint must track the cursor exactly. A
+     120ms fade on `inset` would smear the overlay between halves as you cross
+     the midline and report a zone you are no longer aiming at. */
+}
+
+/* The grab handle between two panes. The visible line is 1px on the shared
+   hairline value (D-18); the HIT AREA is widened to 9px by the ::after below,
+   because a 1px pointer target is a dexterity test. */
+.br-group-splitter {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 1px;
+  background: var(--border-subtle);
+  cursor: row-resize;
+  transition: background-color var(--motion-fast) var(--ease-out);
+}
+
+.br-group-splitter--row {
+  cursor: col-resize;
+}
+
+/* Widen the hit area ACROSS the line, never along it: a `col` branch's splitter
+   is a horizontal rule, so it grows vertically; a `row` branch's is vertical, so
+   it grows horizontally. Overhang 4px each side => a 9px target for a 1px line.
+   Sits above the panes via the parent's z-index, so the grab works right up to
+   the boundary. */
+.br-group-splitter::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 0;
+  right: 0;
+}
+
+.br-group-splitter--row::after {
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.br-group-splitter:hover {
+  background: var(--accent-bar);
+}
+
+/* One floating-surface recipe (design.md §4.5 + D-18).
+   Was: a hand-rolled two-layer shadow plus a 44%-diluted hairline. The
+   dilution broke D-18 ("one hairline value, at full strength") — adjacent
+   panels' edges read at different weights, so they never visually aligned.
+   And because the shadow bypassed the token layer, every theme family had
+   to re-declare it by hand. --shadow-popover is already authored for all
+   four variants, so pointing at it deletes both overrides below. */
 .biorouter-popover-surface {
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 44%, transparent);
-  box-shadow:
-    0px 14px 38px -18px rgba(32, 25, 15, 0.22),
-    0px 0px 0px 1px rgba(32, 25, 15, 0.035);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-popover);
 }
 
-.dark .biorouter-popover-surface {
-  box-shadow:
-    0px 14px 42px -16px rgba(0, 0, 0, 0.58),
-    0px 0px 0px 1px rgba(255, 255, 255, 0.055);
-}
-
-/* Alma Mater LIGHT — the modal/diagnostics scrims and the popover shadow are
-   hardcoded rgba() outside the token layer, so retint them navy to match the
-   theme. Scoped `:not(.dark)` so Alma dark keeps the neutral-black scrim. */
+/* Alma Mater LIGHT — the modal/diagnostics scrims are hardcoded rgba()
+   outside the token layer, so retint them navy to match the theme. Scoped
+   `:not(.dark)` so Alma dark keeps the neutral-black scrim. (The popover
+   shadow override that used to live here is gone: the token handles it.) */
 :root[data-theme='alma-mater']:not(.dark) .biorouter-modal-overlay,
 :root[data-theme='alma-mater']:not(.dark) .biorouter-diagnostics-overlay {
   background: rgba(5, 32, 73, 0.2);
-}
-
-:root[data-theme='alma-mater']:not(.dark) .biorouter-popover-surface {
-  box-shadow:
-    0px 14px 38px -18px rgba(5, 32, 73, 0.22),
-    0px 0px 0px 1px rgba(5, 32, 73, 0.04);
 }
 
 /* D-05 / P1 — a flat header separated by a hairline. The gradient wash and the
@@ -1229,47 +1591,146 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
   }
 }
 
-/* P6 — inline code is MONOSPACE. It was `var(--font-sans)` (Arial), so every
-   inline path, flag and identifier in chat rendered in a proportional face. */
-.bg-inline-code {
-  border-radius: var(--radius-sm);
+/* ══════════════════════════════════════════════════════════════════
+   MARKDOWN PROSE — remap @tailwindcss/typography onto the semantic tokens.
+
+   The plugin ships its own colour ramp in `--tw-prose-*`, and NOTHING remapped
+   it, so every markdown element the call-site class list happens to forget fell
+   back to Tailwind's cold blue-grey on a warm ground: <strong>, h3 and h4 came
+   out gray-900, <hr> and the table borders came out #e5e7eb — a hex design.md's
+   anti-pattern list names outright as a "foreign body" (§3.1, D-18).
+
+   Pointing the whole ramp at the semantic tokens fixes it for every theme at
+   once, because the tokens already flip per family (Parchment light/dark AND
+   alma-mater light/dark). That is also why the BASE and the `prose-invert` sets
+   are given identical values: `dark:prose-invert` reassigns each base var from
+   its `-invert-` twin, so if the twins kept the plugin's defaults, dark mode
+   would quietly reintroduce the greys. Same tokens on both sides = no ramp of
+   ours can ever be bypassed.
+
+   Deliberately UNLAYERED so it wins over the plugin's `utilities`-layer
+   defaults regardless of specificity (same tactic as the Prism `token` fix at
+   the foot of this file). ══════════════════════════════════════════════════ */
+.prose {
+  --tw-prose-body: var(--text-default);
+  --tw-prose-headings: var(--text-default);
+  --tw-prose-lead: var(--text-muted);
+  --tw-prose-links: var(--text-accent);
+  --tw-prose-bold: var(--text-default);
+  --tw-prose-counters: var(--text-subtle);
+  --tw-prose-bullets: var(--text-subtle);
+  --tw-prose-hr: var(--border-subtle);
+  --tw-prose-quotes: var(--text-muted);
+  --tw-prose-quote-borders: var(--border-strong);
+  --tw-prose-captions: var(--text-muted);
+  --tw-prose-kbd: var(--text-default);
+  --tw-prose-kbd-shadows: var(--border-strong);
+  --tw-prose-code: var(--text-default);
+  --tw-prose-pre-code: var(--text-default);
+  --tw-prose-pre-bg: var(--background-code);
+  --tw-prose-th-borders: var(--border-subtle);
+  --tw-prose-td-borders: var(--border-subtle);
+
+  /* The invert set mirrors the base set exactly — see the note above. */
+  --tw-prose-invert-body: var(--text-default);
+  --tw-prose-invert-headings: var(--text-default);
+  --tw-prose-invert-lead: var(--text-muted);
+  --tw-prose-invert-links: var(--text-accent);
+  --tw-prose-invert-bold: var(--text-default);
+  --tw-prose-invert-counters: var(--text-subtle);
+  --tw-prose-invert-bullets: var(--text-subtle);
+  --tw-prose-invert-hr: var(--border-subtle);
+  --tw-prose-invert-quotes: var(--text-muted);
+  --tw-prose-invert-quote-borders: var(--border-strong);
+  --tw-prose-invert-captions: var(--text-muted);
+  --tw-prose-invert-kbd: var(--text-default);
+  --tw-prose-invert-kbd-shadows: var(--border-strong);
+  --tw-prose-invert-code: var(--text-default);
+  --tw-prose-invert-pre-code: var(--text-default);
+  --tw-prose-invert-pre-bg: var(--background-muted);
+  --tw-prose-invert-th-borders: var(--border-subtle);
+  --tw-prose-invert-td-borders: var(--border-subtle);
+}
+
+/* design.md §4.17 — markdown tables. Header row 32px, 11px caps in --text-muted
+   with a bottom hairline ONLY; body rows 40px with a hairline between; numeric
+   columns right-aligned + tabular-nums; NO zebra, NO vertical rules.
+
+   These live in CSS rather than in MarkdownContent.tsx's `prose-*` class list
+   because they are structural (`tbody tr:last-child`, `[align='right']`) and a
+   variant modifier cannot express them. The tsx drops `prose-td:border
+   prose-th:border prose-thead:bg-background-medium` — a filled header band plus
+   a full box grid around every cell — and this block is what replaces it. */
+.prose table {
+  border-collapse: collapse;
+  font-variant-numeric: normal;
+}
+
+.prose thead {
+  background: transparent;
+}
+
+.prose thead th {
+  height: 32px;
+  padding: 0 12px 0 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* `middle`, matching the header. §4.17 fixes the row heights (32px header,
+   40px body), which only reads right if the text is centred in them — with
+   `top` a single-line cell hung at the top of its 40px box while the header
+   sat centred in its 32px one, so the two rows aligned on opposite edges. */
+.prose tbody td {
+  height: 40px;
+  padding: 8px 12px 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
   color: var(--text-default);
-  background-color: var(--background-medium);
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  font-style: normal;
-  font-weight: 400;
-  line-height: normal;
+  vertical-align: middle;
 }
 
-/* The typography plugin injects literal backticks around `prose code`.
-   These two rules suppress them — the fill already communicates "code". */
-.bg-inline-code:before {
-  content: '';
+/* The last row's hairline would double up with the container/next block's own
+   edge — the rule is "a hairline BETWEEN rows", not around the table. */
+.prose tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-pre:has(> code.bg-inline-code) {
-  padding: 1em;
+.prose thead th:last-child,
+.prose tbody td:last-child {
+  padding-right: 0;
 }
 
-li > code.bg-inline-code,
-p > code.bg-inline-code,
-td > code.bg-inline-code,
-th > code.bg-inline-code,
-blockquote code.bg-inline-code,
-h1 > code.bg-inline-code,
-h2 > code.bg-inline-code,
-h3 > code.bg-inline-code,
-strong > code.bg-inline-code,
-em > code.bg-inline-code {
-  color: var(--text-default);
-  background-color: var(--background-medium);
-  padding: 2px 5px;
+/* Numeric columns. GFM emits `align` on the cell, so honour it directly and pair
+   right-alignment with tabular figures so digits form a column. */
+.prose th[align='right'],
+.prose td[align='right'] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.bg-inline-code:after {
-  content: '';
+.prose th[align='center'],
+.prose td[align='center'] {
+  text-align: center;
 }
+
+/* `.bg-inline-code` retired. It had exactly two call sites, both in
+   MarkdownContent.tsx, and both now use the `prose-code:*` token utilities —
+   one recipe instead of a class competing with them, reconciled only by the
+   specificity ladder that used to live here (and which had to be extended by
+   hand for every new parent element; h4/h5/h6 and `ol > li` were already
+   missing). The load-bearing `pre:has(> code.bg-inline-code){padding:1em}`
+   rule — which padded language-less fenced blocks — moved into the component
+   as `prose-pre:[&:has(>code)]:p-3`, so retiring the class does not silently
+   unpad them. */
 
 .user-message p {
   margin-bottom: 0 !important;
@@ -1461,11 +1922,23 @@ em > code.bg-inline-code {
 
 /* KaTeX Math Rendering */
 
+/* KaTeX's own stylesheet sets a `font` SHORTHAND, which resets line-height to
+   1.2 alongside the 1.21em size. Overriding font-size alone (as this rule used
+   to) left inline math a hair tighter than the prose it sits in, so a paragraph
+   containing math rode differently from one that didn't. Restate the line-height
+   so inline math tracks the body copy. */
 .prose .katex {
   font-size: 1em;
+  line-height: 1.45;
   color: inherit;
 }
 
+/* Display math is centred, margined and scrolled HERE and nowhere else — this
+   rule is the single source of truth. `MarkdownParagraph` in MarkdownContent.tsx
+   used to ALSO wrap a lone-math paragraph in `flex justify-center my-3
+   overflow-x-auto`, so every display equation was centred twice and margined
+   twice; the tsx wrapper is removed and this block keeps the behaviour. Do not
+   reintroduce the duplicate there. */
 .katex-display {
   margin: 0.75em 0;
   padding: 0.5em 0;
@@ -1475,11 +1948,10 @@ em > code.bg-inline-code {
   text-align: center;
 }
 
+/* Inline math inherits its colour; display math is lifted to the body ink. The
+   `.dark` twin of this rule was byte-identical (--text-default already flips per
+   theme), so it was dead weight and is gone. */
 .katex-display .katex {
-  color: var(--text-default);
-}
-
-.dark .katex-display .katex {
   color: var(--text-default);
 }
 

@@ -27,7 +27,7 @@ function DropdownMenuTrigger({
 
 function DropdownMenuContent({
   className,
-  sideOffset = 4,
+  sideOffset = 6,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
@@ -35,8 +35,15 @@ function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        // design.md §4.5: --radius-xl (12px) surface, 4px padding, 6px trigger offset.
+        //
+        // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
+        // content is portalled to <body>, making it a SIBLING of any dialog content
+        // (--z-modal, 400) it is rendered inside, with no way to detect that host.
+        // PermissionModal.tsx renders a DropdownMenuContent inside a DialogContent;
+        // at 200 that menu would paint under the dialog that owns it.
         className={cn(
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-2xl p-1 space-y-0.5',
+          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-xl p-1 space-y-0.5',
           className
         )}
         {...props}
@@ -48,6 +55,23 @@ function DropdownMenuContent({
 function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
   return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
 }
+
+/**
+ * design.md §4.5 — THE menu row: 32px tall, 12px horizontal padding, `--radius-md`,
+ * 13/18 text, hover fill `--background-medium`.
+ *
+ * `min-h-8` is what actually lands the 32px spec: 13/18 text inside 6px of vertical
+ * padding measures 30px, and `items-center` then optically centres the label in the
+ * extra 2px. Expressing height as a minimum (rather than a fixed `h-8`) lets a row
+ * that wraps — a long extension name, a two-line label — grow instead of clipping.
+ *
+ * Every row-shaped member of this menu — item, checkbox, radio, sub-trigger — composes
+ * this ONE string, so the per-call-site drift §4.5 called out cannot reappear. Call
+ * sites should add only what is theirs (a toggle's `justify-between`, a cursor); a
+ * call site that re-states padding or type size is reintroducing the drift.
+ */
+export const DROPDOWN_ROW_CLASS_NAME =
+  "relative flex min-h-8 cursor-default items-center gap-2 rounded-md px-3 py-1.5 text-[13px] leading-[18px] select-none transition-colors duration-[var(--motion-fast)] focus:bg-background-medium focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
 function DropdownMenuItem({
   className,
@@ -64,7 +88,8 @@ function DropdownMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "focus:bg-background-muted focus:text-text-muted data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted relative flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm  select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        DROPDOWN_ROW_CLASS_NAME,
+        "data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted data-[inset]:pl-8",
         className
       )}
       {...props}
@@ -85,7 +110,10 @@ function DropdownMenuCheckboxItem({
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
       className={cn(
-        "focus:bg-background-muted focus:text-text-muted relative flex cursor-default items-center gap-2 rounded-md py-1.5 pr-2 pl-8 text-sm  select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        DROPDOWN_ROW_CLASS_NAME,
+        // The left gutter exists only to hold the check; without an indicator the
+        // row keeps the plain §4.5 padding instead of a phantom 32px indent.
+        showIndicator && 'pl-8',
         className
       )}
       checked={checked}
@@ -117,10 +145,7 @@ function DropdownMenuRadioItem({
   return (
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
-      className={cn(
-        "focus:bg-background-muted focus:text-text-muted relative flex cursor-default items-center gap-2 rounded-md py-1.5 pr-2 pl-8 text-sm  select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        className
-      )}
+      className={cn(DROPDOWN_ROW_CLASS_NAME, 'pl-8', className)}
       {...props}
     >
       <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
@@ -144,7 +169,12 @@ function DropdownMenuLabel({
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
       data-inset={inset}
-      className={cn('px-2 py-1.5 text-sm data-[inset]:pl-8', className)}
+      // design.md §4.5 section label: 11px caps, +0.08em, --text-muted, 8px×12px.
+      // It names a group; it is not a row, so it never takes the row height or hover.
+      className={cn(
+        'px-3 py-1.5 text-[11px] font-medium tracking-[0.08em] text-text-muted uppercase data-[inset]:pl-8',
+        className
+      )}
       {...props}
     />
   );
@@ -157,7 +187,8 @@ function DropdownMenuSeparator({
   return (
     <DropdownMenuPrimitive.Separator
       data-slot="dropdown-menu-separator"
-      className={cn('bg-border-default -mx-1 my-1 h-px', className)}
+      // --border-subtle, 4px margin (§4.5). `bg-border-default` is slated for deletion.
+      className={cn('bg-border-subtle -mx-1 my-1 h-px', className)}
       {...props}
     />
   );
@@ -190,7 +221,8 @@ function DropdownMenuSubTrigger({
       data-slot="dropdown-menu-sub-trigger"
       data-inset={inset}
       className={cn(
-        'focus:bg-background-muted focus:text-text-muted data-[state=open]:bg-background-muted data-[state=open]:text-text-muted flex cursor-default items-center rounded-md px-2 py-1.5 text-sm  select-none data-[inset]:pl-8',
+        DROPDOWN_ROW_CLASS_NAME,
+        'data-[state=open]:bg-background-medium data-[state=open]:text-text-default data-[inset]:pl-8',
         className
       )}
       {...props}
@@ -209,7 +241,7 @@ function DropdownMenuSubContent({
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
       className={cn(
-        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-2xl p-1 space-y-0.5',
+        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-xl p-1 space-y-0.5',
         className
       )}
       {...props}

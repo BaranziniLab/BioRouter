@@ -101,7 +101,13 @@ const CodeBlock = memo(function CodeBlock({
   }, [codeStyle, language, children]);
 
   return (
-    <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-muted">
+    // `bg-background-code`, not `bg-background-muted`: the syntax palette in
+    // codeTheme.ts is verified against #faf8f3 / #16120c (design.md §5.1), but
+    // --background-muted is #282217 in dark — so dark code blocks were painting
+    // a ground the palette was never measured on and `comment` fell to 4.15:1,
+    // under AA. The highlighter itself renders transparent, so this div IS the
+    // ground the reader sees.
+    <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
       {/* Header bar */}
       <div className="flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
         <span className="text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
@@ -152,6 +158,15 @@ function artifactSourceFromMarkdownValue(
   return { kind: 'file', title: basenameFromPath(path), path };
 }
 
+// The ONE link treatment in this renderer (design spec "The markdown layer,
+// rebuilt"). Plain `<a>` gets it from the typography plugin, whose
+// `--tw-prose-links` main.css points at `--text-accent`; the two <button>-based
+// links below are not `<a>`, so the plugin cannot reach them and they restate it
+// here. Previously these were three different treatments (plugin accent,
+// `decoration-border-strong` with default ink, and accent-with-neutral-underline).
+const LINK_CLASS =
+  'cursor-pointer font-medium text-text-accent underline decoration-text-accent/40 underline-offset-2 transition-colors hover:decoration-text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus';
+
 function ArtifactLinkButton({
   artifact,
   children,
@@ -164,12 +179,14 @@ function ArtifactLinkButton({
   inlineCode?: boolean;
 }) {
   return (
+    // Both variants are mono at 13px — the same size as a fenced block
+    // (CODE_FONT_SIZE) and inline code. The sole difference is the inline-code
+    // fill, which is the only thing `inlineCode` should mean; the two variants
+    // used to also disagree on font-size (0.9em vs 0.95em) for no stated reason.
     <button
       type="button"
-      className={`inline cursor-pointer break-all rounded-sm text-left underline decoration-border-strong underline-offset-2 transition-colors hover:text-text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus ${
-        inlineCode
-          ? 'bg-inline-code px-1 py-0.5 font-mono text-[0.9em] text-text-default hover:bg-background-medium'
-          : 'font-mono text-[0.95em] text-text-default'
+      className={`inline break-all rounded-sm text-left font-mono text-[13px] ${LINK_CLASS} ${
+        inlineCode ? 'bg-background-medium px-1 py-0.5' : ''
       }`}
       onClick={() => onOpenArtifact(artifact)}
       title={`Preview ${artifact.title} in the side panel`}
@@ -194,7 +211,11 @@ const MarkdownCode = memo(
         {children}
       </ArtifactLinkButton>
     ) : (
-      <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-mono">
+      // Fill/size/padding come from the `prose-code:*` list on the wrapper —
+      // the single inline-code recipe. This used to also carry `bg-inline-code`,
+      // a second, competing fill that only won via a specificity ladder in
+      // main.css.
+      <code ref={ref} {...props} className="break-all whitespace-pre-wrap font-mono">
         {children}
       </code>
     );
@@ -262,12 +283,18 @@ const MarkdownParagraph = ({
     (meaningfulChildren[0] as React.ReactElement<{ className?: string }>).props.className!.includes(
       'katex'
     );
+  // Centring, margin and overflow for math live in ONE place: the
+  // `.katex-display` block in main.css. This wrapper used to restate all three
+  // as `flex justify-center my-3 overflow-x-auto`.
+  //
+  // Note it never actually reached *display* math: remark-math emits `$$…$$` as
+  // a block sibling, so `.katex-display` is a direct child of the prose root and
+  // is never inside a <p>. The duplicate styling only ever landed on a paragraph
+  // holding nothing but INLINE math — which `.katex-display` does not style, so
+  // the flex/margin were wrong there too. What this branch is genuinely for is
+  // keeping `linkifyFilePaths` off KaTeX's output.
   if (isDisplayMath) {
-    return (
-      <p className="flex justify-center my-3 overflow-x-auto" {...props}>
-        {children}
-      </p>
-    );
+    return <p {...props}>{children}</p>;
   }
   return <p {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir)}</p>;
 };
@@ -294,19 +321,23 @@ const MarkdownContent = memo(function MarkdownContent({
     <div
       className={`w-full overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
+      prose-pre:[&:has(>code)]:p-3 prose-pre:[&>code]:p-0
       prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
       prose-code:text-text-default prose-code:bg-background-medium
-      prose-code:rounded-sm prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.9em]
+      prose-code:rounded-sm prose-code:px-1 prose-code:py-0.5
+      prose-code:text-[13px] prose-code:font-normal prose-code:not-italic
       prose-code:before:content-none prose-code:after:content-none
-      prose-a:break-all prose-a:overflow-wrap-anywhere
-      prose-table:table prose-table:w-full
+      prose-a:break-all prose-a:font-medium prose-a:underline
+      prose-a:decoration-text-accent/40 prose-a:underline-offset-2
+      prose-table:table prose-table:w-full prose-table:text-[13px]
+      prose-th:tabular-nums prose-td:tabular-nums
       prose-blockquote:text-text-muted prose-blockquote:border-border-subtle prose-blockquote:not-italic
-      prose-td:border prose-td:border-border-subtle prose-td:p-2 prose-td:align-top
-      prose-th:border prose-th:border-border-subtle prose-th:p-2 prose-th:text-text-default
-      prose-thead:bg-background-medium
-      prose-h1:text-lg prose-h1:font-semibold prose-h1:mb-3 prose-h1:mt-0 prose-h1:font-sans
-      prose-h2:text-base prose-h2:font-semibold prose-h2:mb-2 prose-h2:mt-4 prose-h2:font-sans
-      prose-h3:text-sm prose-h3:font-semibold prose-h3:mb-2 prose-h3:mt-3 prose-h3:font-sans
+      [&_blockquote_p:first-of-type]:before:content-none
+      [&_blockquote_p:last-of-type]:after:content-none
+      prose-h1:text-[18px] prose-h1:leading-[26px] prose-h1:font-semibold prose-h1:tracking-[-0.005em] prose-h1:mb-3 prose-h1:mt-0 prose-h1:font-sans
+      prose-h2:text-[16px] prose-h2:leading-[24px] prose-h2:font-semibold prose-h2:mb-2 prose-h2:mt-4 prose-h2:font-sans
+      prose-h3:text-[15px] prose-h3:leading-[22px] prose-h3:font-semibold prose-h3:mb-2 prose-h3:mt-3 prose-h3:font-sans
+      prose-h4:text-[13px] prose-h4:leading-[18px] prose-h4:font-semibold prose-h4:tracking-[0.02em] prose-h4:text-text-muted prose-h4:mb-1 prose-h4:mt-3 prose-h4:font-sans
       prose-p:mt-0 prose-p:mb-2 prose-p:font-sans
       prose-ol:my-2 prose-ol:font-sans
       prose-ul:mt-0 prose-ul:mb-3 prose-ul:font-sans
@@ -357,7 +388,7 @@ const MarkdownContent = memo(function MarkdownContent({
               return (
                 <button
                   type="button"
-                  className="inline cursor-pointer break-all text-left text-text-accent underline underline-offset-2 decoration-border-strong hover:text-text-muted"
+                  className={`inline break-all text-left ${LINK_CLASS}`}
                   onClick={() => onOpenArtifact({ kind: 'externalUrl', title: href, url: href })}
                 >
                   {children}

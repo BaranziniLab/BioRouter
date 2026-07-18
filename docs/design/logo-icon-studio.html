@@ -1,0 +1,440 @@
+<title>BioRouter BR icon - centering studio</title>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --surface: #ffffff;
+    --surface-2: #faf8f3;
+    --ink: #2a2520;
+    --muted: #6f6558;
+    --faint: #9a8f7e;
+    --line: #e7dfd0;
+    --line-strong: #d8cdb9;
+    --accent: #b85a32;
+    --accent-ink: #ffffff;
+    --navy: #052049;
+    --coral: #b85a32;
+    --plate: #faf8f3;
+    --guide: #b85a32;
+    --shadow: 0 18px 50px -22px rgba(42, 37, 32, .5), 0 3px 10px -4px rgba(42, 37, 32, .25);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17140f; --surface: #211d17; --surface-2: #1b1812; --ink: #efe8db;
+      --muted: #b3a996; --faint: #7d7364; --line: #322c22; --line-strong: #423a2c;
+      --accent: #d67e52; --accent-ink: #201810;
+      --shadow: 0 22px 60px -24px rgba(0,0,0,.8), 0 4px 14px -6px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17140f; --surface: #211d17; --surface-2: #1b1812; --ink: #efe8db;
+    --muted: #b3a996; --faint: #7d7364; --line: #322c22; --line-strong: #423a2c;
+    --accent: #d67e52; --accent-ink: #201810;
+    --shadow: 0 22px 60px -24px rgba(0,0,0,.8), 0 4px 14px -6px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f1ea; --surface: #ffffff; --surface-2: #faf8f3; --ink: #2a2520;
+    --muted: #6f6558; --faint: #9a8f7e; --line: #e7dfd0; --line-strong: #d8cdb9;
+    --accent: #b85a32; --accent-ink: #ffffff;
+    --shadow: 0 18px 50px -22px rgba(42,37,32,.5), 0 3px 10px -4px rgba(42,37,32,.25);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  header { margin-bottom: 28px; }
+  .eyebrow {
+    font-size: 11px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 10px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 38px); line-height: 1.1; margin: 0 0 12px;
+    font-weight: 700; letter-spacing: -.02em; text-wrap: balance;
+  }
+  h1 .mk { font-weight: 800; }
+  h1 .mk-b { color: var(--navy); }
+  h1 .mk-r { color: var(--coral); font-size: .82em; }
+  .lede { font-size: 15px; color: var(--muted); max-width: 60ch; margin: 0; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .studio {
+    display: grid; grid-template-columns: minmax(0, 460px) minmax(0, 1fr);
+    gap: 28px; margin-top: 32px; align-items: start;
+  }
+  @media (max-width: 820px) { .studio { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  .panel + .panel { margin-top: 20px; }
+  .panel h2 {
+    font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 16px;
+  }
+
+  .stage {
+    position: sticky; top: 24px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 26px;
+  }
+  .plate-frame {
+    display: grid; place-items: center;
+    background:
+      linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
+      repeating-linear-gradient(45deg, var(--line) 0 1px, transparent 1px 11px);
+    border-radius: 14px; padding: 30px;
+  }
+  svg#icon { width: 100%; max-width: 380px; height: auto; display: block; filter: drop-shadow(var(--shadow)); }
+  .plate { fill: var(--plate); }
+  #B, #R, #gB, #gR { font-family: var(--sans); font-weight: 800; }
+  .ghost { opacity: .22; }
+  .ghost #gUL-left, .ghost #gUL-right { opacity: .5; }
+  #guides line, #guides rect { pointer-events: none; }
+  .cl { stroke: var(--guide); stroke-width: 1.4; stroke-dasharray: 6 5; opacity: .8; }
+  .union { fill: none; stroke: var(--guide); stroke-width: 1.4; opacity: .55; }
+  .platebox { fill: none; stroke: var(--guide); stroke-width: 1; stroke-dasharray: 2 4; opacity: .35; }
+
+  .readout {
+    display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 18px;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+  .readout b { color: var(--ink); font-weight: 600; }
+  .lowflag {
+    margin-top: 14px; font-size: 13px; color: var(--muted); padding: 10px 12px;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; display: none;
+  }
+  .lowflag.on { display: block; }
+  .lowflag b { color: var(--accent); font-family: var(--mono); }
+
+  .ctl { margin-bottom: 22px; }
+  .ctl:last-child { margin-bottom: 0; }
+  .ctl-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
+  .ctl-head label { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .val { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  .hint { font-size: 12.5px; color: var(--faint); margin: 7px 0 0; }
+
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+    background: var(--line-strong); border-radius: 4px; outline: none; margin: 4px 0;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); border: 3px solid var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.25); cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 20px; height: 20px; border-radius: 50%; background: var(--accent);
+    border: 3px solid var(--surface); cursor: pointer;
+  }
+
+  .toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+  .toggle {
+    display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    font-size: 13px; color: var(--muted); padding: 7px 12px;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+  }
+  .toggle input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .toggle.on { color: var(--ink); border-color: var(--line-strong); }
+
+  .btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+  button {
+    font-family: var(--sans); font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 9px; padding: 9px 15px; border: 1px solid var(--line-strong);
+    background: var(--surface-2); color: var(--ink); transition: background .12s ease, border-color .12s ease;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.05); }
+
+  textarea {
+    width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    color: var(--ink); background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 13px; resize: vertical; min-height: 132px;
+  }
+  textarea[readonly] { color: var(--muted); }
+  .export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .copied { font-size: 12px; color: var(--accent); font-weight: 600; opacity: 0; transition: opacity .2s; }
+  .copied.on { opacity: 1; }
+  .sub { font-size: 12.5px; color: var(--faint); margin: 10px 0 0; }
+
+  footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--faint); }
+  footer code { font-family: var(--mono); color: var(--muted); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">BioRouter &middot; app-icon studio</p>
+    <h1>The <span class="mk mk-b">B</span><span class="mk mk-r">R</span> mark sits low &mdash; because the underline was never counted</h1>
+    <p class="lede">The letters are centered, then the underline is added <b>below</b> them, so the real mass drops. This tool centers the <b>union of the letters and the underline</b> as one body, and gives you two dials &mdash; <b>vertical position</b> and <b>mark size</b> &mdash; with the centered, slightly-smaller setting as the default. Tune it, then <b>export your setup as text</b> and send it back.</p>
+  </header>
+
+  <div class="studio">
+    <div>
+      <div class="stage">
+        <div class="plate-frame">
+          <svg id="icon" viewBox="0 0 512 512" role="img" aria-label="BioRouter BR icon preview">
+            <rect class="plate" x="6" y="6" width="500" height="500" rx="115"/>
+            <g id="ghost-mark" class="ghost" style="display:none">
+              <text id="gB" x="0" y="0">B</text>
+              <text id="gR" x="0" y="0">R</text>
+              <rect id="gUL-left" x="0" y="0" width="0" height="0" fill="#052049"/>
+              <rect id="gUL-right" x="0" y="0" width="0" height="0" fill="#b85a32"/>
+            </g>
+            <g id="mark">
+              <text id="B" x="0" y="0" fill="#052049">B</text>
+              <text id="R" x="0" y="0" fill="#b85a32">R</text>
+              <rect id="UL-left" x="0" y="0" width="0" height="0" fill="#052049"/>
+              <rect id="UL-right" x="0" y="0" width="0" height="0" fill="#b85a32"/>
+            </g>
+            <g id="guides" style="display:none">
+              <rect class="platebox" x="6" y="6" width="500" height="500" rx="115"/>
+              <line class="cl" x1="24" y1="256" x2="488" y2="256"/>
+              <rect id="union-box" class="union" x="0" y="0" width="0" height="0" rx="4"/>
+            </g>
+          </svg>
+        </div>
+
+        <div class="readout" id="readout"></div>
+        <div class="lowflag" id="lowflag"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Dials</h2>
+
+        <div class="ctl">
+          <div class="ctl-head">
+            <label for="size">Mark size</label>
+            <span class="val" id="size-val">50%</span>
+          </div>
+          <input type="range" id="size" min="34" max="80" step="1" value="50">
+          <p class="hint">The share of the icon the letters + underline fill, top to bottom. Font-independent, so the number means the same thing when it reaches the real asset. The default is smaller than the current, oversized mark.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head">
+            <label for="offset">Vertical position</label>
+            <span class="val" id="offset-val">0 px</span>
+          </div>
+          <input type="range" id="offset" min="-60" max="60" step="1" value="0">
+          <p class="hint"><b>0 = the letters + underline are centered as one body.</b> Negative nudges up, positive down. Size changes never un-center it &mdash; the offset is measured from true center.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head">
+            <label for="gap">Underline gap</label>
+            <span class="val" id="gap-val">8%</span>
+          </div>
+          <input type="range" id="gap" min="2" max="34" step="1" value="8">
+          <p class="hint">Space between the letters and the underline, as a share of cap height &mdash; so it scales with the mark. The default keeps the underline close to the text. Counts toward the centered body, so changing it re-centers automatically.</p>
+        </div>
+
+        <div class="ctl">
+          <div class="ctl-head"><label>Overlays</label></div>
+          <div class="toggles">
+            <label class="toggle" id="t-guides-l"><input type="checkbox" id="t-guides"> Center &amp; union guides</label>
+            <label class="toggle" id="t-ghost-l"><input type="checkbox" id="t-ghost"> Show the low &ldquo;current&rdquo;</label>
+          </div>
+        </div>
+
+        <div class="ctl">
+          <div class="btnrow"><button class="primary" id="reset">Reset to default</button></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="export-head">
+          <h2 style="margin:0">Export your setup</h2>
+          <span class="copied" id="copied">copied &#10003;</span>
+        </div>
+        <textarea id="export" readonly rows="9" aria-label="Exported setup"></textarea>
+        <div class="btnrow" style="margin-top:12px"><button class="primary" id="copy">Copy</button></div>
+        <p class="sub">Paste this back to me and I&rsquo;ll apply it to the real icon asset. You can also paste a setup below to load it here.</p>
+        <textarea id="import" rows="3" placeholder="Paste a setup here, then press Apply..." style="min-height:76px;margin-top:12px"></textarea>
+        <div class="btnrow" style="margin-top:10px"><button id="apply">Apply pasted setup</button></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Reconstruction of the proposed <code>BR</code> monogram in the brand tokens &mdash; <code>#052049</code> UCSF Navy, <code>#b85a32</code> coral, <code>#faf8f3</code> plate. The shipped app icon is still the abstract glyph; this mark is a new design. Centering and size are computed live from the rendered geometry (<code>getBBox</code>), so both defaults are measured, not guessed.
+  </footer>
+</div>
+
+<script>
+(function () {
+  const CANVAS = 512, CENTER = 256;
+  const R_RATIO = 0.74;   // "R" is this fraction of "B" cap height
+  const TRACK = 6;        // gap between the two letters
+  const THICK_K = 0.15;   // underline thickness, as a fraction of cap height
+  const REF_SB = 100;     // reference font-size used to solve for the target footprint
+
+  // gap = space between the letters' baseline edge and the underline, as a
+  // fraction of cap height. Default sits the underline a bit close to the text.
+  const DEFAULTS = { size: 50, offset: 0, gap: 0.08 };
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    B: $("B"), R: $("R"), ULl: $("UL-left"), ULr: $("UL-right"), mark: $("mark"),
+    gB: $("gB"), gR: $("gR"), gULl: $("gUL-left"), gULr: $("gUL-right"), ghost: $("ghost-mark"),
+    union: $("union-box"), guides: $("guides"),
+    size: $("size"), offset: $("offset"), gap: $("gap"),
+    sizeVal: $("size-val"), offsetVal: $("offset-val"), gapVal: $("gap-val"),
+    readout: $("readout"), lowflag: $("lowflag"),
+    exportBox: $("export"), importBox: $("import"),
+  };
+
+  let state = { ...DEFAULTS };
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+  // Lay "B" then "R" on a shared baseline at an absolute B font-size, and derive
+  // the split underline. All numbers live in an arbitrary local space; the whole
+  // group is translated afterwards. getBBox is read live, so metrics are whatever
+  // the VIEWER's font actually renders - the geometry self-calibrates per browser.
+  function layout(bEl, rEl, sB) {
+    const sR = sB * R_RATIO;
+    bEl.setAttribute("font-size", sB);
+    rEl.setAttribute("font-size", sR);
+    bEl.setAttribute("x", 0); bEl.setAttribute("y", 0);
+    const bb = bEl.getBBox();
+    const rx = bb.x + bb.width + TRACK;
+    rEl.setAttribute("x", rx); rEl.setAttribute("y", 0);
+    const rb = rEl.getBBox();
+
+    const left = Math.min(bb.x, rb.x);
+    const right = Math.max(bb.x + bb.width, rb.x + rb.width);
+    const top = Math.min(bb.y, rb.y);
+    const lettersBottom = Math.max(bb.y + bb.height, rb.y + rb.height);
+    const capHeight = bb.height;
+    const gap = capHeight * state.gap;
+    const thick = capHeight * THICK_K;
+    const ulTop = lettersBottom + gap;
+    const ulBottom = ulTop + thick;
+    const split = bb.x + bb.width + TRACK / 2;   // colour seam sits between the letters
+
+    return {
+      left, right, top, lettersBottom, capHeight, ulTop, thick, ulBottom, split,
+      width: right - left, unionHeight: ulBottom - top,
+      unionCenterX: (left + right) / 2,
+      unionCenterY: (top + ulBottom) / 2,
+      lettersCenterY: (top + lettersBottom) / 2,
+      sB, sR, rx,
+    };
+  }
+
+  function paintUnderline(leftRect, rightRect, g) {
+    leftRect.setAttribute("x", g.left); leftRect.setAttribute("y", g.ulTop);
+    leftRect.setAttribute("width", Math.max(0, g.split - g.left)); leftRect.setAttribute("height", g.thick);
+    rightRect.setAttribute("x", g.split); rightRect.setAttribute("y", g.ulTop);
+    rightRect.setAttribute("width", Math.max(0, g.right - g.split)); rightRect.setAttribute("height", g.thick);
+  }
+
+  function render() {
+    // Solve font-size so the UNION footprint = size% of the canvas. Everything in
+    // layout() scales linearly with sB, so one reference measurement is exact.
+    const ref = layout(els.B, els.R, REF_SB);
+    const targetUnionPx = (state.size / 100) * CANVAS;
+    const sB = REF_SB * (targetUnionPx / ref.unionHeight);
+
+    const g = layout(els.B, els.R, sB);
+    paintUnderline(els.ULl, els.ULr, g);
+    const tx = CENTER - g.unionCenterX;
+    const ty = (CENTER + state.offset) - g.unionCenterY;
+    els.mark.setAttribute("transform", `translate(${tx.toFixed(2)} ${ty.toFixed(2)})`);
+
+    els.union.setAttribute("x", (g.left + tx).toFixed(2));
+    els.union.setAttribute("y", (g.top + ty).toFixed(2));
+    els.union.setAttribute("width", g.width.toFixed(2));
+    els.union.setAttribute("height", g.unionHeight.toFixed(2));
+
+    // "current" ghost: same size and glyphs, so its geometry IS g - we must NOT
+    // re-measure with getBBox while it is display:none (that returns zeros).
+    els.gB.setAttribute("font-size", g.sB); els.gB.setAttribute("x", 0); els.gB.setAttribute("y", 0);
+    els.gR.setAttribute("font-size", g.sR); els.gR.setAttribute("x", g.rx); els.gR.setAttribute("y", 0);
+    paintUnderline(els.gULl, els.gULr, g);
+    const gtx = CENTER - g.unionCenterX;
+    const gty = CENTER - g.lettersCenterY;   // centre the LETTERS, not the union
+    els.ghost.setAttribute("transform", `translate(${gtx.toFixed(2)} ${gty.toFixed(2)})`);
+    const low = g.unionCenterY - g.lettersCenterY;
+
+    els.sizeVal.textContent = state.size + "%";
+    els.offsetVal.textContent = (state.offset > 0 ? "+" : "") + state.offset + " px";
+    els.gapVal.textContent = Math.round(state.gap * 100) + "%";
+    const topPad = g.top + ty, botPad = CANVAS - (g.ulBottom + ty);
+    els.readout.innerHTML =
+      `cap height <b>${Math.round(g.capHeight)}</b>` +
+      `<span>underline <b>${Math.round(g.thick)}</b> thick</span>` +
+      `<span>union <b>${Math.round(g.unionHeight)}</b> tall (${state.size}%)</span>` +
+      `<span>pad top <b>${Math.round(topPad)}</b> / bottom <b>${Math.round(botPad)}</b></span>`;
+    els.lowflag.innerHTML =
+      `Centering only the letters drops the real body <b>${Math.round(low)} px</b> below the plate center. ` +
+      `That is the &ldquo;shifted down&rdquo; you are seeing &mdash; the underline&rsquo;s mass was never counted.`;
+
+    updateExport(g, low);
+  }
+
+  function updateExport(g, low) {
+    els.exportBox.value = [
+      "BioRouter BR app icon - centering setup",
+      "",
+      "mark size: " + state.size + "%   (union of letters + underline, as a share of the icon height)",
+      "vertical offset: " + (state.offset > 0 ? "+" : "") + state.offset + " px   (0 = that union centered as one body)",
+      "underline gap: " + Math.round(state.gap * 100) + "%   (of cap height, letters -> underline)",
+      "",
+      "-- derived (canvas 512x512, plate radius 115) --",
+      "cap height: " + Math.round(g.capHeight) + " px",
+      "underline: " + Math.round(g.thick) + " px thick, split navy/coral at the B|R seam",
+      "union (letters + underline): " + Math.round(g.unionHeight) + " px tall",
+      "colors: B #052049 | R #b85a32 | underline #052049/#b85a32 | plate #faf8f3",
+      "note: the current mark (letters-only centered) sits ~" + Math.round(low) + " px low",
+    ].join("\n");
+  }
+
+  els.size.addEventListener("input", (e) => { state.size = +e.target.value; render(); });
+  els.offset.addEventListener("input", (e) => { state.offset = +e.target.value; render(); });
+  els.gap.addEventListener("input", (e) => { state.gap = +e.target.value / 100; render(); });
+
+  function bindToggle(cbId, labelId, targetEl) {
+    const cb = $(cbId), label = $(labelId);
+    cb.addEventListener("change", () => {
+      targetEl.style.display = cb.checked ? "" : "none";
+      label.classList.toggle("on", cb.checked);
+      if (targetEl === els.ghost) els.lowflag.classList.toggle("on", cb.checked);
+    });
+  }
+  bindToggle("t-guides", "t-guides-l", els.guides);
+  bindToggle("t-ghost", "t-ghost-l", els.ghost);
+
+  $("reset").addEventListener("click", () => {
+    state = { ...DEFAULTS };
+    els.size.value = state.size; els.offset.value = state.offset;
+    els.gap.value = Math.round(state.gap * 100);
+    render();
+  });
+
+  $("copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(els.exportBox.value); }
+    catch { els.exportBox.select(); document.execCommand("copy"); }
+    const c = $("copied"); c.classList.add("on"); setTimeout(() => c.classList.remove("on"), 1400);
+  });
+
+  $("apply").addEventListener("click", () => {
+    const txt = els.importBox.value;
+    const sizeM = txt.match(/mark size:\s*(-?\d+)/i);
+    const offM = txt.match(/vertical offset:\s*([+-]?\d+)/i);
+    const gapM = txt.match(/underline gap:\s*(-?\d+)/i);
+    if (sizeM) state.size = clamp(+sizeM[1], 34, 80);
+    if (offM) state.offset = clamp(+offM[1], -60, 60);
+    if (gapM) state.gap = clamp(+gapM[1], 2, 34) / 100;
+    els.size.value = state.size; els.offset.value = state.offset;
+    els.gap.value = Math.round(state.gap * 100);
+    render();
+  });
+
+  render();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+})();
+</script>

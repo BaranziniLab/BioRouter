@@ -19,8 +19,8 @@ import {
   SidebarMenuButton,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarSeparator,
 } from '../ui/sidebar';
+import { BioRouterWordmark } from '../icons/BioRouterWordmark';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
@@ -191,8 +191,24 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     navigateWithViewTransition(navigate, path);
   };
 
-  const handleOpenChat = (sessionId: string) => {
-    navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
+  // A click opens the chat as its own tab; if it is already open anywhere the
+  // reducer dedupes and just activates it. This is a cross-route entry, so it
+  // keeps today's PUSH navigation — only in-strip tab clicks use replace, which
+  // is what keeps Back returning you to wherever you came from INTO /pair.
+  // `title` rides along in route state so the tab opens already named. It is
+  // only ever a HINT: the URL alone still opens the chat (a deep link, a
+  // reload, an external nav carry no state), and BaseChat's load still renames
+  // the tab authoritatively — including the `userSetName` flag, which the
+  // session LIST does not carry. This removes the flash, not the correction.
+  const handleOpenChat = (sessionId: string, title?: string) => {
+    // NB: the 3rd arg of navigateWithViewTransition IS the route state itself,
+    // not an options bag — `{ state: … }` here would nest it one level deep and
+    // silently do nothing.
+    navigateWithViewTransition(
+      navigate,
+      `/pair?resumeSessionId=${sessionId}`,
+      title ? { title } : undefined
+    );
   };
 
   const renderMenuItem = (entry: NavigationItem) => {
@@ -229,24 +245,63 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
   return (
     <>
-      <SidebarContent className="gap-0 overflow-hidden pt-10">
+      <SidebarContent className="gap-0 overflow-hidden">
+        {/* The 52px titlebar band: traffic lights and the floating TitlebarControls
+            strip live over this space, so the sidebar only reserves it. Its bottom
+            hairline continues the chat/preview header hairline, giving the window
+            one continuous top edge.
+            `-mt-2` cancels SidebarContent's 8px top padding so the band starts at
+            the window's top edge (y=0), exactly like the chat/preview header —
+            otherwise the band sat 8px low and its hairline fell ~9px below the tab
+            strip's, breaking the "one continuous top edge". */}
+        <div
+          data-testid="sidebar-titlebar-band"
+          aria-hidden="true"
+          className="-mt-2 h-13 shrink-0 border-b border-sidebar-border"
+        />
+
         <div className="shrink-0">
-          <div
-            data-testid="sidebar-biorouter-wordmark"
-            className="flex h-8 items-center gap-2 px-5"
-          >
-            <span className="text-sm font-semibold leading-none">Biorouter</span>
-            <EnvironmentBadge />
+          {/* Brand row. The wordmark IS the lockup now — "Bio" navy + "Router"
+              coral over the split underline (D-39), replacing the old mono glyph
+              + plain "Biorouter" text. Its left edge lands on the same 44px text
+              edge as every nav label. The component recolours navy -> UCSF teal
+              on a dark surface on its own. */}
+          <div className="px-2 pt-2">
+            <div
+              data-testid="sidebar-biorouter-wordmark"
+              className="flex h-8 items-center gap-2 px-3"
+            >
+              <BioRouterWordmark
+                data-testid="sidebar-biorouter-mark"
+                // h-[22px] so the wordmark's cap height reads at the same size as
+                // the text-sm nav labels beside it — measured against "New Session"
+                // in the calibration harness. (The SVG box includes the underline,
+                // so the letters are smaller than the box; 17px looked undersized.)
+                className="h-[22px] w-auto shrink-0"
+              />
+              <EnvironmentBadge />
+            </div>
           </div>
 
           <SidebarGroup className="px-2 pb-1">
+            <div data-testid="sidebar-menu-label" className="flex h-8 shrink-0 items-center px-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle">
+                Menu
+              </span>
+            </div>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0">{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </div>
 
-        <SidebarSeparator data-testid="sidebar-nav-divider" className="shrink-0" />
+        {/* Full-width inset rule — the menu and the history are separate zones. */}
+        <div
+          data-testid="sidebar-nav-divider"
+          role="separator"
+          aria-orientation="horizontal"
+          className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
+        />
         <RecentChats
           sessions={sessions}
           activeSessionId={currentSessionId}
@@ -259,7 +314,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         />
       </SidebarContent>
 
-      <SidebarSeparator data-testid="sidebar-footer-divider" className="shrink-0" />
+      {/* Matches the menu/history divider above rather than SidebarSeparator's
+          32px sliver — two rules ~100px apart at different widths read as an
+          accident, not a system. */}
+      <div
+        data-testid="sidebar-footer-divider"
+        role="separator"
+        className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
+      />
       <SidebarFooter className="gap-1 p-2">
         <SidebarUpdateButton />
         <SidebarMenu className="gap-0">
