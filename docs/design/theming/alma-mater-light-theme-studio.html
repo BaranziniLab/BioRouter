@@ -1,0 +1,1345 @@
+<meta charset="utf-8">
+<title>Alma Mater — light theme redesign (UCSF Teal)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   ALMA MATER — LIGHT THEME REDESIGN · studio document
+   Self-contained: no CDN, no webfont, no build step. Opens from file://.
+
+   Two custom-property namespaces, deliberately never mixed:
+     --page-*  the document's own chrome
+     --*       the mocked BioRouter app tokens, injected per-frame as inline
+               style so light and dark can render simultaneously on one page.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --page-bg: #f7fafc;
+  --page-card: #ffffff;
+  --page-ink: #06213f;
+  --page-mut: #4a6076;
+  --page-subtle: #6b7f92;
+  --page-line: #dde8ef;
+  --page-line-2: #c8dbe6;
+  --page-accent: #0f7c86;
+  --page-accent-2: #14a0ac;
+  --page-navy: #052049;
+  --page-code: #eef5f9;
+  --page-warn: #8a5a00;
+  --page-bad: #c40d3e;
+  --page-good: #007242;
+
+  --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-full: 9999px;
+  --ease: cubic-bezier(.2, 0, 0, 1);
+  --measure: 74ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-bg: #061627; --page-card: #0b2033; --page-ink: #e8f1f6; --page-mut: #a3b8c6;
+    --page-subtle: #8199aa; --page-line: #17364b; --page-line-2: #21475f;
+    --page-accent: #5cc8d4; --page-accent-2: #7fd6e0; --page-code: #0d2739;
+    --page-warn: #e0a400; --page-bad: #f5768a; --page-good: #5fbf74;
+  }
+}
+:root[data-doc='light']{--page-bg:#f7fafc;--page-card:#fff;--page-ink:#06213f;--page-mut:#4a6076;--page-subtle:#6b7f92;--page-line:#dde8ef;--page-line-2:#c8dbe6;--page-accent:#0f7c86;--page-accent-2:#14a0ac;--page-code:#eef5f9;--page-warn:#8a5a00;--page-bad:#c40d3e;--page-good:#007242}
+:root[data-doc='dark']{--page-bg:#061627;--page-card:#0b2033;--page-ink:#e8f1f6;--page-mut:#a3b8c6;--page-subtle:#8199aa;--page-line:#17364b;--page-line-2:#21475f;--page-accent:#5cc8d4;--page-accent-2:#7fd6e0;--page-code:#0d2739;--page-warn:#e0a400;--page-bad:#f5768a;--page-good:#5fbf74}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--page-bg); color: var(--page-ink);
+  font-family: var(--font-ui); font-size: 15px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 28px 96px; }
+.mono { font-family: var(--font-mono); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------- masthead ---------- */
+.mast { padding: 68px 0 30px; }
+.kicker {
+  font-size: 11.5px; font-weight: 650; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--page-accent); display: flex; align-items: center; gap: 11px;
+}
+.kicker::before { content: ''; width: 30px; height: 2px; background: var(--page-accent); border-radius: 2px; }
+h1.title {
+  font-family: var(--font-display); font-weight: 600;
+  font-size: clamp(38px, 5.6vw, 66px); line-height: 1.02; letter-spacing: -.02em;
+  margin: 20px 0 0;
+}
+h1.title em { font-style: normal; color: var(--page-accent); }
+.lede { max-width: var(--measure); font-size: 17.5px; color: var(--page-mut); margin: 20px 0 0; }
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+.pill {
+  font-size: 12px; padding: 5px 11px; border-radius: var(--r-full);
+  background: var(--page-card); border: 1px solid var(--page-line); color: var(--page-mut);
+}
+.pill b { color: var(--page-ink); font-weight: 600; }
+.pill.hot { border-color: var(--page-accent); color: var(--page-accent); }
+
+/* ---------- controls ---------- */
+.controls {
+  position: sticky; top: 0; z-index: 30; margin: 30px 0 0;
+  padding: 13px 0; background: color-mix(in srgb, var(--page-bg) 88%, transparent);
+  backdrop-filter: blur(14px); border-bottom: 1px solid var(--page-line);
+  display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+}
+.cgroup { display: flex; align-items: center; gap: 9px; }
+.clabel { font-size: 11px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--page-subtle); }
+.seg { display: flex; background: var(--page-card); border: 1px solid var(--page-line); border-radius: var(--r-md); padding: 2px; gap: 2px; }
+.seg button, .acc-btn {
+  font: inherit; font-size: 12.5px; padding: 5px 11px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--page-mut); cursor: pointer; transition: all .16s var(--ease);
+  display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-ui);
+}
+.seg button:hover, .acc-btn:hover { color: var(--page-ink); }
+.seg button[aria-pressed='true'] { background: var(--page-accent); color: #fff; font-weight: 600; }
+.acc-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.acc-btn { border: 1px solid var(--page-line); background: var(--page-card); }
+.acc-btn[aria-pressed='true'] { border-color: var(--page-accent); color: var(--page-ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--page-accent); }
+.chip { width: 13px; height: 13px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.16); flex: none; }
+
+/* ---------- sections ---------- */
+.sec { padding: 60px 0 0; }
+.sec__head { display: flex; align-items: baseline; gap: 13px; flex-wrap: wrap; margin-bottom: 8px; }
+.sec__n { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--page-accent); letter-spacing: .04em; }
+.sec h2 { font-family: var(--font-display); font-size: 27px; font-weight: 600; letter-spacing: -.01em; margin: 0; }
+.why { font-size: 12.5px; color: var(--page-subtle); font-style: italic; }
+.intro { max-width: var(--measure); color: var(--page-mut); margin: 10px 0 26px; }
+
+/* ---------- generic panel ---------- */
+.panel { background: var(--page-card); border: 1px solid var(--page-line); border-radius: var(--r-lg); padding: 22px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.frame-cap { font-size: 11.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--page-subtle); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+.frame-cap .hexes { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0; text-transform: none; font-weight: 400; }
+
+/* ---------- data tables ---------- */
+table.dt { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.dt th {
+  text-align: left; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--page-subtle); font-weight: 650; padding: 0 10px 9px; border-bottom: 1px solid var(--page-line);
+}
+table.dt td { padding: 8px 10px; border-bottom: 1px solid var(--page-line); vertical-align: middle; }
+table.dt tr:last-child td { border-bottom: 0; }
+.sw { display: inline-block; width: 20px; height: 20px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); vertical-align: middle; margin-right: 8px; flex: none; }
+.cellflex { display: flex; align-items: center; gap: 0; }
+.verdict { font-size: 11px; font-weight: 650; padding: 2px 8px; border-radius: var(--r-full); font-family: var(--font-mono); }
+.v-bad { background: color-mix(in srgb, var(--page-bad) 13%, transparent); color: var(--page-bad); }
+.v-good { background: color-mix(in srgb, var(--page-good) 15%, transparent); color: var(--page-good); }
+.v-warn { background: color-mix(in srgb, var(--page-warn) 15%, transparent); color: var(--page-warn); }
+.gain { font-family: var(--font-mono); font-weight: 650; color: var(--page-accent); }
+
+/* ---------- cards ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 14px; margin-top: 20px; }
+.cardx { background: var(--page-card); border: 1px solid var(--page-line); border-radius: var(--r-lg); padding: 17px 18px; }
+.tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; font-weight: 700; width: 21px; height: 21px; line-height: 21px; text-align: center; border-radius: 6px; background: var(--page-accent); color: #fff; margin-bottom: 10px; }
+.cardx h3 { font-size: 15px; margin: 0 0 7px; font-weight: 620; letter-spacing: -.005em; }
+.cardx p { font-size: 13.5px; color: var(--page-mut); margin: 0; }
+.ba { margin-top: 12px; border-top: 1px solid var(--page-line); padding-top: 10px; display: grid; gap: 5px; }
+.ba .row { display: flex; gap: 9px; font-size: 12px; align-items: baseline; }
+.ba .k { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; width: 34px; flex: none; }
+.ba .before .k { color: var(--page-bad); } .ba .after .k { color: var(--page-good); }
+.ba .v { color: var(--page-mut); }
+.ref { margin-top: 11px; font-family: var(--font-mono); font-size: 10.5px; color: var(--page-subtle); }
+
+/* ---------- readout ---------- */
+.readout { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; font-family: var(--font-mono); font-size: 11.5px; color: var(--page-mut); }
+.readout b { color: var(--page-ink); font-weight: 600; }
+
+/* ---------- export ---------- */
+.export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
+.export-head h2 { font-family: var(--font-display); font-size: 22px; margin: 0; font-weight: 600; }
+.copied { font-size: 12px; color: var(--page-accent); font-weight: 650; opacity: 0; transition: opacity .2s; }
+.copied.on { opacity: 1; }
+textarea {
+  width: 100%; font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  color: var(--page-ink); background: var(--page-code); border: 1px solid var(--page-line);
+  border-radius: var(--r-md); padding: 13px 14px; resize: vertical;
+}
+textarea[readonly] { color: var(--page-mut); }
+.btnrow { display: flex; gap: 9px; margin-top: 12px; flex-wrap: wrap; }
+button.primary, button.ghost {
+  font: inherit; font-size: 13.5px; font-weight: 600; padding: 8px 16px; border-radius: var(--r-md); cursor: pointer;
+  transition: all .16s var(--ease); font-family: var(--font-ui);
+}
+button.primary { background: var(--page-accent); color: #fff; border: 1px solid var(--page-accent); }
+button.primary:hover { filter: brightness(1.08); }
+button.ghost { background: transparent; color: var(--page-mut); border: 1px solid var(--page-line); }
+button.ghost:hover { color: var(--page-ink); border-color: var(--page-line-2); }
+.sub { font-size: 13px; color: var(--page-subtle); margin: 12px 0 0; max-width: var(--measure); }
+
+/* ---------- footer ---------- */
+.foot { margin-top: 74px; padding-top: 24px; border-top: 1px solid var(--page-line); font-size: 12.5px; color: var(--page-subtle); max-width: var(--measure); }
+.foot code { font-family: var(--font-mono); font-size: 11.5px; background: var(--page-code); padding: 1.5px 5px; border-radius: 4px; color: var(--page-mut); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MOCKED BIOROUTER APP — token-driven; every value comes from the inline
+   style map on `.app`, so a frame is a faithful preview of the real theme.
+   ══════════════════════════════════════════════════════════════════════════ */
+.app {
+  border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--page-line);
+  background: var(--background-app); color: var(--text-default);
+  font-family: var(--font-ui); font-size: 12.5px; cursor: default; user-select: none;
+  box-shadow: 0 1px 3px rgba(5,32,73,.07);
+}
+.titlebar {
+  height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 12px;
+  background: var(--sidebar); border-bottom: 1px solid var(--sidebar-border);
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; }
+.tb-title { margin-left: 8px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-subtle); }
+.appbody { display: grid; grid-template-columns: 168px 1fr; min-height: 430px; }
+
+.side { background: var(--sidebar); border-right: 1px solid var(--sidebar-border); display: flex; flex-direction: column; padding: 11px 0 9px; }
+.brand { display: flex; align-items: center; gap: 8px; padding: 0 12px 13px; font-weight: 650; font-size: 13px; color: var(--sidebar-foreground); }
+.brand-mark { width: 21px; height: 21px; border-radius: 6px; background: var(--accent-bar); position: relative; flex: none; }
+.brand-mark::after { content: ''; position: absolute; inset: 6px 5px; border-radius: 2px; background: var(--sidebar); }
+.nav { display: flex; flex-direction: column; gap: 1px; padding: 0 7px; }
+.nav-item {
+  display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 6px;
+  color: var(--sidebar-foreground); opacity: .78; font-size: 12px; position: relative;
+}
+.nav-item svg { width: 14px; height: 14px; flex: none; }
+.nav-item.active { background: var(--sidebar-active); opacity: 1; font-weight: 600; }
+.nav-item.active::before {
+  content: ''; position: absolute; left: -7px; top: 5px; bottom: 5px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--accent-bar);
+}
+.nav-item.hov { background: var(--sidebar-hover); opacity: .92; }
+.side-foot { margin-top: auto; padding: 0 7px; }
+.side-user { display: flex; align-items: center; gap: 8px; padding: 7px 8px; margin-top: 5px; border-radius: 7px; background: var(--sidebar-hover); }
+.avatar { width: 21px; height: 21px; border-radius: 50%; background: var(--background-accent); color: var(--text-on-accent); font-size: 9px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.su-name { font-size: 11px; font-weight: 600; color: var(--sidebar-foreground); line-height: 1.25; }
+.su-org { font-size: 9.5px; color: var(--text-subtle); }
+
+.main { display: flex; flex-direction: column; background: var(--background-app); min-width: 0; }
+.page-head { padding: 15px 18px 12px; border-bottom: 1px solid var(--border-subtle); }
+.page-head h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.page-head p { font-size: 11.5px; color: var(--text-muted); margin: 3px 0 0; }
+.chat { padding: 15px 18px; display: flex; flex-direction: column; gap: 13px; flex: 1; min-width: 0; }
+.msg { display: flex; gap: 9px; }
+.who { width: 22px; height: 22px; border-radius: 50%; font-size: 8.5px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.who.u { background: var(--background-medium); color: var(--text-muted); }
+.who.a { background: var(--background-accent); color: var(--text-on-accent); }
+.content { min-width: 0; flex: 1; }
+.content p { margin: 0 0 7px; font-size: 12.5px; line-height: 1.55; }
+
+.code { background: var(--background-code); border: 1px solid var(--border-subtle); border-radius: var(--r-md); overflow: hidden; margin: 8px 0; }
+.code-bar { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid var(--border-subtle); }
+.lang { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-subtle); text-transform: uppercase; letter-spacing: .07em; }
+.code pre { margin: 0; padding: 9px 11px; font-family: var(--font-mono); font-size: 11px; line-height: 1.65; overflow-x: auto; color: var(--syn-plain); }
+.k { color: var(--syn-keyword); } .fn { color: var(--syn-func); } .ty { color: var(--syn-type); }
+.st { color: var(--syn-string); } .cm { color: var(--syn-comment); font-style: italic; }
+.op { color: var(--syn-operator); } .nu { color: var(--syn-number); }
+
+.tool { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--background-muted); margin: 8px 0; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-bar); flex: none; }
+.t-name { font-size: 11.5px; font-weight: 600; flex: 1; }
+.t-name span { font-family: var(--font-mono); font-weight: 400; color: var(--text-subtle); font-size: 10px; margin-left: 6px; }
+.t-chip { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); background: var(--background-medium); padding: 2px 7px; border-radius: var(--r-full); }
+
+.badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 9px 0 0; }
+.badge { font-size: 10px; font-weight: 600; padding: 2.5px 9px 2.5px 7px; border-radius: var(--r-full); display: inline-flex; align-items: center; gap: 5px; }
+.badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.badge.ok { color: var(--text-success); background: color-mix(in srgb, var(--text-success) 13%, transparent); }
+.badge.warn { color: var(--text-warning); background: color-mix(in srgb, var(--text-warning) 15%, transparent); }
+.badge.err { color: var(--text-danger); background: color-mix(in srgb, var(--text-danger) 13%, transparent); }
+.badge.info { color: var(--text-info); background: color-mix(in srgb, var(--text-info) 13%, transparent); }
+
+.btns { display: flex; gap: 7px; margin-top: 11px; flex-wrap: wrap; align-items: center; }
+.btn { font-size: 11.5px; font-weight: 600; padding: 6px 13px; border-radius: 7px; }
+.btn.primary { background: var(--background-accent); color: var(--text-on-accent); }
+.btn.secondary { background: transparent; color: var(--text-default); border: 1px solid var(--border-input); }
+.btn.ghost { background: transparent; color: var(--text-muted); }
+.linkish { color: var(--text-accent); font-size: 11.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+
+.composer { margin-top: auto; padding: 11px 18px 15px; }
+.composer-box { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border-input); background: var(--background-default); border-radius: 10px; padding: 8px 9px 8px 12px; }
+.composer-box .ph { flex: 1; color: var(--text-subtle); font-size: 12px; }
+.send { width: 27px; height: 27px; border-radius: 7px; background: var(--background-accent); color: var(--text-on-accent); display: grid; place-items: center; flex: none; }
+.send svg { width: 13px; height: 13px; }
+
+/* focus + input specimen strip */
+.spec { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 0 18px 15px; }
+.spec-item { border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 9px 10px; background: var(--background-default); }
+.spec-item.focused { background: var(--background-focus); border-color: var(--border-focus); }
+.spec-item.hovered { background: var(--background-medium); }
+.spec-lab { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-subtle); font-weight: 650; }
+.spec-val { font-size: 11.5px; color: var(--text-default); margin-top: 3px; font-weight: 550; }
+
+/* heatmap */
+.heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 8px); gap: 2.5px; margin-top: 9px; }
+.heat i { width: 8px; height: 8px; border-radius: 2px; display: block; }
+.heat-leg { display: flex; align-items: center; gap: 5px; font-size: 9.5px; color: var(--text-subtle); margin-top: 7px; }
+.heat-leg i { width: 8px; height: 8px; border-radius: 2px; }
+.metric-row { display: flex; gap: 22px; margin-top: 4px; }
+.metric .mv { font-family: var(--font-mono); font-size: 22px; font-weight: 300; color: var(--text-default); line-height: 1.1; }
+.metric .ml { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-subtle); font-weight: 650; margin-top: 2px; }
+.gal { padding: 15px 16px; display: flex; flex-direction: column; gap: 13px; }
+
+/* swatch panels */
+.swgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.swgroup { margin-bottom: 16px; }
+.swgroup h4 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; color: var(--page-subtle); font-weight: 650; margin: 0 0 8px; }
+.swrow { display: flex; align-items: center; gap: 9px; padding: 3.5px 0; font-size: 12px; }
+.swrow .nm { flex: 1; color: var(--page-mut); }
+.swrow .hx { font-family: var(--font-mono); font-size: 10.5px; color: var(--page-subtle); text-transform: uppercase; }
+
+/* assertion list */
+.asserts { max-height: 420px; overflow-y: auto; border: 1px solid var(--page-line); border-radius: var(--r-md); }
+.arow { display: flex; align-items: center; gap: 10px; padding: 5px 12px; font-size: 11.5px; border-bottom: 1px solid var(--page-line); font-family: var(--font-mono); }
+.arow:last-child { border-bottom: 0; }
+.arow .st { width: 40px; font-weight: 700; flex: none; }
+.arow .rt { width: 62px; text-align: right; flex: none; color: var(--page-ink); font-weight: 600; }
+.arow .lb { flex: 1; color: var(--page-mut); font-family: var(--font-ui); }
+.arow .nt { color: var(--page-subtle); font-size: 10.5px; }
+.arow.pass .st { color: var(--page-good); }
+.arow.fail { background: color-mix(in srgb, var(--page-bad) 8%, transparent); }
+.arow.fail .st { color: var(--page-bad); }
+.summary-bar { padding: 11px 14px; border-radius: var(--r-md); font-family: var(--font-mono); font-size: 13px; font-weight: 650; margin-bottom: 14px; }
+.summary-bar.ok { background: color-mix(in srgb, var(--page-good) 13%, transparent); color: var(--page-good); }
+.summary-bar.no { background: color-mix(in srgb, var(--page-bad) 13%, transparent); color: var(--page-bad); }
+
+@media (max-width: 1080px) {
+  .grid2, .swgrid { grid-template-columns: 1fr; }
+  .appbody { grid-template-columns: 132px 1fr; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="kicker">BioRouter · Alma Mater · Light-theme redesign · Draft for approval</div>
+    <h1 class="title">The light theme,<br>in <em>UCSF teal</em>.</h1>
+    <p class="lede">
+      Alma Mater's dark mode is a confident navy instrument. Its light mode is not — it is a
+      near-colourless blue-grey that reads as unfinished rather than institutional. This document
+      measures exactly why, rebuilds the surfaces around UCSF's teal column, and validates every
+      token against the same 35 contrast assertions the repo's guard enforces — computed live, in
+      this page, for every option you can pick above.
+      <br><br>
+      One caveat up front, in §02: the brand research does <b>not</b> support treating teal as
+      co-iconic with navy. Navy anchors the identity; teal is one of six peer hues and, on UCSF's
+      own site, a micro-accent. The proposal therefore makes teal the accent and keeps navy as the
+      ink and the whole dark mode — which is both the stronger design and the more literal reading
+      of UCSF's one stated colour rule.
+    </p>
+    <div class="pill-row" id="pillRow"></div>
+  </header>
+
+  <div class="controls">
+    <div class="cgroup"><span class="clabel">Accent</span><div class="acc-row" id="accentBtns"></div></div>
+    <div class="cgroup"><span class="clabel">Canvas</span>
+      <div class="seg" id="canvasSeg">
+        <button data-canvas="tinted" aria-pressed="true">Tinted</button>
+        <button data-canvas="white" aria-pressed="false">White</button>
+      </div>
+    </div>
+    <div class="cgroup"><span class="clabel">Links</span>
+      <div class="seg" id="linkSeg">
+        <button data-link="teal" aria-pressed="true">Teal</button>
+        <button data-link="ctablue" aria-pressed="false">CTA Blue</button>
+      </div>
+    </div>
+    <div class="cgroup"><span class="clabel">Sidebar</span>
+      <div class="seg" id="sideSeg">
+        <button data-side="tint" aria-pressed="true">Pale blue</button>
+        <button data-side="navy" aria-pressed="false">Navy slab</button>
+      </div>
+    </div>
+    <div class="cgroup"><span class="clabel">Doc</span>
+      <div class="seg" id="docSeg">
+        <button data-doc="light" aria-pressed="true">Light</button>
+        <button data-doc="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </div>
+
+  <p id="optionNote" class="sub" style="display:none;margin-top:14px"></p>
+
+  <!-- ════════ 01 · DIAGNOSIS ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">01</span>
+      <h2>What is actually wrong with the light theme</h2>
+      <span class="why">measured from the shipping tokens, not inferred</span>
+    </div>
+    <p class="intro">
+      The complaint — "the light blueish grey doesn't contrast well" — is reproducible as three
+      separate numeric defects. None of them is a contrast-guard failure, which is why the theme
+      passes CI and still looks wrong.
+    </p>
+
+    <div class="panel">
+      <table class="dt">
+        <thead><tr><th>Surface token</th><th>Ships today</th><th>OKLCH chroma</th><th>Hue</th><th>Reads as</th></tr></thead>
+        <tbody id="diagBody"></tbody>
+      </table>
+    </div>
+
+    <div class="cards">
+      <div class="cardx">
+        <span class="tag">A</span>
+        <h3>The surfaces carry no brand colour at all</h3>
+        <p>Every light surface sits at chroma ≤ 0.008 — below the threshold where the eye reads
+        a hue rather than "dirty white". The UCSF palette is present only on the CTA button,
+        which is a rounding error of the pixels on screen.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">mean surface chroma 0.0044 — greyscale</span></div>
+          <div class="row after"><span class="k">New</span><span class="v" id="baChroma">mean 0.0234 — a legible UCSF blue</span></div>
+        </div>
+        <div class="ref">§5a · alma-mater-theme-tokens.md</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">B</span>
+        <h3>The neutrals are not one family</h3>
+        <p>The ramp wanders across 61° of hue — <span class="mono">#d1d3d3</span> is a teal-grey at
+        197°, the sidebar is a violet-grey at 258°. Adjacent surfaces disagree about what colour
+        "neutral" is, which is precisely what makes a palette look muddy.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">hue spread 197° → 258° = 61°</span></div>
+          <div class="row after"><span class="k">New</span><span class="v" id="baHue">single family, 6° spread</span></div>
+        </div>
+        <div class="ref">D-15 · one neutral family</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">C</span>
+        <h3>Two surface steps are below the perception floor</h3>
+        <p>Sidebar hover moves the surface by ΔL* 2.85 and card-to-ground by 4.21. Under about
+        ΔL* 3 a surface change is not reliably seen at all, so the interface feels inert —
+        hovering a nav row appears to do nothing.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">sidebar hover ΔL* 2.85 — invisible</span></div>
+          <div class="row after"><span class="k">New</span><span class="v" id="baFlat">every step ≥ 3.0, structure ≥ 4.4</span></div>
+        </div>
+        <div class="ref">§5b · two-tone canvas</div>
+      </div>
+      <div class="cardx">
+        <span class="tag">D</span>
+        <h3>The accent is a UCSF colour, but not <em>the</em> UCSF colour</h3>
+        <p>Eggplant is genuinely in the brand matrix (G2) and was chosen to dodge the "corporate
+        blue" cliché. But nobody pictures plum when they picture UCSF — they picture navy and
+        teal. The twist cost the theme its recognisability.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Now</span><span class="v">#6c247c eggplant — distinctive, unplaceable</span></div>
+          <div class="row after"><span class="k">New</span><span class="v" id="baAcc">UCSF Teal — instantly placeable</span></div>
+        </div>
+        <div class="ref">§4 · the accent decision</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 01b · WHAT THE BRAND RESEARCH SAYS ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">02</span>
+      <h2>What the brand research actually found</h2>
+      <span class="why">including one finding that argues against this redesign's premise</span>
+    </div>
+    <p class="intro">
+      Before choosing hexes, the UCSF brand was re-derived from primary sources — the lettered
+      matrix at <code class="mono">identity.ucsf.edu/brand-guide/color</code> parsed from raw HTML,
+      plus the computed styles of live UCSF properties. Four findings changed the design. The
+      first one is uncomfortable and is reported here rather than buried.
+    </p>
+
+    <div class="cards">
+      <div class="cardx" style="border-color:var(--page-warn)">
+        <span class="tag" style="background:var(--page-warn)">!</span>
+        <h3>Teal is <em>not</em> co-iconic with navy</h3>
+        <p>The brief assumed teal is "maybe just as iconic as navy". The evidence does not support
+        that. Navy A1 is the single base colour, is UCSF's body-text ink, and is the only colour
+        with a stated proportion rule. Teal C3 is one of <em>six</em> peer primary hue ranges, and
+        across 382&nbsp;KB of live ucsf.edu CSS the teal token is applied in three declarations.
+        Teal is real, official and beautiful — but it is a micro-accent, not a co-anchor.</p>
+        <div class="ba">
+          <div class="row before"><span class="k">Claim</span><span class="v">navy ≈ teal in brand weight</span></div>
+          <div class="row after"><span class="k">Found</span><span class="v">navy anchors; teal is 1 of 6 peer hues</span></div>
+        </div>
+        <div class="ref">identity.ucsf.edu/brand-guide/color · measured CSS</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">1</span>
+        <h3>So teal is used where it is strongest</h3>
+        <p>This is why the proposal makes teal the <em>accent</em> and leaves navy as the ink, the
+        inverse surface and the whole dark mode — rather than turning the app teal. UCSF's one
+        proportion rule is "pair navy as a base colour with neutrals and up to three additional
+        colours". Navy base + one teal accent is a literal reading of that sentence.</p>
+        <div class="ref">brand guide, colour usage</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">2</span>
+        <h3><span class="mono">#F2F3F4</span> is not an arbitrary grey</h3>
+        <p>The ground that reads as washed out is I6 — and I6 is the measured page background of
+        www.ucsf.edu. The current theme was not wrong to pick it. It fails <em>here</em> because a
+        marketing page surrounds it with navy bands and full-bleed photography, while a dense
+        desktop app surrounds it with more grey. The same swatch, different context.</p>
+        <div class="ref">computed body background, www.ucsf.edu</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">3</span>
+        <h3>Peers never put a large field in the mid-tones</h3>
+        <p>Across Stanford Medicine, Hopkins, Mayo, Broad, Dana-Farber and Cleveland Clinic, brand
+        colour appears either very dark (L*&nbsp;&lt;&nbsp;25) or small and fully saturated — never
+        as a large mid-tone, mid-saturation field. That zone <em>is</em> the washed-out blue-grey.
+        Hopkins Medicine, navy + teal exactly like UCSF, is the closest analogue.</p>
+        <div class="ba">
+          <div class="row after"><span class="k">Rule</span><span class="v">tint stays under C 0.026 on big surfaces</span></div>
+        </div>
+        <div class="ref">measured computed styles, 8 peer sites</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">4</span>
+        <h3>UCSF publishes its ratios against <em>navy</em>, not white</h3>
+        <p>The brand guide lists C3 Teal at 5.08:1 — that is against navy. Against white it is
+        <b>3.15:1</b> and fails AA for body text. Copying UCSF's published numbers into a
+        light-theme argument would have shipped an inaccessible link colour. Every ratio in this
+        document is computed here, against the actual token.</p>
+        <div class="ref">verified numerically · §5 below</div>
+      </div>
+
+      <div class="cardx">
+        <span class="tag">5</span>
+        <h3>There is a sanctioned ultra-light tint tier</h3>
+        <p>UCSF's Sitebuilder theme ships an unpublished "6" row — <span class="mono">B6 #E2F4FC</span>,
+        <span class="mono">C6 #E8F6F8</span>, <span class="mono">A6 #E6EEF6</span> — ultra-light
+        tinted panels. It is precedent that UCSF itself tints surfaces toward brand hues rather
+        than leaving them neutral grey. <span class="mono">C6</span> is the heatmap's idle step here.</p>
+        <div class="ref">pharm.ucsf.edu theme CSS · not brand-guide policy</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 03 · THE PROPOSAL ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">03</span>
+      <h2>Alma Mater Light, rebuilt</h2>
+      <span class="why">the app in both modes, live from the token map</span>
+    </div>
+    <p class="intro" id="proposalIntro"></p>
+
+    <div class="grid2">
+      <div>
+        <div class="frame-cap"><span>Proposed · Light</span><span class="hexes" id="capLight"></span></div>
+        <div id="mount-new-light"></div>
+      </div>
+      <div>
+        <div class="frame-cap"><span>Dark · navy surfaces unchanged</span><span class="hexes" id="capDark"></span></div>
+        <div id="mount-new-dark"></div>
+      </div>
+    </div>
+    <div class="readout" id="readout"></div>
+  </section>
+
+  <!-- ════════ 03 · BEFORE / AFTER ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">04</span>
+      <h2>Against what ships today</h2>
+      <span class="why">same chrome, same content, only the tokens differ</span>
+    </div>
+    <p class="intro">
+      The left frame is the current Alma Mater light theme exactly as it ships. Nothing about the
+      layout, type or spacing changes in the proposal — this is a re-colouring, as the original
+      theme was.
+    </p>
+    <div class="grid2">
+      <div>
+        <div class="frame-cap"><span>Current · shipping</span><span class="hexes">#f2f3f4 · #eceef1 · #6c247c</span></div>
+        <div id="mount-old-light"></div>
+      </div>
+      <div>
+        <div class="frame-cap"><span>Proposed</span><span class="hexes" id="capNew2"></span></div>
+        <div id="mount-new-light-2"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 04 · COMPONENTS ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">05</span>
+      <h2>Components and data surfaces</h2>
+      <span class="why">where the accent earns its keep — and where it must stay out</span>
+    </div>
+    <p class="intro">
+      Teal appears on primary actions, the active-nav rail, live-status dots and links. It does
+      not appear on focus (a neutral surface shift, D-15), on status (the alert columns own
+      those hues), or as decoration.
+    </p>
+    <div class="grid2">
+      <div>
+        <div class="frame-cap"><span>Light</span></div>
+        <div id="mount-gal-light"></div>
+      </div>
+      <div>
+        <div class="frame-cap"><span>Dark</span></div>
+        <div id="mount-gal-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 05 · CONTRAST ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">06</span>
+      <h2>Contrast, computed here and now</h2>
+      <span class="why">the repo's own 35 assertions, re-run in the page</span>
+    </div>
+    <p class="intro">
+      These are not asserted claims copied from a spec — the ratios below are computed in this
+      document from the live token map, using the same relative-luminance maths as
+      <code class="mono">ui/desktop/scripts/check-contrast.mjs</code>. Change any control above and
+      they recompute. If a row fails here, <code class="mono">npm run check:contrast</code> will fail too.
+    </p>
+    <div class="grid2">
+      <div>
+        <div class="summary-bar" id="sumLight"></div>
+        <div class="asserts" id="assertsLight"></div>
+      </div>
+      <div>
+        <div class="summary-bar" id="sumDark"></div>
+        <div class="asserts" id="assertsDark"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 06 · TOKENS ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">07</span>
+      <h2>Token reference</h2>
+      <span class="why">every value that would change in main.css</span>
+    </div>
+    <div class="panel">
+      <div class="swgrid">
+        <div id="sw-light"></div>
+        <div id="sw-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 07 · EXPORT ════════ -->
+  <section class="sec">
+    <div class="sec__head">
+      <span class="sec__n">08</span>
+      <h2>Export your decision</h2>
+      <span class="why">tune above, then send this back</span>
+    </div>
+    <p class="intro">
+      Everything below regenerates whenever you change a control. Pick the accent, canvas and
+      sidebar you want, copy the block, and paste it back to me — I will implement exactly that
+      combination. You can also paste a previous setup in to restore it.
+    </p>
+    <div class="panel">
+      <div class="export-head">
+        <h2>Setup</h2>
+        <span class="copied" id="copied">copied ✓</span>
+      </div>
+      <textarea id="export" readonly rows="26" aria-label="Exported setup"></textarea>
+      <div class="btnrow">
+        <button class="primary" id="copy">Copy setup</button>
+        <button class="ghost" id="copyCss">Copy as CSS block</button>
+        <button class="ghost" id="reset">Reset to recommended</button>
+      </div>
+      <p class="sub">
+        “Copy as CSS block” emits the literal <code class="mono">:root[data-theme='alma-mater']</code>
+        and <code class="mono">.dark[data-theme='alma-mater']</code> replacement bodies, ready to drop
+        into <code class="mono">main.css</code>.
+      </p>
+      <textarea id="import" rows="3" placeholder="Paste a setup here, then press Apply…" style="margin-top:14px"></textarea>
+      <div class="btnrow"><button class="ghost" id="apply">Apply pasted setup</button></div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    Palette sourced from <code>identity.ucsf.edu/brand-guide</code>. Contrast maths identical to
+    <code>ui/desktop/scripts/check-contrast.mjs</code>; syntax stops verified against the code ground
+    the way <code>codeTheme.test.ts</code> does. Layout, type scale, radii, motion and spacing are
+    unchanged from Parchment — this is a colour-token change only.
+    <br><br>
+    <span id="footStamp"></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ══════════════ colour maths — same as check-contrast.mjs ══════════════ */
+  function hexToRgb(h) {
+    var s = h.replace('#', '');
+    if (s.length === 3) s = s.split('').map(function (c) { return c + c; }).join('');
+    return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+  }
+  function lum(h) {
+    var c = hexToRgb(h).map(function (v) {
+      var x = v / 255;
+      return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function ratio(a, b) {
+    var la = lum(a), lb = lum(b), hi = Math.max(la, lb), lo = Math.min(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+  function lstar(h) {
+    var Y = lum(h);
+    return Y <= 216 / 24389 ? Y * (24389 / 27) : Math.cbrt(Y) * 116 - 16;
+  }
+  function oklch(h) {
+    var rgb = hexToRgb(h).map(function (v) {
+      var x = v / 255;
+      return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    var r = rgb[0], g = rgb[1], b = rgb[2];
+    var l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    var m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    var s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    var L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+    var A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+    var B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+    var C = Math.sqrt(A * A + B * B);
+    var H = Math.atan2(B, A) * 180 / Math.PI; if (H < 0) H += 360;
+    return { L: L, C: C, H: H };
+  }
+
+  /* ══════════════ ACCENT OPTIONS ══════════════
+     Every teal below is an OFFICIAL UCSF swatch, cited by its letter code —
+     verified 2026-07-18 against identity.ucsf.edu/brand-guide/color by parsing
+     raw HTML, not a page summary. UCSF names only ~17 of its ~42 swatches, so
+     tokens are labelled by code (C1/C2/C3) rather than by invented names like
+     "Dark Teal", which resolve to nothing on the brand guide.
+
+     The teal ladder, and why each stop sits where it does:
+       C3 #16A0AC — "UCSF Teal", the named vibrant stop. 3.15:1 on white, so it
+                    is a rail/dot/emphasis colour, never a text or fill colour.
+       C2 #14828C — 4.56:1 with white ink: the lightest OFFICIAL teal that
+                    clears AA for a filled button label.
+       C1 #0E5258 — 8.87:1 on white, 7.87:1 on the tinted canvas: the link and
+                    hover stop.
+     `--text-accent` is canvas-dependent (see LINKS) because the guard measures
+     it against --background-app, and a tinted canvas costs ~0.5 of a ratio. */
+  var ACCENTS = {
+    teal: {
+      name: 'UCSF Teal (C1–C3)', swatch: '#14828c',
+      note: 'The recommended accent. Fill C2 #14828C (white ink 4.56:1), rail C3 #16A0AC — the named "UCSF Teal" — and C1 #0E5258 for links and hover. All three are official swatches from a single hue column.',
+      light: { '--background-accent': '#14828c', '--background-accent-hover': '#0e5258', '--border-accent': '#14828c', '--text-on-accent': '#ffffff', '--accent-bar': '#16a0ac',
+               '--heat-0': '#e8f6f8', '--heat-1': '#b4e2e8', '--heat-2': '#60d0da', '--heat-3': '#16a0ac', '--heat-4': '#0e5258' },
+      dark:  { '--background-accent': '#60d0da', '--background-accent-hover': '#8ae0e8', '--border-accent': '#60d0da', '--text-accent': '#60d0da', '--text-on-accent': '#052049', '--accent-bar': '#60d0da',
+               '--heat-0': '#10223f', '--heat-1': '#0e5258', '--heat-2': '#14828c', '--heat-3': '#16a0ac', '--heat-4': '#60d0da' }
+    },
+    deepteal: {
+      name: 'Deep Teal (C1 fill)', swatch: '#0e5258',
+      note: 'The same column, one stop deeper: C1 #0E5258 as the fill (white ink 8.87:1). Quieter and far more legible, at the cost of the vividness the vibrant stop carries.',
+      light: { '--background-accent': '#0e5258', '--background-accent-hover': '#083c41', '--border-accent': '#0e5258', '--text-on-accent': '#ffffff', '--accent-bar': '#14828c',
+               '--heat-0': '#e8f6f8', '--heat-1': '#b4e2e8', '--heat-2': '#60d0da', '--heat-3': '#16a0ac', '--heat-4': '#0e5258' },
+      dark:  { '--background-accent': '#60d0da', '--background-accent-hover': '#8ae0e8', '--border-accent': '#60d0da', '--text-accent': '#60d0da', '--text-on-accent': '#052049', '--accent-bar': '#60d0da',
+               '--heat-0': '#10223f', '--heat-1': '#0e5258', '--heat-2': '#14828c', '--heat-3': '#16a0ac', '--heat-4': '#60d0da' }
+    },
+    ctablue: {
+      name: 'CTA Blue (A3)', swatch: '#006be9',
+      note: "UCSF's own digital answer: A3 #006BE9, \"specially formulated for digital applications, ensuring a consistent experience for all buttons and links\". The most literally compliant option — and the most generic.",
+      light: { '--background-accent': '#006be9', '--background-accent-hover': '#0f388a', '--border-accent': '#006be9', '--text-on-accent': '#ffffff', '--accent-bar': '#178ccb',
+               '--heat-0': '#e2f4fc', '--heat-1': '#b8e6fa', '--heat-2': '#6fc0e8', '--heat-3': '#178ccb', '--heat-4': '#0f388a' },
+      dark:  { '--background-accent': '#7fc4ee', '--background-accent-hover': '#a3d6f4', '--border-accent': '#7fc4ee', '--text-accent': '#8fcdf0', '--text-on-accent': '#052049', '--accent-bar': '#7fc4ee',
+               '--heat-0': '#10223f', '--heat-1': '#123a52', '--heat-2': '#176489', '--heat-3': '#2f95c4', '--heat-4': '#7fc4ee' }
+    },
+    eggplant: {
+      name: 'Eggplant (current)', swatch: '#6c247c',
+      note: 'What ships today (G2), shown on the rebuilt surfaces so the surface fix can be judged independently of the accent change.',
+      light: { '--background-accent': '#6c247c', '--background-accent-hover': '#571c66', '--border-accent': '#6c247c', '--text-on-accent': '#ffffff', '--accent-bar': '#a238ba',
+               '--heat-0': '#ece6f1', '--heat-1': '#d9c2e8', '--heat-2': '#c48ed6', '--heat-3': '#9e44b4', '--heat-4': '#6c247c' },
+      dark:  { '--background-accent': '#c45ed8', '--background-accent-hover': '#d07ee0', '--border-accent': '#c45ed8', '--text-accent': '#d7a5e8', '--text-on-accent': '#1a0a24', '--accent-bar': '#c45ed8',
+               '--heat-0': '#10223f', '--heat-1': '#3a1e52', '--heat-2': '#6c247c', '--heat-3': '#a238ba', '--heat-4': '#c45ed8' }
+    }
+  };
+
+  /* Link colour is solved per canvas, because --text-accent is measured against
+     --background-app and the tinted canvas is ~4 L* darker than white. */
+  var LINKS = {
+    teal:    { tinted: '#0e5258', white: '#14828c', label: 'Teal' },
+    ctablue: { tinted: '#0059c2', white: '#006be9', label: 'CTA Blue' }
+  };
+
+  /* ══════════════ BASE SURFACE SETS ══════════════ */
+
+  /* The rebuilt light surfaces. Three deliberate changes from what ships:
+
+     1. ONE hue family at ~207° — teal-leaning, so the neutrals echo the accent
+        column instead of drifting between 197° and 258° as they do today.
+     2. Chroma raised into the 0.006–0.026 band. Below ~0.006 a large flat field
+        reads as "grey with something wrong with the monitor"; above ~0.030 a
+        tinted neutral starts reading as a coloured panel. Every surface here
+        sits inside that window, rising as lightness falls — the same curve
+        Tailwind slate, USWDS gray-cool and IBM Carbon all use.
+     3. The canvas gives up pure white (see CANVAS). With #ffffff there is no
+        elevation headroom: nothing can be brighter than the ground, so depth
+        can only be expressed by going darker, which is what reads as flat. */
+  var NEW_LIGHT = {
+    '--background-default': '#ffffff', '--background-card': '#ffffff',
+    '--background-muted': '#dfebed', '--background-code': '#dfebed',
+    '--background-medium': '#cfe1e3', '--background-strong': '#bfd5d8',
+    '--background-inverse': '#052049',
+    '--background-danger': '#e61048', '--background-success': '#007242', '--background-info': '#0f388a',
+    '--background-warning': '#8a5a00', '--text-on-status': '#ffffff',
+    '--border-subtle': '#c7dadd', '--border-strong': '#b8d0d3', '--border-input': '#c2d7d9',
+    '--border-danger': '#c40d3e', '--border-success': '#007242', '--border-warning': '#8a5a00', '--border-info': '#0f388a',
+    '--text-default': '#052049', '--text-muted': '#456076', '--text-subtle': '#4d6277', '--text-inverse': '#ffffff',
+    '--text-danger': '#c40d3e', '--text-success': '#007242', '--text-warning': '#8a5a00', '--text-info': '#0f388a',
+    '--ring': '#456076', '--background-focus': '#c1d7d9', '--border-focus': '#4d6277',
+    '--sidebar': '#dce9ea', '--sidebar-hover': '#cee0e2', '--sidebar-active': '#bed4d7',
+    '--sidebar-border': '#c7dadd', '--sidebar-foreground': '#052049',
+    '--syn-plain': '#052049', '--syn-comment': '#4d6277', '--syn-keyword': '#0f388a', '--syn-string': '#007242',
+    '--syn-number': '#8a5a00', '--syn-func': '#0e5258', '--syn-type': '#14828c', '--syn-operator': '#456076'
+  };
+
+  // Dark is unchanged from what ships — only the accent tokens move.
+  var NEW_DARK = {
+    '--background-app': '#04142e', '--background-default': '#08213f', '--background-card': '#08213f',
+    '--background-muted': '#0d2a50', '--background-code': '#08213f', '--background-medium': '#143563',
+    '--background-strong': '#1e477f', '--background-inverse': '#f2f3f4',
+    '--background-danger': '#f5768a', '--background-success': '#5fbf74', '--background-info': '#7fb3e6',
+    '--background-warning': '#feb80a', '--text-on-status': '#052049',
+    '--border-subtle': '#17386a', '--border-strong': '#24487f', '--border-input': '#24487f',
+    '--border-danger': '#f5768a', '--border-success': '#5fbf74', '--border-warning': '#feb80a', '--border-info': '#7fb3e6',
+    '--text-default': '#f2f3f4', '--text-muted': '#b4b9bf', '--text-subtle': '#909aa6', '--text-inverse': '#052049',
+    '--text-danger': '#f5768a', '--text-success': '#5fbf74', '--text-warning': '#feb80a', '--text-info': '#7fb3e6',
+    '--ring': '#b4b9bf', '--background-focus': '#163c74', '--border-focus': '#909aa6',
+    '--sidebar': '#071b3a', '--sidebar-hover': '#0e2a50', '--sidebar-active': '#163864',
+    '--sidebar-border': '#1a3a66', '--sidebar-foreground': '#f2f3f4',
+    '--syn-plain': '#e1e3e5', '--syn-comment': '#8a93a6', '--syn-keyword': '#7fb3e6', '--syn-string': '#6fc084',
+    '--syn-number': '#e0a44a', '--syn-func': '#5cc6d0', '--syn-type': '#8fd0e8', '--syn-operator': '#b4b9bf'
+  };
+
+  // What ships today, for the before/after frame.
+  var OLD_LIGHT = {
+    '--background-app': '#ffffff', '--background-default': '#ffffff', '--background-card': '#ffffff',
+    '--background-muted': '#f2f3f4', '--background-code': '#f2f3f4', '--background-medium': '#e1e3e5',
+    '--background-strong': '#d1d3d3', '--background-inverse': '#052049',
+    '--background-danger': '#e61048', '--background-success': '#007242', '--background-info': '#0f388a',
+    '--background-warning': '#8a5a00', '--text-on-status': '#ffffff',
+    '--border-subtle': '#e1e3e5', '--border-strong': '#cfd3d8', '--border-input': '#d1d3d3',
+    '--border-danger': '#c40d3e', '--border-success': '#007242', '--border-warning': '#8a5a00', '--border-info': '#0f388a',
+    '--text-default': '#052049', '--text-muted': '#506380', '--text-subtle': '#586780', '--text-inverse': '#ffffff',
+    '--text-danger': '#c40d3e', '--text-success': '#007242', '--text-warning': '#8a5a00', '--text-info': '#0f388a',
+    '--ring': '#506380', '--background-focus': '#d0d6de', '--border-focus': '#586780',
+    '--sidebar': '#eceef1', '--sidebar-hover': '#e3e6ea', '--sidebar-active': '#d7dbe0',
+    '--sidebar-border': '#e1e3e5', '--sidebar-foreground': '#052049',
+    '--background-accent': '#6c247c', '--background-accent-hover': '#571c66', '--border-accent': '#6c247c',
+    '--text-accent': '#6c247c', '--text-on-accent': '#ffffff', '--accent-bar': '#a238ba',
+    '--heat-0': '#ece6f1', '--heat-1': '#d9c2e8', '--heat-2': '#c48ed6', '--heat-3': '#9e44b4', '--heat-4': '#6c247c',
+    '--syn-plain': '#052049', '--syn-comment': '#586780', '--syn-keyword': '#0f388a', '--syn-string': '#007242',
+    '--syn-number': '#8a5a00', '--syn-func': '#0e5258', '--syn-type': '#6c247c', '--syn-operator': '#506380'
+  };
+
+  // Variants.
+  var CANVAS = {
+    tinted: { '--background-app': '#eaf3f4' },
+    white:  { '--background-app': '#ffffff' }
+  };
+  var NAVY_SIDEBAR = {
+    '--sidebar': '#052049', '--sidebar-hover': '#0b2c5c', '--sidebar-active': '#123a70',
+    '--sidebar-border': '#0b2c5c', '--sidebar-foreground': '#ffffff'
+  };
+
+  var DEFAULTS = { accent: 'teal', canvas: 'tinted', link: 'teal', side: 'tint' };
+  var state = { accent: 'teal', canvas: 'tinted', link: 'teal', side: 'tint' };
+
+  /* ══════════════ token assembly ══════════════ */
+  function lightTokens() {
+    var t = {};
+    Object.assign(t, NEW_LIGHT, ACCENTS[state.accent].light, CANVAS[state.canvas]);
+    // Eggplant keeps its own link colour; the teal/CTA ladders solve per canvas.
+    if (state.accent === 'eggplant') t['--text-accent'] = '#6c247c';
+    else t['--text-accent'] = LINKS[state.link][state.canvas];
+    if (state.side === 'navy') Object.assign(t, NAVY_SIDEBAR);
+    return t;
+  }
+  function darkTokens() {
+    var t = {};
+    Object.assign(t, NEW_DARK, ACCENTS[state.accent].dark);
+    return t;
+  }
+
+  /* ══════════════ the 35 assertions ══════════════ */
+  var TEXT_GROUNDS = ['--background-app', '--background-default', '--background-muted', '--sidebar'];
+  var RING_GROUNDS = TEXT_GROUNDS.concat(['--background-medium']);
+
+  function runAsserts(scope) {
+    var rows = [], fails = 0;
+    function A(label, f, b, min) {
+      var fg = scope[f], bg = scope[b];
+      if (!fg || !bg) { rows.push({ ok: false, r: 0, label: label, note: 'missing token' }); fails++; return; }
+      var r = ratio(fg, bg), ok = r >= min;
+      if (!ok) fails++;
+      rows.push({ ok: ok, r: r, label: label, note: fg + ' on ' + bg + ' · need ' + min });
+    }
+    TEXT_GROUNDS.forEach(function (g) {
+      A('text-default on ' + g.replace('--', ''), '--text-default', g, 4.5);
+      A('text-muted on ' + g.replace('--', ''), '--text-muted', g, 4.5);
+      A('text-subtle on ' + g.replace('--', ''), '--text-subtle', g, 4.5);
+    });
+    RING_GROUNDS.forEach(function (g) { A('focus ring on ' + g.replace('--', ''), '--ring', g, 3.0); });
+    A('text-on-accent ON accent', '--text-on-accent', '--background-accent', 4.5);
+    A('text-accent as text', '--text-accent', '--background-app', 4.5);
+    ['danger', 'success', 'warning', 'info'].forEach(function (s) {
+      A('text-' + s + ' on app', '--text-' + s, '--background-app', 4.5);
+      A('text-on-status ON ' + s + ' fill', '--text-on-status', '--background-' + s, 4.5);
+    });
+    A('border-subtle vs app', '--border-subtle', '--background-app', 1.25);
+    A('border-strong vs subtle', '--border-strong', '--border-subtle', 1.1);
+    A('text-default on code ground', '--text-default', '--background-code', 4.5);
+    A('text-muted on code ground', '--text-muted', '--background-code', 4.5);
+    A('text-subtle on code ground', '--text-subtle', '--background-code', 4.5);
+    A('text-default on background-focus', '--text-default', '--background-focus', 4.5);
+    A('border-focus vs background-focus', '--border-focus', '--background-focus', 3.0);
+    A('background-focus vs medium', '--background-focus', '--background-medium', 1.1);
+    return { rows: rows, fails: fails };
+  }
+
+  /* ══════════════ app mock ══════════════ */
+  var I = {
+    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8Z"/></svg>',
+    sessions: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>',
+    ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6V4h4v3h6v4h-3v4h3v6h-6v-3h-4v3H4v-6h3v-4H4Z"/></svg>',
+    know: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="6" r="2.4"/><circle cx="5.5" cy="17" r="2.4"/><circle cx="18.5" cy="17" r="2.4"/><path d="M10.4 7.7 7 14.6m6.6-6.9 3.4 6.9M8 17.4h8"/></svg>',
+    skills: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.6 5.6 6.1.8-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6L3.3 9.4l6.1-.8Z"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7m-10 10-2.1 2.1"/></svg>',
+    send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>'
+  };
+
+  var APP_HTML =
+    '<div class="titlebar">' +
+      '<span class="dot" style="background:#f5768a"></span><span class="dot" style="background:#feb80a"></span><span class="dot" style="background:#5fbf74"></span>' +
+      '<span class="tb-title">biorouter · chat</span>' +
+    '</div>' +
+    '<div class="appbody">' +
+      '<aside class="side">' +
+        '<div class="brand"><span class="brand-mark"></span>BioRouter</div>' +
+        '<nav class="nav">' +
+          '<div class="nav-item">' + I.home + 'Home</div>' +
+          '<div class="nav-item active">' + I.chat + 'Chat</div>' +
+          '<div class="nav-item hov">' + I.sessions + 'Sessions</div>' +
+          '<div class="nav-item">' + I.ext + 'Extensions</div>' +
+          '<div class="nav-item">' + I.know + 'Knowledge</div>' +
+          '<div class="nav-item">' + I.skills + 'Skills</div>' +
+        '</nav>' +
+        '<div class="side-foot">' +
+          '<div class="nav-item">' + I.gear + 'Settings</div>' +
+          '<div class="side-user"><span class="avatar">BL</span><span><span class="su-name">Baranzini Lab</span><br><span class="su-org">UCSF</span></span></div>' +
+        '</div>' +
+      '</aside>' +
+      '<main class="main">' +
+        '<div class="page-head"><h1>Chat</h1><p>Session · MS cohort exploration</p></div>' +
+        '<div class="chat">' +
+          '<div class="msg"><span class="who u">You</span><div class="content"><p>Which genes in the SPOKE graph connect to multiple sclerosis through more than one pathway?</p></div></div>' +
+          '<div class="msg"><span class="who a">BR</span><div class="content">' +
+            '<p>Twelve genes have multi-pathway links. Querying the graph now — see the <span class="linkish">full result set</span>.</p>' +
+            '<div class="tool"><span class="status-dot"></span><span class="t-name">spoke_query<span>cypher · 12 rows</span></span><span class="t-chip">ok · 340ms</span></div>' +
+            '<div class="code"><div class="code-bar"><span class="lang">cypher</span></div><pre>' +
+              '<span class="cm">// multi-pathway disease associations</span>\n' +
+              '<span class="k">MATCH</span> (g<span class="op">:</span><span class="ty">Gene</span>)<span class="op">-[</span>r<span class="op">:</span><span class="fn">PARTICIPATES</span><span class="op">]-&gt;</span>(p<span class="op">:</span><span class="ty">Pathway</span>)\n' +
+              '<span class="k">WHERE</span> p<span class="op">.</span>disease <span class="op">=</span> <span class="st">"multiple sclerosis"</span>\n' +
+              '<span class="k">WITH</span> g<span class="op">,</span> <span class="fn">count</span>(p) <span class="k">AS</span> n <span class="k">WHERE</span> n <span class="op">&gt;</span> <span class="nu">1</span>\n' +
+              '<span class="k">RETURN</span> g<span class="op">.</span>symbol<span class="op">,</span> n <span class="k">ORDER BY</span> n <span class="k">DESC</span>' +
+            '</pre></div>' +
+            '<div class="badges"><span class="badge ok">12 matches</span><span class="badge info">cached</span><span class="badge warn">2 low-confidence</span><span class="badge err">1 deprecated ID</span></div>' +
+            '<div class="btns"><span class="btn primary">Open in Knowledge</span><span class="btn secondary">Export CSV</span><span class="btn ghost">Refine</span></div>' +
+          '</div></div>' +
+        '</div>' +
+        '<div class="spec">' +
+          '<div class="spec-item"><div class="spec-lab">Resting</div><div class="spec-val">Cohort filter</div></div>' +
+          '<div class="spec-item hovered"><div class="spec-lab">Hover</div><div class="spec-val">Cohort filter</div></div>' +
+          '<div class="spec-item focused"><div class="spec-lab">Focused</div><div class="spec-val">Cohort filter</div></div>' +
+        '</div>' +
+        '<div class="composer"><div class="composer-box"><span class="ph">Ask about a gene, a cohort, a pathway…</span><span class="send">' + I.send + '</span></div></div>' +
+      '</main>' +
+    '</div>';
+
+  var heatLevels = [0,1,0,2,1,3,0,1,2,4,3,1,0,2,1,0,3,2,4,1,0,1,3,2,1,0,2,4,3,2,1,0,1,2,3,4,2,1,0,1,2,3,1,0,2,1,3,4,2,1];
+
+  function galleryHTML() {
+    var cells = heatLevels.map(function (l) { return '<i style="background:var(--heat-' + l + ')"></i>'; }).join('');
+    return '<div class="gal">' +
+      '<div class="btns" style="margin:0"><span class="btn primary">Run workflow</span><span class="btn secondary">Configure</span><span class="btn ghost">Cancel</span><span class="linkish">View docs</span></div>' +
+      '<div class="badges" style="margin:0"><span class="badge ok">passing</span><span class="badge info">queued</span><span class="badge warn">degraded</span><span class="badge err">failed</span></div>' +
+      '<div class="metric-row">' +
+        '<div class="metric"><div class="mv">1,284</div><div class="ml">Sessions</div></div>' +
+        '<div class="metric"><div class="mv">36.2k</div><div class="ml">Tool calls</div></div>' +
+        '<div class="metric"><div class="mv">98.4%</div><div class="ml">Success</div></div>' +
+      '</div>' +
+      '<div><div class="heat">' + cells + '</div>' +
+        '<div class="heat-leg">Less <i style="background:var(--heat-0)"></i><i style="background:var(--heat-1)"></i><i style="background:var(--heat-2)"></i><i style="background:var(--heat-3)"></i><i style="background:var(--heat-4)"></i> More</div>' +
+      '</div>' +
+      '<div class="tool" style="margin:0"><span class="status-dot"></span><span class="t-name">knowledge_ingest<span>4 documents</span></span><span class="t-chip">running</span></div>' +
+    '</div>';
+  }
+
+  function styleStr(map) {
+    return Object.keys(map).map(function (k) { return k + ':' + map[k]; }).join(';');
+  }
+  function buildFrame(tokens, html) {
+    var el = document.createElement('div');
+    el.className = 'app';
+    el.setAttribute('style', styleStr(tokens));
+    el.innerHTML = html;
+    return el;
+  }
+  function mount(id, node) {
+    var m = document.getElementById(id);
+    if (!m) return;
+    m.innerHTML = '';
+    m.appendChild(node);
+  }
+
+  /* ══════════════ swatch panels ══════════════ */
+  var SW_GROUPS = [
+    ['Canvas', ['--background-app', '--background-default', '--background-muted', '--background-medium', '--background-strong', '--background-focus']],
+    ['Sidebar', ['--sidebar', '--sidebar-hover', '--sidebar-active', '--sidebar-border']],
+    ['Accent', ['--background-accent', '--background-accent-hover', '--text-accent', '--accent-bar', '--text-on-accent']],
+    ['Text', ['--text-default', '--text-muted', '--text-subtle']],
+    ['Borders', ['--border-subtle', '--border-strong', '--border-input', '--border-focus', '--ring']],
+    ['Status', ['--background-danger', '--background-success', '--background-warning', '--background-info']],
+    ['Heatmap', ['--heat-0', '--heat-1', '--heat-2', '--heat-3', '--heat-4']]
+  ];
+  function buildSwatches(tokens, title) {
+    var h = '<h3 style="font-family:var(--font-display);font-size:19px;margin:0 0 16px;font-weight:600">' + title + '</h3>';
+    SW_GROUPS.forEach(function (g) {
+      h += '<div class="swgroup"><h4>' + g[0] + '</h4>';
+      g[1].forEach(function (t) {
+        var v = tokens[t];
+        if (!v) return;
+        h += '<div class="swrow"><span class="sw" style="background:' + v + '"></span>' +
+             '<span class="nm">' + t.replace('--', '') + '</span>' +
+             '<span class="hx">' + v.toUpperCase() + '</span></div>';
+      });
+      h += '</div>';
+    });
+    return h;
+  }
+
+  /* ══════════════ diagnosis table ══════════════ */
+  var DIAG = [
+    ['--background-muted', '#f2f3f4'], ['--background-medium', '#e1e3e5'],
+    ['--background-strong', '#d1d3d3'], ['--sidebar', '#eceef1'],
+    ['--sidebar-hover', '#e3e6ea'], ['--sidebar-active', '#d7dbe0'],
+    ['--border-subtle', '#e1e3e5'], ['--border-strong', '#cfd3d8']
+  ];
+  function renderDiag() {
+    var b = document.getElementById('diagBody');
+    b.innerHTML = DIAG.map(function (d) {
+      var o = oklch(d[1]);
+      var verdict = o.C < 0.006 ? ['v-bad', 'dead grey'] : o.C < 0.012 ? ['v-warn', 'barely tinted'] : ['v-good', 'tinted'];
+      return '<tr><td class="mono" style="font-size:11.5px">' + d[0].replace('--', '') + '</td>' +
+        '<td><span class="cellflex"><span class="sw" style="background:' + d[1] + '"></span><span class="mono" style="font-size:11.5px">' + d[1].toUpperCase() + '</span></span></td>' +
+        '<td class="mono tnum" style="font-size:11.5px">' + o.C.toFixed(4) + '</td>' +
+        '<td class="mono tnum" style="font-size:11.5px">' + o.H.toFixed(0) + '°</td>' +
+        '<td><span class="verdict ' + verdict[0] + '">' + verdict[1] + '</span></td></tr>';
+    }).join('');
+  }
+
+  /* ══════════════ export ══════════════ */
+  function meanChroma(tokens, keys) {
+    var s = 0, n = 0;
+    keys.forEach(function (k) { if (tokens[k]) { s += oklch(tokens[k]).C; n++; } });
+    return n ? s / n : 0;
+  }
+  var SURFACE_KEYS = ['--background-muted', '--background-medium', '--background-strong', '--sidebar', '--sidebar-hover', '--sidebar-active', '--border-subtle', '--border-strong'];
+
+  function updateExport() {
+    var L = lightTokens(), D = darkTokens(), a = ACCENTS[state.accent];
+    var rl = runAsserts(L), rd = runAsserts(D);
+    var mcNew = meanChroma(L, SURFACE_KEYS), mcOld = meanChroma(OLD_LIGHT, SURFACE_KEYS);
+    var hues = SURFACE_KEYS.map(function (k) { return oklch(L[k]).H; });
+    var spread = Math.max.apply(null, hues) - Math.min.apply(null, hues);
+
+    var lines = [
+      'BioRouter · Alma Mater light-theme redesign — approved setup',
+      '',
+      'accent: ' + state.accent + '   (' + a.name + ')',
+      'canvas: ' + state.canvas + '   (tinted = #eaf3f4 recessed ground, white cards; white = pure #ffffff)',
+      'links: ' + state.link + '   (teal = UCSF C-column; ctablue = UCSF A3 #006BE9, the documented link colour)',
+      'sidebar: ' + state.side + '   (tint = pale teal-leaning neutral; navy = full navy slab)',
+      '',
+      '-- resulting light tokens --',
+      'background-app:     ' + L['--background-app'],
+      'background-muted:   ' + L['--background-muted'],
+      'background-medium:  ' + L['--background-medium'],
+      'background-strong:  ' + L['--background-strong'],
+      'sidebar:            ' + L['--sidebar'],
+      'sidebar-hover:      ' + L['--sidebar-hover'],
+      'sidebar-active:     ' + L['--sidebar-active'],
+      'border-subtle:      ' + L['--border-subtle'],
+      'background-accent:  ' + L['--background-accent'],
+      'text-accent:        ' + L['--text-accent'],
+      'accent-bar:         ' + L['--accent-bar'],
+      '',
+      '-- resulting dark accent (navy surfaces unchanged) --',
+      'background-accent:  ' + D['--background-accent'],
+      'text-accent:        ' + D['--text-accent'],
+      'accent-bar:         ' + D['--accent-bar'],
+      '',
+      '-- derived --',
+      'contrast: light ' + (rl.rows.length - rl.fails) + '/' + rl.rows.length +
+        ' pass, dark ' + (rd.rows.length - rd.fails) + '/' + rd.rows.length + ' pass',
+      'mean surface chroma: ' + mcOld.toFixed(4) + ' (today) -> ' + mcNew.toFixed(4) +
+        '  (' + (mcNew / mcOld).toFixed(1) + 'x)',
+      'surface hue spread:  61 deg (today) -> ' + spread.toFixed(0) + ' deg',
+      'white ink on accent fill: ' + ratio(L['--text-on-accent'], L['--background-accent']).toFixed(2) + ':1',
+      '',
+      'note: ' + a.note
+    ];
+    document.getElementById('export').value = lines.join('\n');
+  }
+
+  function cssBlock() {
+    var L = lightTokens(), D = darkTokens();
+    function body(t, keys) {
+      return keys.filter(function (k) { return t[k]; })
+        .map(function (k) { return '  ' + k + ': ' + t[k] + ';'; }).join('\n');
+    }
+    var order = ['--background-accent', '--background-accent-hover', '--border-accent', '--text-accent', '--text-on-accent', '--accent-bar',
+      '--background-app', '--background-default', '--background-card', '--background-muted', '--background-code',
+      '--background-medium', '--background-strong', '--background-inverse',
+      '--background-danger', '--background-success', '--background-info', '--background-warning', '--text-on-status',
+      '--border-subtle', '--border-strong', '--border-input', '--border-danger', '--border-success', '--border-warning', '--border-info',
+      '--text-default', '--text-muted', '--text-subtle', '--text-inverse',
+      '--text-danger', '--text-success', '--text-warning', '--text-info',
+      '--ring', '--background-focus', '--border-focus',
+      '--heat-0', '--heat-1', '--heat-2', '--heat-3', '--heat-4',
+      '--sidebar', '--sidebar-hover', '--sidebar-active', '--sidebar-border'];
+    return "/* Alma Mater LIGHT — redesigned (" + ACCENTS[state.accent].name + ") */\n" +
+      ":root[data-theme='alma-mater'] {\n" + body(L, order) + "\n}\n\n" +
+      "/* Alma Mater DARK — navy surfaces unchanged; accent lifted to match light */\n" +
+      ".dark[data-theme='alma-mater'] {\n" + body(D, order) + "\n}\n";
+  }
+
+  /* ══════════════ render ══════════════ */
+  function renderAsserts(elId, sumId, res, label) {
+    var el = document.getElementById(elId);
+    el.innerHTML = res.rows.map(function (r) {
+      return '<div class="arow ' + (r.ok ? 'pass' : 'fail') + '">' +
+        '<span class="st">' + (r.ok ? 'pass' : 'FAIL') + '</span>' +
+        '<span class="rt">' + r.r.toFixed(2) + ':1</span>' +
+        '<span class="lb">' + r.label + '</span>' +
+        '<span class="nt">' + r.note + '</span></div>';
+    }).join('');
+    var s = document.getElementById(sumId);
+    s.className = 'summary-bar ' + (res.fails === 0 ? 'ok' : 'no');
+    s.textContent = res.fails === 0
+      ? label + ' — all ' + res.rows.length + ' assertions pass'
+      : label + ' — ' + res.fails + '/' + res.rows.length + ' FAIL';
+  }
+
+  function renderAll() {
+    var L = lightTokens(), D = darkTokens(), a = ACCENTS[state.accent];
+
+    mount('mount-new-light', buildFrame(L, APP_HTML));
+    mount('mount-new-dark', buildFrame(D, APP_HTML));
+    mount('mount-new-light-2', buildFrame(L, APP_HTML));
+    mount('mount-old-light', buildFrame(OLD_LIGHT, APP_HTML));
+    mount('mount-gal-light', buildFrame(L, galleryHTML()));
+    mount('mount-gal-dark', buildFrame(D, galleryHTML()));
+
+    document.getElementById('sw-light').innerHTML = buildSwatches(L, 'Alma Mater · Light');
+    document.getElementById('sw-dark').innerHTML = buildSwatches(D, 'Alma Mater · Dark');
+
+    var rl = runAsserts(L), rd = runAsserts(D);
+    renderAsserts('assertsLight', 'sumLight', rl, 'Light');
+    renderAsserts('assertsDark', 'sumDark', rd, 'Dark');
+
+    document.getElementById('capLight').textContent =
+      L['--background-app'] + ' · ' + L['--sidebar'] + ' · ' + L['--background-accent'];
+    document.getElementById('capNew2').textContent =
+      L['--background-muted'] + ' · ' + L['--sidebar'] + ' · ' + L['--background-accent'];
+    document.getElementById('capDark').textContent =
+      D['--background-app'] + ' · ' + D['--sidebar'] + ' · ' + D['--background-accent'];
+
+    var mcNew = meanChroma(L, SURFACE_KEYS), mcOld = meanChroma(OLD_LIGHT, SURFACE_KEYS);
+    var hues = SURFACE_KEYS.map(function (k) { return oklch(L[k]).H; });
+    var spread = Math.max.apply(null, hues) - Math.min.apply(null, hues);
+
+    document.getElementById('readout').innerHTML = [
+      ['accent', a.name],
+      ['white on fill', ratio(L['--text-on-accent'], L['--background-accent']).toFixed(2) + ':1'],
+      ['link on canvas', ratio(L['--text-accent'], L['--background-app']).toFixed(2) + ':1'],
+      ['mean surface chroma', mcNew.toFixed(4) + ' (was ' + mcOld.toFixed(4) + ')'],
+      ['hue spread', spread.toFixed(0) + '° (was 61°)'],
+      ['sidebar hover ΔL*', Math.abs(lstar(L['--sidebar']) - lstar(L['--sidebar-hover'])).toFixed(2) + ' (was 2.85)'],
+      ['contrast', (rl.rows.length - rl.fails) + '/' + rl.rows.length + ' light · ' + (rd.rows.length - rd.fails) + '/' + rd.rows.length + ' dark']
+    ].map(function (p) { return p[0] + ' <b>' + p[1] + '</b>'; }).join('');
+
+    document.getElementById('baChroma').textContent = 'mean ' + mcNew.toFixed(4) + ' — ' + (mcNew / mcOld).toFixed(1) + '× more chroma';
+    document.getElementById('baHue').textContent = 'single family, ' + spread.toFixed(0) + '° spread';
+    document.getElementById('baFlat').textContent =
+      'sidebar hover ΔL* ' + Math.abs(lstar(L['--sidebar']) - lstar(L['--sidebar-hover'])).toFixed(2) + ', structure ≥ 4.4';
+    document.getElementById('baAcc').textContent = a.name + ' — instantly placeable';
+
+    document.getElementById('proposalIntro').textContent =
+      a.note + ' Surfaces move to a single UCSF light-blue family at hue ≈ 229°, with chroma raised ' +
+      (mcNew / mcOld).toFixed(1) + '× so the ground reads as a deliberate institutional blue rather than as unsaturated grey. ' +
+      'Navy stays the ink and the inverse surface; the dark mode keeps every navy surface it ships with today.';
+
+    /* The navy sidebar is the most on-brand option and it CANNOT ship as-is:
+       check-contrast.mjs treats --sidebar as a body-text ground and measures
+       --text-default against it. The real sidebar paints --sidebar-foreground,
+       so the guard is over-strict here — but it is the guard, and it would fail
+       CI. Surfacing that rather than letting an approved option die in review. */
+    var note = document.getElementById('optionNote');
+    if (state.side === 'navy') {
+      note.style.display = 'block';
+      note.innerHTML = '<b style="color:var(--page-warn)">Navy sidebar — needs a guard change first.</b> ' +
+        'It fails ' + rl.fails + ' of the 35 light assertions, all of the form ' +
+        '<code class="mono">text-* on --sidebar</code>: the guard measures ' +
+        '<code class="mono">--text-default</code> (navy) against <code class="mono">--sidebar</code>, ' +
+        'but a navy sidebar paints <code class="mono">--sidebar-foreground</code> (white) instead. ' +
+        'The contrast is genuinely fine in the running app — the assertion is modelling the wrong pair. ' +
+        'Shipping this option means teaching <code class="mono">check-contrast.mjs</code> to use ' +
+        '<code class="mono">--sidebar-foreground</code> as the foreground for the ' +
+        '<code class="mono">--sidebar</code> ground. Worth doing, but it is a second change, not a free one.';
+    } else if (state.accent === 'ctablue' && state.link === 'teal') {
+      note.style.display = 'block';
+      note.innerHTML = '<b>Mixed hues.</b> A CTA-Blue accent with teal links puts two saturated ' +
+        'brand hues in play at once. UCSF scopes CTA Blue to buttons <em>and</em> links together; ' +
+        'Stanford states the rule explicitly ("do not use these blues in contexts other than links"). ' +
+        'Passing contrast, but it dilutes the one-accent discipline.';
+    } else {
+      note.style.display = 'none';
+    }
+
+    document.getElementById('pillRow').innerHTML = [
+      ['Ink', 'UCSF Navy #052049'],
+      ['Accent', a.name],
+      ['Surfaces', (mcNew / mcOld).toFixed(1) + '× chroma'],
+      ['Contrast', (rl.fails + rd.fails === 0 ? 'AA · 70/70 pass' : 'AA · ' + (rl.fails + rd.fails) + ' fail')],
+      ['Layout change', 'none']
+    ].map(function (p, i) {
+      return '<span class="pill' + (i === 1 ? ' hot' : '') + '"><b>' + p[0] + ':</b> ' + p[1] + '</span>';
+    }).join('');
+
+    updateExport();
+  }
+
+  /* ══════════════ controls ══════════════ */
+  var accWrap = document.getElementById('accentBtns');
+  Object.keys(ACCENTS).forEach(function (key) {
+    var v = ACCENTS[key];
+    var b = document.createElement('button');
+    b.className = 'acc-btn';
+    b.dataset.acc = key;
+    b.setAttribute('aria-pressed', key === state.accent ? 'true' : 'false');
+    b.innerHTML = '<span class="chip" style="background:' + v.swatch + '"></span>' + v.name;
+    b.addEventListener('click', function () {
+      state.accent = key;
+      Array.prototype.forEach.call(accWrap.children, function (c) {
+        c.setAttribute('aria-pressed', c.dataset.acc === key ? 'true' : 'false');
+      });
+      renderAll();
+    });
+    accWrap.appendChild(b);
+  });
+
+  function wireSeg(id, prop, attr) {
+    document.getElementById(id).addEventListener('click', function (e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      state[prop] = btn.dataset[attr];
+      Array.prototype.forEach.call(this.children, function (c) {
+        c.setAttribute('aria-pressed', c.dataset[attr] === state[prop] ? 'true' : 'false');
+      });
+      renderAll();
+    });
+  }
+  wireSeg('canvasSeg', 'canvas', 'canvas');
+  wireSeg('linkSeg', 'link', 'link');
+  wireSeg('sideSeg', 'side', 'side');
+
+  document.getElementById('docSeg').addEventListener('click', function (e) {
+    var btn = e.target.closest('button');
+    if (!btn) return;
+    document.documentElement.setAttribute('data-doc', btn.dataset.doc);
+    Array.prototype.forEach.call(this.children, function (c) {
+      c.setAttribute('aria-pressed', c.dataset.doc === btn.dataset.doc ? 'true' : 'false');
+    });
+    try { localStorage.setItem('br-alma-doc', btn.dataset.doc); } catch (err) {}
+  });
+
+  async function copyText(txt) {
+    try { await navigator.clipboard.writeText(txt); }
+    catch (err) {
+      var ta = document.createElement('textarea');
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) {}
+      document.body.removeChild(ta);
+    }
+    var c = document.getElementById('copied');
+    c.classList.add('on');
+    setTimeout(function () { c.classList.remove('on'); }, 1500);
+  }
+  document.getElementById('copy').addEventListener('click', function () {
+    copyText(document.getElementById('export').value);
+  });
+  document.getElementById('copyCss').addEventListener('click', function () { copyText(cssBlock()); });
+
+  // Push `state` back onto every control's aria-pressed, which is the single
+  // source of truth the CSS styles off.
+  function syncControls() {
+    Array.prototype.forEach.call(accWrap.children, function (c) {
+      c.setAttribute('aria-pressed', String(c.dataset.acc === state.accent));
+    });
+    [['canvasSeg', 'canvas', 'canvas'], ['linkSeg', 'link', 'link'], ['sideSeg', 'side', 'side']]
+      .forEach(function (s) {
+        Array.prototype.forEach.call(document.getElementById(s[0]).children, function (c) {
+          c.setAttribute('aria-pressed', String(c.dataset[s[2]] === state[s[1]]));
+        });
+      });
+  }
+
+  document.getElementById('reset').addEventListener('click', function () {
+    Object.assign(state, DEFAULTS);
+    syncControls();
+    renderAll();
+  });
+
+  document.getElementById('apply').addEventListener('click', function () {
+    var t = document.getElementById('import').value;
+    // Each field is independently optional, so a partial or hand-edited paste
+    // still applies cleanly; unknown values are ignored rather than thrown.
+    var m = function (re) { var x = t.match(re); return x ? x[1].trim().toLowerCase() : null; };
+    var acc = m(/accent:\s*([\w-]+)/i), can = m(/canvas:\s*(\w+)/i);
+    var lnk = m(/links:\s*(\w+)/i), sid = m(/sidebar:\s*(\w+)/i);
+    if (acc && ACCENTS[acc]) state.accent = acc;
+    if (can === 'white' || can === 'tinted') state.canvas = can;
+    if (lnk && LINKS[lnk]) state.link = lnk;
+    if (sid === 'tint' || sid === 'navy') state.side = sid;
+    syncControls();
+    renderAll();
+  });
+
+  /* ══════════════ boot ══════════════ */
+  var savedDoc = null;
+  try { savedDoc = localStorage.getItem('br-alma-doc'); } catch (e) {}
+  var docDark = savedDoc ? savedDoc === 'dark'
+    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-doc', docDark ? 'dark' : 'light');
+  Array.prototype.forEach.call(document.getElementById('docSeg').children, function (c) {
+    c.setAttribute('aria-pressed', String(c.dataset.doc === (docDark ? 'dark' : 'light')));
+  });
+
+  renderDiag();
+  renderAll();
+  document.getElementById('footStamp').textContent =
+    'Generated from the token maps in this document — every ratio shown is computed, not asserted.';
+})();
+</script>

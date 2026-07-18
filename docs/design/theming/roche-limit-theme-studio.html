@@ -1,0 +1,1337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roche Limit — a Jupyter-inspired theme family for BioRouter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,300;1,6..72,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   DOCUMENT CHROME — an observatory colour-standard plate.
+   Deliberately NOT the theme being proposed: the wrapper is editorial so
+   that the app frames inside can be pixel-honest renderings of what ships.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root{
+  --pl-ink:#12100e;
+  --pl-paper:#e8e4dc;
+  --pl-paper-2:#dedad0;
+  --pl-rule:#c3bcae;
+  --pl-dim:#6b6459;
+  --pl-orange:#d95b08;
+  --pl-orange-bright:#ee6c1a;
+  --serif:'Newsreader',"Iowan Old Style",Charter,Palatino,Georgia,serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--pl-paper);color:var(--pl-ink);
+  font-family:var(--serif);font-size:17px;line-height:1.65;
+  font-variant-numeric:oldstyle-nums;
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(217,91,8,.07), transparent 42%),
+    radial-gradient(circle at 92% 4%, rgba(18,16,14,.05), transparent 38%);
+  background-attachment:fixed;
+}
+/* film grain */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='3'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.055'/%3E%3C/svg%3E");
+}
+.wrap{max-width:1360px;margin:0 auto;padding:0 32px 120px}
+
+/* ── masthead ───────────────────────────────────────────────────────── */
+.mast{padding:76px 0 40px;border-bottom:1px solid var(--pl-rule);position:relative}
+.eyebrow{
+  font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--pl-dim);margin:0 0 22px;
+}
+.eyebrow b{color:var(--pl-orange);font-weight:700}
+.mast-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:56px;align-items:start}
+@media(max-width:900px){.mast-grid{grid-template-columns:1fr}}
+h1.title{
+  font-family:var(--serif);font-weight:300;font-size:clamp(52px,8.2vw,104px);
+  line-height:.92;letter-spacing:-.028em;margin:0 0 20px;
+}
+h1.title em{font-style:italic;color:var(--pl-orange)}
+.dek{font-size:20px;line-height:1.55;color:#3a352e;max-width:60ch;margin:0 0 26px;font-weight:300}
+.dek strong{font-weight:500;color:var(--pl-ink)}
+.meta{
+  font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--pl-dim);
+  display:flex;flex-wrap:wrap;gap:10px 22px;padding-top:20px;border-top:1px solid var(--pl-rule);
+}
+.meta span b{color:var(--pl-ink);font-weight:500}
+.pill{
+  display:inline-block;padding:3px 9px;border:1px solid var(--pl-orange);border-radius:2px;
+  color:var(--pl-orange);font-weight:700;letter-spacing:.1em;
+}
+
+/* orbital diagram */
+.orbit{width:100%;height:auto;display:block}
+.orbit .lbl{font-family:var(--mono);font-size:7.4px;letter-spacing:.11em;fill:var(--pl-dim);text-transform:uppercase}
+.orbit .lbl-hi{fill:var(--pl-orange);font-weight:700}
+@keyframes drift{to{transform:rotate(360deg)}}
+.orbit .satellite{transform-origin:110px 110px;animation:drift 34s linear infinite}
+@media(prefers-reduced-motion:reduce){.orbit .satellite{animation:none}}
+
+/* ── concept strip ──────────────────────────────────────────────────── */
+.concept{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--pl-rule);
+  border:1px solid var(--pl-rule);margin:44px 0 0;
+}
+@media(max-width:820px){.concept{grid-template-columns:1fr}}
+.concept > div{background:var(--pl-paper);padding:24px 26px}
+.concept h4{
+  font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--pl-orange);margin:0 0 10px;font-weight:700;
+}
+.concept p{margin:0;font-size:15.5px;line-height:1.6;color:#3a352e}
+
+/* ── section headers ────────────────────────────────────────────────── */
+section{margin-top:80px;scroll-margin-top:96px}
+.sec-head{display:flex;align-items:baseline;gap:18px;border-bottom:1px solid var(--pl-rule);padding-bottom:12px;margin-bottom:14px;flex-wrap:wrap}
+.plate-no{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;color:var(--pl-orange);font-weight:700;text-transform:uppercase}
+h2{font-family:var(--serif);font-weight:400;font-size:31px;letter-spacing:-.018em;margin:0;flex:1}
+.sec-note{font-size:16px;color:var(--pl-dim);margin:0 0 26px;max-width:78ch;font-weight:300;line-height:1.6}
+.sec-note code,.concept code,td code,.led code{font-family:var(--mono);font-size:.87em;background:var(--pl-paper-2);padding:1px 5px;border-radius:2px;border:1px solid var(--pl-rule)}
+
+/* ── controls ───────────────────────────────────────────────────────── */
+.controls{
+  position:sticky;top:0;z-index:60;background:rgba(232,228,220,.94);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--pl-rule);margin:44px -32px 0;padding:13px 32px;
+  display:flex;gap:26px;align-items:center;flex-wrap:wrap;
+}
+.ctl{display:flex;align-items:center;gap:9px}
+.ctl > label{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--pl-dim);font-weight:500;
+}
+.seg{display:flex;border:1px solid var(--pl-rule);border-radius:2px;overflow:hidden;background:var(--pl-paper)}
+.seg button{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;padding:6px 13px;border:0;
+  background:transparent;color:var(--pl-dim);cursor:pointer;transition:background .16s,color .16s;
+  border-right:1px solid var(--pl-rule);white-space:nowrap;
+}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--pl-paper-2);color:var(--pl-ink)}
+.seg button[aria-pressed=true]{background:var(--pl-ink);color:var(--pl-paper)}
+.seg button.warn[aria-pressed=true]{background:var(--pl-orange);color:#fff}
+.q-tag{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.1em;color:#fff;background:var(--pl-orange);
+  padding:1.5px 5px;border-radius:2px;font-weight:700;
+}
+
+/* ── app frame shell ────────────────────────────────────────────────── */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+@media(max-width:1160px){.duo{grid-template-columns:1fr}}
+.frame-label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.17em;text-transform:uppercase;
+  color:var(--pl-dim);margin:0 0 9px;display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+}
+.frame-label b{color:var(--pl-ink);font-weight:700}
+.frame-label .hexes{color:var(--pl-dim);font-size:9.5px;letter-spacing:.05em}
+.shot{
+  border:1px solid var(--pl-rule);border-radius:3px;overflow:hidden;
+  box-shadow:0 1px 2px rgba(18,16,14,.06),0 18px 44px -26px rgba(18,16,14,.42);
+  background:#fff;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   APP CHROME — honest BioRouter rendering. Every colour here comes from a
+   token variable set by JS. Nothing is hardcoded; what you see is the theme.
+   ═══════════════════════════════════════════════════════════════════════ */
+.app{
+  --font-app:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-code:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  font-family:var(--font-app);background:var(--bg-app);color:var(--text-default);
+  font-size:13px;line-height:1.55;display:flex;flex-direction:column;height:620px;
+  font-variant-numeric:normal;
+}
+.app.compact{height:auto}
+.titlebar{
+  height:34px;flex:0 0 34px;display:flex;align-items:center;gap:7px;padding:0 12px;
+  background:var(--sidebar);border-bottom:1px solid var(--sidebar-border);
+}
+.tdot{width:9px;height:9px;border-radius:50%;background:var(--border-strong)}
+.tb-title{
+  margin-left:9px;font-size:11px;color:var(--text-subtle);font-family:var(--font-code);
+  letter-spacing:.02em;
+}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.kernel{
+  display:flex;align-items:center;gap:5px;font-size:10px;font-family:var(--font-code);
+  color:var(--text-subtle);
+}
+.kernel .k-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-bar);box-shadow:0 0 0 2.5px color-mix(in srgb,var(--accent-bar) 18%,transparent)}
+.app-body{flex:1;display:flex;min-height:0}
+
+/* sidebar */
+.sidebar{
+  width:174px;flex:0 0 174px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);
+  display:flex;flex-direction:column;padding:11px 0;
+}
+.brand{display:flex;align-items:center;gap:8px;padding:0 13px 13px}
+.brand-mark{
+  width:17px;height:17px;border-radius:3px;background:var(--background-accent);flex:none;
+  display:grid;place-items:center;
+}
+.brand-mark::after{content:'';width:6px;height:6px;border-radius:50%;background:var(--text-on-accent)}
+.brand-name{font-weight:650;font-size:12.5px;letter-spacing:-.01em;color:var(--sidebar-fg)}
+.nav{display:flex;flex-direction:column;gap:1px;padding:0 7px}
+.nav-item{
+  display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;
+  color:var(--text-muted);font-size:12.5px;cursor:default;position:relative;
+  transition:background .12s;
+}
+.nav-item svg{width:15px;height:15px;flex:none;stroke-width:1.7}
+.nav-item.hover{background:var(--sidebar-hover)}
+.nav-item.active{background:var(--sidebar-active);color:var(--text-default);font-weight:550}
+/* the notebook collapser, reinterpreted: a 2px rail, not an 8px bar */
+.nav-item.active::before{
+  content:'';position:absolute;left:-7px;top:5px;bottom:5px;width:2px;border-radius:1px;
+  background:var(--accent-bar);
+}
+.nav-item.active svg{color:var(--accent-bar)}
+.side-foot{margin-top:auto;padding:0 7px}
+.side-user{display:flex;align-items:center;gap:8px;padding:8px;margin-top:5px;border-top:1px solid var(--sidebar-border)}
+.av{
+  width:22px;height:22px;border-radius:5px;background:var(--background-medium);color:var(--text-muted);
+  display:grid;place-items:center;font-size:9.5px;font-weight:700;flex:none;letter-spacing:.02em;
+}
+.u-name{font-size:11.5px;font-weight:550;color:var(--text-default);line-height:1.25}
+.u-org{font-size:10px;color:var(--text-subtle);line-height:1.25}
+
+/* main */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg-app)}
+.tabstrip{
+  display:flex;align-items:stretch;gap:0;border-bottom:1px solid var(--border-subtle);
+  background:var(--bg-app);padding:0 10px;flex:none;
+}
+.tab{
+  padding:8px 13px;font-size:11.5px;color:var(--text-subtle);border-bottom:2px solid transparent;
+  margin-bottom:-1px;white-space:nowrap;
+}
+.tab.active{color:var(--text-default);border-bottom-color:var(--accent-bar);font-weight:550}
+.chat{flex:1;overflow:hidden;padding:20px 22px;display:flex;flex-direction:column;gap:15px}
+.msg{display:flex;gap:11px;align-items:flex-start}
+.who{
+  width:22px;height:22px;border-radius:5px;flex:none;display:grid;place-items:center;
+  font-size:9px;font-weight:700;letter-spacing:.02em;
+}
+.msg.user .who{background:var(--background-medium);color:var(--text-muted)}
+.msg.ai .who{background:var(--background-accent);color:var(--text-on-accent)}
+.content{flex:1;min-width:0;font-size:13px;color:var(--text-default)}
+.msg.user .content{color:var(--text-muted)}
+.content a.link{color:var(--text-accent);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:.5px}
+code.inline{
+  font-family:var(--font-code);font-size:11.5px;background:var(--bg-code);
+  border:1px solid var(--border-subtle);border-radius:3px;padding:.5px 4px;color:var(--text-default);
+}
+
+/* the code cell — Jupyter's signature unit, recessed then rising on focus */
+.cell{
+  margin:11px 0;border:1px solid var(--cell-border);border-radius:6px;overflow:hidden;
+  background:var(--bg-code);position:relative;transition:background .15s,border-color .15s;
+}
+.cell.railed::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent-bar);
+}
+.cell.active{background:var(--cell-active-bg);border-color:var(--cell-active-border)}
+.cell-bar{
+  display:flex;align-items:center;gap:8px;padding:5px 11px;border-bottom:1px solid var(--border-subtle);
+  background:transparent;
+}
+.lang{
+  font-family:var(--font-code);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--text-subtle);
+}
+.cell-bar .spacer{margin-left:auto}
+.copy{font-family:var(--font-code);font-size:9.5px;color:var(--text-subtle);letter-spacing:.04em}
+.cell pre{
+  margin:0;padding:11px 13px;font-family:var(--font-code);font-size:11.5px;line-height:1.62;
+  overflow-x:auto;color:var(--syn-plain);
+}
+.k{color:var(--syn-keyword);font-weight:600}
+.st{color:var(--syn-string)}
+.cm{color:var(--syn-comment);font-style:italic}
+.fn{color:var(--syn-func)}
+.ty{color:var(--syn-type)}
+.op{color:var(--syn-operator)}
+.nu{color:var(--syn-number)}
+
+/* tool call */
+.tool{
+  display:flex;align-items:center;gap:9px;padding:7px 11px;border:1px solid var(--border-subtle);
+  border-radius:6px;background:var(--bg-muted);margin:10px 0;position:relative;overflow:hidden;
+}
+.tool.railed::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent-bar)}
+.status-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-bar);flex:none}
+.t-name{font-family:var(--font-code);font-size:11px;color:var(--text-default)}
+.t-name span{color:var(--text-subtle)}
+.t-chip{
+  margin-left:auto;font-family:var(--font-code);font-size:9.5px;color:var(--text-subtle);
+  border:1px solid var(--border-subtle);border-radius:3px;padding:1.5px 6px;background:var(--bg-app);
+}
+/* output area — the Out[n] idea without the REPL costume */
+.out{
+  margin:10px 0;border:1px solid var(--border-subtle);border-radius:6px;overflow:hidden;background:var(--bg-app);
+}
+.out-head{
+  display:flex;align-items:center;gap:7px;padding:5px 11px;border-bottom:1px solid var(--border-subtle);
+  font-family:var(--font-code);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-subtle);
+}
+.out-head .oi{width:5px;height:5px;border-radius:50%;background:var(--text-info)}
+.out-body{padding:10px 12px;display:flex;gap:5px;align-items:flex-end;height:74px}
+.bar{flex:1;background:var(--accent-bar);border-radius:1.5px 1.5px 0 0;opacity:.92}
+
+/* badges, buttons */
+.badges{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
+.badge{
+  font-size:10.5px;padding:2px 8px;border-radius:4px;border:1px solid;font-weight:550;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.badge.ok{color:var(--text-success);border-color:var(--text-success);background:transparent}
+.badge.info{color:var(--text-info);border-color:var(--text-info)}
+.badge.warn{color:var(--text-warning);border-color:var(--text-warning)}
+.badge.err{color:var(--text-danger);border-color:var(--text-danger)}
+.btn-row{display:flex;gap:8px;margin-top:13px;flex-wrap:wrap}
+.btn{
+  font-size:12px;padding:5px 13px;border-radius:6px;border:1px solid transparent;
+  font-weight:550;cursor:default;
+}
+.btn.primary{background:var(--background-accent);color:var(--text-on-accent)}
+.btn.secondary{background:var(--bg-muted);color:var(--text-default);border-color:var(--border-strong)}
+.btn.ghost{background:transparent;color:var(--text-muted)}
+
+/* composer — the "active editor rises to canvas colour" trick */
+.composer{
+  flex:none;margin:0 22px 18px;border:1px solid var(--border-input);border-radius:9px;
+  background:var(--bg-code);padding:10px 12px;display:flex;align-items:center;gap:10px;
+  transition:background .15s,border-color .15s;
+}
+.composer.focused{background:var(--bg-app);border-color:var(--border-focus);box-shadow:var(--shadow-composer)}
+.composer .ph{flex:1;color:var(--text-subtle);font-size:12.5px}
+.composer .caret{width:1.5px;height:15px;background:var(--accent-bar);animation:blink 1.15s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.composer .caret{animation:none}}
+.send{
+  width:26px;height:26px;border-radius:6px;background:var(--background-accent);color:var(--text-on-accent);
+  display:grid;place-items:center;flex:none;
+}
+.send svg{width:14px;height:14px;stroke-width:2.2}
+.bottom-chips{display:flex;gap:6px;padding:0 22px 14px;flex-wrap:wrap}
+.chip{
+  font-size:10.5px;padding:2.5px 8px;border-radius:5px;border:1px solid var(--border-subtle);
+  color:var(--text-subtle);background:var(--bg-muted);display:inline-flex;align-items:center;gap:5px;
+}
+.chip .cdot{width:5px;height:5px;border-radius:50%;background:var(--accent-bar)}
+
+/* ── gallery / settings mounts ──────────────────────────────────────── */
+.gal{padding:20px 22px;display:flex;flex-direction:column;gap:19px}
+.gal h5{
+  font-family:var(--font-code);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--text-subtle);margin:0 0 9px;font-weight:500;
+}
+.card{
+  border:1px solid var(--border-subtle);border-radius:8px;background:var(--bg-card);padding:13px;
+}
+.row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border-subtle)}
+.row:last-child{border-bottom:0}
+.row .lab{font-size:12.5px;color:var(--text-default)}
+.row .sub{font-size:11px;color:var(--text-subtle)}
+.toggle{width:32px;height:18px;border-radius:9px;background:var(--background-strong);position:relative;flex:none}
+.toggle.on{background:var(--background-accent)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .16s}
+.toggle.on::after{left:16px}
+.input{
+  border:1px solid var(--border-input);border-radius:6px;padding:6px 10px;font-size:12px;
+  color:var(--text-subtle);background:var(--bg-app);
+}
+.input.focused{background:var(--bg-app);border-color:var(--border-focus);box-shadow:0 0 0 3px var(--bg-focus)}
+.heat{display:flex;gap:3px}
+.heat i{width:22px;height:22px;border-radius:3px;display:block}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.metric{border:1px solid var(--border-subtle);border-radius:8px;padding:10px 12px;background:var(--bg-card)}
+.metric .mv{font-size:20px;font-weight:600;letter-spacing:-.02em;color:var(--text-default);line-height:1.15}
+.metric .ml{font-size:10.5px;color:var(--text-subtle);margin-top:2px}
+.metric .md{font-size:10.5px;color:var(--text-success);margin-top:3px}
+.seg-app{display:inline-flex;border:1px solid var(--border-subtle);border-radius:7px;overflow:hidden}
+.seg-app b{
+  font-size:11.5px;font-weight:500;padding:5px 12px;color:var(--text-muted);
+  border-right:1px solid var(--border-subtle);display:flex;align-items:center;gap:6px;
+}
+.seg-app b:last-child{border-right:0}
+.seg-app b.on{background:var(--background-accent);color:var(--text-on-accent);font-weight:600}
+.sw-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.tip{
+  display:inline-block;background:var(--bg-inverse);color:var(--text-inverse);font-size:11px;
+  padding:4px 9px;border-radius:5px;
+}
+
+/* ── provenance table ───────────────────────────────────────────────── */
+.prov{width:100%;border-collapse:collapse;font-size:14px;background:var(--pl-paper);border:1px solid var(--pl-rule)}
+.prov th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--pl-dim);text-align:left;padding:11px 13px;border-bottom:1px solid var(--pl-rule);font-weight:500;
+}
+.prov td{padding:10px 13px;border-bottom:1px solid var(--pl-rule);vertical-align:top;line-height:1.5}
+.prov tr:last-child td{border-bottom:0}
+.prov td.mono,.prov th.mono{font-family:var(--mono);font-size:12px}
+.chipx{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;white-space:nowrap}
+.chipx i{width:12px;height:12px;border-radius:2px;border:1px solid rgba(18,16,14,.22);display:inline-block;flex:none}
+.tbl-scroll{overflow-x:auto;border-radius:3px}
+
+/* ── swatch reference ───────────────────────────────────────────────── */
+.sw-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+@media(max-width:1000px){.sw-grid{grid-template-columns:1fr}}
+.sw-panel{border:1px solid var(--pl-rule);border-radius:3px;overflow:hidden;background:var(--pl-paper)}
+.sw-panel > h4{
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;margin:0;
+  padding:11px 14px;border-bottom:1px solid var(--pl-rule);color:var(--pl-dim);font-weight:500;
+}
+.sw-group{padding:13px 14px;border-bottom:1px solid var(--pl-rule)}
+.sw-group:last-child{border-bottom:0}
+.sw-group h5{
+  font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--pl-orange);margin:0 0 9px;font-weight:700;
+}
+.sw-row{display:flex;align-items:center;gap:10px;padding:3.5px 0;font-family:var(--mono);font-size:11px}
+.sw-row i{width:26px;height:16px;border-radius:2px;border:1px solid rgba(18,16,14,.2);flex:none}
+.sw-row .nm{flex:1;color:#3a352e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-row .hx{color:var(--pl-dim);font-size:10.5px}
+.ramp{display:flex;height:34px;border:1px solid var(--pl-rule);border-radius:2px;overflow:hidden;margin-top:6px}
+.ramp i{flex:1;position:relative}
+.ramp i span{
+  position:absolute;bottom:2px;left:0;right:0;text-align:center;font-family:var(--mono);
+  font-size:7.5px;opacity:.8;
+}
+.ramp-legend{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--pl-dim);margin-top:5px;letter-spacing:.06em}
+
+/* ── ledger ─────────────────────────────────────────────────────────── */
+.led{
+  border:1px solid var(--pl-rule);background:var(--pl-paper);border-radius:3px;overflow:hidden;
+}
+.led-head{
+  display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--pl-rule);
+  background:var(--pl-paper-2);
+}
+.led-num{font-family:var(--mono);font-size:26px;font-weight:700;color:var(--pl-orange);line-height:1}
+.led-head div p{margin:0;font-size:14.5px;color:#3a352e}
+.led-head div b{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--pl-ink)}
+.led-body{padding:6px 18px 16px}
+.led-item{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--pl-rule);align-items:flex-start}
+.led-item:last-child{border-bottom:0}
+.led-mark{
+  font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.08em;padding:2.5px 7px;
+  border-radius:2px;flex:none;margin-top:2px;
+}
+.led-mark.fix{background:var(--pl-orange);color:#fff}
+.led-mark.ok{background:#1f6b4a;color:#fff}
+.led-item p{margin:0;font-size:14.5px;line-height:1.55;color:#3a352e}
+.led-item p b{color:var(--pl-ink);font-weight:500}
+
+/* ── questions ──────────────────────────────────────────────────────── */
+.qs{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:1px;background:var(--pl-rule);border:1px solid var(--pl-rule)}
+.q{background:var(--pl-paper);padding:20px 22px}
+.q h4{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--pl-orange);margin:0 0 9px;font-weight:700;text-transform:uppercase}
+.q h5{font-family:var(--serif);font-size:18px;font-weight:500;margin:0 0 8px;letter-spacing:-.01em}
+.q p{margin:0 0 10px;font-size:14.5px;line-height:1.55;color:#3a352e}
+.q .rec{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--pl-ink);
+  border-top:1px solid var(--pl-rule);padding-top:9px;margin:0;
+}
+.q .rec b{color:var(--pl-orange);font-weight:700}
+
+/* ── footer ─────────────────────────────────────────────────────────── */
+footer{
+  margin-top:84px;border-top:1px solid var(--pl-rule);padding-top:22px;
+  font-family:var(--mono);font-size:10.5px;color:var(--pl-dim);letter-spacing:.03em;line-height:1.9;
+}
+footer b{color:var(--pl-ink)}
+footer .big{
+  font-family:var(--serif);font-size:19px;letter-spacing:-.01em;color:var(--pl-ink);
+  margin:0 0 14px;font-weight:400;line-height:1.5;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ═════════════════════════ MASTHEAD ═════════════════════════ -->
+<header class="mast">
+  <p class="eyebrow">BioRouter Design · Theme Family Proposal · <b>Awaiting approval</b></p>
+  <div class="mast-grid">
+    <div>
+      <h1 class="title">Roche&nbsp;<em>Limit</em></h1>
+      <p class="dek">
+        A third theme family for BioRouter, drawn from <strong>JupyterLab</strong>: a white page,
+        recessed grey panels, and one bright orange doing all the signalling.
+        It approaches Jupyter as closely as a theme can — and stops exactly before
+        it becomes a clone.
+      </p>
+      <div class="meta">
+        <span>Family id <b>roche-limit</b></span>
+        <span>Variants <b>light + dark</b></span>
+        <span>Tokens <b>59 × 2</b></span>
+        <span>Contrast <b>164/164 AA</b></span>
+        <span class="pill">Nothing shipped yet</span>
+      </div>
+    </div>
+    <div>
+      <svg class="orbit" viewBox="0 0 220 220" role="img" aria-label="Diagram: a satellite orbiting a primary body, with the Roche limit marked as the closest stable approach.">
+        <defs>
+          <radialGradient id="prim" cx="38%" cy="32%">
+            <stop offset="0%" stop-color="#f6a35e"/>
+            <stop offset="55%" stop-color="#ee6c1a"/>
+            <stop offset="100%" stop-color="#a8460a"/>
+          </radialGradient>
+        </defs>
+        <!-- roche limit ring -->
+        <circle cx="110" cy="110" r="66" fill="none" stroke="#d95b08" stroke-width="1" stroke-dasharray="3 4" opacity=".85"/>
+        <!-- stable orbit -->
+        <circle cx="110" cy="110" r="92" fill="none" stroke="#c3bcae" stroke-width="1"/>
+        <!-- primary -->
+        <circle cx="110" cy="110" r="34" fill="url(#prim)"/>
+        <ellipse cx="110" cy="110" rx="52" ry="9" fill="none" stroke="#12100e" stroke-width="1.1" opacity=".38"/>
+        <!-- satellite on the stable orbit -->
+        <g class="satellite">
+          <circle cx="202" cy="110" r="7" fill="#12100e"/>
+        </g>
+        <!-- labels -->
+        <text class="lbl lbl-hi" x="110" y="34" text-anchor="middle">Roche limit</text>
+        <line x1="110" y1="38" x2="110" y2="44" stroke="#d95b08" stroke-width="1"/>
+        <text class="lbl" x="110" y="212" text-anchor="middle">stable orbit</text>
+        <line x1="110" y1="199" x2="110" y2="205" stroke="#c3bcae" stroke-width="1"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="concept">
+    <div>
+      <h4>The astronomy</h4>
+      <p>The Roche limit is the closest a satellite can orbit a larger body before tidal
+      forces pull it apart. Approach is survivable. Contact is not.</p>
+    </div>
+    <div>
+      <h4>The design reading</h4>
+      <p>We take Jupyter's structure — white page, recessed cells, flat hairlines, quiet
+      chrome — and hold position just outside the point where evocation becomes imitation.</p>
+    </div>
+    <div>
+      <h4>What that rules out</h4>
+      <p>No <code>In&nbsp;[1]:</code> gutter. No Jupyter logo orange. No Material palette.
+      Those are inside the limit, and crossing it is where a theme stops being a design.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ═════════════════════════ CONTROLS ═════════════════════════ -->
+<div class="controls" id="controls">
+  <div class="ctl">
+    <label for="famSeg">Family</label>
+    <div class="seg" id="famSeg">
+      <button data-fam="roche" aria-pressed="true">Roche Limit</button>
+      <button data-fam="parchment" aria-pressed="false">Parchment</button>
+      <button data-fam="alma" aria-pressed="false">Alma Mater</button>
+    </div>
+  </div>
+  <div class="ctl">
+    <label>Chrome <span class="q-tag">Q1</span></label>
+    <div class="seg" id="chromeSeg">
+      <button data-chrome="instrument" aria-pressed="true">Instrument</button>
+      <button data-chrome="warm" aria-pressed="false">Warm</button>
+    </div>
+  </div>
+  <div class="ctl">
+    <label>Grey <span class="q-tag">Q6</span></label>
+    <div class="seg" id="greySeg">
+      <button data-grey="warm" aria-pressed="true">Warm-neutral</button>
+      <button data-grey="pure" aria-pressed="false">Pure</button>
+    </div>
+  </div>
+  <div class="ctl">
+    <label>Cell rail <span class="q-tag">Q4</span></label>
+    <div class="seg" id="railSeg">
+      <button data-rail="off" aria-pressed="true">Off</button>
+      <button data-rail="on" aria-pressed="false" class="warn">On</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════════════════ PLATE I ═════════════════════════ -->
+<section id="plate1">
+  <div class="sec-head"><span class="plate-no">Plate I</span><h2>The app, in both modes</h2></div>
+  <p class="sec-note">
+    Every colour below is driven by the same token variables the real theme sets — nothing is
+    hardcoded. The controls above rewrite those tokens live, so what you see is what
+    <code>main.css</code> would ship. Note the two Jupyter moves: the code cell sits
+    <em>recessed</em> below the page in light and <em>raised</em> above it in dark, and the composer
+    rises to the page colour when focused.
+  </p>
+  <div class="duo">
+    <div>
+      <p class="frame-label"><b>Light</b> <span class="hexes" id="hx-light">#FFFFFF page · #F4F4F2 panel · #EE6C1A accent</span></p>
+      <div class="shot"><div class="app" id="mount-light"></div></div>
+    </div>
+    <div>
+      <p class="frame-label"><b>Dark</b> <span class="hexes" id="hx-dark">#131312 canvas · #1B1B19 card · #EE6C1A accent</span></p>
+      <div class="shot"><div class="app" id="mount-dark"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE II ═════════════════════════ -->
+<section id="plate2">
+  <div class="sec-head"><span class="plate-no">Plate II</span><h2>Provenance — what we took, what we changed</h2></div>
+  <p class="sec-note">
+    Every Jupyter value in the left column was read byte-exact from
+    <code>jupyterlab@main</code> <code>theme-{light,dark}-extension/style/variables.css</code>.
+    The right column is what Roche Limit actually ships, and why it differs.
+  </p>
+  <div class="tbl-scroll">
+  <table class="prov">
+    <thead>
+      <tr><th>Role</th><th>JupyterLab ships</th><th>Roche Limit ships</th><th>Why the distance</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">page</td>
+        <td><span class="chipx"><i style="background:#fff"></i>#FFFFFF</span><br><span style="font-size:12px;color:var(--pl-dim)">--jp-layout-color0</span></td>
+        <td><span class="chipx"><i style="background:#fff"></i>#FFFFFF</span></td>
+        <td><b>Kept exactly.</b> The white page is the brief and the Jupyter ground truth at once.</td>
+      </tr>
+      <tr>
+        <td class="mono">panel / cell</td>
+        <td><span class="chipx"><i style="background:#eee"></i>#EEEEEE</span> <span class="chipx"><i style="background:#f5f5f5"></i>#F5F5F5</span></td>
+        <td><span class="chipx"><i style="background:#F4F4F2"></i>#F4F4F2</span> <span class="chipx"><i style="background:#F5F5F3"></i>#F5F5F3</span></td>
+        <td>Same lightness, warmed by ~2 units of blue. Jupyter's greys are Material Design 2016; the structure survives, the era doesn't.</td>
+      </tr>
+      <tr>
+        <td class="mono">accent</td>
+        <td><span class="chipx"><i style="background:#2196F3"></i>#2196F3</span> brand<br><span class="chipx"><i style="background:#F37726"></i>#F37726</span> logo only</td>
+        <td><span class="chipx"><i style="background:#EE6C1A"></i>#EE6C1A</span></td>
+        <td><b>The key divergence.</b> Jupyter's UI accent is Material blue; orange is reserved for the logo and kernel state. We invert that — orange becomes the accent, per the brief — and shift off <code>#F37726</code> for trademark distance and because it clears 3:1 on white where Jupyter's does not (3.09 vs 2.81).</td>
+      </tr>
+      <tr>
+        <td class="mono">accent as text</td>
+        <td>— (never used)</td>
+        <td><span class="chipx"><i style="background:#AE4700"></i>#AE4700</span></td>
+        <td>Bright orange cannot legally carry text on white at any size. Links and coloured labels use ramp step 11 (5.67:1); the bright anchor is fills and rails only.</td>
+      </tr>
+      <tr>
+        <td class="mono">ink</td>
+        <td><span class="chipx"><i style="background:rgba(0,0,0,.87)"></i>rgba(0,0,0,.87)</span></td>
+        <td><span class="chipx"><i style="background:#1F1E1C"></i>#1F1E1C</span></td>
+        <td>Warm near-black, opaque. Jupyter's ramp bottoms out at <code>rgba(0,0,0,.38)</code>, which fails AA — the Jupyter team flags it as unfinished. We don't inherit that.</td>
+      </tr>
+      <tr>
+        <td class="mono">dark canvas</td>
+        <td><span class="chipx"><i style="background:#111"></i>#111111</span> <span class="chipx"><i style="background:#212121"></i>#212121</span></td>
+        <td><span class="chipx"><i style="background:#131312"></i>#131312</span> <span class="chipx"><i style="background:#1B1B19"></i>#1B1B19</span></td>
+        <td>Same polarity flip (canvas dark, card lighter). Warmed a touch so bright orange doesn't halate against a cold ground.</td>
+      </tr>
+      <tr>
+        <td class="mono">cell focus</td>
+        <td class="mono">active-background<br>= layout-color0</td>
+        <td class="mono">composer focused<br>= --background-app</td>
+        <td><b>Taken wholesale.</b> Jupyter signals focus by returning the editor to page lightness — costing zero accent budget. The single most replicable idea in their system.</td>
+      </tr>
+      <tr>
+        <td class="mono">collapser</td>
+        <td>8px bar, 2px radius<br>brand when active</td>
+        <td>2px rail, accent-bar</td>
+        <td>The rail concept survives; the 8px notebook dimension does not. BioRouter already speaks this language on the active sidebar row and tab underline. <span class="q-tag">Q4</span></td>
+      </tr>
+      <tr>
+        <td class="mono">prompt gutter</td>
+        <td class="mono">In [1]: / Out[1]:<br>#307FC1 / #BF5B3D</td>
+        <td>none</td>
+        <td>BioRouter is a chat/research IDE, not an IPython REPL. Reproducing execution counts is costume. Colab dropped it and lost nothing; the input/output pigment idea survives in the status tokens.</td>
+      </tr>
+      <tr>
+        <td class="mono">radius</td>
+        <td class="mono">2px (cells 0)</td>
+        <td class="mono">4 / 8 / 12 / 16px</td>
+        <td>Inherited from BioRouter's <code>@theme</code> block, outside family scope. We honour the spirit by keeping elevation flat and every boundary a hairline. <span class="q-tag">Q5</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE III ═════════════════════════ -->
+<section id="plate3">
+  <div class="sec-head"><span class="plate-no">Plate III</span><h2>Components &amp; data surfaces</h2></div>
+  <p class="sec-note">
+    Buttons, status, form focus, metrics, and the usage heatmap — the surfaces where a theme
+    usually falls apart. Status hues are deliberately pushed away from the accent: warning is
+    <em>true yellow</em>, not amber, because Radix amber sits 15° from our orange and reads as a
+    branded chip rather than a warning.
+  </p>
+  <div class="duo">
+    <div>
+      <p class="frame-label"><b>Light</b></p>
+      <div class="shot"><div class="app compact" id="mount-gal-light"></div></div>
+    </div>
+    <div>
+      <p class="frame-label"><b>Dark</b></p>
+      <div class="shot"><div class="app compact" id="mount-gal-dark"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE IV ═════════════════════════ -->
+<section id="plate4">
+  <div class="sec-head"><span class="plate-no">Plate IV</span><h2>Where the toggle lives</h2></div>
+  <p class="sec-note">
+    Roche Limit becomes a third option in <code>ThemeFamilySelector</code>, beside the existing
+    Palette control in Settings → Appearance. The grid there is currently hardcoded to two
+    columns and needs bumping to three.
+  </p>
+  <div class="duo">
+    <div>
+      <p class="frame-label"><b>Light</b></p>
+      <div class="shot"><div class="app compact" id="mount-set-light"></div></div>
+    </div>
+    <div>
+      <p class="frame-label"><b>Dark</b></p>
+      <div class="shot"><div class="app compact" id="mount-set-dark"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE V ═════════════════════════ -->
+<section id="plate5">
+  <div class="sec-head"><span class="plate-no">Plate V</span><h2>Token reference</h2></div>
+  <p class="sec-note">
+    The 59 semantic tokens a family must declare, in both blocks. The accent ramp follows the
+    Radix 12-step methodology anchored on step 9.
+  </p>
+  <div class="sw-grid">
+    <div class="sw-panel" id="sw-light"></div>
+    <div class="sw-panel" id="sw-dark"></div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE VI ═════════════════════════ -->
+<section id="plate6">
+  <div class="sec-head"><span class="plate-no">Plate VI</span><h2>Accessibility ledger</h2></div>
+  <p class="sec-note">
+    <code>npm run lint:check</code> runs <code>scripts/check-contrast.mjs</code> in CI — a new family
+    that fails it fails the build. The palette was verified independently before this document
+    was written, and three values were corrected as a result.
+  </p>
+  <div class="led">
+    <div class="led-head">
+      <span class="led-num">164</span>
+      <div>
+        <b>assertions · all pass</b>
+        <p>Every text token against every ground it can land on, every ink-on-fill pair, every
+        non-text boundary at 3:1, and all 20 syntax stops.</p>
+      </div>
+    </div>
+    <div class="led-body">
+      <div class="led-item">
+        <span class="led-mark fix">Fixed</span>
+        <p><b>Light <code>--text-subtle</code>: <code>#6B6963</code> → <code>#69675F</code>.</b>
+        The original measured 4.47:1 on <code>--background-focus</code> — a fail rounded up to a
+        pass. The corrected value clears 4.61:1 on the darkest ground it can reach.</p>
+      </div>
+      <div class="led-item">
+        <span class="led-mark fix">Fixed</span>
+        <p><b>Dark <code>--text-subtle</code>: <code>#98968F</code> → <code>#9C9A93</code>.</b>
+        Same failure mirrored: 4.34:1 on the dark focus surface. Now 4.56:1.</p>
+      </div>
+      <div class="led-item">
+        <span class="led-mark fix">Fixed</span>
+        <p><b>Light <code>--accent-bar</code>: <code>#EE6C1A</code> → <code>#D95B08</code>.</b>
+        The bright anchor is 3.09:1 on white but only <b>2.81:1 on the grey panel</b> — so rails and
+        status dots would have failed WCAG 1.4.11 the moment they sat on a card. The deeper orange
+        clears 3:1 on <em>every</em> light ground (min 3.14). <code>--background-accent</code> stays
+        <code>#EE6C1A</code>, so fills keep the brightness the brief asked for. Dark mode keeps the
+        pure anchor throughout — it clears 5.1:1 even on the muted panel.</p>
+      </div>
+      <div class="led-item">
+        <span class="led-mark ok">Note</span>
+        <p><b>Ink on orange is dark, never white.</b> White on <code>#EE6C1A</code> is 2.81:1 — a
+        fail at any size. <code>--text-on-accent</code> is <code>#1F1E1C</code> at 5.39:1. If a
+        white-text orange button is ever required, the fill must be <code>#AE4700</code> (5.67:1).</p>
+      </div>
+      <div class="led-item">
+        <span class="led-mark ok">Note</span>
+        <p><b>The Warm chrome option above is constrained by this.</b> The obvious warm treatment —
+        ramp step 4 <code>#FADBBB</code> as the focus surface — fails at 4.29:1. The toggle uses
+        steps 2 and 3 instead, which pass. Worth knowing that the warm direction has a hard ceiling.</p>
+      </div>
+      <div class="led-item">
+        <span class="led-mark ok">Carried</span>
+        <p><b><code>--border-input</code> at <code>#C9C9C3</code> is 1.66:1 on white</b> — below the
+        3:1 non-text threshold. This is inherited parity: Parchment and Alma Mater both do the same,
+        and it matches Jupyter's own <code>#E0E0E0</code>. Fixing it is a theme-wide change, not a
+        Roche Limit change. Flagged, not silently shipped. <span class="q-tag">Q2</span></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE VII ═════════════════════════ -->
+<section id="plate7">
+  <div class="sec-head"><span class="plate-no">Plate VII</span><h2>Exportability — the honest answer</h2></div>
+  <p class="sec-note">
+    You asked that these adjustments be settings you can export later. Here is the true state of
+    the codebase, because the answer changes what needs building.
+  </p>
+  <div class="qs">
+    <div class="q">
+      <h4>Today</h4>
+      <h5>There is no export, for any setting</h5>
+      <p>Theme state lives only in renderer <code>localStorage</code> under three keys:
+      <code>theme</code>, <code>use_system_theme</code>, <code>theme_family</code>. It never reaches
+      the backend and never lands in a file you can copy. <code>config.yaml</code> has no appearance
+      keys; the Electron <code>settings.json</code> has six keys, none of them appearance.</p>
+      <p class="rec">This is already true of Parchment and Alma Mater. Roche Limit doesn't introduce
+      the gap — it makes it visible.</p>
+    </div>
+    <div class="q">
+      <h4>Tier 1 · ships with the theme</h4>
+      <h5>Export / import the appearance block</h5>
+      <p>A versioned JSON blob written through the save-dialog IPC that
+      <code>WorkflowsView</code> already uses:</p>
+      <p><code style="display:block;padding:9px;line-height:1.5;font-size:11.5px">{ "schema": "biorouter.appearance/1",<br>&nbsp;&nbsp;"themeFamily": "roche-limit",<br>&nbsp;&nbsp;"theme": "dark",<br>&nbsp;&nbsp;"useSystemTheme": false }</code></p>
+      <p class="rec"><b>~1 day.</b> No backend work. Import needs <code>showOpenDialog</code> +
+      <code>readFile</code> on the preload bridge — only the save side is confirmed wired.</p>
+    </div>
+    <div class="q">
+      <h4>Tier 2 · the real fix</h4>
+      <h5>Round-trip through config.yaml</h5>
+      <p>Persist appearance under an <code>appearance:</code> key via the existing
+      <code>/config/upsert</code> + <code>/config/read</code> routes. That file is already what
+      users back up and move between machines, so "exportable" becomes free.</p>
+      <p class="rec">Costs a <b>hybrid</b> read path: <code>index.html</code> reads localStorage
+      <em>synchronously</em> to prevent the theme flash, so config becomes the source of truth and
+      localStorage becomes a sync cache. Separate plan.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ PLATE VIII ═════════════════════════ -->
+<section id="plate8">
+  <div class="sec-head"><span class="plate-no">Plate VIII</span><h2>Open questions for you</h2></div>
+  <p class="sec-note">
+    Four of these are live in the controls at the top of this page — toggle them and judge by eye.
+    Two are architectural and need a decision rather than a preview.
+  </p>
+  <div class="qs">
+    <div class="q">
+      <h4>Q1 · previewable</h4>
+      <h5>How orange should the chrome be?</h5>
+      <p>Jupyter's own answer is <em>barely</em>: orange is the logo and kernel state, everything
+      interactive is blue. <b>Instrument</b> keeps every hover, active and focus surface neutral —
+      orange appears only on rails, fills and dots. <b>Warm</b> tints the sidebar-active and focus
+      surfaces toward the orange ramp.</p>
+      <p class="rec">Recommend <b>Instrument</b> — it's the Jupyter-faithful reading, and it keeps
+      orange meaning something.</p>
+    </div>
+    <div class="q">
+      <h4>Q4 · previewable</h4>
+      <h5>Do tool-call cards get the cell rail?</h5>
+      <p>JupyterLab's 8px collapser is its strongest structural signature. Extending a 2px rail to
+      the active tool-call card is the single most notebook-legible move available.</p>
+      <p class="rec">Recommend <b>On</b> — but note it needs a component change, not just tokens,
+      which breaks the "pure re-colouring" contract Alma Mater set. <b>Your call on scope.</b></p>
+    </div>
+    <div class="q">
+      <h4>Q6 · previewable</h4>
+      <h5>Warm-neutral or pure grey?</h5>
+      <p>Warm-neutral holds every grey under OKLCH chroma ~0.006 — imperceptible alone, but it stops
+      the orange reading as hazard signage against a cool ground. Pure grey is slightly more clinical.
+      Both verified AA.</p>
+      <p class="rec">Recommend <b>Warm-neutral</b>. The difference is subtle; the failure mode it
+      prevents is not.</p>
+    </div>
+    <div class="q">
+      <h4>Q3 · decision</h4>
+      <h5>Adopt Jupyter's font stack?</h5>
+      <p>Fonts live in <code>@theme inline</code>, described in-file as the single source of truth,
+      and Alma Mater's precedent is explicit: a family is "a pure re-colouring, same layout, same
+      fonts." Jupyter's stack is near-identical to BioRouter's already.</p>
+      <p class="rec">Recommend <b>no</b>. The win is small and the contract is worth more.</p>
+    </div>
+    <div class="q">
+      <h4>Q5 · decision</h4>
+      <h5>Should a family be allowed to change radii?</h5>
+      <p>Jupyter reads as technical almost entirely because of its 2px corners. BioRouter's radius
+      scale lives in <code>@theme</code>, outside family scope — so Roche Limit will always be softer
+      than Jupyter. Changing that means moving <code>--radius-*</code> into <code>:root</code> and
+      touching all four existing blocks.</p>
+      <p class="rec">Recommend <b>not now</b> — real architecture change. Worth a separate decision
+      if the softness bothers you in Plate&nbsp;I.</p>
+    </div>
+    <div class="q">
+      <h4>Q2 · decision</h4>
+      <h5>Fix the input-border contrast globally?</h5>
+      <p><code>--border-input</code> fails 1.4.11 in all three families. Raising it to
+      <code>#8E8C86</code> / <code>#706F69</code> makes forms compliant and visibly heavier — and
+      makes Roche Limit inconsistent with its siblings unless all three change.</p>
+      <p class="rec">Recommend <b>a separate theme-wide fix</b>, not a Roche Limit special case.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p class="big">Nothing in the codebase has changed. This document is the approval gate.</p>
+  <div>
+    On approval, implementation touches <b>8 files</b>: <b>main.css</b> (two new blocks after L506) ·
+    <b>ThemeContext.tsx</b> (union + two hardcoded allow-lists at L77 and L174) ·
+    <b>index.html</b> (the pre-hydration duplicate, or the app flashes Parchment on launch) ·
+    <b>ThemeFamilySelector.tsx</b> (entry + <code>grid-cols-2</code>→<code>3</code>) ·
+    <b>codeTheme.ts</b> (register in <code>codeThemesByFamily</code>, <em>not</em> the flat
+    <code>codeThemes</code> map) · <b>InAppTerminalDock.tsx</b> (20 xterm slots × 2) ·
+    <b>codeTheme.test.ts</b> · <b>check-contrast.mjs</b> (or CI has no guard on the new family).
+  </div>
+  <div style="margin-top:14px">
+    Jupyter values read byte-exact from <b>jupyterlab@main</b> · Contrast computed with a WCAG 2.x
+    implementation self-tested against <code>#767676</code> on white = 4.54:1 ·
+    Companion spec: <b>docs/design/roche-limit-theme.md</b>
+  </div>
+</footer>
+
+</div>
+
+<script>
+/* ═══════════════════════ ICONS ═══════════════════════ */
+const svg = (d, extra='') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+const I = {
+  home:     svg('<path d="M3 10.5 12 4l9 6.5"/><path d="M5 9.5V20h14V9.5"/>'),
+  chat:     svg('<path d="M4 5h16v11H9l-5 4z"/>'),
+  sessions: svg('<path d="M4 6h16M4 12h16M4 18h10"/>'),
+  ext:      svg('<path d="M9 4h6v3a2 2 0 1 0 0 4v3H9v-3a2 2 0 1 1 0-4z"/><path d="M15 7h4v4M15 18h4v-4"/>'),
+  know:     svg('<path d="M5 5a2 2 0 0 1 2-2h11v16H7a2 2 0 0 0-2 2z"/><path d="M18 3v18"/>'),
+  skills:   svg('<path d="M12 3l2.2 5.3L20 9.2l-4 3.7 1 5.6-5-2.8-5 2.8 1-5.6-4-3.7 5.8-.9z"/>'),
+  gear:     svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>'),
+  send:     svg('<path d="M5 12h13M12 5l7 7-7 7"/>','stroke-width="2.2"'),
+};
+
+/* ═══════════════════════ TOKEN SETS ═══════════════════════
+   These mirror the exact values proposed in roche-limit-theme.md.
+   ═════════════════════════════════════════════════════════ */
+const SHADOW_L = '0px 2px 6px -1px rgba(31,30,28,0.09), 0px 1px 2px 0px rgba(31,30,28,0.05)';
+const SHADOW_D = '0px 2px 10px -1px rgba(0,0,0,0.45), 0px 1px 3px 0px rgba(0,0,0,0.3)';
+
+const ROCHE_LIGHT = {
+  '--bg-app':'#FFFFFF','--bg-default':'#FFFFFF','--bg-card':'#FFFFFF','--bg-muted':'#F4F4F2',
+  '--bg-code':'#F5F5F3','--bg-medium':'#ECECE9','--background-strong':'#DCDCD8','--bg-inverse':'#1F1E1C',
+  '--sidebar':'#F7F7F5','--sidebar-hover':'#EFEFEC','--sidebar-active':'#EAEAE6',
+  '--sidebar-fg':'#1F1E1C','--sidebar-border':'#E7E7E3',
+  '--text-default':'#1F1E1C','--text-muted':'#5C5A55','--text-subtle':'#69675F','--text-inverse':'#FFFFFF',
+  '--border-subtle':'#E4E4E0','--border-strong':'#D2D2CD','--border-input':'#C9C9C3',
+  '--background-accent':'#EE6C1A','--accent-hover':'#DE6110','--text-on-accent':'#1F1E1C',
+  '--text-accent':'#AE4700','--accent-bar':'#D95B08',
+  '--text-danger':'#C4232B','--text-success':'#0F7150','--text-info':'#0A69BC','--text-warning':'#6E6300',
+  '--bg-focus':'#E8E8E4','--border-focus':'#6B6963',
+  '--cell-border':'#E4E4E0','--cell-active-bg':'#FFFFFF','--cell-active-border':'#C9C9C3',
+  '--syn-plain':'#1F1E1C','--syn-comment':'#3F6E6E','--syn-keyword':'#0A7A32','--syn-string':'#B02121',
+  '--syn-number':'#0F6E38','--syn-func':'#1849B8','--syn-type':'#0F6E38','--syn-operator':'#7024B0',
+  '--heat-0':'#EEEEEA','--heat-1':'#FADCC0','--heat-2':'#F6BC8C','--heat-3':'#EE8B45','--heat-4':'#C4560E',
+  '--shadow-composer':SHADOW_L,
+};
+const ROCHE_DARK = {
+  '--bg-app':'#131312','--bg-default':'#1B1B19','--bg-card':'#1B1B19','--bg-muted':'#232320',
+  '--bg-code':'#1B1B19','--bg-medium':'#2C2C29','--background-strong':'#3A3A36','--bg-inverse':'#EDEDEA',
+  '--sidebar':'#171716','--sidebar-hover':'#232320','--sidebar-active':'#2E2E2A',
+  '--sidebar-fg':'#EDEDEA','--sidebar-border':'#2A2A27',
+  '--text-default':'#EDEDEA','--text-muted':'#A5A39D','--text-subtle':'#9C9A93','--text-inverse':'#131312',
+  '--border-subtle':'#302F2C','--border-strong':'#3E3D39','--border-input':'#4A4945',
+  '--background-accent':'#EE6C1A','--accent-hover':'#F27F30','--text-on-accent':'#131312',
+  '--text-accent':'#F2955A','--accent-bar':'#EE6C1A',
+  '--text-danger':'#FF9592','--text-success':'#3DD68C','--text-info':'#70B8FF','--text-warning':'#F2E06B',
+  '--bg-focus':'#33322E','--border-focus':'#9C9A93',
+  '--cell-border':'#302F2C','--cell-active-bg':'#131312','--cell-active-border':'#4A4945',
+  '--syn-plain':'#EDEDEA','--syn-comment':'#7FA3A3','--syn-keyword':'#6FCB78','--syn-string':'#FF8F8F',
+  '--syn-number':'#84D089','--syn-func':'#7FBEF7','--syn-type':'#84D089','--syn-operator':'#D9A0FF',
+  '--heat-0':'#1E1D1B','--heat-1':'#4A2A0E','--heat-2':'#7A4413','--heat-3':'#B45F18','--heat-4':'#EE6C1A',
+  '--shadow-composer':SHADOW_D,
+};
+
+/* comparison families (existing, shipping) */
+const PARCH_LIGHT = {
+  ...ROCHE_LIGHT,
+  '--bg-muted':'#faf8f3','--bg-code':'#faf8f3','--bg-medium':'#f4f0e6','--background-strong':'#d4cab6',
+  '--sidebar':'#f3ede1','--sidebar-hover':'#ece4d4','--sidebar-active':'#e4d9c3','--sidebar-fg':'#2a2520','--sidebar-border':'#e9e1d0',
+  '--text-default':'#2a2520','--text-muted':'#635c54','--text-subtle':'#6e6760','--bg-inverse':'#2a2520',
+  '--border-subtle':'#e8e1d2','--border-strong':'#d4cab6','--border-input':'#d4cab6',
+  '--background-accent':'#b85a32','--accent-hover':'#a94f2a','--text-on-accent':'#ffffff','--text-accent':'#b85a32','--accent-bar':'#cf6d47',
+  '--text-danger':'#b3261e','--text-success':'#1f7a3d','--text-info':'#1e5fbf','--text-warning':'#8a5a00',
+  '--bg-focus':'#ece4d4','--border-focus':'#6e6760','--cell-border':'#e8e1d2','--cell-active-bg':'#ffffff','--cell-active-border':'#d4cab6',
+  '--syn-plain':'#2a2520','--syn-comment':'#6f6659','--syn-keyword':'#a94f2a','--syn-string':'#22784f','--syn-number':'#8a5a00','--syn-func':'#255fb5','--syn-type':'#7847b8','--syn-operator':'#6e6760',
+  '--heat-0':'#ece5d6','--heat-1':'#e9c9ab','--heat-2':'#dda27a','--heat-3':'#c6774c','--heat-4':'#a04a27',
+};
+const PARCH_DARK = {
+  ...ROCHE_DARK,
+  '--bg-app':'#0d0a06','--bg-default':'#16120c','--bg-card':'#16120c','--bg-muted':'#282217','--bg-code':'#16120c',
+  '--bg-medium':'#403928','--background-strong':'#615a46','--bg-inverse':'#f4f0e6',
+  '--sidebar':'#282217','--sidebar-hover':'#322b1d','--sidebar-active':'#3d3524','--sidebar-fg':'#f4f0e6','--sidebar-border':'#403928',
+  '--text-default':'#f4f0e6','--text-muted':'#b0a892','--text-subtle':'#9c937b','--text-inverse':'#16120c',
+  '--border-subtle':'#282217','--border-strong':'#403928','--border-input':'#403928',
+  '--background-accent':'#e8895f','--accent-hover':'#f0a07c','--text-on-accent':'#16120c','--text-accent':'#e8895f','--accent-bar':'#e8895f',
+  '--text-danger':'#f07575','--text-success':'#7ac87c','--text-info':'#7aabf5','--text-warning':'#f0c84a',
+  '--bg-focus':'#3d3524','--border-focus':'#9c937b','--cell-border':'#282217','--cell-active-bg':'#0d0a06','--cell-active-border':'#403928',
+  '--syn-plain':'#e8e1d2','--syn-comment':'#8d8266','--syn-keyword':'#e8895f','--syn-string':'#7fbf6a','--syn-number':'#d9a441','--syn-func':'#8fb8e8','--syn-type':'#b98ad6','--syn-operator':'#b0a892',
+  '--heat-0':'#241f16','--heat-1':'#4a3524','--heat-2':'#7a4d2e','--heat-3':'#b0653a','--heat-4':'#e8895f',
+};
+const ALMA_LIGHT = {
+  ...ROCHE_LIGHT,
+  '--bg-muted':'#f2f3f4','--bg-code':'#f2f3f4','--bg-medium':'#e1e3e5','--background-strong':'#d1d3d3',
+  '--sidebar':'#eceef1','--sidebar-hover':'#e3e6ea','--sidebar-active':'#d7dbe0','--sidebar-fg':'#052049','--sidebar-border':'#e1e3e5',
+  '--text-default':'#052049','--text-muted':'#506380','--text-subtle':'#586780','--bg-inverse':'#052049',
+  '--border-subtle':'#e1e3e5','--border-strong':'#cfd3d8','--border-input':'#d1d3d3',
+  '--background-accent':'#6c247c','--accent-hover':'#571c66','--text-on-accent':'#ffffff','--text-accent':'#6c247c','--accent-bar':'#a238ba',
+  '--text-danger':'#c40d3e','--text-success':'#007242','--text-info':'#0f388a','--text-warning':'#8a5a00',
+  '--bg-focus':'#d0d6de','--border-focus':'#586780','--cell-border':'#e1e3e5','--cell-active-bg':'#ffffff','--cell-active-border':'#d1d3d3',
+  '--syn-plain':'#052049','--syn-comment':'#586780','--syn-keyword':'#0f388a','--syn-string':'#007242','--syn-number':'#8a5a00','--syn-func':'#0e5258','--syn-type':'#6c247c','--syn-operator':'#506380',
+  '--heat-0':'#ece6f1','--heat-1':'#d9c2e8','--heat-2':'#c48ed6','--heat-3':'#9e44b4','--heat-4':'#6c247c',
+};
+const ALMA_DARK = {
+  ...ROCHE_DARK,
+  '--bg-app':'#04142e','--bg-default':'#08213f','--bg-card':'#08213f','--bg-muted':'#0d2a50','--bg-code':'#08213f',
+  '--bg-medium':'#143563','--background-strong':'#1e477f','--bg-inverse':'#f2f3f4',
+  '--sidebar':'#071b3a','--sidebar-hover':'#0e2a50','--sidebar-active':'#163864','--sidebar-fg':'#f2f3f4','--sidebar-border':'#1a3a66',
+  '--text-default':'#f2f3f4','--text-muted':'#b4b9bf','--text-subtle':'#909aa6','--text-inverse':'#052049',
+  '--border-subtle':'#17386a','--border-strong':'#24487f','--border-input':'#24487f',
+  '--background-accent':'#c45ed8','--accent-hover':'#d07ee0','--text-on-accent':'#1a0a24','--text-accent':'#d7a5e8','--accent-bar':'#c45ed8',
+  '--text-danger':'#f5768a','--text-success':'#5fbf74','--text-info':'#7fb3e6','--text-warning':'#feb80a',
+  '--bg-focus':'#163c74','--border-focus':'#909aa6','--cell-border':'#17386a','--cell-active-bg':'#04142e','--cell-active-border':'#24487f',
+  '--syn-plain':'#e1e3e5','--syn-comment':'#8a93a6','--syn-keyword':'#7fb3e6','--syn-string':'#6fc084','--syn-number':'#e0a44a','--syn-func':'#5cc6d0','--syn-type':'#c58ad6','--syn-operator':'#b4b9bf',
+  '--heat-0':'#10223f','--heat-1':'#3a1e52','--heat-2':'#6c247c','--heat-3':'#a238ba','--heat-4':'#c45ed8',
+};
+
+/* Q6 — pure-neutral grey variant (verified AA in both modes) */
+const PURE_L = {
+  '--bg-muted':'#F4F4F4','--bg-code':'#F5F5F5','--bg-medium':'#ECECEC','--background-strong':'#DCDCDC',
+  '--sidebar':'#F7F7F7','--sidebar-hover':'#EFEFEF','--sidebar-active':'#EAEAEA','--sidebar-border':'#E7E7E7',
+  '--text-default':'#1E1E1E','--text-muted':'#5B5B5B','--text-subtle':'#686868','--bg-inverse':'#1E1E1E',
+  '--border-subtle':'#E4E4E4','--border-strong':'#D2D2D2','--border-input':'#C9C9C9',
+  '--bg-focus':'#E8E8E8','--cell-border':'#E4E4E4','--cell-active-border':'#C9C9C9','--sidebar-fg':'#1E1E1E',
+};
+const PURE_D = {
+  '--bg-app':'#121212','--bg-default':'#1B1B1B','--bg-card':'#1B1B1B','--bg-muted':'#232323','--bg-code':'#1B1B1B',
+  '--bg-medium':'#2C2C2C','--background-strong':'#3A3A3A','--bg-inverse':'#EDEDED',
+  '--sidebar':'#171717','--sidebar-hover':'#232323','--sidebar-active':'#2E2E2E','--sidebar-border':'#2A2A2A',
+  '--text-default':'#EDEDED','--text-muted':'#A4A4A4','--text-subtle':'#9C9C9C','--text-inverse':'#121212',
+  '--border-subtle':'#303030','--border-strong':'#3E3E3E','--border-input':'#4A4A4A',
+  '--bg-focus':'#333333','--cell-border':'#303030','--cell-active-bg':'#121212','--cell-active-border':'#4A4A4A','--sidebar-fg':'#EDEDED',
+};
+/* Q1 — warm chrome. Uses ramp steps 2/3, NOT step 4 (#FADBBB fails AA at 4.29:1). */
+const WARM_L = {'--sidebar-hover':'#FEF6EE','--sidebar-active':'#FCEBD8','--bg-focus':'#FCEBD8','--bg-medium':'#FEF6EE'};
+const WARM_D = {'--sidebar-hover':'#251A11','--sidebar-active':'#331E0C','--bg-focus':'#331E0C','--bg-medium':'#251A11'};
+
+const FAMILIES = {
+  roche:     { light:ROCHE_LIGHT,  dark:ROCHE_DARK,  name:'Roche Limit',
+               hxL:'#FFFFFF page · #F4F4F2 panel · #EE6C1A accent',
+               hxD:'#131312 canvas · #1B1B19 card · #EE6C1A accent' },
+  parchment: { light:PARCH_LIGHT,  dark:PARCH_DARK,  name:'Parchment',
+               hxL:'#FFFFFF page · #FAF8F3 panel · #B85A32 accent',
+               hxD:'#0D0A06 canvas · #16120C card · #E8895F accent' },
+  alma:      { light:ALMA_LIGHT,   dark:ALMA_DARK,   name:'Alma Mater',
+               hxL:'#FFFFFF page · #F2F3F4 panel · #6C247C accent',
+               hxD:'#04142E canvas · #08213F card · #C45ED8 accent' },
+};
+
+let STATE = { fam:'roche', chrome:'instrument', grey:'warm', rail:'off' };
+
+function tokensFor(mode){
+  const f = FAMILIES[STATE.fam];
+  let t = { ...f[mode] };
+  if (STATE.fam === 'roche'){
+    if (STATE.grey === 'pure')   t = { ...t, ...(mode==='light'?PURE_L:PURE_D) };
+    if (STATE.chrome === 'warm') t = { ...t, ...(mode==='light'?WARM_L:WARM_D) };
+  }
+  return t;
+}
+function applyTokens(el, tokens){
+  for (const [k,v] of Object.entries(tokens)) el.style.setProperty(k, v);
+}
+
+/* ═══════════════════════ APP MARKUP ═══════════════════════ */
+const nav = (icon,label,state='') =>
+  `<div class="nav-item ${state}">${I[icon]}<span>${label}</span></div>`;
+
+const railCls = () => STATE.rail === 'on' ? ' railed' : '';
+
+const APP = () => `
+<div class="titlebar">
+  <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+  <span class="tb-title">biorouter · chat</span>
+  <span class="tb-right"><span class="kernel"><span class="k-dot"></span>opus-4.8 · ready</span></span>
+</div>
+<div class="app-body">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark"></span><span class="brand-name">BioRouter</span></div>
+    <nav class="nav">
+      ${nav('home','Home')}
+      ${nav('chat','Chat','active')}
+      ${nav('sessions','Sessions','hover')}
+      ${nav('ext','Extensions')}
+      ${nav('know','Knowledge')}
+      ${nav('skills','Skills')}
+    </nav>
+    <div class="side-foot">
+      ${nav('gear','Settings')}
+      <div class="side-user">
+        <span class="av">BL</span>
+        <div><div class="u-name">Baranzini Lab</div><div class="u-org">UCSF</div></div>
+      </div>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="tabstrip">
+      <div class="tab active">Roche Limit</div>
+      <div class="tab">variant calling</div>
+      <div class="tab">cohort v3</div>
+    </div>
+    <div class="chat">
+      <div class="msg user">
+        <span class="who">You</span>
+        <div class="content">Plot the expression distribution for the top 3 markers.</div>
+      </div>
+      <div class="msg ai">
+        <span class="who">BR</span>
+        <div class="content">
+          Running it now — using <code class="inline">scanpy</code> against the loaded
+          <a class="link">cohort_v3.h5ad</a>.
+          <div class="cell active${railCls()}">
+            <div class="cell-bar"><span class="lang">python</span><span class="spacer"></span><span class="copy">copy</span></div>
+<pre><span class="k">import</span> scanpy <span class="k">as</span> sc
+<span class="cm"># top markers by adjusted p-value</span>
+markers <span class="op">=</span> adata<span class="op">.</span>uns[<span class="st">'rank_genes'</span>][<span class="st">'names'</span>][:<span class="nu">3</span>]
+sc<span class="op">.</span>pl<span class="op">.</span><span class="fn">violin</span>(adata, markers, groupby<span class="op">=</span><span class="st">'cell_type'</span>)</pre>
+          </div>
+          <div class="tool${railCls()}">
+            <span class="status-dot"></span>
+            <span class="t-name">shell <span>· python analysis.py</span></span>
+            <span class="t-chip">ok · 1.4s</span>
+          </div>
+          <div class="out">
+            <div class="out-head"><span class="oi"></span>output · figure</div>
+            <div class="out-body">
+              <span class="bar" style="height:38%"></span><span class="bar" style="height:62%"></span>
+              <span class="bar" style="height:88%"></span><span class="bar" style="height:71%"></span>
+              <span class="bar" style="height:46%"></span><span class="bar" style="height:94%"></span>
+              <span class="bar" style="height:57%"></span><span class="bar" style="height:33%"></span>
+              <span class="bar" style="height:79%"></span><span class="bar" style="height:51%"></span>
+            </div>
+          </div>
+          <div class="badges">
+            <span class="badge ok">3 markers</span>
+            <span class="badge info">cached</span>
+            <span class="badge warn">2 cells dropped</span>
+            <span class="badge err">1 NA</span>
+          </div>
+          <div class="btn-row">
+            <span class="btn primary">Open figure</span>
+            <span class="btn secondary">Re-run</span>
+            <span class="btn ghost">Dismiss</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="bottom-chips">
+      <span class="chip"><span class="cdot"></span>opus-4.8</span>
+      <span class="chip">cohort_v3</span>
+      <span class="chip">4 extensions</span>
+    </div>
+    <div class="composer focused">
+      <span class="ph">Ask about the figure…</span>
+      <span class="caret"></span>
+      <span class="send">${I.send}</span>
+    </div>
+  </main>
+</div>`;
+
+const GALLERY = () => `
+<div class="gal">
+  <div>
+    <h5>Buttons &amp; status</h5>
+    <div class="btn-row" style="margin-top:0">
+      <span class="btn primary">Primary</span>
+      <span class="btn secondary">Secondary</span>
+      <span class="btn ghost">Ghost</span>
+    </div>
+    <div class="badges">
+      <span class="badge ok">Success</span><span class="badge info">Info</span>
+      <span class="badge warn">Warning</span><span class="badge err">Error</span>
+    </div>
+  </div>
+  <div>
+    <h5>Form · rest vs focus</h5>
+    <div style="display:flex;gap:9px;flex-wrap:wrap">
+      <span class="input">Session name</span>
+      <span class="input focused">cohort_v3 &nbsp;|</span>
+      <span class="tip">Focus is a surface shift, never a ring</span>
+    </div>
+  </div>
+  <div>
+    <h5>Metrics</h5>
+    <div class="metrics">
+      <div class="metric"><div class="mv">12,481</div><div class="ml">cells</div><div class="md">+4.2%</div></div>
+      <div class="metric"><div class="mv">3.2s</div><div class="ml">median turn</div><div class="md">−0.4s</div></div>
+      <div class="metric"><div class="mv">98.6%</div><div class="ml">QC pass</div><div class="md">+0.1%</div></div>
+    </div>
+  </div>
+  <div>
+    <h5>Usage heatmap</h5>
+    <div class="heat">
+      <i style="background:var(--heat-0)"></i><i style="background:var(--heat-1)"></i>
+      <i style="background:var(--heat-2)"></i><i style="background:var(--heat-3)"></i>
+      <i style="background:var(--heat-4)"></i>
+      <i style="background:var(--heat-2)"></i><i style="background:var(--heat-0)"></i>
+      <i style="background:var(--heat-3)"></i><i style="background:var(--heat-1)"></i>
+      <i style="background:var(--heat-4)"></i>
+    </div>
+  </div>
+  <div>
+    <h5>Code · syntax stops</h5>
+    <div class="cell">
+      <div class="cell-bar"><span class="lang">r</span><span class="spacer"></span><span class="copy">copy</span></div>
+<pre><span class="cm"># differential expression</span>
+res <span class="op">&lt;-</span> <span class="fn">DESeq</span>(dds) <span class="op">|&gt;</span> <span class="fn">results</span>(alpha <span class="op">=</span> <span class="nu">0.05</span>)
+sig <span class="op">&lt;-</span> <span class="fn">subset</span>(res, padj <span class="op">&lt;</span> <span class="nu">0.05</span> <span class="op">&amp;</span> <span class="k">abs</span>(log2FC) <span class="op">&gt;</span> <span class="nu">1</span>)
+<span class="fn">write.csv</span>(sig, <span class="st">"de_results.csv"</span>)</pre>
+    </div>
+  </div>
+</div>`;
+
+const SETTINGS = () => `
+<div class="gal">
+  <div class="card">
+    <div class="row">
+      <div><div class="lab">Palette</div><div class="sub">Theme family, independent of light/dark</div></div>
+    </div>
+    <div style="padding:10px 0 4px">
+      <div class="seg-app">
+        <b><span class="sw-dot" style="background:#cf6d47"></span>Parchment</b>
+        <b><span class="sw-dot" style="background:#6c247c"></span>Alma Mater</b>
+        <b class="on"><span class="sw-dot" style="background:currentColor"></span>Roche Limit</b>
+      </div>
+    </div>
+    <div class="row">
+      <div><div class="lab">Appearance</div><div class="sub">Light, dark, or follow system</div></div>
+      <div class="seg-app"><b>Light</b><b class="on">Dark</b><b>System</b></div>
+    </div>
+    <div class="row">
+      <div><div class="lab">Use system theme</div><div class="sub">Match the OS setting automatically</div></div>
+      <div class="toggle on"></div>
+    </div>
+    <div class="row">
+      <div><div class="lab">Export appearance…</div><div class="sub">biorouter-appearance.json · Tier 1, to be built</div></div>
+      <span class="btn secondary">Export</span>
+    </div>
+  </div>
+</div>`;
+
+/* ═══════════════════════ SWATCH PANELS ═══════════════════════ */
+const GROUPS = [
+  ['Surfaces', [
+    ['--background-app','--bg-app'],['--background-card','--bg-card'],
+    ['--background-muted','--bg-muted'],['--background-code','--bg-code'],
+    ['--background-medium','--bg-medium'],['--background-strong','--background-strong'],
+    ['--background-inverse','--bg-inverse'],
+  ]],
+  ['Text', [
+    ['--text-default','--text-default'],['--text-muted','--text-muted'],
+    ['--text-subtle','--text-subtle'],['--text-inverse','--text-inverse'],
+  ]],
+  ['Borders', [
+    ['--border-subtle','--border-subtle'],['--border-strong','--border-strong'],['--border-input','--border-input'],
+  ]],
+  ['Accent', [
+    ['--background-accent','--background-accent'],['--background-accent-hover','--accent-hover'],
+    ['--text-accent','--text-accent'],['--text-on-accent','--text-on-accent'],['--accent-bar','--accent-bar'],
+  ]],
+  ['Status', [
+    ['--text-danger','--text-danger'],['--text-success','--text-success'],
+    ['--text-info','--text-info'],['--text-warning','--text-warning'],
+  ]],
+  ['Focus', [['--background-focus','--bg-focus'],['--border-focus','--border-focus']]],
+  ['Sidebar', [
+    ['--sidebar','--sidebar'],['--sidebar-hover','--sidebar-hover'],
+    ['--sidebar-active','--sidebar-active'],['--sidebar-border','--sidebar-border'],
+  ]],
+];
+const RAMP_L = ['#FFFCFA','#FEF6EE','#FCEBD8','#FADBBB','#F8CCA1','#F4BB89','#EBA671','#E08C52','#EE6C1A','#DE6110','#AE4700','#55321F'];
+const RAMP_D = ['#16110E','#1C1510','#331E0C','#452201','#552A02','#64380F','#7D471F','#A05B2B','#EE6C1A','#F27F30','#F2955A','#FBDFC2'];
+
+function renderSwatches(el, tokens, title, ramp){
+  const groups = GROUPS.map(([name, rows]) => `
+    <div class="sw-group">
+      <h5>${name}</h5>
+      ${rows.map(([label,key]) => {
+        const v = tokens[key] || '—';
+        return `<div class="sw-row"><i style="background:${v}"></i>
+          <span class="nm">${label}</span><span class="hx">${String(v).toUpperCase()}</span></div>`;
+      }).join('')}
+    </div>`).join('');
+  const rampHtml = `
+    <div class="sw-group">
+      <h5>Accent ramp · 12 steps</h5>
+      <div class="ramp">${ramp.map((c,i)=>`<i style="background:${c}" title="step ${i+1} · ${c}"></i>`).join('')}</div>
+      <div class="ramp-legend"><span>1 · tint</span><span>4 · selection</span><span>9 · fill</span><span>11 · text</span><span>12</span></div>
+    </div>`;
+  el.innerHTML = `<h4>${title}</h4>${rampHtml}${groups}`;
+}
+
+/* ═══════════════════════ RENDER ═══════════════════════ */
+function mount(id, mode, html){
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = html;
+  applyTokens(el, tokensFor(mode));
+}
+function render(){
+  mount('mount-light','light', APP());
+  mount('mount-dark','dark',  APP());
+  mount('mount-gal-light','light', GALLERY());
+  mount('mount-gal-dark','dark',   GALLERY());
+  mount('mount-set-light','light', SETTINGS());
+  mount('mount-set-dark','dark',   SETTINGS());
+
+  const f = FAMILIES[STATE.fam];
+  document.getElementById('hx-light').textContent = f.hxL;
+  document.getElementById('hx-dark').textContent  = f.hxD;
+
+  const isRoche = STATE.fam === 'roche';
+  renderSwatches(document.getElementById('sw-light'), tokensFor('light'),
+    `${f.name} · light`, isRoche ? RAMP_L : RAMP_L);
+  renderSwatches(document.getElementById('sw-dark'), tokensFor('dark'),
+    `${f.name} · dark`, isRoche ? RAMP_D : RAMP_D);
+
+  /* variant toggles only mean something for Roche Limit */
+  for (const id of ['chromeSeg','greySeg','railSeg']){
+    const seg = document.getElementById(id);
+    seg.style.opacity = isRoche ? '1' : '.4';
+    seg.style.pointerEvents = isRoche ? 'auto' : 'none';
+  }
+}
+function wire(id, key){
+  const seg = document.getElementById(id);
+  seg.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    STATE[key] = btn.dataset[key];
+    [...seg.querySelectorAll('button')].forEach(b =>
+      b.setAttribute('aria-pressed', String(b === btn)));
+    render();
+  });
+}
+wire('famSeg','fam');
+wire('chromeSeg','chrome');
+wire('greySeg','grey');
+wire('railSeg','rail');
+render();
+</script>
+</body>
+</html>
