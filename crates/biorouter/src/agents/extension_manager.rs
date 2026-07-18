@@ -1356,7 +1356,10 @@ impl ExtensionManager {
         // disk (see `SecretGuard::find_denied_path`).
         if let Some(args) = tool_call.arguments.as_ref() {
             let cwd = self.resolve_working_dir().await;
+            let secret_guard_phase =
+                crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
             let guard = biorouter_mcp::secret_guard::SecretGuard::for_dir(&cwd);
+            drop(secret_guard_phase);
             if let Some(denied) = guard.find_denied_path(args) {
                 return Err(ErrorData::new(
                     ErrorCode::INVALID_PARAMS,
@@ -1378,8 +1381,14 @@ impl ExtensionManager {
         // token and returns a receiver that gets ONLY this dispatch's
         // notifications; on an unpooled client it is the legacy broadcast
         // subscription with no token.
+        // This lock is taken on the dispatch loop itself (not inside the
+        // returned future), so contention here stalls the dispatch of every
+        // *subsequent* tool in the same turn — measured separately from the
+        // in-future lock below.
+        let register_wait = crate::agents::phase_timing::Phase::start("mcp.register_dispatch_wait");
         let (progress_token, notifications_receiver) =
             client.lock().await.register_dispatch().await;
+        drop(register_wait);
         let session_id = session_id.to_string();
 
         let fut = async move {
@@ -1388,7 +1397,17 @@ impl ExtensionManager {
                 tool_name,
                 session_id
             );
+            // H6 measurement. Two tool calls on the SAME extension client
+            // serialize on this mutex, which converts `max(durations)` into
+            // `sum(durations)`. Wait time and call time must be logged as
+            // separate spans: a large `mcp.client_lock_wait` next to a small
+            // `mcp.call_tool` is the signature of that serialization, and the
+            // combined span cannot distinguish it from a genuinely slow tool.
+            let lock_wait = crate::agents::phase_timing::Phase::start("mcp.client_lock_wait");
             let client_guard = client.lock().await;
+            drop(lock_wait);
+
+            let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             let mut meta = McpMeta::new(&session_id);
             if let Some(token) = progress_token {
                 meta = meta.with_progress_token(token);
