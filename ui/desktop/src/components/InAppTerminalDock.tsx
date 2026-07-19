@@ -141,7 +141,7 @@ const TERMINAL_THEMES = {
  * a surface the dock never paints. Corrected here, which forced two follow-ons:
  * `black` was #0d2a50 — now the ground itself, i.e. invisible — so it moves to
  * --background-strong, and `cursor` fell to 4.06:1 on the true ground so it lifts
- * from the orchid accent to --background-accent-hover (5.29:1).
+ * to --background-accent-hover (the light teal C4 stop, 9.50:1).
  *
  * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
  * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
@@ -151,9 +151,9 @@ const ALMA_TERMINAL_THEMES = {
   light: {
     background: '#f2f3f4',
     foreground: '#052049',
-    cursor: '#6c247c', // eggplant accent
+    cursor: '#0e5258', // C1 teal — the accent family; C2 is 4.11:1 here
     cursorAccent: '#f2f3f4',
-    selectionBackground: '#d7dbe0',
+    selectionBackground: '#d8d9da',
     black: '#052049',
     red: '#c40d3e',
     green: '#007242',
@@ -174,7 +174,7 @@ const ALMA_TERMINAL_THEMES = {
   dark: {
     background: '#0d2a50', // --background-muted, alma-mater dark
     foreground: '#e1e3e5', // 11.15:1
-    cursor: '#d07ee0', // --background-accent-hover orchid, 5.29:1
+    cursor: '#8ae0e8', // --background-accent-hover, teal C4-light, 9.50:1
     cursorAccent: '#0d2a50',
     selectionBackground: '#163864',
     black: '#1e477f', // --background-strong — the ANSI dim slot, 1.55:1
@@ -196,10 +196,71 @@ const ALMA_TERMINAL_THEMES = {
   },
 } as const;
 
+/**
+ * Roche Limit terminal palette — grounded on --background-muted (light #f4f4f2,
+ * dark #232320), the same rule the other two families follow. Hues match the
+ * theme's status + syntax stops so the terminal reads as part of the app.
+ *
+ * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
+ * which is the ANSI dim slot and is a lifted ground by convention (1.38:1 here,
+ * matching ALMA_TERMINAL_THEMES.dark's 1.55:1 and TERMINAL_THEMES.dark's 1.49:1),
+ * and `cursor`, which is non-text and holds the 3:1 bar.
+ * See docs/design/roche-limit-theme.md §4.11 / §5.9.
+ */
+const ROCHE_TERMINAL_THEMES = {
+  light: {
+    background: '#f4f4f2', // --background-muted, roche-limit light
+    foreground: '#1f1e1c', // 15.13:1
+    cursor: '#d95b08', // --accent-bar; the bright anchor is only 2.81:1 here
+    cursorAccent: '#f4f4f2',
+    selectionBackground: '#fadbbb', // accent ramp step 4
+    black: '#1f1e1c',
+    red: '#c4232b', // 5.26:1
+    green: '#0f7150', // 5.45:1
+    yellow: '#6e6300', // 5.53:1
+    blue: '#0a69bc', // 5.07:1
+    magenta: '#7024b0', // 7.43:1
+    cyan: '#3f6e6e', // 5.20:1
+    white: '#69675f', // 4.94:1 — --text-subtle
+    brightBlack: '#5c5a55', // 6.25:1
+    brightRed: '#a8161e', // 6.81:1
+    brightGreen: '#0a5e42', // 7.08:1
+    brightYellow: '#5a5100', // 7.30:1
+    brightBlue: '#08579c', // 6.68:1
+    brightMagenta: '#5c1d91', // 9.35:1
+    brightCyan: '#2f5a5a', // 6.98:1
+    brightWhite: '#1f1e1c', // 15.13:1
+  },
+  dark: {
+    background: '#232320', // --background-muted, roche-limit dark
+    foreground: '#ededea', // 12.86:1
+    cursor: '#ee6c1a', // the bright anchor works on dark, 5.10:1
+    cursorAccent: '#232320',
+    selectionBackground: '#452201', // accent ramp step 4
+    black: '#3a3a36', // --background-strong — the ANSI dim slot, 1.38:1
+    red: '#ff9592', // 7.48:1
+    green: '#3dd68c', // 8.40:1
+    yellow: '#f2e06b', // 11.74:1
+    blue: '#70b8ff', // 7.50:1
+    magenta: '#d9a0ff', // 7.82:1
+    cyan: '#7fa3a3', // 5.76:1
+    white: '#a5a39d', // 6.25:1
+    brightBlack: '#9c9a93', // 5.60:1
+    brightRed: '#ffb3b0', // 9.25:1
+    brightGreen: '#6fe5a6', // 10.08:1
+    brightYellow: '#f7ec9a', // 13.07:1
+    brightBlue: '#9ccdff', // 9.45:1
+    brightMagenta: '#e6bcff', // 9.76:1
+    brightCyan: '#a0c0c0', // 8.10:1
+    brightWhite: '#ffffff', // 15.76:1
+  },
+} as const;
+
 /** Terminal palettes keyed by theme family, then resolved mode. */
 const TERMINAL_THEMES_BY_FAMILY = {
   parchment: TERMINAL_THEMES,
   'alma-mater': ALMA_TERMINAL_THEMES,
+  'roche-limit': ROCHE_TERMINAL_THEMES,
 } as const;
 
 const TerminalPaneView: React.FC<{

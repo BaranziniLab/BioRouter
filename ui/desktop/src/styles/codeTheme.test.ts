@@ -3,8 +3,10 @@ import {
   CODE_BG,
   codePalettes,
   codePalettesAlma,
+  codePalettesRoche,
   codeThemeDark,
   codeThemeLight,
+  codeThemesByFamily,
 } from './codeTheme';
 
 function luminance(hex: string): number {
@@ -64,4 +66,36 @@ describe('code theme', () => {
       }
     }
   );
+
+  it.each(['light', 'dark'] as const)(
+    'Roche Limit %s palette clears WCAG AA on its own ground',
+    (theme) => {
+      const { palette, bg } = codePalettesRoche[theme];
+      for (const [token, hex] of Object.entries(palette)) {
+        expect(
+          contrast(hex, bg),
+          `roche ${theme} "${token}" (${hex}) on ${bg} is ${contrast(hex, bg).toFixed(2)}:1`
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  );
+
+  // Roche Limit deliberately does NOT inherit two JupyterLab stops that ship
+  // below AA: their `comment` (#408080) is ~2.8:1 on the dark ground, and their
+  // dark `func` (#1e88e5) is ~3.4:1. Pin that so a future "be more faithful to
+  // Jupyter" edit cannot quietly reintroduce them.
+  it('does not inherit JupyterLab stops that fail AA', () => {
+    expect(codePalettesRoche.dark.palette.comment).not.toBe('#408080');
+    expect(codePalettesRoche.dark.palette.func).not.toBe('#1e88e5');
+  });
+
+  // Every family must be registered for BOTH modes: the consumer indexes
+  // codeThemesByFamily[family][mode] with no fallback, so a missing entry is a
+  // runtime undefined rather than a type error at the call site.
+  it('registers every theme family in both modes', () => {
+    for (const family of ['parchment', 'alma-mater', 'roche-limit'] as const) {
+      expect(codeThemesByFamily[family]?.light, `${family}.light`).toBeDefined();
+      expect(codeThemesByFamily[family]?.dark, `${family}.dark`).toBeDefined();
+    }
+  });
 });
