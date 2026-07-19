@@ -35,6 +35,70 @@ const noWindowLocationHref = {
   }
 };
 
+// Custom rule to detect strokeWidth passed to an icon from the app-icons registry.
+// app-icons' light() wrapper pins stroke 1.5 *after* the prop spread, so the prop is
+// silently discarded. Only identifiers imported from that module are flagged --
+// inline <svg> and non-registry components use strokeWidth legitimately.
+const APP_ICONS_MODULE = /(^|\/)app-icons(\.[jt]sx?)?$/;
+
+const noStrokeWidthOnAppIcons = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'Disallow strokeWidth on icons imported from the app-icons registry',
+      recommended: true,
+    },
+  },
+  create(context) {
+    const registryIcons = new Set();
+    const registryNamespaces = new Set();
+
+    return {
+      Program(node) {
+        for (const statement of node.body) {
+          if (
+            statement.type !== 'ImportDeclaration' ||
+            typeof statement.source.value !== 'string' ||
+            !APP_ICONS_MODULE.test(statement.source.value)
+          ) {
+            continue;
+          }
+          for (const specifier of statement.specifiers) {
+            if (specifier.type === 'ImportNamespaceSpecifier') {
+              registryNamespaces.add(specifier.local.name);
+            } else {
+              registryIcons.add(specifier.local.name);
+            }
+          }
+        }
+      },
+      JSXOpeningElement(node) {
+        const name = node.name;
+        let isRegistryIcon = false;
+        if (name.type === 'JSXIdentifier') {
+          isRegistryIcon = registryIcons.has(name.name);
+        } else if (
+          name.type === 'JSXMemberExpression' &&
+          name.object.type === 'JSXIdentifier'
+        ) {
+          isRegistryIcon = registryNamespaces.has(name.object.name);
+        }
+        if (!isRegistryIcon) {
+          return;
+        }
+        for (const attribute of node.attributes) {
+          if (attribute.type === 'JSXAttribute' && attribute.name.name === 'strokeWidth') {
+            context.report({
+              node: attribute,
+              message: 'Do not pass strokeWidth to an app-icons icon. light() pins stroke 1.5 after the spread, so the prop is dead code -- remove it'
+            });
+          }
+        }
+      }
+    };
+  }
+};
+
 module.exports = [
   js.configs.recommended,
   {
@@ -80,7 +144,8 @@ module.exports = [
       'react-hooks': reactHooksPlugin,
       'custom': {
         rules: {
-          'no-window-location-href': noWindowLocationHref
+          'no-window-location-href': noWindowLocationHref,
+          'no-strokewidth-on-app-icons': noStrokeWidthOnAppIcons
         }
       }
     },
@@ -106,7 +171,8 @@ module.exports = [
       '@typescript-eslint/no-var-requires': 'warn', // Downgrade to warning for Electron main process
       'no-undef': 'error',
       'no-useless-catch': 'warn',
-      'custom/no-window-location-href': 'error'
+      'custom/no-window-location-href': 'error',
+      'custom/no-strokewidth-on-app-icons': 'error'
     },
     settings: {
       react: {
