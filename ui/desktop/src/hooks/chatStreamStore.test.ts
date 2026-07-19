@@ -877,3 +877,154 @@ describe('ChatStreamRegistry — progressive loading', () => {
     expect(controller.getSnapshot().chatState).toBe(ChatState.Idle);
   });
 });
+
+describe('ChatStreamRegistry turn timestamps', () => {
+  it('stamps lastMessageAt per live Message event and advances it on the next one', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('ts1') } } as never);
+
+    const controlled = createControlledStream();
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('ts1');
+    const submitted = controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    // Submit stamps a turn origin so the indicator has a fallback before any
+    // message lands.
+    const afterSubmit = controller.getSnapshot();
+    expect(afterSubmit.turnStartedAt).toBeTypeOf('number');
+    expect(afterSubmit.lastMessageAt).toBeUndefined();
+
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('m1', 'first'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+    const first = controller.getSnapshot().lastMessageAt;
+    expect(first).toBeTypeOf('number');
+
+    vi.advanceTimersByTime(5000);
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('m2', 'second'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+    const second = controller.getSnapshot().lastMessageAt;
+    expect(second).toBeGreaterThan(first as number);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+  });
+
+  it('clears both timestamps when the turn finishes', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('ts2') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Message',
+          message: assistantMessage('m1', 'hello'),
+          token_state: tokenState,
+        } as MessageEvent;
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('ts2');
+    await controller.handleSubmit('go');
+    await flush();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.chatState).toBe(ChatState.Idle);
+    expect(snapshot.turnStartedAt).toBeUndefined();
+    expect(snapshot.lastMessageAt).toBeUndefined();
+  });
+
+  it('clears both timestamps when the turn errors', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('ts3') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield {
+          type: 'Message',
+          message: assistantMessage('m1', 'partial'),
+          token_state: tokenState,
+        } as MessageEvent;
+        yield {
+          type: 'Error',
+          error: 'provider exploded',
+          code: 'inference_failed',
+          token_state: tokenState,
+        } as unknown as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController('ts3');
+    await controller.handleSubmit('go');
+    await flush();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.turnStartedAt).toBeUndefined();
+    expect(snapshot.lastMessageAt).toBeUndefined();
+  });
+
+  it('clears both timestamps when the user stops the turn', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('ts4') } } as never);
+
+    const controlled = createControlledStream();
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('ts4');
+    void controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('m1', 'working'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+    expect(controller.getSnapshot().lastMessageAt).toBeTypeOf('number');
+
+    controller.stopStreaming();
+    await flush();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.chatState).toBe(ChatState.Idle);
+    expect(snapshot.turnStartedAt).toBeUndefined();
+    expect(snapshot.lastMessageAt).toBeUndefined();
+
+    controlled.close();
+  });
+
+  it('does not stamp lastMessageAt when replaying a saved session', async () => {
+    // The historical-session guarantee at the store level: loading a transcript
+    // must never look like a live event, or a replay would inherit a clock.
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: {
+        session: {
+          ...session('ts5'),
+          conversation: [assistantMessage('old-1', 'from last week')],
+          message_count: 1,
+        },
+      },
+    } as never);
+
+    const controller = registry.getController('ts5');
+    await controller.loadSession();
+    await flush();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.messages.length).toBeGreaterThan(0);
+    expect(snapshot.lastMessageAt).toBeUndefined();
+    expect(snapshot.turnStartedAt).toBeUndefined();
+  });
+});

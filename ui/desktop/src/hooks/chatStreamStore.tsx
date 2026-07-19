@@ -151,6 +151,20 @@ export interface ChatStreamSnapshot {
   tokenState: TokenState;
   notifications: NotificationEvent[];
   /**
+   * Client clock (ms) when the current turn was submitted; undefined while
+   * idle. Fallback origin for the trailing activity timer when no Message
+   * event has landed yet.
+   */
+  turnStartedAt?: number;
+  /**
+   * Client clock (ms) when the most recent Message event was APPLIED. This is
+   * deliberately a client timestamp, not `message.created` (which is SECONDS —
+   * see utils/timeUtils.ts — and carries server-clock skew). It is the origin
+   * every live elapsed display counts from, and living in the store is what
+   * makes it survive the message list's per-event re-render churn.
+   */
+  lastMessageAt?: number;
+  /**
    * Whether this session's agent — model provider + extensions — has finished
    * loading on the backend. The transcript paints before this flips (see
    * `loadSession`), so anything that reads AGENT state rather than SESSION
@@ -292,9 +306,17 @@ class ChatStreamController {
     this.notify();
   }
 
-  private updateMessages = (messages: Message[]): void => {
+  // `receivedAt` is stamped ONLY by the live stream path. The other callers
+  // (session load, diverge, edit) deliberately omit it: replaying a saved
+  // transcript must never look like a live event, or a historical session
+  // would inherit a running clock.
+  private updateMessages = (messages: Message[], receivedAt?: number): void => {
     this.messagesRef = messages;
-    this.updateSnapshot((prev) => ({ ...prev, messages }));
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      messages,
+      lastMessageAt: receivedAt ?? prev.lastMessageAt,
+    }));
   };
 
   private updateTokenState = (tokenState: TokenState): void => {
@@ -572,7 +594,12 @@ class ChatStreamController {
       })();
     }
 
-    this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      chatState: ChatState.Idle,
+      turnStartedAt: undefined,
+      lastMessageAt: undefined,
+    }));
     for (const listener of this.finishListeners) listener();
   };
 
@@ -609,7 +636,7 @@ class ChatStreamController {
             }
 
             this.updateTokenState(event.token_state);
-            this.updateMessages(currentMessages);
+            this.updateMessages(currentMessages, Date.now());
             break;
           }
           case 'Error':
@@ -669,6 +696,8 @@ class ChatStreamController {
       chatState: ChatState.Streaming,
       notifications: [],
       turnError: undefined,
+      turnStartedAt: Date.now(),
+      lastMessageAt: undefined,
     }));
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
@@ -870,7 +899,12 @@ class ChatStreamController {
   stopStreaming = (): void => {
     this.activeStreamId += 1;
     this.abortController?.abort();
-    this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      chatState: ChatState.Idle,
+      turnStartedAt: undefined,
+      lastMessageAt: undefined,
+    }));
     this.lastInteractionTime = Date.now();
 
     // BR-62b: aborting the SSE socket only tears down *this* client's view of

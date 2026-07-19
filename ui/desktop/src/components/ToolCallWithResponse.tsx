@@ -19,6 +19,14 @@ import McpAppRenderer from './McpApps/McpAppRenderer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
 
+/**
+ * The tool card's own status vocabulary. `interrupted` extends the shared
+ * `LoadingStatus` for the one case only a tool card has: the turn ended without
+ * a tool response ever arriving. It renders through the (previously
+ * unreachable) `pending` dot rather than claiming success.
+ */
+type ToolLoadingStatus = LoadingStatus | 'interrupted';
+
 interface ToolGraphNode {
   tool: string;
   description: string;
@@ -56,6 +64,14 @@ interface ToolCallWithResponseProps {
   toolResponse?: ToolResponseMessageContent;
   notifications?: NotificationEvent[];
   isStreamingMessage?: boolean;
+  /**
+   * Whether the CHAT TURN is still running (chat-level `chatState !== Idle`),
+   * as opposed to `isStreamingMessage`, which only says "this message is
+   * currently the last one". Tool status must key off the turn: a tool call
+   * keeps executing long after its message stops being last. Defaults to
+   * false so a read-only replay never spins.
+   */
+  turnActive?: boolean;
   append?: (value: string) => void;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
@@ -281,6 +297,7 @@ function ToolCallWithResponseContent({
   toolResponse,
   notifications,
   isStreamingMessage,
+  turnActive = false,
   append,
   onOpenArtifact,
   workingDir,
@@ -323,6 +340,7 @@ function ToolCallWithResponseContent({
             toolResponse,
             notifications,
             isStreamingMessage,
+            turnActive,
             onOpenArtifact,
             workingDir,
           }}
@@ -417,7 +435,13 @@ interface ToolCallViewProps {
   };
   toolResponse?: ToolResponseMessageContent;
   notifications?: NotificationEvent[];
+  /**
+   * Retained for callers, but deliberately NOT read when deriving status: "this
+   * message is currently last" is exactly the signal that used to paint pending
+   * tool calls green. Use `turnActive` instead.
+   */
   isStreamingMessage?: boolean;
+  turnActive?: boolean;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
 }
@@ -618,7 +642,7 @@ function ToolCallView({
   toolCall,
   toolResponse,
   notifications,
-  isStreamingMessage = false,
+  turnActive = false,
   onOpenArtifact,
   workingDir,
 }: ToolCallViewProps) {
@@ -641,29 +665,24 @@ function ToolCallView({
 
   const isToolDetails = toolCall?.arguments && Object.entries(toolCall.arguments).length > 0;
 
-  // Check if streaming has finished but no tool response was received
-  // This is a workaround for cases where the backend doesn't send tool responses
-  const isStreamingComplete = !isStreamingMessage;
-  const shouldShowAsComplete = isStreamingComplete && !toolResponse;
   const toolError = getToolResultError(toolResponse?.toolResult);
 
-  const loadingStatus: LoadingStatus = !toolResponse
-    ? shouldShowAsComplete
-      ? 'success'
-      : 'loading'
-    : toolError
+  // Status is derived from FACTS — is there a result, and is the turn still
+  // running — never from "am I the last message". The old derivation keyed off
+  // `!isStreamingMessage`, which flips false for a still-executing tool call the
+  // instant any later message arrives, painting a pending card green "Finished".
+  //
+  // The response-less-after-the-turn-ended case still must not spin forever
+  // (some backends never emit a tool response: cancelled turns, BioRouterMode
+  // ::Chat skips, crashed extensions), so it routes to a distinct `interrupted`
+  // state rather than a fabricated success.
+  const loadingStatus: ToolLoadingStatus = toolResponse
+    ? toolError
       ? 'error'
-      : 'success';
-
-  // Tool call timing tracking
-  const [startTime, setStartTime] = useState<number | null>(null);
-
-  // Track when tool call starts (when there's no response yet)
-  useEffect(() => {
-    if (!toolResponse && startTime === null) {
-      setStartTime(Date.now());
-    }
-  }, [toolResponse, startTime]);
+      : 'success'
+    : turnActive
+      ? 'loading'
+      : 'interrupted';
 
   const toolResults =
     loadingStatus === 'success' && toolResponse?.toolResult
@@ -696,8 +715,8 @@ function ToolCallView({
     (entries) => entries.sort((a, b) => b.progress - a.progress)[0]
   );
 
-  // Map LoadingStatus to ToolCallStatus
-  const getToolCallStatus = (loadingStatus: LoadingStatus): ToolCallStatus => {
+  // Map ToolLoadingStatus to ToolCallStatus
+  const getToolCallStatus = (loadingStatus: ToolLoadingStatus): ToolCallStatus => {
     switch (loadingStatus) {
       case 'success':
         return 'success';
@@ -719,10 +738,10 @@ function ToolCallView({
       ? compactValue(latestProgress || latestLog || 'Working through the tool call')
       : loadingStatus === 'error'
         ? 'Tool call failed'
-        : toolResults.length > 0
-          ? `${toolResults.length} result${toolResults.length === 1 ? '' : 's'} ready`
-          : shouldShowAsComplete
-            ? 'Finished'
+        : loadingStatus === 'interrupted'
+          ? 'No result'
+          : toolResults.length > 0
+            ? `${toolResults.length} result${toolResults.length === 1 ? '' : 's'} ready`
             : null;
 
   const toolLabel = (
@@ -738,7 +757,9 @@ function ToolCallView({
             ? 'Working on'
             : loadingStatus === 'error'
               ? 'Problem with'
-              : 'Ran'}{' '}
+              : loadingStatus === 'interrupted'
+                ? 'Stopped'
+                : 'Ran'}{' '}
           <span className="text-text-default">{toolSummary}</span>
         </span>
         {liveDetail && (

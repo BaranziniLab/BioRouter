@@ -1141,6 +1141,8 @@ function BaseChatContent({
     turnError,
     setWorkflowUserParams,
     tokenState,
+    turnStartedAt,
+    lastMessageAt,
     agentReady,
     notifications: toolCallNotifications,
     onMessageUpdate,
@@ -2002,6 +2004,9 @@ function BaseChatContent({
                               append={(text: string) => handleSubmit(text)}
                               isUserMessage={(m: Message) => m.role === 'user'}
                               isStreamingMessage={chatState !== ChatState.Idle}
+                              chatState={chatState}
+                              turnStartedAt={turnStartedAt}
+                              lastMessageAt={lastMessageAt}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
                               submitElicitationResponse={submitElicitationResponse}

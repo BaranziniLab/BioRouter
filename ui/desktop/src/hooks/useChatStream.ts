@@ -29,6 +29,10 @@ interface UseChatStreamReturn {
   sessionLoadError?: string;
   turnError?: ChatTurnErrorData;
   tokenState: TokenState;
+  /** Client clock (ms) when the current turn was submitted; undefined while idle. */
+  turnStartedAt?: number;
+  /** Client clock (ms) when the most recent live Message event was applied. */
+  lastMessageAt?: number;
   /**
    * Whether the session's model + extensions have finished loading. The
    * transcript is up well before this — anything reading AGENT state must gate
@@ -88,6 +92,8 @@ export function useChatStream({
     steer: controller.steer,
     setWorkflowUserParams: controller.setWorkflowUserParams,
     tokenState: snapshot.tokenState,
+    turnStartedAt: snapshot.turnStartedAt,
+    lastMessageAt: snapshot.lastMessageAt,
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     onMessageUpdate: controller.onMessageUpdate,

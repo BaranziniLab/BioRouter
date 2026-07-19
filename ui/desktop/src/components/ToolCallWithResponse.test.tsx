@@ -127,7 +127,10 @@ describe('summarizeToolCall', () => {
     expect(trigger).toHaveClass('min-h-0');
     expect(trigger).toHaveClass('!px-0');
     expect(trigger.querySelector('svg:last-child')).toHaveClass('opacity-0');
-    expect(screen.getByText(/Finished/)).toBeInTheDocument();
+    // No tool response ever arrived and the turn is not running, so the card
+    // reports the truth ("No result") rather than the old fabricated "Finished".
+    expect(screen.getByText(/No result/)).toBeInTheDocument();
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
     expect(screen.queryByText('cmd')).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
@@ -325,5 +328,68 @@ describe('summarizeToolCall', () => {
       title: 'index.html',
       path: '/Users/wgu/Desktop/weather-website/dist/index.html',
     });
+  });
+});
+
+describe('ToolCallWithResponse status derivation', () => {
+  const pendingToolRequest: ToolRequestMessageContent = {
+    type: 'toolRequest',
+    id: 'tool-status-1',
+    toolCall: {
+      status: 'success',
+      value: {
+        name: 'developer__exec_command',
+        arguments: { cmd: 'npm run typecheck' },
+      },
+    },
+  };
+
+  it('shows a response-less tool call as loading while the turn is still running', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={pendingToolRequest}
+        toolResponse={undefined}
+        turnActive={true}
+      />
+    );
+
+    expect(screen.getByLabelText('Tool status: loading')).toBeInTheDocument();
+    expect(screen.getByText(/Working on/)).toBeInTheDocument();
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+  });
+
+  it('stays loading for a response-less tool call that is no longer the last message', () => {
+    // The regression this guards: status used to be derived from "am I the last
+    // streaming message", so a still-running sibling painted green the instant
+    // any later message arrived.
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={pendingToolRequest}
+        toolResponse={undefined}
+        isStreamingMessage={false}
+        turnActive={true}
+      />
+    );
+
+    expect(screen.getByLabelText('Tool status: loading')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool status: success')).not.toBeInTheDocument();
+  });
+
+  it('marks a response-less tool call as interrupted once the turn has ended', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={pendingToolRequest}
+        toolResponse={undefined}
+        turnActive={false}
+      />
+    );
+
+    expect(screen.getByLabelText('Tool status: pending')).toBeInTheDocument();
+    expect(screen.getByText(/No result/)).toBeInTheDocument();
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool status: success')).not.toBeInTheDocument();
   });
 });

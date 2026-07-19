@@ -23,6 +23,9 @@ import { NotificationEvent } from '../types/message';
 import LoadingBioRouter from './LoadingBioRouter';
 import { ChatType } from '../types/chat';
 import { identifyConsecutiveToolCalls, isInChain } from '../utils/toolCallChaining';
+import TurnActivityIndicator from './TurnActivityIndicator';
+import { deriveTrailingActivity } from '../utils/trailingActivity';
+import { ChatState } from '../types/chatState';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 
 interface ProgressiveMessageListProps {
@@ -45,6 +48,14 @@ interface ProgressiveMessageListProps {
   ) => Promise<void>;
   onOpenArtifact?: (artifact: ArtifactSource) => void;
   workingDir?: string;
+  /**
+   * Live turn state, supplied only by an interactive chat. Read-only replays
+   * (SessionHistoryView) omit these, which is what guarantees the trailing
+   * activity indicator can never appear on a saved session.
+   */
+  chatState?: ChatState;
+  turnStartedAt?: number;
+  lastMessageAt?: number;
 }
 
 export default function ProgressiveMessageList({
@@ -63,6 +74,9 @@ export default function ProgressiveMessageList({
   submitElicitationResponse,
   onOpenArtifact,
   workingDir,
+  chatState,
+  turnStartedAt,
+  lastMessageAt,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -173,6 +187,20 @@ export default function ProgressiveMessageList({
   // Detect tool call chains
   const toolCallChains = useMemo(() => identifyConsecutiveToolCalls(messages), [messages]);
 
+  // Pure, memoised on the same identities the list already re-renders for, so
+  // it adds no scan the list was not already paying for.
+  const trailingActivity = useMemo(
+    () =>
+      deriveTrailingActivity({
+        messages,
+        isTurnActive: isStreamingMessage,
+        chatState,
+        turnStartedAt,
+        lastMessageAt,
+      }),
+    [messages, isStreamingMessage, chatState, turnStartedAt, lastMessageAt]
+  );
+
   // Render messages up to the current rendered count
   const renderMessages = useCallback(() => {
     const messagesToRender = messages.slice(0, renderedCount);
@@ -228,6 +256,7 @@ export default function ProgressiveMessageList({
                 toolCallChains={toolCallChains}
                 append={append}
                 toolCallNotifications={toolCallNotifications}
+                turnActive={isStreamingMessage}
                 isStreaming={
                   isStreamingMessage &&
                   !isUser &&
@@ -262,6 +291,16 @@ export default function ProgressiveMessageList({
   return (
     <>
       {renderMessages()}
+
+      {/* Trails the last tool card, INSIDE the scroll area, so the transcript
+          never goes blank during the model round-trip after a tool returns.
+          The wrapper classes mirror the message wrapper above so the vertical
+          rhythm matches exactly. */}
+      {trailingActivity && (
+        <div className="relative mt-4 assistant" data-testid="trailing-activity-container">
+          <TurnActivityIndicator activity={trailingActivity} />
+        </div>
+      )}
 
       {/* Loading indicator when progressively rendering */}
       {isLoading && (

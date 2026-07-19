@@ -30,6 +30,13 @@ interface BioRouterMessageProps {
   toolCallNotifications: Map<string, NotificationEvent[]>;
   append: (value: string) => void;
   isStreaming?: boolean; // Whether this message is currently being streamed
+  /**
+   * Whether the chat TURN is still running. Distinct from `isStreaming`, which
+   * is only true for the last message: a tool call keeps executing after its
+   * message stops being last, and tool status must follow the turn, not the
+   * array position.
+   */
+  turnActive?: boolean;
   // Precomputed by the parent list once per render and passed down to avoid each
   // message recomputing O(n) scans over the whole conversation (which made the
   // list O(n²) per streaming frame). Both fall back to local computation when
@@ -51,6 +58,7 @@ export default function BioRouterMessage({
   toolCallNotifications,
   append,
   isStreaming = false,
+  turnActive = false,
   messageIndex: messageIndexProp,
   toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
@@ -218,6 +226,7 @@ export default function BioRouterMessage({
                       toolResponse={toolResponsesMap.get(toolRequest.id)}
                       notifications={toolCallNotifications.get(toolRequest.id)}
                       isStreamingMessage={isStreaming}
+                      turnActive={turnActive}
                       append={append}
                       onOpenArtifact={onOpenArtifact}
                       workingDir={workingDir}
