@@ -486,6 +486,17 @@ const PATH_ARGUMENT_KEYS = [
 const SHELL_OUTPUT_RE =
   /(?:>>?|(?:^|\s)(?:--outfile|--output|--out|-out|-o)[=\s]+)\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&>]+))/g;
 
+// Code-execution wrappers: with the `code_execution` extension enabled (the
+// default), the model never calls `text_editor`/`shell`/`write_file` directly —
+// it calls `code_execution__execute_code` with a `code` string that imports and
+// invokes those primitives inside the script. The direct-argument extraction
+// then sees only `{ code, tool_graph }` and misses EVERY file the agent writes,
+// so nothing surfaces in the artifact panel (observed live: a session that built
+// `/tmp/biookf-rebuild/SCHEMA.md` via execute_code could not preview it — the
+// path never reached the read IPC). `pathsFromCodeBlob` reaches inside the blob
+// and pulls paths out of the embedded calls exactly as we do for direct ones.
+const CODE_EXECUTION_TOOLS = new Set(['execute_code', 'run_code']);
+
 // The tool name as the extension exposes it, e.g. `developer__text_editor`.
 export function baseToolName(toolName: string): string {
   const delimiter = toolName.lastIndexOf('__');
@@ -572,17 +583,16 @@ export function fileArtifactPathsFromToolCall(
   if (!argRecord) return [];
   const name = baseToolName(toolName);
 
+  // Unwrap the code-execution wrapper (default config) before anything else —
+  // the real tool calls live inside its `code` string, not in `argRecord`.
+  if (CODE_EXECUTION_TOOLS.has(name)) {
+    const code = argRecord.code;
+    return typeof code === 'string' ? pathsFromCodeBlob(code, workingDir) : [];
+  }
+
   if (name === 'shell' || name === 'bash') {
     const command = argRecord.command;
-    if (typeof command !== 'string') return [];
-    const paths: string[] = [];
-    for (const match of command.matchAll(SHELL_OUTPUT_RE)) {
-      const candidate = match[1] ?? match[2] ?? match[3];
-      if (!candidate) continue;
-      const resolved = resolveArtifactPath(candidate, workingDir);
-      if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
-    }
-    return paths;
+    return typeof command === 'string' ? shellRedirectPaths(command, workingDir) : [];
   }
 
   if (!FILE_WRITING_TOOLS.has(name)) return [];
@@ -599,6 +609,162 @@ export function fileArtifactPathsFromToolCall(
     return resolved ? [resolved] : [];
   }
   return [];
+}
+
+// Output targets named by a shell command's redirections / `-o`|`--output`
+// flags, anchored against `workingDir` and filtered to previewable files.
+function shellRedirectPaths(command: string, workingDir?: string): string[] {
+  const paths: string[] = [];
+  for (const match of command.matchAll(SHELL_OUTPUT_RE)) {
+    const candidate = match[1] ?? match[2] ?? match[3];
+    if (!candidate) continue;
+    const resolved = resolveArtifactPath(candidate, workingDir);
+    if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
+  }
+  return paths;
+}
+
+// --- code_execution unwrapping ----------------------------------------------
+//
+// The `code` string is JavaScript source, so extraction is textual and
+// deliberately conservative — it mirrors the direct-call rules (mutating
+// `text_editor` commands, `*_file` writes, `shell` redirect targets) applied to
+// the calls found embedded in the blob, and resolves `` `${dir}/x.md` `` style
+// template paths against simple `const dir = "…"` bindings. A path it cannot
+// resolve (computed interpolation, a python-heredoc write) is skipped rather
+// than guessed — no false artifacts, same posture as the direct path.
+
+/** `const/let/var NAME = "literal"` string bindings, so a template path like
+ *  `` `${dir}/SCHEMA.md` `` in an embedded call can be resolved. Only plain
+ *  string / interpolation-free backtick right-hand sides are captured. */
+function scanStringBindings(code: string): Map<string, string> {
+  const bindings = new Map<string, string>();
+  const re =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`([^`$]*)`)/g;
+  for (const m of code.matchAll(re)) {
+    bindings.set(m[1], (m[2] ?? m[3] ?? m[4] ?? '').replace(/\\(["'`\\])/g, '$1'));
+  }
+  return bindings;
+}
+
+/** Resolve one JS string-literal token (quoted or template, optionally
+ *  `String.raw`) to its concrete value, substituting `${ident}` from `bindings`.
+ *  Returns null if it isn't a string literal or carries an unresolvable
+ *  interpolation (a computed expression or an unknown identifier). */
+function resolveStringLiteral(token: string, bindings: Map<string, string>): string | null {
+  const t = token.trim().replace(/^String\.raw\s*/, '');
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1).replace(/\\(.)/g, '$1');
+  }
+  if (t.startsWith('`') && t.endsWith('`')) {
+    let out = '';
+    for (const part of t.slice(1, -1).split(/(\$\{[^}]*\})/)) {
+      if (part.startsWith('${')) {
+        const id = /^\$\{\s*([A-Za-z_$][\w$]*)\s*\}$/.exec(part);
+        if (!id || !bindings.has(id[1])) return null;
+        out += bindings.get(id[1]);
+      } else {
+        out += part;
+      }
+    }
+    return out;
+  }
+  return null;
+}
+
+/** Source text of each `callName({ … })` argument object found in `code`, via a
+ *  string-aware balanced-brace scan (so braces inside string/template literals
+ *  don't confuse nesting). */
+function embeddedCallObjects(code: string, callName: string): string[] {
+  const objects: string[] = [];
+  const opener = new RegExp(`\\b${callName}\\s*\\(\\s*\\{`, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(code))) {
+    const start = code.indexOf('{', match.index);
+    if (start === -1) continue;
+    let depth = 0;
+    let quote: string | null = null;
+    let i = start;
+    for (; i < code.length; i++) {
+      const c = code[i];
+      if (quote) {
+        if (c === '\\') i++;
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') quote = c;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        i++;
+        break;
+      }
+    }
+    objects.push(code.slice(start, i));
+  }
+  return objects;
+}
+
+/** The string-literal token assigned to `key` in an object-literal source (only
+ *  at a property boundary, so `file_text: "path: …"` can't spoof a `path`). */
+function literalValueForKey(objectSrc: string, key: string): string | null {
+  const re = new RegExp(
+    `(?:^\\s*\\{\\s*|[{,]\\s*)${key}\\s*:\\s*` +
+      `(String\\.raw\\s*\`[^\`]*\`|\`[^\`]*\`|"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*')`
+  );
+  const m = re.exec(objectSrc);
+  return m ? m[1] : null;
+}
+
+function pathsFromCodeBlob(code: string, workingDir?: string): string[] {
+  const bindings = scanStringBindings(code);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (resolved: string | null) => {
+    const anchored = resolved ? resolveArtifactPath(resolved, workingDir) : null;
+    if (anchored && !seen.has(anchored)) {
+      seen.add(anchored);
+      out.push(anchored);
+    }
+  };
+  const pathArgOf = (objectSrc: string): string | null => {
+    for (const key of PATH_ARGUMENT_KEYS) {
+      const token = literalValueForKey(objectSrc, key);
+      const value = token ? resolveStringLiteral(token, bindings) : null;
+      if (value) return value;
+    }
+    return null;
+  };
+
+  // Embedded `text_editor` — mutating commands only, mirroring the direct rule.
+  for (const objectSrc of embeddedCallObjects(code, 'text_editor')) {
+    const commandToken = literalValueForKey(objectSrc, 'command');
+    const command = commandToken ? resolveStringLiteral(commandToken, bindings) : null;
+    if (!command || !MUTATING_EDITOR_COMMANDS.has(command)) continue;
+    add(pathArgOf(objectSrc));
+  }
+
+  // Embedded `write_file`/`create_file`/… — inherently writes, no command gate.
+  for (const tool of FILE_WRITING_TOOLS) {
+    if (tool === 'text_editor') continue;
+    for (const objectSrc of embeddedCallObjects(code, tool)) add(pathArgOf(objectSrc));
+  }
+
+  // Embedded `shell`/`bash` — redirect / `-o` targets in the command literal.
+  for (const callName of ['shell', 'bash']) {
+    for (const objectSrc of embeddedCallObjects(code, callName)) {
+      const commandToken = literalValueForKey(objectSrc, 'command');
+      const command = commandToken ? resolveStringLiteral(commandToken, bindings) : null;
+      if (!command) continue;
+      for (const path of shellRedirectPaths(command, workingDir)) {
+        if (!seen.has(path)) {
+          seen.add(path);
+          out.push(path);
+        }
+      }
+    }
+  }
+
+  return out;
 }
 
 export function artifactSourceFromResource(

@@ -406,7 +406,7 @@ describe('dirnameFromPath', () => {
     expect(dirnameFromPath('C:\\Users\\me\\proj\\report.md')).toBe('C:\\Users\\me\\proj');
   });
 
-  it("is empty for a bare filename (nothing to anchor against)", () => {
+  it('is empty for a bare filename (nothing to anchor against)', () => {
     expect(dirnameFromPath('report.md')).toBe('');
   });
 
@@ -576,6 +576,104 @@ describe('fileArtifactPathsFromToolCall — shell', () => {
       '/home/ada/project/one.csv',
       '/home/ada/project/two.csv',
     ]);
+  });
+});
+
+describe('fileArtifactPathsFromToolCall — code_execution wrapper', () => {
+  // With the `code_execution` extension enabled (the default), the model wraps
+  // every real tool call inside `code_execution__execute_code`. Before the fix
+  // these all returned [] and no written file ever reached the artifact panel.
+  const exec = (code: string, workingDir: string | undefined = WORKING_DIR) =>
+    fileArtifactPathsFromToolCall(
+      'code_execution__execute_code',
+      { code, tool_graph: {} },
+      workingDir
+    );
+
+  it('extracts an absolute text_editor create — the exact live repro', () => {
+    // Regression guard for /tmp/biookf-rebuild/SCHEMA.md not previewing.
+    const code = [
+      'import { text_editor } from "developer";',
+      'const r = text_editor({ path: "/tmp/biookf-rebuild/SCHEMA.md", command: "create", file_text: "x" });',
+      'record_result(r);',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/tmp/biookf-rebuild/SCHEMA.md']);
+  });
+
+  it('resolves a `${dir}` template path against a const-string binding', () => {
+    const code = [
+      'import { text_editor } from "developer";',
+      'const dir = "/tmp/biookf-rebuild";',
+      'text_editor({ path: `${dir}/SCHEMA.md`, command: "str_replace", old_str: "a", new_str: "b" });',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/tmp/biookf-rebuild/SCHEMA.md']);
+  });
+
+  it('does NOT surface a text_editor view (read, not a write)', () => {
+    const code = [
+      'import { text_editor } from "developer";',
+      'const dir = "/tmp/biookf-rebuild";',
+      'const s = text_editor({ path: `${dir}/SCHEMA.md`, command: "view" });',
+    ].join('\n');
+    expect(exec(code)).toEqual([]);
+  });
+
+  it('extracts a shell redirect target written inside the blob', () => {
+    const code = [
+      'import { shell } from "developer";',
+      'const out = shell({ command: "python summarize.py > results/summary.csv" });',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/home/ada/project/results/summary.csv']);
+  });
+
+  it('extracts from a String.raw multi-line shell command', () => {
+    const code = [
+      'import { shell } from "developer";',
+      'const out = shell({ command: String.raw`set -e',
+      'cd /tmp/biookf-rebuild',
+      'printf "hello" > /tmp/biookf-rebuild/notes.md` });',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/tmp/biookf-rebuild/notes.md']);
+  });
+
+  it('handles an embedded write_file with no command gate', () => {
+    const code = 'write_file({ file_path: "/tmp/out/report.html", content: "<p>hi</p>" });';
+    expect(exec(code)).toEqual(['/tmp/out/report.html']);
+  });
+
+  it('dedupes a file written and then re-edited in the same blob', () => {
+    const code = [
+      'const dir = "/tmp/biookf-rebuild";',
+      'text_editor({ path: `${dir}/SCHEMA.md`, command: "create", file_text: "a" });',
+      'text_editor({ path: `${dir}/SCHEMA.md`, command: "str_replace", old_str: "a", new_str: "b" });',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/tmp/biookf-rebuild/SCHEMA.md']);
+  });
+
+  it('does not let a file_text value spoof a path key', () => {
+    const code =
+      'text_editor({ command: "create", path: "/tmp/real.md", file_text: "see path: /etc/passwd here" });';
+    expect(exec(code)).toEqual(['/tmp/real.md']);
+  });
+
+  it('skips a python-heredoc write it cannot statically resolve — no false artifact', () => {
+    const code = [
+      'import { shell } from "developer";',
+      'shell({ command: String.raw`python3 - <<PY',
+      'from pathlib import Path',
+      "Path('SCHEMA.md').write_text('x')",
+      'PY` });',
+    ].join('\n');
+    expect(exec(code)).toEqual([]);
+  });
+
+  it('returns [] when the code arg is missing or non-string', () => {
+    expect(fileArtifactPathsFromToolCall('code_execution__execute_code', {}, WORKING_DIR)).toEqual(
+      []
+    );
+    expect(
+      fileArtifactPathsFromToolCall('code_execution__execute_code', { code: 42 }, WORKING_DIR)
+    ).toEqual([]);
   });
 });
 
