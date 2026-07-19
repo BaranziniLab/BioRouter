@@ -107,6 +107,20 @@ function replaceRegion(src, name, body, file) {
   if (i === -1 || j === -1) {
     throw new Error(`missing ${name} region markers in ${file}`);
   }
+  // Without these three checks a malformed region fails OPEN. Swapped markers
+  // make the slice re-emit the surrounding text, growing the file on every run
+  // and exiting 0; duplicated markers leave a stale second region that WINS the
+  // CSS cascade while --check certifies the file current, because both sides
+  // use first-occurrence indexOf.
+  if (j < i) {
+    throw new Error(`${name} region markers are reversed in ${file} (END precedes START)`);
+  }
+  if (src.indexOf(start, i + 1) !== -1 || src.indexOf(end, j + 1) !== -1) {
+    throw new Error(
+      `${name} region markers appear more than once in ${file}; a duplicate region ` +
+        `would win the cascade while --check reported the file current`
+    );
+  }
   return src.slice(0, i + start.length) + '\n' + body + '\n' + src.slice(j);
 }
 
