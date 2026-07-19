@@ -41,7 +41,7 @@ pub use biorouter_sandbox::shell_sandbox;
 pub use agent_drafter::AgentDrafterServer;
 pub use autovisualiser::AutoVisualiserRouter;
 pub use computercontroller::ComputerControllerServer;
-pub use developer::rmcp_developer::DeveloperServer;
+pub use developer::rmcp_developer::{set_path_jail_relaxed, DeveloperServer};
 pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
 pub use tutorial::TutorialServer;

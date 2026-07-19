@@ -1339,6 +1339,15 @@ impl Agent {
         Vec<String>,
         Vec<(String, ToolStream)>,
     )> {
+        // Sync the developer server's `text_editor` path jail to the live mode
+        // before anything is dispatched. In Auto ("Fully Automatic") mode the
+        // jail is relaxed so legitimate writes outside the session working dir
+        // (e.g. `/tmp`) are not rejected — sensitive-path writes stay gated by
+        // the `SensitiveOpsInspector` above. Every other mode keeps the jail.
+        // The policy (Auto ⇒ relaxed) lives here; the developer server only
+        // reads the flag. See `biorouter_mcp::set_path_jail_relaxed`.
+        biorouter_mcp::set_path_jail_relaxed(biorouter_mode == BioRouterMode::Auto);
+
         // Run all tool inspectors
         let mut inspection_results = self
             .tool_inspection_manager

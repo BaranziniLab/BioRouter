@@ -45,6 +45,33 @@ use super::text_editor::{
 };
 use super::undo_history::{self, FileHistory};
 
+/// Process-global switch for the `text_editor` working-directory containment
+/// jail (see [`DeveloperServer::resolve_path`]).
+///
+/// The `biorouter` agent sets this from the **live** `BioRouterMode` before it
+/// dispatches each tool batch: `true` in `Auto` ("Fully Automatic") mode,
+/// `false` in every other mode. In Auto mode the agent's `SensitiveOpsInspector`
+/// already routes writes to sensitive system paths through the approval flow, so
+/// the additional path jail would only reject *legitimate* writes outside the
+/// session working directory (e.g. to `/tmp`) — the exact false-rejection the
+/// 2026-07-19 tool-errors audit found. The **policy** (which mode relaxes the
+/// jail) lives in `biorouter`; this crate merely reads the flag it toggles, so
+/// the mode read is never duplicated here. A process global (not a per-instance
+/// field) is correct because `BioRouterMode` is itself global config, and the
+/// developer server is a long-lived pooled MCP server the agent cannot re-plumb
+/// per turn.
+static PATH_JAIL_RELAXED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Relax (or re-engage) the `text_editor` working-directory jail process-wide.
+/// Called by the `biorouter` agent with `biorouter_mode == BioRouterMode::Auto`.
+pub fn set_path_jail_relaxed(relaxed: bool) {
+    PATH_JAIL_RELAXED.store(relaxed, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn path_jail_relaxed() -> bool {
+    PATH_JAIL_RELAXED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Build a git context + version-control policy block for the extension
 /// instructions. If `cwd` is inside a git work tree, the agent is told the
 /// current branch and how many files are uncommitted, plus a concise policy
@@ -1751,6 +1778,23 @@ impl DeveloperServer {
     }
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
+        self.resolve_path_jailed(path_str, path_jail_relaxed())
+    }
+
+    /// Resolve `path_str` against the effective working directory, applying the
+    /// containment jail unless `jail_relaxed` is set.
+    ///
+    /// `jail_relaxed` mirrors [`BioRouterMode::Auto`] (via [`path_jail_relaxed`]):
+    /// in Auto mode the agent's `SensitiveOpsInspector` gates sensitive-path
+    /// writes through approval, so this convenience jail is skipped and any
+    /// non-sensitive target (e.g. `/tmp/out.md`) resolves instead of being
+    /// rejected as "outside the working directory". In every other mode the jail
+    /// is enforced exactly as before.
+    fn resolve_path_jailed(
+        &self,
+        path_str: &str,
+        jail_relaxed: bool,
+    ) -> Result<PathBuf, ErrorData> {
         let cwd = self.effective_cwd();
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
@@ -1760,6 +1804,13 @@ impl DeveloperServer {
         } else {
             cwd.join(path)
         };
+
+        // Auto mode: the containment jail is relaxed (sensitive writes are still
+        // gated upstream by the agent's SensitiveOpsInspector), so skip the
+        // outside-working-directory check entirely.
+        if jail_relaxed {
+            return Ok(resolved);
+        }
 
         // Canonicalize the cwd for comparison
         let canonical_cwd = std::fs::canonicalize(&cwd).map_err(|e| {
@@ -2283,6 +2334,33 @@ mod tests {
             .is_ok());
         // A path outside the session dir is rejected by the jail.
         assert!(server.resolve_path("/etc/hosts").is_err());
+    }
+
+    /// GATE (2026-07-19 tool-errors audit, ITER-1): in Auto mode the containment
+    /// jail is relaxed, so a write target outside the session working directory
+    /// resolves instead of being rejected as "outside the working directory".
+    /// Every other mode keeps the jail. Exercises the pure `jail_relaxed`
+    /// parameter directly (no global mutation) so it is race-free under the test
+    /// harness; the live global is driven by `biorouter`'s agent from the mode.
+    #[test]
+    fn auto_mode_relaxes_path_jail_outside_working_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DeveloperServer::new().with_working_dir(tmp.path().to_path_buf());
+        // A target outside the session working dir (a sibling temp dir).
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("br-jail-relax-probe.md");
+        let target_str = target.to_str().unwrap();
+
+        // Jail enforced (non-Auto modes): rejected.
+        assert!(
+            server.resolve_path_jailed(target_str, false).is_err(),
+            "with the jail enforced, an outside-working-dir path must be rejected"
+        );
+        // Jail relaxed (Auto mode): the path resolves.
+        let resolved = server
+            .resolve_path_jailed(target_str, true)
+            .expect("Auto mode must relax the jail and resolve an outside path");
+        assert_eq!(resolved, target);
     }
 
     /// #2 regression: if the session dir is deleted, the editor jail falls back
