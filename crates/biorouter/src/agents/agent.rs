@@ -3521,6 +3521,19 @@ impl Agent {
                                 // syntax check on X found ...".
                                 let mut pending_post_edit_diagnostics: Option<String> = None;
 
+                                // §6.2c: ids whose tool response was already streamed to the
+                                // transcript the moment it completed (in the execution loop
+                                // below), in COMPLETION order. The post-batch persistence loop
+                                // still pushes every response into `messages_to_add` in REQUEST
+                                // order, but skips RE-yielding these — so SQLite keeps request
+                                // order while the live transcript surfaces each result as soon
+                                // as it lands (invariant §6.5-2). Empty (and the streaming is a
+                                // no-op) when `BIOROUTER_TOOL_RESPONSE_STREAMING` is off.
+                                let stream_tool_responses =
+                                    super::tool_dispatch_limits::tool_response_streaming_enabled();
+                                let mut emitted_response_ids: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
+
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
                                     for request in remaining_requests.iter() {
@@ -3662,7 +3675,7 @@ impl Agent {
                                         match item {
                                             ToolStreamItem::Result(output) => {
                                                 self.integrate_tool_result(
-                                                    request_id,
+                                                    request_id.clone(),
                                                     output,
                                                     &enable_extension_request_ids,
                                                     &request_to_response_map,
@@ -3672,6 +3685,27 @@ impl Agent {
                                                     tool_output_guardrail,
                                                     tool_error_taxonomy,
                                                 ).await;
+                                                // §6.2c: emit this tool's response the instant it
+                                                // completes, in COMPLETION order, so a slow sibling
+                                                // in the same batch can no longer hold a finished
+                                                // result off-screen until every tool returns. The
+                                                // response mutex now holds the full response
+                                                // (`integrate_tool_result` just wrote it). Record
+                                                // the id so the post-batch loop persists it in
+                                                // request order WITHOUT re-yielding (invariant
+                                                // §6.5-2). `select_all` polls in future order, so a
+                                                // Result can only surface once its `call_tool`
+                                                // resolved — this can never stream a partial.
+                                                if stream_tool_responses {
+                                                    if let Some(response_msg) =
+                                                        request_to_response_map.get(&request_id)
+                                                    {
+                                                        let response =
+                                                            response_msg.lock().await.clone();
+                                                        yield AgentEvent::Message(response);
+                                                    }
+                                                    emitted_response_ids.insert(request_id);
+                                                }
                                             }
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
@@ -3990,7 +4024,16 @@ impl Agent {
                                         messages_to_add.push(request_msg);
                                         let final_response = tool_response_messages[idx]
                                                                 .lock().await.clone();
-                                        yield AgentEvent::Message(final_response.clone());
+                                        // §6.2c: the execution loop already streamed this response
+                                        // in completion order; only yield here for responses NOT
+                                        // emitted there (frontend tools, chat-mode skips, or the
+                                        // whole batch when streaming is disabled). Persistence is
+                                        // unconditional and stays in REQUEST order (invariant
+                                        // §6.5-2) — the assistant tool_use pushed just above pairs
+                                        // with the response pushed just below.
+                                        if !emitted_response_ids.contains(&request.id) {
+                                            yield AgentEvent::Message(final_response.clone());
+                                        }
                                         messages_to_add.push(final_response);
                                     }
                                 }

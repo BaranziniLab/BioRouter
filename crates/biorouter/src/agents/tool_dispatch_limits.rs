@@ -64,6 +64,26 @@ fn write_ordering_enabled() -> bool {
     }
 }
 
+/// §6.2c: whether a tool response is streamed to the transcript the instant it
+/// completes (in COMPLETION order) rather than after the whole batch finishes
+/// (in request order). On by default; only an explicit `0`/`false`/`no`/`off`
+/// in `BIOROUTER_TOOL_RESPONSE_STREAMING` restores the pre-§6.2c behaviour where
+/// every response is yielded from the post-batch loop in request order — a full
+/// rollback, mirroring `BIOROUTER_TOOL_WRITE_ORDERING`/`BIOROUTER_TOOL_CALL_BATCHING`.
+///
+/// This flag changes only the *streamed transcript* ordering: the PERSISTED
+/// `messages_to_add` is built in request order either way (invariant §6.5-2), so
+/// SQLite session history and every provider replay are identical regardless.
+pub fn tool_response_streaming_enabled() -> bool {
+    match std::env::var("BIOROUTER_TOOL_RESPONSE_STREAMING") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 static TOOL_SEMAPHORE: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(max_concurrent_tools())));
 
