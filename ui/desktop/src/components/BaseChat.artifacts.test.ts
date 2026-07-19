@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '../api';
 import {
   collectArtifactsFromMessages,
+  decideArtifactAutoOpen,
   getDefaultArtifactPanelWidth,
   getArtifactPanelExpansionContentWidth,
   shouldAutoRepairArtifact,
@@ -454,6 +455,84 @@ describe('getDefaultArtifactPanelWidth', () => {
   it('preserves the panel bounds and minimum chat width', () => {
     expect(getDefaultArtifactPanelWidth(900)).toBe(360);
     expect(getDefaultArtifactPanelWidth(3000)).toBe(920);
+  });
+});
+
+describe('decideArtifactAutoOpen', () => {
+  const empty = new Set<string>();
+
+  it('waits for a saved transcript to hydrate before taking a baseline', () => {
+    // Session claims history but the transcript has not loaded (0 messages).
+    // Snapshotting now would bank an empty baseline and spring the panel on
+    // every old artifact once they load.
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: false,
+        knownKeys: empty,
+        reportedMessageCount: 8,
+        loadedMessageCount: 0,
+        artifactKeys: [],
+      })
+    ).toEqual({ action: 'wait' });
+  });
+
+  it('SNAPSHOTS a reopened session and opens NOTHING (historical-reload guard)', () => {
+    // The prove-by-revert gate: reopening an old chat whose transcript already
+    // holds artifacts must bank them as known and open none. If the first scan
+    // were ever changed to open, this asserts against it.
+    const decision = decideArtifactAutoOpen({
+      scanDone: false,
+      knownKeys: empty,
+      reportedMessageCount: 8,
+      loadedMessageCount: 8,
+      artifactKeys: ['file:/w/a.png', 'file:/w/b.png'],
+    });
+    expect(decision.action).toBe('snapshot');
+    if (decision.action !== 'snapshot') throw new Error('unreachable');
+    expect([...decision.knownKeys]).toEqual(['file:/w/a.png', 'file:/w/b.png']);
+    // No `openIndex` field exists on a snapshot decision — nothing opens.
+    expect('openIndex' in decision).toBe(false);
+  });
+
+  it('snapshots an empty new session without waiting', () => {
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: false,
+        knownKeys: empty,
+        reportedMessageCount: 0,
+        loadedMessageCount: 0,
+        artifactKeys: [],
+      })
+    ).toEqual({ action: 'snapshot', knownKeys: new Set() });
+  });
+
+  it('opens the newest previously-unseen artifact of a live turn', () => {
+    const decision = decideArtifactAutoOpen({
+      scanDone: true,
+      knownKeys: new Set(['file:/w/a.png']),
+      reportedMessageCount: 2,
+      loadedMessageCount: 4,
+      artifactKeys: ['file:/w/a.png', 'file:/w/b.png', 'file:/w/c.png'],
+    });
+    expect(decision.action).toBe('open');
+    if (decision.action !== 'open') throw new Error('unreachable');
+    // The LAST unseen artifact is the one that opens.
+    expect(decision.openIndex).toBe(2);
+    // Every newly-seen artifact is banked, not only the opened one.
+    expect(decision.knownKeys.has('file:/w/b.png')).toBe(true);
+    expect(decision.knownKeys.has('file:/w/c.png')).toBe(true);
+  });
+
+  it('does not re-open artifacts already seen (tab switch / re-render)', () => {
+    expect(
+      decideArtifactAutoOpen({
+        scanDone: true,
+        knownKeys: new Set(['file:/w/a.png', 'file:/w/b.png']),
+        reportedMessageCount: 2,
+        loadedMessageCount: 4,
+        artifactKeys: ['file:/w/a.png', 'file:/w/b.png'],
+      })
+    ).toEqual({ action: 'none' });
   });
 });
 

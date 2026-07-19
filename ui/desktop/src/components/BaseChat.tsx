@@ -173,6 +173,59 @@ export function shouldAutoRepairArtifact(
   return now - lastAgentActiveAt < ARTIFACT_REPAIR_ACTIVE_GRACE_MS;
 }
 
+// The artifact side panel's ONE automatic open trigger, as a pure decision.
+//
+// Triggers for the panel are, exhaustively: (1) THIS decision — auto-open on the
+// newest previously-unseen artifact of a LIVE turn — applied by the effect that
+// calls it; and (2) explicit user clicks on an artifact card or the panel's tab
+// strip (`handleOpenArtifact` invoked directly), which are never automatic.
+//
+// The invariant this protects: reopening / replaying a SAVED session must not
+// spring the panel. The first time a session's transcript is in hand we SNAPSHOT
+// its existing artifacts as already-known and open nothing; only artifacts that
+// appear AFTER that baseline — i.e. produced by a live turn in this session —
+// auto-open. `wait` defers the snapshot until a saved transcript has hydrated
+// (it loads 0 → N atomically), so a reopened chat's history is captured by the
+// baseline instead of looking new. Re-runs after the scan are idempotent: an
+// artifact already in `knownKeys` (a tab switch, a re-render, a state change)
+// never re-opens.
+export type ArtifactAutoOpenDecision =
+  | { action: 'wait' }
+  | { action: 'snapshot'; knownKeys: Set<string> }
+  | { action: 'none' }
+  | { action: 'open'; openIndex: number; knownKeys: Set<string> };
+
+export function decideArtifactAutoOpen(params: {
+  scanDone: boolean;
+  knownKeys: ReadonlySet<string>;
+  reportedMessageCount: number;
+  loadedMessageCount: number;
+  artifactKeys: readonly string[];
+}): ArtifactAutoOpenDecision {
+  const { scanDone, knownKeys, reportedMessageCount, loadedMessageCount, artifactKeys } = params;
+
+  if (!scanDone) {
+    // A saved session that claims messages but has not hydrated its transcript
+    // yet: snapshotting now would bank an empty baseline and then treat the
+    // whole history as "new", springing the panel on reopen. Defer the baseline.
+    if (reportedMessageCount > 0 && loadedMessageCount === 0) {
+      return { action: 'wait' };
+    }
+    return { action: 'snapshot', knownKeys: new Set(artifactKeys) };
+  }
+
+  let openIndex = -1;
+  const nextKnown = new Set(knownKeys);
+  artifactKeys.forEach((key, index) => {
+    if (nextKnown.has(key)) return;
+    nextKnown.add(key);
+    openIndex = index; // the newest unseen artifact wins
+  });
+
+  if (openIndex < 0) return { action: 'none' };
+  return { action: 'open', openIndex, knownKeys: nextKnown };
+}
+
 /**
  * Session filter for BROADCAST window events.
  *
@@ -1449,23 +1502,26 @@ function BaseChatContent({
 
   useEffect(() => {
     if (!session) return;
-    if (!artifactInitialScanDoneRef.current) {
-      if ((session.message_count ?? 0) > 0 && messages.length === 0) return;
-      knownArtifactKeysRef.current = new Set(sessionArtifacts.map(artifactKey));
-      artifactInitialScanDoneRef.current = true;
-      return;
-    }
-
-    const newArtifacts = sessionArtifacts.filter((artifact) => {
-      const key = artifactKey(artifact);
-      if (knownArtifactKeysRef.current.has(key)) return false;
-      knownArtifactKeysRef.current.add(key);
-      return true;
+    const decision = decideArtifactAutoOpen({
+      scanDone: artifactInitialScanDoneRef.current,
+      knownKeys: knownArtifactKeysRef.current,
+      reportedMessageCount: session.message_count ?? 0,
+      loadedMessageCount: messages.length,
+      artifactKeys: sessionArtifacts.map(artifactKey),
     });
-
-    const latestArtifact = newArtifacts[newArtifacts.length - 1];
-    if (latestArtifact) {
-      handleOpenArtifact(latestArtifact);
+    switch (decision.action) {
+      case 'wait':
+        return;
+      case 'snapshot':
+        knownArtifactKeysRef.current = decision.knownKeys;
+        artifactInitialScanDoneRef.current = true;
+        return;
+      case 'none':
+        return;
+      case 'open':
+        knownArtifactKeysRef.current = decision.knownKeys;
+        handleOpenArtifact(sessionArtifacts[decision.openIndex]);
+        return;
     }
   }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
 
