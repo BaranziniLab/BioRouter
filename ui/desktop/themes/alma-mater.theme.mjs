@@ -153,7 +153,7 @@ export default {
     splash: {
       navy: '#052049',
       coral: '#16a0ac',
-      track: '#e8e1d2',
+      track: '#e1e3e5',
     },
   },
   dark: {
@@ -285,9 +285,9 @@ export default {
       brightWhite: '#f2f3f4',
     },
     splash: {
-      navy: '#052049',
+      navy: '#18a3ac',
       coral: '#16a0ac',
-      track: '#e8e1d2',
+      track: '#17386a',
     },
   },
 };

@@ -8,6 +8,11 @@
 
 This is the single source of truth for how Biorouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
 
+> **Read [§3.0](#30--theme-families--this-document-describes-one-of-three) first.** This document describes
+> **Parchment**, the base theme family. Two others ship alongside it (Alma Mater, Roche Limit), selected by
+> a `data-theme` attribute. The *tokens* below are the system-wide contract; the *hexes* are Parchment's
+> answer to it.
+
 > **Companion artifact:** [`docs/design-system.html`](docs/design-system.html) — also hosted at
 > **<https://claude.ai/code/artifact/0726814d-a317-4dd2-bf34-a447e5c6ae6d>** — renders every token, element, and state
 > described here, in **both themes side by side**, and lets you pick between the open options in
@@ -96,7 +101,7 @@ A visible focus indicator is not optional and is not a design compromise.
 
 ### P6 — The monospace layer is part of the design system
 Terminals, code blocks, diffs, logs, and tool output are the app's most-read surfaces. They get the same care as chat.
-**Forces:** the code theme and the terminal palette are *tokens*, derived from the neutral ramp, and they **have a dark variant**. Today neither does. ([Part 5](#part-5--the-monospace-layer))
+**Forces:** the code theme and the terminal palette are *tokens*, derived from the neutral ramp, and they **have a dark variant**. ✅ Both now do — and both are generated per family from `themes/<id>.theme.mjs`, so there are six code palettes and six terminal palettes (3 families × light/dark), each gated on contrast at generation time. ([Part 5](#part-5--the-monospace-layer))
 
 ### P7 — Both themes ship, or neither does
 Dark mode is not a filter applied to light mode. Every surface, overlay, inset highlight, syntax colour, and status hue is authored twice.
@@ -109,6 +114,45 @@ The row rhythm, the type scale, and the spacing scale are fixed. You spend from 
 ---
 
 ## Part 3 · Foundations
+
+### 3.0 · Theme families — this document describes one of three
+
+Everything below used to be *the* design system. It is now **Parchment**, the base family — one of three
+that ship, selected by a `data-theme` attribute on `<html>`, orthogonal to light/dark.
+
+| Family | `data-theme` | Character | Reference |
+|---|---|---|---|
+| **Parchment** | *(none — the base)* | Warm paper and terracotta. **The subject of this document.** | this file |
+| **Alma Mater** | `alma-mater` | UCSF brand — navy ground, teal accent | [`docs/design/alma-mater-theme.md`](docs/design/alma-mater-theme.md) |
+| **Roche Limit** | `roche-limit` | JupyterLab-inspired white / grey / orange | [`docs/design/roche-limit-theme.md`](docs/design/roche-limit-theme.md) |
+
+The architecture — how a family is defined, generated and guarded — is
+[`docs/design/theme-system-architecture.md`](docs/design/theme-system-architecture.md). Two facts from it
+change how you read the rest of Part 3:
+
+**1 · The tokens are the contract; the hexes are Parchment's answer to it.** Every family re-colours the
+*same* semantic token set. So a rule stated as "hover is `--background-medium`" is a system-wide rule; a
+rule stated as "hover is `#f4f0e6`" is a Parchment value that two other families answer differently. Where
+this document prints a hex, read it as *Parchment's* value unless the surrounding text says otherwise —
+and prefer the token when writing new code, or the rule silently ships wrong in the other two families.
+
+**2 · A theme is now ONE file.** `ui/desktop/themes/<id>.theme.mjs` is the source of truth for a family:
+its light and dark token maps, its syntax palette, its ANSI-16 terminal palette, its boot-splash stops,
+its picker label and swatch. `npm run themes` (`scripts/generate-themes.mjs`) generates everything
+downstream — the `:root[data-theme='…']` / `.dark[data-theme='…']` CSS blocks in `main.css`,
+`src/styles/themes.generated.ts`, the family list, the picker entry, and the splash block in
+`index.html` — into fenced `THEMES:GENERATED:*` regions. Do not hand-edit a generated region.
+
+The one hand-written exception is **Parchment's own `:root` / `.dark` blocks in `main.css`**. They stay
+hand-authored because they are the *base layer*: they carry the structural tokens every family inherits
+and never restates (radii, motion, z-index, row height — `STRUCTURAL_TOKENS` in
+[`scripts/lib/theme-contract.mjs`](ui/desktop/scripts/lib/theme-contract.mjs)), plus the raw neutral and
+coral ramps the other families' generated blocks are overrides *against*. `parchment.theme.mjs` still owns
+Parchment's syntax, terminal, splash and picker data.
+
+The generator is also a **gate**: it refuses to emit a theme whose syntax palette falls below 4.5:1 on
+that family's `--background-code`, or whose terminal palette falls below its per-slot floor
+(`TERMINAL_FLOORS` — see [§5.2](#52--the-terminal)). A theme that fails contrast cannot be written to disk.
 
 ### 3.1 · Colour
 
@@ -144,7 +188,11 @@ Biorouter has exactly one brand hue: a terracotta coral.
 
 > **This is the single most consequential fact in this document:** white text on `#cf6d47` is **3.54:1** and fails AA. If the primary button is coral, its fill must be `#b85a32`, not `#cf6d47`. See **[Decision D-01](#d-01--primary-cta-colour)**.
 
-**Today:** the coral is not reachable through any semantic token. It exists only as `--color-block-teal: #cf6d47` — *a variable named "teal" that holds a coral* ([`main.css:20`](ui/desktop/src/styles/main.css#L20)) — and as `--color-block-orange: #b85a32`. Meanwhile `--color-accent` is `var(--color-neutral-900)`, so `--background-accent` (the primary-button fill) is **near-black**, not coral. The existing design doc claims primary CTAs are coral. They are not. `DR-01`, `DR-02`.
+**Today:** ✅ **fixed — D-01 shipped.** `--background-accent` **is** the coral: `var(--color-coral-600)` = `#b85a32` in light, `var(--color-coral-400)` = `#e8895f` in dark ([`main.css:104`, `233`](ui/desktop/src/styles/main.css#L104)). White on the light fill is **4.62:1**; `#16120c` on the dark fill is **7.26:1** — both clear AA. `--accent-bar` (the sidebar rail, tab underline and status dots) carries `--color-coral-500` `#cf6d47` in light, which is 3.04:1 on the sidebar — fine as a non-text indicator, and the reason `#cf6d47` is *only* ever a bar and never a text or button fill.
+
+The legacy aliases survive but are now honest about what they hold: `--color-block-teal: var(--color-coral-500)` and `--color-block-orange: var(--color-coral-600)` ([`main.css:45–46`](ui/desktop/src/styles/main.css#L45)) — the misleading *names* remain, so `DR-02` stays open; the near-black primary button (`DR-01`) does not.
+
+> This paragraph previously read *"the coral is not reachable through any semantic token … `--background-accent` is near-black, not coral. The existing design doc claims primary CTAs are coral. They are not."* That was true when audited and has been false since D-01 landed. It is corrected rather than deleted because the claim was quoted downstream.
 
 #### Semantic status colours
 
@@ -184,7 +232,7 @@ This is the same convention GitHub's contribution graph uses. Absolute values li
 
 | Role | Was | On white | On sidebar `#f3ede1` | **Canonical** | Min ratio |
 |---|---|---|---|---|---|
-| `--text-default` | `#2a2520` | 15.17 ✓ | 9.34 ✓ | `#2a2520` *(unchanged)* | 9.34 |
+| `--text-default` | `#2a2520` | 15.17 ✓ | 13.01 ✓ | `#2a2520` *(unchanged)* | 13.01 |
 | `--text-muted` | `#7a736c` | 4.67 ✓ | **4.01 ✗** | **`#635c54`** | 5.65 |
 | `--text-subtle` | `#948d83` | **3.28 ✗** | **2.82 ✗** | **`#6e6760`** | 4.78 |
 
@@ -202,8 +250,16 @@ Three findings the arithmetic forced, none of which the original audit caught:
 2. `--text-subtle` failed *everywhere* in light mode, and also failed on the dark sidebar. `DR-05`
 3. **The first draft of this document had `subtle` darker than `muted`** — an inverted hierarchy. The values above restore the correct order: `default` → `muted` → `subtle`, each step lighter, all clearing 4.5:1 on the darkest ground either can land on.
 
+> **"Min ratio" means: across the four grounds body text may legitimately land on** — `--background-app`,
+> `--background-default`, `--background-muted`, `--sidebar` — which is exactly the set
+> `check-contrast.mjs` enumerates (`TEXT_GROUNDS`). It is *not* a minimum over every fill in the system.
+> `--text-default` on `--background-strong` (`#d4cab6`) is **9.34:1**; an earlier revision of this table
+> printed that number in the sidebar column, which is how a value measured against a pressed-state fill
+> came to be documented as the sidebar ratio. The sidebar figure is **13.01:1**.
+
 All of these are asserted by [`ui/desktop/scripts/check-contrast.mjs`](ui/desktop/scripts/check-contrast.mjs), which parses the real
-token file, resolves the `var()` chains and fails `npm run lint:check` on any regression. It currently makes **58 assertions**.
+token file, resolves the `var()` chains and fails `npm run lint:check` on any regression. It runs across
+**all three theme families × light/dark** and currently makes **228 assertions**.
 
 #### Border tokens
 
@@ -226,7 +282,28 @@ It is in fact *worse* than a no-op. `--border-strong` (`neutral-100 #f4f0e6`) is
 | `--border-strong` (hover, emphasis) | `#d4cab6` | `#403928` |
 | `--border-input` (control resting edge) | `#e8e1d2` | `#403928` |
 
-Three tokens. Delete `--border-default`, and delete the `@layer base { * { @apply border-border-default } }` global that silently paints every element's border colour ([`main.css:246`](ui/desktop/src/styles/main.css#L246)).
+Three real tokens.
+
+**Shipped, and the rule was knowingly not taken in full.** `--border-strong` is now `neutral-300`
+`#d4cab6` and `--border-subtle` `neutral-200` `#e8e1d2`, so `strong` is finally *darker* than `subtle`
+and `hover:border-border-strong` firms the edge instead of weakening it (`DR-06`, `DR-51` closed).
+
+But **`--border-default` was not deleted.** It is retained as a deprecated alias —
+`--border-default: var(--border-subtle)` ([`main.css:144`](ui/desktop/src/styles/main.css#L144)) — with a
+comment recording why: **45 call sites still name it**, and a rename touching 45 files to eliminate one
+`var()` hop buys nothing the alias doesn't already buy. The harmful part is gone: the token no longer
+resolves to a near-invisible `neutral-100`.
+
+The `@layer base` global also **stays**, deliberately, and was re-pointed rather than removed
+([`main.css:749`](ui/desktop/src/styles/main.css#L749)):
+
+```css
+*, ::before, ::after { border-color: var(--border-subtle); }
+```
+
+Tailwind v4's preflight defaults `border-color` to `currentColor`, so deleting the global would paint
+every un-coloured border in the **text** colour — strictly worse than what it replaced. It now names the
+hairline directly instead of `--border-default`. `DR-45` closed.
 
 #### The two-tone canvas
 
@@ -241,6 +318,40 @@ The sidebar is a distinct, slightly deeper warm surface against the lighter main
 | Sidebar active | `#e4d9c3` | `#3d3524` |
 
 **Canonical.** Keep the two-tone. But see [Decision D-09](#d-09--sidebar-treatment) — and fix `--text-muted` on it (`DR-04`).
+
+#### Four tokens this document had never named
+
+They ship, they are theme-aware, and the guard checks three of them. Undocumented tokens get
+re-invented as literals, which is how the scrim and the code ground got duplicated in the first place.
+
+| Token | Light | Dark | What it is for |
+|---|---|---|---|
+| `--sidebar-icon` | `#2a2520` | `#f4f0e6` | The nav-icon colour, split from the label. In Parchment it is a pass-through to `--sidebar-foreground` — icons are the same ink as their label. It exists so **Alma Mater** can carry brand teal (`#14828c` / `#60d0da`) on its icons without dragging the labels with it. Declared in every family so `check-contrast.mjs` can assert it on `--sidebar`, `--sidebar-hover` and `--sidebar-active` (floor 3:1, a non-text indicator). |
+| `--background-code` | `#faf8f3` | `#16120c` | The ground code actually paints on, and the ground the [§5.1](#51--code-blocks) syntax palette is measured against. Introduced by **D-20**: light wants `--background-muted`, dark wants `--background-default`, so no existing token expressed it and the value had been copy-pasted into `codeTheme.ts`, `main.css` and `InAppTerminalDock`. |
+| `--scrim` | `rgba(32,25,15,.18)` | `rgba(0,0,0,.48)` | The modal / diagnostics backdrop. Was a hardcoded warm-brown `rgba()`, so **Roche Limit — added later — silently wore Parchment's brown scrim.** Tokenised so each family tints its own ink. |
+| `--sidebar-ring` | `#615a46` | `#d4cab6` | `--ring` scoped to the sidebar; tracks `--ring` in Parchment. |
+
+#### The boot splash
+
+The splash paints **before the app** — before React, before `main.css` — so it cannot read a token.
+Its four values are therefore literals, generated into a `THEMES:GENERATED:SPLASH` region in
+[`ui/desktop/index.html`](ui/desktop/index.html) from each family's `splash` block, and cross-checked
+against `THEME_FAMILIES` by `boot-splash.test.ts` so a new family cannot silently miss this screen.
+
+| Token | Parchment light | Parchment dark | Role |
+|---|---|---|---|
+| `--br-bg` | `#faf8f3` | `#282217` | The ground — tracks `--background-muted` |
+| `--br-navy` | `#052049` | `#052049` | The `Bio` letter + the left half of the underline (D-39) |
+| `--br-coral` | `#b85a32` | `#b85a32` | The `Router` letter + the right half of the underline |
+| `--br-track` | `#e8e1d2` | `#e8e1d2` | The 120×2px sweep track under the mark |
+
+**Drift found while documenting this.** `--br-navy` does not flip for dark mode in *any* family, and the
+mark sits directly on `--br-bg` with **no cream plate**. So on every dark boot splash the navy half of the
+mark is invisible: `#052049` measures **1.02:1** on Parchment dark `#282217`, **1.12:1** on Alma Mater dark
+`#0d2a50`, and **1.02:1** on Roche Limit dark `#232320`. The user sees a lone coral `R` above half an
+underline. **D-39 already decided this case** — "on a dark app surface UCSF navy all but vanishes, so the
+navy role becomes UCSF teal `#18A3AC`" — and `<BioRouterMark>` honours it; the splash, which is a separate
+literal path that predates the generator, never got the rule. `DR-61`.
 
 ---
 
@@ -440,8 +551,24 @@ is added around it.
 | Token | Light | Dark | Checked |
 |---|---|---|---|
 | `--background-focus` | `#e4dcc9` | `#4d4430` | text-default on it: 11.11:1 / 8.45:1 ✓ |
-| `--border-focus` | `#6e6760` (`--text-subtle`) | `#9c937b` | 4.51:1 / 3.15:1 against the focused fill ✓ |
-| `--ring` *(escape hatch only)* | `#615a46` | `#d4cab6` | ≥5.89:1 / ≥7.05:1 on every ground ✓ |
+| `--border-focus` | `#6e6760` (`--text-subtle`) | `#9c937b` | **4.08:1** / 3.15:1 against the focused fill ✓ (floor 3:1) |
+| `--ring` *(escape hatch only)* | `#615a46` | `#d4cab6` | ≥5.89:1 / ≥7.05:1 on the ring grounds ✓ (floor 3:1) |
+
+The token is spelled **`--ring`**. There is no `--focus-ring` — where this document says `--focus-ring`
+(§4.1, §4.6, §4.7, §5.2) it means `--ring`, and those specs are in any case superseded by D-15: the
+default treatment is the fill shift above, not a ring.
+
+**"On every ground" is a defined set, not a flourish.** `check-contrast.mjs` measures `--ring` against
+`RING_GROUNDS` = the four text grounds plus `--background-medium`: `--background-app`,
+`--background-default`, `--background-muted`, `--sidebar`, `--background-medium`. The ring is drawn
+*outside* the control at 2px offset, so the page ground is what it lands on — not the control's own fill.
+Across that set the light floor is **5.89:1** (set by `--sidebar`) and the dark floor is **7.05:1** (set
+by `--background-medium`).
+
+Two fills sit outside that set and are worth stating so the "≥" is not read as a universal claim: on
+`--background-strong` the ring measures **4.22:1** in *both* themes (`#615a46` on `#d4cab6`, and its
+mirror `#d4cab6` on `#615a46` — the same pair inverted), and on `--background-focus` the dark ring is
+**5.91:1**. All clear the 3:1 floor a non-text indicator owes.
 
 Focus must also be distinguishable from **hover**: the focused fill sits one step past the hover fill
 (1.20:1 light, 1.19:1 dark) — perceptible without being loud.
@@ -872,19 +999,32 @@ This is the same rule as P3: colour is evidence.
 
 ## Part 5 · The monospace layer
 
-Terminals, code, diffs and logs are where this app earns its trust. Today they are the **least** designed surfaces in it: both the code theme and the terminal palette are hardcoded light and have no dark variant.
+Terminals, code, diffs and logs are where this app earns its trust. They were once the **least** designed
+surfaces in the app — one hardcoded light code theme, one hardcoded light terminal palette, neither with a
+dark variant. Both are now generated, per family, and gated on contrast. This part is the spec they are
+generated *to*.
 
 ### 5.1 · Code blocks
 
-> **Code in Biorouter does not render in a monospace font.**
->
-> `MarkdownContent.tsx` sets `fontFamily: 'var(--font-sans)'` on the fenced-code renderer ([line 110](ui/desktop/src/components/MarkdownContent.tsx#L110)), wraps it in `font-sans` ([125](ui/desktop/src/components/MarkdownContent.tsx#L125)), renders inline code with `font-sans` ([155](ui/desktop/src/components/MarkdownContent.tsx#L155)), and adds `prose-code:font-sans` ([209](ui/desktop/src/components/MarkdownContent.tsx#L209)). `.bg-inline-code` sets `font-family: var(--font-sans)` ([`main.css:872`](ui/desktop/src/styles/main.css#L872)).
->
-> `--font-sans` is **Arial**. Every code block, diff, and inline path in the chat surface is set in a proportional font. Columns don't align. This is the single largest violation of P6 in the codebase. `DR-46`
+> ✅ **Code renders in monospace.** This blockquote used to read *"Code in Biorouter does not render in a
+> monospace font"* — `MarkdownContent.tsx` set `fontFamily: 'var(--font-sans)'` on the fenced-code
+> renderer, and `--font-sans` was Arial, so every code block, diff and inline path was proportional and
+> columns did not align. Both halves are fixed: `codeTheme.ts` sets `var(--font-mono)`, and D-06 replaced
+> Arial with a native stack (`ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas,
+> 'Liberation Mono', monospace` — [`main.css:705`](ui/desktop/src/styles/main.css#L705)). The **same**
+> `--font-mono` string is used verbatim by the xterm terminal, so a pasted command and its output are set
+> identically (`DR-07`). `DR-46` closed — the drift register has recorded it as fixed for some time; this
+> paragraph simply had not been updated to match.
 
-**Today (colour).** `MarkdownContent.tsx` imports `oneLight` and spreads it into a local `warmLightTheme` — a warm-tinted derivative (`#2a2520`, `#8a8078`, `#7c5c2e`, `#4a7c59`). `ArtifactViewer.tsx` keeps a separate static `previewCodeTheme`. Neither has a dark variant, and both apply inline `color` styles that override the `dark:prose-invert` on the wrapper — so `prose-invert` is a silent no-op for code. In dark mode, fenced blocks render near-black text on `bg-background-medium`, which in dark is `neutral-700 #403928`. Effectively unreadable. `DR-39`
-
-Two divergent hand-tuned themes, neither tokenised, neither dark. Replace both with the single token-derived palette below.
+**Today (colour).** ✅ **Superseded by `codeTheme.ts`.** The two divergent hand-tuned themes are gone:
+`MarkdownContent.tsx` no longer imports `oneLight`, and `ArtifactViewer.tsx`'s separate static
+`previewCodeTheme` is gone with it. One builder — `build(palette, tint)` in
+[`ui/desktop/src/styles/codeTheme.ts`](ui/desktop/src/styles/codeTheme.ts) — produces **six** Prism themes
+from the generated per-family syntax palettes (3 families × light/dark), and leaf components select one
+via `useResolvedTheme()` + `useThemeFamily()`. Code blocks paint on `--background-code`, not
+`--background-medium`, which is the value the palette below is actually measured against (D-20). The
+`prose-invert` complaint no longer applies: the prose tokens are remapped to the Parchment tokens outright
+(D-19). `DR-39` closed.
 
 **Canonical.** A code block is a `--radius-lg` panel, `--background-muted` fill, 1px `--border-subtle`, no shadow. A 32px header carries the language in 11px caps `--text-subtle` and a ghost copy button. Body: 13/20 mono, 12px padding, `overflow-x: auto`, `tab-size: 2`.
 
@@ -900,48 +1040,104 @@ The syntax palette is derived from the system, not imported:
 | Function | `#255fb5` | `#8fb8e8` |
 | Type / class | `#7847b8` | `#b98ad6` |
 | Operator | `#6e6760` | `#b0a892` |
-| Deleted | `#b3261e` on `#b3261e`@8% | `#f0857b` on `#f0857b`@10% |
-| Inserted | `#1f7a3d` on `#1f7a3d`@8% | `#7ac87c` on `#7ac87c`@10% |
+| Deleted | `#b3261e` on `#b3261e`@9% | `#f07575` on `#f07575`@10% |
+| Inserted | `#1f7a3d` on `#1f7a3d`@9% | `#7ac87c` on `#7ac87c`@10% |
 
-Every foreground clears 4.5:1 on its stated ground. See **[Decision D-10](#d-10--code-theme)**.
+The two grounds above are `--background-code`, light and dark. Every foreground clears 4.5:1 on its
+stated ground — verified: the tightest stop is `comment`, **5.32:1** light and **4.90:1** dark. This is
+not a claim taken on trust: `generate-themes.mjs` recomputes all ten stops against that family's
+`--background-code` and **refuses to write the theme** if any falls below 4.5.
+
+The diff-row tints are **9% light / 10% dark**, applied as
+`color-mix(in srgb, <stop> <tint>, transparent)` over the whole line
+([`codeTheme.ts:133–134`](ui/desktop/src/styles/codeTheme.ts#L133)). This document previously said 8% for
+light; the dark figure was correct.
+
+See **[Decision D-10](#d-10--code-theme)**.
 
 **Inline code.** `--radius-sm`, `--background-medium` fill, 0.9em, 2px×5px padding, no border. (`.bg-inline-code` currently uses `::before`/`::after` pseudo-elements to inject backticks — remove them; the fill already communicates it. `DR-40`)
 
 ### 5.2 · The terminal
 
-**Today** ([`InAppTerminalDock.tsx:94–118`](ui/desktop/src/components/InAppTerminalDock.tsx#L94)) a single `terminalTheme` object is passed to xterm at line 180, unconditionally. Its background is `#fffdf7` — a warm off-white that matches **no token** in the system. There is no dark theme, no `.dark` branch, no `prefers-color-scheme` check. **In dark mode the terminal is a glowing cream rectangle.** `DR-41`
+**Today.** ✅ **Superseded.** The single unconditional `terminalTheme` with the bespoke `#fffdf7` cream
+background is gone. There are now **six** terminal palettes (3 families × light/dark), generated from each
+family's `terminal` block and selected at runtime via `useResolvedTheme()` + `useThemeFamily()`;
+`grep -r fffdf7 src` returns 0 hits. `DR-41` closed.
 
-The shipped light palette is, to its credit, warm and mostly legible. Its base eight clear 4.5:1 on `#fffdf7` except `blue` (4.45:1). The *bright* eight fail: `brightGreen` 3.36:1, `brightBlue` 3.05:1, `brightCyan` 3.31:1, `brightBlack` 4.32:1 — and `brightBlack` is what most CLIs use for dimmed/secondary text. `DR-42`
+Which token the dock paints is now **recorded per family rather than assumed** — `terminalGround` in the
+theme definition. Parchment answers `--background-muted` in light (`#faf8f3`) and **`--background-code`**
+in dark (`#16120c`); the families genuinely differ here, and writing it down was cheaper than pretending
+they agree.
 
-**Canonical.** The terminal background is `--background-muted` (`#faf8f3` / `#16120c`), not a bespoke cream. Font: `--font-mono` at 13px/1.5 — the same stack and size as code blocks, so a pasted command and its output look identical. Cursor: `--focus-ring`, block, 1.2s blink. Selection: `--background-strong` at 60%.
+**Canonical.** Font: `--font-mono` at 13px/1.5 — literally the same stack and size as code blocks, so a
+pasted command and its output look identical. Cursor: **the accent** — `#b85a32` light / `#e8895f` dark
+(`--background-accent`), block, 1.2s blink; 4.35:1 and 7.26:1 on their grounds, clearing the 3:1 a
+non-text indicator owes. Selection: **`#e4d9c3`** light (= `--sidebar-active`) and **`#403928`** dark
+(= `--background-medium`), opaque — **no alpha**. *(This paragraph previously specified the cursor as
+`--focus-ring` — a token that does not exist — and the selection as `--background-strong` at 60%. Neither
+was ever what shipped.)*
 
-**ANSI 16, light** (on `#faf8f3`) — the shipped values, with `blue` and the bright set corrected:
+#### The bright slots do not owe 4.5:1, and here is why
+
+This table used to be introduced as *"the shipped values, with `blue` and the bright set corrected."*
+**That was false.** Nothing had been corrected, because the terminal palettes had no test at all — the
+claim sat in the document while five stops shipped below AA. Both halves are now addressed in code, but
+not in the same way, and the difference is the point:
+
+- **`cyan` was `#16818c` — 4.35:1, under AA.** It is a **base** slot, so it owes the full 4.5. It is now
+  **`#107e89`**, which measures **4.53:1**. Fixed properly.
+- **`brightRed` 3.86 · `brightBlue` 4.27 · `brightMagenta` 3.98 · `brightCyan` 3.18** are now held to a
+  documented **3:1** floor, not 4.5. On a **light** ground, "bright" and AA are mutually exclusive: the
+  ANSI convention is that a bright variant is *lighter* than its base, and lighter on a light ground means
+  *less* contrast. Forcing 4.5 would either invert the convention or collapse the pairs — `brightCyan`
+  would have to darken to roughly `#007e8a`, a hair from `cyan`'s `#107e89`, making the two
+  indistinguishable. So the bright slots hold the **3:1** graphical / large-text floor, which every one of
+  them clears, and the **base** slots — which carry the bulk of terminal output — hold the full **4.5**.
+
+That is a deliberate, recorded relaxation, not an oversight. The floors and the reason for each live in
+`TERMINAL_FLOORS` in
+[`ui/desktop/scripts/lib/theme-contract.mjs`](ui/desktop/scripts/lib/theme-contract.mjs), and
+`generate-themes.mjs` enforces them per slot at generation time — a palette that misses its floor cannot
+be written to disk. Two further slots are relaxed there for reasons of their own: `black` (floor 1.0 — an
+ANSI dim slot that is a lifted *ground* by convention, not text) and `brightBlack` (floor 3.0 — the
+dimmed/comment slot; it measures 5.32:1 light and 4.90:1 dark, so it clears 4.5 anyway).
+
+**ANSI 16, light** — the shipped Parchment values, on `#faf8f3`. Ratios verified; **bold = below 4.5,
+held to the 3:1 bright floor**:
+
+| | Normal | | Bright | |
+|---|---|---|---|---|
+| Black | `#2d2a26` | 13.45 | `#6f6659` | 5.32 |
+| Red | `#b63f3f` | 5.25 | `#d45252` | **3.86** |
+| Green | `#22784f` | 5.12 | `#1f7a3d` | 5.06 |
+| Yellow | `#9b6818` | 4.51 | `#8a5a00` | 5.58 |
+| Blue | `#255fb5` | 5.85 | `#2f75d6` | **4.27** |
+| Magenta | `#7847b8` | 5.83 | `#9462d6` | **3.98** |
+| Cyan | `#107e89` | 4.53 | `#1f9aa6` | **3.18** |
+| White | `#574f46` | 7.57 | `#2d2a26` | 13.45 |
+
+Foreground `#2d2a26` (13.45:1). Note that Parchment's light `brightGreen` and `brightYellow` are *darker*
+than their bases — a deliberate inversion of the convention in the two slots where it costs nothing, which
+is why they clear 4.5 while the other four do not.
+
+**ANSI 16, dark** (on `--background-code` `#16120c`) — every value clears 4.5:1 comfortably, because on a
+dark ground "brighter" and "higher contrast" point the same way:
 
 | | Normal | Bright |
 |---|---|---|
-| Black | `#2d2a26` | `#6f6659` |
-| Red | `#b63f3f` | `#d45252` |
-| Green | `#22784f` | `#1f7a3d` |
-| Yellow | `#9b6818` | `#8a5a00` |
-| Blue | `#255fb5` | `#2f75d6` |
-| Magenta | `#7847b8` | `#9462d6` |
-| Cyan | `#16818c` | `#1f9aa6` |
-| White | `#574f46` | `#2d2a26` |
+| | Normal | | Bright | |
+|---|---|---|---|---|
+| Black | `#3a3324` | *1.49 — dim slot, floor 1.0* | `#8d8266` | 4.90 |
+| Red | `#e2665c` | 5.59 | `#f0857b` | 7.41 |
+| Green | `#7fbf6a` | 8.49 | `#9ad686` | 10.96 |
+| Yellow | `#d9a441` | 8.29 | `#ecc063` | 10.91 |
+| Blue | `#6f9fd8` | 6.77 | `#8fb8e8` | 9.05 |
+| Magenta | `#b98ad6` | 6.81 | `#d0a6e8` | 9.15 |
+| Cyan | `#5fb8b8` | 8.02 | `#7fd0d0` | 10.51 |
+| White | `#d4cab6` | 11.48 | `#e8e1d2` | 14.33 |
 
-**ANSI 16, dark** (on `#16120c`) — new; every value clears 4.5:1:
-
-| | Normal | Bright |
-|---|---|---|
-| Black | `#3a3324` | `#8d8266` |
-| Red | `#e2665c` | `#f0857b` |
-| Green | `#7fbf6a` | `#9ad686` |
-| Yellow | `#d9a441` | `#ecc063` |
-| Blue | `#6f9fd8` | `#8fb8e8` |
-| Magenta | `#b98ad6` | `#d0a6e8` |
-| Cyan | `#5fb8b8` | `#7fd0d0` |
-| White | `#d4cab6` | `#e8e1d2` |
-
-Foreground `#e8e1d2` (14.33:1). See **[Decision D-11](#d-11--terminal-ground)**.
+Foreground `#e8e1d2` (14.33:1). `black` is the one relaxed slot: at 1.49:1 it is not text but a *lifted
+ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--terminal-ground)**.
 
 ---
 
@@ -1169,7 +1365,9 @@ changing the established type scale, icon sizes, or hit-target clarity.
 > **Companion artifact:** [`docs/design/ui-cohesion-redesign.html`](docs/design/ui-cohesion-redesign.html) —
 > renders each item below on real BioRouter chrome, in both themes, with a
 > **Current ⇄ Redesigned** toggle. Implemented; gates: `tsc` clean, `eslint` 0
-> warnings, **140/140** contrast assertions, **1004/1004** unit tests.
+> warnings, **140/140** contrast assertions, **1004/1004** unit tests. *(Those are that pass's numbers,
+> recorded as of 2026-07-16. The assertion count has since risen to **228** with the third theme family
+> and `--sidebar-icon` — see [§3.0](#30--theme-families--this-document-describes-one-of-three).)*
 
 The through-line is not new. **D-15** made focus a surface shift rather than a
 ring, **D-17** made tool calls lines rather than cards, **D-18** collapsed
@@ -1225,7 +1423,8 @@ shared tab component it will use is already in place (D-23).
 > | Classes that defeat the focus ring (`outline-none`, `outline-hidden`) | `rg -oI 'outline-none\|outline-hidden' src` | **0** *(was 68 across 40 files)* |
 > | Undefined CSS variables in the stylesheets | var-vs-`var()` diff | **0** *(was 4)* |
 > | Legacy brand hex (`#EC5D2A` / `#57B9AF`) | `rg -oI` | **0** |
-> | WCAG contrast assertions | `npm run check:contrast` | **58 / 58 pass** |
+> | WCAG contrast assertions | `npm run check:contrast` | **228 / 228 pass** *(58 at sign-off; grew with the code ground (D-20), `--sidebar-icon`, and ×3 theme families)* |
+| Theme palette contrast | `npm run themes` | **gate** — refuses to emit a theme whose syntax palette misses 4.5:1 on its `--background-code`, or whose terminal palette misses its `TERMINAL_FLOORS` slot floor |
 > | Code-palette contrast | `vitest src/styles/codeTheme.test.ts` | **7 / 7 pass** |
 > | TypeScript | `npx tsc --noEmit` | **clean** |
 > | Unit tests | `npx vitest run` | **600 pass**, 1 pre-existing failure (`dashboardStorage`, unrelated) |
@@ -1298,32 +1497,33 @@ The original backlog, as audited:
 | `DR-38` | Med | open | `::-webkit-scrollbar-thumb` declared twice with different values | `main.css:704` & `740` |
 | `DR-39` | **High** | ✅ fixed | Code blocks are `oneLight` in **both** themes; no dark theme imported | `codeTheme.ts` ships per-family light+dark palettes. |
 | `DR-40` | Low | open | `.bg-inline-code` injects backticks via `::before`/`::after` | `main.css:868–905` |
-| `DR-41` | **High** | ✅ fixed | Terminal has one hardcoded light theme applied unconditionally | Four themes (2 families × 2 modes) switched via `useResolvedTheme` + `useThemeFamily`; `grep -r fffdf7 src` → 0 hits. |
-| `DR-42` | Med | open | Terminal `blue` 4.45:1; `brightBlack` (dim text) 4.32:1; 6 bright colours fail AA | `InAppTerminalDock.tsx:94` |
+| `DR-41` | **High** | ✅ fixed | Terminal has one hardcoded light theme applied unconditionally | Six palettes (3 families × 2 modes), generated from `themes/*.theme.mjs` and switched via `useResolvedTheme` + `useThemeFamily`; `grep -r fffdf7 src` → 0 hits. |
+| `DR-42` | Med | ✅ fixed | Terminal `blue` 4.45:1; `brightBlack` (dim text) 4.32:1; 6 bright colours fail AA | Re-measured on the *shipped* ground: `blue` `#255fb5` is 5.85:1 and `brightBlack` `#6f6659` 5.32:1 — both clear AA (the audited figures were against the retired `#fffdf7` cream). The one real base-slot failure, `cyan` `#16818c` at 4.35:1, is now `#107e89` at **4.53:1**. The four sub-4.5 *bright* slots are held to a documented **3:1** floor with the reason recorded — see [§5.2](#52--the-terminal) and `TERMINAL_FLOORS`. Enforced per slot by `generate-themes.mjs`. |
 | `DR-43` | Med | open | 88 distinct hardcoded hex values in TSX | app-wide |
 | `DR-44` | Med | open | Twelve ad-hoc z-index layers | app-wide |
-| `DR-45` | Med | open | Global `* { @apply border-border-default }` paints every element's border colour | `main.css:246` |
+| `DR-45` | Med | ✅ fixed | Global `* { @apply border-border-default }` paints every element's border colour | The global is **kept deliberately** and re-pointed: `*, ::before, ::after { border-color: var(--border-subtle) }` ([`main.css:749`](ui/desktop/src/styles/main.css#L749)). Deleting it would let Tailwind v4 preflight default every un-coloured border to `currentColor` — the *text* colour — which is worse. The defect was the near-invisible `neutral-100` it resolved to, and that is gone. |
 | `DR-46` | **High** | ✅ fixed | **Code renders in Arial.** Fenced blocks, the wrapper, inline code and `prose-code` are all `font-sans` | Code renders in `var(--font-mono)` (`codeTheme.ts:20`). |
 | `DR-47` | High | open | Base `Card` ships `[box-shadow:var(--shadow-default)]`; every card is elevated by default | `card.tsx:10` |
 | `DR-48` | High | ✅ fixed | Toast is a static `text-white bg-neutral-800/95` — hardcoded dark in both themes, raw neutral, 12px radius | `App.tsx` uses `TOAST_SURFACE_CLASS_NAME` (`alerts/NotificationSurface.tsx`) — tokenised + theme-aware; `grep -r "bg-neutral-800/95" src` → 0 hits. |
 | `DR-49` | **High** | open | ~17 hand-rolled modals with no focus trap, no `role="dialog"`, no `aria-modal` | `BaseModal.tsx:17` + 16 others |
 | `DR-50` | High | open | `<Input>` is `border-0`, so caller-supplied `border-*` colours never paint — validation borders are no-ops | `input.tsx:11` |
-| `DR-51` | High | open | `--border-strong` is *lighter* than `--border-subtle`; hover **weakens** the border | `main.css:75–77,120` |
+| `DR-51` | High | ✅ fixed | `--border-strong` is *lighter* than `--border-subtle`; hover **weakens** the border | `--border-subtle` = `neutral-200` `#e8e1d2`, `--border-strong` = `neutral-300` `#d4cab6` ([`main.css:141–142`](ui/desktop/src/styles/main.css#L141)). `strong` is now darker, so `hover:border-border-strong` firms the edge. Guarded: `check-contrast.mjs` asserts `border-strong vs subtle` ≥ 1.1 in all six theme/mode scopes. |
 | `DR-52` | Med | open | Content max-width varies 1120 / 1280 / 1440 / uncapped; tabs reflow the column | `ReadableContent.tsx:9`, `AppsView.tsx:133` |
 | `DR-53` | Med | ✅ fixed | ~15 direct `lucide-react` imports bypass the `light()` wrapper → `strokeWidth` 2 vs 1.5 | The 15 direct `lucide-react` importers now route through `app-icons`' `light()` wrapper; the 2 remaining are the wrapper itself and a type-only import. |
 | `DR-54` | Med | open | Undefined tokens referenced app-wide: `--color-primary`, `--color-textPlaceholder`, `--color-background-subtle`, `--color-background-app` (`bg-app`), `animate-indeterminate` | `ToolCallWithResponse.tsx:858,862`; `PasteTextBox.tsx:36`; `ProviderSelector.tsx:89` |
 | `DR-55` | Med | open | `search.css` references `--text-standard` / `--text-prominent`, defined nowhere; highlight is a hardcoded yellow with no dark variant | `search.css:4,12` |
-| `DR-56` | Med | open | Two accent utility families: `bg-accent` (constant `#16120c`, never flips) vs `bg-background-accent` (flips per theme) | `main.css:48` vs `main.css:200` |
+| `DR-56` | Med | ✅ fixed | Two accent utility families: `bg-accent` (constant `#16120c`, never flips) vs `bg-background-accent` (flips per theme) | The constant `--accent` token is gone and `grep -r 'bg-accent\b' src` → **0** usages. What remains is `--accent-bar` (`#cf6d47` / `#e8895f`), which is a *different thing* with a defined job — the sidebar rail, tab underline and status dots — and does flip per theme. |
 | `DR-57` | Low | open | `--breakpoint-md` is 930px, but hardcoded `768px`/`767px` media queries remain | `main.css:6,660,805` |
 | `DR-58` | Med | open | `InAppTerminalDock` carries 9+ raw warm-beige hex literals where sidebar tokens already encode the palette | `InAppTerminalDock.tsx:302,396,401,415,416,424,436,474` |
 | `DR-59` | Med | open | Empty / loading / error states hand-rolled in all 7 list views; icon sizes, alignment, text sizes and heights all differ | `WorkflowsView.tsx:651`, `SessionListView.tsx:763`, +5 |
 | `DR-60` | Med | open | Light-mode `--text-default/-muted/-subtle` are raw hex outside the neutral ramp; dark mode derives from it — asymmetric | `main.css:83–86` vs `151–153` |
+| `DR-61` | Med | open | Boot splash `--br-navy` `#052049` never flips for dark mode, and the mark has no plate — the navy half of the BR mark is invisible on **every** dark splash: **1.02:1** (Parchment `#282217`), **1.12:1** (Alma Mater `#0d2a50`), **1.02:1** (Roche Limit `#232320`). D-39 already decided this case for `<BioRouterMark>`; the splash is a separate literal path that never got the rule. | `index.html` `THEMES:GENERATED:SPLASH`; `themes/*.theme.mjs` `splash.navy` |
 
-**Totals:** 60 items — **18 high, 26 medium, 16 low.**
+**Totals:** 61 items — **18 high, 27 medium, 16 low.**
 
 - **Dead code / silent no-ops (14):** `DR-11`, `DR-17`, `DR-21`, `DR-22`, `DR-23`, `DR-26`, `DR-31`, `DR-35`, `DR-40`, `DR-50`, `DR-51`, `DR-54`, `DR-55`, `DR-56`
 - **WCAG AA failures (5):** `DR-03`, `DR-04`, `DR-05`, `DR-15`, `DR-42`
-- **Dark mode never authored (5):** `DR-25`, `DR-39`, `DR-41`, `DR-48`, `DR-55`
+- **Dark mode never authored (6):** `DR-25`, `DR-39`, `DR-41`, `DR-48`, `DR-55`, `DR-61`
 - **Accessibility beyond contrast (2):** `DR-49` (no focus trap on 17 modals), `DR-16` (six focus treatments)
 - **Duplicate implementations (7):** modals, tabs, page headers, empty states, focus, code themes, selects
 

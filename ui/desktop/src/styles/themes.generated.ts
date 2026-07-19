@@ -116,7 +116,7 @@ export const GENERATED_THEMES = {
       },
     },
     dark: {
-      mark: { navy: '#052049', coral: '#b85a32' },
+      mark: { navy: '#18a3ac', coral: '#b85a32' },
       syntax: {
         plain: '#e8e1d2',
         comment: '#8d8266',
@@ -201,7 +201,7 @@ export const GENERATED_THEMES = {
       },
     },
     dark: {
-      mark: { navy: '#052049', coral: '#16a0ac' },
+      mark: { navy: '#18a3ac', coral: '#16a0ac' },
       syntax: {
         plain: '#e1e3e5',
         comment: '#8a93a6',
@@ -246,7 +246,7 @@ export const GENERATED_THEMES = {
     label: 'Roche Limit',
     swatch: '#ee6c1a',
     light: {
-      mark: { navy: '#052049', coral: '#b85a32' },
+      mark: { navy: '#1f1e1c', coral: '#ee6c1a' },
       syntax: {
         plain: '#1f1e1c',
         comment: '#3f6e6e',
@@ -286,7 +286,7 @@ export const GENERATED_THEMES = {
       },
     },
     dark: {
-      mark: { navy: '#052049', coral: '#b85a32' },
+      mark: { navy: '#ededea', coral: '#ee6c1a' },
       syntax: {
         plain: '#ededea',
         comment: '#7fa3a3',

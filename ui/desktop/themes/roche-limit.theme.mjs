@@ -151,9 +151,9 @@ export default {
       brightWhite: '#1f1e1c',
     },
     splash: {
-      navy: '#052049',
-      coral: '#b85a32',
-      track: '#e8e1d2',
+      navy: '#1f1e1c',
+      coral: '#ee6c1a',
+      track: '#e4e4e0',
     },
   },
   dark: {
@@ -285,9 +285,9 @@ export default {
       brightWhite: '#ffffff',
     },
     splash: {
-      navy: '#052049',
-      coral: '#b85a32',
-      track: '#e8e1d2',
+      navy: '#ededea',
+      coral: '#ee6c1a',
+      track: '#302f2c',
     },
   },
 };

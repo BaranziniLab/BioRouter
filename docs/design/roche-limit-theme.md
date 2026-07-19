@@ -3,9 +3,17 @@
 **Status:** ✅ **Approved & implemented** · **Date:** 2026-07-18 · **Owner:** Baranzini Lab, UCSF
 **Companion mockup:** [`docs/design/roche-limit-theme.html`](roche-limit-theme.html) — renders this palette on real BioRouter chrome, in **light + dark**, with live toggles for the three previewable open questions (chrome warmth, grey temperature, cell rail).
 
-> This document is **step 1**. It names the palette, maps every token, and proves the contrast.
-> **Nothing in the codebase changes until you approve it.** Step 2 (after sign-off) wires
-> `roche-limit` into the theme-family registry across eight files.
+> This document began as **step 1** — naming the palette, mapping every token, proving the contrast —
+> and was written before any code changed. **That step is done: the theme shipped on 2026-07-18.**
+> §1–§8 keep the original design argument in its original voice; **§9 records what was actually
+> built**, and where the two disagree §9 wins. §10 preserves the pre-implementation plan for
+> reference.
+>
+> **Where the values live now.** The theme was later folded into the generated theme system: the
+> single authored source is [`ui/desktop/themes/roche-limit.theme.mjs`](../../ui/desktop/themes/roche-limit.theme.mjs),
+> and every consumer is emitted from it by `npm run themes`. See **§9.1** and
+> [`docs/design/theme-system-architecture.md`](theme-system-architecture.md). Any hex in this
+> document is documentation *about* that file, never the source of it.
 
 ---
 
@@ -38,7 +46,8 @@ grey ramp. Those are inside the limit.
    white, matching both your brief and Jupyter's own `--jp-layout-color0`.
 2. **Grey for the intermediate panels.** `--background-muted: #F4F4F2`, code ground `#F5F5F3` — a
    ΔL\* of ~4.6 below the page. Recessed, clearly separated, calm.
-3. **Bright orange for icons and accents.** `#EE6C1A` on fills, rails, dots and the terminal cursor.
+3. **Bright orange for icons and accents.** `#EE6C1A` on fills; a deeper `#D95B08` on the rails,
+   dots, sidebar icons and light-mode terminal cursor that need to hold up on grey grounds (§4.4, §6).
 4. **Real light *and* real dark**, cohesive by construction — same hue relationships, same semantic
    roles, polarity flipped.
 
@@ -117,20 +126,32 @@ Every Jupyter value below was read byte-exact from `jupyterlab@main`
 
 ### 4.4 The accent ramp — 12 steps, Radix methodology, anchored on `#EE6C1A`
 
-| # | Value | Role |
-|---|---|---|
-| 1 | `#FFFCFA` | app background tint |
-| 2 | `#FEF6EE` | subtle background |
-| 3 | `#FCEBD8` | UI element background |
-| 4 | `#FADBBB` | hover background / selection highlight |
-| 5 | `#F8CCA1` | active / selected background |
-| 6 | `#F4BB89` | subtle border |
-| 7 | `#EBA671` | border |
-| 8 | `#E08C52` | strong / hover border |
-| **9** | **`#EE6C1A`** | **solid fill (anchor)** |
-| 10 | `#DE6110` | solid fill hover |
-| 11 | `#AE4700` | low-contrast text — 5.67:1 on white |
-| 12 | `#55321F` | high-contrast text |
+The ramp is the *design* object — the 12-step scale the semantic values were chosen from. It is **not**
+a set of shipped tokens, and most of it never became one. The **Ships as** column is the honest
+account, read back from `roche-limit.theme.mjs`:
+
+| # | Value | Role | Ships as |
+|---|---|---|---|
+| 1 | `#FFFCFA` | app background tint | — not implemented |
+| 2 | `#FEF6EE` | subtle background | — not implemented |
+| 3 | `#FCEBD8` | UI element background | — not implemented |
+| 4 | `#FADBBB` | hover background / selection highlight | terminal `selectionBackground` only |
+| 5 | `#F8CCA1` | active / selected background | — not implemented |
+| 6 | `#F4BB89` | subtle border | — not implemented |
+| 7 | `#EBA671` | border | — not implemented |
+| 8 | `#E08C52` | strong / hover border | — not implemented |
+| **9** | **`#EE6C1A`** | **solid fill (anchor)** | `--color-coral-500`, `--background-accent`, `--border-accent`, `--sidebar-primary`, `--heat-4`, swatch |
+| 10 | `#DE6110` | solid fill hover | `--background-accent-hover` |
+| 11 | `#AE4700` | low-contrast text — 5.67:1 on white | `--color-coral-600`, `--text-accent` |
+| 12 | `#55321F` | high-contrast text | — not implemented |
+
+**Of the 24 documented steps (12 light + 12 dark), exactly four exist as raw colour tokens:**
+`--color-coral-500` (light 9 = dark 9), `--color-coral-600` (light 11), `--color-coral-400`
+(dark 11 `#F2955A`), and `--color-coral-700` `#8F3A00` — **which appears in neither ramp.** It is a
+real shipped token with no entry above; the ramps were never reconciled against it. Light steps
+1–3, 5–8 and 12 and dark steps 1–3, 5–8 and 12 are design scaffolding only. Steps 10 in both modes
+ship as semantic values rather than raw tokens, and step 4 in both modes survives solely as the
+terminal selection fill.
 
 **Semantic accent tokens:**
 
@@ -138,10 +159,10 @@ Every Jupyter value below was read byte-exact from `jupyterlab@main`
 |---|---|---|
 | `--background-accent` | `#EE6C1A` | The bright orange, at full chroma. |
 | `--background-accent-hover` | `#DE6110` | |
-| `--text-on-accent` | `#1F1E1C` | **Dark ink, not white.** White on `#EE6C1A` is 2.81:1 (fail); ink is 5.39:1. |
+| `--text-on-accent` | `#1F1E1C` | **Dark ink, not white.** White on `#EE6C1A` is 3.09:1 (fail); ink is 5.39:1. |
 | `--border-accent` | `#EE6C1A` | |
 | `--text-accent` | `#AE4700` | Links and coloured labels. |
-| `--accent-bar` | `#D95B08` | Rails, dots, tab underline. **Deeper than the anchor** so it clears 3:1 on every light ground — see §6. |
+| `--accent-bar` | `#D95B08` | Rails, dots, tab underline. **Deeper than the anchor** — it buys roughly +0.7 of ratio on every light ground, though it does not reach 3:1 on all of them. See §6. |
 
 > If a white-text orange button is ever required, the fill must be `#AE4700` (white on it = 5.67:1).
 
@@ -172,7 +193,7 @@ surface keeps its icon (WCAG 1.4.1 requires it regardless).
 ### 4.7 Sidebar
 
 `--sidebar: #F7F7F5` · `--sidebar-hover: #EFEFEC` · `--sidebar-active: #EAEAE6` · `--sidebar-border: #E7E7E3`
-**`--sidebar-icon: #D95B08`** — this is where "bright orange for the icons" lands (3.59:1 on the sidebar; dark mode uses the pure anchor `#EE6C1A` at 5.80:1).
+**`--sidebar-icon: #D95B08`** — this is where "bright orange for the icons" lands (3.59:1 on the sidebar; dark mode uses the pure anchor `#EE6C1A` at 5.81:1).
 Aliases (`--sidebar-foreground`, `-primary`, `-primary-foreground`, `-accent`, `-accent-foreground`, `-ring`) are `var()` refs, copied verbatim from the sibling families.
 
 ### 4.8 Heatmap
@@ -208,11 +229,26 @@ Jupyter's IPython/Pygments hues, darkened to clear AA.
 | `deleted` | `#C4232B` | 5.31 | = `--text-danger` |
 | `inserted` | `#12805C` | 4.51 | green |
 
-### 4.11 Terminal ANSI (light)
+### 4.11 Terminal ANSI (light) — measured on `--background-muted` `#F4F4F2`
 
-`background #F5F5F3` · `foreground #1F1E1C` · `cursor #EE6C1A` · `cursorAccent #F5F5F3` · `selectionBackground #FADBBB`
-`black #1F1E1C` · `red #C4232B` · `green #0F7150` · `yellow #6E6300` · `blue #0A69BC` · `magenta #7024B0` · `cyan #3F6E6E` · `white #84827C`
+**Corrected to the shipped values.** The terminal dock does *not* paint the code ground: Roche's
+`terminalGround` is `--background-muted` in both modes, declared explicitly in
+`roche-limit.theme.mjs`, and `background`/`cursorAccent` are **derived** from it rather than
+authored. This table originally quoted the code ground `#F5F5F3` and three pre-regrounding stops;
+§9 has admitted the re-grounding since it shipped, but the table was never updated. It is now.
+
+`background #F4F4F2` · `foreground #1F1E1C` · `cursor #D95B08` · `cursorAccent #F4F4F2` · `selectionBackground #FADBBB`
+`black #1F1E1C` · `red #C4232B` · `green #0F7150` · `yellow #6E6300` · `blue #0A69BC` · `magenta #7024B0` · `cyan #3F6E6E` · `white #69675F`
 `brightBlack #5C5A55` · `brightRed #A8161E` · `brightGreen #0A5E42` · `brightYellow #5A5100` · `brightBlue #08579C` · `brightMagenta #5C1D91` · `brightCyan #2F5A5A` · `brightWhite #1F1E1C`
+
+| Was documented | Ships | Why |
+|---|---|---|
+| `background #F5F5F3` | **`#F4F4F2`** | derived from `--background-muted`, not `--background-code` |
+| `cursorAccent #F5F5F3` | **`#F4F4F2`** | same derivation (the glyph under the cursor is the ground) |
+| `cursor #EE6C1A` | **`#D95B08`** | the cursor is a rail-class mark, so it uses `--accent-bar`, not the anchor — 3.50:1 on the ground |
+| `white #84827C` | **`#69675F`** | `#84827C` is only 3.49:1 on `#F4F4F2`; `#69675F` reaches 5.15:1 |
+
+Every non-dim slot clears AA on `#F4F4F2` (lowest: `blue #0A69BC` at 5.07:1).
 
 ---
 
@@ -324,11 +360,23 @@ Heat: `--heat-0: #1E1D1B` · `--heat-1: #4A2A0E` · `--heat-2: #7A4413` · `--he
 | `deleted` | `#FF9592` | 8.19 | = `--text-danger` |
 | `inserted` | `#3DD68C` | 9.20 | = `--text-success` |
 
-### 5.9 Terminal ANSI (dark)
+### 5.9 Terminal ANSI (dark) — measured on `--background-muted` `#232320`
 
-`background #1B1B19` · `foreground #EDEDEA` · `cursor #EE6C1A` · `cursorAccent #1B1B19` · `selectionBackground #452201`
-`black #131312` · `red #FF9592` · `green #3DD68C` · `yellow #F2E06B` · `blue #70B8FF` · `magenta #D9A0FF` · `cyan #7FA3A3` · `white #A5A39D`
-`brightBlack #5C5A55` · `brightRed #FFB3B0` · `brightGreen #6FE5A6` · `brightYellow #F7EC9A` · `brightBlue #9CCDFF` · `brightMagenta #E6BCFF` · `brightCyan #A0C0C0` · `brightWhite #FFFFFF`
+**Corrected to the shipped values,** for the same reason as §4.11: `terminalGround` is
+`--background-muted` in dark too, not the code ground `#1B1B19`.
+
+`background #232320` · `foreground #EDEDEA` · `cursor #EE6C1A` · `cursorAccent #232320` · `selectionBackground #452201`
+`black #3A3A36` · `red #FF9592` · `green #3DD68C` · `yellow #F2E06B` · `blue #70B8FF` · `magenta #D9A0FF` · `cyan #7FA3A3` · `white #A5A39D`
+`brightBlack #9C9A93` · `brightRed #FFB3B0` · `brightGreen #6FE5A6` · `brightYellow #F7EC9A` · `brightBlue #9CCDFF` · `brightMagenta #E6BCFF` · `brightCyan #A0C0C0` · `brightWhite #FFFFFF`
+
+| Was documented | Ships | Why |
+|---|---|---|
+| `background #1B1B19` | **`#232320`** | derived from `--background-muted` |
+| `cursorAccent #1B1B19` | **`#232320`** | same derivation |
+| `black #131312` | **`#3A3A36`** | on an *elevated* ground the dim slot must lift with it — `#131312` sat 1.18:1 below the new ground, i.e. a hole punched in the panel. `#3A3A36` reads as recessed (1.38:1) rather than absent. Held to a floor of 1.0, not 3.0: it is a ground-by-convention, not text. |
+| `brightBlack #5C5A55` | **`#9C9A93`** | the real fix. `brightBlack` carries dimmed/comment output and is held to 3:1 — `#5C5A55` is **2.29:1** on `#232320`, a fail. `#9C9A93` is 5.60:1. |
+
+Every non-dim slot clears AA on `#232320` (lowest: `cursor #EE6C1A` at 5.10:1, `cyan #7FA3A3` at 5.76:1).
 
 ---
 
@@ -338,8 +386,9 @@ Heat: `--heat-0: #1E1D1B` · `--heat-1: #4A2A0E` · `--heat-2: #7A4413` · `--he
 the build. The palette was verified with an independent WCAG 2.x implementation, self-tested against
 the reference value `#767676` on white = 4.54:1.
 
-**Result: 164 assertions, all pass** — every text token against every ground it can land on, every
-ink-on-fill pair, every non-text boundary at 3:1, and all 20 syntax stops.
+**Result: 228 assertions, all pass** — every text token against every ground it can land on, every
+ink-on-fill pair, every non-text boundary at 3:1, and all 20 syntax stops. (An earlier draft of this
+section said 164; the real count at ship was 228, as §9 records.)
 
 Verification **corrected three values** that the first synthesis had rounded past:
 
@@ -347,11 +396,39 @@ Verification **corrected three values** that the first synthesis had rounded pas
 |---|---|---|---|
 | light `--text-subtle` | `#6B6963` | **`#69675F`** | 4.47:1 on `--background-focus` — a fail reported as a pass. Now 4.61:1 on the darkest ground it can reach. |
 | dark `--text-subtle` | `#98968F` | **`#9C9A93`** | Same failure mirrored: 4.34:1 on the dark focus surface. Now 4.56:1. |
-| light `--accent-bar` | `#EE6C1A` | **`#D95B08`** | The bright anchor is 3.09:1 on white but only **2.81:1 on the grey panel** — rails and status dots would have failed WCAG 1.4.11 the moment they sat on a card. `#D95B08` clears 3:1 on *every* light ground (min 3.14). `--background-accent` stays `#EE6C1A`, so fills keep their brightness. Dark keeps the pure anchor. |
+| light `--accent-bar` | `#EE6C1A` | **`#D95B08`** | The bright anchor is 3.09:1 on white but only **2.81:1 on the grey panel** — rails and status dots lose most of their separation the moment they sit on a card. `#D95B08` recovers ~0.7 of ratio across the board (3.50:1 on that same panel). `--background-accent` stays `#EE6C1A`, so fills keep their brightness. Dark keeps the pure anchor. |
+
+> **The 3:1 claim this table used to make was false.** It read "`#D95B08` clears 3:1 on *every*
+> light ground (min 3.14)." Recomputed against all ten light grounds it can land on, the true
+> minimum is **2.80:1**, and two grounds fail:
+>
+> | Ground | `#D95B08` on it |
+> |---|---|
+> | `--background-app` / `-default` / `-card` `#FFFFFF` | 3.85 |
+> | `--sidebar` `#F7F7F5` | 3.59 |
+> | `--background-code` `#F5F5F3` | 3.53 |
+> | `--background-muted` `#F4F4F2` | 3.50 |
+> | `--sidebar-hover` `#EFEFEC` | 3.34 |
+> | `--heat-0` `#EEEEEA` | 3.31 |
+> | `--background-medium` `#ECECE9` | 3.26 |
+> | `--sidebar-active` `#EAEAE6` | 3.19 |
+> | **`--background-focus` `#E0E0DC`** | **2.91 ✗** |
+> | **`--background-strong` `#DCDCD8`** | **2.80 ✗** |
+>
+> **No theme holds this rule, and none ever has.** On its own `--sidebar-active`, Parchment's rail
+> `#CF6D47` measures **2.53:1** and Alma Mater's `#16A0AC` measures **2.23:1** — both worse than
+> Roche's 3.19 on the equivalent row. The design does not treat the rail as a standalone affordance:
+> it is decorative reinforcement of a background change the active row *already* makes, so it is
+> never the sole cue and **SC 1.4.11 does not bite.** `check-contrast.mjs` therefore deliberately
+> does **not** assert `--accent-bar`, and carries a comment explaining why — asserting it would fail
+> all three families on day one. Revisit only if the rail ever becomes the only cue.
 
 **Two things carried forward deliberately:**
 
-- **Ink on orange is dark, never white.** White on `#EE6C1A` is 2.81:1 — a fail at any size.
+- **Ink on orange is dark, never white.** White on `#EE6C1A` is **3.09:1** — a fail at any size.
+  (Earlier drafts of this line, and of §4.4, printed 2.81:1. That is **Jupyter's** `#F37726` on
+  white, cross-contaminated from the §3 comparison, where both figures are stated correctly. The
+  conclusion is unchanged: 3.09 fails 4.5:1 just as 2.81 does.)
 - **`--border-input` at `#C9C9C3` is 1.66:1 on white,** below the 3:1 non-text threshold. This is
   inherited parity — Parchment and Alma Mater both do the same, and it matches Jupyter's own
   `#E0E0E0`. Fixing it is a theme-wide change, not a Roche Limit change. Flagged, not silently
@@ -359,18 +436,19 @@ Verification **corrected three values** that the first synthesis had rounded pas
 
 ---
 
-## 7 · Open questions
+## 7 · Open questions — and what was actually decided
 
-Three are live as toggles in the companion mockup — judge them by eye. Three need a decision.
+Written before implementation, when three of these were live toggles in the companion mockup. The
+**Outcome** column records what shipped; the recommendations are left in their original voice.
 
-| # | Question | Recommendation |
-|---|---|---|
-| **Q1** | **How orange should the chrome be?** *Instrument* keeps every hover/active/focus surface neutral; *Warm* tints sidebar-active and focus toward the orange ramp. | **Instrument** — the Jupyter-faithful reading, and it keeps orange meaning something. Note the warm option has a hard ceiling: ramp step 4 (`#FADBBB`) as a focus surface **fails AA at 4.29:1**, so the toggle uses steps 2/3. |
-| **Q4** | **Do tool-call cards get the cell rail?** A 2px `--accent-bar` rail on the active card is the most notebook-legible move available. | **On** — but it needs a component change, not just tokens, which breaks the "pure re-colouring" contract Alma Mater set. **Your call on scope.** |
-| **Q6** | **Warm-neutral or pure grey?** Warm-neutral holds every grey under OKLCH chroma ~0.006. | **Warm-neutral** — it prevents orange-on-cool-grey reading as hazard signage. Both variants verified AA. |
-| **Q3** | **Adopt Jupyter's font stack?** | **No.** Fonts live in `@theme inline`, the declared single source of truth; Alma Mater's precedent is "same layout, same fonts". Jupyter's stack is near-identical to BioRouter's anyway. |
-| **Q5** | **Should a family be allowed to change radii?** Jupyter reads as technical largely because of its 2px corners; ours are 4–16px and live outside family scope. | **Not now.** Moving `--radius-*` from `@theme` into `:root` is a real architecture change touching all four existing blocks. |
-| **Q2** | **Fix `--border-input` contrast globally?** | **A separate theme-wide fix**, not a Roche Limit special case. |
+| # | Question | Recommendation | Outcome |
+|---|---|---|---|
+| **Q1** | **How orange should the chrome be?** *Instrument* keeps every hover/active/focus surface neutral; *Warm* tints sidebar-active and focus toward the orange ramp. | **Instrument** — the Jupyter-faithful reading, and it keeps orange meaning something. Note the warm option has a hard ceiling: ramp step 4 (`#FADBBB`) as a focus surface **fails AA at 4.29:1**, so the toggle uses steps 2/3. | ✅ **Taken.** Every hover/active/focus surface ships neutral. |
+| **Q4** | **Do tool-call cards get the cell rail?** A 2px `--accent-bar` rail on the active card is the most notebook-legible move available. | **On** — but it needs a component change, not just tokens, which breaks the "pure re-colouring" contract Alma Mater set. **Your call on scope.** | ❌ **Not taken.** No component change shipped; tool-call cards have no cell rail. The recommendation stands as a proposal, and the "pure re-colouring" contract held. Whoever picks this up should note §6: `--accent-bar` does not clear 3:1 on every ground, so a rail must not be the card's only active cue. |
+| **Q6** | **Warm-neutral or pure grey?** Warm-neutral holds every grey under OKLCH chroma ~0.006. | **Warm-neutral** — it prevents orange-on-cool-grey reading as hazard signage. Both variants verified AA. | ✅ **Taken.** |
+| **Q3** | **Adopt Jupyter's font stack?** | **No.** Fonts live in `@theme inline`, the declared single source of truth; Alma Mater's precedent is "same layout, same fonts". Jupyter's stack is near-identical to BioRouter's anyway. | ✅ **Held.** Fonts unchanged. |
+| **Q5** | **Should a family be allowed to change radii?** Jupyter reads as technical largely because of its 2px corners; ours are 4–16px and live outside family scope. | **Not now.** Moving `--radius-*` from `@theme` into `:root` is a real architecture change touching all four existing blocks. | ⏸ **Deferred.** Radii remain outside family scope. |
+| **Q2** | **Fix `--border-input` contrast globally?** | **A separate theme-wide fix**, not a Roche Limit special case. | ⏸ **Deferred.** `--border-input: #C9C9C3` ships as specified, still 1.66:1 on white, still theme-wide. |
 
 ---
 
@@ -423,6 +501,45 @@ export type ThemeFamily = (typeof THEME_FAMILIES)[number];
 
 ## 9 · Implementation — as built
 
+### 9.1 · Where the theme lives now — one file, everything else generated
+
+**This supersedes the file-by-file account below.** Roche Limit shipped by hand-editing ten sites;
+that experience — three families each redeclaring every token across nine files — is what motivated
+the re-architecture recorded in
+[`docs/design/theme-system-architecture.md`](theme-system-architecture.md). **A theme is now a single
+authored file:**
+
+```
+ui/desktop/themes/roche-limit.theme.mjs     ← the only file anyone edits
+npm run themes                               ← regenerates every consumer
+npm run check:themes                         ← --check mode; part of npm run lint:check
+```
+
+Everything downstream is emitted from it and marked as generated — do not hand-edit any of it:
+
+| Generated artifact | What it carries |
+|---|---|
+| `src/styles/main.css` (`THEMES:GENERATED:FAMILIES` block) | the `:root[data-theme='roche-limit']` + `.dark[…]` token blocks |
+| `src/styles/themes.generated.ts` | syntax palette, terminal palette, code ground, brand-mark colours, the family id list |
+| `src/contexts/ThemeContext.tsx`, `index.html`, `ThemeFamilySelector.tsx`, `codeTheme.ts`, `InAppTerminalDock.tsx`, `BioRouterMark.tsx` | family registry, boot-splash CSS, picker label + swatch, consumer palettes |
+
+Three changes in that re-architecture are visible in this document:
+
+- **`--scrim` is a token.** The per-family hardcoded overlay `rgba()` is gone; see the note at the
+  end of §10. Roche light `rgba(31, 30, 28, 0.18)`, dark `rgba(0, 0, 0, 0.48)`.
+- **`--sidebar-icon` is a token.** Already noted below as the late discovery of the original ship;
+  it is now a declared part of the contract rather than a token found by running CI. Roche light
+  `#D95B08` (3.59:1 on `--sidebar`, 3.19:1 on the darkest row it can sit on), dark `#EE6C1A`
+  (5.81:1 / 4.41:1). Unlike `--accent-bar`, this one **is** asserted at 3:1 against all three
+  sidebar rows, because a nav icon really can be the only cue.
+- **`terminalGround` is declared, not assumed.** Roche's terminal paints `--background-muted` in
+  **both** modes, and `roche-limit.theme.mjs` says so explicitly. The generator *derives*
+  `terminal.background` and `terminal.cursorAccent` from that token instead of letting them be
+  authored, which is why §4.11 and §5.9 had drifted: the families genuinely disagree here
+  (Parchment dark grounds on `--background-code`), so nothing could be safely unified.
+
+### 9.2 · The original ship, 2026-07-18
+
 Shipped 2026-07-18. The plan said eight files; **ten sites** were needed. The two the
 plan missed were both found by looking at the running app rather than the token layer:
 
@@ -434,7 +551,8 @@ plan missed were both found by looking at the running app rather than the token 
 Two more corrections came out of running the real CI gate rather than a private script:
 
 - **`--sidebar-icon` exists** (60 semantic tokens, not the 59 this spec first claimed).
-  It is the token that actually carries "orange icons".
+  It is the token that actually carries "orange icons". *(`--scrim` was tokenised
+  afterwards, so the count is **61** today — see §9.1 and §10.)*
 - **Both `--background-focus` values were wrong** against the repo's 1.1 focus/hover
   floor. Fixed in §4.6 / §5.6.
 
@@ -449,12 +567,12 @@ need not.**
 
 | # | File | Change |
 |---|---|---|
-| 1 | `src/styles/main.css` | `:root[data-theme='roche-limit']` + `.dark[data-theme='roche-limit']` after the Alma blocks. 87 declarations light (60 semantic + 27 raw remaps), 60 dark — verified token-for-token against the Alma blocks. |
+| 1 | `src/styles/main.css` | `:root[data-theme='roche-limit']` + `.dark[data-theme='roche-limit']` after the Alma blocks. 87 declarations light (60 semantic + 27 raw remaps), 60 dark — verified token-for-token against the Alma blocks. *(Today: **88 light** = 61 semantic + 27 raw, **61 dark**, after `--scrim`; and the block is generated, not hand-written.)* |
 | 2 | `src/contexts/ThemeContext.tsx` | Replaced both hardcoded `=== 'alma-mater'` checks with a `THEME_FAMILIES` registry + `isThemeFamily()` guard, so the next family is one edit. |
 | 3 | `index.html` | Pre-hydration script derives from a duplicated `FAMILIES` list (commented as a deliberate duplicate); **plus** the two boot-splash blocks. |
 | 4 | `src/components/BioRouterSidebar/ThemeFamilySelector.tsx` | Third entry; `grid-cols-2` → `grid-cols-3`. |
 | 5 | `src/styles/codeTheme.ts` | `ROCHE_LIGHT`/`ROCHE_DARK`, registered in **`codeThemesByFamily`**; `CODE_BG_ROCHE`, `codePalettesRoche`. |
-| 6 | `src/components/InAppTerminalDock.tsx` | `ROCHE_TERMINAL_THEMES` (20 xterm slots × 2), grounded on `--background-muted` like its siblings — which shifted several ANSI stops off this spec's §4.11 values, re-verified on the real ground. |
+| 6 | `src/components/InAppTerminalDock.tsx` | `ROCHE_TERMINAL_THEMES` (20 xterm slots × 2), grounded on `--background-muted` like its siblings — which shifted eight ANSI stops off this spec's original §4.11 / §5.9 values, re-verified on the real ground. **§4.11 and §5.9 now carry the shipped values**, with the diff and the reason for each. |
 | 7 | `src/styles/codeTheme.test.ts` | AA assertions for both Roche palettes, a guard that no family is missing from `codeThemesByFamily`, and a pin that the two sub-AA JupyterLab stops are never reintroduced. |
 | 8 | `src/components/BioRouterSidebar/ThemeFamilySelector.test.tsx` | **New.** Derives from `THEME_FAMILIES`, so a family added without a button — or without bumping the grid — fails. |
 | 9 | `scripts/check-contrast.mjs` | `ROCHE_L`/`ROCHE_D` with the Alma cascade merge. **140 → 228 assertions.** |
@@ -500,6 +618,14 @@ unilaterally. One-line fix if wanted: derive `CORAL` from `--accent-bar`.
 Plus one optional, family-scoped, non-token change: the modal/diagnostics scrim at `main.css`
 L1277–1279 is a hardcoded `rgba()` outside the token layer; light Roche Limit should add its own
 `rgba(31, 30, 28, 0.22)` rule.
+
+> ✅ **Done — and done better than proposed.** Rather than adding a fourth per-family component
+> rule, the scrim was **tokenised**: `--scrim` is now a real semantic token every family declares,
+> and the overlay rules are a plain `background: var(--scrim)`. Roche light ships
+> **`rgba(31, 30, 28, 0.18)`** — the warm near-black of `--background-inverse` at the same 0.18 alpha
+> the other light families use, not the 0.22 proposed here. Roche dark ships `rgba(0, 0, 0, 0.48)`.
+> This also fixed a latent bug the plan did not anticipate: because the old rule was hardcoded
+> Parchment brown, **Roche Limit silently wore Parchment's scrim** until the token landed.
 
 Electron main and `preload.ts` need **no change** — `themeFamily` is an opaque string on the IPC
 payload.

@@ -1,7 +1,12 @@
 # Theme system — how it works today, and how to make adding themes cheap
 
-**Status:** proposal, awaiting decision · **Date:** 2026-07-18 · **Context:** three families now ship
-(Parchment, Alma Mater, Roche Limit); the team expects more.
+**Status:** ✅ **implemented** (2026-07-18) · **Context:** three families ship (Parchment, Alma Mater,
+Roche Limit); the team expects more, and themes stay baked into the app — not user-installable.
+
+> §1–§4 below are the diagnosis that motivated the work and are kept as the record of what was
+> measured. **§5 is the shipped architecture.** The staged plan it originally proposed was compressed:
+> the guard work, the token contract and the generator all landed together, because extracting the
+> definitions turned out to be the only safe way to prove the generator faithful.
 
 ---
 
@@ -125,95 +130,108 @@ new family to hand-copy splash hexes into `index.html`.
 
 ---
 
-## 5 · Recommendation
+## 5 · The shipped architecture
 
-**Adopt "one authored source per theme, everything else derived" — but ship it in stages, and reject
-runtime/marketplace-installable themes for now.**
+**One definition per family; everything else generated. Compile-time only — themes are baked into
+the app and are not user-installable, by decision.**
 
-Do **not** start with codegen. Start with guard work: ~1 day, closes the only defect class that has
-actually shipped, and makes every later stage safe.
+```
+ui/desktop/themes/<id>.theme.mjs      the ONE file you write
+npm run themes                        emits everything below
+npm run themes -- --check             CI gate: fails if generated output is stale
+```
 
-### Stage 1 — Assert the duplications, auto-scale the guard · ~1 day
+### What is generated
 
-Pure additions. Nothing generated, nothing deleted.
-
-1. Export the resolved cascade maps `check-contrast.mjs` already builds.
-2. Assert the cross-file duplications, per family × mode:
-   `CODE_BG_*[mode] === resolve('--background-code')`, and the terminal ground against **the token
-   that family actually uses** — recorded per family, *not* unified. Parchment-dark uses
-   `--background-code`; the others use `--background-muted`.
-3. Add the missing assertion families: every syntax stop against its real code ground; every
-   non-dim ANSI slot against its terminal ground, with the two documented dim slots exempted by an
-   explicit entry carrying a reason.
-4. **Replace the six hardcoded scopes with a regex sweep for `\[data-theme='([^']+)'\]`.** A new
-   family becomes auto-audited with *zero* edits to this file — the single biggest win of the
-   codegen proposals, obtained without a generator.
-5. Re-key `ThemeFamilySelector`'s `FAMILIES` as `Record<ThemeFamily, …>` so a missing entry is a
-   compile error. Kills the last unguarded list, ~6 lines.
-
-### Stage 2 — One manifest, three consumers · ~0.5 day
-
-Move `label` and `swatch` into `THEME_FAMILIES`. The picker and the boot script derive from it;
-`boot-splash.test.ts` keeps cross-checking.
-
-### Stage 3 — Write the token contract down · ~1 day
-
-Produce the actual list (147 declarations, not the "~45" everyone including me assumed) with each
-token's role, its required contrast partners, and which are structural vs family-varying. Fix the
-three live inconsistencies in §3 while doing it. **Do this before any generator** — both codegen
-proposals mispriced themselves 3× by guessing at this number.
-
-### Stage 4 — Codegen · 4–6 days · **conditional**
-
-One `<family>.theme.ts` per theme; a generator emits the CSS blocks, both TS palettes, the picker
-manifest, the pre-hydration list and the splash CSS, with contrast validation as a precondition of
-emission. **Only build this once a concrete 5th theme exists.** Keep a browser-truth contrast path:
-a guard that reads generator JSON instead of the CSS the browser receives makes emitter bugs
-invisible — precisely the failure class it exists to catch.
-
-### Rejected for now — runtime / BAAM-installable themes
-
-Technically viable (§4 proves the mechanism), but:
-
-- **The obvious implementation is a no-op.** Injecting into `@layer user-theme` loses to the
-  existing tokens at *every* value, because `main.css`'s token blocks are **unlayered** (first
-  `@layer` is at line 845, all token blocks are above it) and unlayered beats every layer. Fixing it
-  means restratifying a 2,300-line stylesheet.
-- **Six tokens per family are inexpressible** in a safe value grammar: the `--shadow-*` set is
-  multi-layer compound strings plus the bare keyword `none`. Admitting raw CSS strings reopens the
-  validation surface the safety argument depends on.
-- **Zero demand.** The BAAM registry carries 37 extensions and 129 skills and no theme requests.
-  Break-even on 4–5 weeks of installer/CSP/IPC work is somewhere past theme #7.
-
-Revisit when someone asks for a theme we won't ship ourselves, or two more first-party families
-land. At that point Stage 4's output *is* the installable payload.
-
-**Do take one cheap piece now:** a scoped `<div data-theme={candidate}>` live preview in Appearance
-settings. Works today because utilities resolve at the use site — but only if the selector drops
-`:root` (which matches `<html>` only). ~20 lines.
-
----
-
-## 6 · Developer experience, before and after
-
-| | Add a 4th theme |
+| Artifact | What lands there |
 |---|---|
-| **Today** | 9 files, 23 edit sites, ~220 hand-authored values, 3 lists to sync (1 unguarded), terminal palette untested, half the tokens unasserted |
-| **After Stage 1** | Same authoring, but the contrast guard picks the family up automatically, every duplication is asserted, and the picker list is a compile error if missed |
-| **After Stage 3** | Same, plus a written contract saying exactly which values are needed and what each must contrast against |
-| **After Stage 4** | One file + one command |
+| `src/styles/main.css` | the `:root[data-theme=X]` / `.dark[data-theme=X]` token blocks, inside a marker region |
+| `src/styles/themes.generated.ts` | syntax palettes, terminal ANSI palettes, brand-mark inks, family manifest, `THEME_FAMILY_IDS` |
+| `index.html` | the pre-hydration family list and the per-family boot-splash CSS |
+
+Regions, not whole files: `main.css` and `index.html` carry hand-written reasoning that is not
+derivable from a palette, so the generator owns only a delimited span. Parchment's `:root`/`.dark`
+blocks stay hand-written — it is the base layer and also carries the 17 structural tokens no theme
+may vary.
+
+### What is derived, never authored
+
+These are exactly the values that used to be typed in two-to-four places and drift:
+
+| Derived | From |
+|---|---|
+| `terminal.background`, `terminal.cursorAccent` | the family's own `terminalGround` token |
+| code ground (`CODE_BG*`) | `--background-code` |
+| boot-splash `--br-bg` | `--background-muted` |
+| picker label + swatch, family list | the definition's `label` / `swatch` / `id` |
+
+`terminalGround` is **per family on purpose**. Parchment dark paints `--background-code`; Alma Mater
+and Roche Limit paint `--background-muted`. Assuming they agreed would silently re-ground two
+terminals under ANSI palettes tuned for a different surface.
+
+### The contract
+
+`scripts/lib/theme-contract.mjs` is the written-down answer to "what must a theme define": 60
+semantic tokens × 2 modes, 27 raw-palette remaps, 10 syntax stops, 19 terminal stops, 3 splash
+values. A definition missing any of them **cannot be emitted** — the generator validates first, then
+contrast-checks the result, and refuses to write on failure.
+
+That refusal is not theoretical: it caught five Parchment light terminal stops sitting below the AA
+floor their own comment claimed they cleared.
+
+### What guards it
+
+- **`check-contrast.mjs` discovers families** by sweeping the stylesheet for `[data-theme='…']`.
+  A new family is audited with **zero** edits to the guard. It also asserts light-before-dark block
+  order, which is load-bearing and was previously unchecked.
+- **`npm run themes -- --check`** is wired into `lint:check`, so stale generated output fails CI.
+- **Per-slot terminal floors** (`TERMINAL_FLOORS`) with a recorded reason for every relaxation.
+
+### Cost of a 4th family — measured, not estimated
+
+Verified by actually adding a throwaway family: **one file**, no other edits. The contrast guard
+picked it up unprompted (228 → 304 assertions), the type system flagged the two maps that still
+needed deriving, and the splash test caught it wearing another family's ground because the demo
+copied its surfaces verbatim.
+
+| | Before | After |
+|---|---|---|
+| Files touched | 9 | **1** |
+| Edit sites | 23 | **1** |
+| Hand-authored values | ~220 | ~200 (in one place, validated) |
+| Hardcoded family lists | 3 | **0** |
+| Guard edits | 5 | **0** |
+
+### Migration was proven, not asserted
+
+`scripts/extract-themes.mjs` pulled the shipping values into definitions; resolved-token output was
+then diffed against a pre-change baseline. **All 104 tokens per family identical; Parchment 77/77
+untouched.** The only differences were the two intended ones. The extractor is kept only so the
+migration is reproducible; it is not part of the build.
 
 ---
 
-## 7 · Open questions
+## 6 · Decisions taken
 
-1. **Is there a concrete 4th and 5th theme?** This single input decides whether Stage 4 happens.
-2. **Terminal ground: unify or codify?** Unifying means retuning up to three ANSI palettes; codifying
-   means a per-family `groundToken` forever. Lean **codify** — it's honest and assertable.
-3. **Theme files as TS or JSON?** TS gives compile-time completeness; JSON is version-proof and
-   marketplace-ready. If Stage 4 might ever feed a runtime path, JSON wins.
-4. **Do shadows and radii stay hand-authored?** Recommend shadows stay raw strings and out of the
-   contrast set; radii/motion/z-index leave the per-family blocks entirely.
-5. **Should the Alma modal-overlay override become a token?** It is the last per-family component
-   rule. Recommend yes, in Stage 3.
-6. **Should the brand mark become family-aware?** It is a live bug today (§3.2).
+1. **Runtime / user-installable themes: rejected.** Technically viable (§4 proves the mechanism
+   works), but themes stay baked in by decision. The obvious implementation is also a trap: injecting
+   into `@layer user-theme` loses to the existing tokens at every value, because `main.css`'s token
+   blocks are unlayered and unlayered beats every layer.
+2. **Terminal ground: codified, not unified.** Each family declares which token its terminal paints.
+3. **Shadows stay raw strings**, outside the contrast set.
+4. **Bright ANSI slots hold 3:1, base slots hold 4.5.** On a light ground "bright" (conventionally
+   *lighter*) and AA are mutually exclusive; forcing 4.5 would collapse `brightCyan` into `cyan`.
+5. **`--accent-bar` is deliberately NOT asserted.** On the rail's own ground (`--sidebar-active`)
+   Parchment measures 2.53, Alma Mater 2.23 and Roche 3.19; on `--background-strong` all three fail
+   (2.18 / 2.10 / 2.80). So two of three families have never met 3:1 and the rule has never been
+   enforced — asserting it would fail the default theme on day one, not catch a regression. The rail
+   reinforces a background change the active row already makes, so it is not the sole cue. Roche's
+   doc claimed a guarantee nothing meets; the doc was corrected rather than the themes.
+
+## 7 · Still open
+
+- The `index.html` comment claiming tokens "do not exist as runtime custom properties" is wrong
+  (§4). The splash grounds are now generated from `--background-muted`, so the duplication is gone,
+  but the comment's reasoning should be corrected.
+- `--sidebar-icon` on a navy sidebar, and the scoped `<div data-theme>` live preview for settings,
+  remain unbuilt.

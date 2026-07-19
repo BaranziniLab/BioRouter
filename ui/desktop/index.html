@@ -85,13 +85,23 @@
       #br-boot {
         /* Parchment (the default family), light.
 
-           These are LITERAL values, not var(--background-muted) and friends.
-           Tailwind v4's `@theme inline` compiles those tokens away — they are
-           substituted into utility classes at build time and do not exist as
-           runtime custom properties, so a var() reference here silently falls
-           back and paints the wrong ground. Verified: a probe element styled
-           `background: var(--background-muted, magenta)` computes magenta in
-           every theme. Do not "simplify" this back to tokens.
+           These are LITERAL values, not var(--background-muted) and friends —
+           but NOT for the reason this comment used to give. It claimed Tailwind
+           v4's `@theme inline` "compiles those tokens away" so they "do not
+           exist as runtime custom properties". That is false: a probe styled
+           `background: var(--background-muted, magenta)` computes #f2f3f4, and
+           injecting a whole new `[data-theme]` block at runtime recolours every
+           utility correctly. The tokens are ordinary custom properties.
+
+           The real reason is TIMING. This splash paints before the stylesheet
+           has been applied — in dev, Vite injects main.css via JS after first
+           paint — so a var() here resolves to its fallback during exactly the
+           window the splash exists to fill. Hence literals.
+
+           They are no longer hand-copied, though: `npm run themes` generates
+           every rule below from each family's --background-muted, so the
+           duplication that used to rot is now derived. Edit the theme
+           definition, not this block.
 
            The values mirror --background-muted per family, which is the ground
            the post-boot Hub uses, so handing off to the app has no colour jump.
@@ -124,33 +134,33 @@
       <!-- THEMES:GENERATED:SPLASH:START -->
       html.dark #br-boot {
         --br-bg: #282217;
-        --br-navy: #052049;
+        --br-navy: #18a3ac;
         --br-coral: #b85a32;
-        --br-track: #e8e1d2;
+        --br-track: #3a3223;
       }
       html[data-theme='alma-mater'] #br-boot {
         --br-bg: #f2f3f4;
         --br-navy: #052049;
         --br-coral: #16a0ac;
-        --br-track: #e8e1d2;
+        --br-track: #e1e3e5;
       }
       html.dark[data-theme='alma-mater'] #br-boot {
         --br-bg: #0d2a50;
-        --br-navy: #052049;
+        --br-navy: #18a3ac;
         --br-coral: #16a0ac;
-        --br-track: #e8e1d2;
+        --br-track: #17386a;
       }
       html[data-theme='roche-limit'] #br-boot {
         --br-bg: #f4f4f2;
-        --br-navy: #052049;
-        --br-coral: #b85a32;
-        --br-track: #e8e1d2;
+        --br-navy: #1f1e1c;
+        --br-coral: #ee6c1a;
+        --br-track: #e4e4e0;
       }
       html.dark[data-theme='roche-limit'] #br-boot {
         --br-bg: #232320;
-        --br-navy: #052049;
-        --br-coral: #b85a32;
-        --br-track: #e8e1d2;
+        --br-navy: #ededea;
+        --br-coral: #ee6c1a;
+        --br-track: #302f2c;
       }
 <!-- THEMES:GENERATED:SPLASH:END -->
 

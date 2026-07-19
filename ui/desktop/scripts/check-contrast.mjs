@@ -131,7 +131,13 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // against its own fill. In dark, --border-subtle and --background-muted are
   // both neutral-800, so the block is delimited by its ground change alone,
   // exactly as P1 intends.)
-  assert(`${theme}: text-default on code ground`, '--text-default', '--background-code', 4.5, scope);
+  assert(
+    `${theme}: text-default on code ground`,
+    '--text-default',
+    '--background-code',
+    4.5,
+    scope
+  );
   assert(`${theme}: text-muted on code ground`, '--text-muted', '--background-code', 4.5, scope);
   assert(`${theme}: text-subtle on code ground`, '--text-subtle', '--background-code', 4.5, scope);
 
@@ -171,15 +177,25 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to
-  // SC 1.4.11's 3:1, and Roche Limit's design doc explicitly guarantees it
-  // ("clears 3:1 on every light ground, min 3.14"). That guarantee is false —
-  // the rail sits on --sidebar-active, where it measures 2.80 (Roche light),
-  // 2.23 (Alma light) and 2.18 (Parchment light). All THREE families fail,
-  // which means the design has never held this rule, not that one theme
-  // regressed. The rail is decorative reinforcement of a background change the
-  // active row already makes, so it is not the sole cue and 1.4.11 does not
-  // bite. Asserting it here would fail every theme on day one; the doc claim is
-  // what needs correcting. Revisit if the rail ever becomes the only affordance.
+  // SC 1.4.11's 3:1, and Roche Limit's design doc used to guarantee it. The
+  // measured picture, per family, light mode:
+  //
+  //                    on --sidebar-active   on --background-strong
+  //   parchment  #cf6d47        2.53                  2.18
+  //   alma-mater #16a0ac        2.23                  2.10
+  //   roche      #d95b08        3.19                  2.80
+  //
+  // The rail's own ground is --sidebar-active (the active row paints it), where
+  // Parchment and Alma Mater fail and Roche passes; on --background-strong all
+  // three fail. So this is not one theme regressing — two of three have never
+  // met the bar, and the rule has never been enforced. The rail reinforces a
+  // background change the active row already makes, so it is not the sole cue
+  // and 1.4.11 does not bite. Asserting it here would fail the default theme on
+  // day one. Revisit if the rail ever becomes the only affordance.
+  //
+  // (An earlier draft of this comment quoted "2.80 / 2.23 / 2.18 on
+  // --sidebar-active" — three numbers taken from two different grounds. The
+  // table above is recomputed; do not reintroduce a figure without a ground.)
 }
 
 const w = Math.max(...rows.map((r) => r[2].length));

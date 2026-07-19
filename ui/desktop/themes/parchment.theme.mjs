@@ -227,9 +227,9 @@ export default {
       brightWhite: '#e8e1d2',
     },
     splash: {
-      navy: '#052049',
+      navy: '#18a3ac',
       coral: '#b85a32',
-      track: '#e8e1d2',
+      track: '#3a3223',
     },
   },
 };

@@ -297,6 +297,25 @@ const failures = [];
           );
         }
       }
+      // The boot splash paints the BR mark before React exists. Its two inks
+      // must be legible on the splash ground — which is NOT automatic: a
+      // regression once left every dark splash carrying the LIGHT navy, making
+      // the mark's navy half invisible (1.02:1) on all three families. The mark
+      // is a logotype, so it takes the 3:1 graphical floor rather than 4.5.
+      // Only the PRIMARY ink is checked. WCAG exempts logotypes from contrast
+      // (SC 1.4.11), and the coral half is exactly that — a brand accent that
+      // is 2.84:1 (Alma) and 2.81:1 (Roche) on their light grounds by design.
+      // The navy half is different: it carries the mark's readable structure,
+      // and a regression once left every dark splash using the LIGHT navy,
+      // rendering it invisible at 1.02:1 on all three families with nothing
+      // failing. That is the case this assertion exists to catch.
+      const splashBg = resolveRaw('--background-muted', scope);
+      const c = contrast(t[mode].splash.navy, splashBg);
+      if (c < 3) {
+        failures.push(
+          `${t.id}.${mode}: splash navy ${t[mode].splash.navy} on ${splashBg} = ${c.toFixed(2)}:1 (need 3)`
+        );
+      }
     }
   }
 }
