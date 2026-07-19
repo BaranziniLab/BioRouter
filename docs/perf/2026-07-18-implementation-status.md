@@ -283,3 +283,70 @@ tool-argument size distribution. If the p50 tool call has <20 argument tokens,
    specifically the five-impl safety audit.
 5. Decide `docs/design/boot-splash-studio.html`'s home — it violates the
    protected-path rule as filed.
+
+---
+
+## 9. Live smoke-test results (2026-07-18, real UCSF credentials)
+
+Run headless via `biorouter run` against both configured providers, measured
+with the Stage-0 markers this branch added. **Supersedes the "unverified"
+caveats in §3–§5 for the two Versa providers.**
+
+### 9.1 No regressions
+
+| Check | Result |
+|---|---|
+| Tool calls execute + correct answers, both providers | PASS (exit 0) |
+| Token/cost accounting on the streaming path | PASS — 7 turns, non-zero cost recorded |
+| Lock/poison/deadlock errors after the H6 mutex removal | none in server logs |
+| GUI renders; trailing indicator + tool card | PASS (verified in a real browser) |
+
+The "4 of 7 extensions loaded" toast is **not** a regression: `ucsfomopagent`
+and `cdwagent` want `CLINICAL_RECORDS_USERNAME`, `spokeagent` wants
+`SPOKEAGENT_PASSCODE`. Unconfigured secrets, unrelated to this branch.
+
+### 9.2 Streaming: Azure real, Bedrock buffered by the gateway
+
+Measured on an identical ~600-word prose prompt (no tools). A **short**
+response cannot distinguish these two cases — both show a small generation
+window. Only a long output separates them. Do not re-test this with a short
+prompt and conclude anything.
+
+| Provider | `STREAM_OPEN`→`OPENED` (TTFB) | `OPENED`→`EXHAUSTED` (streamed) | Verdict |
+|---|---|---|---|
+| `versa_azure` / gpt-5.5 | 1.95 s | **10.70 s** | genuine incremental streaming |
+| `versa_bedrock` / claude-sonnet-4-6 | 21.93 s | **0.15 s** | fully buffered upstream |
+
+Our Bedrock decoder is lazy (`try_stream!` + `receiver.recv().await` per event,
+`formats/bedrock.rs:1130-1145`), so the buffering is **not** ours. The UCSF
+MuleSoft gateway (`unified-api.ucsf.edu`) forwards SSE incrementally but
+buffers `application/vnd.amazon.eventstream`.
+
+**Decision (owner, 2026-07-18): leave Bedrock streaming enabled as-is.** It is
+harmless, and it begins working for free if the gateway is ever fixed. Two
+things to know while it stays on:
+
+- It delivers **no** user-visible benefit on Bedrock today.
+- Retry semantics changed shape: only stream-open is retried, mid-stream
+  failures are terminal. If the gateway starts dropping long streams, turns
+  that previously succeeded via retry will now fail. This is the one live
+  regression risk being deliberately accepted.
+
+The real fix is a gateway change (pass event-stream through unbuffered), which
+would make every Bedrock Claude model stream. Not pursued for now.
+
+### 9.3 The original symptom, measured
+
+```
++0.00s  WAITING_LLM_STREAM_OPEN
++5.39s  WAITING_LLM_STREAM_OPENED    <- the whole perceived gap is here
++5.41s  TOOL_EXEC_START              <- tool fires 20 ms after the response lands
++5.48s  TOOL_EXEC_END                <- tool itself takes 70 ms
++5.56s  WAITING_LLM_STREAM_EXHAUSTED
++5.61s  WAITING_LLM_STREAM_OPEN      <- ~50 ms of bookkeeping before the next turn
+```
+
+Tools fire 20 ms after the response arrives and take ~70 ms; inter-turn
+bookkeeping is ~50 ms. The 2–5 s gap is model time essentially in full. This
+**empirically confirms the investigation's ~90%-intrinsic conclusion** and is
+why Track 2 (make the wait legible), not optimization, was the correct fix.
