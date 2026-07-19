@@ -87,7 +87,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
           className="flex-shrink-0"
           aria-label="Close preview"
         >
-          <X className="h-4 w-4" strokeWidth={1.5} />
+          <X className="h-4 w-4" />
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 text-xs leading-relaxed text-text-default">
@@ -98,7 +98,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
             {parsed.frontmatter && (
               <div className="overflow-hidden rounded-lg bg-background-muted">
                 <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                  <FileCode2 className="h-3 w-3" strokeWidth={1.5} />
+                  <FileCode2 className="h-3 w-3" />
                   Overview
                 </div>
                 <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[11px] leading-5 text-text-muted whitespace-pre-wrap">

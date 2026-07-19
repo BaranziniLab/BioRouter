@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef, KeyboardEvent } from 'react';
-import { Search as SearchIcon } from '../icons/app-icons';
-import { ArrowDown, ArrowUp, Close } from '../icons';
+import { ArrowDown, ArrowUp, Search as SearchIcon, X } from '../icons/app-icons';
 import debounce from 'lodash/debounce';
 import { Button } from '../ui/button';
 
@@ -258,7 +257,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             className="no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-colors duration-[var(--motion-fast)] text-text-muted hover:text-text-default hover:bg-background-medium"
             title="Close (Esc)"
           >
-            <Close className="h-5 w-5" />
+            <X className="h-5 w-5" />
           </Button>
         </div>
       </div>

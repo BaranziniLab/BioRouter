@@ -105,9 +105,9 @@ export function DispatchProgress({ state, onAbort }: Props) {
           className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
         >
           {open ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.5} />
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.5} />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
           )}
           <span className="min-w-0 break-words">
             {statusLabel}
@@ -127,9 +127,9 @@ export function DispatchProgress({ state, onAbort }: Props) {
               disabled={state.status === 'stopping'}
             >
               {state.status === 'stopping' ? (
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <StopCircle className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <StopCircle className="h-3.5 w-3.5" />
               )}
               {state.status === 'stopping' ? 'Stopping...' : 'Stop'}
             </button>
@@ -141,10 +141,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
           <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-xl bg-background-muted px-3 py-3 text-[11px] leading-5">
             {lines.length === 0 && (
               <div className="flex items-start gap-2 text-text-muted">
-                <LoaderCircle
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin"
-                  strokeWidth={1.5}
-                />
+                <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                 <p className="min-w-0 break-words whitespace-pre-wrap">
                   {state.status === 'starting'
                     ? 'Checking the staged source and opening the digest pipeline.'
@@ -158,9 +155,9 @@ export function DispatchProgress({ state, onAbort }: Props) {
             {lines.map((line, index) => (
               <div key={index} className={`flex items-start gap-2 ${line.tone}`}>
                 {line.text.startsWith('Completed') ? (
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 ) : line.text.startsWith('Issue') || line.text.startsWith('Digest error') ? (
-                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 ) : (
                   <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-60" />
                 )}

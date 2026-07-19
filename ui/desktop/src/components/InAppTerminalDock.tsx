@@ -554,7 +554,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   onClick={() => setActivePaneId(pane.id)}
                   className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
                 >
-                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                  <TerminalIcon className="h-4 w-4 flex-shrink-0" />
                   <span className="br-tab__label">{pane.title}</span>
                 </button>
                 <button
@@ -568,7 +568,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   aria-label={`Close terminal tab ${pane.title}`}
                   title={`Close ${pane.title}`}
                 >
-                  <X className="h-3 w-3" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
             );
@@ -605,7 +605,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           aria-label="Hide terminal"
           title="Hide terminal"
         >
-          <X className="h-3.5 w-3.5" />
+          <X />
         </Button>
       </div>
       {/* The single painted terminal ground. No gutter padding: the terminal

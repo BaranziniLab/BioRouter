@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import kebabCase from 'lodash/kebabCase';
 import { Switch } from '../../../ui/switch';
-import { Gear } from '../../../icons';
+import { Settings } from '../../../icons/app-icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import BuiltInBadge from '../../../ui/BuiltInBadge';
 import { getSubtitle, getFriendlyTitle, isBuiltInExtension } from './ExtensionList';
@@ -71,7 +71,7 @@ export default function ExtensionItem({
             aria-label={`Configure ${getFriendlyTitle(extension)} extension`}
             onClick={() => onConfigure?.(extension)}
           >
-            <Gear className="w-4 h-4" />
+            <Settings className="w-4 h-4" />
           </button>
         )}
         <Switch

@@ -9,7 +9,7 @@ import {
   Trash2,
   Download,
   Upload,
-  ExternalLink,
+  NewWindow,
   Puzzle,
   LayoutDashboard,
   GitBranch,
@@ -735,7 +735,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             <h3 className="text-sm font-medium truncate">{session.name}</h3>
             {session.diverged_from && (
               <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
-                <GitBranch className="w-3 h-3 flex-shrink-0" strokeWidth={1.5} />
+                <GitBranch className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate max-w-[320px]">
                   branched from{' '}
                   {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
@@ -813,7 +813,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         className="h-7 w-7 p-0"
                         aria-label={`Launch options for ${session.name}`}
                       >
-                        <ExternalLink className="w-4 h-4" />
+                        <NewWindow className="w-4 h-4" />
                       </Button>
                     </DropdownMenuTrigger>
                   </TooltipTrigger>
@@ -821,7 +821,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </Tooltip>
                 <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                   <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
-                    <ExternalLink className="w-4 h-4" />
+                    <NewWindow className="w-4 h-4" />
                     Open in new window
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={(e) => handleOpenInDashboardClick(e)}>

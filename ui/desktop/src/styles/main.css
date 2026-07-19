@@ -965,8 +965,8 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   margin-right: 4px;
   border: 0;
   border-radius: var(--radius-md);
@@ -980,7 +980,7 @@
 
 .br-tabstrip__overflow:hover,
 .br-tabstrip__overflow[data-state='open'] {
-  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  background: var(--background-medium);
   color: var(--text-default);
 }
 

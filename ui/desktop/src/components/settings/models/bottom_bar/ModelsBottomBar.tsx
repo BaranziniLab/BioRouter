@@ -1,4 +1,4 @@
-import { Sliders, Brain } from '../../../icons/app-icons';
+import { SlidersHorizontal, Brain } from '../../../icons/app-icons';
 import React, { useEffect, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
@@ -197,14 +197,14 @@ export default function ModelsBottomBar({
               onClick={() => setIsAddModelModalOpen(true)}
             >
               <span>Change Model</span>
-              <Sliders className="ml-auto size-3.5 rotate-90" />
+              <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
             <DropdownMenuItem
               className="h-auto rounded-md px-2 py-1.5 text-xs font-medium text-text-default"
               onClick={() => setIsLeadWorkerModalOpen(true)}
             >
               <span>Lead/Worker Settings</span>
-              <Sliders className="ml-auto size-3.5" />
+              <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
           </div>
         </DropdownMenuContent>

@@ -1,11 +1,10 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { ScrollText } from './icons/app-icons';
+import { ChevronsDownUp, Send, X } from './icons/app-icons';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
-import { Send, Close } from './icons';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
@@ -648,7 +647,7 @@ export default function ChatInput({
 
           handleSubmit(customEvent);
         },
-        compactIcon: <ScrollText size={12} />,
+        compactIcon: <ChevronsDownUp size={12} />,
       });
     }
 
@@ -1651,7 +1650,7 @@ export default function ChatInput({
                   variant="outline"
                   size="xs"
                 >
-                  <Close />
+                  <X />
                 </Button>
               )}
             </div>
@@ -1707,7 +1706,7 @@ export default function ChatInput({
                   variant="outline"
                   size="xs"
                 >
-                  <Close />
+                  <X />
                 </Button>
               )}
             </div>

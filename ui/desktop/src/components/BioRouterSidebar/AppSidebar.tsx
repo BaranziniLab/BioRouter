@@ -1,15 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Clock,
-  Home,
-  Layers,
-  Puzzle,
-  AppWindow,
-  Pipeline,
-  Plus,
-  Settings,
-  KnowledgeIcon,
-} from '../icons/app-icons';
+import { Home, Plus, Settings } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -81,49 +72,49 @@ const menuItems: NavigationItem[] = [
     type: 'item',
     path: '/workflows',
     label: 'Workflows',
-    icon: Pipeline,
+    icon: ENTITY_ICONS.workflow,
     tooltip: 'Browse your saved workflows',
   },
   {
     type: 'item',
     path: '/schedules',
     label: 'Scheduler',
-    icon: Clock,
+    icon: ENTITY_ICONS.schedule,
     tooltip: 'Manage scheduled runs',
   },
   {
     type: 'item',
     path: '/extensions',
     label: 'Extensions',
-    icon: Puzzle,
+    icon: ENTITY_ICONS.extension,
     tooltip: 'Manage your extensions',
   },
   {
     type: 'item' as const,
     path: '/skills',
     label: 'Skills',
-    icon: Layers,
+    icon: ENTITY_ICONS.skill,
     tooltip: 'Manage reusable instruction skills',
   },
   {
     type: 'item' as const,
     path: '/knowledge',
     label: 'Knowledge',
-    icon: KnowledgeIcon,
+    icon: ENTITY_ICONS.knowledge,
     tooltip: 'Personal knowledge bases',
   },
   {
     type: 'item' as const,
     path: '/applications',
     label: 'Applications',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.application,
     tooltip: 'Biorouter apps you built with Agent Drafter',
   },
   {
     type: 'item',
     path: '/apps',
     label: 'Apps',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.mcpApp,
     tooltip: 'Browse and launch MCP apps',
   },
 ];

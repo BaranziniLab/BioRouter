@@ -13,7 +13,6 @@ import {
 } from '../../schedule';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
-import { TrashIcon } from '../icons/TrashIcon';
 import {
   Plus,
   RefreshCw,
@@ -23,6 +22,7 @@ import {
   Square,
   Eye,
   CircleDotDashed,
+  Trash2,
 } from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
@@ -191,7 +191,7 @@ const ScheduleCard: React.FC<{
             title="Delete"
             aria-label={`Delete ${scheduleDisplayName(job.id)}`}
           >
-            <TrashIcon className="w-3.5 h-3.5" />
+            <Trash2 className="w-3.5 h-3.5" />
           </Button>
         </div>
       </div>

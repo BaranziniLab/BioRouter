@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  AppWindow,
-  BookOpen,
-  Check,
-  ChevronDown,
-  Clock,
-  History,
-  Layers,
-  Loader2,
-  Pipeline,
-  Puzzle,
-  RotateCcw,
-} from '../../icons/app-icons';
+import { Check, ChevronDown, History, Loader2, RotateCcw } from '../../icons/app-icons';
+import { ENTITY_ICONS, type EntityIcon } from '../../icons/entity-icons';
 import { previewReset, resetAppData } from '../../../api';
 import type { ResetCategory, ResetCounts } from '../../../api';
 import { toastService } from '../../../toasts';
@@ -41,7 +30,7 @@ type CategoryDefinition = {
   countKey: keyof ResetCounts;
   countLabel: string;
   singularCountLabel?: string;
-  icon: typeof AppWindow;
+  icon: EntityIcon;
 };
 
 const CATEGORIES: CategoryDefinition[] = [
@@ -51,7 +40,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Delete every application created with Agent Drafter.',
     countKey: 'applications',
     countLabel: 'built',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.application,
   },
   {
     id: 'knowledge',
@@ -60,7 +49,7 @@ const CATEGORIES: CategoryDefinition[] = [
     countKey: 'knowledgeBases',
     countLabel: 'bases',
     singularCountLabel: 'base',
-    icon: BookOpen,
+    icon: ENTITY_ICONS.knowledge,
   },
   {
     id: 'skills',
@@ -68,7 +57,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove user-installed skills and restore built-in skill files.',
     countKey: 'skills',
     countLabel: 'custom',
-    icon: Layers,
+    icon: ENTITY_ICONS.skill,
   },
   {
     id: 'extensions',
@@ -76,7 +65,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove added extensions while keeping bundled capabilities.',
     countKey: 'extensions',
     countLabel: 'custom',
-    icon: Puzzle,
+    icon: ENTITY_ICONS.extension,
   },
   {
     id: 'schedules',
@@ -84,7 +73,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove custom schedules and restore Daily Meditation.',
     countKey: 'schedules',
     countLabel: 'custom',
-    icon: Clock,
+    icon: ENTITY_ICONS.schedule,
   },
   {
     id: 'workflows',
@@ -92,7 +81,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove managed workflows and restore the Meditation workflow.',
     countKey: 'workflows',
     countLabel: 'custom',
-    icon: Pipeline,
+    icon: ENTITY_ICONS.workflow,
   },
   {
     id: 'history',

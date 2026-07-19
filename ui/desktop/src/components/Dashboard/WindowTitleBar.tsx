@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { More } from '../icons';
-import { X, Minimize2, Maximize2, Minus } from '../icons/app-icons';
+import { X, Minimize2, Maximize2, Minus, MoreHorizontal } from '../icons/app-icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -111,7 +110,7 @@ export const WindowTitleBar: React.FC<Props> = ({
               style={noDragStyle}
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <More className="h-3.5 w-3.5" />
+              <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="bottom" className="w-36">

@@ -1242,6 +1242,68 @@ describe('artifact render-error provenance', () => {
 });
 
 /**
+ * The same guard ChatTabStrip.test.tsx carries, for the panel's strip.
+ *
+ * design.md §3.9 fixes the icon scale at 16 (inline/dense) / 20 (default) /
+ * 24 (page-level). This strip is the window's third one and had drifted to its
+ * own third geometry — 14px (the tab glyph) and 12px (the close ×). The sweep is
+ * scoped to `.br-tabstrip`, so it holds the whole bar (tab glyphs, the close ×,
+ * the ▾ and the two panel actions) without reaching the preview body below it.
+ *
+ * Tailwind size classes are real DOM, so jsdom CAN hold this line: the classes
+ * are the single source of the rendered px.
+ */
+describe('ArtifactViewer — strip icons stay on the design.md §3.9 scale', () => {
+  const ON_SCALE = ['h-4 w-4', 'h-5 w-5', 'h-6 w-6'];
+
+  const viewer = (artifact: ArtifactSource) => (
+    <ThemeProvider>
+      <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
+    </ThemeProvider>
+  );
+  const file = (title: string): ArtifactSource => ({
+    kind: 'file',
+    title,
+    path: `/work/${title}`,
+  });
+
+  function stripIconClassNames(container: HTMLElement) {
+    const strip = container.querySelector('.br-tabstrip');
+    expect(strip).not.toBeNull();
+    return [...strip!.querySelectorAll('svg')].map((s) => s.getAttribute('class') ?? '');
+  }
+
+  it('renders every strip icon at an on-scale size, never a bespoke px value', async () => {
+    installElectronMock();
+    const { container, rerender } = render(viewer(file('chart-a.html')));
+    rerender(viewer(file('summary.md')));
+    await screen.findByRole('tab', { name: 'chart-a.html' });
+
+    const classes = stripIconClassNames(container);
+    expect(classes.length).toBeGreaterThan(0);
+    for (const cls of classes) {
+      // No arbitrary-value sizing: h-[13px] and friends are exactly the drift.
+      expect(cls).not.toMatch(/[hw]-\[/);
+      expect(ON_SCALE.some((size) => cls.includes(size))).toBe(true);
+    }
+  });
+
+  it('draws every strip glyph at stroke 1.5, which is what app-icons guarantees', async () => {
+    // Provenance check: a raw `lucide-react` import would default to stroke 2.
+    installElectronMock();
+    const { container } = render(viewer(file('chart-a.html')));
+    await screen.findByRole('tab', { name: 'chart-a.html' });
+
+    const strip = container.querySelector('.br-tabstrip');
+    const svgs = [...strip!.querySelectorAll('svg')];
+    expect(svgs.length).toBeGreaterThan(0);
+    for (const svg of svgs) {
+      expect(svg.getAttribute('stroke-width')).toBe('1.5');
+    }
+  });
+});
+
+/**
  * Rung 3 of the yield ladder (D-32) for the PREVIEW panel's strip.
  *
  * The panel feels this rung first: it is the narrowest strip in the window, and

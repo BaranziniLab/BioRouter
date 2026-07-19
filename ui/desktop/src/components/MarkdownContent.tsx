@@ -15,7 +15,7 @@ import {
 } from '../styles/codeTheme';
 import { Button } from './ui/button';
 
-import { Check, Copy } from './icons';
+import { Check, Copy } from './icons/app-icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {

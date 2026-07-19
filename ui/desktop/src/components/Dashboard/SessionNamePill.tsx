@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { More } from '../icons';
+import { MoreHorizontal } from '../icons/app-icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -102,7 +102,7 @@ export const SessionNamePill: React.FC<Props> = ({
                 style={noDragStyle}
                 onPointerDown={(event) => event.stopPropagation()}
               >
-                <More className="h-4 w-4" />
+                <MoreHorizontal className="h-4 w-4" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="bottom" className="w-36">
