@@ -412,3 +412,43 @@ share one id, and two responses do not" test.
 | Tool card status honest while running | PASS | PASS |
 | React depth errors | 0 | 0 |
 | Cost tracking non-zero | PASS | PASS ($0.04) |
+
+---
+
+## 11. B4 "tab-activation re-submit" — resolved: NOT REPRODUCIBLE, misattributed observation
+
+The §10-era regression sweep for the four deferred items reported a deterministic
+live failure (B4): activating a chat tab re-submitted its initial message,
+counts 1→2→3→4→5. A dedicated bisect investigation could not reproduce it and
+resolved the conflict:
+
+- **Live, isolated environment** (own vite :5273, own user-data-dir, own
+  biorouterd): three Home-created tabs, ~15 activations plus a
+  pre-session-load race — every session stayed at exactly 1 user message.
+- **Instrumented chain**: cargo cleared by `consumePending` at first submit;
+  every remount observed `initialMessage=undefined`. No link fails.
+- **Code-level bisect**: `git diff 6c261665..HEAD` over the entire
+  cargo/auto-submit path (`chatGroups/**`, `ChatGroupsContext.tsx`,
+  `navigationUtils.ts`) is EMPTY; `BaseChat.tsx`'s only delta is the additive
+  §6.1b pending-card rendering. The guard at HEAD is byte-identical to the
+  commit where the same scenario passed live (A4, 6 switches, counts 1+1).
+- **Backend excluded**: the re-submit is gated on a frontend-only reducer field
+  (`tab.pendingInitialMessage`) that no backend event can write.
+
+Verdict: the B4 "failure" was a confounded observation in a shared environment —
+that sweep ran two biorouterds against one `sessions.db` beside a concurrent
+session's GUI, and its own B2 runaway (repeated text_editor retries) was
+writing the same DB while it clicked. The attribution ("pre-existing gap in
+f1f1d6b6") was reasoning-based and is withdrawn.
+
+Kept from the investigation: `activationResubmitGuard.test.tsx` — a
+high-fidelity in-process harness (real provider + real urlSync + real reducer,
+StrictMode) whose SANITY case proves it is not vacuous: removing the
+`consumePending` dispatch makes the same drive re-submit. It guards the
+mechanism permanently.
+
+Optional hardening (deliberately NOT done): making the cargo single-shot at the
+reducer (e.g. clearing on `openTab` DEDUPE) would remove the dependence on the
+component→reducer round-trip — but done naively it can DROP a legitimate first
+message when a urlSync echo dedupes before BaseChat consumes. Needs its own
+careful change if ever attempted.
