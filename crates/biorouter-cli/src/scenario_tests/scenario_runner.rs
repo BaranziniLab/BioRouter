@@ -142,7 +142,6 @@ where
     F: Fn(&ScenarioResult) -> Result<()>,
 {
     use biorouter::config::ExtensionConfig;
-    use tokio::sync::Mutex;
 
     biorouter::agents::moim::SKIP.with(|f| f.set(true));
 
