@@ -39,7 +39,7 @@ mod tetrate_streaming_tests {
         let mut content_chunks = Vec::new();
 
         while let Some(result) = stream.next().await {
-            let (message, usage) = result?;
+            let (message, usage, _pending) = result?;
             chunk_count += 1;
 
             if let Some(msg) = message {
@@ -110,7 +110,7 @@ mod tetrate_streaming_tests {
         let mut chunk_count = 0;
 
         while let Some(result) = stream.next().await {
-            let (message, _usage) = result?;
+            let (message, _usage, _pending) = result?;
             chunk_count += 1;
 
             if let Some(msg) = message {
@@ -152,7 +152,7 @@ mod tetrate_streaming_tests {
         let mut chunk_count = 0;
 
         while let Some(result) = stream.next().await {
-            let (_message, _usage) = result?;
+            let (_message, _usage, _pending) = result?;
             chunk_count += 1;
         }
 
@@ -187,7 +187,7 @@ mod tetrate_streaming_tests {
         let mut total_content_length = 0;
 
         while let Some(result) = stream.next().await {
-            let (message, usage) = result?;
+            let (message, usage, _pending) = result?;
             chunk_count += 1;
 
             if let Some(msg) = message {
@@ -298,7 +298,7 @@ mod tetrate_streaming_tests {
         let mut chunk_count = 0;
 
         while let Some(result) = stream.next().await {
-            let (message, _usage) = result?;
+            let (message, _usage, _pending) = result?;
             chunk_count += 1;
 
             if let Some(msg) = message {

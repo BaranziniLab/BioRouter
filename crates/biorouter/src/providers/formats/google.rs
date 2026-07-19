@@ -503,12 +503,7 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
 
 pub fn response_to_streaming_message<S>(
     mut stream: S,
-) -> impl futures::Stream<
-    Item = anyhow::Result<(
-        Option<Message>,
-        Option<crate::providers::base::ProviderUsage>,
-    )>,
-> + 'static
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
 {
@@ -610,14 +605,14 @@ where
                             chrono::Utc::now().timestamp(),
                             vec![content],
                         ).with_id(stream_id.clone());
-                        yield (Some(message), None);
+                        yield (Some(message), None, None);
                     }
                 }
             }
         }
 
         if let Some(usage) = final_usage {
-            yield (None, Some(usage));
+            yield (None, Some(usage), None);
         }
     }
 }
@@ -1346,7 +1341,7 @@ mod tests {
         let mut final_usage = None;
 
         while let Some(result) = message_stream.next().await {
-            let (message, usage) = result.unwrap();
+            let (message, usage, _pending) = result.unwrap();
             if let Some(msg) = message {
                 message_ids.push(msg.id.clone());
                 if let Some(MessageContent::Text(text)) = msg.content.first() {
@@ -1389,7 +1384,7 @@ mod tests {
         let mut tool_calls = Vec::new();
 
         while let Some(result) = message_stream.next().await {
-            let (message, _usage) = result.unwrap();
+            let (message, _usage, _pending) = result.unwrap();
             if let Some(msg) = message {
                 if let Some(MessageContent::ToolRequest(req)) = msg.content.first() {
                     if let Ok(tool_call) = &req.tool_call {
@@ -1424,7 +1419,7 @@ mod tests {
         let mut text_parts = Vec::new();
 
         while let Some(result) = message_stream.next().await {
-            let (message, _usage) = result.unwrap();
+            let (message, _usage, _pending) = result.unwrap();
             if let Some(msg) = message {
                 if let Some(MessageContent::Text(text)) = msg.content.first() {
                     text_parts.push(text.text.clone());
@@ -1477,7 +1472,7 @@ data: [DONE]"#;
         let mut text_parts = Vec::new();
 
         while let Some(result) = message_stream.next().await {
-            let (message, _usage) = result.unwrap();
+            let (message, _usage, _pending) = result.unwrap();
             if let Some(msg) = message {
                 if let Some(MessageContent::Text(text)) = msg.content.first() {
                     text_parts.push(text.text.clone());
@@ -1510,7 +1505,7 @@ data: [DONE]"#;
         let mut text_parts = Vec::new();
 
         while let Some(result) = message_stream.next().await {
-            let (message, _usage) = result.unwrap();
+            let (message, _usage, _pending) = result.unwrap();
             if let Some(msg) = message {
                 if let Some(MessageContent::Text(text)) = msg.content.first() {
                     text_parts.push(text.text.clone());

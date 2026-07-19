@@ -184,11 +184,11 @@ async fn run_battery(report: &mut ModelReport) {
             let mut stream_err = None;
             while let Some(item) = stream.next().await {
                 match item {
-                    Ok((Some(m), _)) => {
+                    Ok((Some(m), _, _)) => {
                         text.push_str(&m.as_concat_text());
                         chunks += 1;
                     }
-                    Ok((None, _)) => chunks += 1,
+                    Ok((None, _, _)) => chunks += 1,
                     Err(e) => {
                         stream_err = Some(e.to_string());
                         break;

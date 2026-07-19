@@ -665,10 +665,10 @@ impl Provider for GcpVertexAIProvider {
             let mut message_stream = response_to_streaming_message(framed, &context_clone);
 
             while let Some(message) = message_stream.next().await {
-                let (message, usage) = message
+                let (message, usage, pending) = message
                     .map_err(|e| ProviderError::RequestFailed(format!("Stream decode error: {}", e)))?;
                 log.write(&message, usage.as_ref().map(|u| &u.usage))?;
-                yield (message, usage);
+                yield (message, usage, pending);
             }
         }))
     }

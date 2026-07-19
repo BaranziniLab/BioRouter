@@ -165,6 +165,18 @@ pub enum MessageEvent {
         #[schema(value_type = Object)]
         message: ServerNotification,
     },
+    /// A tool call the model has begun emitting, announced as soon as its name
+    /// is known — before its arguments finish generating. Advisory only: the
+    /// client draws a skeleton tool card keyed by `id` and later merges the
+    /// authoritative `Message` tool request (same `id`) into it. This is NOT a
+    /// tool request and must never be dispatched, gated, or persisted; it does
+    /// not enter `all_messages` or the coalescer.
+    ToolCallPending {
+        id: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        partial_args: Option<String>,
+    },
     UpdateConversation {
         conversation: Conversation,
         token_state: TokenState,
@@ -665,6 +677,19 @@ pub async fn reply(
                             stream_event(MessageEvent::Notification{
                                 request_id: request_id.clone(),
                                 message: n,
+                            }, &tx, &cancel_token).await;
+                        }
+                        Ok(Some(Ok(AgentEvent::ToolCallPending(pending)))) => {
+                            // Advisory skeleton for the UI. Deliberately does NOT
+                            // touch `all_messages` or `track_tool_telemetry` — it
+                            // is not a tool request and must never be counted or
+                            // dispatched. Flush buffered text first so the card
+                            // appears after the assistant prose that precedes it.
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
+                            stream_event(MessageEvent::ToolCallPending {
+                                id: pending.id,
+                                name: pending.name,
+                                partial_args: pending.partial_args,
                             }, &tx, &cancel_token).await;
                         }
 

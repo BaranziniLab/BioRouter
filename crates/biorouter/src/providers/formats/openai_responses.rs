@@ -615,7 +615,7 @@ fn process_streaming_output_items(
 
 pub fn responses_api_to_streaming_message<S>(
     mut stream: S,
-) -> impl Stream<Item = anyhow::Result<(Option<Message>, Option<ProviderUsage>)>> + 'static
+) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
 {
@@ -679,7 +679,7 @@ where
                         msg = msg.with_id(id.clone());
                     }
 
-                    yield (Some(msg), None);
+                    yield (Some(msg), None, None);
                 }
 
                 ResponsesStreamEvent::OutputItemDone { item, .. } => {
@@ -742,9 +742,9 @@ where
             if let Some(id) = response_id {
                 message = message.with_id(id);
             }
-            yield (Some(message), final_usage);
+            yield (Some(message), final_usage, None);
         } else if let Some(usage) = final_usage {
-            yield (None, Some(usage));
+            yield (None, Some(usage), None);
         }
     }
 }
@@ -909,7 +909,7 @@ data: [DONE]
 
         let mut final_usage = None;
         while let Some(result) = messages.next().await {
-            let (_, usage) = result?;
+            let (_, usage, _pending) = result?;
             if usage.is_some() {
                 final_usage = usage;
             }

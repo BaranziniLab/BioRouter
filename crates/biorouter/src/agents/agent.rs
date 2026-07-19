@@ -334,6 +334,17 @@ pub enum AgentEvent {
         mode: String,
     },
     HistoryReplaced(Conversation),
+    /// A tool call the model has started emitting, announced as soon as its
+    /// **name** is known — typically seconds before its arguments finish
+    /// generating.
+    ///
+    /// Purely advisory, purely for the UI. It is a distinct `AgentEvent`
+    /// variant rather than a `Message` on purpose: `categorize_tools`,
+    /// `num_tool_requests` and the dispatch loop only ever walk `Message`
+    /// contents, so a pending call is *structurally* incapable of being
+    /// executed with truncated arguments, gated, persisted, or replayed.
+    /// Never turn this into a `MessageContent`. See [`PendingToolCall`].
+    ToolCallPending(crate::providers::base::PendingToolCall),
     /// BR-52: the session's token counters as of the last turn/compaction
     /// boundary, emitted by the agent right after it wrote them.
     ///
@@ -3402,7 +3413,21 @@ impl Agent {
                     }
 
                     match next {
-                        Ok((response, usage)) => {
+                        Ok((response, usage, pending)) => {
+                            // A pending tool-call notification: the model has
+                            // started a tool block and its name is known, but its
+                            // arguments are still generating. Our decoders yield
+                            // this in isolation (no message, no usage), so forward
+                            // it to the UI and move on. It is intentionally NOT a
+                            // `Message`, so it never reaches `categorize_tools`,
+                            // `num_tool_requests`, or dispatch — a partial tool
+                            // call is structurally incapable of being executed.
+                            // (Invariant §6.5.1.)
+                            if let Some(pending) = pending {
+                                yield AgentEvent::ToolCallPending(pending);
+                                continue;
+                            }
+
                             compaction_attempts = 0;
                             // BR-66: the provider is answering again; whatever blip
                             // was retried before is over.

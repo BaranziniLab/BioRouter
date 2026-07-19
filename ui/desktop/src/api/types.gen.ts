@@ -975,6 +975,11 @@ export type MessageEvent = {
     request_id: string;
     type: 'Notification';
 } | {
+    id: string;
+    name: string;
+    partial_args?: string | null;
+    type: 'ToolCallPending';
+} | {
     conversation: Conversation;
     token_state: TokenState;
     type: 'UpdateConversation';

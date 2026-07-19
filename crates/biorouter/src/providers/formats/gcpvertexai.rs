@@ -10,12 +10,8 @@ use std::fmt;
 
 pub type StreamingMessageStream = std::pin::Pin<
     Box<
-        dyn futures::Stream<
-                Item = anyhow::Result<(
-                    Option<Message>,
-                    Option<crate::providers::base::ProviderUsage>,
-                )>,
-            > + Send
+        dyn futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>>
+            + Send
             + 'static,
     >,
 >;

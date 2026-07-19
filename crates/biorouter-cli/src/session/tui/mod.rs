@@ -623,6 +623,9 @@ async fn drive_response(
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
                     // BR-52: the TUI reads token counts from the session row.
                     Some(Ok(AgentEvent::TokenUsage(_))) => {}
+                    // Advisory pending tool-call hint; TUI renders authoritative
+                    // tool requests only.
+                    Some(Ok(AgentEvent::ToolCallPending(_))) => {}
                     Some(Ok(AgentEvent::TurnAborted { code, message })) => {
                         // The assistant Message carrying the human-readable text was
                         // already pushed; add a real error line so the turn does not

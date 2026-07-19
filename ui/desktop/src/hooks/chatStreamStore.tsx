@@ -173,6 +173,28 @@ export interface ChatStreamSnapshot {
    * a failed load still ends at `true` with `turnError` set.
    */
   agentReady: boolean;
+  /**
+   * §6.1b — tool calls the model has begun emitting whose arguments are still
+   * generating, keyed by tool-call id. Populated from `ToolCallPending` stream
+   * events so the UI can draw a skeleton card the moment a tool's NAME is known
+   * — seconds before its arguments finish — and removed the instant the
+   * authoritative `ToolRequest` (same id) lands in a `Message`.
+   *
+   * These are DELIBERATELY held OUT of `messages`. A pending tool call is
+   * advisory display state, never a real request: it must never be dispatched,
+   * persisted, or fed back to the model, and keeping it off the message array
+   * also sidesteps the content-dedup landmine (`pushMessage` dedupes content by
+   * JSON equality, so a partial and its completed form would BOTH survive).
+   */
+  pendingToolCalls: PendingToolCallView[];
+}
+
+/** A tool call announced before its arguments finished streaming (§6.1b). */
+export interface PendingToolCallView {
+  id: string;
+  name: string;
+  /** Arguments accumulated so far; almost never valid JSON. Display only. */
+  partialArgs?: string;
 }
 
 function clientTurnError(
@@ -218,6 +240,7 @@ class ChatStreamController {
     tokenState: EMPTY_TOKEN_STATE,
     notifications: [],
     agentReady: false,
+    pendingToolCalls: [],
   };
   private listeners = new Set<() => void>();
   private finishListeners = new Set<() => void>();
@@ -328,6 +351,45 @@ class ChatStreamController {
       ...prev,
       notifications: [...prev.notifications, notification],
     }));
+  };
+
+  /** Upsert a pending tool-call skeleton by id (§6.1b). */
+  private upsertPendingToolCall = (pending: PendingToolCallView): void => {
+    this.updateSnapshot((prev) => {
+      const idx = prev.pendingToolCalls.findIndex((p) => p.id === pending.id);
+      if (idx === -1) {
+        return { ...prev, pendingToolCalls: [...prev.pendingToolCalls, pending] };
+      }
+      // Merge in a later (longer) partial-args preview without reordering.
+      const next = prev.pendingToolCalls.slice();
+      next[idx] = { ...next[idx], ...pending };
+      return { ...prev, pendingToolCalls: next };
+    });
+  };
+
+  /**
+   * Remove any pending skeletons whose id matches a real tool request in the
+   * message just applied — the authoritative card now renders in its place.
+   */
+  private clearPendingToolCallsFromMessage = (msg: Message): void => {
+    const landedIds = new Set(
+      msg.content
+        .filter((c) => c.type === 'toolRequest' || c.type === 'frontendToolRequest')
+        .map((c) => (c as { id?: string }).id)
+        .filter((id): id is string => typeof id === 'string')
+    );
+    if (landedIds.size === 0) return;
+    this.updateSnapshot((prev) => {
+      const remaining = prev.pendingToolCalls.filter((p) => !landedIds.has(p.id));
+      if (remaining.length === prev.pendingToolCalls.length) return prev;
+      return { ...prev, pendingToolCalls: remaining };
+    });
+  };
+
+  private clearPendingToolCalls = (): void => {
+    this.updateSnapshot((prev) =>
+      prev.pendingToolCalls.length === 0 ? prev : { ...prev, pendingToolCalls: [] }
+    );
   };
 
   /**
@@ -527,6 +589,9 @@ class ChatStreamController {
     if (error) {
       this.updateSnapshot((prev) => ({ ...prev, turnError: error }));
     }
+    // The turn is over: any skeleton whose authoritative request never arrived
+    // (cancel, provider abort, a dropped block) must not linger.
+    this.clearPendingToolCalls();
     this.abortController = null;
 
     const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
@@ -614,9 +679,24 @@ class ChatStreamController {
       for await (const event of stream) {
         if (this.activeStreamId !== streamId) return;
         switch (event.type) {
+          case 'ToolCallPending': {
+            // Advisory skeleton for a tool whose args are still streaming. Upsert
+            // by id; NEVER routed into `messages` (see `pendingToolCalls`).
+            this.upsertPendingToolCall({
+              id: event.id,
+              name: event.name,
+              partialArgs: event.partial_args ?? undefined,
+            });
+            // A tool block is generating: reflect that as active streaming.
+            this.setChatState(ChatState.Streaming);
+            break;
+          }
           case 'Message': {
             const msg = event.message;
             currentMessages = pushMessage(currentMessages, msg);
+            // The authoritative request(s) landed: drop any matching skeletons so
+            // the real tool card replaces the placeholder with no flicker or ghost.
+            this.clearPendingToolCallsFromMessage(msg);
             const hasToolConfirmation = msg.content.some(
               (content) => content.type === 'toolConfirmationRequest'
             );
@@ -664,6 +744,8 @@ class ChatStreamController {
           case 'Notification':
             this.updateNotifications(event as NotificationEvent);
             break;
+          default:
+            break;
         }
       }
 
@@ -695,6 +777,7 @@ class ChatStreamController {
       ...prev,
       chatState: ChatState.Streaming,
       notifications: [],
+      pendingToolCalls: [],
       turnError: undefined,
       turnStartedAt: Date.now(),
       lastMessageAt: undefined,

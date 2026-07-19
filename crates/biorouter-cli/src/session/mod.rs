@@ -1145,6 +1145,9 @@ impl CliSession {
                         // BR-52: token accounting is rendered from the session row
                         // in the CLI; the carried snapshot is informational here.
                         Some(Ok(AgentEvent::TokenUsage(_))) => {}
+                        // Advisory pending tool-call hint; the CLI renders the
+                        // authoritative tool request when it lands.
+                        Some(Ok(AgentEvent::ToolCallPending(_))) => {}
                         Some(Ok(AgentEvent::TurnAborted { code, message })) => {
                             // The human-readable Message was already yielded and
                             // rendered. Record the machine-checkable failure so the

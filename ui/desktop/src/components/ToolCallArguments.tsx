@@ -11,7 +11,13 @@ export type ToolCallArgumentValue =
   | { [key: string]: ToolCallArgumentValue };
 
 interface ToolCallArgumentsProps {
-  args: Record<string, ToolCallArgumentValue>;
+  /**
+   * Parsed tool arguments. May be absent or a non-object when rendering a
+   * *pending* tool call (§6.1b) whose arguments are still streaming and are not
+   * yet valid JSON — this component must render nothing rather than throw in
+   * that case.
+   */
+  args?: Record<string, ToolCallArgumentValue> | null;
 }
 
 export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
@@ -90,6 +96,12 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
       </div>
     );
   };
+
+  // Tolerate absent / non-object args (a pending tool call whose arguments have
+  // not finished streaming, or unparseable partial JSON): render nothing.
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return null;
+  }
 
   return (
     <div className="my-2">

@@ -294,7 +294,7 @@ impl Agent {
 
         Ok(Box::pin(try_stream! {
             while let Some(result) = stream.next().await {
-                let (mut message, usage) = result?;
+                let (mut message, usage, pending) = result?;
 
                 // Store the model information in the global store
                 if let Some(usage) = usage.as_ref() {
@@ -306,7 +306,10 @@ impl Agent {
                     message = Some(toolshim_postprocess(message.unwrap(), &toolshim_tools).await?);
                 }
 
-                yield (message, usage);
+                // `pending` is a display-only tool-call notification. It travels
+                // its own slot, never becoming a `Message`, so it can never be
+                // dispatched. Forwarded verbatim to the agent loop.
+                yield (message, usage, pending);
             }
 
             // The stream is drained: generation is genuinely finished. This is

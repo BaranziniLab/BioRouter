@@ -76,7 +76,7 @@ async fn streaming_completion_works() {
     let mut chunks = 0;
     let mut text = String::new();
     while let Some(item) = stream.next().await {
-        let (message, _usage) = item.expect("stream item should be ok");
+        let (message, _usage, _pending) = item.expect("stream item should be ok");
         if let Some(message) = message {
             text.push_str(&message.as_concat_text());
         }

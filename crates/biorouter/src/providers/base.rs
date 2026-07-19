@@ -730,15 +730,58 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// A tool call the provider has *started* emitting but has not finished.
+///
+/// # This is deliberately NOT a `MessageContent::ToolRequest`
+///
+/// A tool request that reaches the agent's dispatch path is executed. A
+/// *partial* tool request would be executed with truncated arguments — for
+/// `shell` or `text_editor` that destroys user data, and it would happen once
+/// per streamed delta. Modelling pending state as a `Message` therefore cannot
+/// be made safe by convention; the only durable guarantee is a structural one.
+///
+/// `PendingToolCall` travels on its own channel, parallel to `Message`, all the
+/// way to the frontend. `categorize_tools`, `num_tool_requests`, dispatch,
+/// session persistence and replay all walk `Message` contents exclusively, so a
+/// value of this type is *incapable* of being executed, gated, persisted or
+/// replayed. It exists only to let the UI draw a card the moment the tool's
+/// name is known, seconds before its arguments finish generating.
+///
+/// Invariant 1 of the investigation (§6.5) is upheld by this type's existence,
+/// not by any check. See `crates/biorouter/tests/streaming_pending_tool_calls.rs`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingToolCall {
+    /// Provider-assigned tool-call id. Identical to the id on the authoritative
+    /// `ToolRequest` that follows, so the frontend can upsert by id.
+    pub id: String,
+    /// The tool name. Known at `content_block_start` / the first tool-call
+    /// chunk — i.e. before any argument bytes exist.
+    pub name: String,
+    /// Arguments accumulated *so far*. Almost never valid JSON. Emitted
+    /// throttled (never per delta) and purely for display; nothing may parse
+    /// this and act on it.
+    pub partial_args: Option<String>,
+}
+
+/// One item of a provider stream: an optional partial/complete `Message`, an
+/// optional usage snapshot, and an optional [`PendingToolCall`] notification.
+///
+/// The third slot is a *notification only*. Consumers must forward it and must
+/// never fold it into a `Message`.
+pub type ProviderStreamItem = (
+    Option<Message>,
+    Option<ProviderUsage>,
+    Option<PendingToolCall>,
+);
+
 /// A message stream yields partial text content but complete tool calls, all within the Message object
 /// So a message with text will contain potentially just a word of a longer response, but tool calls
 /// messages will only be yielded once concatenated.
-pub type MessageStream = Pin<
-    Box<dyn Stream<Item = Result<(Option<Message>, Option<ProviderUsage>), ProviderError>> + Send>,
->;
+pub type MessageStream =
+    Pin<Box<dyn Stream<Item = Result<ProviderStreamItem, ProviderError>> + Send>>;
 
 pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
-    let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
+    let stream = futures::stream::once(async move { Ok((Some(message), Some(usage), None)) });
     Box::pin(stream)
 }
 

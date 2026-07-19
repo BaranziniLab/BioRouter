@@ -7076,6 +7076,33 @@
           },
           {
             "type": "object",
+            "description": "A tool call the model has begun emitting, announced as soon as its name\nis known — before its arguments finish generating. Advisory only: the\nclient draws a skeleton tool card keyed by `id` and later merges the\nauthoritative `Message` tool request (same `id`) into it. This is NOT a\ntool request and must never be dispatched, gated, or persisted; it does\nnot enter `all_messages` or the coalescer.",
+            "required": [
+              "id",
+              "name",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "partial_args": {
+                "type": "string",
+                "nullable": true
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "ToolCallPending"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "conversation",
               "token_state",

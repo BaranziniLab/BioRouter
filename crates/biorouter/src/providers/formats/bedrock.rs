@@ -1161,13 +1161,16 @@ pub fn bedrock_message_stream(
 
             for (message, usage) in decoder.on_event(&event) {
                 log.write(&message, usage.as_ref().map(|u| u.usage).as_ref())?;
-                yield (message, usage);
+                // Bedrock does not (yet) emit pending tool-call notifications;
+                // the third slot is always `None`. The decoder only ever yields a
+                // tool block once it is complete, so nothing partial escapes here.
+                yield (message, usage, None);
             }
         }
 
         for (message, usage) in decoder.finish() {
             log.write(&message, usage.as_ref().map(|u| u.usage).as_ref())?;
-            yield (message, usage);
+            yield (message, usage, None);
         }
     })
 }
@@ -1352,8 +1355,15 @@ mod bedrock_stream_tests {
             .filter_map(|(m, _)| m.map(|m| m.id))
             .collect();
 
-        assert!(ids.len() >= 4, "expected several yielded messages, got {}", ids.len());
-        assert!(ids.iter().all(Option::is_some), "every streamed message needs an id: {ids:?}");
+        assert!(
+            ids.len() >= 4,
+            "expected several yielded messages, got {}",
+            ids.len()
+        );
+        assert!(
+            ids.iter().all(Option::is_some),
+            "every streamed message needs an id: {ids:?}"
+        );
         let first = &ids[0];
         assert!(
             ids.iter().all(|id| id == first),

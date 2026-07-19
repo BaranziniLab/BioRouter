@@ -1,6 +1,6 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
-use crate::providers::base::Usage;
+use crate::providers::base::{PendingToolCall, Usage};
 use crate::providers::errors::ProviderError;
 use crate::providers::utils::{convert_image, ImageFormat};
 use anyhow::{anyhow, Result};
@@ -9,6 +9,13 @@ use rmcp::object as json_object;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// Minimum wall-clock gap between two partial-argument notifications for the
+/// same tool call. Anthropic emits `input_json_delta` every few tokens; without
+/// throttling a single tool call would become hundreds of SSE frames.
+const PENDING_ARGS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+/// …or this many newly accumulated argument characters, whichever is sooner.
+const PENDING_ARGS_CHARS: usize = 200;
 
 // Constants for frequently used strings in Anthropic API format
 const TYPE_FIELD: &str = "type";
@@ -490,12 +497,7 @@ pub fn create_request(
 #[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
-) -> impl futures::Stream<
-    Item = anyhow::Result<(
-        Option<Message>,
-        Option<crate::providers::base::ProviderUsage>,
-    )>,
-> + 'static
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
 {
@@ -534,6 +536,14 @@ where
         let mut current_redacted: Option<String> = None;
         let mut final_usage: Option<crate::providers::base::ProviderUsage> = None;
         let mut message_id: Option<String> = None;
+        // Throttle state for pending-tool-call arg updates. Anthropic sends one
+        // `input_json_delta` per few tokens; emitting a notification per delta
+        // would turn one tool call into hundreds of SSE frames for a UI that
+        // only redraws a truncated preview. Emit at most every
+        // PENDING_ARGS_INTERVAL or every PENDING_ARGS_CHARS of new argument
+        // text, whichever comes first.
+        let mut last_pending_emit: Option<std::time::Instant> = None;
+        let mut last_pending_len: usize = 0;
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
@@ -591,6 +601,18 @@ where
                                 current_tool_id = Some(id.to_string());
                                 if let Some(name) = content_block.get("name").and_then(|v| v.as_str()) {
                                     accumulated_tool_calls.insert(id.to_string(), (name.to_string(), String::new()));
+                                    // The tool's name is known here; its arguments
+                                    // are not (and may take seconds to generate).
+                                    // Announce it now so the UI can draw a card
+                                    // immediately. NOT a Message — see
+                                    // `PendingToolCall`.
+                                    last_pending_emit = Some(std::time::Instant::now());
+                                    last_pending_len = 0;
+                                    yield (None, None, Some(PendingToolCall {
+                                        id: id.to_string(),
+                                        name: name.to_string(),
+                                        partial_args: None,
+                                    }));
                                 }
                             }
                         } else if content_block.get("type") == Some(&json!(THINKING_TYPE)) {
@@ -627,14 +649,32 @@ where
                                     vec![MessageContent::text(text)],
                                 );
                                 message.id = message_id.clone();
-                                yield (Some(message), None);
+                                yield (Some(message), None, None);
                             }
                         } else if delta.get("type") == Some(&json!("input_json_delta")) {
                             // Tool input delta
-                            if let Some(tool_id) = &current_tool_id {
+                            if let Some(tool_id) = current_tool_id.clone() {
                                 if let Some(partial_json) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                                    if let Some((_name, args)) = accumulated_tool_calls.get_mut(tool_id) {
+                                    let mut update: Option<PendingToolCall> = None;
+                                    if let Some((name, args)) = accumulated_tool_calls.get_mut(&tool_id) {
                                         args.push_str(partial_json);
+                                        // Throttled preview update. Never per delta.
+                                        let due_by_size = args.len().saturating_sub(last_pending_len) >= PENDING_ARGS_CHARS;
+                                        let due_by_time = last_pending_emit
+                                            .map(|t| t.elapsed() >= PENDING_ARGS_INTERVAL)
+                                            .unwrap_or(true);
+                                        if due_by_size || due_by_time {
+                                            update = Some(PendingToolCall {
+                                                id: tool_id.clone(),
+                                                name: name.clone(),
+                                                partial_args: Some(args.clone()),
+                                            });
+                                            last_pending_len = args.len();
+                                        }
+                                    }
+                                    if let Some(update) = update {
+                                        last_pending_emit = Some(std::time::Instant::now());
+                                        yield (None, None, Some(update));
                                     }
                                 }
                             }
@@ -665,13 +705,13 @@ where
                         if !thinking.is_empty() || !signature.is_empty() {
                             let mut message = Message::assistant().with_thinking(thinking, signature);
                             message.id = message_id.clone();
-                            yield (Some(message), None);
+                            yield (Some(message), None, None);
                         }
                     }
                     if let Some(data) = current_redacted.take() {
                         let mut message = Message::assistant().with_redacted_thinking(data);
                         message.id = message_id.clone();
-                        yield (Some(message), None);
+                        yield (Some(message), None, None);
                     }
                     // Content block finished
                     if let Some(tool_id) = current_tool_id.take() {
@@ -695,7 +735,7 @@ where
                                             vec![MessageContent::tool_request(tool_id, Err(error))],
                                         );
                                         message.id = message_id.clone();
-                                        yield (Some(message), None);
+                                        yield (Some(message), None, None);
                                         continue;
                                     }
                                 }
@@ -714,7 +754,7 @@ where
                                 vec![MessageContent::tool_request(tool_id, Ok(tool_call))],
                             );
                             message.id = message_id.clone();
-                            yield (Some(message), None);
+                            yield (Some(message), None, None);
                         }
                     }
                     continue;
@@ -787,7 +827,7 @@ where
                     // output were billed. The agent keeps the LAST snapshot per
                     // turn, so re-yielding here cannot double count.
                     if let Some(snapshot) = final_usage.clone() {
-                        yield (None, Some(snapshot));
+                        yield (None, Some(snapshot), None);
                     }
                     continue;
                 }
@@ -826,7 +866,7 @@ where
 
         // Yield final usage information if available
         if let Some(usage) = final_usage {
-            yield (None, Some(usage));
+            yield (None, Some(usage), None);
         } else {
             tracing::debug!("🔍 Anthropic no final usage to yield");
         }
@@ -1086,7 +1126,7 @@ mod tests {
         let mut redacted_blocks = Vec::new();
         let mut text = String::new();
         while let Some(result) = messages.next().await {
-            let (message, _usage) = result?;
+            let (message, _usage, _pending) = result?;
             let Some(message) = message else { continue };
             assert_eq!(
                 message.id.as_deref(),
@@ -1121,6 +1161,85 @@ mod tests {
         assert_eq!(redacted_blocks[0].data, "EmwKAhgBEgy3va3p");
 
         assert_eq!(text, "Here is the answer.");
+        Ok(())
+    }
+
+    /// §6.1b safety: a pending tool-call notification carries the tool NAME
+    /// before any argument bytes, is emitted throttled (not per delta), and is
+    /// never a `Message` — so it is structurally incapable of being dispatched.
+    #[tokio::test]
+    async fn test_streaming_emits_pending_tool_call_before_args() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        // A tool_use block whose argument JSON arrives across several deltas.
+        let lines = vec![
+            r#"data: {"type":"message_start","message":{"id":"msg_p","model":"claude-sonnet-4-20250514","usage":{"input_tokens":5,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_pending","name":"developer__shell"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"rm -rf /\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
+        ];
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut items = Vec::new();
+        while let Some(result) = messages.next().await {
+            items.push(result?);
+        }
+
+        // (a) The FIRST item is a pending notification, name known, no message,
+        //     and no partial args yet — i.e. it precedes every argument byte.
+        let (first_msg, _first_usage, first_pending) = &items[0];
+        assert!(first_msg.is_none(), "pending item must not carry a Message");
+        let first_pending = first_pending
+            .as_ref()
+            .expect("first stream item must be a pending tool-call notification");
+        assert_eq!(first_pending.name, "developer__shell");
+        assert_eq!(first_pending.id, "toolu_pending");
+        assert!(
+            first_pending.partial_args.is_none(),
+            "the announcement must arrive before any argument bytes"
+        );
+
+        // (c) EVERY pending item is message-free: a partial can never reach
+        //     dispatch, whatever its throttled args say.
+        for (msg, _usage, pending) in &items {
+            if pending.is_some() {
+                assert!(
+                    msg.is_none(),
+                    "a pending notification must never carry a Message"
+                );
+            }
+        }
+
+        // (b) Exactly ONE authoritative ToolRequest, emitted at content_block_stop,
+        //     with the complete, correctly-parsed arguments.
+        let tool_requests: Vec<_> = items
+            .iter()
+            .filter_map(|(m, _, _)| m.as_ref())
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::ToolRequest(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_requests.len(),
+            1,
+            "exactly one authoritative ToolRequest per tool_use block"
+        );
+        let call = tool_requests[0]
+            .tool_call
+            .as_ref()
+            .expect("the authoritative request parsed cleanly");
+        assert_eq!(call.name, "developer__shell");
+        assert_eq!(
+            call.arguments.as_ref().unwrap().get("command").unwrap(),
+            "rm -rf /"
+        );
         Ok(())
     }
 
@@ -1174,7 +1293,7 @@ mod tests {
         let mut conversation = Conversation::new_unvalidated(vec![Message::user().with_text("hi")]);
         let mut saw_tool_use = false;
         while let Some(result) = messages.next().await {
-            let (message, _usage) = result?;
+            let (message, _usage, _pending) = result?;
             let Some(message) = message else { continue };
 
             let tool_requests: Vec<_> = message
@@ -1409,7 +1528,7 @@ data: [DONE]
 
         let mut final_usage = None;
         while let Some(result) = messages.next().await {
-            let (_, usage) = result?;
+            let (_, usage, _pending) = result?;
             if usage.is_some() {
                 final_usage = usage;
             }
@@ -1502,7 +1621,7 @@ data: [DONE]
         pin!(messages);
 
         let mut seen_length = false;
-        while let Some(Ok((_message, usage))) = messages.next().await {
+        while let Some(Ok((_message, usage, _pending))) = messages.next().await {
             if let Some(u) = usage {
                 if u.finish_reason.as_deref() == Some("length") {
                     seen_length = true;
@@ -1535,7 +1654,7 @@ data: [DONE]
         pin!(messages);
 
         let mut saw_stop = false;
-        while let Some(Ok((_message, usage))) = messages.next().await {
+        while let Some(Ok((_message, usage, _pending))) = messages.next().await {
             if let Some(u) = usage {
                 assert_ne!(
                     u.finish_reason.as_deref(),

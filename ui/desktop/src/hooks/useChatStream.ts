@@ -2,7 +2,7 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import { Message, Session, TokenState } from '../api';
 import { NotificationEvent, UserAttachment } from '../types/message';
-import { useChatStreamController } from './chatStreamStore';
+import { useChatStreamController, type PendingToolCallView } from './chatStreamStore';
 import type { ChatTurnErrorData } from '../types/turnError';
 
 interface UseChatStreamProps {
@@ -40,6 +40,12 @@ interface UseChatStreamReturn {
    */
   agentReady: boolean;
   notifications: Map<string, NotificationEvent[]>;
+  /**
+   * §6.1b — tool calls the model has begun emitting whose arguments are still
+   * streaming. Advisory skeleton state, never part of `messages`; each is
+   * removed the instant its authoritative `ToolRequest` lands.
+   */
+  pendingToolCalls: PendingToolCallView[];
   onMessageUpdate: (
     messageId: string,
     newContent: string,
@@ -96,6 +102,7 @@ export function useChatStream({
     lastMessageAt: snapshot.lastMessageAt,
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
+    pendingToolCalls: snapshot.pendingToolCalls,
     onMessageUpdate: controller.onMessageUpdate,
   };
 }

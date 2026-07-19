@@ -12,6 +12,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
 import LoadingBioRouter from './LoadingBioRouter';
 import ProgressiveMessageList from './ProgressiveMessageList';
+import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
@@ -1200,6 +1201,7 @@ function BaseChatContent({
     lastMessageAt,
     agentReady,
     notifications: toolCallNotifications,
+    pendingToolCalls,
     onMessageUpdate,
   } = useChatStream({
     sessionId,
@@ -2073,6 +2075,11 @@ function BaseChatContent({
                               onOpenArtifact={handleOpenArtifact}
                               workingDir={sessionWorkingDir}
                             />
+                            {/* §6.1b: skeleton cards for tool calls whose args
+                                are still streaming. They sit at the tail of the
+                                transcript and vanish as each authoritative
+                                request lands (removed by id in the store). */}
+                            <PendingToolCallList pending={pendingToolCalls} />
                             {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
                               <ChatTurnError error={turnError} />
                             )}

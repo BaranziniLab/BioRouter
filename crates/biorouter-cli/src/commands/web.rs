@@ -620,6 +620,9 @@ async fn process_message_streaming(
                     // BR-52: the web bridge reads token counts from the session
                     // row when it needs them, so the carried snapshot is a no-op here.
                     Ok(AgentEvent::TokenUsage(_)) => {}
+                    // Advisory pending tool-call UI hint; the web bridge renders
+                    // authoritative messages only.
+                    Ok(AgentEvent::ToolCallPending(_)) => {}
                     Ok(AgentEvent::TurnAborted { code, message }) => {
                         // The turn ended without doing its work — report it as an
                         // error rather than letting the stream finish normally.

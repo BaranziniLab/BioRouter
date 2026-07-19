@@ -475,10 +475,18 @@ fn strip_data_prefix(line: &str) -> Option<&str> {
 #[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
-) -> impl Stream<Item = anyhow::Result<(Option<Message>, Option<ProviderUsage>)>> + 'static
+) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
 {
+    use crate::providers::base::PendingToolCall;
+    /// See the twin constants in `formats::anthropic`. This decoder is the
+    /// higher-traffic one: it drains the *entire* remaining stream before
+    /// yielding anything, so without pending notifications the UI shows nothing
+    /// at all until generation finishes.
+    const PENDING_ARGS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+    const PENDING_ARGS_CHARS: usize = 200;
+
     try_stream! {
         use futures::StreamExt;
 
@@ -526,18 +534,37 @@ where
             });
 
             if chunk.choices.is_empty() {
-                yield (None, usage)
+                yield (None, usage, None)
             } else if chunk.choices[0].delta.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
                 let mut tool_call_data: std::collections::HashMap<i32, (String, String, String)> = std::collections::HashMap::new();
                 let mut tool_usage = usage;
                 let mut tool_model = chunk.model.clone();
 
+                // Per-index throttle state for pending-tool-call notifications:
+                // (last emit instant, arg length at last emit).
+                let mut pending_throttle: std::collections::HashMap<i32, (std::time::Instant, usize)> = std::collections::HashMap::new();
+                // Announcements to emit after the borrow of `chunk` ends.
+                let mut pending_announcements: Vec<PendingToolCall> = Vec::new();
+
                 if let Some(tool_calls) = &chunk.choices[0].delta.tool_calls {
                     for tool_call in tool_calls {
                         if let (Some(index), Some(id), Some(name)) = (tool_call.index, &tool_call.id, &tool_call.function.name) {
                             tool_call_data.insert(index, (id.clone(), name.clone(), tool_call.function.arguments.clone()));
+                            // Name is known; arguments are not. Announce now so
+                            // the UI can draw a card instead of waiting for the
+                            // whole stream to drain below. NOT a Message.
+                            pending_throttle.insert(index, (std::time::Instant::now(), 0));
+                            pending_announcements.push(PendingToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                partial_args: None,
+                            });
                         }
                     }
+                }
+
+                for announcement in pending_announcements.drain(..) {
+                    yield (None, None, Some(announcement));
                 }
 
                 let is_complete = chunk.choices[0].finish_reason == Some("tool_calls".to_string());
@@ -567,10 +594,31 @@ where
                                     if let Some(delta_tool_calls) = &tool_chunk.choices[0].delta.tool_calls {
                                         for delta_call in delta_tool_calls {
                                             if let Some(index) = delta_call.index {
-                                                if let Some((_, _, ref mut args)) = tool_call_data.get_mut(&index) {
+                                                if let Some((id, name, ref mut args)) = tool_call_data.get_mut(&index) {
                                                     args.push_str(&delta_call.function.arguments);
+                                                    // Throttled preview update. Never per delta.
+                                                    let (last_at, last_len) = pending_throttle
+                                                        .get(&index)
+                                                        .copied()
+                                                        .unwrap_or((std::time::Instant::now() - PENDING_ARGS_INTERVAL, 0));
+                                                    if args.len().saturating_sub(last_len) >= PENDING_ARGS_CHARS
+                                                        || last_at.elapsed() >= PENDING_ARGS_INTERVAL
+                                                    {
+                                                        pending_throttle.insert(index, (std::time::Instant::now(), args.len()));
+                                                        pending_announcements.push(PendingToolCall {
+                                                            id: id.clone(),
+                                                            name: name.clone(),
+                                                            partial_args: Some(args.clone()),
+                                                        });
+                                                    }
                                                 } else if let (Some(id), Some(name)) = (&delta_call.id, &delta_call.function.name) {
                                                     tool_call_data.insert(index, (id.clone(), name.clone(), delta_call.function.arguments.clone()));
+                                                    pending_throttle.insert(index, (std::time::Instant::now(), 0));
+                                                    pending_announcements.push(PendingToolCall {
+                                                        id: id.clone(),
+                                                        name: name.clone(),
+                                                        partial_args: None,
+                                                    });
                                                 }
                                             }
                                         }
@@ -595,6 +643,14 @@ where
                             }
                         } else {
                             break;
+                        }
+
+                        // Flush this iteration's pending notifications. Emitted
+                        // here, inside the drain loop, so the UI sees tool cards
+                        // while the rest of the stream is still arriving —
+                        // otherwise nothing reaches it until the loop exits.
+                        for announcement in pending_announcements.drain(..) {
+                            yield (None, None, Some(announcement));
                         }
                     }
                 }
@@ -662,6 +718,7 @@ where
                 yield (
                     Some(msg),
                     tool_usage,
+                    None,
                 )
             } else if chunk.choices[0].delta.content.is_some() {
                 let text = chunk.choices[0].delta.content.as_ref().unwrap();
@@ -679,9 +736,10 @@ where
                 yield (
                     Some(msg),
                     usage,
+                    None,
                 )
             } else if usage.is_some() {
-                yield (None, usage)
+                yield (None, usage, None)
             }
         }
     }
@@ -1755,7 +1813,7 @@ data: [DONE]
 
         let mut saw_tool_calls = false;
         let mut final_usage = None;
-        while let Some(Ok((message, usage))) = messages.next().await {
+        while let Some(Ok((message, usage, _pending))) = messages.next().await {
             if usage.is_some() {
                 final_usage = usage;
             }
@@ -1788,6 +1846,74 @@ data: [DONE]
         Ok(())
     }
 
+    /// §6.1b safety: the higher-traffic OpenAI decoder must announce each tool
+    /// call's NAME before its arguments finish, must never wrap a pending
+    /// notification in a `Message`, and must still emit exactly one authoritative
+    /// ToolRequest per call. Reuses the two-`developer__shell` fixture above.
+    #[tokio::test]
+    async fn test_streaming_emits_pending_tool_calls_before_dispatch() -> anyhow::Result<()> {
+        let response_lines = r#"
+data: {"model":"m","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":1,"id":"toolu_a","type":"function","function":{"name":"developer__shell","arguments":""}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x","created":1}
+data: {"model":"m","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":1,"function":{"arguments":"{\"command\": \"ls\"}"}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x","created":1}
+data: {"model":"m","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":2,"id":"toolu_b","type":"function","function":{"name":"developer__shell","arguments":""}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x","created":1}
+data: {"model":"m","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":2,"function":{"arguments":"{\"command\": \"rm -rf /\"}"}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x","created":1}
+data: {"model":"m","choices":[{"delta":{"role":"assistant","content":""},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"object":"chat.completion.chunk","id":"x","created":1}
+data: [DONE]
+"#;
+        let response_stream =
+            tokio_stream::iter(response_lines.lines().map(|line| Ok(line.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut items = Vec::new();
+        while let Some(result) = messages.next().await {
+            items.push(result?);
+        }
+
+        // (c) Every pending notification is message-free — structurally impossible
+        //     to dispatch.
+        let pendings: Vec<_> = items
+            .iter()
+            .filter_map(|(m, _, p)| p.as_ref().map(|p| (m.is_none(), p.clone())))
+            .collect();
+        assert!(
+            pendings.iter().all(|(msg_is_none, _)| *msg_is_none),
+            "a pending notification must never carry a Message"
+        );
+
+        // (a) Both tool names are announced, and the first announcement for each
+        //     call carries no args (name-before-args).
+        let names: Vec<_> = pendings.iter().map(|(_, p)| p.name.clone()).collect();
+        assert!(names.iter().all(|n| n == "developer__shell"));
+        let first_a = pendings
+            .iter()
+            .find(|(_, p)| p.id == "toolu_a")
+            .expect("toolu_a announced");
+        assert!(
+            first_a.1.partial_args.is_none(),
+            "the first notification for a call must precede its argument bytes"
+        );
+        assert!(pendings.iter().any(|(_, p)| p.id == "toolu_b"));
+
+        // (b) Exactly TWO authoritative ToolRequests, both parsed cleanly.
+        let tool_requests: Vec<_> = items
+            .iter()
+            .filter_map(|(m, _, _)| m.as_ref())
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::ToolRequest(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_requests.len(),
+            2,
+            "exactly one authoritative ToolRequest per tool call"
+        );
+        assert!(tool_requests.iter().all(|r| r.tool_call.is_ok()));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_streaming_captures_length_finish_reason() -> anyhow::Result<()> {
         // Mirrors MiMo's truncation protocol: a content chunk, then a chunk with
@@ -1805,7 +1931,7 @@ data: [DONE]
         pin!(messages);
 
         let mut seen_length = false;
-        while let Some(Ok((_message, usage))) = messages.next().await {
+        while let Some(Ok((_message, usage, _pending))) = messages.next().await {
             if let Some(u) = usage {
                 if u.finish_reason.as_deref() == Some("length") {
                     seen_length = true;
@@ -1832,7 +1958,7 @@ data: [DONE]
         let messages = response_to_streaming_message(response_stream);
         pin!(messages);
 
-        while let Some(Ok((_message, usage))) = messages.next().await {
+        while let Some(Ok((_message, usage, _pending))) = messages.next().await {
             if let Some(u) = usage {
                 assert_ne!(
                     u.finish_reason.as_deref(),
