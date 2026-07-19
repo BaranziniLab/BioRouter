@@ -881,6 +881,9 @@ pub struct BedrockStreamDecoder {
     finish_reason: Option<String>,
     /// Set once `messageStop` is seen. A stream that ends without it was cut off.
     saw_message_stop: bool,
+    /// Shared id stamped on every message yielded for this response, so the
+    /// desktop store merges the deltas into one transcript entry.
+    message_id: String,
 }
 
 /// One item of the decoded stream: a partial message and/or a usage snapshot.
@@ -897,6 +900,7 @@ impl BedrockStreamDecoder {
             usage: None,
             finish_reason: None,
             saw_message_stop: false,
+            message_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -905,8 +909,18 @@ impl BedrockStreamDecoder {
         !self.saw_message_stop
     }
 
-    fn assistant_message(content: MessageContent) -> Message {
-        Message::new(Role::Assistant, Utc::now().timestamp(), vec![content])
+    /// Every message this decoder yields for one response carries the SAME id.
+    ///
+    /// The desktop store merges streamed messages by id (`chatStreamStore`
+    /// `pushMessage`); without a stable one, each `contentBlockDelta` lands as a
+    /// separate transcript bubble with its own timestamp, so a streamed reply
+    /// renders one bubble per token. The Anthropic decoder gets this for free by
+    /// reusing the `message_start` id (`formats/anthropic.rs:629`); ConverseStream's
+    /// `messageStart` carries only a role, so we mint one per stream instead.
+    fn assistant_message(&self, content: MessageContent) -> Message {
+        let mut message = Message::new(Role::Assistant, Utc::now().timestamp(), vec![content]);
+        message.id = Some(self.message_id.clone());
+        message
     }
 
     /// Current usage snapshot, carrying whatever `finish_reason` we know.
@@ -957,7 +971,7 @@ impl BedrockStreamDecoder {
                             Vec::new()
                         } else {
                             vec![(
-                                Some(Self::assistant_message(MessageContent::text(text))),
+                                Some(self.assistant_message(MessageContent::text(text))),
                                 None,
                             )]
                         }
@@ -994,7 +1008,7 @@ impl BedrockStreamDecoder {
 
             bedrock::ConverseStreamOutput::ContentBlockStop(stop) => {
                 match self.tool_blocks.remove(&stop.content_block_index) {
-                    Some(acc) => vec![(Some(Self::finish_tool_block(acc)), None)],
+                    Some(acc) => vec![(Some(self.finish_tool_block(acc)), None)],
                     None => Vec::new(),
                 }
             }
@@ -1021,7 +1035,7 @@ impl BedrockStreamDecoder {
     ///
     /// Called only from the `contentBlockStop` arm, so `acc.input` is the
     /// complete argument JSON.
-    fn finish_tool_block(acc: ToolUseAccumulator) -> Message {
+    fn finish_tool_block(&self, acc: ToolUseAccumulator) -> Message {
         let ToolUseAccumulator {
             tool_use_id,
             name,
@@ -1063,7 +1077,7 @@ impl BedrockStreamDecoder {
             ),
         };
 
-        Self::assistant_message(content)
+        self.assistant_message(content)
     }
 
     /// Flush state after the event stream ends.
@@ -1097,7 +1111,7 @@ impl BedrockStreamDecoder {
                         None,
                     )),
                 );
-                (Some(Self::assistant_message(content)), None)
+                (Some(self.assistant_message(content)), None)
             })
             .collect();
 
@@ -1309,6 +1323,61 @@ mod bedrock_stream_tests {
     /// The entire point of the change: each text delta must surface as its own
     /// item, not be buffered until the turn ends.
     #[test]
+    /// REGRESSION (2026-07-18, found in the live GUI, not by these tests):
+    /// every message a single response yields must share ONE id.
+    ///
+    /// The desktop store merges streamed messages by id. When this decoder left
+    /// `Message::id` as None, each `contentBlockDelta` landed as its own
+    /// transcript bubble with its own timestamp — a streamed reply rendered one
+    /// bubble per token. The original tests asserted decoded CONTENT and so were
+    /// blind to it; assert identity here.
+    #[test]
+    fn every_message_in_one_response_shares_a_single_id() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                text_delta(0, "Hello"),
+                text_delta(0, " there"),
+                text_delta(0, "!"),
+                tool_start(1, "tooluse_abc", "shell"),
+                tool_delta(1, "{\"command\":\"ls\"}"),
+                block_stop(1),
+            ],
+        );
+
+        let ids: Vec<Option<String>> = items
+            .into_iter()
+            .filter_map(|(m, _)| m.map(|m| m.id))
+            .collect();
+
+        assert!(ids.len() >= 4, "expected several yielded messages, got {}", ids.len());
+        assert!(ids.iter().all(Option::is_some), "every streamed message needs an id: {ids:?}");
+        let first = &ids[0];
+        assert!(
+            ids.iter().all(|id| id == first),
+            "all messages in one response must share one id so the UI merges them, got {ids:?}"
+        );
+    }
+
+    /// Two separate responses must NOT share an id, or the second would merge
+    /// into the first in the transcript.
+    #[test]
+    fn separate_responses_get_distinct_ids() {
+        let mut a = BedrockStreamDecoder::new("m");
+        let mut b = BedrockStreamDecoder::new("m");
+        let id_of = |d: &mut BedrockStreamDecoder| {
+            drain(d, &[message_start(), text_delta(0, "hi")])
+                .into_iter()
+                .find_map(|(m, _)| m.and_then(|m| m.id))
+        };
+        let ida = id_of(&mut a);
+        let idb = id_of(&mut b);
+        assert!(ida.is_some() && idb.is_some());
+        assert_ne!(ida, idb, "two responses must not share a message id");
+    }
+
     fn text_is_yielded_incrementally_as_it_arrives() {
         let mut decoder = BedrockStreamDecoder::new("us.anthropic.claude-sonnet-4-6");
         let items = drain(
