@@ -774,6 +774,30 @@ pub type ProviderStreamItem = (
     Option<PendingToolCall>,
 );
 
+/// §6.2b kill switch: batch a single response's `tool_use` / `functionCall`
+/// blocks into **one** assistant `Message` carrying N `ToolRequest`s, instead of
+/// one `Message` per block. The agent's `select_all` then sees N tool futures at
+/// once and dispatches them in parallel; one message per block made multi-tool
+/// turns run serially on the native Anthropic/Google decoders (the OpenAI
+/// decoder already batches).
+///
+/// On by default; only an explicit `0`/`false`/`no`/`off` in
+/// `BIOROUTER_TOOL_CALL_BATCHING` restores the pre-6.2b one-message-per-tool
+/// behaviour (serial execution) as a full rollback — mirroring
+/// `BIOROUTER_TOOL_WRITE_ORDERING`. This flag changes only *execution timing*:
+/// the batch is re-split into one assistant message per request (fresh uuid)
+/// before it is persisted or replayed (`agent.rs`), so session history is
+/// identical either way.
+pub fn tool_call_batching_enabled() -> bool {
+    match std::env::var("BIOROUTER_TOOL_CALL_BATCHING") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 /// A message stream yields partial text content but complete tool calls, all within the Message object
 /// So a message with text will contain potentially just a word of a longer response, but tool calls
 /// messages will only be yielded once concatenated.

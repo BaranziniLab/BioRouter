@@ -1,5 +1,5 @@
 use crate::model::ModelConfig;
-use crate::providers::base::Usage;
+use crate::providers::base::{tool_call_batching_enabled, Usage};
 use crate::providers::errors::ProviderError;
 use crate::providers::utils::{is_valid_function_name, sanitize_function_name};
 use anyhow::Result;
@@ -501,6 +501,24 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
     }
 }
 
+/// §6.2b: drain buffered `functionCall` blocks into a **single** assistant
+/// message stamped with the stream id, or `None` when nothing is buffered. One
+/// message carrying N `ToolRequest`s is what makes the agent's `select_all`
+/// dispatch them in parallel; one message per block serialized them.
+fn flush_pending_tool_contents(
+    pending: &mut Vec<MessageContent>,
+    stream_id: &str,
+) -> Option<Message> {
+    if pending.is_empty() {
+        return None;
+    }
+    let content: Vec<MessageContent> = pending.drain(..).collect();
+    Some(
+        Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content)
+            .with_id(stream_id.to_string()),
+    )
+}
+
 pub fn response_to_streaming_message<S>(
     mut stream: S,
 ) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
@@ -515,6 +533,13 @@ where
         let mut last_signature: Option<String> = None;
         let stream_id = Uuid::new_v4().to_string();
         let mut incomplete_data: Option<String> = None;
+        // §6.2b: buffer completed functionCall blocks and flush them as ONE
+        // message before the terminal usage yield, so a multi-tool turn
+        // dispatches in parallel. Off restores one message per block (serial).
+        // Text/thinking parts keep streaming per-part, unchanged. A dropped
+        // stream (cancellation) drops this Vec unflushed — never half-delivers.
+        let batch_tool_calls = tool_call_batching_enabled();
+        let mut pending_tool_contents: Vec<MessageContent> = Vec::new();
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
@@ -600,19 +625,34 @@ where
             if let Some(parts) = parts {
                 for part in parts {
                     if let Some(content) = process_response_part(part, &mut last_signature) {
-                        let message = Message::new(
-                            Role::Assistant,
-                            chrono::Utc::now().timestamp(),
-                            vec![content],
-                        ).with_id(stream_id.clone());
-                        yield (Some(message), None, None);
+                        // §6.2b: buffer tool requests so N of them coalesce into one
+                        // message (parallel dispatch). Text/thinking still stream
+                        // per-part so first-token latency is unchanged.
+                        if batch_tool_calls && matches!(content, MessageContent::ToolRequest(_)) {
+                            pending_tool_contents.push(content);
+                        } else {
+                            let message = Message::new(
+                                Role::Assistant,
+                                chrono::Utc::now().timestamp(),
+                                vec![content],
+                            ).with_id(stream_id.clone());
+                            yield (Some(message), None, None);
+                        }
                     }
                 }
             }
         }
 
+        // §6.2b: flush the batched tool calls as ONE message, together with the
+        // terminal usage (agent.rs reads message + usage in one match arm).
+        let batched_tool_message = flush_pending_tool_contents(
+            &mut pending_tool_contents,
+            &stream_id,
+        );
         if let Some(usage) = final_usage {
-            yield (None, Some(usage), None);
+            yield (batched_tool_message, Some(usage), None);
+        } else if batched_tool_message.is_some() {
+            yield (batched_tool_message, None, None);
         }
     }
 }
@@ -1395,6 +1435,73 @@ mod tests {
         }
 
         assert_eq!(tool_calls, vec!["test_tool"]);
+    }
+
+    /// Two `functionCall` parts in one streamed response chunk.
+    const GOOGLE_TWO_FUNCTION_STREAM: &str = concat!(
+        r#"data: {"candidates": [{"content": {"role": "model", "#,
+        r#""parts": [{"functionCall": {"name": "first_tool", "args": {"a": 1}}}, "#,
+        r#"{"functionCall": {"name": "second_tool", "args": {"b": 2}}}]}}], "#,
+        r#""usageMetadata": {"promptTokenCount": 5, "#,
+        r#""candidatesTokenCount": 4, "totalTokenCount": 9}}"#
+    );
+
+    /// §6.2b core gate (Gemini twin): two `functionCall` blocks in one response
+    /// must decode to **one** assistant message carrying **two** `ToolRequest`s,
+    /// in request order — so the agent dispatches them in parallel. Before §6.2b
+    /// the native decoder emitted one message per part (`[1, 1]`, serial).
+    #[tokio::test]
+    async fn test_streaming_batches_multiple_function_calls_into_one_message() {
+        use futures::StreamExt;
+
+        let lines: Vec<Result<String, anyhow::Error>> = GOOGLE_TWO_FUNCTION_STREAM
+            .lines()
+            .map(|l| Ok(l.to_string()))
+            .collect();
+        let stream = Box::pin(futures::stream::iter(lines));
+        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+
+        let mut tool_messages: Vec<Message> = Vec::new();
+        let mut saw_usage = false;
+        while let Some(result) = message_stream.next().await {
+            let (message, usage, _pending) = result.unwrap();
+            if let Some(msg) = &message {
+                if msg
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+                {
+                    // The batched tool message must ride the terminal usage item.
+                    saw_usage = usage.is_some();
+                    tool_messages.push(msg.clone());
+                }
+            }
+        }
+
+        assert_eq!(
+            tool_messages.len(),
+            1,
+            "two functionCall blocks must batch into ONE assistant message"
+        );
+        let names: Vec<String> = tool_messages[0]
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::ToolRequest(r) => {
+                    Some(r.tool_call.as_ref().unwrap().name.to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["first_tool".to_string(), "second_tool".to_string()],
+            "both requests present, in request order"
+        );
+        assert!(
+            saw_usage,
+            "the batched tool message must be yielded together with the usage snapshot"
+        );
     }
 
     #[tokio::test]

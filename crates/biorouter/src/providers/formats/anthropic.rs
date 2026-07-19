@@ -1,6 +1,6 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
-use crate::providers::base::{PendingToolCall, Usage};
+use crate::providers::base::{tool_call_batching_enabled, PendingToolCall, Usage};
 use crate::providers::errors::ProviderError;
 use crate::providers::utils::{convert_image, ImageFormat};
 use anyhow::{anyhow, Result};
@@ -494,6 +494,26 @@ pub fn create_request(
 }
 
 /// Process streaming response from Anthropic's API
+/// §6.2b: drain buffered `tool_use` blocks into a **single** assistant message
+/// stamped with the streaming `message_id`, or `None` when nothing is buffered.
+///
+/// One message carrying N `ToolRequest`s is what makes the agent's `select_all`
+/// dispatch them in parallel; emitting one message per block serialized them.
+/// The `drain` empties the buffer, so a second flush (after-loop belt-and-
+/// suspenders) is a no-op — a batch is never delivered twice.
+fn flush_pending_tool_contents(
+    pending: &mut Vec<MessageContent>,
+    message_id: &Option<String>,
+) -> Option<Message> {
+    if pending.is_empty() {
+        return None;
+    }
+    let content: Vec<MessageContent> = pending.drain(..).collect();
+    let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
+    message.id = message_id.clone();
+    Some(message)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
@@ -544,6 +564,13 @@ where
         // text, whichever comes first.
         let mut last_pending_emit: Option<std::time::Instant> = None;
         let mut last_pending_len: usize = 0;
+        // §6.2b: buffer completed tool_use blocks and flush them as ONE message
+        // (at the next message_delta, and again after the loop) so the agent
+        // dispatches a multi-tool turn in parallel. Off restores one message per
+        // block (serial). If the stream is dropped mid-turn (cancellation), this
+        // Vec is dropped unflushed — a cancelled stream never half-delivers.
+        let batch_tool_calls = tool_call_batching_enabled();
+        let mut pending_tool_contents: Vec<MessageContent> = Vec::new();
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
@@ -715,51 +742,64 @@ where
                     }
                     // Content block finished
                     if let Some(tool_id) = current_tool_id.take() {
-                        // Tool call finished, yield complete tool call
+                        // Tool call finished: build its authoritative content. The
+                        // parse-failure (INVALID_PARAMS) variant is preserved
+                        // byte-for-byte; only where it is DELIVERED changes.
                         if let Some((name, args)) = accumulated_tool_calls.remove(&tool_id) {
                             let parsed_args = if args.is_empty() {
-                                json!({})
+                                Some(json!({}))
                             } else {
-                                match serde_json::from_str::<Value>(&args) {
-                                    Ok(parsed) => parsed,
-                                    Err(_) => {
-                                        // If parsing fails, create an error tool request
-                                        let error = ErrorData::new(
-                                            ErrorCode::INVALID_PARAMS,
-                                            format!("Could not parse tool arguments: {}", args),
-                                            None,
-                                        );
-                                        let mut message = Message::new(
-                                            Role::Assistant,
-                                            chrono::Utc::now().timestamp(),
-                                            vec![MessageContent::tool_request(tool_id, Err(error))],
-                                        );
-                                        message.id = message_id.clone();
-                                        yield (Some(message), None, None);
-                                        continue;
-                                    }
+                                serde_json::from_str::<Value>(&args).ok()
+                            };
+                            let content = match parsed_args {
+                                Some(parsed) => {
+                                    let tool_call = CallToolRequestParams{
+                                        task: None,
+                                        name: name.into(),
+                                        arguments: Some(object(parsed)),
+                                        meta: None,
+                                    };
+                                    MessageContent::tool_request(tool_id, Ok(tool_call))
+                                }
+                                None => {
+                                    // If parsing fails, create an error tool request
+                                    let error = ErrorData::new(
+                                        ErrorCode::INVALID_PARAMS,
+                                        format!("Could not parse tool arguments: {}", args),
+                                        None,
+                                    );
+                                    MessageContent::tool_request(tool_id, Err(error))
                                 }
                             };
 
-                            let tool_call = CallToolRequestParams{
-                                task: None,
-                                name: name.into(),
-                                arguments: Some(object(parsed_args)),
-                                meta: None,
-                            };
-
-                            let mut message = Message::new(
-                                rmcp::model::Role::Assistant,
-                                chrono::Utc::now().timestamp(),
-                                vec![MessageContent::tool_request(tool_id, Ok(tool_call))],
-                            );
-                            message.id = message_id.clone();
-                            yield (Some(message), None, None);
+                            if batch_tool_calls {
+                                // §6.2b: defer — flushed as ONE message at the next
+                                // message_delta / after the loop, so a multi-tool
+                                // turn dispatches in parallel.
+                                pending_tool_contents.push(content);
+                            } else {
+                                let mut message = Message::new(
+                                    Role::Assistant,
+                                    chrono::Utc::now().timestamp(),
+                                    vec![content],
+                                );
+                                message.id = message_id.clone();
+                                yield (Some(message), None, None);
+                            }
                         }
                     }
                     continue;
                 }
                 "message_delta" => {
+                    // §6.2b: a message_delta closes the response, so every tool
+                    // block that will arrive already has. Flush the batch here and
+                    // yield it TOGETHER with this delta's usage snapshot below —
+                    // agent.rs reads (message, usage) in one match arm.
+                    let batched_tool_message = flush_pending_tool_contents(
+                        &mut pending_tool_contents,
+                        &message_id,
+                    );
+
                     // Message metadata delta (like stop_reason) and cumulative usage
                     tracing::debug!("🔍 Anthropic message_delta event data: {}", serde_json::to_string_pretty(&event.data).unwrap_or_else(|_| format!("{:?}", event.data)));
 
@@ -826,8 +866,13 @@ where
                     // nothing at all even though the full input and the partial
                     // output were billed. The agent keeps the LAST snapshot per
                     // turn, so re-yielding here cannot double count.
+                    //
+                    // §6.2b: carry the batched tool message on the same item so the
+                    // agent sees message + usage together.
                     if let Some(snapshot) = final_usage.clone() {
-                        yield (None, Some(snapshot), None);
+                        yield (batched_tool_message, Some(snapshot), None);
+                    } else if batched_tool_message.is_some() {
+                        yield (batched_tool_message, None, None);
                     }
                     continue;
                 }
@@ -864,10 +909,23 @@ where
             }
         }
 
-        // Yield final usage information if available
+        // §6.2b: a stream that ended WITHOUT a message_delta (e.g. straight to
+        // message_stop / [DONE], or truncated cleanly) still has its buffered tool
+        // blocks flushed here — otherwise a whole multi-tool turn would silently
+        // vanish. A no-op in the common path (message_delta already drained it).
+        let batched_tool_message = flush_pending_tool_contents(
+            &mut pending_tool_contents,
+            &message_id,
+        );
+
+        // Yield final usage information if available, together with any batched
+        // tool message (agent.rs reads message + usage in one match arm).
         if let Some(usage) = final_usage {
-            yield (None, Some(usage), None);
+            yield (batched_tool_message, Some(usage), None);
         } else {
+            if let Some(message) = batched_tool_message {
+                yield (Some(message), None, None);
+            }
             tracing::debug!("🔍 Anthropic no final usage to yield");
         }
     }
@@ -1161,6 +1219,174 @@ mod tests {
         assert_eq!(redacted_blocks[0].data, "EmwKAhgBEgy3va3p");
 
         assert_eq!(text, "Here is the answer.");
+        Ok(())
+    }
+
+    /// Collect every authoritative `ToolRequest`, grouped by the message it
+    /// arrived in, from a decoded stream. `[2]` means one message carried two
+    /// requests (batched); `[1, 1]` means two separate one-request messages
+    /// (the pre-§6.2b serial shape).
+    async fn tool_request_message_shape(lines: Vec<&'static str>) -> Vec<usize> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut shape = Vec::new();
+        while let Some(result) = messages.next().await {
+            let (message, _usage, _pending) = result.unwrap();
+            let Some(message) = message else { continue };
+            let count = message
+                .content
+                .iter()
+                .filter(|c| matches!(c, MessageContent::ToolRequest(_)))
+                .count();
+            if count > 0 {
+                shape.push(count);
+            }
+        }
+        shape
+    }
+
+    /// A response with two `tool_use` blocks. Reused by the batching tests
+    /// (with a terminal `message_delta`) and, sliced, by the no-delta
+    /// regression test.
+    const TWO_TOOL_USE_LINES: [&str; 8] = [
+        r#"data: {"type":"message_start","message":{"id":"msg_batch","model":"claude-sonnet-4-20250514","usage":{"input_tokens":5,"output_tokens":1}}}"#,
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_a","name":"developer__shell"}}"#,
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#,
+        r#"data: {"type":"content_block_stop","index":0}"#,
+        r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_b","name":"developer__text_editor"}}"#,
+        r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"view\",\"path\":\"/tmp/x\"}"}}"#,
+        r#"data: {"type":"content_block_stop","index":1}"#,
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}"#,
+    ];
+
+    /// §6.2b core gate: two `tool_use` blocks in one response must decode to
+    /// **one** assistant message carrying **two** `ToolRequest`s — so the agent's
+    /// `select_all` sees two futures and dispatches them in parallel. Before
+    /// §6.2b the native decoder emitted one message per block (`[1, 1]`), which
+    /// forced serial execution; that shape is what the kill switch restores
+    /// (`test_streaming_kill_switch_restores_serial_tool_messages`).
+    #[tokio::test]
+    async fn test_streaming_batches_multiple_tool_uses_into_one_message() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let response_stream =
+            tokio_stream::iter(TWO_TOOL_USE_LINES.iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut items = Vec::new();
+        while let Some(result) = messages.next().await {
+            items.push(result?);
+        }
+
+        // Exactly ONE message carries tool requests, and it carries BOTH.
+        let tool_messages: Vec<&Message> = items
+            .iter()
+            .filter_map(|(m, _, _)| m.as_ref())
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+            })
+            .collect();
+        assert_eq!(
+            tool_messages.len(),
+            1,
+            "two tool_use blocks must batch into ONE assistant message, not one per block"
+        );
+
+        let requests: Vec<_> = tool_messages[0]
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::ToolRequest(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the single message must carry BOTH tool requests"
+        );
+
+        // Request order is preserved (block 0 then block 1). Anthropic 400s if a
+        // later tool-result batch is ordered against a different sequence, so the
+        // request order the decoder emits is load-bearing.
+        assert_eq!(requests[0].id, "toolu_a");
+        assert_eq!(requests[1].id, "toolu_b");
+        assert_eq!(
+            requests[0].tool_call.as_ref().unwrap().name,
+            "developer__shell"
+        );
+        assert_eq!(
+            requests[1].tool_call.as_ref().unwrap().name,
+            "developer__text_editor"
+        );
+
+        // The batched message rides the SAME stream item as the terminal usage
+        // snapshot (agent.rs reads message + usage in one match arm).
+        let batched_item = items
+            .iter()
+            .find(|(m, _, _)| {
+                m.as_ref().is_some_and(|m| {
+                    m.content
+                        .iter()
+                        .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+                })
+            })
+            .unwrap();
+        assert!(
+            batched_item.1.is_some(),
+            "the batched tool message must be yielded together with the usage snapshot"
+        );
+        Ok(())
+    }
+
+    /// §6.2b regression: a stream that ends after the final `content_block_stop`
+    /// with **no** `message_delta` (straight to `[DONE]`) must still flush its
+    /// batched tools via the after-loop flush — otherwise a whole multi-tool turn
+    /// would silently vanish.
+    #[tokio::test]
+    async fn test_streaming_batches_tools_without_message_delta() -> Result<()> {
+        // Drop the trailing message_delta; end with [DONE] instead.
+        let mut lines: Vec<&'static str> = TWO_TOOL_USE_LINES[..7].to_vec();
+        lines.push(r#"data: [DONE]"#);
+
+        let shape = tool_request_message_shape(lines).await;
+        assert_eq!(
+            shape,
+            vec![2],
+            "a stream ending without a message_delta must still deliver both tools \
+             batched into one message (after-loop flush)"
+        );
+        Ok(())
+    }
+
+    /// §6.2b kill switch: `BIOROUTER_TOOL_CALL_BATCHING=0` restores the pre-§6.2b
+    /// serial shape — one assistant message per `tool_use` block (`[1, 1]`). This
+    /// is the full rollback lever documented alongside `BIOROUTER_TOOL_WRITE_ORDERING`.
+    ///
+    /// Uses `serial_test` because it mutates a process-global env var.
+    #[tokio::test]
+    #[serial_test::serial(tool_call_batching_env)]
+    async fn test_streaming_kill_switch_restores_serial_tool_messages() -> Result<()> {
+        // SAFETY: single-threaded tokio test, serialized against any other test
+        // touching this env var; restored before returning.
+        std::env::set_var("BIOROUTER_TOOL_CALL_BATCHING", "0");
+        let shape = tool_request_message_shape(TWO_TOOL_USE_LINES.to_vec()).await;
+        std::env::remove_var("BIOROUTER_TOOL_CALL_BATCHING");
+
+        assert_eq!(
+            shape,
+            vec![1, 1],
+            "with batching OFF each tool_use block must be its own message (serial)"
+        );
         Ok(())
     }
 
