@@ -319,6 +319,13 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         sessionId={activeTab?.sessionId ?? ''}
         initialMessage={activeTab?.pendingInitialMessage}
         initialAttachments={activeTab?.pendingInitialAttachments}
+        // Spend the route cargo exactly once. The reducer has always had
+        // `consumePending`; nothing ever dispatched it, so a tab kept the
+        // message that created its session forever and re-sent it on every
+        // remount (BR duplicate-submission bug, 2026-07-18).
+        onInitialMessageConsumed={
+          activeTab ? () => dispatch?.({ type: 'consumePending', tabId: activeTab.tabId }) : undefined
+        }
         renderSessionTitle={() => strip}
         onChatChange={onChatChange}
         onSessionLoaded={handleSessionLoaded}
@@ -441,6 +448,7 @@ interface ChatGroupPaneProps {
   sessionId: string;
   initialMessage?: string;
   initialAttachments?: import('../../types/message').UserAttachment[];
+  onInitialMessageConsumed?: () => void;
   renderSessionTitle: () => ReactElement;
   onChatChange: (chat: ChatType) => void;
   onSessionLoaded: (session: { id: string; name: string; userSetName: boolean } | null) => void;
@@ -460,6 +468,7 @@ function ChatGroupPane({
   sessionId,
   initialMessage,
   initialAttachments,
+  onInitialMessageConsumed,
   renderSessionTitle,
   onChatChange,
   onSessionLoaded,
@@ -501,6 +510,7 @@ function ChatGroupPane({
         sessionId={sessionId}
         initialMessage={initialMessage}
         initialAttachments={initialAttachments}
+        onInitialMessageConsumed={onInitialMessageConsumed}
         suppressEmptyState={false}
         renderSessionTitle={renderSessionTitle}
         onSessionUpdate={onSessionLoaded}

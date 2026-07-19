@@ -489,6 +489,54 @@ export function handleCreateSessionError(
   });
 }
 
+/**
+ * The mount-time auto-submit decision, lifted out of its effect so it can be
+ * unit-tested. `BaseChatContent` is a ~2100-line component needing react-router
+ * plus a dozen contexts, so mounting it to observe this is impractical (see the
+ * note in BaseChat.sessionScope.test.ts); the effect below is now a thin call.
+ *
+ * Returns the new value for `hasAutoSubmittedRef`.
+ *
+ * ORDERING IS LOAD-BEARING. `onConsumed` fires only on the branch that actually
+ * submits, and only AFTER `submit` — never on the `!session` bail. The cargo
+ * that supplied `initialMessage` (a chat tab's `pendingInitialMessage`) outlives
+ * this component, so it must be dropped at the instant it is spent: any earlier
+ * and a mount that bails on an unresolved session would throw away a legitimate
+ * FIRST submission; any later (or never, which is what shipped) and every
+ * remount of the tab re-sends it as a real agent turn.
+ */
+export function runInitialMessageAutoSubmit(args: {
+  hasSession: boolean;
+  hasAutoSubmitted: boolean;
+  initialMessage?: string;
+  initialAttachments?: UserAttachment[];
+  shouldStartAgent: boolean;
+  submit: (text: string, attachments?: UserAttachment[]) => void;
+  clearRouterState: () => void;
+  onConsumed?: () => void;
+}): boolean {
+  if (!args.hasSession || args.hasAutoSubmitted) {
+    return args.hasAutoSubmitted;
+  }
+
+  if (args.initialMessage) {
+    args.submit(args.initialMessage, args.initialAttachments);
+    // Clear initialMessage + attachments from navigation state to prevent
+    // re-sending on refresh. Only covers the router; not the tab record.
+    args.clearRouterState();
+    // Tell the owner the cargo is spent.
+    args.onConsumed?.();
+    return true;
+  }
+
+  if (args.shouldStartAgent) {
+    args.submit('');
+    return true;
+  }
+
+  return args.hasAutoSubmitted;
+}
+
 export function formatCompactNumber(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
@@ -630,6 +678,12 @@ interface BaseChatProps {
   sessionId: string;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
+  /**
+   * Called once, at the instant `initialMessage` is actually submitted, so the
+   * owner can drop the cargo that supplied it. See the call site for why this
+   * cannot be done by the owner on render.
+   */
+  onInitialMessageConsumed?: () => void;
   /** Render messages + input as a single coherent surface (default true). */
   coherent?: boolean;
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
@@ -712,6 +766,7 @@ function BaseChatContent({
   sessionId,
   initialMessage,
   initialAttachments,
+  onInitialMessageConsumed,
   suppressEmptyState,
   coherent = true,
   onRenameSession,
@@ -1266,25 +1321,30 @@ function BaseChatContent({
   }, [messages]);
 
   useEffect(() => {
-    if (!session || hasAutoSubmittedRef.current) {
-      return;
-    }
-
-    const shouldStartAgent = searchParams.get('shouldStartAgent') === 'true';
-
-    if (initialMessage) {
-      hasAutoSubmittedRef.current = true;
-      handleSubmit(initialMessage, initialAttachments);
-      // Clear initialMessage + attachments from navigation state to prevent re-sending on refresh
-      navigate(location.pathname + location.search, {
-        replace: true,
-        state: { ...location.state, initialMessage: undefined, initialAttachments: undefined },
-      });
-    } else if (shouldStartAgent) {
-      hasAutoSubmittedRef.current = true;
-      handleSubmit('');
-    }
-  }, [session, initialMessage, initialAttachments, searchParams, handleSubmit, navigate, location]);
+    hasAutoSubmittedRef.current = runInitialMessageAutoSubmit({
+      hasSession: Boolean(session),
+      hasAutoSubmitted: hasAutoSubmittedRef.current,
+      initialMessage,
+      initialAttachments,
+      shouldStartAgent: searchParams.get('shouldStartAgent') === 'true',
+      submit: handleSubmit,
+      clearRouterState: () =>
+        navigate(location.pathname + location.search, {
+          replace: true,
+          state: { ...location.state, initialMessage: undefined, initialAttachments: undefined },
+        }),
+      onConsumed: onInitialMessageConsumed,
+    });
+  }, [
+    session,
+    initialMessage,
+    initialAttachments,
+    searchParams,
+    handleSubmit,
+    navigate,
+    location,
+    onInitialMessageConsumed,
+  ]);
 
   // Resolve session-scoped vision capability whenever the session's bound
   // provider or model changes. Falls back to null (== use global context) if
