@@ -87,6 +87,14 @@ export default function ProgressiveMessageList({
   const [isLoading, setIsLoading] = useState(() => messages.length > showLoadingThreshold);
   const timeoutRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  // Held in a ref so the batching effect below can CALL the latest callback
+  // without taking its identity as a dependency. BaseChat memoises
+  // `handleRenderingComplete` on `messages.length`, so during a stream its
+  // identity changes on every event; as a dependency it re-armed the effect,
+  // which sets state, which re-rendered the parent — the nested-update chain
+  // that tripped React's depth limit.
+  const onRenderingCompleteRef = useRef(onRenderingComplete);
+  onRenderingCompleteRef.current = onRenderingComplete;
   const hasOnlyToolResponses = (message: Message) =>
     message.content.every((c) => c.type === 'toolResponse');
 
@@ -103,10 +111,8 @@ export default function ProgressiveMessageList({
       setRenderedCount(messages.length);
       setIsLoading(false);
       // For small lists, call completion callback immediately
-      if (onRenderingComplete) {
-        setTimeout(() => onRenderingComplete(), 50);
-      }
-      return;
+      const completionTimer = window.setTimeout(() => onRenderingCompleteRef.current?.(), 50);
+      return () => window.clearTimeout(completionTimer);
     }
 
     // Large list - start progressive loading
@@ -117,9 +123,7 @@ export default function ProgressiveMessageList({
         if (nextCount >= messages.length) {
           setIsLoading(false);
           // Call the completion callback after a brief delay to ensure DOM is updated
-          if (onRenderingComplete) {
-            setTimeout(() => onRenderingComplete(), 50);
-          }
+          setTimeout(() => onRenderingCompleteRef.current?.(), 50);
         } else {
           // Schedule next batch
           timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
@@ -138,14 +142,13 @@ export default function ProgressiveMessageList({
         timeoutRef.current = null;
       }
     };
-  }, [
-    messages.length,
-    batchSize,
-    batchDelay,
-    showLoadingThreshold,
-    renderedCount,
-    onRenderingComplete,
-  ]);
+    // `renderedCount` is deliberately NOT a dependency: this effect only ever
+    // WRITES it, via `setRenderedCount(current => …)`. Listing it made the
+    // effect re-arm itself on its own write, and `onRenderingComplete` (see the
+    // ref above) re-armed it again on every stream event. Together they formed
+    // the nested-update chain behind "Maximum update depth exceeded".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length, batchSize, batchDelay, showLoadingThreshold]);
 
   // Cleanup on unmount
   useEffect(() => {

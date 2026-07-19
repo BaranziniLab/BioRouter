@@ -151,3 +151,57 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
     expect(screen.queryByTestId('turn-activity-indicator')).toBeNull();
   });
 });
+
+describe('ProgressiveMessageList render stability', () => {
+  // NOTE ON TEST STRENGTH — read before trusting this.
+  //
+  // "Maximum update depth exceeded" was reproduced LIVE in the Electron GUI on
+  // 2026-07-18 and confirmed PRE-EXISTING (it reproduced with the trailing
+  // indicator commit reverted). The fix removes `renderedCount` and
+  // `onRenderingComplete` from the batching effect's dependency array; the
+  // effect only ever WRITES `renderedCount`, through a functional updater.
+  //
+  // This test does NOT gate that fix. It was checked against the unfixed
+  // component and still passed: jsdom + Testing Library's act() batching do not
+  // reproduce the nested-update cascade, which needs the real scheduler. It is
+  // kept as a smoke test that streaming re-renders stay clean, not as proof.
+  // The load-bearing evidence is the live GUI check recorded in
+  // docs/perf/2026-07-18-implementation-status.md §10.
+  it('renders cleanly while messages stream in (smoke, not a depth-loop gate)', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const grow = (n: number): Message[] =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `m-${i}`,
+        role: i % 2 === 0 ? 'assistant' : 'user',
+        created: 1_700_000_000 + i,
+        metadata: { userVisible: true, agentVisible: true },
+        content: [{ type: 'text', text: `message ${i}` }],
+      })) as Message[];
+
+    // A fresh callback identity per render, exactly as BaseChat's
+    // useCallback(..., [messages.length]) produces during a stream.
+    const renderWith = (n: number) => (
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={grow(n)}
+        isStreamingMessage
+        chatState={ChatState.Streaming}
+        onRenderingComplete={() => {}}
+        batchSize={15}
+        batchDelay={5}
+        showLoadingThreshold={30}
+      />
+    );
+
+    const { rerender } = render(renderWith(1));
+    for (let n = 2; n <= 40; n++) rerender(renderWith(n));
+
+    const depthErrors = errorSpy.mock.calls
+      .map((args) => args.map(String).join(' '))
+      .filter((text) => /Maximum update depth exceeded/i.test(text));
+
+    errorSpy.mockRestore();
+    expect(depthErrors).toEqual([]);
+  });
+});
