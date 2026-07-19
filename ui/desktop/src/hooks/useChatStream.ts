@@ -17,6 +17,12 @@ interface UseChatStreamReturn {
   chatState: ChatState;
   setChatState: (state: ChatState) => void;
   handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<void>;
+  /**
+   * Re-run the last turn after a retryable failure (backend blip, provider
+   * error, dropped stream, transient cold-load failure). Never duplicates the
+   * trailing user message. Wired to the inline turn-error Retry action.
+   */
+  retryTurn: () => Promise<void>;
   submitSystemMessage: (message: Message) => Promise<void>;
   submitElicitationResponse: (
     elicitationId: string,
@@ -92,6 +98,7 @@ export function useChatStream({
     chatState: snapshot.chatState,
     setChatState: controller.setChatState,
     handleSubmit: controller.handleSubmit,
+    retryTurn: controller.retryTurn,
     submitSystemMessage: controller.submitSystemMessage,
     submitElicitationResponse: controller.submitElicitationResponse,
     stopStreaming: controller.stopStreaming,

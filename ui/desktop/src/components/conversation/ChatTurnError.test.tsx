@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatTurnError, hasVisibleTurnErrorMessage, presentChatTurnError } from './ChatTurnError';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
@@ -72,6 +72,61 @@ describe('ChatTurnError', () => {
     const detailBody = screen.getByText(details);
     expect(detailBody).toHaveClass('break-words');
     expect(detailBody).toHaveClass('[overflow-wrap:anywhere]');
+  });
+
+  it('labels a transient backend-unreachable failure distinctly from a provider failure', () => {
+    const presentation = presentChatTurnError(
+      error({
+        message: 'Failed to fetch',
+        code: 'session_load_unreachable',
+        scope: 'transport',
+        retryable: true,
+        technicalDetails: 'Failed to fetch',
+      })
+    );
+
+    // Backend (biorouterd) down reads as its own thing — not "check provider
+    // settings", which would send the user hunting for a key that is fine.
+    expect(presentation.title).toBe('Backend unreachable');
+    expect(presentation.message).toContain('backend is restarting');
+    expect(presentation.message).not.toContain('provider settings');
+  });
+
+  it('labels a dropped stream as a mid-response interruption', () => {
+    const presentation = presentChatTurnError(
+      error({
+        message: 'stream closed',
+        code: 'stream_interrupted',
+        scope: 'transport',
+        retryable: true,
+      })
+    );
+    expect(presentation.title).toBe('Connection dropped');
+    expect(presentation.message).toContain('dropped before the response finished');
+  });
+
+  it('renders a Retry action for a retryable error and invokes onRetry once', () => {
+    const onRetry = vi.fn();
+    render(
+      <ChatTurnError
+        error={error({ code: 'submit_error', scope: 'transport', retryable: true })}
+        onRetry={onRetry}
+      />
+    );
+
+    const retry = screen.getByTestId('chat-turn-error-retry');
+    fireEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the Retry action when the error is not retryable', () => {
+    render(<ChatTurnError error={error({ retryable: false })} onRetry={vi.fn()} />);
+    expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
+  });
+
+  it('omits the Retry action when no handler is provided', () => {
+    render(<ChatTurnError error={error({ retryable: true })} />);
+    expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
   });
 
   it('uses connection-specific recovery copy without dropping technical details', () => {

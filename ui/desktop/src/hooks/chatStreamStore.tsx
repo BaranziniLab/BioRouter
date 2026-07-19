@@ -570,11 +570,30 @@ class ChatStreamController {
             console.warn('Failed to populate apps cache:', err);
           });
         } catch (error) {
-          this.updateSnapshot((prev) => ({
-            ...prev,
-            sessionLoadError: errorMessage(error),
-            chatState: ChatState.Idle,
-          }));
+          if (isConnectionError(error)) {
+            // The backend (biorouterd) was transiently unreachable — it is
+            // restarting, or the network blipped. This is NOT an unloadable
+            // session, so it must NOT escalate to the full-pane "Failed to Load
+            // Session" card that nukes the transcript and offers only "Go home".
+            // Surface it as a retryable inline turn error instead: the chat UI
+            // and composer stay mounted, and `retryTurn` (or the daemon
+            // self-recovering) re-runs this load and repaints the transcript.
+            // The genuine-load-failure card below is reserved for real errors
+            // (bad id / corrupt data / an HTTP response), which are not
+            // TypeErrors and never look like a connection failure.
+            this.updateSnapshot((prev) => ({
+              ...prev,
+              turnError:
+                prev.turnError ?? clientTurnError(error, 'session_load_unreachable', 'transport'),
+              chatState: ChatState.Idle,
+            }));
+          } else {
+            this.updateSnapshot((prev) => ({
+              ...prev,
+              sessionLoadError: errorMessage(error),
+              chatState: ChatState.Idle,
+            }));
+          }
         } finally {
           this.loadPromise = null;
         }
@@ -896,6 +915,37 @@ class ChatStreamController {
       ? [...this.messagesRef, newMessage]
       : [...this.messagesRef];
     await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+  };
+
+  /**
+   * Re-run the last turn after a RETRYABLE failure — a backend/provider blip on
+   * send, a dropped stream, or a transient cold-load failure while biorouterd
+   * was restarting. Safe to call repeatedly and safe to double-fire:
+   *
+   *  - Bails if a turn is already live (an in-flight, un-aborted controller), so
+   *    a stray double-click can never launch a second concurrent turn.
+   *  - Clears the inline error being retried past.
+   *  - Re-attempts the session load. This is a no-op once the session is loaded,
+   *    and re-runs a cold load that failed while the daemon was briefly down —
+   *    which is what repaints a transcript the fatal-card bug used to discard.
+   *  - Re-submits the TRAILING user message EXACTLY ONCE, reusing the message
+   *    already at the tail of the transcript (`updateMessageList: false`), so no
+   *    duplicate user turn is ever appended to the store. If there is no trailing
+   *    user turn (nothing was ever sent on this controller, e.g. a pure mount
+   *    load failure) the reload alone is the retry.
+   */
+  retryTurn = async (): Promise<void> => {
+    if (this.abortController && !this.abortController.signal.aborted) return;
+    this.updateSnapshot((prev) => ({ ...prev, turnError: undefined }));
+
+    await this.loadSession();
+    if (!this.canSubmitMessage()) return;
+
+    const last = this.messagesRef[this.messagesRef.length - 1];
+    if (!last || last.role !== 'user') return;
+
+    this.lastInteractionTime = Date.now();
+    await this.submitPreparedMessage(last, [...this.messagesRef], false);
   };
 
   submitElicitationResponse = async (

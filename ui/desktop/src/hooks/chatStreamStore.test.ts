@@ -383,6 +383,133 @@ describe('ChatStreamRegistry', () => {
     expect(controller.getSnapshot().turnError).toBeUndefined();
   });
 
+  // ---- SEND-HARDENING: a system-level blip on the send/load path must degrade
+  // to an inline turn error, never the transcript-nuking "Failed to Load
+  // Session" card. See docs/qa/2026-07-19-qa-round2.md (SEND-HARDENING).
+
+  it('degrades a send into an unreachable backend to an inline error, never the fatal card (gate a)', async () => {
+    // The user reproduction: biorouterd is briefly down (a QA restart), the
+    // controller is fresh (post-reload), and the user hits Send. The send runs
+    // through loadSession's cold path, whose fetch rejects with the browser's
+    // `TypeError: Failed to fetch`.
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const controller = registry.getController('send-into-dead-backend');
+    await controller.handleSubmit('analyze my cohort');
+
+    const snap = controller.getSnapshot();
+    // The full-pane "Failed to Load Session / Go home" card is NOT triggered.
+    expect(snap.sessionLoadError).toBeUndefined();
+    // A retryable, transport-scoped inline turn error surfaces instead.
+    expect(snap.turnError).toMatchObject({
+      code: 'session_load_unreachable',
+      scope: 'transport',
+      retryable: true,
+    });
+    expect(snap.chatState).toBe(ChatState.Idle);
+  });
+
+  it('keeps a transient cold-load connection failure inline instead of the fatal card', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const controller = registry.getController('cold-load-blip');
+    await controller.loadSession();
+
+    const snap = controller.getSnapshot();
+    expect(snap.sessionLoadError).toBeUndefined();
+    expect(snap.turnError).toMatchObject({
+      code: 'session_load_unreachable',
+      scope: 'transport',
+      retryable: true,
+    });
+  });
+
+  it('still shows the fatal card for a genuine (non-connection) resume failure (gate c)', async () => {
+    // A real HTTP error (bad id / corrupt data) is not a connection blip: it
+    // arrives as a plain Error, not a TypeError, and must stay fatal.
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockRejectedValue(new Error('HTTP 404: session not found'));
+
+    const controller = registry.getController('genuinely-unloadable');
+    await controller.loadSession();
+
+    const snap = controller.getSnapshot();
+    expect(snap.sessionLoadError).toBe('HTTP 404: session not found');
+    expect(snap.turnError).toBeUndefined();
+  });
+
+  it('retryTurn re-runs the failed send exactly once without duplicating the user message (gate b)', async () => {
+    // Unique session id: the transcript cache is a module-level LRU keyed by id,
+    // so reusing a shared id ('s1') would load another test's cached messages
+    // and break the exact-length assertions below.
+    const sessionId = 'retry-gate-b';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    // First send: the backend blips mid-POST. Retry: the backend is back.
+    vi.mocked(reply).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.mocked(reply).mockResolvedValueOnce({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.handleSubmit('hello world');
+
+    // The failed send parked the user's message in the transcript (once) and
+    // surfaced a retryable inline error — NOT the fatal card.
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+    expect(controller.getSnapshot().turnError).toMatchObject({
+      code: 'submit_error',
+      scope: 'transport',
+      retryable: true,
+    });
+    expect(controller.getSnapshot().messages.filter((m) => m.role === 'user')).toHaveLength(1);
+
+    await controller.retryTurn();
+
+    // reply fired once for the original send and once for the retry — no more.
+    expect(reply).toHaveBeenCalledTimes(2);
+    // The user's message still appears exactly once (retry reused the trailing
+    // turn rather than appending a duplicate).
+    expect(controller.getSnapshot().messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+    expect(controller.getSnapshot().sessionLoadError).toBeUndefined();
+  });
+
+  it('retryTurn does not fire a second concurrent turn while one is live', async () => {
+    const sessionId = 'retry-concurrent';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+    const controlled = createControlledStream();
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController(sessionId);
+    // Preload the session + agent so the turn reaches reply() and enters
+    // Streaming deterministically (no cold-load latency to flush past).
+    await controller.loadSession();
+    await flush();
+
+    const inFlight = controller.handleSubmit('hello world');
+    // Drive the turn up to the (mocked) reply() call, where it parks on the
+    // controlled stream's first event with a live abortController.
+    for (let i = 0; i < 12 && vi.mocked(reply).mock.calls.length === 0; i += 1) {
+      await flush();
+    }
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+    // A retry while the turn is still streaming must be a no-op.
+    await controller.retryTurn();
+    expect(reply).toHaveBeenCalledTimes(1);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await inFlight;
+  });
+
   it('submits attachment-only messages as new user messages', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);

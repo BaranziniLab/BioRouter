@@ -1222,6 +1222,7 @@ function BaseChatContent({
     chatState,
     setChatState,
     handleSubmit,
+    retryTurn,
     submitSystemMessage,
     submitElicitationResponse,
     stopStreaming,
@@ -2070,7 +2071,7 @@ function BaseChatContent({
                                 request lands (removed by id in the store). */}
                             <PendingToolCallList pending={pendingToolCalls} />
                             {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
-                              <ChatTurnError error={turnError} />
+                              <ChatTurnError error={turnError} onRetry={retryTurn} />
                             )}
                           </>
                         </SearchView>

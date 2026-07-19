@@ -33,9 +33,38 @@ function providerMessage(value: string): string | undefined {
   return encoded ? decodeProviderMessage(encoded) : undefined;
 }
 
+// Codes whose transport failure is a fetch to biorouterd itself failing (the
+// app's own backend), NOT the model provider. These get "backend is
+// restarting" copy so the user checks the right thing — retrying in a moment
+// rather than hunting through provider settings for a key that is fine.
+const BACKEND_CODES = new Set(['session_load_unreachable', 'agent_load_failed', 'submit_error']);
+
+// A dropped/closed stream mid-response, as opposed to a connection that never
+// opened. Distinct copy: the request DID start, so "retry to continue".
+const MIDSTREAM_CODES = new Set(['stream_error', 'stream_interrupted']);
+
+function isBackendUnreachable(error: ChatTurnErrorData): boolean {
+  return (
+    (error.scope === 'transport' || isConnectionError(error.message)) &&
+    BACKEND_CODES.has(error.code)
+  );
+}
+
+function isMidStreamDrop(error: ChatTurnErrorData): boolean {
+  return error.scope === 'transport' && MIDSTREAM_CODES.has(error.code);
+}
+
 function userFacingMessage(error: ChatTurnErrorData): string {
   const decoded = providerMessage(error.message) ?? providerMessage(error.technicalDetails ?? '');
   if (decoded) return decoded;
+
+  if (isBackendUnreachable(error)) {
+    return "BioRouter's backend is restarting or unreachable. Your conversation is safe — retry in a moment, or check that the app is running.";
+  }
+
+  if (isMidStreamDrop(error)) {
+    return 'The connection dropped before the response finished. Retry to continue where it left off.';
+  }
 
   if (error.scope === 'transport' || isConnectionError(error.message)) {
     return 'Biorouter could not reach the model provider. Check your connection and provider settings, then try again.';
@@ -55,6 +84,10 @@ export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPre
     title = PROVIDER_TITLES[error.providerKind];
   } else if (error.message.includes('insufficient_quota')) {
     title = 'Model quota exceeded';
+  } else if (isBackendUnreachable(error)) {
+    title = 'Backend unreachable';
+  } else if (isMidStreamDrop(error)) {
+    title = 'Connection dropped';
   } else if (error.scope === 'transport' || isConnectionError(error.message)) {
     title = 'Model connection failed';
   } else if (error.scope === 'session') {
@@ -85,8 +118,16 @@ export function hasVisibleTurnErrorMessage(error: ChatTurnErrorData, messages: M
   return false;
 }
 
-export function ChatTurnError({ error }: { error: ChatTurnErrorData }) {
+export function ChatTurnError({
+  error,
+  onRetry,
+}: {
+  error: ChatTurnErrorData;
+  /** Re-run the failed turn. Rendered as a "Retry" action when the error is retryable. */
+  onRetry?: () => void;
+}) {
   const presentation = presentChatTurnError(error);
+  const canRetry = error.retryable && !!onRetry;
 
   return (
     <div data-testid="chat-turn-error" className="mt-4">
@@ -95,6 +136,18 @@ export function ChatTurnError({ error }: { error: ChatTurnErrorData }) {
         role="alert"
         title={presentation.title}
         message={presentation.message}
+        actions={
+          canRetry ? (
+            <button
+              type="button"
+              data-testid="chat-turn-error-retry"
+              onClick={onRetry}
+              className="inline-flex items-center rounded-md border border-border-subtle bg-background-default px-2.5 py-1 text-[13px] font-medium text-text-default transition-colors hover:bg-background-medium"
+            >
+              Retry
+            </button>
+          ) : undefined
+        }
       >
         {presentation.details && (
           <details className="mt-2.5 text-xs text-text-muted">
