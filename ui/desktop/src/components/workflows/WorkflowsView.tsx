@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { listSavedWorkflows, convertToLocaleDateString } from '../../workflow/workflow_management';
 import {
-  FileText,
   Edit,
   Trash2,
   Play,
@@ -10,12 +9,12 @@ import {
   Link,
   Clock,
   Terminal,
-  ExternalLink,
+  NewWindow,
   Share2,
   Copy,
   Download,
-  LayoutDashboard,
 } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';
@@ -33,8 +32,6 @@ import ImportWorkflowForm, { ImportWorkflowButton } from './ImportWorkflowForm';
 import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
-import { useNavigate } from 'react-router-dom';
-import { useDashboard } from '../../contexts/DashboardContext';
 import { CronPicker } from '../schedule/CronPicker';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { SearchView } from '../conversation/SearchView';
@@ -54,10 +51,10 @@ import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 
+const WorkflowIcon = ENTITY_ICONS.workflow;
+
 export default function WorkflowsView() {
   const setView = useNavigation();
-  const navigate = useNavigate();
-  const dashboard = useDashboard();
   const [savedWorkflows, setSavedWorkflows] = useState<WorkflowManifest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -154,23 +151,6 @@ export default function WorkflowsView() {
       );
     } catch (error) {
       console.error('Failed to open workflow in new window:', error);
-    }
-  };
-
-  const handleStartWorkflowChatInDashboard = async (workflowId: string, workflowTitle?: string) => {
-    try {
-      await dashboard.spawnWindow({
-        workflowId,
-        cwd: getInitialWorkingDir(),
-        name: workflowTitle,
-      });
-      navigate('/dashboard');
-    } catch (error) {
-      console.error('Failed to add workflow to dashboard:', error);
-      toastError({
-        title: 'Failed to add workflow to dashboard',
-        msg: error instanceof Error ? error.message : String(error),
-      });
     }
   };
 
@@ -501,23 +481,15 @@ export default function WorkflowsView() {
                 className="h-7 w-7 p-0"
                 title="Launch workflow"
               >
-                <ExternalLink className="w-4 h-4" />
+                <NewWindow className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem
                 onClick={() => handleStartWorkflowChatInNewWindow(workflowManifestResponse.id)}
               >
-                <ExternalLink className="w-4 h-4" />
+                <NewWindow className="w-4 h-4" />
                 Open in new window
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() =>
-                  handleStartWorkflowChatInDashboard(workflowManifestResponse.id, workflow.title)
-                }
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                Add to dashboard
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -641,13 +613,13 @@ export default function WorkflowsView() {
     if (savedWorkflows.length === 0) {
       return (
         <EmptyState
-          icon={FileText}
+          icon={WorkflowIcon}
           title="No workflows yet"
           description="Create a reusable workflow here, save one from a conversation, or import an existing workflow."
           actions={
             <>
               <Button onClick={() => setShowCreateDialog(true)}>
-                <FileText className="h-4 w-4" />
+                <WorkflowIcon className="h-4 w-4" />
                 Create workflow
               </Button>
               <Button onClick={() => setShowImportDialog(true)} variant="outline">
@@ -662,7 +634,7 @@ export default function WorkflowsView() {
     if (filteredWorkflows.length === 0 && searchTerm) {
       return (
         <EmptyState
-          icon={FileText}
+          icon={WorkflowIcon}
           title="No matching workflows"
           description="Try a different title, description, or slash command."
           compact
@@ -702,7 +674,7 @@ export default function WorkflowsView() {
                   variant="default"
                   className="flex items-center gap-2"
                 >
-                  <FileText className="w-4 h-4" />
+                  <WorkflowIcon className="w-4 h-4" />
                   Create Workflow
                 </Button>
                 <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />

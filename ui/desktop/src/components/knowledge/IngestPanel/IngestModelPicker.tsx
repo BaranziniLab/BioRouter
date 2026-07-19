@@ -121,16 +121,14 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
                 }}
                 className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors duration-[var(--motion-fast)] ${selected ? 'bg-background-medium' : 'hover:bg-background-medium'}`}
               >
-                <Brain className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.5} />
+                <Brain className="h-4 w-4 shrink-0 text-text-muted" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{model}</span>
                   <span className="block text-[11px] text-text-muted">
                     {providerDisplayNames[provider.name] ?? provider.name}
                   </span>
                 </span>
-                {selected && (
-                  <Check className="h-4 w-4 shrink-0 text-text-default" strokeWidth={1.5} />
-                )}
+                {selected && <Check className="h-4 w-4 shrink-0 text-text-default" />}
               </button>
             );
           })}
@@ -151,7 +149,7 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
         className="group flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border-input bg-background-default px-3 text-left transition-colors duration-[var(--motion-fast)] hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          <Brain className="h-4 w-4 shrink-0 text-text-muted" strokeWidth={1.5} />
+          <Brain className="h-4 w-4 shrink-0 text-text-muted" />
           <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-text-muted">
             Model
           </span>
@@ -162,14 +160,11 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 rounded-sm bg-background-medium px-2 py-1 text-[11px] font-medium text-text-muted">
-          {saving && (
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" strokeWidth={1.5} />
-          )}
+          {saving && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" />}
           {saving ? 'Saving' : 'Set default'}
           {!saving && (
             <ChevronDown
               className={`h-3.5 w-3.5 text-text-muted transition-transform duration-[var(--motion-fast)] ${open ? 'rotate-180' : ''}`}
-              strokeWidth={1.5}
             />
           )}
         </span>

@@ -86,7 +86,6 @@ export default function WorkflowExpandableInfo({
                 className={`w-6 h-6 transition-transform duration-300 ${
                   isValueExpanded ? 'rotate-180' : ''
                 }`}
-                strokeWidth={2.5}
               />
             </Button>
           )}

@@ -7,6 +7,7 @@ import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
 import { registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
+import { GENERATED_THEMES } from '../styles/themes.generated';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -69,138 +70,27 @@ const TERMINAL_FONT =
 const TERMINAL_FONT_SIZE = 13;
 const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13/20
 
-/**
- * ANSI 16 for both themes (design.md §5.2, decision D-11).
- *
- * The ground is --background-muted, not a bespoke cream, so the terminal, the
- * chat code block and the page all share one surface. Previously a single light
- * theme was applied unconditionally, which left the terminal a glowing cream
- * rectangle in dark mode.
- *
- * Every colour clears WCAG AA (4.5:1) on its own ground. The old palette's
- * `blue` (4.45:1) and `brightBlack` — what most CLIs use for dimmed text
- * (4.32:1) — both failed; they are corrected here.
- */
-const TERMINAL_THEMES = {
-  light: {
-    background: '#faf8f3',
-    foreground: '#2d2a26',
-    cursor: '#b85a32', // the focus-ring accent
-    cursorAccent: '#faf8f3',
-    selectionBackground: '#e4d9c3',
-    black: '#2d2a26',
-    red: '#b63f3f',
-    green: '#22784f',
-    yellow: '#9b6818',
-    blue: '#255fb5',
-    magenta: '#7847b8',
-    cyan: '#16818c',
-    white: '#574f46',
-    brightBlack: '#6f6659',
-    brightRed: '#d45252',
-    brightGreen: '#1f7a3d',
-    brightYellow: '#8a5a00',
-    brightBlue: '#2f75d6',
-    brightMagenta: '#9462d6',
-    brightCyan: '#1f9aa6',
-    brightWhite: '#2d2a26',
-  },
-  dark: {
-    background: '#16120c',
-    foreground: '#e8e1d2',
-    cursor: '#e8895f',
-    cursorAccent: '#16120c',
-    selectionBackground: '#403928',
-    black: '#3a3324',
-    red: '#e2665c',
-    green: '#7fbf6a',
-    yellow: '#d9a441',
-    blue: '#6f9fd8',
-    magenta: '#b98ad6',
-    cyan: '#5fb8b8',
-    white: '#d4cab6',
-    brightBlack: '#8d8266',
-    brightRed: '#f0857b',
-    brightGreen: '#9ad686',
-    brightYellow: '#ecc063',
-    brightBlue: '#8fb8e8',
-    brightMagenta: '#d0a6e8',
-    brightCyan: '#7fd0d0',
-    brightWhite: '#e8e1d2',
-  },
-} as const;
+
+
 
 /**
- * Alma Mater (UCSF) terminal palette — the same design as TERMINAL_THEMES but on
- * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted for
- * the family: light #f2f3f4, dark #0d2a50.
+ * Terminal palettes, keyed by family then resolved mode — GENERATED.
  *
- * The dark ground used to be stated as #08213f. That is wrong twice over: it is
- * --background-default (the navy *card*, two steps darker than --background-muted),
- * and it is this palette's own `black`. The ratios were therefore measured against
- * a surface the dock never paints. Corrected here, which forced two follow-ons:
- * `black` was #0d2a50 — now the ground itself, i.e. invisible — so it moves to
- * --background-strong, and `cursor` fell to 4.06:1 on the true ground so it lifts
- * from the orchid accent to --background-accent-hover (5.29:1).
+ * xterm paints to a canvas and cannot read a CSS custom property, so these
+ * values must exist as JS. They used to be hand-typed here: 126 hexes across
+ * three families, with per-stop ratios documented in comments and NOT ONE TEST
+ * covering them. The generator now derives them from the same theme definition
+ * that produces the CSS, and checks every stop against its own ground before it
+ * will emit — which is how five Parchment light stops were found sitting below
+ * the AA floor their comment claimed they cleared.
  *
- * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
- * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
- * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/alma-mater-theme.md.
+ * `background` and `cursorAccent` are derived from each family's own
+ * `terminalGround` token. That token is per-family on purpose: Parchment dark
+ * paints --background-code, while Alma Mater and Roche Limit paint
+ * --background-muted. Assuming they agreed would silently re-ground two
+ * terminals under palettes tuned for a different surface.
  */
-const ALMA_TERMINAL_THEMES = {
-  light: {
-    background: '#f2f3f4',
-    foreground: '#052049',
-    cursor: '#6c247c', // eggplant accent
-    cursorAccent: '#f2f3f4',
-    selectionBackground: '#d7dbe0',
-    black: '#052049',
-    red: '#c40d3e',
-    green: '#007242',
-    yellow: '#8a5a00',
-    blue: '#0f388a',
-    magenta: '#6c247c',
-    cyan: '#0e5258',
-    white: '#506380',
-    brightBlack: '#586780',
-    brightRed: '#d0143f',
-    brightGreen: '#1f7a3d',
-    brightYellow: '#8a5a00',
-    brightBlue: '#255fb5',
-    brightMagenta: '#8a1fa0',
-    brightCyan: '#106a72',
-    brightWhite: '#052049',
-  },
-  dark: {
-    background: '#0d2a50', // --background-muted, alma-mater dark
-    foreground: '#e1e3e5', // 11.15:1
-    cursor: '#d07ee0', // --background-accent-hover orchid, 5.29:1
-    cursorAccent: '#0d2a50',
-    selectionBackground: '#163864',
-    black: '#1e477f', // --background-strong — the ANSI dim slot, 1.55:1
-    red: '#f5768a',
-    green: '#5fbf74',
-    yellow: '#feb80a',
-    blue: '#7fb3e6',
-    magenta: '#c58ad6',
-    cyan: '#5cc6d0',
-    white: '#b4b9bf',
-    brightBlack: '#909aa6',
-    brightRed: '#ff8fa0',
-    brightGreen: '#7fd08f',
-    brightYellow: '#ffca4a',
-    brightBlue: '#a3c9f0',
-    brightMagenta: '#d7a5e8',
-    brightCyan: '#7fd8e0',
-    brightWhite: '#f2f3f4',
-  },
-} as const;
-
-/** Terminal palettes keyed by theme family, then resolved mode. */
-const TERMINAL_THEMES_BY_FAMILY = {
-  parchment: TERMINAL_THEMES,
-  'alma-mater': ALMA_TERMINAL_THEMES,
-} as const;
+const TERMINAL_THEMES_BY_FAMILY = GENERATED_THEMES;
 
 const TerminalPaneView: React.FC<{
   active: boolean;
@@ -231,7 +121,7 @@ const TerminalPaneView: React.FC<{
 
   useEffect(() => {
     const term = terminalRef.current;
-    if (term) term.options.theme = TERMINAL_THEMES_BY_FAMILY[themeFamily][resolvedTheme];
+    if (term) term.options.theme = TERMINAL_THEMES_BY_FAMILY[themeFamily][resolvedTheme].terminal;
   }, [resolvedTheme, themeFamily]);
 
   const focusTerminal = useCallback(() => {
@@ -296,7 +186,7 @@ const TerminalPaneView: React.FC<{
       fontSize: TERMINAL_FONT_SIZE,
       lineHeight: TERMINAL_LINE_HEIGHT,
       scrollback: 8000,
-      theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current],
+      theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current].terminal,
     });
 
     terminalRef.current = term;
@@ -416,7 +306,7 @@ const TerminalPaneView: React.FC<{
         }}
         // The ground is painted ONCE, by the dock's terminal region (bg-background-muted).
         // This host is transparent and contributes only the inset xterm needs to
-        // breathe, so the token — not a hex — is what actually reaches the screen;
+        // breathe, so the generated palette — not a hand-typed hex — is what reaches the screen;
         // the theme `background` above is the forced mirror xterm needs internally
         // (it cannot read a CSS var). The bg-transparent! overrides are what keep
         // the token authoritative: without them xterm's own layers would repaint
@@ -554,7 +444,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   onClick={() => setActivePaneId(pane.id)}
                   className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
                 >
-                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                  <TerminalIcon className="h-4 w-4 flex-shrink-0" />
                   <span className="br-tab__label">{pane.title}</span>
                 </button>
                 <button
@@ -568,7 +458,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   aria-label={`Close terminal tab ${pane.title}`}
                   title={`Close ${pane.title}`}
                 >
-                  <X className="h-3 w-3" />
+                  <X className="h-4 w-4" />
                 </button>
               </div>
             );
@@ -605,7 +495,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           aria-label="Hide terminal"
           title="Hide terminal"
         >
-          <X className="h-3.5 w-3.5" />
+          <X />
         </Button>
       </div>
       {/* The single painted terminal ground. No gutter padding: the terminal

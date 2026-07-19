@@ -1,9 +1,9 @@
 // Single source of truth for session-name state across the renderer.
 //
 // Why this exists: the rename path used to live in three places — BaseChat's
-// chat-tab pill, ChatWindow's dashboard title-bar, and useChatStream's
-// LLM-auto-rename polling. Each one called the API directly, none updated
-// the in-memory session cache, and the dashboard had its own regex-based
+// chat-tab pill, the dashboard window title-bar (since removed), and
+// useChatStream's LLM-auto-rename polling. Each one called the API directly,
+// none updated the in-memory session cache, and each had its own regex-based
 // "is this a default placeholder?" check duplicated from useChatStream. The
 // result was the snap-back bug: a name committed in the UI would stick
 // momentarily, then revert when the stale cache or stale localStorage state
@@ -22,7 +22,7 @@
 //      broadcast. Callers do not need to coordinate cache invalidation or
 //      sibling-window updates themselves.
 //   4. `subscribeSessionNameChanges` — fan-out for sibling windows
-//      (history list, other dashboard windows, the chat tab) to receive
+//      (history list, other open windows, the chat tab) to receive
 //      updates without re-fetching.
 
 import type { Message, Session } from '../api';
@@ -80,7 +80,7 @@ export function cacheUpdateName(sessionId: string, name: string, userSetName: bo
 
 // ── Cross-window broadcast ────────────────────────────────────────────────
 // BroadcastChannel works inside a single renderer (across React subtrees,
-// open routes, sibling dashboard windows) and also across BrowserWindows in
+// open routes, sibling subtrees) and also across BrowserWindows in
 // the same Electron app (Chromium broadcasts on a per-origin basis).
 
 export interface SessionNameChange {

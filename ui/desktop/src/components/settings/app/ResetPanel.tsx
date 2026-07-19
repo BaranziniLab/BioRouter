@@ -1,24 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  AppWindow,
-  BookOpen,
-  Check,
-  ChevronDown,
-  Clock,
-  History,
-  Layers,
-  Loader2,
-  Pipeline,
-  Puzzle,
-  RotateCcw,
-} from '../../icons/app-icons';
+import { Check, ChevronDown, History, Loader2, RotateCcw } from '../../icons/app-icons';
+import { ENTITY_ICONS, type EntityIcon } from '../../icons/entity-icons';
 import { previewReset, resetAppData } from '../../../api';
 import type { ResetCategory, ResetCounts } from '../../../api';
 import { toastService } from '../../../toasts';
 import { clearAllSessionCache } from '../../../utils/sessionCache';
 import { clearSessionListCache } from '../../../utils/sessionListCache';
 import { LocalMessageStorage } from '../../../utils/localMessageStorage';
-import { clearDashboardState } from '../../Dashboard/dashboardStorage';
 import { Button } from '../../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import {
@@ -41,7 +29,7 @@ type CategoryDefinition = {
   countKey: keyof ResetCounts;
   countLabel: string;
   singularCountLabel?: string;
-  icon: typeof AppWindow;
+  icon: EntityIcon;
 };
 
 const CATEGORIES: CategoryDefinition[] = [
@@ -51,7 +39,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Delete every application created with Agent Drafter.',
     countKey: 'applications',
     countLabel: 'built',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.application,
   },
   {
     id: 'knowledge',
@@ -60,7 +48,7 @@ const CATEGORIES: CategoryDefinition[] = [
     countKey: 'knowledgeBases',
     countLabel: 'bases',
     singularCountLabel: 'base',
-    icon: BookOpen,
+    icon: ENTITY_ICONS.knowledge,
   },
   {
     id: 'skills',
@@ -68,7 +56,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove user-installed skills and restore built-in skill files.',
     countKey: 'skills',
     countLabel: 'custom',
-    icon: Layers,
+    icon: ENTITY_ICONS.skill,
   },
   {
     id: 'extensions',
@@ -76,7 +64,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove added extensions while keeping bundled capabilities.',
     countKey: 'extensions',
     countLabel: 'custom',
-    icon: Puzzle,
+    icon: ENTITY_ICONS.extension,
   },
   {
     id: 'schedules',
@@ -84,7 +72,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove custom schedules and restore Daily Meditation.',
     countKey: 'schedules',
     countLabel: 'custom',
-    icon: Clock,
+    icon: ENTITY_ICONS.schedule,
   },
   {
     id: 'workflows',
@@ -92,7 +80,7 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove managed workflows and restore the Meditation workflow.',
     countKey: 'workflows',
     countLabel: 'custom',
-    icon: Pipeline,
+    icon: ENTITY_ICONS.workflow,
   },
   {
     id: 'history',
@@ -107,11 +95,22 @@ const CATEGORIES: CategoryDefinition[] = [
 
 const ALL_CATEGORIES = CATEGORIES.map((category) => category.id);
 
+// Dashboard mode is gone, but installs that ran an older build still carry its
+// localStorage payload. Reset stays responsible for clearing it so the keys do
+// not linger forever; drop this once those versions are out of circulation.
+const DISCONTINUED_DASHBOARD_KEYS = [
+  'biorouter.dashboard.v2',
+  'biorouter.dashboard.v1',
+  'biorouter.labmeeting.v1',
+];
+
 function clearRendererHistory() {
   LocalMessageStorage.clearHistory();
   clearAllSessionCache();
   clearSessionListCache();
-  clearDashboardState();
+  for (const key of DISCONTINUED_DASHBOARD_KEYS) {
+    localStorage.removeItem(key);
+  }
 }
 
 function clearKnowledgeSelections() {

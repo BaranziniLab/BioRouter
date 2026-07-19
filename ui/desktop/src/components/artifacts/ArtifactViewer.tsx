@@ -718,7 +718,7 @@ export default function ArtifactViewer({
                   title={artifactHoverTitle(tab.artifact)}
                   className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                 >
-                  <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <TabIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span className="br-tab__label min-w-0 flex-1 truncate">
                     {tab.artifact.title}
                   </span>
@@ -729,13 +729,13 @@ export default function ArtifactViewer({
                   aria-label={`Close ${tab.artifact.title}`}
                   title={`Close ${tab.artifact.title}`}
                   className={cn(
-                    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-text-subtle transition-[background-color,color,opacity] hover:bg-background-medium hover:text-text-default',
+                    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-subtle transition-[background-color,color,opacity] hover:bg-background-medium hover:text-text-default',
                     isActive
                       ? 'opacity-100'
                       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
                   )}
                 >
-                  <X className="h-3 w-3" aria-hidden="true" />
+                  <X className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
             );
@@ -1279,9 +1279,9 @@ function DirectoryTreePreview({
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
             {isGitRepository ? (
-              <Github className="h-7 w-7 text-text-subtle" aria-hidden="true" />
+              <Github className="h-6 w-6 text-text-subtle" aria-hidden="true" />
             ) : (
-              <Folder className="h-7 w-7 text-text-subtle" aria-hidden="true" />
+              <Folder className="h-6 w-6 text-text-subtle" aria-hidden="true" />
             )}
             <div className="text-sm font-medium text-text-default">
               {isGitRepository ? 'Select a repository file' : 'Select a file'}
@@ -1448,7 +1448,14 @@ function TextFilePreview({
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* `bg-background-code` when the code view is showing, for the same reason
+          MarkdownContent does it: the syntax palette is measured against
+          --background-code, but the panel root paints --background-muted, and the
+          highlighter renders transparent — so the reader was seeing the palette
+          on a surface it was never verified against. In Parchment dark that put
+          `comment` at 4.14:1, under AA. Only the code view switches ground; the
+          markdown and preview branches keep the panel's own surface. */}
+      <div className={cn('min-h-0 flex-1 overflow-auto', showingCode && 'bg-background-code')}>
         {showingCode ? (
           code
         ) : markdown ? (

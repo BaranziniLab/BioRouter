@@ -13,8 +13,11 @@ import {
   parseDelimitedTable,
   pathFromArtifactHref,
   resolveArtifactPath,
+  sandboxedSurface,
   withHostTheme,
 } from './artifactUtils';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
+import type { ThemeFamily } from '../../contexts/ThemeContext';
 
 const WORKING_DIR = '/home/ada/project';
 
@@ -524,6 +527,34 @@ describe('withHostTheme', () => {
     );
     expect(withHostTheme('<div>no head</div>', 'light')).toBe(
       '<script>window.__BR_VIZ_HOST_THEME__="light";</script><div>no head</div>'
+    );
+  });
+});
+
+describe('sandboxedSurface', () => {
+  it('returns the generated tokens for every family and mode', () => {
+    for (const family of THEME_FAMILY_IDS) {
+      for (const mode of ['light', 'dark'] as const) {
+        expect(sandboxedSurface(family, mode)).toBe(GENERATED_THEMES[family][mode].surface);
+      }
+    }
+  });
+
+  // The whole point: a sandboxed preview must not paint one family's ground for
+  // all three. If these ever collapse to a single value, the previews have been
+  // re-hardcoded.
+  it('gives each family a distinct ground in dark mode', () => {
+    const grounds = THEME_FAMILY_IDS.map((family) => sandboxedSurface(family, 'dark').background);
+    expect(new Set(grounds).size).toBe(THEME_FAMILY_IDS.length);
+  });
+
+  // `theme_family` is free-form localStorage: a build that once shipped a family
+  // we later removed leaves an id nothing maps to. Returning `undefined` there
+  // would put `background:undefined` into the srcdoc and paint the document
+  // unstyled, so fall back the way BioRouterMark does.
+  it('falls back to parchment for an unknown family', () => {
+    expect(sandboxedSurface('nonesuch' as ThemeFamily, 'dark')).toBe(
+      GENERATED_THEMES.parchment.dark.surface
     );
   });
 });

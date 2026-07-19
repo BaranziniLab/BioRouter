@@ -1,7 +1,5 @@
 import { useCallback } from 'react';
 import { divergeSession } from '../api';
-import { useOptionalDashboard } from '../contexts/DashboardContext';
-import { useInDashboardCanvas } from '../contexts/DashboardCanvasContext';
 import { toastError } from '../toasts';
 
 export interface UseDivergeResult {
@@ -10,10 +8,8 @@ export interface UseDivergeResult {
    * conversation history up to the last complete assistant answer, leaving the
    * original untouched.
    *
-   * - On a Dashboard canvas window → spawns a new chat box on the canvas
-   *   (closeable like any other), leaving the original window in place.
-   * - Everywhere else (single chat / Hub / Pair) → opens a NEW focused Electron
-   *   window for the branch, leaving the current window exactly where it is.
+   * The branch always opens in a NEW focused Electron window, leaving the
+   * current window exactly where it is.
    *
    * `truncateAfterMs` and `truncateAfterId` identify the assistant message a
    * per-message Diverge button was clicked on; the durable id takes precedence
@@ -28,18 +24,9 @@ export interface UseDivergeResult {
     truncateAfterMs?: number,
     truncateAfterId?: string
   ) => Promise<string | null>;
-  /** True when rendered on the Dashboard canvas, so callers can tailor wording. */
-  inDashboard: boolean;
 }
 
 export function useDiverge(): UseDivergeResult {
-  // `useOptionalDashboard` is truthy app-wide (the provider wraps every route),
-  // so it cannot tell "in a chat" from "on the canvas". `useInDashboardCanvas`
-  // is true ONLY inside a dashboard ChatWindow — that's what decides whether a
-  // diverge spawns on-canvas or opens a separate window.
-  const dashboard = useOptionalDashboard();
-  const onCanvas = useInDashboardCanvas();
-  const useCanvasSpawn = onCanvas && dashboard != null;
 
   const diverge = useCallback(
     async (
@@ -67,15 +54,9 @@ export function useDiverge(): UseDivergeResult {
           throw new Error('Diverge did not return a new session id');
         }
 
-        if (useCanvasSpawn) {
-          // On the dashboard canvas: add a new chat box for the branch. The
-          // original window stays; the new one becomes focused.
-          await dashboard.spawnWindow({ resumeSessionId: newSessionId, cwd: workingDir });
-        } else {
-          // In a normal chat: open a NEW focused Electron window for the
-          // branch. The current window is never navigated or changed.
-          window.electron.createDivergedChatWindow(workingDir, newSessionId);
-        }
+        // Open a NEW focused Electron window for the branch. The current
+        // window is never navigated or changed.
+        window.electron.createDivergedChatWindow(workingDir, newSessionId);
         return newSessionId;
       } catch (err) {
         console.error('Failed to diverge session:', err);
@@ -86,8 +67,8 @@ export function useDiverge(): UseDivergeResult {
         return null;
       }
     },
-    [dashboard, useCanvasSpawn]
+    []
   );
 
-  return { diverge, inDashboard: useCanvasSpawn };
+  return { diverge };
 }

@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MessageDivergeLink from './MessageDivergeLink';
-import { DashboardContext, DashboardApi } from '../contexts/DashboardContext';
-import { DashboardCanvasContext } from '../contexts/DashboardCanvasContext';
 
 const mockDivergeSession = vi.fn();
 vi.mock('../api', () => ({
@@ -26,18 +24,8 @@ beforeEach(() => {
   };
 });
 
-/** Minimal DashboardApi with a spy spawnWindow; the rest are no-ops. */
-function makeDashboard(spawnWindow: DashboardApi['spawnWindow']): DashboardApi {
-  return new Proxy({ spawnWindow } as Partial<DashboardApi>, {
-    get(target, prop) {
-      if (prop in target) return target[prop as keyof DashboardApi];
-      return () => {};
-    },
-  }) as DashboardApi;
-}
-
 describe('MessageDivergeLink', () => {
-  it('opens a new desktop window when NOT inside a dashboard', async () => {
+  it('opens a new desktop window for the branch', async () => {
     mockDivergeSession.mockResolvedValue({
       data: { sessionId: '20260622_9', workingDir: '/home/u/proj' },
     });
@@ -81,53 +69,6 @@ describe('MessageDivergeLink', () => {
         throwOnError: true,
       });
     });
-  });
-
-  it('spawns an inline chat box when inside a dashboard', async () => {
-    mockDivergeSession.mockResolvedValue({
-      data: { sessionId: '20260622_9', workingDir: '/home/u/proj' },
-    });
-    const spawnWindow = vi.fn().mockResolvedValue(undefined);
-
-    render(
-      <DashboardContext.Provider value={makeDashboard(spawnWindow)}>
-        {/* Inside a dashboard CANVAS window — only then does diverge spawn
-            on-canvas instead of opening a new Electron window. */}
-        <DashboardCanvasContext.Provider value={true}>
-          <MessageDivergeLink sessionId="20260622_1" />
-        </DashboardCanvasContext.Provider>
-      </DashboardContext.Provider>
-    );
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
-
-    await waitFor(() => {
-      expect(spawnWindow).toHaveBeenCalledWith({
-        resumeSessionId: '20260622_9',
-        cwd: '/home/u/proj',
-      });
-    });
-    // No new desktop window in dashboard mode.
-    expect(mockCreateChatWindow).not.toHaveBeenCalled();
-    expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
-  });
-
-  it('inside the dashboard PROVIDER but NOT on the canvas opens a new window (isolation)', async () => {
-    mockDivergeSession.mockResolvedValue({
-      data: { sessionId: '20260622_9', workingDir: '/home/u/proj' },
-    });
-    const spawnWindow = vi.fn().mockResolvedValue(undefined);
-    // The DashboardProvider wraps the whole app, so the context is present even
-    // in the chat view. A diverge from here must NOT leak into the dashboard.
-    render(
-      <DashboardContext.Provider value={makeDashboard(spawnWindow)}>
-        <MessageDivergeLink sessionId="20260622_1" />
-      </DashboardContext.Provider>
-    );
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
-
-    await waitFor(() => expect(mockCreateDivergedChatWindow).toHaveBeenCalled());
-    expect(mockCreateChatWindow).not.toHaveBeenCalled();
-    expect(spawnWindow).not.toHaveBeenCalled();
   });
 
   it('shows an error toast and opens nothing when the backend fails', async () => {

@@ -38,7 +38,6 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
         </Badge>
         <ChevronDown
           className={`h-4 w-4 shrink-0 text-text-muted transition-transform duration-[var(--motion-fast)] ${open ? 'rotate-180' : ''}`}
-          strokeWidth={1.5}
         />
       </button>
       {open && <KBSelectorPalette onClose={() => setOpen(false)} />}

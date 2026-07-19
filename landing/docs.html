@@ -143,10 +143,6 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           Knowledge bases
         </button>
-        <button class="docs-nav-item" id="dnav-dashboard" onclick="showDoc('dashboard')">
-          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
-          Dashboard mode
-        </button>
         <button class="docs-nav-item" id="dnav-workflows" onclick="showDoc('workflows')">
           <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Workflows and automation
@@ -235,7 +231,7 @@
           <li><strong>Knowledge &amp; memory:</strong> clear saved knowledge and recreate an empty Soul base.</li>
           <li><strong>Skills and extensions:</strong> remove user additions while restoring bundled content.</li>
           <li><strong>Schedules and workflows:</strong> remove custom entries and restore the Meditation defaults.</li>
-          <li><strong>Conversation &amp; usage history:</strong> clear chats, token and cost totals, dashboard state, and checkpoints.</li>
+          <li><strong>Conversation &amp; usage history:</strong> clear chats, token and cost totals, and checkpoints.</li>
         </ul>
         <div class="alert alert-warning"><strong>Reset is permanent.</strong> Select only the categories you intend to remove. Biorouter refuses to reset data while an agent turn is active.</div>
 
@@ -591,7 +587,7 @@ retry:
 
         <h2>Running a workflow</h2>
         <p>Open Sidebar → Workflows → select a workflow → fill parameters → Run. To import a workflow file, use <strong>Workflows → Import workflow</strong>. The workflow builder can pin provider/model/temperature, choose visible knowledge bases, prefer specific skills, and pre-enable extensions for that run.</p>
-        <p>Workflows can run in the current chat, a new chat window, or Dashboard mode. They can also be registered as slash commands, exported as YAML, or shared through a deeplink.</p>
+        <p>Workflows can run in the current chat or in a new chat tab, so a repeatable run can sit beside your ordinary conversations. They can also be registered as slash commands, exported as YAML, or shared through a deeplink.</p>
 
         <h2>Creating a workflow from a session</h2>
         <p>After an exploratory chat that produced a useful result, open <strong>Workflows → Create from session</strong>. Biorouter extracts the instructions, the extensions you actually used, and the model you ran on into a fresh YAML file you can edit, share, or schedule.</p>
@@ -1062,79 +1058,6 @@ biorouter schedule cron-help                   # cron expression examples</pre>
       </div>
 
       <!-- KNOWLEDGE -->
-      <!-- DASHBOARD -->
-      <div class="doc-page" id="doc-dashboard">
-        <h1>Dashboard mode</h1>
-        <p class="doc-intro">Dashboard mode turns Biorouter into an infinite spatial canvas where you run <strong>many chat sessions at once</strong>, side by side. Split coding, literature review, and data analysis across dozens of agents working in parallel — and organize, fold, and watch them all from a single view. Each window is an independent session with its own history and its own model.</p>
-
-        <h2>Opening the dashboard</h2>
-        <p>Click the <strong>grid icon</strong> in the top-left of the window chrome (next to the new-session and sidebar-toggle buttons) to enter Dashboard mode. A toolbar appears across the top of the canvas; the count of open conversations is shown on the right as <em>“N on canvas.”</em></p>
-
-        <h2>The toolbar</h2>
-        <table class="doc-table">
-          <thead><tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr></thead>
-          <tbody>
-            <tr><td><strong>Spawn</strong></td><td><span class="shortcut-stack"><code>⌘⌥N</code><code>Ctrl Alt N</code></span></td><td>Open a new conversation window on the canvas. It appears focused and centered.</td></tr>
-            <tr><td><strong>Organize</strong></td><td><span class="shortcut-stack"><code>⌘⌥O</code><code>Ctrl Alt O</code></span></td><td>Resolve overlaps, tidy the windows into a clean layout, and re-center the camera on the focused window.</td></tr>
-            <tr><td><strong>Fold</strong> <span style="font-size:12px;color:var(--text-2)">(toggle)</span></td><td><span class="shortcut-stack"><code>⌘⌥F</code><code>Ctrl Alt F</code></span></td><td>Collapse <em>every</em> window into a compact card so you can see them all at once; one card stays open at a time. Toggle it back off to return to full windows.</td></tr>
-            <tr><td><strong>Clear</strong></td><td>Mouse only</td><td>Close every conversation on the canvas.</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Dashboard keyboard shortcuts</h2>
-        <p>Dashboard shortcuts use <strong>Command + Option</strong> on macOS and <strong>Control + Alt</strong> on Windows/Linux. They are available while a chat input is focused, so you can spawn, organize, fold, and move between windows without leaving the keyboard. Destructive remove shortcuts are ignored while you are typing in an editable field.</p>
-        <table class="doc-table">
-          <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
-          <tbody>
-            <tr><td class="shortcut-row"><code>⌘⌥N</code> / <code>Ctrl Alt N</code></td><td>Spawn a new focused conversation window.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥O</code> / <code>Ctrl Alt O</code></td><td>Organize the canvas, resolve overlaps, and center the focused window.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥F</code> / <code>Ctrl Alt F</code></td><td>Toggle fold mode for the whole dashboard.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥A</code> / <code>Ctrl Alt A</code></td><td>Fold all windows into cards.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥E</code> / <code>Ctrl Alt E</code></td><td>Unfold all windows and leave fold mode.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥Enter</code> / <code>Ctrl Alt Enter</code></td><td>Fold or unfold the focused window.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥[</code>, <code>⌘⌥]</code></td><td>Cycle focus to the previous or next window.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥↑</code>, <code>⌘⌥↓</code>, <code>⌘⌥←</code>, <code>⌘⌥→</code></td><td>Focus the nearest window in that direction.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥1</code> through <code>⌘⌥9</code></td><td>Focus the matching window in visual order, from top-left to bottom-right.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥⇧1</code> through <code>⌘⌥⇧9</code></td><td>Fold or unfold that numbered window without changing the rest of the canvas.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⌥Delete</code> / <code>⌘⌥Backspace</code></td><td>Remove the focused dashboard window when focus is not inside an editable text field.</td></tr>
-            <tr><td class="shortcut-row"><code>⌘⇧N</code> / <code>Ctrl Shift N</code></td><td>Legacy spawn shortcut. Use <code>⌘⌥N</code> for the dashboard-native path.</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Working with a window</h2>
-        <p>Each conversation is a draggable, resizable window with a colored accent (so you can tell them apart at a glance). Its title bar has four controls on the right:</p>
-        <table class="doc-table">
-          <thead><tr><th>Button</th><th>Action</th></tr></thead>
-          <tbody>
-            <tr><td><strong>Fold</strong> (—)</td><td>Collapse this window into a card.</td></tr>
-            <tr><td><strong>Shrink</strong> (⤡)</td><td>Resize down to the minimum window size.</td></tr>
-            <tr><td><strong>Enlarge</strong> (⤢)</td><td>Resize up to the default comfortable chat size.</td></tr>
-            <tr><td><strong>Close</strong> (✕)</td><td>End this conversation and remove it from the canvas.</td></tr>
-          </tbody>
-        </table>
-        <ul>
-          <li><strong>Move:</strong> drag the title bar. <strong>Resize:</strong> drag the bottom-right corner handle.</li>
-          <li><strong>Focus:</strong> click any background window to bring it to the front (the focused window carries a deeper shadow).</li>
-          <li><strong>Rename:</strong> double-click the window's title. (New sessions are auto-named after the first exchange.)</li>
-          <li><strong>Switch models per window:</strong> each window keeps its own model, so you can run a fast local model in one and a frontier cloud model in another at the same time.</li>
-        </ul>
-
-        <h2>Moving around the canvas</h2>
-        <p>The canvas is effectively infinite. <strong>Pan</strong> by dragging any empty (dotted) area, or with a two-finger trackpad scroll. The camera <strong>auto-centers</strong> on the active window whenever you spawn, focus, enlarge/shrink, or hit <em>Organize</em> — so you never lose a window off-screen. Use <strong>Organize</strong> any time things get cluttered to snap everything back into a tidy, centered arrangement.</p>
-        <p>The dashboard state is stored locally in the desktop app: open windows, the focused window, camera offset, and fold mode survive ordinary navigation. Closing a dashboard window removes it from the canvas without deleting the underlying chat history.</p>
-
-        <h2>Fold mode — see everything, run one</h2>
-        <p>Turn on <strong>Fold</strong> when you have many sessions and want an overview. Every window collapses into a small card showing its name, working directory, and a status indicator — a hollow ring when idle, a gently <em>breathing</em> dot when the agent is busy — plus a hover preview of the latest message. In fold mode:</p>
-        <ul>
-          <li><strong>Click a card</strong> to expand it into a full window (only one is open at a time).</li>
-          <li><strong>Click empty canvas</strong> to refold the open one, returning to the all-cards overview.</li>
-          <li>Cards still expose <strong>Expand / Shrink / Enlarge / Close</strong> controls, and you can drag them to rearrange.</li>
-        </ul>
-        <p>This makes it easy to fire off a dozen long-running agents, fold them all into cards, watch the busy indicators, and dip into whichever one needs you — then fold it away again.</p>
-        <h2>Workflows on the dashboard</h2>
-        <p>The workflow library can launch a workflow directly onto the dashboard. Use this when you want a repeatable workflow running beside ordinary chats, or when you want several parameterized runs visible at once.</p>
-      </div>
-
       <div class="doc-page" id="doc-knowledge">
         <h1>Knowledge bases</h1>
         <p class="doc-intro">A knowledge base is a personal, <strong>LLM-maintained</strong> store of structured information: a folder of markdown pages backed by a full git history. You never hand-edit it: Biorouter reads your sources, writes cross-linked pages, classifies credibility, and commits every change. Because it's plain markdown under git, everything stays <strong>local on disk</strong>, readable, diffable, and reversible.</p>
@@ -1324,7 +1247,7 @@ fi</pre>
     if (m.classList.contains('open') && !m.contains(e.target) && !h.contains(e.target)) m.classList.remove('open');
   });
 
-  const DOC_PAGES = ['install','ucsf','cli','providers','extensions','dashboard','knowledge','hooks','workflows','privacy','arch','agents','agent-sdk'];
+  const DOC_PAGES = ['install','ucsf','cli','providers','extensions','knowledge','hooks','workflows','privacy','arch','agents','agent-sdk'];
   function showDoc(name) {
     DOC_PAGES.forEach(d => {
       const p = document.getElementById('doc-' + d);

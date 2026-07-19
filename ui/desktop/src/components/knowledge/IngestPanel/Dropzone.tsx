@@ -128,7 +128,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         <div
           className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-medium text-text-muted'}`}
         >
-          <Upload className="h-5 w-5" strokeWidth={1.5} />
+          <Upload className="h-5 w-5" />
         </div>
         <div className="mt-2 text-sm font-medium">Drag and drop to stage</div>
         <div className="mt-1 text-xs leading-5 text-text-muted">
@@ -180,7 +180,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
               }}
               className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
             >
-              <FileStack className="h-5 w-5 text-text-muted" strokeWidth={1.5} />
+              <FileStack className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-sm font-medium">Choose files</div>
               <p className="mt-1 text-xs leading-5 text-text-muted">
                 Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
@@ -196,7 +196,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
               }}
               className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
             >
-              <FolderTree className="h-5 w-5 text-text-muted" strokeWidth={1.5} />
+              <FolderTree className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-sm font-medium">Choose folder or archive</div>
               <p className="mt-1 text-xs leading-5 text-text-muted">
                 Let Biorouter unpack archives, skip binaries, and stage readable children one by one

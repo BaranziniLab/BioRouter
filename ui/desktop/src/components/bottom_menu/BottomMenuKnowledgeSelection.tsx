@@ -71,7 +71,7 @@ export function BottomMenuKnowledgeSelection() {
               className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
               aria-label={`Manage knowledge bases (${visibleBases.length} visible)`}
             >
-              <BookOpen className="mr-0.5 h-4 w-4" strokeWidth={1.5} />
+              <BookOpen className="mr-0.5 h-4 w-4" />
               <span>{visibleBases.length}</span>
             </button>
           </DropdownMenuTrigger>

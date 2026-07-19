@@ -8,14 +8,21 @@ import {
   Activity as _Activity,
   AlertCircle as _AlertCircle,
   AlertTriangle as _AlertTriangle,
+  AlignLeft as _AlignLeft,
   AppWindow as _AppWindow,
   AppWindowMac as _AppWindowMac,
   Archive as _Archive,
+  ArrowDown as _ArrowDown,
   ArrowLeft as _ArrowLeft,
+  ArrowUp as _ArrowUp,
+  BookMarked as _BookMarked,
   BookOpen as _BookOpen,
+  Bookmark as _Bookmark,
+  BookmarkPlus as _BookmarkPlus,
   Bot as _Bot,
   Brain as _Brain,
   Calendar as _Calendar,
+  Camera as _Camera,
   Check as _Check,
   CheckCircle as _CheckCircle,
   CheckCircle2 as _CheckCircle2,
@@ -40,6 +47,8 @@ import {
   EyeOff as _EyeOff,
   File as _File,
   FileCode2 as _FileCode2,
+  FilePlus as _FilePlus,
+  FileSpreadsheet as _FileSpreadsheet,
   FileStack as _FileStack,
   FileText as _FileText,
   FlaskConical as _FlaskConical,
@@ -61,19 +70,17 @@ import {
   Image as _Image,
   Info as _Info,
   Layers as _Layers,
-  LayoutDashboard as _LayoutDashboard,
   Link as _Link,
   Loader2 as _Loader2,
   LoaderCircle as _LoaderCircle,
   Lock as _Lock,
   Maximize2 as _Maximize2,
-  Minimize2 as _Minimize2,
   MessageSquare as _MessageSquare,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
-  Minus as _Minus,
   Monitor as _Monitor,
   Moon as _Moon,
+  MoreHorizontal as _MoreHorizontal,
   Music as _Music,
   Package as _Package,
   Palette as _Palette,
@@ -100,7 +107,7 @@ import {
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
   Square as _Square,
-  SquareArrowOutUpRight as _SquareArrowOutUpRight,
+  SquareStack as _SquareStack,
   StopCircle as _StopCircle,
   Sun as _Sun,
   Target as _Target,
@@ -136,18 +143,6 @@ const light = (Icon: LucideIcon): React.FC<LucideProps> => {
 };
 
 // ---------------------------------------------------------------------------
-// Canonical icon sizes (design.md §3.9). Pass as the `size` prop, e.g.
-// <Search size={ICON_SIZE.dense} />.
-// ---------------------------------------------------------------------------
-export const ICON_SIZE = {
-  dense: 16, // inline / dense rows
-  default: 20, // default
-  page: 24, // page-level / empty-state
-} as const;
-
-export type IconSizeName = keyof typeof ICON_SIZE;
-
-// ---------------------------------------------------------------------------
 // Named exports — same names as the original file so no consumer changes.
 // ---------------------------------------------------------------------------
 
@@ -155,14 +150,22 @@ export const Activity = light(_Activity);
 export const AlertCircle = light(_AlertCircle);
 export const Info = light(_Info);
 export const AlertTriangle = light(_AlertTriangle);
+// The session-review mark the cohesion spec draws (three descending rules).
+export const AlignLeft = light(_AlignLeft);
 export const AppWindow = light(_AppWindow);
 export const AppWindowMac = light(_AppWindowMac);
 export const Archive = light(_Archive);
+export const ArrowDown = light(_ArrowDown);
 export const ArrowLeft = light(_ArrowLeft);
+export const ArrowUp = light(_ArrowUp);
+export const BookMarked = light(_BookMarked);
 export const BookOpen = light(_BookOpen);
+export const Bookmark = light(_Bookmark);
+export const BookmarkPlus = light(_BookmarkPlus);
 export const Bot = light(_Bot);
 export const Brain = light(_Brain);
 export const Calendar = light(_Calendar);
+export const Camera = light(_Camera);
 export const Check = light(_Check);
 export const CheckIcon = Check;
 export const CheckCircle = light(_CheckCircle);
@@ -191,6 +194,8 @@ export const Eye = light(_Eye);
 export const EyeOff = light(_EyeOff);
 export const File = light(_File);
 export const FileCode2 = light(_FileCode2);
+export const FilePlus = light(_FilePlus);
+export const FileSpreadsheet = light(_FileSpreadsheet);
 export const FileStack = light(_FileStack);
 export const FileText = light(_FileText);
 export const FlaskConical = light(_FlaskConical);
@@ -211,19 +216,17 @@ export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
 export const Layers = light(_Layers);
-export const LayoutDashboard = light(_LayoutDashboard);
 export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
 export const LoaderCircle = light(_LoaderCircle);
 export const Lock = light(_Lock);
 export const Maximize2 = light(_Maximize2);
-export const Minimize2 = light(_Minimize2);
 export const MessageSquare = light(_MessageSquare);
 export const MessageSquarePlus = light(_MessageSquarePlus);
 export const MessageSquareText = light(_MessageSquareText);
-export const Minus = light(_Minus);
 export const Monitor = light(_Monitor);
 export const Moon = light(_Moon);
+export const MoreHorizontal = light(_MoreHorizontal);
 export const Music = light(_Music);
 export const Package = light(_Package);
 export const Palette = light(_Palette);
@@ -252,10 +255,11 @@ export const Share2 = light(_Share2);
 export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);
-// Opening a *new window*. Deliberately not `Plus` (that is New Session) and not
-// `AppWindow` (that is the Applications route) — a window with an arrow leaving
-// it reads as "pop this out into its own window" and is used nowhere else.
-export const NewWindow = light(_SquareArrowOutUpRight);
+// Opening a *new window* — the ⧉ mark the cohesion spec draws for the titlebar
+// control (two offset windows). Deliberately not `Plus` (that is New Session),
+// not `AppWindow` (that is the Applications route), and not `Copy`, whose
+// geometry the spec's drawing actually matches but which already means copy.
+export const NewWindow = light(_SquareStack);
 // The original 'Square' icon was visually a circle-with-square (stop button),
 // which corresponds to lucide's StopCircle. Keep both names pointing to it.
 export const Square = light(_StopCircle);
@@ -281,15 +285,15 @@ export const Zap = light(_Zap);
 // ---------------------------------------------------------------------------
 
 /** Central node with rays — represents a knowledge graph / KB. */
-export const KnowledgeIcon: React.FC<LucideProps> = ({ strokeWidth = 1.5, ...props }) => (
+export const KnowledgeIcon: React.FC<LucideProps> = (props) => (
   <svg
     viewBox="0 0 24 24"
     fill="none"
-    stroke="currentColor"
-    strokeWidth={strokeWidth}
     strokeLinecap="round"
     strokeLinejoin="round"
     {...props}
+    stroke="currentColor"
+    strokeWidth={1.5}
   >
     <circle cx="12" cy="12" r="3" />
     <circle cx="5" cy="6" r="1.6" />

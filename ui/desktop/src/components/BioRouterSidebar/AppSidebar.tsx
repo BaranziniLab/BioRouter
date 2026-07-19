@@ -1,15 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Clock,
-  Home,
-  Layers,
-  Puzzle,
-  AppWindow,
-  Pipeline,
-  Plus,
-  Settings,
-  KnowledgeIcon,
-} from '../icons/app-icons';
+import { Home, Plus, Settings } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -81,49 +72,49 @@ const menuItems: NavigationItem[] = [
     type: 'item',
     path: '/workflows',
     label: 'Workflows',
-    icon: Pipeline,
+    icon: ENTITY_ICONS.workflow,
     tooltip: 'Browse your saved workflows',
   },
   {
     type: 'item',
     path: '/schedules',
     label: 'Scheduler',
-    icon: Clock,
+    icon: ENTITY_ICONS.schedule,
     tooltip: 'Manage scheduled runs',
   },
   {
     type: 'item',
     path: '/extensions',
     label: 'Extensions',
-    icon: Puzzle,
+    icon: ENTITY_ICONS.extension,
     tooltip: 'Manage your extensions',
   },
   {
     type: 'item' as const,
     path: '/skills',
     label: 'Skills',
-    icon: Layers,
+    icon: ENTITY_ICONS.skill,
     tooltip: 'Manage reusable instruction skills',
   },
   {
     type: 'item' as const,
     path: '/knowledge',
     label: 'Knowledge',
-    icon: KnowledgeIcon,
+    icon: ENTITY_ICONS.knowledge,
     tooltip: 'Personal knowledge bases',
   },
   {
     type: 'item' as const,
     path: '/applications',
     label: 'Applications',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.application,
     tooltip: 'Biorouter apps you built with Agent Drafter',
   },
   {
     type: 'item',
     path: '/apps',
     label: 'Apps',
-    icon: AppWindow,
+    icon: ENTITY_ICONS.mcpApp,
     tooltip: 'Browse and launch MCP apps',
   },
 ];
@@ -229,7 +220,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           tooltip={entry.tooltip}
           className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
         >
-          <IconComponent className="h-4 w-4" />
+          {/* Icons take --sidebar-icon rather than inheriting the label's ink.
+              In Parchment that token passes through to --sidebar-foreground, so
+              nothing changes there; Alma Mater points it at UCSF teal, which is
+              where the brand actually lives in that theme. */}
+          <IconComponent className="h-4 w-4 text-sidebar-icon" />
           <span>{entry.label}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>

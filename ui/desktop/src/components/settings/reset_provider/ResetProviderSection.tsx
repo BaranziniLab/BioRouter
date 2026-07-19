@@ -1,5 +1,5 @@
 import { Button } from '../../ui/button';
-import { RefreshCw } from '../../icons/app-icons';
+import { RotateCcw } from '../../icons/app-icons';
 import { useConfig } from '../../ConfigContext';
 import { View, ViewOptions } from '../../../utils/navigationUtils';
 
@@ -34,7 +34,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
         variant="destructive"
         className="flex items-center justify-center gap-2"
       >
-        <RefreshCw className="h-4 w-4" />
+        <RotateCcw className="h-4 w-4" />
         Reset Provider and Model
       </Button>
     </div>

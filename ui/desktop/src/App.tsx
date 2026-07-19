@@ -54,8 +54,6 @@ import ApplicationsView from './components/applications/ApplicationsView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
-import { DashboardProvider } from './components/Dashboard/DashboardProvider';
-import { DashboardRoute } from './components/Dashboard/DashboardRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
@@ -73,7 +71,7 @@ const HubRouteWrapper = () => {
  * It holds the PER-CHAT-TAB terminals, keyed by tab id, above the tab switch so
  * a tab's shell survives switching away from it (BaseChat, keyed by tab id,
  * remounts on every switch). Its scope is deliberately this route and no wider:
- * every other surface (the Dashboard's N chat windows, /extensions' mini-chat,
+ * every other surface (/extensions' mini-chat,
  * the Hub) has no provider, so useTerminalDock() returns null there and BaseChat
  * keeps its own local per-chat dock exactly as it does today. Hoisting this to
  * the app root would let those surfaces share terminal state across windows.
@@ -626,60 +624,57 @@ export function AppInner() {
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
         <ChatStreamProvider>
-          <DashboardProvider>
-            <KnowledgeProvider sessionId={chat.sessionId || null}>
-              <Routes>
-                <Route path="launcher" element={<LauncherView />} />
+          <KnowledgeProvider sessionId={chat.sessionId || null}>
+            <Routes>
+              <Route path="launcher" element={<LauncherView />} />
+              <Route
+                path="welcome"
+                element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
+              />
+              <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
+              <Route path="standalone-app" element={<StandaloneAppView />} />
+              <Route
+                path="/"
+                element={
+                  <ProviderGuard didSelectProvider={didSelectProvider}>
+                    <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
+                      <AppLayout />
+                    </ChatProvider>
+                  </ProviderGuard>
+                }
+              >
+                <Route index element={<HubRouteWrapper />} />
+                <Route path="pair" element={<PairRouteWrapper setChat={setChat} />} />
+                <Route path="settings" element={<SettingsRoute />} />
                 <Route
-                  path="welcome"
-                  element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
-                />
-                <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
-                <Route path="standalone-app" element={<StandaloneAppView />} />
-                <Route
-                  path="/"
+                  path="extensions"
                   element={
-                    <ProviderGuard didSelectProvider={didSelectProvider}>
-                      <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
-                        <AppLayout />
-                      </ChatProvider>
-                    </ProviderGuard>
+                    <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
+                      <ExtensionsRoute />
+                    </ChatProvider>
                   }
-                >
-                  <Route index element={<HubRouteWrapper />} />
-                  <Route path="pair" element={<PairRouteWrapper setChat={setChat} />} />
-                  <Route path="settings" element={<SettingsRoute />} />
-                  <Route
-                    path="extensions"
-                    element={
-                      <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
-                        <ExtensionsRoute />
-                      </ChatProvider>
-                    }
-                  />
-                  <Route path="apps" element={<AppsView />} />
-                  <Route path="applications" element={<ApplicationsView />} />
-                  <Route path="sessions" element={<SessionsRoute />} />
-                  <Route path="schedules" element={<SchedulesRoute />} />
-                  <Route path="workflows" element={<WorkflowsRoute />} />
-                  <Route path="skills" element={<SkillsRoute />} />
-                  <Route path="knowledge" element={<KnowledgeRoute />} />
-                  <Route path="dashboard" element={<DashboardRoute />} />
-                  <Route
-                    path="shared-session"
-                    element={
-                      <SharedSessionRouteWrapper
-                        isLoadingSharedSession={isLoadingSharedSession}
-                        setIsLoadingSharedSession={setIsLoadingSharedSession}
-                        sharedSessionError={sharedSessionError}
-                      />
-                    }
-                  />
-                  <Route path="permission" element={<PermissionRoute />} />
-                </Route>
-              </Routes>
-            </KnowledgeProvider>
-          </DashboardProvider>
+                />
+                <Route path="apps" element={<AppsView />} />
+                <Route path="applications" element={<ApplicationsView />} />
+                <Route path="sessions" element={<SessionsRoute />} />
+                <Route path="schedules" element={<SchedulesRoute />} />
+                <Route path="workflows" element={<WorkflowsRoute />} />
+                <Route path="skills" element={<SkillsRoute />} />
+                <Route path="knowledge" element={<KnowledgeRoute />} />
+                <Route
+                  path="shared-session"
+                  element={
+                    <SharedSessionRouteWrapper
+                      isLoadingSharedSession={isLoadingSharedSession}
+                      setIsLoadingSharedSession={setIsLoadingSharedSession}
+                      sharedSessionError={sharedSessionError}
+                    />
+                  }
+                />
+                <Route path="permission" element={<PermissionRoute />} />
+              </Route>
+            </Routes>
+          </KnowledgeProvider>
         </ChatStreamProvider>
       </div>
     </>

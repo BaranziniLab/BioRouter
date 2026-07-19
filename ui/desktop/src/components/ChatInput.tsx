@@ -1,11 +1,10 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { ScrollText } from './icons/app-icons';
+import { ChevronsDownUp, Send, X } from './icons/app-icons';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
-import { Send, Close } from './icons';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
@@ -133,7 +132,7 @@ interface ChatInputProps {
   onWorkingDirChange?: (newDir: string) => void;
   /** Optional override for vision capability. When the chat is bound to a
    * specific session whose model differs from the user's global default
-   * (notably dashboard windows), the override reflects the session's actual
+   * (notably tabs and split panes), the override reflects the session's actual
    * model. Falls back to the global ModelAndProviderContext flag when
    * undefined. */
   supportsVisionOverride?: boolean;
@@ -194,9 +193,9 @@ export default function ChatInput({
     currentModelSupportsVision: globalSupportsVision,
     currentModelSupportedInputMimeTypes: globalSupportedInputMimeTypes,
   } = useModelAndProvider();
-  // Prefer the session-scoped flag when provided. This matters in dashboard
-  // mode (where each window may be bound to a different model than the user's
-  // global default) and after per-session model switches.
+  // Prefer the session-scoped flag when provided. This matters when several
+  // chats are open at once (each may be bound to a different model than the
+  // user's global default) and after per-session model switches.
   const currentModelSupportsVision =
     supportsVisionOverride !== undefined ? supportsVisionOverride : globalSupportsVision;
   const currentModelSupportedInputMimeTypes =
@@ -369,21 +368,6 @@ export default function ChatInput({
   const [hasUserTyped, setHasUserTyped] = useState(false);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-
-  // Listen for parent-initiated focus requests (e.g. dashboard ChatWindow
-  // dispatches 'focus-chat-input' when a folded card is unfolded). The mount
-  // autoFocus on textarea doesn't re-fire on visibility change, so we need
-  // an explicit poke. Match by sessionId so a stray broadcast doesn't focus
-  // every chat input on the page.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ sessionId?: string | null }>).detail;
-      if (detail?.sessionId && detail.sessionId !== sessionId) return;
-      textAreaRef.current?.focus();
-    };
-    window.addEventListener('focus-chat-input', handler);
-    return () => window.removeEventListener('focus-chat-input', handler);
-  }, [sessionId]);
 
   // Re-populate the composer when a submit failed before the backend accepted it
   // (e.g. backend unreachable): BaseChat.handleCreateSessionError dispatches
@@ -648,7 +632,7 @@ export default function ChatInput({
 
           handleSubmit(customEvent);
         },
-        compactIcon: <ScrollText size={12} />,
+        compactIcon: <ChevronsDownUp size={12} />,
       });
     }
 
@@ -1651,7 +1635,7 @@ export default function ChatInput({
                   variant="outline"
                   size="xs"
                 >
-                  <Close />
+                  <X />
                 </Button>
               )}
             </div>
@@ -1707,7 +1691,7 @@ export default function ChatInput({
                   variant="outline"
                   size="xs"
                 >
-                  <Close />
+                  <X />
                 </Button>
               )}
             </div>

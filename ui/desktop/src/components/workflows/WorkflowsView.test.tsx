@@ -14,9 +14,6 @@ vi.mock('../../workflow/workflow_management', () => ({
 }));
 
 vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
-vi.mock('../../contexts/DashboardContext', () => ({
-  useDashboard: () => ({ spawnWindow: vi.fn() }),
-}));
 vi.mock('../conversation/SearchView', () => ({
   SearchView: ({ children }: { children: ReactNode }) => children,
 }));

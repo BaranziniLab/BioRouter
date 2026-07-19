@@ -193,6 +193,11 @@
      kept warm and low-contrast so it never reads as glaring). */
   --sidebar: #f3ede1;
   --sidebar-foreground: var(--text-default);
+  /* Nav-icon colour. Parchment keeps icons the same ink as their label, so this
+     is a pass-through; Alma Mater overrides it to carry the brand teal. Defined
+     here (and in .dark) so every theme resolves it and check-contrast.mjs can
+     assert it across all four. */
+  --sidebar-icon: var(--sidebar-foreground);
   --sidebar-primary: var(--background-accent);
   --sidebar-primary-foreground: var(--text-inverse);
   --sidebar-hover: #ece4d4;
@@ -203,6 +208,9 @@
   --sidebar-ring: var(--ring);
 
   /* custom shadow — flat by default; popover for elevated menus/modals */
+  /* Modal / diagnostics scrim. Tokenised so each family tints it to its own
+     ink rather than inheriting Parchment's warm brown. */
+  --scrim: rgba(32, 25, 15, 0.18);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
   /* composer: a hair more lift than --shadow-default so the chat box reads as a
      distinct, gently raised surface — deliberately very subtle */
@@ -283,6 +291,7 @@
      near-black main canvas, with its own hover/active steps. */
   --sidebar: var(--background-muted);
   --sidebar-foreground: var(--text-default);
+  --sidebar-icon: var(--sidebar-foreground);
   --sidebar-primary: var(--background-accent);
   --sidebar-primary-foreground: var(--text-inverse);
   --sidebar-hover: #322b1d;
@@ -292,6 +301,7 @@
   --sidebar-border: var(--color-neutral-700);
   --sidebar-ring: var(--ring);
 
+  --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
@@ -303,43 +313,40 @@
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   ALMA MATER — the UCSF brand theme family (docs/design/alma-mater-theme.md).
-   A pure RE-COLOURING of Parchment: navy foundation, cool neutrals, a UCSF
-   Violet / eggplant accent. Same layout, same fonts, same flat-surface
-   discipline. Selected via `data-theme='alma-mater'` on <html>, orthogonal
-   to the `.dark` class, so light AND dark are both honoured.
+   THEME FAMILY TOKEN BLOCKS — GENERATED. Do not edit by hand.
 
-   Specificity `(0,2,0)` for these blocks beats the bare `:root` / `.dark`
-   `(0,1,0)` without touching them, and each token is re-declared in the
-   dark block too so no light value ever leaks into dark mode.
+   Source of truth: themes/<id>.theme.mjs. Regenerate with `npm run themes`;
+   `npm run themes -- --check` fails the build if these drift. Per-family
+   rationale lives in that definition file and in docs/design/*.md.
 
-   All pairs are WCAG-AA verified — see scripts/check-contrast.mjs. Palette
-   sourced from identity.ucsf.edu/brand-guide (letter-coded UCSF matrix).
+   Each family redeclares EVERY semantic token in both modes, so no base value
+   can leak through. The generator emits the light block immediately before the
+   dark one because the two selectors have identical specificity (0,2,0) — only
+   source order separates them, and reversing the pair renders light tokens in
+   dark mode while every contrast assertion still passes. check-contrast.mjs
+   asserts the ordering rather than trusting it.
    ══════════════════════════════════════════════════════════════════ */
+/* THEMES:GENERATED:FAMILIES:START */
 :root[data-theme='alma-mater'] {
-  /* ── Raw palette remap (mode-independent): recolours the stray
-     `coral-*`/`block-*` and `neutral-*` direct utility usages so nothing is
-     left warm. Semantic tokens below are authoritative; these only catch
-     components that reach past the semantic layer. ── */
-  --color-coral-400: #c45ed8; /* dark accent + orchid */
-  --color-coral-500: #a238ba; /* accent bar / dots (UCSF Violet G3) */
-  --color-coral-600: #6c247c; /* light CTA fill (UCSF Eggplant G2) */
-  --color-coral-700: #571c66; /* light CTA hover */
-
-  /* Cool navy-gray ramp — the opposite bias to Parchment's warm bone. */
+  /* Raw palette remap (mode-independent): recolours the stray direct
+     utility usages so nothing is left with the base family's bias. The
+     semantic tokens below are authoritative; these only catch components
+     that reach past the semantic layer. */
+  --color-coral-400: #60d0da;
+  --color-coral-500: #16a0ac;
+  --color-coral-600: #14828c;
+  --color-coral-700: #0e5258;
   --color-neutral-50: #f7f8f9;
-  --color-neutral-100: #f2f3f4; /* I6 */
-  --color-neutral-200: #e1e3e5; /* J5 */
-  --color-neutral-300: #d1d3d3; /* K3 */
-  --color-neutral-400: #b4b9bf; /* J3 */
-  --color-neutral-500: #878d96; /* J2 */
+  --color-neutral-100: #f2f3f4;
+  --color-neutral-200: #e1e3e5;
+  --color-neutral-300: #d1d3d3;
+  --color-neutral-400: #b4b9bf;
+  --color-neutral-500: #878d96;
   --color-neutral-600: #5a6b86;
   --color-neutral-700: #3a4a66;
   --color-neutral-800: #1f3152;
   --color-neutral-900: #0f2545;
-  --color-neutral-950: #04142e; /* navy canvas */
-
-  /* Status hues re-mapped to the UCSF alert columns. */
+  --color-neutral-950: #04142e;
   --color-red-100: #f5768a;
   --color-red-200: #e85268;
   --color-red-600: #c40d3e;
@@ -353,14 +360,13 @@
   --color-yellow-200: #e0a400;
   --color-yellow-700: #8a5a00;
 
-  /* ── Semantic tokens — Alma Mater LIGHT (direct hex per the design doc) ── */
-  --background-accent: #6c247c; /* Eggplant G2; white ink 9.63:1 */
-  --background-accent-hover: #571c66;
-  --border-accent: #6c247c;
-  --text-accent: #6c247c; /* links / coloured labels, 9.63:1 on white */
+  /* Semantic tokens — Alma Mater LIGHT */
+  --background-accent: #14828c;
+  --background-accent-hover: #0e5258;
+  --border-accent: #14828c;
+  --text-accent: #14828c;
   --text-on-accent: #ffffff;
-  --accent-bar: #a238ba; /* rails, dots, underline (UCSF Violet) */
-
+  --accent-bar: #16a0ac;
   --background-app: #ffffff;
   --background-default: #ffffff;
   --background-card: #ffffff;
@@ -368,81 +374,66 @@
   --background-code: #f2f3f4;
   --background-medium: #e1e3e5;
   --background-strong: #d1d3d3;
-  --background-inverse: #052049; /* UCSF Navy, not black */
-  --background-danger: #e61048; /* N3 Red */
-  --background-success: #007242; /* D2 Green */
-  --background-info: #0f388a; /* A2 Blue */
-  --background-warning: #8a5a00; /* dark amber, white ink (bright yellow is dark-only) */
+  --background-inverse: #052049;
+  --background-danger: #e61048;
+  --background-success: #007242;
+  --background-info: #0f388a;
+  --background-warning: #8a5a00;
   --text-on-status: #ffffff;
-
   --border-subtle: #e1e3e5;
   --border-strong: #cfd3d8;
   --border-input: #d1d3d3;
-  --border-default: var(--border-subtle);
+  --border-default: #e1e3e5;
   --border-danger: #c40d3e;
   --border-success: #007242;
   --border-warning: #8a5a00;
   --border-info: #0f388a;
-
-  --text-default: #052049; /* Navy, 16.0:1 on white */
-  --text-muted: #506380; /* I3 Blue-Gray, 5.5:1 on ground */
-  --text-subtle: #586780; /* 5.15:1 on ground */
+  --text-default: #052049;
+  --text-muted: #506380;
+  --text-subtle: #586780;
   --text-inverse: #ffffff;
-  --text-danger: #c40d3e; /* 6.04:1 on white */
+  --text-danger: #c40d3e;
   --text-success: #007242;
   --text-warning: #8a5a00;
   --text-info: #0f388a;
-
-  /* Focus stays a NEUTRAL surface shift, never the accent (design.md D-15).
-     background-focus is one cool step past the hover fill (--background-medium
-     #e1e3e5) so focus and hover stay distinguishable. */
   --ring: #506380;
-  --background-focus: #d0d6de;
+  --background-focus: #d3d6d9;
   --border-focus: #586780;
-
-  /* Usage heatmap — UCSF Violet ladder, monotonic in luminance. */
-  --heat-0: #ece6f1;
-  --heat-1: #d9c2e8;
-  --heat-2: #c48ed6;
-  --heat-3: #9e44b4;
-  --heat-4: #6c247c;
-
-  /* Two-tone canvas — cool-gray sidebar one calm step deeper than the app. */
-  --sidebar: #eceef1;
-  --sidebar-foreground: var(--text-default);
-  --sidebar-primary: var(--background-accent);
-  --sidebar-primary-foreground: var(--text-inverse);
-  --sidebar-hover: #e3e6ea;
-  --sidebar-active: #d7dbe0;
-  --sidebar-accent: var(--sidebar-hover);
-  --sidebar-accent-foreground: var(--text-default);
+  --heat-0: #e8f6f8;
+  --heat-1: #b4e2e8;
+  --heat-2: #60d0da;
+  --heat-3: #16a0ac;
+  --heat-4: #0e5258;
+  --sidebar: #eef0f0;
+  --sidebar-foreground: #052049;
+  --sidebar-icon: #14828c;
+  --sidebar-primary: #14828c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-hover: #e3e5e5;
+  --sidebar-active: #d8d9da;
+  --sidebar-accent: #e3e5e5;
+  --sidebar-accent-foreground: #052049;
   --sidebar-border: #e1e3e5;
-  --sidebar-ring: var(--ring);
-
-  /* Shadows shift from warm brown to navy tint; flat-by-default is unchanged. */
+  --sidebar-ring: #506380;
+  --scrim: rgba(5, 32, 73, 0.2);
   --shadow-default: 0px 1px 3px 0px rgba(5, 32, 73, 0.08), 0px 0px 1px 0px rgba(5, 32, 73, 0.14);
   --shadow-composer: 0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
   --shadow-popover: 0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18);
-  --shadow-modal:
-    0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16),
-    0px 0px 0px 1px rgba(5, 32, 73, 0.05);
+  --shadow-modal: 0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16), 0px 0px 0px 1px rgba(5, 32, 73, 0.05);
   --shadow-modal-chrome-bottom: none;
   --shadow-modal-chrome-top: none;
 }
 
 .dark[data-theme='alma-mater'] {
-  /* ── Semantic tokens — Alma Mater DARK. Navy-based surfaces; the accent
-     lifts to orchid so it glows on the navy canvas. Every token the light
-     block sets is re-declared here so no light value leaks into dark. ── */
-  --background-accent: #c45ed8; /* Orchid G4 */
-  --background-accent-hover: #d07ee0;
-  --border-accent: #c45ed8;
-  --text-accent: #d7a5e8; /* light orchid link, 8.03:1 on card */
-  --text-on-accent: #1a0a24; /* plum-black ink, 5.34:1 */
-  --accent-bar: #c45ed8;
-
-  --background-app: #04142e; /* deep navy canvas */
-  --background-default: #08213f; /* navy card */
+  /* Semantic tokens — Alma Mater DARK */
+  --background-accent: #60d0da;
+  --background-accent-hover: #8ae0e8;
+  --border-accent: #60d0da;
+  --text-accent: #60d0da;
+  --text-on-accent: #052049;
+  --accent-bar: #60d0da;
+  --background-app: #04142e;
+  --background-default: #08213f;
   --background-card: #08213f;
   --background-muted: #0d2a50;
   --background-code: #08213f;
@@ -452,58 +443,215 @@
   --background-danger: #f5768a;
   --background-success: #5fbf74;
   --background-info: #7fb3e6;
-  --background-warning: #feb80a; /* bright UCSF yellow, navy ink */
+  --background-warning: #feb80a;
   --text-on-status: #052049;
-
   --border-subtle: #17386a;
   --border-strong: #24487f;
   --border-input: #24487f;
-  --border-default: var(--border-subtle);
+  --border-default: #17386a;
   --border-danger: #f5768a;
   --border-success: #5fbf74;
   --border-warning: #feb80a;
   --border-info: #7fb3e6;
-
-  --text-default: #f2f3f4; /* I6, 16.5:1 on canvas */
-  --text-muted: #b4b9bf; /* J3, 8.2:1 */
-  --text-subtle: #909aa6; /* 5.66:1 */
+  --text-default: #f2f3f4;
+  --text-muted: #b4b9bf;
+  --text-subtle: #909aa6;
   --text-inverse: #052049;
   --text-danger: #f5768a;
   --text-success: #5fbf74;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
-
   --ring: #b4b9bf;
   --background-focus: #163c74;
   --border-focus: #909aa6;
-
   --heat-0: #10223f;
-  --heat-1: #3a1e52;
-  --heat-2: #6c247c;
-  --heat-3: #a238ba;
-  --heat-4: #c45ed8;
-
+  --heat-1: #0e5258;
+  --heat-2: #14828c;
+  --heat-3: #16a0ac;
+  --heat-4: #60d0da;
   --sidebar: #071b3a;
-  --sidebar-foreground: var(--text-default);
-  --sidebar-primary: var(--background-accent);
-  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-foreground: #f2f3f4;
+  --sidebar-icon: #60d0da;
+  --sidebar-primary: #60d0da;
+  --sidebar-primary-foreground: #052049;
   --sidebar-hover: #0e2a50;
   --sidebar-active: #163864;
-  --sidebar-accent: var(--sidebar-hover);
-  --sidebar-accent-foreground: var(--text-default);
+  --sidebar-accent: #0e2a50;
+  --sidebar-accent-foreground: #f2f3f4;
   --sidebar-border: #1a3a66;
-  --sidebar-ring: var(--ring);
-
-  /* Dark shadows stay black, like Parchment dark. */
+  --sidebar-ring: #b4b9bf;
+  --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
-  --shadow-modal:
-    0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5),
-    0px 0px 0px 1px rgba(255, 255, 255, 0.055);
+  --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
   --shadow-modal-chrome-bottom: none;
   --shadow-modal-chrome-top: none;
 }
+
+:root[data-theme='roche-limit'] {
+  /* Raw palette remap (mode-independent): recolours the stray direct
+     utility usages so nothing is left with the base family's bias. The
+     semantic tokens below are authoritative; these only catch components
+     that reach past the semantic layer. */
+  --color-coral-400: #f2955a;
+  --color-coral-500: #ee6c1a;
+  --color-coral-600: #ae4700;
+  --color-coral-700: #8f3a00;
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f4f4f2;
+  --color-neutral-200: #e4e4e0;
+  --color-neutral-300: #d2d2cd;
+  --color-neutral-400: #a9a7a1;
+  --color-neutral-500: #84827c;
+  --color-neutral-600: #5c5a55;
+  --color-neutral-700: #3e3d39;
+  --color-neutral-800: #2c2c29;
+  --color-neutral-900: #1b1b19;
+  --color-neutral-950: #131312;
+  --color-red-100: #ff9592;
+  --color-red-200: #e85e62;
+  --color-red-600: #c4232b;
+  --color-blue-100: #70b8ff;
+  --color-blue-200: #4a97ee;
+  --color-blue-700: #0a69bc;
+  --color-green-100: #3dd68c;
+  --color-green-200: #22b071;
+  --color-green-600: #0f7150;
+  --color-yellow-100: #f2e06b;
+  --color-yellow-200: #d8c23a;
+  --color-yellow-700: #6e6300;
+
+  /* Semantic tokens — Roche Limit LIGHT */
+  --background-accent: #ee6c1a;
+  --background-accent-hover: #de6110;
+  --border-accent: #ee6c1a;
+  --text-accent: #ae4700;
+  --text-on-accent: #1f1e1c;
+  --accent-bar: #d95b08;
+  --background-app: #ffffff;
+  --background-default: #ffffff;
+  --background-card: #ffffff;
+  --background-muted: #f4f4f2;
+  --background-code: #f5f5f3;
+  --background-medium: #ecece9;
+  --background-strong: #dcdcd8;
+  --background-inverse: #1f1e1c;
+  --background-danger: #c4232b;
+  --background-success: #0f7150;
+  --background-info: #0a69bc;
+  --background-warning: #6e6300;
+  --text-on-status: #ffffff;
+  --border-subtle: #e4e4e0;
+  --border-strong: #d2d2cd;
+  --border-input: #c9c9c3;
+  --border-default: #e4e4e0;
+  --border-danger: #c4232b;
+  --border-success: #0f7150;
+  --border-warning: #6e6300;
+  --border-info: #0a69bc;
+  --text-default: #1f1e1c;
+  --text-muted: #5c5a55;
+  --text-subtle: #69675f;
+  --text-inverse: #ffffff;
+  --text-danger: #c4232b;
+  --text-success: #0f7150;
+  --text-warning: #6e6300;
+  --text-info: #0a69bc;
+  --ring: #5c5a55;
+  --background-focus: #e0e0dc;
+  --border-focus: #6b6963;
+  --heat-0: #eeeeea;
+  --heat-1: #fadcc0;
+  --heat-2: #f6bc8c;
+  --heat-3: #ee8b45;
+  --heat-4: #c4560e;
+  --sidebar: #f7f7f5;
+  --sidebar-foreground: #1f1e1c;
+  --sidebar-icon: #d95b08;
+  --sidebar-primary: #ee6c1a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-hover: #efefec;
+  --sidebar-active: #eaeae6;
+  --sidebar-accent: #efefec;
+  --sidebar-accent-foreground: #1f1e1c;
+  --sidebar-border: #e7e7e3;
+  --sidebar-ring: #5c5a55;
+  --scrim: rgba(31, 30, 28, 0.18);
+  --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
+  --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
+  --shadow-popover: 0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16);
+  --shadow-modal: 0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05);
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
+}
+
+.dark[data-theme='roche-limit'] {
+  /* Semantic tokens — Roche Limit DARK */
+  --background-accent: #ee6c1a;
+  --background-accent-hover: #f27f30;
+  --border-accent: #ee6c1a;
+  --text-accent: #f2955a;
+  --text-on-accent: #131312;
+  --accent-bar: #ee6c1a;
+  --background-app: #131312;
+  --background-default: #1b1b19;
+  --background-card: #1b1b19;
+  --background-muted: #232320;
+  --background-code: #1b1b19;
+  --background-medium: #2c2c29;
+  --background-strong: #3a3a36;
+  --background-inverse: #ededea;
+  --background-danger: #ff9592;
+  --background-success: #3dd68c;
+  --background-info: #70b8ff;
+  --background-warning: #f2e06b;
+  --text-on-status: #131312;
+  --border-subtle: #302f2c;
+  --border-strong: #3e3d39;
+  --border-input: #4a4945;
+  --border-default: #302f2c;
+  --border-danger: #ff9592;
+  --border-success: #3dd68c;
+  --border-warning: #f2e06b;
+  --border-info: #70b8ff;
+  --text-default: #ededea;
+  --text-muted: #a5a39d;
+  --text-subtle: #9c9a93;
+  --text-inverse: #131312;
+  --text-danger: #ff9592;
+  --text-success: #3dd68c;
+  --text-warning: #f2e06b;
+  --text-info: #70b8ff;
+  --ring: #a5a39d;
+  --background-focus: #35342f;
+  --border-focus: #9c9a93;
+  --heat-0: #1e1d1b;
+  --heat-1: #4a2a0e;
+  --heat-2: #7a4413;
+  --heat-3: #b45f18;
+  --heat-4: #ee6c1a;
+  --sidebar: #171716;
+  --sidebar-foreground: #ededea;
+  --sidebar-icon: #ee6c1a;
+  --sidebar-primary: #ee6c1a;
+  --sidebar-primary-foreground: #131312;
+  --sidebar-hover: #232320;
+  --sidebar-active: #2e2e2a;
+  --sidebar-accent: #232320;
+  --sidebar-accent-foreground: #ededea;
+  --sidebar-border: #2a2a27;
+  --sidebar-ring: #a5a39d;
+  --scrim: rgba(0, 0, 0, 0.48);
+  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
+  --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
+}
+/* THEMES:GENERATED:FAMILIES:END */
+
 
 @theme inline {
   --ease-g2: cubic-bezier(0.55, 0, 1, 0.45);
@@ -576,6 +724,7 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-icon: var(--sidebar-icon);
 
   /* The four permitted elevations (D-05). Tailwind's default shadow scale is
      unset above (`--shadow-*: initial`), so `shadow-sm/md/lg/xl` generate
@@ -834,24 +983,21 @@
 }
 
 .biorouter-modal-overlay {
-  background: rgba(32, 25, 15, 0.18);
+  /* --scrim, not a literal. This used to be a hardcoded warm-brown rgba() with
+     a single hand-written override retinting Alma Mater light — which is why
+     Roche Limit, added later, silently wore Parchment's brown scrim. */
+  background: var(--scrim);
   backdrop-filter: blur(8px);
 }
 
-.dark .biorouter-modal-overlay {
-  background: rgba(0, 0, 0, 0.48);
-}
 
 /* P7 — the diagnostics panel was a white card behind a CREAM scrim in dark mode.
    It now uses the same tokens as every other modal. */
 .biorouter-diagnostics-overlay {
-  background: rgba(32, 25, 15, 0.18);
+  background: var(--scrim);
   backdrop-filter: blur(8px);
 }
 
-.dark .biorouter-diagnostics-overlay {
-  background: rgba(0, 0, 0, 0.48);
-}
 
 .biorouter-diagnostics-surface {
   background: var(--background-default);
@@ -965,8 +1111,8 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   margin-right: 4px;
   border: 0;
   border-radius: var(--radius-md);
@@ -980,7 +1126,7 @@
 
 .br-tabstrip__overflow:hover,
 .br-tabstrip__overflow[data-state='open'] {
-  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  background: var(--background-medium);
   color: var(--text-default);
 }
 
@@ -1270,15 +1416,6 @@
   box-shadow: var(--shadow-popover);
 }
 
-/* Alma Mater LIGHT — the modal/diagnostics scrims are hardcoded rgba()
-   outside the token layer, so retint them navy to match the theme. Scoped
-   `:not(.dark)` so Alma dark keeps the neutral-black scrim. (The popover
-   shadow override that used to live here is gone: the token handles it.) */
-:root[data-theme='alma-mater']:not(.dark) .biorouter-modal-overlay,
-:root[data-theme='alma-mater']:not(.dark) .biorouter-diagnostics-overlay {
-  background: rgba(5, 32, 73, 0.2);
-}
-
 /* D-05 / P1 — a flat header separated by a hairline. The gradient wash and the
    chrome shadow that used to replace the border are gone. */
 .biorouter-page-header {
@@ -1552,11 +1689,6 @@ body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/'] {
 
 .no-drag {
   -webkit-app-region: no-drag;
-}
-
-body.dashboard-route-active .titlebar-drag-region {
-  -webkit-app-region: no-drag;
-  pointer-events: none;
 }
 
 body.biorouter-chat-route-active .titlebar-drag-region {

@@ -59,7 +59,7 @@ export function ChatTabGhost({ ghost }: { ghost: DragGhost }) {
       aria-hidden="true"
       style={{ left: ghost.x, top: ghost.y }}
     >
-      <MessageSquare className="h-[13px] w-[13px] flex-none" />
+      <MessageSquare className="h-4 w-4 flex-none" />
       <span className="br-tab__label">{ghost.title}</span>
     </div>
   );

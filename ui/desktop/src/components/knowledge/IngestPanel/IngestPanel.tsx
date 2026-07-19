@@ -352,7 +352,7 @@ export function IngestPanel() {
           onClick={() => setShowPasteBox(true)}
           className="w-full"
         >
-          <Clipboard className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+          <Clipboard className="mr-1.5 h-4 w-4" />
           Paste text
         </Button>
         <IngestWarnings
