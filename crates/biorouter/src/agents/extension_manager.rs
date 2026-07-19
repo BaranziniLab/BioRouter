@@ -1356,7 +1356,10 @@ impl ExtensionManager {
             let cwd = self.resolve_working_dir().await;
             let secret_guard_phase =
                 crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
-            let guard = biorouter_mcp::secret_guard::SecretGuard::for_dir(&cwd);
+            // 6.2d: memoised per resolved cwd. Invalidated on the exact bytes
+            // of every `.biorouterignore` that backs the guard, so an edit is
+            // honoured on the very next dispatch (see `cached_for_dir`).
+            let guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(&cwd);
             drop(secret_guard_phase);
             if let Some(denied) = guard.find_denied_path(args) {
                 return Err(ErrorData::new(

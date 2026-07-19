@@ -21,7 +21,9 @@
 use etcetera::AppStrategy;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Built-in secret/credential deny patterns applied as an always-on floor.
 ///
@@ -85,24 +87,25 @@ impl SecretGuard {
     /// *after* the floor so a `!path` negation can un-ignore a specific file the
     /// user explicitly wants read.
     pub fn for_dir(cwd: &Path) -> Self {
+        Self::build(cwd, &ignore_sources(cwd))
+    }
+
+    /// Build a guard from an explicit, already-resolved list of ignore files.
+    ///
+    /// `sources` must be exactly what [`ignore_sources`] returns for `cwd` —
+    /// the cache fingerprints that same list, so any divergence between the
+    /// files read here and the files fingerprinted there would be a staleness
+    /// hole. Keep the two in lockstep by never calling this with a hand-built
+    /// list outside tests.
+    fn build(cwd: &Path, sources: &[PathBuf]) -> Self {
         let mut builder = GitignoreBuilder::new(cwd);
 
         for pat in DEFAULT_SECRET_PATTERNS {
             let _ = builder.add_line(None, pat);
         }
 
-        let global_ignore_path = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|strategy| strategy.config_dir().join(".biorouterignore"))
-            .ok();
-        if let Some(p) = global_ignore_path.as_ref() {
-            if p.is_file() {
-                let _ = builder.add(p);
-            }
-        }
-
-        let local_ignore_path = cwd.join(".biorouterignore");
-        if local_ignore_path.is_file() {
-            let _ = builder.add(&local_ignore_path);
+        for source in sources {
+            let _ = builder.add(source);
         }
 
         // Degrade to an empty matcher on a malformed ignore file rather than
@@ -112,6 +115,65 @@ impl SecretGuard {
             ignore,
             root: cwd.to_path_buf(),
         }
+    }
+
+    /// Cached counterpart of [`SecretGuard::for_dir`], for the tool-dispatch
+    /// hot path.
+    ///
+    /// Building a guard costs a `GitignoreBuilder`, two `stat`s, up to two file
+    /// reads and a globset compile — all synchronous `std::fs` on a tokio
+    /// worker, on every tool call. This memoises the guard per resolved working
+    /// directory.
+    ///
+    /// **Correctness over savings.** The cache is a security boundary: if a
+    /// user adds a path to `.biorouterignore` and we serve a stale guard, the
+    /// agent reads a file the user explicitly protected. So invalidation
+    /// compares the *exact bytes* of every ignore file, not an mtime — mtime
+    /// has filesystem-dependent granularity and can miss a same-second edit of
+    /// equal length. The two ignore files are small; re-reading them still
+    /// skips the builder and the globset compile, which dominate.
+    ///
+    /// The fingerprint is taken **before** the guard is built, never after. A
+    /// write racing the build then leaves a guard stamped with the *older*
+    /// fingerprint, so the next call sees a mismatch and rebuilds. Stamping
+    /// afterwards would cache new-content-under-new-fingerprint only by luck
+    /// and could pin stale contents.
+    pub fn cached_for_dir(cwd: &Path) -> Arc<Self> {
+        let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let sources = ignore_sources(&root);
+        let fingerprint = fingerprint_sources(&sources);
+
+        if let Some(fp) = fingerprint.as_ref() {
+            if let Ok(cache) = GUARD_CACHE.lock() {
+                if let Some(entry) = cache.get(&root) {
+                    if &entry.fingerprint == fp {
+                        return entry.guard.clone();
+                    }
+                }
+            }
+        }
+
+        let guard = Arc::new(Self::build(&root, &sources));
+
+        if let Some(fp) = fingerprint {
+            if let Ok(mut cache) = GUARD_CACHE.lock() {
+                // Unbounded growth guard: a long-lived daemon can see many
+                // working directories. Clearing wholesale is fine — the cache
+                // is a pure memo.
+                if cache.len() >= MAX_CACHE_ENTRIES && !cache.contains_key(&root) {
+                    cache.clear();
+                }
+                cache.insert(
+                    root,
+                    CacheEntry {
+                        guard: guard.clone(),
+                        fingerprint: fp,
+                    },
+                );
+            }
+        }
+
+        guard
     }
 
     /// The underlying gitignore matcher, for callers (e.g. the code analyzer)
@@ -218,6 +280,63 @@ impl SecretGuard {
 
 fn has_separator(s: &str) -> bool {
     s.contains('/') || s.contains('\\')
+}
+
+/// Ignore files that contribute to a guard rooted at `cwd`, in the order they
+/// are layered: global (`<config>/.biorouterignore`) first, then project-local
+/// (`<cwd>/.biorouterignore`). Only files that exist are returned, so creating
+/// or deleting one changes the list itself and therefore the fingerprint.
+fn ignore_sources(cwd: &Path) -> Vec<PathBuf> {
+    let mut sources = Vec::with_capacity(2);
+
+    if let Ok(strategy) = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone()) {
+        let global = strategy.config_dir().join(".biorouterignore");
+        if global.is_file() {
+            sources.push(global);
+        }
+    }
+
+    let local = cwd.join(".biorouterignore");
+    if local.is_file() {
+        sources.push(local);
+    }
+
+    sources
+}
+
+/// Largest ignore file we are willing to hold in the fingerprint. Beyond this
+/// the entry is simply not cached (fail-open on performance, never on
+/// correctness).
+const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024;
+
+/// Cap on distinct working directories memoised at once.
+const MAX_CACHE_ENTRIES: usize = 64;
+
+/// Exact contents of every ignore file backing a guard, paired with its path.
+/// Equality here is the cache's entire validity condition.
+type Fingerprint = Vec<(PathBuf, Vec<u8>)>;
+
+struct CacheEntry {
+    guard: Arc<SecretGuard>,
+    fingerprint: Fingerprint,
+}
+
+static GUARD_CACHE: LazyLock<Mutex<HashMap<PathBuf, CacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Read every source's bytes. `None` means "do not cache this directory" — an
+/// oversized or unreadable ignore file, where we cannot prove freshness later.
+fn fingerprint_sources(sources: &[PathBuf]) -> Option<Fingerprint> {
+    let mut fingerprint = Fingerprint::with_capacity(sources.len());
+    for source in sources {
+        let meta = std::fs::metadata(source).ok()?;
+        if meta.len() > MAX_FINGERPRINT_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(source).ok()?;
+        fingerprint.push((source.clone(), bytes));
+    }
+    Some(fingerprint)
 }
 
 #[cfg(test)]
@@ -327,6 +446,154 @@ mod tests {
         assert!(g.is_denied(Path::new("secrets.yaml")));
         assert!(g.is_denied(Path::new("build.log")));
         assert!(!g.is_denied(Path::new("normal.txt")));
+    }
+
+    // ---- cache (BR / 6.2d) ----------------------------------------------
+    //
+    // The staleness tests are the point of this cache. A `.biorouterignore`
+    // edit that the cache does not honour is a security regression, not a
+    // performance bug.
+
+    #[test]
+    fn cache_returns_the_same_guard_for_the_same_dir() {
+        let dir = tempdir().unwrap();
+        let a = SecretGuard::cached_for_dir(dir.path());
+        let b = SecretGuard::cached_for_dir(dir.path());
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "second lookup rebuilt the guard instead of hitting the cache"
+        );
+    }
+
+    #[test]
+    fn cache_honours_a_new_biorouterignore_rule() {
+        let dir = tempdir().unwrap();
+        let ignore = dir.path().join(".biorouterignore");
+        fs::write(&ignore, "# nothing yet\n").unwrap();
+
+        let before = SecretGuard::cached_for_dir(dir.path());
+        assert!(
+            !before.is_denied(Path::new("private-notes.txt")),
+            "precondition: the file is readable before the user protects it"
+        );
+
+        // The user protects a path. The very next dispatch must honour it.
+        fs::write(&ignore, "# nothing yet\nprivate-notes.txt\n").unwrap();
+
+        let after = SecretGuard::cached_for_dir(dir.path());
+        assert!(
+            after.is_denied(Path::new("private-notes.txt")),
+            "STALE GUARD: a .biorouterignore edit was not honoured — the agent \
+             would read a file the user explicitly protected"
+        );
+    }
+
+    #[test]
+    fn cache_honours_a_removed_biorouterignore_rule() {
+        let dir = tempdir().unwrap();
+        let ignore = dir.path().join(".biorouterignore");
+        fs::write(&ignore, "notes.txt\n").unwrap();
+        assert!(SecretGuard::cached_for_dir(dir.path()).is_denied(Path::new("notes.txt")));
+
+        // Deleting the file entirely changes the source list, not just its
+        // bytes — the fingerprint must catch that too.
+        fs::remove_file(&ignore).unwrap();
+        assert!(
+            !SecretGuard::cached_for_dir(dir.path()).is_denied(Path::new("notes.txt")),
+            "STALE GUARD: a deleted .biorouterignore was still in effect"
+        );
+    }
+
+    /// The global `<config>/.biorouterignore` is the second file a guard reads.
+    /// Mutating the real config dir from a test is not safe (it is process-wide
+    /// and shared with every other test), so exercise the multi-source
+    /// fingerprint through the same helper the global file flows through.
+    #[test]
+    fn fingerprint_tracks_every_ignore_source() {
+        let dir = tempdir().unwrap();
+        let global = dir.path().join("global.biorouterignore");
+        let local = dir.path().join(".biorouterignore");
+        fs::write(&global, "a.txt\n").unwrap();
+        fs::write(&local, "b.txt\n").unwrap();
+        let sources = vec![global.clone(), local.clone()];
+
+        let first = fingerprint_sources(&sources).expect("fingerprintable");
+
+        // A change to the *non-local* (global-position) source must invalidate.
+        fs::write(&global, "a.txt\nc.txt\n").unwrap();
+        let second = fingerprint_sources(&sources).expect("fingerprintable");
+        assert_ne!(
+            first, second,
+            "a change to the global ignore file left the fingerprint unchanged"
+        );
+
+        // And it really does reach the built guard.
+        let guard = SecretGuard::build(dir.path(), &sources);
+        assert!(guard.is_denied(Path::new("c.txt")));
+        assert!(guard.is_denied(Path::new("b.txt")));
+    }
+
+    #[test]
+    fn fingerprint_covers_the_global_config_ignore_file() {
+        // Structural guard: `ignore_sources` is what both the builder and the
+        // fingerprint consume, so the global file can never be read by one and
+        // missed by the other.
+        let dir = tempdir().unwrap();
+        let sources = ignore_sources(dir.path());
+        let global = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
+            .map(|s| s.config_dir().join(".biorouterignore"))
+            .expect("app strategy");
+        if global.is_file() {
+            assert!(
+                sources.contains(&global),
+                "an existing global .biorouterignore was not tracked"
+            );
+        } else {
+            assert!(!sources.contains(&global));
+        }
+    }
+
+    #[test]
+    fn distinct_dirs_get_distinct_guards() {
+        let a = tempdir().unwrap();
+        let b = tempdir().unwrap();
+        fs::write(a.path().join(".biorouterignore"), "only-in-a.txt\n").unwrap();
+
+        let ga = SecretGuard::cached_for_dir(a.path());
+        let gb = SecretGuard::cached_for_dir(b.path());
+
+        assert!(!Arc::ptr_eq(&ga, &gb));
+        assert!(ga.is_denied(Path::new("only-in-a.txt")));
+        assert!(
+            !gb.is_denied(Path::new("only-in-a.txt")),
+            "a guard was served across working directories"
+        );
+    }
+
+    #[test]
+    fn cached_guard_matches_uncached_guard() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".biorouterignore"),
+            "!secrets.public\nx.log\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+
+        let cached = SecretGuard::cached_for_dir(dir.path());
+        let fresh = SecretGuard::for_dir(dir.path());
+        for p in [".env", "secrets.public", "x.log", "normal.txt"] {
+            assert_eq!(
+                cached.is_denied(Path::new(p)),
+                fresh.is_denied(Path::new(p)),
+                "cached and uncached guards disagree on {p}"
+            );
+        }
+        let args = json!({ "path": ".env" });
+        assert_eq!(
+            cached.find_denied_path(args.as_object().unwrap()),
+            Some(".env".to_string())
+        );
     }
 
     #[test]
