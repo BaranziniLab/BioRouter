@@ -50,8 +50,13 @@ const DARK = {
 /**
  * Alma Mater (UCSF) syntax palette — recoloured to UCSF hue families, measured
  * against the Alma code grounds (light #f2f3f4, dark #08213f). `type` is the
- * eggplant accent so code ties to the brand. Every stop clears WCAG AA; ratios
- * asserted in codeTheme.test.ts. See docs/design/alma-mater-theme.md §5g.
+ * accent so code ties to the brand — now the teal C column, which is why `type`
+ * and `func` swapped families: the accent teal took `type`, and the eggplant it
+ * displaced from the chrome moved to `func`, where its hue distance from teal
+ * keeps the two roles legibly apart. (The accent's own C2 #14828c is only
+ * 4.11:1 on the code ground and could not be used here; C1 #0e5258 is 7.99:1.)
+ * Every stop clears WCAG AA; ratios asserted in codeTheme.test.ts.
+ * See docs/design/alma-mater-theme.md §5g.
  */
 const ALMA_LIGHT = {
   plain: '#052049', // Navy
@@ -59,8 +64,8 @@ const ALMA_LIGHT = {
   keyword: '#0f388a', //  9.68:1  (A2 Blue)
   string: '#007242', //  5.42:1  (D2 Green)
   number: '#8a5a00', //  5.33:1
-  func: '#0e5258', //  7.99:1  (C1 Teal)
-  type: '#6c247c', //  8.67:1  (G2 Violet — the accent)
+  func: '#6c247c', //  8.67:1  (G2 Violet)
+  type: '#0e5258', //  7.99:1  (C1 Teal — the accent family)
   operator: '#506380', //  5.50:1  (I3)
   deleted: '#c40d3e',
   inserted: '#007242',
@@ -72,11 +77,46 @@ const ALMA_DARK = {
   keyword: '#7fb3e6', //  7.30:1
   string: '#6fc084', //  7.35:1
   number: '#e0a44a', //  7.37:1
-  func: '#5cc6d0', //  8.04:1  (→C4 teal)
-  type: '#c58ad6', //  6.14:1  (→G4 orchid — the accent)
+  func: '#c58ad6', //  6.14:1  (→G4 orchid)
+  type: '#5cc6d0', //  8.04:1  (→C4 teal — the accent family)
   operator: '#b4b9bf', //  8.18:1  (J3)
   deleted: '#f5768a',
   inserted: '#5fbf74',
+} as const;
+
+/**
+ * Roche Limit syntax palette — JupyterLab's own IPython/Pygments hues, darkened
+ * (light) and lifted (dark) until every stop clears WCAG AA on the Roche code
+ * grounds (light #f5f5f3, dark #1b1b19). Ratios asserted in codeTheme.test.ts.
+ *
+ * Two stops deliberately do NOT copy Jupyter: their `comment` (#408080) ships
+ * unchanged in dark at ~2.8:1, and their dark `func` (#1e88e5) at ~3.4:1 —
+ * both fail AA. See docs/design/roche-limit-theme.md §4.10 / §5.8.
+ */
+const ROCHE_LIGHT = {
+  plain: '#1f1e1c', // 15.26:1
+  comment: '#3f6e6e', //  5.25:1  (Jupyter #408080 teal, darkened)
+  keyword: '#0a7a32', //  5.01:1  (Jupyter #008000 green)
+  string: '#b02121', //  6.23:1  (Jupyter #ba2121 brick)
+  number: '#0f6e38', //  5.82:1
+  func: '#1849b8', //  7.17:1  (Jupyter #0000ff def-blue)
+  type: '#0f6e38', //  5.82:1  (Jupyter #008000 builtin)
+  operator: '#7024b0', //  7.49:1  (Jupyter #7800c2)
+  deleted: '#c4232b',
+  inserted: '#12805c',
+} as const;
+
+const ROCHE_DARK = {
+  plain: '#ededea', // 14.71:1
+  comment: '#7fa3a3', //  6.30:1  (Jupyter #408080 lifted)
+  keyword: '#6fcb78', //  8.62:1  (Jupyter #4caf50)
+  string: '#ff8f8f', //  7.87:1  (Jupyter #ff7070)
+  number: '#84d089', //  9.34:1  (Jupyter #66bb6a)
+  func: '#7fbef7', //  8.72:1  (Jupyter #1e88e5 lifted)
+  type: '#84d089', //  9.34:1  (Jupyter #43a047 builtin)
+  operator: '#d9a0ff', //  8.56:1  (Jupyter #d48fff)
+  deleted: '#ff9592',
+  inserted: '#3dd68c',
 } as const;
 
 type SyntaxPalette = {
@@ -161,6 +201,8 @@ export const codeThemeLight = build(LIGHT, '9%');
 export const codeThemeDark = build(DARK, '10%');
 export const codeThemeAlmaLight = build(ALMA_LIGHT, '9%');
 export const codeThemeAlmaDark = build(ALMA_DARK, '10%');
+export const codeThemeRocheLight = build(ROCHE_LIGHT, '9%');
+export const codeThemeRocheDark = build(ROCHE_DARK, '10%');
 
 /** Parchment themes, keyed by resolved mode (kept for back-compat). */
 export const codeThemes = { light: codeThemeLight, dark: codeThemeDark } as const;
@@ -168,15 +210,24 @@ export const codeThemes = { light: codeThemeLight, dark: codeThemeDark } as cons
 /**
  * Syntax themes keyed by theme family, then resolved mode. Consumers select
  * with `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]` so code
- * matches whichever theme (Parchment / Alma Mater) is active.
+ * matches whichever theme (Parchment / Alma Mater / Roche Limit) is active.
  */
 export const codeThemesByFamily = {
   parchment: { light: codeThemeLight, dark: codeThemeDark },
   'alma-mater': { light: codeThemeAlmaLight, dark: codeThemeAlmaDark },
+  'roche-limit': { light: codeThemeRocheLight, dark: codeThemeRocheDark },
 } as const;
 
 /** Ground each Alma Mater palette is measured against (--background-muted). */
 export const CODE_BG_ALMA = { light: '#f2f3f4', dark: '#08213f' } as const;
+
+/**
+ * Ground each Roche Limit palette is measured against. Light uses
+ * `--background-code` (#f5f5f3), which is deliberately a hair lighter than
+ * `--background-muted`; dark uses `--background-code` (#1b1b19), which equals
+ * `--background-default`, exactly as both shipping families do.
+ */
+export const CODE_BG_ROCHE = { light: '#f5f5f3', dark: '#1b1b19' } as const;
 
 /** Palette values, exported so tests can assert the contrast ratios. */
 export const codePalettes = { light: LIGHT, dark: DARK } as const;
@@ -185,4 +236,10 @@ export const codePalettes = { light: LIGHT, dark: DARK } as const;
 export const codePalettesAlma = {
   light: { palette: ALMA_LIGHT, bg: CODE_BG_ALMA.light },
   dark: { palette: ALMA_DARK, bg: CODE_BG_ALMA.dark },
+} as const;
+
+/** Roche Limit palettes + their grounds, exported for the contrast test. */
+export const codePalettesRoche = {
+  light: { palette: ROCHE_LIGHT, bg: CODE_BG_ROCHE.light },
+  dark: { palette: ROCHE_DARK, bg: CODE_BG_ROCHE.dark },
 } as const;

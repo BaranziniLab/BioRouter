@@ -54,6 +54,18 @@ struct PlanWriteParams {
 pub struct TodoClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
+    /// Serializes [`TodoClient::with_state`]'s read-modify-write.
+    ///
+    /// H6: until the client-wide `McpClientBox` mutex was removed, every
+    /// `call_tool` on this extension was serialized for free, which is what made
+    /// `with_state` safe. It loads the session's `extension_data`, mutates it,
+    /// and writes the WHOLE blob back — with two `.await` points in between, so
+    /// two concurrent `todo_add`s could both read `{a}`, then write `{a,x}` and
+    /// `{a,y}`: a lost update. Now that tool calls on one extension overlap,
+    /// this extension carries its own lock instead. It is deliberately narrow —
+    /// it guards only the session-metadata round trip (sub-millisecond, local),
+    /// not the MCP dispatch path, so it costs nothing and cannot reintroduce H6.
+    state_lock: tokio::sync::Mutex<()>,
 }
 
 impl TodoClient {
@@ -98,7 +110,11 @@ impl TodoClient {
             ),
         };
 
-        Ok(Self { info, context })
+        Ok(Self {
+            info,
+            context,
+            state_lock: tokio::sync::Mutex::new(()),
+        })
     }
 
     /// Load the session's todo state (migrating any legacy blob), let `f`
@@ -107,6 +123,9 @@ impl TodoClient {
     where
         F: FnOnce(&mut TodoState) -> Result<String, String>,
     {
+        // Held across the whole read-modify-write; see `state_lock`.
+        let _state_guard = self.state_lock.lock().await;
+
         let manager = &self.context.session_manager;
         let mut session = manager
             .get_session(session_id, false)

@@ -2923,6 +2923,10 @@ impl SessionStorage {
     }
 
     async fn add_message(&self, session_id: &str, message: &Message) -> Result<()> {
+        // Runs on the turn path once per message (including every tool
+        // response); the transaction covers the message row, blob spill and
+        // FTS index write, so it is a plausible per-tool-call fixed cost.
+        let _phase = crate::agents::phase_timing::Phase::start("session.add_message");
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 

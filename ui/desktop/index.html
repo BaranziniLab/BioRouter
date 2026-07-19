@@ -8,14 +8,17 @@
       // Initialize theme before any content loads
       (function () {
         function initializeThemeFamily() {
-          // The theme *family* (Parchment / Alma Mater) is a `data-theme` attribute,
-          // orthogonal to the dark class. Set it before first paint so Alma Mater
-          // does not flash Parchment on load.
+          // The theme *family* (Parchment / Alma Mater / Roche Limit) is a
+          // `data-theme` attribute, orthogonal to the dark class. Set it before
+          // first paint so a non-default family does not flash Parchment on load.
+          //
+          // This list duplicates THEME_FAMILIES in src/contexts/ThemeContext.tsx
+          // on purpose — this script runs ahead of the bundle and cannot import
+          // TypeScript. Keep the two in lockstep when adding a family.
+          const FAMILIES = ['parchment', 'alma-mater', 'roche-limit'];
           try {
-            const fam =
-              window.localStorage && localStorage.getItem('theme_family') === 'alma-mater'
-                ? 'alma-mater'
-                : 'parchment';
+            const stored = window.localStorage && localStorage.getItem('theme_family');
+            const fam = FAMILIES.indexOf(stored) !== -1 ? stored : 'parchment';
             document.documentElement.setAttribute('data-theme', fam);
           } catch (error) {
             document.documentElement.setAttribute('data-theme', 'parchment');
@@ -30,7 +33,7 @@
               const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
               const savedTheme = localStorage.getItem('theme');
               const isDark = useSystemTheme ? systemPrefersDark : (savedTheme ? savedTheme === 'dark' : systemPrefersDark);
-              
+
               if (isDark) {
                 document.documentElement.classList.add('dark');
               } else {
@@ -53,7 +56,7 @@
 
         // Run immediately
         initializeTheme();
-        
+
         // Retry after DOM is ready if initial attempt failed
         if (document.readyState === 'loading') {
           document.addEventListener('DOMContentLoaded', function() {
@@ -63,8 +66,309 @@
       })();
     </script>
     <link href="./src/styles/main.css" rel="stylesheet"/>
+    <style id="br-boot-splash-style">
+      /* ═══════════════════════════════════════════════════════════════════
+         BOOT SPLASH — the screen shown while the app is still starting.
+
+         Lives here, ahead of React, on purpose. `renderer.tsx` awaits
+         `getBiorouterdHostPort()` *before* it calls `createRoot().render()`,
+         so during backend startup — the slow case this screen exists for —
+         React has not run and a <Suspense> fallback cannot paint. Only
+         pre-React markup can cover that window.
+
+         It reads the `data-theme` / `dark` state the script above already
+         stamped on <html>, so it is theme-correct from the first frame.
+         Spec: docs/superpowers/specs/2026-07-18-boot-splash-design.md
+         ═══════════════════════════════════════════════════════════════════ */
+      #br-boot {
+        /* Parchment (the default family), light.
+
+           These are LITERAL values, not var(--background-muted) and friends.
+           Tailwind v4's `@theme inline` compiles those tokens away — they are
+           substituted into utility classes at build time and do not exist as
+           runtime custom properties, so a var() reference here silently falls
+           back and paints the wrong ground. Verified: a probe element styled
+           `background: var(--background-muted, magenta)` computes magenta in
+           every theme. Do not "simplify" this back to tokens.
+
+           The values mirror --background-muted per family, which is the ground
+           the post-boot Hub uses, so handing off to the app has no colour jump.
+
+           EVERY theme family needs a light and a dark rule below.
+           boot-splash.test.ts cross-checks this list against THEME_FAMILIES in
+           src/contexts/ThemeContext.tsx and fails if one is missing, so adding
+           a family cannot silently regress this screen. */
+        --br-bg: #faf8f3;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
+        --br-track: #e8e1d2;
+
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 26px;
+        background: var(--br-bg);
+        opacity: 1;
+        transition: opacity 260ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      /* `hidden` must beat the flex display above, hence the id+attr selector. */
+      #br-boot[hidden] { display: none; }
+      #br-boot.br-out { opacity: 0; }
+
+      /* Parchment dark. Navy becomes UCSF teal on a dark surface, matching
+         BioRouterMark.tsx. Each combined dark+family selector below is
+         deliberately more specific than these single-condition rules, so it
+         wins regardless of source order. */
+      html.dark #br-boot {
+        --br-bg: #282217;
+        --br-navy: #18a3ac;
+        --br-track: #3a3223;
+      }
+      /* Alma Mater keeps the UCSF mark; only the ground changes. */
+      html[data-theme='alma-mater'] #br-boot {
+        --br-bg: #f2f3f4;
+        --br-navy: #052049;
+        --br-track: #e1e3e5;
+      }
+      html.dark[data-theme='alma-mater'] #br-boot {
+        --br-bg: #0d2a50;
+        --br-navy: #18a3ac;
+        --br-track: #17386a;
+      }
+      /* Roche Limit rebrands the mark itself: the ink goes warm near-black on
+         the grey panel and lifts to the light ink in dark, and coral becomes
+         the bright orange. */
+      html[data-theme='roche-limit'] #br-boot {
+        --br-bg: #f4f4f2;
+        --br-navy: #1f1e1c;
+        --br-coral: #ee6c1a;
+        --br-track: #e4e4e0;
+      }
+      html.dark[data-theme='roche-limit'] #br-boot {
+        --br-bg: #232320;
+        --br-navy: #ededea;
+        --br-coral: #ee6c1a;
+        --br-track: #302f2c;
+      }
+
+      #br-boot .br-mark { width: 84px; height: 84px; display: block; }
+      /* The mark is set in Inter (bundled @font-face in main.css), like the
+         rest of the brand — never the native UI stack. */
+      #br-boot .br-mark text {
+        font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto,
+          'Helvetica Neue', Arial, sans-serif;
+        font-weight: 800;
+      }
+      #br-boot .br-navy { fill: var(--br-navy); }
+      #br-boot .br-coral { fill: var(--br-coral); }
+      #br-boot .br-part { opacity: 0; }
+
+      #br-boot .br-sweep {
+        position: relative;
+        width: 120px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--br-track);
+        overflow: hidden;
+        opacity: 0;
+      }
+      #br-boot .br-sweep i {
+        position: absolute;
+        inset: 0;
+        display: block;
+        border-radius: 2px;
+        background: linear-gradient(90deg, transparent, var(--br-navy), transparent);
+        transform: translateX(-100%);
+      }
+      @keyframes br-boot-sweep { to { transform: translateX(100%); } }
+
+      /* No visible text on this screen, so the only thing announcing the wait
+         is this line. Without it a slow boot is silent to a screen reader. */
+      #br-boot .br-sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #br-boot .br-part { opacity: 1; }
+        #br-boot .br-sweep { opacity: 1; }
+        #br-boot .br-sweep i { animation: none; }
+      }
+    </style>
   </head>
   <body>
+    <!-- br-boot:start -->
+    <div id="br-boot" hidden>
+      <span class="br-sr" role="status">Loading BioRouter…</span>
+      <!--
+        The BR monogram, emitted as static geometry rather than measured at
+        runtime like BioRouterMark.tsx does. On the boot path there is no time
+        to wait for fonts before a getBBox() pass, and the numbers are
+        deterministic for Inter 800 anyway. To regenerate after a brand change,
+        render <BioRouterMark/> in a browser and copy the resulting viewBox and
+        child coordinates. Reveal order is left to right: B, R, then the two
+        halves of the underline.
+      -->
+      <svg class="br-mark" viewBox="-24.5235 -110.806 165.672 165.672" role="img" aria-label="BioRouter">
+        <text class="br-part br-navy" x="0" y="0" font-size="100">B</text>
+        <text class="br-part br-coral" x="68.140625" y="0" font-size="74">R</text>
+        <rect class="br-part br-navy" x="0" y="23.36" width="66.640625" height="17.7"/>
+        <rect class="br-part br-coral" x="66.640625" y="23.36" width="49.984375" height="17.7"/>
+      </svg>
+      <div class="br-sweep"><i></i></div>
+    </div>
+    <!-- br-boot:end -->
+    <script id="br-boot-splash-script">
+      /* Boot splash controller. Kept inline and dependency-free so it paints
+         without waiting on the module graph. `boot-splash.test.ts` extracts
+         and runs this exact source, so it is the tested artefact. */
+      (function () {
+        var THRESHOLD_MS = 400; // below this, a boot is fast enough to show nothing
+        var DURATION_MS = 420;
+        var STAGGER_MS = 70;
+        var SLIDE_EM = 0.18;
+        var BLUR_PX = 2;
+        var EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+        var FADE_OUT_MS = 260;
+
+        // Inside an SVG a CSS length is a user-space unit, not a device pixel,
+        // so px and em have to be converted against the viewBox or the blur
+        // would scale with the mark and read wrong at every size.
+        var WORK = 100; // the B's font-size, i.e. 1em, in user units
+        var VIEWBOX_SIDE = 165.672;
+        var RENDERED_PX = 84;
+
+        var el = document.getElementById('br-boot');
+        if (!el) return;
+
+        var showTimer = null;
+        var removeTimer = null;
+        var anims = [];
+        var shown = false;
+        var finished = false;
+
+        function prefersReducedMotion() {
+          return !!(
+            window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          );
+        }
+
+        function show() {
+          if (finished || shown) return;
+          shown = true;
+          showTimer = null;
+          el.hidden = false;
+
+          var parts = el.querySelectorAll('.br-part');
+          var sweep = el.querySelector('.br-sweep');
+          var bar = sweep ? sweep.querySelector('i') : null;
+
+          // No Web Animations (jsdom, or reduced motion): render settled.
+          if (prefersReducedMotion() || typeof el.animate !== 'function') {
+            for (var s = 0; s < parts.length; s++) parts[s].style.opacity = '1';
+            if (sweep) sweep.style.opacity = '1';
+            return;
+          }
+
+          var unitsPerPx = VIEWBOX_SIDE / RENDERED_PX;
+          var slideU = SLIDE_EM * WORK;
+          var blurU = BLUR_PX * unitsPerPx;
+
+          for (var i = 0; i < parts.length; i++) {
+            anims.push(
+              parts[i].animate(
+                [
+                  {
+                    opacity: 0,
+                    transform: 'translateX(-' + slideU.toFixed(2) + 'px)',
+                    filter: 'blur(' + blurU.toFixed(2) + 'px)',
+                  },
+                  {
+                    opacity: 0.7,
+                    transform: 'translateX(-' + (slideU * 0.2222).toFixed(2) + 'px)',
+                    filter: 'blur(' + (blurU * 0.3).toFixed(2) + 'px)',
+                  },
+                  { opacity: 1, transform: 'translateX(0px)', filter: 'blur(0px)' },
+                ],
+                {
+                  duration: DURATION_MS,
+                  easing: EASE,
+                  delay: i * STAGGER_MS,
+                  fill: 'forwards',
+                }
+              )
+            );
+          }
+
+          var settle = (parts.length - 1) * STAGGER_MS + DURATION_MS;
+          if (sweep) {
+            anims.push(
+              sweep.animate([{ opacity: 0 }, { opacity: 1 }], {
+                duration: 260,
+                easing: EASE,
+                delay: Math.max(0, settle - 160),
+                fill: 'forwards',
+              })
+            );
+            if (bar) bar.style.animation = 'br-boot-sweep 1150ms cubic-bezier(.4,0,.2,1) infinite';
+          }
+        }
+
+        function teardown() {
+          if (removeTimer) {
+            clearTimeout(removeTimer);
+            removeTimer = null;
+          }
+          for (var i = 0; i < anims.length; i++) {
+            try {
+              anims[i].cancel();
+            } catch (e) {
+              /* already finished */
+            }
+          }
+          anims = [];
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+        }
+
+        // Called by renderer.tsx once React has actually mounted the app.
+        function dismiss() {
+          if (finished) return;
+          finished = true;
+          if (showTimer) {
+            clearTimeout(showTimer);
+            showTimer = null;
+          }
+          // Never crossed the threshold: drop it without a flash.
+          if (!shown) {
+            teardown();
+            return;
+          }
+          el.classList.add('br-out');
+          removeTimer = setTimeout(teardown, FADE_OUT_MS + 40);
+          el.addEventListener('transitionend', teardown, { once: true });
+        }
+
+        showTimer = setTimeout(show, THRESHOLD_MS);
+
+        window.__brBootSplash = {
+          dismiss: dismiss,
+          isShown: function () {
+            return shown;
+          },
+        };
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="./src/renderer.tsx"></script>
   </body>

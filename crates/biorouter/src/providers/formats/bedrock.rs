@@ -6,7 +6,11 @@ use crate::mcp_utils::ToolResult;
 use anyhow::{anyhow, bail, Result};
 use aws_sdk_bedrockruntime::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_bedrockruntime::operation::converse::ConverseError;
+use aws_sdk_bedrockruntime::operation::converse_stream::{
+    ConverseStreamError, ConverseStreamOutput as ConverseStreamResponse,
+};
 use aws_sdk_bedrockruntime::types as bedrock;
+use aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError;
 use aws_smithy_types::{Document, Number};
 use base64::Engine;
 use chrono::Utc;
@@ -19,6 +23,7 @@ use serde_json::Value;
 use super::super::base::Usage;
 use super::super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
+use crate::providers::utils::RequestLog;
 
 pub fn to_bedrock_message(message: &Message) -> Result<bedrock::Message> {
     bedrock::Message::builder()
@@ -583,11 +588,15 @@ pub fn classify_bedrock_converse_error(err: SdkError<ConverseError>) -> Provider
 
 /// Classify a Bedrock error the SDK could not map to a typed variant, using the
 /// raw HTTP status code and body signals. This is the path a proxied error takes.
-fn classify_untyped_bedrock_error(
+///
+/// Generic over the error type so the streaming operation (`ConverseStreamError`)
+/// shares one implementation with the blocking one (`ConverseError`) — the
+/// proxy-shaped-error problem this solves is identical on both paths.
+fn classify_untyped_bedrock_error<E: ProvideErrorMetadata + std::fmt::Debug>(
     status: Option<u16>,
     body_says_overflow: bool,
     detail: String,
-    err: ConverseError,
+    err: E,
 ) -> ProviderError {
     // If either the body or whatever metadata the SDK salvaged reads like an
     // overflow, treat it as a context-length problem so the agent can compact.
@@ -622,6 +631,1098 @@ fn classify_untyped_bedrock_error(
         // No raw response at all (should not happen for a ServiceError, but keep it
         // safe): treat as a retryable server error.
         None => ProviderError::ServerError(detail),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming: the `ConverseStream` event stream
+// ---------------------------------------------------------------------------
+
+/// Classify a failure of the *streaming* `ConverseStream` operation — i.e. the
+/// initial `send()`, before any event has been received.
+///
+/// This is deliberately a near-twin of [`classify_bedrock_converse_error`]:
+/// `ConverseStreamError` is a different generated type with an extra
+/// `ModelStreamErrorException` variant, so it cannot share the `match`, but the
+/// proxy-shaped-error reasoning documented on the blocking classifier applies
+/// verbatim (UCSF's MuleSoft proxy returns bodies the SDK cannot type, so we
+/// fall back to the raw HTTP status).
+pub fn classify_bedrock_converse_stream_error(err: SdkError<ConverseStreamError>) -> ProviderError {
+    let status = err.raw_response().map(|r| r.status().as_u16());
+    let body_says_overflow = err
+        .raw_response()
+        .and_then(|r| r.body().bytes())
+        .map(|b| looks_like_context_overflow(&String::from_utf8_lossy(&b[..b.len().min(4096)])))
+        .unwrap_or(false);
+
+    match &err {
+        SdkError::TimeoutError(_) => {
+            return ProviderError::ServerError(
+                "Bedrock streaming request timed out with no response from the endpoint \
+                 (network stall or gateway hang). This is usually transient."
+                    .to_string(),
+            );
+        }
+        SdkError::DispatchFailure(_) => {
+            return ProviderError::ServerError(
+                "Could not reach the Bedrock endpoint (connection/dispatch failure). \
+                 Check the endpoint URL and network connectivity. This is usually transient."
+                    .to_string(),
+            );
+        }
+        SdkError::ResponseError(_) => {
+            return ProviderError::ServerError(
+                "Received an incomplete or unparseable response from the Bedrock endpoint. \
+                 This is usually transient."
+                    .to_string(),
+            );
+        }
+        SdkError::ConstructionFailure(_) => {
+            return ProviderError::ServerError(
+                "Failed to construct the Bedrock streaming request before sending it.".to_string(),
+            );
+        }
+        _ => {}
+    }
+
+    let detail = format!("Failed to open Bedrock stream: {:?}", err);
+
+    match err.into_service_error() {
+        ConverseStreamError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
+            details: format!("Bedrock throttling error: {:?}", e),
+            retry_delay: None,
+        },
+        ConverseStreamError::AccessDeniedException(e) => {
+            ProviderError::Authentication(format!("Failed to call Bedrock: {:?}", e))
+        }
+        ConverseStreamError::ValidationException(e)
+            if looks_like_context_overflow(e.message().unwrap_or_default()) =>
+        {
+            ProviderError::ContextLengthExceeded(format!("Failed to call Bedrock: {:?}", e))
+        }
+        ConverseStreamError::ValidationException(e) => {
+            ProviderError::ExecutionError(format!("Bedrock rejected the request: {:?}", e))
+        }
+        ConverseStreamError::ModelErrorException(e) => {
+            ProviderError::ExecutionError(format!("Failed to call Bedrock: {:?}", e))
+        }
+        ConverseStreamError::ModelTimeoutException(e) => {
+            ProviderError::ServerError(format!("Bedrock model timed out (transient): {:?}", e))
+        }
+        ConverseStreamError::ModelNotReadyException(e) => {
+            ProviderError::ServerError(format!("Bedrock model not ready (transient): {:?}", e))
+        }
+        // Only on the streaming operation: the service failed part-way through
+        // emitting the event stream. AWS documents this as retryable.
+        ConverseStreamError::ModelStreamErrorException(e) => {
+            ProviderError::ServerError(format!("Bedrock model stream error (transient): {:?}", e))
+        }
+        ConverseStreamError::InternalServerException(e) => {
+            ProviderError::ServerError(format!("Bedrock internal server error: {:?}", e))
+        }
+        ConverseStreamError::ServiceUnavailableException(e) => {
+            ProviderError::ServerError(format!("Bedrock service unavailable (transient): {:?}", e))
+        }
+        ConverseStreamError::ResourceNotFoundException(e) => {
+            ProviderError::ExecutionError(format!(
+                "Bedrock resource not found — check the model id / access: {:?}",
+                e
+            ))
+        }
+        other => classify_untyped_bedrock_error(status, body_says_overflow, detail, other),
+    }
+}
+
+/// Classify a failure raised **mid-stream**, while receiving events.
+///
+/// The error type here is `SdkError<ConverseStreamOutputError, RawMessage>` —
+/// note the second type parameter: at this point the HTTP response is long gone
+/// and the "raw response" is an event-stream frame, so there is no status code
+/// to fall back on. We therefore classify purely from the typed variant and its
+/// metadata. (The function is generic over that second parameter so it does not
+/// have to name `RawMessage`, which lives behind an `aws-smithy-types` feature
+/// this crate does not enable directly.)
+///
+/// These errors are **not** retried: bytes have already been handed to the
+/// agent, and replaying the request would duplicate them. The turn fails and the
+/// agent's own error handling takes over. This matches the Anthropic streaming
+/// path, which likewise does not retry once a stream has begun.
+pub fn classify_bedrock_stream_event_error<R: std::fmt::Debug + Send + Sync + 'static>(
+    err: SdkError<ConverseStreamOutputError, R>,
+) -> ProviderError {
+    match &err {
+        SdkError::TimeoutError(_) => {
+            return ProviderError::ServerError(
+                "The Bedrock response stream stalled and timed out mid-generation. \
+                 This is usually transient."
+                    .to_string(),
+            );
+        }
+        SdkError::DispatchFailure(_) => {
+            return ProviderError::ServerError(
+                "The connection to Bedrock dropped mid-generation. This is usually transient."
+                    .to_string(),
+            );
+        }
+        SdkError::ResponseError(_) => {
+            return ProviderError::ServerError(
+                "Received a malformed frame in the Bedrock response stream. \
+                 This is usually transient."
+                    .to_string(),
+            );
+        }
+        _ => {}
+    }
+
+    let detail = format!("Bedrock stream error: {:?}", err);
+
+    match err.into_service_error() {
+        ConverseStreamOutputError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
+            details: format!("Bedrock throttled the response stream: {:?}", e),
+            retry_delay: None,
+        },
+        ConverseStreamOutputError::ValidationException(e)
+            if looks_like_context_overflow(e.message().unwrap_or_default()) =>
+        {
+            ProviderError::ContextLengthExceeded(format!("Bedrock stream: {:?}", e))
+        }
+        ConverseStreamOutputError::ValidationException(e) => {
+            ProviderError::ExecutionError(format!("Bedrock rejected the request: {:?}", e))
+        }
+        ConverseStreamOutputError::ModelStreamErrorException(e) => {
+            ProviderError::ServerError(format!("Bedrock model stream error (transient): {:?}", e))
+        }
+        ConverseStreamOutputError::InternalServerException(e) => {
+            ProviderError::ServerError(format!("Bedrock internal server error: {:?}", e))
+        }
+        ConverseStreamOutputError::ServiceUnavailableException(e) => {
+            ProviderError::ServerError(format!("Bedrock service unavailable (transient): {:?}", e))
+        }
+        other => {
+            if looks_like_context_overflow(other.message().unwrap_or_default()) {
+                ProviderError::ContextLengthExceeded(format!(
+                    "Bedrock reported a context/token-window overflow mid-stream. {detail}"
+                ))
+            } else {
+                ProviderError::ServerError(detail)
+            }
+        }
+    }
+}
+
+/// Map Bedrock's `stopReason` onto the OpenAI-style `finish_reason` the agent
+/// loop understands.
+///
+/// Only `"length"` triggers the agent's auto-continue path, so the mapping is
+/// deliberately conservative: the reasons that mean "the OUTPUT hit the token
+/// cap" map to `"length"`, and everything else passes through as its raw Bedrock
+/// string. In particular `model_context_window_exceeded` — which means the
+/// **input** did not fit — must NOT become `"length"`, or the agent would try to
+/// continue a turn that can never make progress.
+fn map_bedrock_stop_reason(reason: &bedrock::StopReason) -> String {
+    match reason {
+        bedrock::StopReason::EndTurn | bedrock::StopReason::StopSequence => "stop".to_string(),
+        bedrock::StopReason::MaxTokens => "length".to_string(),
+        bedrock::StopReason::ToolUse => "tool_calls".to_string(),
+        bedrock::StopReason::ContentFiltered | bedrock::StopReason::GuardrailIntervened => {
+            "content_filter".to_string()
+        }
+        other => other.as_str().to_string(),
+    }
+}
+
+/// A tool-use block being accumulated across `contentBlockDelta` events.
+#[derive(Debug, Clone)]
+struct ToolUseAccumulator {
+    tool_use_id: String,
+    name: String,
+    /// Partial JSON, concatenated in arrival order. Never parsed until the
+    /// matching `contentBlockStop`.
+    input: String,
+}
+
+/// Incremental decoder for the Bedrock `ConverseStream` event stream.
+///
+/// # Why this exists
+///
+/// The blocking `Converse` API returns nothing until the model has finished the
+/// entire turn, so a tool-call card could not appear in the UI until generation
+/// was completely done (see
+/// `docs/investigations/2026-07-18-tool-call-ui-latency.md` §0). This decoder
+/// turns the SDK's typed event stream into the repo's [`MessageStream`], so text
+/// reaches the UI as it is produced.
+///
+/// # Safety property (the important one)
+///
+/// **A tool request is emitted exactly once, at `contentBlockStop`, with fully
+/// parsed arguments — never before.** Bedrock delivers a tool's `input` as a
+/// sequence of partial-JSON fragments; emitting early would hand the agent's
+/// dispatch path a *truncated* argument object, and for `shell` or `text_editor`
+/// executing truncated arguments is destructive. Accumulated fragments are only
+/// ever `push_str`ed until the block closes.
+///
+/// # Block indices, not "the current block"
+///
+/// Every event carries a `contentBlockIndex`. Accumulators are keyed by that
+/// index rather than by a single "current tool" slot, so a response containing
+/// several tool_use blocks decodes correctly even if the service interleaves
+/// their deltas.
+///
+/// # Reasoning / thinking content
+///
+/// `reasoningContent` deltas are **deliberately discarded** — see
+/// [`BedrockStreamDecoder::on_event`].
+pub struct BedrockStreamDecoder {
+    model_name: String,
+    tool_blocks: HashMap<i32, ToolUseAccumulator>,
+    /// Latest usage reported by the `metadata` event.
+    usage: Option<Usage>,
+    /// Mapped `stopReason` from the `messageStop` event.
+    finish_reason: Option<String>,
+    /// Set once `messageStop` is seen. A stream that ends without it was cut off.
+    saw_message_stop: bool,
+}
+
+/// One item of the decoded stream: a partial message and/or a usage snapshot.
+pub type BedrockStreamItem = (
+    Option<Message>,
+    Option<crate::providers::base::ProviderUsage>,
+);
+
+impl BedrockStreamDecoder {
+    pub fn new(model_name: impl Into<String>) -> Self {
+        Self {
+            model_name: model_name.into(),
+            tool_blocks: HashMap::new(),
+            usage: None,
+            finish_reason: None,
+            saw_message_stop: false,
+        }
+    }
+
+    /// True if the stream terminated without a `messageStop` event.
+    pub fn was_truncated(&self) -> bool {
+        !self.saw_message_stop
+    }
+
+    fn assistant_message(content: MessageContent) -> Message {
+        Message::new(Role::Assistant, Utc::now().timestamp(), vec![content])
+    }
+
+    /// Current usage snapshot, carrying whatever `finish_reason` we know.
+    ///
+    /// The agent keeps the **last** usage snapshot of a turn rather than summing
+    /// them, so re-emitting a snapshot cannot double-count. That is what lets us
+    /// emit one at `messageStop` (finish reason known, usage possibly not yet)
+    /// and another at `metadata` (real token counts) without corrupting cost
+    /// accounting.
+    fn usage_snapshot(&self) -> crate::providers::base::ProviderUsage {
+        let mut snapshot = crate::providers::base::ProviderUsage::new(
+            self.model_name.clone(),
+            self.usage.unwrap_or_default(),
+        );
+        snapshot.finish_reason = self.finish_reason.clone();
+        snapshot
+    }
+
+    /// Feed one SDK event, returning zero or more stream items to yield.
+    pub fn on_event(&mut self, event: &bedrock::ConverseStreamOutput) -> Vec<BedrockStreamItem> {
+        match event {
+            // Role announcement only; nothing to surface.
+            bedrock::ConverseStreamOutput::MessageStart(_) => Vec::new(),
+
+            bedrock::ConverseStreamOutput::ContentBlockStart(start) => {
+                if let Some(bedrock::ContentBlockStart::ToolUse(tool_use)) = start.start.as_ref() {
+                    // The tool NAME and id are known here, but we still do not
+                    // emit — a tool request without complete arguments must
+                    // never reach the agent's dispatch path.
+                    self.tool_blocks.insert(
+                        start.content_block_index,
+                        ToolUseAccumulator {
+                            tool_use_id: tool_use.tool_use_id.clone(),
+                            name: tool_use.name.clone(),
+                            input: String::new(),
+                        },
+                    );
+                }
+                Vec::new()
+            }
+
+            bedrock::ConverseStreamOutput::ContentBlockDelta(delta_event) => {
+                match delta_event.delta.as_ref() {
+                    // The whole point of the change: text is yielded the moment
+                    // it arrives.
+                    Some(bedrock::ContentBlockDelta::Text(text)) => {
+                        if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![(
+                                Some(Self::assistant_message(MessageContent::text(text))),
+                                None,
+                            )]
+                        }
+                    }
+                    Some(bedrock::ContentBlockDelta::ToolUse(tool_delta)) => {
+                        if let Some(acc) =
+                            self.tool_blocks.get_mut(&delta_event.content_block_index)
+                        {
+                            acc.input.push_str(&tool_delta.input);
+                        } else {
+                            tracing::debug!(
+                                index = delta_event.content_block_index,
+                                "Bedrock toolUse delta for an unknown content block index; dropping"
+                            );
+                        }
+                        Vec::new()
+                    }
+                    // Extended-thinking output. Deliberately DISCARDED, not
+                    // decoded — see the module note below. Decoding it would be
+                    // actively harmful: `to_bedrock_message_content` maps
+                    // `MessageContent::Thinking` to an EMPTY TEXT BLOCK, so a
+                    // decoded thinking block would be replayed to Anthropic
+                    // stripped of its signature, which Anthropic rejects. The
+                    // blocking path does not decode thinking either (
+                    // `from_bedrock_content_block` has no reasoning arm), so
+                    // discarding keeps the two paths identical. Nothing is lost
+                    // today because neither provider requests extended thinking
+                    // (no `additional_model_request_fields` thinking budget is
+                    // ever set), so these events do not occur in practice.
+                    Some(bedrock::ContentBlockDelta::ReasoningContent(_)) => Vec::new(),
+                    _ => Vec::new(),
+                }
+            }
+
+            bedrock::ConverseStreamOutput::ContentBlockStop(stop) => {
+                match self.tool_blocks.remove(&stop.content_block_index) {
+                    Some(acc) => vec![(Some(Self::finish_tool_block(acc)), None)],
+                    None => Vec::new(),
+                }
+            }
+
+            bedrock::ConverseStreamOutput::MessageStop(stop) => {
+                self.saw_message_stop = true;
+                self.finish_reason = Some(map_bedrock_stop_reason(&stop.stop_reason));
+                vec![(None, Some(self.usage_snapshot()))]
+            }
+
+            bedrock::ConverseStreamOutput::Metadata(meta) => match meta.usage.as_ref() {
+                Some(usage) => {
+                    self.usage = Some(from_bedrock_usage(usage));
+                    vec![(None, Some(self.usage_snapshot()))]
+                }
+                None => Vec::new(),
+            },
+
+            _ => Vec::new(),
+        }
+    }
+
+    /// Turn a completed tool-use block into a tool request message.
+    ///
+    /// Called only from the `contentBlockStop` arm, so `acc.input` is the
+    /// complete argument JSON.
+    fn finish_tool_block(acc: ToolUseAccumulator) -> Message {
+        let ToolUseAccumulator {
+            tool_use_id,
+            name,
+            input,
+        } = acc;
+
+        let parsed = if input.trim().is_empty() {
+            // A no-argument tool sends no deltas at all.
+            Ok(Value::Object(Default::default()))
+        } else {
+            serde_json::from_str::<Value>(&input)
+                .map_err(|e| format!("Could not parse tool arguments: {e}: {input}"))
+        };
+
+        let content = match parsed {
+            // `rmcp::model::object` debug-asserts its argument is an object, and
+            // the agent expects a map. A non-object here means the stream was
+            // corrupt; fail the call loudly rather than coercing it to `{}`.
+            Ok(value) if value.is_object() => MessageContent::tool_request(
+                tool_use_id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: name.into(),
+                    arguments: Some(object(value)),
+                    meta: None,
+                }),
+            ),
+            Ok(value) => MessageContent::tool_request(
+                tool_use_id,
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    format!("Tool arguments were not a JSON object: {value}"),
+                    None,
+                )),
+            ),
+            Err(message) => MessageContent::tool_request(
+                tool_use_id,
+                Err(ErrorData::new(ErrorCode::INVALID_PARAMS, message, None)),
+            ),
+        };
+
+        Self::assistant_message(content)
+    }
+
+    /// Flush state after the event stream ends.
+    ///
+    /// Any tool block still open never received its `contentBlockStop`, so its
+    /// arguments are truncated. It is surfaced as a **failed** tool request —
+    /// never as a callable one — so the turn reports the truncation instead of
+    /// silently dropping it (or, far worse, executing half a command).
+    pub fn finish(&mut self) -> Vec<BedrockStreamItem> {
+        let mut pending: Vec<(i32, ToolUseAccumulator)> = self.tool_blocks.drain().collect();
+        pending.sort_by_key(|(index, _)| *index);
+
+        let mut items: Vec<BedrockStreamItem> = pending
+            .into_iter()
+            .map(|(index, acc)| {
+                tracing::warn!(
+                    index,
+                    tool = %acc.name,
+                    "Bedrock stream ended before tool_use block completed; \
+                     surfacing it as a failed tool call rather than executing truncated arguments"
+                );
+                let content = MessageContent::tool_request(
+                    acc.tool_use_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!(
+                            "The Bedrock response stream ended before the arguments for `{}` \
+                             were complete, so the call was not made. Please retry.",
+                            acc.name
+                        ),
+                        None,
+                    )),
+                );
+                (Some(Self::assistant_message(content)), None)
+            })
+            .collect();
+
+        // A truncated stream never reached `messageStop`/`metadata`, so no usage
+        // snapshot was emitted. Emit whatever we have so a cancelled or cut-off
+        // turn is still billed rather than recorded as free.
+        if !self.saw_message_stop && self.usage.is_some() {
+            items.push((None, Some(self.usage_snapshot())));
+        }
+
+        items
+    }
+}
+
+/// Drive a `ConverseStream` response into the repo's [`MessageStream`].
+///
+/// Takes the whole operation output rather than its `stream` field because the
+/// SDK's `EventReceiver` lives in a private module and is therefore unnameable
+/// outside `aws-sdk-bedrockruntime`.
+///
+/// Cancellation: dropping the returned stream drops the generator mid-`await`,
+/// which drops the receiver and the accumulator state together. Nothing is
+/// half-flushed, because the only state that could be flushed (an open tool
+/// block) is *never* emitted as a callable request.
+pub fn bedrock_message_stream(
+    response: ConverseStreamResponse,
+    model_name: String,
+    mut log: RequestLog,
+) -> crate::providers::base::MessageStream {
+    Box::pin(async_stream::try_stream! {
+        let mut receiver = response.stream;
+        let mut decoder = BedrockStreamDecoder::new(model_name);
+
+        loop {
+            let event = match receiver.recv().await {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(err) => {
+                    let provider_error = classify_bedrock_stream_event_error(err);
+                    let _ = log.error(&provider_error);
+                    // Terminates the stream with this error. Any tool block still
+                    // open is intentionally NOT flushed as a callable request.
+                    yield Err(provider_error)?;
+                    break;
+                }
+            };
+
+            for (message, usage) in decoder.on_event(&event) {
+                log.write(&message, usage.as_ref().map(|u| u.usage).as_ref())?;
+                yield (message, usage);
+            }
+        }
+
+        for (message, usage) in decoder.finish() {
+            log.write(&message, usage.as_ref().map(|u| u.usage).as_ref())?;
+            yield (message, usage);
+        }
+    })
+}
+
+#[cfg(test)]
+mod bedrock_stream_tests {
+    use super::*;
+    use aws_sdk_bedrockruntime::types::{
+        ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
+        ContentBlockStopEvent, ConversationRole, ConverseStreamMetadataEvent, ConverseStreamOutput,
+        MessageStartEvent, MessageStopEvent, ReasoningContentBlockDelta, StopReason, TokenUsage,
+        ToolUseBlockDelta, ToolUseBlockStart,
+    };
+
+    // ---- synthetic event builders -----------------------------------------
+
+    fn message_start() -> ConverseStreamOutput {
+        ConverseStreamOutput::MessageStart(
+            MessageStartEvent::builder()
+                .role(ConversationRole::Assistant)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn message_stop(reason: StopReason) -> ConverseStreamOutput {
+        ConverseStreamOutput::MessageStop(
+            MessageStopEvent::builder()
+                .stop_reason(reason)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn text_delta(index: i32, text: &str) -> ConverseStreamOutput {
+        ConverseStreamOutput::ContentBlockDelta(
+            ContentBlockDeltaEvent::builder()
+                .content_block_index(index)
+                .delta(ContentBlockDelta::Text(text.to_string()))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn tool_start(index: i32, id: &str, name: &str) -> ConverseStreamOutput {
+        ConverseStreamOutput::ContentBlockStart(
+            ContentBlockStartEvent::builder()
+                .content_block_index(index)
+                .start(ContentBlockStart::ToolUse(
+                    ToolUseBlockStart::builder()
+                        .tool_use_id(id)
+                        .name(name)
+                        .build()
+                        .unwrap(),
+                ))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn tool_delta(index: i32, fragment: &str) -> ConverseStreamOutput {
+        ConverseStreamOutput::ContentBlockDelta(
+            ContentBlockDeltaEvent::builder()
+                .content_block_index(index)
+                .delta(ContentBlockDelta::ToolUse(
+                    ToolUseBlockDelta::builder()
+                        .input(fragment)
+                        .build()
+                        .unwrap(),
+                ))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn block_stop(index: i32) -> ConverseStreamOutput {
+        ConverseStreamOutput::ContentBlockStop(
+            ContentBlockStopEvent::builder()
+                .content_block_index(index)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn metadata(input: i32, output: i32, total: i32) -> ConverseStreamOutput {
+        ConverseStreamOutput::Metadata(
+            ConverseStreamMetadataEvent::builder()
+                .usage(
+                    TokenUsage::builder()
+                        .input_tokens(input)
+                        .output_tokens(output)
+                        .total_tokens(total)
+                        .cache_read_input_tokens(7)
+                        .cache_write_input_tokens(3)
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        )
+    }
+
+    // ---- assertion helpers -------------------------------------------------
+
+    fn drain(
+        decoder: &mut BedrockStreamDecoder,
+        events: &[ConverseStreamOutput],
+    ) -> Vec<BedrockStreamItem> {
+        events
+            .iter()
+            .flat_map(|event| decoder.on_event(event))
+            .collect()
+    }
+
+    fn texts(items: &[BedrockStreamItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| match content {
+                MessageContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every tool request in the decoded items, as `(id, Ok(name, args) | Err(msg))`.
+    #[allow(clippy::type_complexity)]
+    fn tool_requests(
+        items: &[BedrockStreamItem],
+    ) -> Vec<(String, Result<(String, Value), String>)> {
+        items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some((
+                    request.id.clone(),
+                    match &request.tool_call {
+                        Ok(call) => Ok((
+                            call.name.to_string(),
+                            Value::Object(call.arguments.clone().unwrap_or_default()),
+                        )),
+                        Err(error) => Err(error.message.to_string()),
+                    },
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ---- text ---------------------------------------------------------------
+
+    /// The entire point of the change: each text delta must surface as its own
+    /// item, not be buffered until the turn ends.
+    #[test]
+    fn text_is_yielded_incrementally_as_it_arrives() {
+        let mut decoder = BedrockStreamDecoder::new("us.anthropic.claude-sonnet-4-6");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                text_delta(0, "Hello"),
+                text_delta(0, ", "),
+                text_delta(0, "world"),
+                block_stop(0),
+                message_stop(StopReason::EndTurn),
+            ],
+        );
+
+        assert_eq!(texts(&items), vec!["Hello", ", ", "world"]);
+        assert!(tool_requests(&items).is_empty());
+        assert!(!decoder.was_truncated());
+        assert!(decoder.finish().is_empty());
+    }
+
+    #[test]
+    fn empty_text_deltas_are_not_yielded_as_messages() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(&mut decoder, &[text_delta(0, ""), text_delta(0, "x")]);
+        assert_eq!(texts(&items), vec!["x"]);
+    }
+
+    // ---- single tool call ---------------------------------------------------
+
+    /// THE safety property: nothing tool-shaped is emitted until
+    /// `contentBlockStop`, and what is emitted then has complete arguments.
+    #[test]
+    fn tool_call_is_emitted_once_at_block_stop_with_complete_arguments() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+
+        let before_stop = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(0, "tooluse_abc", "shell"),
+                tool_delta(0, "{\"command\":"),
+                tool_delta(0, "\"ls -la /tmp\"}"),
+            ],
+        );
+        assert!(
+            before_stop.is_empty(),
+            "no item may be emitted before contentBlockStop, got {before_stop:?}"
+        );
+
+        let at_stop = drain(&mut decoder, &[block_stop(0)]);
+        let requests = tool_requests(&at_stop);
+        assert_eq!(requests.len(), 1, "exactly one tool request");
+        assert_eq!(requests[0].0, "tooluse_abc");
+        let (name, args) = requests[0].1.as_ref().expect("tool call should parse");
+        assert_eq!(name, "shell");
+        assert_eq!(args, &serde_json::json!({"command": "ls -la /tmp"}));
+
+        // And it is not re-emitted afterwards.
+        let after = drain(&mut decoder, &[message_stop(StopReason::ToolUse)]);
+        assert!(tool_requests(&after).is_empty());
+    }
+
+    /// Bedrock splits `input` at arbitrary byte boundaries, including mid-token
+    /// and mid-string. Accumulation must be a plain concatenation.
+    #[test]
+    fn tool_input_split_across_many_deltas_reassembles_exactly() {
+        let full = r#"{"path":"/tmp/a.txt","command":"str_replace","new_str":"x, y"}"#;
+        let mut decoder = BedrockStreamDecoder::new("m");
+
+        let mut events = vec![tool_start(3, "id1", "text_editor")];
+        // Chop into 5-byte fragments, deliberately ignoring JSON structure.
+        for chunk in full.as_bytes().chunks(5) {
+            events.push(tool_delta(3, std::str::from_utf8(chunk).unwrap()));
+        }
+        events.push(block_stop(3));
+
+        let items = drain(&mut decoder, &events);
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 1);
+        let (name, args) = requests[0].1.as_ref().unwrap();
+        assert_eq!(name, "text_editor");
+        assert_eq!(args, &serde_json::from_str::<Value>(full).unwrap());
+    }
+
+    #[test]
+    fn tool_with_no_input_deltas_gets_an_empty_object() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[tool_start(0, "id", "list_things"), block_stop(0)],
+        );
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].1.as_ref().unwrap().1, serde_json::json!({}));
+    }
+
+    // ---- multiple tool calls ------------------------------------------------
+
+    /// Two tool_use blocks in one response, with their deltas interleaved.
+    /// Keying accumulators by `contentBlockIndex` is what makes this work.
+    #[test]
+    fn two_interleaved_tool_calls_each_decode_correctly() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(0, "id_a", "shell"),
+                tool_start(1, "id_b", "text_editor"),
+                tool_delta(0, "{\"command\":"),
+                tool_delta(1, "{\"path\":\"/etc/"),
+                tool_delta(0, "\"pwd\"}"),
+                tool_delta(1, "hosts\"}"),
+                block_stop(0),
+                block_stop(1),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 2);
+
+        assert_eq!(requests[0].0, "id_a");
+        let (name_a, args_a) = requests[0].1.as_ref().unwrap();
+        assert_eq!(name_a, "shell");
+        assert_eq!(args_a, &serde_json::json!({"command": "pwd"}));
+
+        assert_eq!(requests[1].0, "id_b");
+        let (name_b, args_b) = requests[1].1.as_ref().unwrap();
+        assert_eq!(name_b, "text_editor");
+        assert_eq!(args_b, &serde_json::json!({"path": "/etc/hosts"}));
+    }
+
+    #[test]
+    fn text_and_tool_call_in_one_response_both_decode() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                text_delta(0, "Let me look."),
+                block_stop(0),
+                tool_start(1, "id", "shell"),
+                tool_delta(1, "{\"command\":\"ls\"}"),
+                block_stop(1),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+        assert_eq!(texts(&items), vec!["Let me look."]);
+        assert_eq!(tool_requests(&items).len(), 1);
+    }
+
+    // ---- truncation ---------------------------------------------------------
+
+    /// A stream that dies mid-tool-call must NOT produce a callable request with
+    /// half the arguments — for `shell` that would execute a truncated command.
+    /// It must also not vanish silently; it becomes a failed request.
+    #[test]
+    fn stream_truncated_mid_tool_call_yields_a_failed_request_not_truncated_arguments() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+
+        let during = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(0, "id_trunc", "shell"),
+                tool_delta(0, "{\"command\":\"rm -rf /tmp/scratch"),
+                // no contentBlockStop, no messageStop — connection died here
+            ],
+        );
+        assert!(during.is_empty());
+
+        let flushed = decoder.finish();
+        assert!(decoder.was_truncated());
+
+        let requests = tool_requests(&flushed);
+        assert_eq!(requests.len(), 1, "the dropped call must be surfaced");
+        assert_eq!(requests[0].0, "id_trunc");
+        let error = requests[0]
+            .1
+            .as_ref()
+            .expect_err("a truncated tool call must never be a callable request");
+        assert!(
+            error.contains("ended before the arguments"),
+            "error should explain the truncation: {error}"
+        );
+        assert!(
+            error.contains("shell"),
+            "error should name the tool: {error}"
+        );
+    }
+
+    /// Text already delivered before a truncation stays delivered; only the
+    /// incomplete tool block is turned into a failure.
+    #[test]
+    fn truncation_preserves_already_yielded_text() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let during = drain(
+            &mut decoder,
+            &[
+                text_delta(0, "partial answer"),
+                tool_start(1, "id", "shell"),
+                tool_delta(1, "{\"comm"),
+            ],
+        );
+        assert_eq!(texts(&during), vec!["partial answer"]);
+        assert_eq!(tool_requests(&decoder.finish()).len(), 1);
+    }
+
+    /// A clean stream leaves nothing to flush — `finish` must not invent a
+    /// duplicate tool request for a block that already closed.
+    #[test]
+    fn finish_after_a_complete_stream_emits_nothing() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        drain(
+            &mut decoder,
+            &[
+                tool_start(0, "id", "shell"),
+                tool_delta(0, "{\"command\":\"ls\"}"),
+                block_stop(0),
+                message_stop(StopReason::ToolUse),
+                metadata(1, 2, 3),
+            ],
+        );
+        assert!(decoder.finish().is_empty());
+        assert!(!decoder.was_truncated());
+    }
+
+    // ---- malformed arguments -------------------------------------------------
+
+    #[test]
+    fn unparseable_tool_json_becomes_a_failed_request() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                tool_start(0, "id", "shell"),
+                tool_delta(0, "{\"command\": not json"),
+                block_stop(0),
+            ],
+        );
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].1.is_err(), "must not be callable");
+    }
+
+    /// `rmcp::model::object` debug-asserts its input is an object; a scalar must
+    /// be rejected before it reaches that call.
+    #[test]
+    fn non_object_tool_json_becomes_a_failed_request() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                tool_start(0, "id", "shell"),
+                tool_delta(0, "\"just a string\""),
+                block_stop(0),
+            ],
+        );
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 1);
+        let error = requests[0].1.as_ref().unwrap_err();
+        assert!(error.contains("not a JSON object"), "got: {error}");
+    }
+
+    // ---- usage / accounting --------------------------------------------------
+
+    #[test]
+    fn metadata_event_reports_usage_with_all_buckets_and_the_model_name() {
+        let mut decoder = BedrockStreamDecoder::new("us.anthropic.claude-opus-4-6-v1");
+        let items = drain(&mut decoder, &[text_delta(0, "hi"), metadata(100, 40, 140)]);
+
+        let usage = items
+            .iter()
+            .filter_map(|(_, usage)| usage.as_ref())
+            .next_back()
+            .expect("a usage snapshot must be emitted");
+
+        assert_eq!(usage.model, "us.anthropic.claude-opus-4-6-v1");
+        assert_eq!(usage.usage.input_tokens, Some(100));
+        assert_eq!(usage.usage.output_tokens, Some(40));
+        assert_eq!(usage.usage.total_tokens, Some(140));
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(7));
+        assert_eq!(usage.usage.cache_creation_input_tokens, Some(3));
+        // Same reconciliation the blocking path guarantees: 100 + 40 + 7 + 3.
+        assert_eq!(usage.usage.billed_total(), Some(150));
+    }
+
+    /// The final snapshot must carry both the real token counts and the mapped
+    /// finish reason, in Bedrock's real event order (messageStop then metadata).
+    #[test]
+    fn final_usage_snapshot_carries_tokens_and_finish_reason() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                text_delta(0, "hi"),
+                message_stop(StopReason::MaxTokens),
+                metadata(10, 5, 15),
+            ],
+        );
+
+        let last = items
+            .iter()
+            .filter_map(|(_, usage)| usage.as_ref())
+            .next_back()
+            .expect("a usage snapshot must be emitted");
+        // "max_tokens" -> "length" is what lets the agent auto-continue a
+        // response cut off by the output limit.
+        assert_eq!(last.finish_reason.as_deref(), Some("length"));
+        assert_eq!(last.usage.input_tokens, Some(10));
+        assert_eq!(last.usage.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn stop_reasons_map_onto_the_openai_style_finish_reasons() {
+        for (bedrock_reason, expected) in [
+            (StopReason::EndTurn, "stop"),
+            (StopReason::StopSequence, "stop"),
+            (StopReason::MaxTokens, "length"),
+            (StopReason::ToolUse, "tool_calls"),
+            (StopReason::ContentFiltered, "content_filter"),
+            (StopReason::GuardrailIntervened, "content_filter"),
+            // An INPUT-too-large stop must never become "length": that is the
+            // agent's auto-continue trigger, and continuing cannot help.
+            (
+                StopReason::ModelContextWindowExceeded,
+                "model_context_window_exceeded",
+            ),
+        ] {
+            let mut decoder = BedrockStreamDecoder::new("m");
+            let items = drain(&mut decoder, &[message_stop(bedrock_reason.clone())]);
+            let usage = items
+                .iter()
+                .filter_map(|(_, usage)| usage.as_ref())
+                .next_back()
+                .unwrap();
+            assert_eq!(
+                usage.finish_reason.as_deref(),
+                Some(expected),
+                "for {bedrock_reason:?}"
+            );
+        }
+    }
+
+    /// Usage that arrived before a truncation must still be reported, so a
+    /// cut-off turn is billed rather than recorded as free.
+    #[test]
+    fn truncated_stream_still_reports_usage_it_received() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        drain(&mut decoder, &[metadata(50, 20, 70)]);
+
+        let flushed = decoder.finish();
+        let usage = flushed
+            .iter()
+            .filter_map(|(_, usage)| usage.as_ref())
+            .next_back()
+            .expect("usage should be re-emitted on truncation");
+        assert_eq!(usage.usage.input_tokens, Some(50));
+    }
+
+    /// No usage was ever reported, so `finish` must not fabricate a zero
+    /// snapshot that would overwrite real accounting.
+    #[test]
+    fn truncated_stream_without_usage_emits_no_usage_snapshot() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        drain(&mut decoder, &[text_delta(0, "hi")]);
+        let flushed = decoder.finish();
+        assert!(flushed.iter().all(|(_, usage)| usage.is_none()));
+    }
+
+    // ---- reasoning content ---------------------------------------------------
+
+    /// Documented decision: reasoning deltas are discarded, not decoded. See the
+    /// note in `on_event` — `to_bedrock_message_content` cannot round-trip a
+    /// thinking block with its signature, and replaying one without a signature
+    /// is rejected by Anthropic.
+    #[test]
+    fn reasoning_content_deltas_are_discarded_not_decoded() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let reasoning = ConverseStreamOutput::ContentBlockDelta(
+            ContentBlockDeltaEvent::builder()
+                .content_block_index(0)
+                .delta(ContentBlockDelta::ReasoningContent(
+                    ReasoningContentBlockDelta::Text("thinking out loud".to_string()),
+                ))
+                .build()
+                .unwrap(),
+        );
+        let signature = ConverseStreamOutput::ContentBlockDelta(
+            ContentBlockDeltaEvent::builder()
+                .content_block_index(0)
+                .delta(ContentBlockDelta::ReasoningContent(
+                    ReasoningContentBlockDelta::Signature("sig".to_string()),
+                ))
+                .build()
+                .unwrap(),
+        );
+
+        let items = drain(
+            &mut decoder,
+            &[reasoning, signature, block_stop(0), text_delta(1, "answer")],
+        );
+        assert_eq!(texts(&items), vec!["answer"]);
+        assert!(tool_requests(&items).is_empty());
+    }
+
+    /// A toolUse delta whose block was never opened (should not happen, but the
+    /// service is not ours) must be dropped, never invent a request.
+    #[test]
+    fn tool_delta_for_an_unknown_block_index_is_dropped() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(&mut decoder, &[tool_delta(9, "{\"a\":1}"), block_stop(9)]);
+        assert!(tool_requests(&items).is_empty());
+        assert!(decoder.finish().is_empty());
     }
 }
 

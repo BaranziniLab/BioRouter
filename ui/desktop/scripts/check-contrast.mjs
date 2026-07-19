@@ -65,6 +65,18 @@ const ALMA_D = Object.assign(
 const ALMA_LIGHT = Object.assign({}, LIGHT, ALMA_L);
 const ALMA_DARK = Object.assign({}, LIGHT, DARK, ALMA_L, ALMA_D);
 
+// Roche Limit (JupyterLab-inspired) theme family — same cascade rule as Alma.
+const ROCHE_L = Object.assign(
+  {},
+  ...blocks(css, (s) => s === ":root[data-theme='roche-limit']").map(parseDecls)
+);
+const ROCHE_D = Object.assign(
+  {},
+  ...blocks(css, (s) => s === ".dark[data-theme='roche-limit']").map(parseDecls)
+);
+const ROCHE_LIGHT = Object.assign({}, LIGHT, ROCHE_L);
+const ROCHE_DARK = Object.assign({}, LIGHT, DARK, ROCHE_L, ROCHE_D);
+
 function resolve(name, scope) {
   let v = scope[name] ?? THEME[name];
   for (let i = 0; i < 12 && v && v.startsWith('var('); i++) {
@@ -121,6 +133,8 @@ for (const [theme, scope] of [
   ['dark', DARK],
   ['alma-light', ALMA_LIGHT],
   ['alma-dark', ALMA_DARK],
+  ['roche-light', ROCHE_LIGHT],
+  ['roche-dark', ROCHE_DARK],
 ]) {
   rows.push(['', '', `── ${theme} ──`, '']);
   for (const g of TEXT_GROUNDS) {
@@ -193,6 +207,17 @@ for (const [theme, scope] of [
     1.1,
     scope
   );
+
+  // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
+  // asks it against every row the icon can sit on — the resting sidebar, the
+  // hover fill, and the active fill. The darkest row is what binds. Alma Mater
+  // paints these in the brand teal (the one place it appears at reading size),
+  // so an accent change that only checked the resting sidebar could ship an
+  // icon that disappears the moment a row is selected. Parchment passes these
+  // trivially because its --sidebar-icon is a pass-through to the label ink.
+  for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
+    assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
+  }
 }
 
 const w = Math.max(...rows.map((r) => r[2].length));

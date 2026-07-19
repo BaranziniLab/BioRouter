@@ -5,11 +5,16 @@ use serde_json::Value;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
 use super::azureauth::{AuthError, AzureAuth};
-use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
 use super::retry::ProviderRetry;
-use super::utils::{get_model, handle_response_openai_compat, ImageFormat};
+use super::utils::{
+    azure_chat_completions_path, get_model, handle_response_openai_compat,
+    handle_status_openai_compat, stream_openai_compat, ImageFormat,
+};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
@@ -134,15 +139,38 @@ impl AzureProvider {
         })
     }
 
-    async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
-        // Build the path for Azure OpenAI
-        let path = format!(
-            "openai/deployments/{}/chat/completions?api-version={}",
-            self.deployment_name, self.api_version
-        );
+    /// The single source of truth for the Azure deployment path, shared by the
+    /// blocking and streaming paths so they cannot drift.
+    fn chat_completions_path(&self) -> String {
+        // Shared with versa_azure via providers::utils so the two cannot drift
+        // — a change made in one file used to be silently missable in the other.
+        azure_chat_completions_path(&self.deployment_name, &self.api_version)
+    }
 
+    async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
+        let path = self.chat_completions_path();
         let response = self.api_client.response_post(&path, payload).await?;
         handle_response_openai_compat(response).await
+    }
+
+    /// The exact request body `stream()` posts. See the equivalent on
+    /// `VersaAzureProvider` for why this is extracted rather than inlined.
+    fn build_stream_payload(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<Value> {
+        // `for_streaming = true` also sets stream_options.include_usage, which
+        // is what makes Azure emit a final usage-bearing chunk.
+        create_request(
+            &self.model,
+            system,
+            messages,
+            tools,
+            &ImageFormat::OpenAi,
+            true,
+        )
     }
 }
 
@@ -234,5 +262,100 @@ impl Provider for AzureProvider {
         let response_model = get_model(&response);
         log.write(&response, Some(&usage))?;
         Ok((message, ProviderUsage::new(response_model, usage)))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    async fn stream(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let payload = self.build_stream_payload(system, messages, tools)?;
+        let mut log = RequestLog::start(&self.model, &payload)?;
+
+        let path = self.chat_completions_path();
+        let response = self
+            .with_retry(|| async {
+                let resp = self.api_client.response_post(&path, &payload).await?;
+                handle_status_openai_compat(resp).await
+            })
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        stream_openai_compat(response, log)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// azure and versa_azure received the identical streaming change, but only
+    /// versa_azure was tested. These assertions exist so the Azure path
+    /// convention is pinned in both files: `supports_streaming()` is hardcoded
+    /// true here, so a wrong path 404s every streaming turn with no fallback to
+    /// `complete()` — the provider is broken outright, not degraded.
+    fn test_provider() -> AzureProvider {
+        let api_client = ApiClient::new(
+            "https://example-resource.openai.azure.com".to_string(),
+            AuthMethod::ApiKey {
+                header_name: "api-key".to_string(),
+                key: "test-key".to_string(),
+            },
+        )
+        .expect("api client builds");
+
+        AzureProvider {
+            api_client,
+            deployment_name: AZURE_DEFAULT_MODEL.to_string(),
+            api_version: AZURE_DEFAULT_API_VERSION.to_string(),
+            model: ModelConfig::new_or_fail(AZURE_DEFAULT_MODEL),
+            name: "azure_openai".to_string(),
+        }
+    }
+
+    #[test]
+    fn chat_completions_path_is_azure_deployment_shaped() {
+        let provider = test_provider();
+        let path = provider.chat_completions_path();
+
+        assert_eq!(
+            path,
+            "openai/deployments/gpt-5.4-2026-03-05/chat/completions?api-version=2025-01-01-preview"
+        );
+        assert!(
+            !path.starts_with("chat/completions"),
+            "azure must not post to the plain OpenAI path"
+        );
+    }
+
+    #[test]
+    fn provider_stream_payload_opts_into_streaming_with_usage() {
+        let provider = test_provider();
+        let payload = provider
+            .build_stream_payload("sys", &[], &[])
+            .expect("streaming payload builds");
+
+        assert_eq!(payload["stream"], serde_json::json!(true));
+        assert_eq!(
+            payload["stream_options"]["include_usage"],
+            serde_json::json!(true),
+            "Azure needs stream_options.include_usage or usage/cost tracking breaks"
+        );
+    }
+
+    #[test]
+    fn provider_advertises_streaming() {
+        assert!(
+            test_provider().supports_streaming(),
+            "azure must advertise streaming; without it the agent takes the blocking \
+             complete() path and tool cards only appear at end of generation"
+        );
     }
 }

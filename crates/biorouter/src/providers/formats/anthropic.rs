@@ -515,6 +515,23 @@ where
         let mut accumulated_text = String::new();
         let mut accumulated_tool_calls: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
         let mut current_tool_id: Option<String> = None;
+        // Extended thinking. A thinking block arrives as N `thinking_delta`
+        // chunks followed by one `signature_delta`; a redacted block arrives
+        // whole on `content_block_start`. Both are accumulated and yielded once,
+        // at `content_block_stop` — NOT incrementally like text.
+        //
+        // Why not incrementally: `Conversation::push` (conversation/mod.rs:96)
+        // merges same-id messages by concatenating only Text+Text and by
+        // `extend`ing everything else, so per-delta thinking would land in the
+        // transcript as N separate Thinking blocks of which only the last
+        // carries the signature. Replaying that assistant turn back to
+        // Anthropic (format_messages, :102) would emit unsigned thinking blocks
+        // and be rejected. The desktop store (chatStreamStore.tsx) dedups
+        // content by JSON equality and appends, so it would also render N
+        // thinking bubbles. Incremental thinking needs a replace-by-id merge on
+        // both sides first; that is a separate change.
+        let mut current_thinking: Option<(String, String)> = None;
+        let mut current_redacted: Option<String> = None;
         let mut final_usage: Option<crate::providers::base::ProviderUsage> = None;
         let mut message_id: Option<String> = None;
 
@@ -576,6 +593,22 @@ where
                                     accumulated_tool_calls.insert(id.to_string(), (name.to_string(), String::new()));
                                 }
                             }
+                        } else if content_block.get("type") == Some(&json!(THINKING_TYPE)) {
+                            let initial = content_block
+                                .get(THINKING_TYPE)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let signature = content_block
+                                .get(SIGNATURE_FIELD)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            current_thinking = Some((initial, signature));
+                        } else if content_block.get("type") == Some(&json!(REDACTED_THINKING_TYPE)) {
+                            if let Some(data) = content_block.get(DATA_FIELD).and_then(|v| v.as_str()) {
+                                current_redacted = Some(data.to_string());
+                            }
                         }
                     }
                     continue;
@@ -605,11 +638,41 @@ where
                                     }
                                 }
                             }
+                        } else if delta.get("type") == Some(&json!("thinking_delta")) {
+                            // Extended-thinking text delta; buffered, not yielded.
+                            if let Some(chunk) = delta.get(THINKING_TYPE).and_then(|v| v.as_str()) {
+                                current_thinking
+                                    .get_or_insert_with(|| (String::new(), String::new()))
+                                    .0
+                                    .push_str(chunk);
+                            }
+                        } else if delta.get("type") == Some(&json!("signature_delta")) {
+                            // Closes a thinking block; without it Anthropic
+                            // rejects the block when it is replayed.
+                            if let Some(chunk) = delta.get(SIGNATURE_FIELD).and_then(|v| v.as_str()) {
+                                current_thinking
+                                    .get_or_insert_with(|| (String::new(), String::new()))
+                                    .1
+                                    .push_str(chunk);
+                            }
                         }
                     }
                     continue;
                 }
                 "content_block_stop" => {
+                    // A thinking block closed: emit it complete, with its signature.
+                    if let Some((thinking, signature)) = current_thinking.take() {
+                        if !thinking.is_empty() || !signature.is_empty() {
+                            let mut message = Message::assistant().with_thinking(thinking, signature);
+                            message.id = message_id.clone();
+                            yield (Some(message), None);
+                        }
+                    }
+                    if let Some(data) = current_redacted.take() {
+                        let mut message = Message::assistant().with_redacted_thinking(data);
+                        message.id = message_id.clone();
+                        yield (Some(message), None);
+                    }
                     // Content block finished
                     if let Some(tool_id) = current_tool_id.take() {
                         // Tool call finished, yield complete tool call
@@ -987,6 +1050,197 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(45));
         assert_eq!(usage.total_tokens, Some(55));
 
+        Ok(())
+    }
+
+    /// A native Anthropic extended-thinking stream delivers the reasoning as
+    /// `thinking_delta` chunks followed by a single `signature_delta`. The
+    /// decoder must surface one complete, *signed* Thinking block — dropping it
+    /// is a correctness bug, not a cosmetic one: Anthropic rejects a follow-up
+    /// request whose assistant turn lost its thinking blocks.
+    #[tokio::test]
+    async fn test_streaming_surfaces_thinking_with_signature() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let lines = vec![
+            r#"data: {"type":"message_start","message":{"id":"msg_think","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think "}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step by step."}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EuYBCkQYAiJAsig"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"EmwKAhgBEgy3va3p"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Here is the answer."}}"#,
+            r#"data: {"type":"content_block_stop","index":2}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ];
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut thinking_blocks = Vec::new();
+        let mut redacted_blocks = Vec::new();
+        let mut text = String::new();
+        while let Some(result) = messages.next().await {
+            let (message, _usage) = result?;
+            let Some(message) = message else { continue };
+            assert_eq!(
+                message.id.as_deref(),
+                Some("msg_think"),
+                "streamed messages must carry the message_start id"
+            );
+            for content in &message.content {
+                match content {
+                    MessageContent::Thinking(t) => thinking_blocks.push(t.clone()),
+                    MessageContent::RedactedThinking(r) => redacted_blocks.push(r.clone()),
+                    MessageContent::Text(t) => text.push_str(&t.text),
+                    _ => {}
+                }
+            }
+        }
+
+        // Exactly one Thinking block: yielded whole at content_block_stop, not
+        // once per delta (see the module comment on the streaming decoder).
+        assert_eq!(
+            thinking_blocks.len(),
+            1,
+            "expected exactly one complete Thinking block, got {}",
+            thinking_blocks.len()
+        );
+        assert_eq!(thinking_blocks[0].thinking, "Let me think step by step.");
+        assert_eq!(
+            thinking_blocks[0].signature, "EuYBCkQYAiJAsig",
+            "the signature_delta must survive decoding"
+        );
+
+        assert_eq!(redacted_blocks.len(), 1);
+        assert_eq!(redacted_blocks[0].data, "EmwKAhgBEgy3va3p");
+
+        assert_eq!(text, "Here is the answer.");
+        Ok(())
+    }
+
+    /// Replay gate: a thinking block decoded off the stream must round-trip back
+    /// into a subsequent request body in the exact shape Anthropic accepts.
+    ///
+    /// This deliberately reproduces the pipeline the agent loop actually runs
+    /// rather than concatenating the decoded chunks by hand:
+    ///
+    ///  * the fixture contains a thinking block **followed by a tool_use
+    ///    block**, so the constraint that actually bites is exercised — with
+    ///    extended thinking on, the assistant message that carries `tool_use`
+    ///    must *begin* with a thinking block;
+    ///  * the decoded chunks are fed through the real `Conversation::push`,
+    ///    whose id-matching merge is the only thing that joins them;
+    ///  * the tool-bearing chunk is rebuilt exactly as `agent.rs` rebuilds it,
+    ///    via the real `assistant_turn_message_id`, which is what decides
+    ///    whether the merge happens at all.
+    ///
+    /// Concatenating the chunks by hand (the previous shape of this test) hides
+    /// the defect completely: it passes even when the live pipeline emits two
+    /// consecutive assistant messages with `tool_use` first, which Anthropic
+    /// 400-rejects.
+    #[tokio::test]
+    async fn test_streamed_thinking_replays_into_next_request() -> Result<()> {
+        use crate::agents::agent::assistant_turn_message_id;
+        use crate::conversation::Conversation;
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let lines = vec![
+            r#"data: {"type":"message_start","message":{"id":"msg_replay","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Reasoning."}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIGabc123"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTEDdata"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01","name":"shell"}}"#,
+            r#"data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":2}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
+        ];
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        // Mirror the agent loop: a chunk with no tool requests is pushed
+        // verbatim; a chunk that requests tools is rebuilt as a fresh assistant
+        // message stamped with `assistant_turn_message_id`.
+        let mut conversation = Conversation::new_unvalidated(vec![Message::user().with_text("hi")]);
+        let mut saw_tool_use = false;
+        while let Some(result) = messages.next().await {
+            let (message, _usage) = result?;
+            let Some(message) = message else { continue };
+
+            let tool_requests: Vec<_> = message
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    MessageContent::ToolRequest(r) => Some(r.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if tool_requests.is_empty() {
+                conversation.push(message);
+                continue;
+            }
+
+            saw_tool_use = true;
+            // The loop consumes the provider id once and falls back to fresh
+            // uuids after that; mirrored here so the fixture stays faithful.
+            let mut turn_id = Some(assistant_turn_message_id(&message));
+            for request in tool_requests {
+                let id = turn_id
+                    .take()
+                    .unwrap_or_else(|| format!("msg_{}", uuid::Uuid::new_v4()));
+                conversation.push(
+                    Message::assistant()
+                        .with_id(id)
+                        .with_tool_request(request.id.clone(), request.tool_call.clone()),
+                );
+            }
+        }
+        assert!(saw_tool_use, "fixture must produce a tool_use block");
+
+        let spec = format_messages(conversation.messages());
+
+        let assistant_entries: Vec<_> = spec
+            .iter()
+            .filter(|m| m["role"] == ASSISTANT_ROLE)
+            .collect();
+        assert_eq!(
+            assistant_entries.len(),
+            1,
+            "thinking and tool_use must land in ONE assistant message; two consecutive \
+             assistant entries are rejected by Anthropic. Got: {spec:#?}"
+        );
+
+        let blocks = assistant_entries[0]["content"]
+            .as_array()
+            .expect("assistant content array");
+        assert_eq!(
+            blocks[0]["type"], "thinking",
+            "with extended thinking on, the tool-bearing assistant message must OPEN with \
+             a thinking block. Got: {blocks:#?}"
+        );
+        assert_eq!(blocks[0]["thinking"], "Reasoning.");
+        assert_eq!(blocks[0]["signature"], "SIGabc123");
+        assert!(
+            !blocks[0]["signature"].as_str().unwrap_or("").is_empty(),
+            "an unsigned thinking block is rejected by Anthropic on replay"
+        );
+        assert_eq!(blocks[1]["type"], "redacted_thinking");
+        assert_eq!(blocks[1]["data"], "REDACTEDdata");
+        assert_eq!(
+            blocks[2]["type"], "tool_use",
+            "the tool_use block must ride in the same message, after the thinking blocks"
+        );
         Ok(())
     }
 

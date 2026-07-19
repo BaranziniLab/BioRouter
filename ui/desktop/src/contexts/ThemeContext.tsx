@@ -3,11 +3,29 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 type ThemePreference = 'light' | 'dark' | 'system';
 type ResolvedTheme = 'light' | 'dark';
 /**
+ * Every theme family, in the order they appear in the Appearance settings.
+ *
+ * This is the single source of truth: `loadThemeFamily`, the cross-window IPC
+ * convergence guard, and `ThemeFamilySelector` all derive from it, so adding a
+ * family is one edit rather than three hardcoded string comparisons.
+ *
+ * `index.html`'s pre-hydration script cannot import TypeScript and duplicates
+ * this list deliberately — keep the two in lockstep, exactly as
+ * `loadThemePreference` already is.
+ */
+export const THEME_FAMILIES = ['parchment', 'alma-mater', 'roche-limit'] as const;
+
+/**
  * The theme *family* — orthogonal to light/dark. `parchment` is the warm
- * default; `alma-mater` is the UCSF brand palette. Written to `data-theme` on
+ * default; `alma-mater` is the UCSF brand palette; `roche-limit` is the
+ * JupyterLab-inspired white/grey/orange palette. Written to `data-theme` on
  * <html>; main.css re-colours the same semantic tokens per family.
  */
-export type ThemeFamily = 'parchment' | 'alma-mater';
+export type ThemeFamily = (typeof THEME_FAMILIES)[number];
+
+function isThemeFamily(value: unknown): value is ThemeFamily {
+  return THEME_FAMILIES.includes(value as ThemeFamily);
+}
 
 interface ThemeContextValue {
   userThemePreference: ThemePreference;
@@ -75,7 +93,8 @@ function applyThemeToDocument(theme: ResolvedTheme): void {
 }
 
 function loadThemeFamily(): ThemeFamily {
-  return localStorage.getItem('theme_family') === 'alma-mater' ? 'alma-mater' : 'parchment';
+  const stored = localStorage.getItem('theme_family');
+  return isThemeFamily(stored) ? stored : 'parchment';
 }
 
 function saveThemeFamily(family: ThemeFamily): void {
@@ -171,7 +190,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       setResolvedTheme(resolveTheme(newPreference));
 
       // The native app menu broadcasts without a family; only converge when present.
-      if (themeData.themeFamily === 'alma-mater' || themeData.themeFamily === 'parchment') {
+      if (isThemeFamily(themeData.themeFamily)) {
         setThemeFamilyState(themeData.themeFamily);
         saveThemeFamily(themeData.themeFamily);
         applyFamilyToDocument(themeData.themeFamily);

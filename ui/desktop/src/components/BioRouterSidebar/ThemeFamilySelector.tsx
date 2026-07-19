@@ -9,14 +9,16 @@ interface ThemeFamilySelectorProps {
 }
 
 /**
- * Selects the theme *family* (Parchment / Alma Mater) — the second axis beside
- * the light/dark ThemeSelector. Both render the same segmented-button look, so
- * they read as siblings in the Appearance settings. The small swatch is the
- * family's accent (terracotta for Parchment, UCSF eggplant for Alma Mater).
+ * Selects the theme *family* (Parchment / Alma Mater / Roche Limit) — the second
+ * axis beside the light/dark ThemeSelector. Both render the same segmented-button
+ * look, so they read as siblings in the Appearance settings. The small swatch is
+ * the family's accent (terracotta for Parchment, UCSF teal for Alma Mater,
+ * Jupyter-adjacent orange for Roche Limit).
  */
 const FAMILIES: { id: ThemeFamily; label: string; swatch: string }[] = [
   { id: 'parchment', label: 'Parchment', swatch: '#cf6d47' },
-  { id: 'alma-mater', label: 'Alma Mater', swatch: '#6c247c' },
+  { id: 'alma-mater', label: 'Alma Mater', swatch: '#14828c' },
+  { id: 'roche-limit', label: 'Roche Limit', swatch: '#ee6c1a' },
 ];
 
 const ThemeFamilySelector: React.FC<ThemeFamilySelectorProps> = ({
@@ -30,7 +32,7 @@ const ThemeFamilySelector: React.FC<ThemeFamilySelectorProps> = ({
     <div className={`${!horizontal ? 'px-1 py-2 space-y-2' : ''} ${className}`}>
       {!hideTitle && <div className="text-xs text-text-default px-3">Palette</div>}
       <div
-        className={`${horizontal ? 'flex' : 'grid grid-cols-2'} gap-1 ${!horizontal ? 'px-3' : ''}`}
+        className={`${horizontal ? 'flex' : 'grid grid-cols-3'} gap-1 ${!horizontal ? 'px-3' : ''}`}
       >
         {FAMILIES.map((family) => {
           const active = themeFamily === family.id;

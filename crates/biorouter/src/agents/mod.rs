@@ -1,4 +1,4 @@
-mod agent;
+pub(crate) mod agent;
 // BR-35: the per-reply wall-clock / token / dollar ceiling. Off unless
 // configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
 // steps a reply takes, this bounds how long it runs and what it costs.
@@ -27,6 +27,9 @@ pub mod platform_tools;
 // BR-47: auto post-edit diagnostics — the config gate, write-detection, and
 // corrective-context formatting for the edit->check->fix reflection loop.
 pub mod post_edit_diagnostics;
+// Stage 0 of the tool-call latency work: opt-in per-phase timing behind
+// `BIOROUTER_PHASE_TIMING=1`, free when off.
+pub mod phase_timing;
 pub mod prompt_manager;
 mod recurring;
 // BR-12: `pub(crate)` so `context_mgmt::run_eager_compaction` can reuse

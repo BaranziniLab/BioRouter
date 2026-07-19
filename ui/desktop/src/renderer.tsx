@@ -7,7 +7,6 @@ import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from './components/ConfigContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import SuspenseLoader from './suspense-loader';
 import { client } from './api/client.gen';
 import { wrapArtifactForBrowser } from './utils/artifactSecurity';
 
@@ -23,7 +22,24 @@ type HeadlessConfig = {
 declare global {
   interface Window {
     __BIOROUTER_HEADLESS_CONFIG__?: Partial<HeadlessConfig>;
+    /** Boot splash controller, defined by the inline script in index.html. */
+    __brBootSplash?: { dismiss: () => void; isShown: () => boolean };
   }
+}
+
+/**
+ * Tears down the pre-React boot splash once the app has actually mounted.
+ *
+ * It sits inside the <Suspense> boundary with no props of its own, so React
+ * commits it in the same pass as <App> — i.e. exactly when the lazy chunk has
+ * resolved and there is a real UI to hand off to. Dismissing any earlier would
+ * uncover a blank page.
+ */
+function DismissBootSplash() {
+  React.useEffect(() => {
+    window.__brBootSplash?.dismiss();
+  }, []);
+  return null;
 }
 
 function getHeadlessConfig(): HeadlessConfig {
@@ -424,6 +440,9 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     console.log('window created, getting biorouterd connection info');
     const biorouterApiHost = await window.electron.getBiorouterdHostPort();
     if (biorouterApiHost === null) {
+      // React never renders on this path, so nothing else would ever take the
+      // splash down — the user would be left staring at it behind the alert.
+      window.__brBootSplash?.dismiss();
       window.alert('failed to start biorouter backend process');
       return;
     }
@@ -439,12 +458,16 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <Suspense fallback={SuspenseLoader()}>
+      {/* No fallback element: the boot splash in index.html is already on
+          screen and covers this window, so rendering one here would only
+          flash a second loader underneath it. */}
+      <Suspense fallback={null}>
         <ConfigProvider>
           <ErrorBoundary>
             <App />
           </ErrorBoundary>
         </ConfigProvider>
+        <DismissBootSplash />
       </Suspense>
     </React.StrictMode>
   );
