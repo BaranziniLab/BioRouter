@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom';
 import { vi, afterEach } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
+import { ASYNC_UTIL_TIMEOUT_MS, TEST_TIMEOUT_MS, MIN_TIMEOUT_HEADROOM } from './timeouts';
 import { client } from '../api/client.gen';
 
 // This is the standard setup to ensure that React Testing Library's
@@ -55,20 +56,23 @@ Object.defineProperty(globalThis, 'localStorage', {
 
 /**
  * Testing Library's async helpers (`findBy*`, `waitFor`) time out on their OWN
- * `asyncUtilTimeout`, which defaults to 1000ms and is INDEPENDENT of vitest's
- * `testTimeout`. That is why the flaky suites here could not be stabilised by
- * raising `--testTimeout`: the test had 30s, but `findByText` gave up after 1s.
- *
- * Under a full parallel run on a loaded machine, a component that fetches and
- * renders a list routinely needs more than a second — so tests failed with
- * "Unable to find an element with the text: …" while passing in isolation, and
- * got written off as flakes. They were not flaky; they were racing a timeout
- * nobody had noticed.
- *
- * 5s is a load allowance, not a correctness change: a test asserting something
- * that never appears still fails, just 4s later.
+ * `asyncUtilTimeout`, which is INDEPENDENT of vitest's `testTimeout`. Both
+ * numbers, and the invariant between them, live in ./timeouts.ts — read that
+ * file before changing either.
  */
-configure({ asyncUtilTimeout: 5000 });
+configure({ asyncUtilTimeout: ASYNC_UTIL_TIMEOUT_MS });
+
+// The invariant, enforced rather than documented. If a wait can outlive its
+// test, vitest kills the test first and Testing Library's far more useful error
+// ("Unable to find an element with the text: …") is never thrown. That is the
+// exact collision this repo shipped, and it read as flakiness for weeks.
+if (ASYNC_UTIL_TIMEOUT_MS * MIN_TIMEOUT_HEADROOM > TEST_TIMEOUT_MS) {
+  throw new Error(
+    `Test timeout misconfiguration: asyncUtilTimeout (${ASYNC_UTIL_TIMEOUT_MS}ms) needs at least ` +
+      `${MIN_TIMEOUT_HEADROOM}x headroom under testTimeout (${TEST_TIMEOUT_MS}ms), or a wait that ` +
+      `exhausts its budget will be killed before it can report why. See src/test/timeouts.ts.`
+  );
+}
 
 /**
  * jsdom implements no `matchMedia`, and the app asks for it during render —
