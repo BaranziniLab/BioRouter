@@ -607,7 +607,15 @@ const loadingStatus: LoadingStatus = toolResponse
 
 **Do NOT apply the naive `toolResponse ? ... : 'pending'`.** The comment at `:644-645` documents `shouldShowAsComplete` as a deliberate workaround "for cases where the backend doesn't send tool responses." Deleting it leaves orphaned cards spinning amber forever on cancelled turns, `BioRouterMode::Chat` skips, and crashed extensions. Routing the response-less-after-turn-end case to a distinct `interrupted` state preserves "never spin forever" while removing the false success — and finally makes the dead `'pending'` variant at `ToolCallStatusIndicator.tsx:4` reachable.
 
-**Secondary fix, same commit:** `ProgressiveMessageList.tsx:234` compares `index` against `messagesToRender.length - 1` (the `renderedCount` slice at `:178`), not `messages.length - 1`. Past 50 messages the last *progressively rendered* message spuriously gets `isStreaming={true}`.
+**~~Secondary fix, same commit:~~ WITHDRAWN 2026-07-18 — this claim was false.** The report originally asserted that `ProgressiveMessageList.tsx:234` compares `index` against `messages.length - 1`, spuriously marking the last *progressively rendered* message as streaming past 50 messages. Two independent agents checked the actual line during implementation and found it already reads:
+
+```tsx
+index === messagesToRender.length - 1 &&
+```
+
+which is the correct comparison, against the `renderedCount` slice. It is the only length comparison in the file. No fix was needed and none was made. Budget no work for this item; verify before re-asserting it.
+
+*Process note: this is the one claim in this document that survived the three-lens adversarial verification pass but did not survive contact with the code. The verifiers reasoned about the mechanism rather than opening the file at that line. Treat every remaining unquoted line-number claim here with the same suspicion.*
 
 **Test gate:** `ToolCallWithResponse.test.tsx` today only exercises `isStreamingMessage={false}` (lines 87, 120). Add (a) `toolResponse=undefined, turnActive=true` → `aria-label="Tool status: loading"`, text `"Working on"`; (b) `toolResponse=undefined, turnActive=false` → `interrupted`, explicitly **not** `"Finished"`. Case (a) fails today.
 
