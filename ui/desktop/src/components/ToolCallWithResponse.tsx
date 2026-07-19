@@ -151,7 +151,10 @@ function getToolResultError(toolResult: unknown): string | null {
   if (result.status === 'error') return displayError(result.error);
 
   const value = normalizedToolResultValue(result);
-  if (value?.is_error !== true) return null;
+  // `isError` is the wire spelling: rmcp serialises CallToolResult with
+  // rename_all = "camelCase", so every live and persisted tool result uses it.
+  // `is_error` is kept for tolerance of any snake_case producer.
+  if (value?.isError !== true && value?.is_error !== true) return null;
   const text = getToolResultContent(result)
     .flatMap((content) =>
       'text' in content && typeof content.text === 'string' ? [content.text] : []

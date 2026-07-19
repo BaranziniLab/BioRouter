@@ -249,6 +249,53 @@ describe('summarizeToolCall', () => {
     expect(screen.getByText('Record missing-record was not found')).toBeInTheDocument();
   });
 
+  /**
+   * R1-02 — the REAL wire spelling. rmcp serialises CallToolResult with
+   * `rename_all = "camelCase"`, so every live and persisted tool result carries
+   * `isError`, not `is_error`. Before the fix only the snake_case spelling was
+   * checked, so genuinely failed calls (e.g. search_modules "No matches found")
+   * rendered as green successes — three in a row in the loop-guard repro.
+   */
+  it('shows a camelCase isError result (the real MCP wire shape) as a failure', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-mcp-error-camel',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'code_execution__search_modules',
+          arguments: { terms: 'web search' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-mcp-error-camel',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: true,
+              content: [{ type: 'text', text: 'Error: No matches found for: web search' }],
+              structuredContent: {
+                error: { kind: 'tool_failure', retryable: false },
+              },
+            },
+          },
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+
+    expect(screen.getByText('Tool call failed')).toBeInTheDocument();
+    expect(screen.getByText('Error: No matches found for: web search')).toBeInTheDocument();
+  });
+
   it('contains an unexpected tool-card render failure instead of crashing the chat', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const toolRequest: ToolRequestMessageContent = {

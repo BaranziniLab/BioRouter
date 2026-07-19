@@ -355,9 +355,14 @@ function toolCallOf(content: {
 }
 
 function isSuccessfulToolResult(toolResult: Record<string, unknown>): boolean {
-  const wrapped = toolResult as { status?: string; value?: { is_error?: boolean } };
+  // `isError` is the wire spelling (rmcp serialises CallToolResult in
+  // camelCase); `is_error` is kept for tolerance of any snake_case producer.
+  const wrapped = toolResult as {
+    status?: string;
+    value?: { isError?: boolean; is_error?: boolean };
+  };
   if (wrapped.status && wrapped.status !== 'success') return false;
-  return wrapped.value?.is_error !== true;
+  return wrapped.value?.isError !== true && wrapped.value?.is_error !== true;
 }
 
 // Auto Visualiser combined reports are served as `ui://dashboard/<slug>` resources

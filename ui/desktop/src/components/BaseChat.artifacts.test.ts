@@ -165,6 +165,42 @@ describe('collectArtifactsFromMessages', () => {
     ]);
   });
 
+  /**
+   * R1-02 — camelCase is the wire spelling: rmcp serialises CallToolResult with
+   * `rename_all = "camelCase"`, so a failed call arrives as `isError: true`.
+   * Only successful tool responses may contribute artifacts.
+   */
+  it('ignores files named by a tool call that failed with the camelCase isError flag', () => {
+    const failedResponse: Message = {
+      id: crypto.randomUUID(),
+      role: 'tool',
+      created: 2,
+      metadata: { userVisible: false, agentVisible: true },
+      content: [
+        {
+          type: 'toolResponse',
+          id: 't-camel-err',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: true,
+              content: [{ type: 'text', text: 'could not write /work/report.md' }],
+            },
+          },
+        },
+      ],
+    };
+    const messages: Message[] = [
+      writeRequest('t-camel-err', 'developer__text_editor', {
+        command: 'write',
+        path: '/work/report.md',
+      }),
+      failedResponse,
+    ];
+
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([]);
+  });
+
   it('does not auto-preview protocol examples or hidden repository metadata', () => {
     const messages = [
       visibleMessage([
