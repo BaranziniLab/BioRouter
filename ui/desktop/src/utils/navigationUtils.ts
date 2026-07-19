@@ -54,7 +54,30 @@ export const createNavigationHandler = (navigate: NavigateFunction) => {
         navigateWithViewTransition(navigate, '/', options);
         break;
       case 'pair':
-        navigateWithViewTransition(navigate, '/pair', options);
+        // The session id MUST ride in the query string, not only in location.state.
+        //
+        // /pair's deep-link inbox is useChatGroupsUrlSync, and its IN effect is
+        // gated on `searchParams.get('resumeSessionId')` — it returns early when
+        // that param is absent, BEFORE it ever reads location.state. So a
+        // state-only navigation reached the route with the message in hand and
+        // dropped it on the floor: no openTab, no tab cargo, no submit. That is
+        // the Home-composer "my message vanished" bug (Hub.tsx passes
+        // resumeSessionId + initialMessage here), and it hit resumeSession(),
+        // startNewSession(), WorkflowsView and SessionsView identically.
+        //
+        // App.tsx's rescue effect could not cover it: it only fires when there is
+        // NO session id, and these callers arrive with one already created.
+        //
+        // The options object still travels as location.state, which is where
+        // initialMessage / initialAttachments / title are read from once the
+        // param has opened the gate.
+        navigateWithViewTransition(
+          navigate,
+          options?.resumeSessionId
+            ? `/pair?resumeSessionId=${encodeURIComponent(options.resumeSessionId)}`
+            : '/pair',
+          options
+        );
         break;
       case 'settings':
         navigateWithViewTransition(navigate, '/settings', options);

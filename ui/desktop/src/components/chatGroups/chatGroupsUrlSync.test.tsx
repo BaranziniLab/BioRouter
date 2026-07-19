@@ -155,6 +155,33 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
     );
   });
 
+  /**
+   * The IN gate is the query param, so a state-only arrival is INERT — every
+   * test above supplies `search: '?resumeSessionId=…'`, which is why none of
+   * them caught the Home-composer drop. Pinned here as the contract that makes
+   * the navigationUtils fix load-bearing: callers MUST put the id in the URL.
+   */
+  it('ignores a state-only resumeSessionId (the id must be in the query string)', () => {
+    const onOpen = vi.fn();
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/pair',
+            search: '',
+            state: { resumeSessionId: 'sP', initialMessage: 'hi' },
+          },
+        ]}
+      >
+        <Routes>
+          <Route path="/pair" element={<Harness onOpen={onOpen} />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('an empty active group writes nothing to the URL', () => {
     const onOpen = vi.fn();
     const { getByTestId } = renderAt('/pair', onOpen, '');
