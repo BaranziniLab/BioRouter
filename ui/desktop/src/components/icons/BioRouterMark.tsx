@@ -27,6 +27,13 @@ import { GENERATED_THEMES } from '../../styles/themes.generated';
  * and Alma Mater lift to a teal; Roche lifts to its light ink), which is what
  * the splash's `--br-navy` does too.
  */
+/**
+ * The plate is deliberately NOT themed. `plate` renders the OS app-icon variant
+ * — fixed brand artwork that should not shift with whatever palette the app is
+ * wearing — and it is not used anywhere in-app (only the icon-generation path).
+ * The letters stay navy on it for the same reason: on a cream plate they sit on
+ * a light ground regardless of the app's mode.
+ */
 const PLATE = '#faf8f3';
 
 const WEIGHT = 800;

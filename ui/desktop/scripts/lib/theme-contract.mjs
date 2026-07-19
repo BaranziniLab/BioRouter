@@ -224,8 +224,17 @@ export const TERMINAL_DIM_SLOTS = {
   black: TERMINAL_FLOORS.black.why,
 };
 
-/** Boot-splash values. `bg` is derived from --background-muted. */
-export const SPLASH_STOPS = ['navy', 'coral', 'track'];
+/**
+ * The brand mark's inks, plus the splash progress track. Named `mark`, not
+ * `splash`: these drive BOTH the pre-React boot splash AND the in-app
+ * <BioRouterMark>, and calling them "splash" is what let the two drift apart in
+ * the first place. (The <BioRouterWordmark> deliberately does NOT read these —
+ * see the note in that component.) `bg` is derived from --background-muted.
+ */
+export const MARK_STOPS = ['navy', 'coral', 'track'];
+
+/** @deprecated alias kept so an out-of-tree import does not break silently. */
+export const SPLASH_STOPS = MARK_STOPS;
 
 /**
  * Structural tokens: identical across every family, declared once in `:root`.
@@ -265,8 +274,8 @@ export function validateMode(id, mode, def) {
   for (const s of TERMINAL_STOPS) {
     if (!has(def.terminal, s)) problems.push(`${id}.${mode}: missing terminal stop "${s}"`);
   }
-  for (const s of SPLASH_STOPS) {
-    if (!has(def.splash, s)) problems.push(`${id}.${mode}: missing splash value "${s}"`);
+  for (const s of MARK_STOPS) {
+    if (!has(def.mark, s)) problems.push(`${id}.${mode}: missing mark value "${s}"`);
   }
   if (has(def.terminal, 'background')) {
     problems.push(`${id}.${mode}: terminal.background is DERIVED from terminalGround — remove it`);

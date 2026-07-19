@@ -141,7 +141,7 @@ function tsFor(theme) {
     const terminal = { background: g, cursorAccent: g };
     for (const s of TERMINAL_STOPS) terminal[s] = d.terminal[s];
     parts.push(`  ${mode}: {
-    mark: { navy: '${d.splash.navy}', coral: '${d.splash.coral}' },
+    mark: { navy: '${d.mark.navy}', coral: '${d.mark.coral}' },
     syntax: {
 ${obj(d.syntax, 6)}
     },
@@ -231,7 +231,7 @@ const splashRules = themes
         : mode === 'light'
           ? `html[data-theme='${t.id}'] #br-boot`
           : `html.dark[data-theme='${t.id}'] #br-boot`;
-      const s = t[mode].splash;
+      const s = t[mode].mark;
       out.push(
         `      ${sel} {\n` +
           `        --br-bg: ${bg};\n` +
@@ -248,14 +248,6 @@ const splashRules = themes
 const familiesJs = `          const FAMILIES = [${themes.map((t) => `'${t.id}'`).join(', ')}];`;
 
 /* ── write regions ── */
-function replaceHtmlRegion(src, name, body) {
-  const start = `<!-- THEMES:GENERATED:${name}:START -->`;
-  const end = `<!-- THEMES:GENERATED:${name}:END -->`;
-  const i = src.indexOf(start);
-  const j = src.indexOf(end);
-  if (i === -1 || j === -1) throw new Error(`missing ${name} region markers in index.html`);
-  return src.slice(0, i + start.length) + '\n' + body + '\n' + src.slice(j);
-}
 
 const outputs = [];
 
@@ -263,7 +255,9 @@ outputs.push([P('src/styles/main.css'), nextCss]);
 outputs.push([P('src/styles/themes.generated.ts'), tsModule]);
 
 let html = await readFile(P('index.html'), 'utf8');
-html = replaceHtmlRegion(html, 'SPLASH', splashRules);
+// CSS comments, not HTML comments: `<!--` inside a <style> is a CDO token and
+// makes the CSS parser discard the following rule.
+html = replaceRegion(html, 'SPLASH', splashRules, 'index.html');
 // The family list lives inside a <script>, so its markers are JS comments.
 html = replaceRegion(html, 'FAMILYLIST', familiesJs, 'index.html');
 outputs.push([P('index.html'), html]);
@@ -310,10 +304,10 @@ const failures = [];
       // rendering it invisible at 1.02:1 on all three families with nothing
       // failing. That is the case this assertion exists to catch.
       const splashBg = resolveRaw('--background-muted', scope);
-      const c = contrast(t[mode].splash.navy, splashBg);
+      const c = contrast(t[mode].mark.navy, splashBg);
       if (c < 3) {
         failures.push(
-          `${t.id}.${mode}: splash navy ${t[mode].splash.navy} on ${splashBg} = ${c.toFixed(2)}:1 (need 3)`
+          `${t.id}.${mode}: splash navy ${t[mode].mark.navy} on ${splashBg} = ${c.toFixed(2)}:1 (need 3)`
         );
       }
     }

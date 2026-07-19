@@ -162,6 +162,42 @@ describe('boot splash', () => {
       expect(new Set(grounds).size).toBe(grounds.length);
     });
 
+    it('uses CSS comments inside <style>, never HTML comments', () => {
+      // `<!--` is not a comment to the CSS parser — it is a CDO token, and a
+      // `<!-- ... -->` marker mid-stylesheet makes the parser DISCARD the rule
+      // that follows it. Generated-region markers written as HTML comments
+      // silently deleted the `html.dark #br-boot` rule, so Parchment dark had no
+      // splash rule at all and fell back to the light ground. The rule text was
+      // still present in the file, which is why a regex over the source (like
+      // the assertions above) could not see the problem — only parsing could.
+      const html = readIndexHtml();
+      const styleBlocks = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+      expect(styleBlocks.length).toBeGreaterThan(0);
+      for (const block of styleBlocks) {
+        expect(block, 'HTML comment inside <style> will eat the next CSS rule').not.toContain(
+          '<!--'
+        );
+      }
+    });
+
+    it('gives every family a splash rule the CSS parser actually keeps', () => {
+      // Guards the same bug from the other side: each family+mode must have a
+      // rule, and each must set its own --br-bg.
+      const html = readIndexHtml();
+      const style = html.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? '';
+      for (const family of themeFamilies()) {
+        const isBase = family === 'parchment';
+        const light = isBase
+          ? /(?:^|\n)\s*#br-boot\s*\{/
+          : new RegExp(`html\\[data-theme='${family}'\\]\\s*#br-boot`);
+        const dark = isBase
+          ? /html\.dark\s*#br-boot/
+          : new RegExp(`html\\.dark\\[data-theme='${family}'\\]\\s*#br-boot`);
+        expect(style, `${family} light splash rule`).toMatch(light);
+        expect(style, `${family} dark splash rule`).toMatch(dark);
+      }
+    });
+
     it('keeps the pre-React theme script in lockstep with ThemeContext', () => {
       const html = readIndexHtml();
       const families = themeFamilies();

@@ -150,7 +150,7 @@ export default {
       brightCyan: '#106a72',
       brightWhite: '#052049',
     },
-    splash: {
+    mark: {
       navy: '#052049',
       coral: '#16a0ac',
       track: '#e1e3e5',
@@ -284,7 +284,7 @@ export default {
       brightCyan: '#7fd8e0',
       brightWhite: '#f2f3f4',
     },
-    splash: {
+    mark: {
       navy: '#18a3ac',
       coral: '#16a0ac',
       track: '#17386a',
