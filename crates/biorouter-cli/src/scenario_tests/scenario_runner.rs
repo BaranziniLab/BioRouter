@@ -142,7 +142,6 @@ where
     F: Fn(&ScenarioResult) -> Result<()>,
 {
     use biorouter::config::ExtensionConfig;
-    use tokio::sync::Mutex;
 
     biorouter::agents::moim::SKIP.with(|f| f.set(true));
 
@@ -223,7 +222,7 @@ where
                 bundled: None,
                 available_tools: vec![],
             },
-            Arc::new(Mutex::new(Box::new(mock_client))),
+            Arc::new(mock_client),
             None,
             None,
         )

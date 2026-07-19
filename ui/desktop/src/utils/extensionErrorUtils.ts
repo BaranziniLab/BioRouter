@@ -49,7 +49,7 @@ export function formatExtensionErrorMessage(
 
 /**
  * Which chat the user is actually looking at, or null when nobody has claimed
- * focus (single-chat hosts like the Dashboard never register). `null` means
+ * focus (single-chat hosts never register). `null` means
  * "permissive" — a host that does not report focus still gets its toasts.
  */
 let focusedChatSessionId: string | null = null;

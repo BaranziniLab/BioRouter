@@ -34,7 +34,7 @@ Shared tokens/components live in `assets/theme.css`; GSAP is vendored at
 
 The app-UI scenes are **not hand-approximated** — `index.html` and `tour.html`
 vendor the site's own `assets/app-mockups.js` + `assets/app-mockups.css` and
-mount the real `[data-screen]` mockups (Home / Chat / Dashboard / Knowledge /
+mount the real `[data-screen]` mockups (Home / Chat / Tabs / Knowledge /
 Workflows / Models), so the UI in the videos is byte-identical to the live app.
 A small `fitMock()` in each composition scales each `.bw` window to fit the
 frame. `assets/icon.svg` (also copied to `video/icon.svg`) is the real logo used

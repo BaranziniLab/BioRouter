@@ -1,19 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MoreHorizontal } from '../icons/app-icons';
+import { MoreHorizontal } from './icons/app-icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
+} from './ui/dropdown-menu';
 
 interface Props {
   name: string;
   onRename: (newName: string) => void;
   onDiverge?: () => void | Promise<void>;
   canDiverge?: boolean;
-  /** Optional accent color dot (dashboard windows pass theirs). */
-  accentColor?: string;
   className?: string;
 }
 
@@ -22,7 +20,6 @@ export const SessionNamePill: React.FC<Props> = ({
   onRename,
   onDiverge,
   canDiverge = false,
-  accentColor,
   className,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -61,12 +58,6 @@ export const SessionNamePill: React.FC<Props> = ({
       className={`inline-flex h-10 min-w-0 items-center gap-1 rounded-md no-drag ${className ?? ''}`}
       style={noDragStyle}
     >
-      {accentColor && (
-        <span
-          className="inline-block w-2 h-2 rounded-full flex-shrink-0"
-          style={{ backgroundColor: accentColor }}
-        />
-      )}
       {editing ? (
         <input
           ref={inputRef}

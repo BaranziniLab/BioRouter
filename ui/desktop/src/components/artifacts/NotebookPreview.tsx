@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { useThemeFamily } from '../../contexts/ThemeContext';
+import { useThemeFamily, type ThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
 import { cn } from '../../utils';
 import MarkdownContent from '../MarkdownContent';
 import type { ArtifactFilePreview } from './artifactTypes';
 import {
+  sandboxedSurface,
   splitPathForStrip,
   STRIP_IDENT_CLASS,
   STRIP_LABEL_CLASS,
@@ -46,18 +47,29 @@ function joined(value: unknown) {
   return '';
 }
 
-function safeNotebookHtml(html: string, resolvedTheme: 'light' | 'dark') {
-  const foreground = resolvedTheme === 'dark' ? '#e8e5df' : '#282724';
-  const background = resolvedTheme === 'dark' ? '#242321' : '#fffdf8';
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:12px}img,svg{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid #aaa6;padding:4px 7px}</style></head><body>${html}</body></html>`;
+/**
+ * Wrap a notebook's `text/html` output in a locked-down document.
+ *
+ * The CSP is deliberately the strictest thing that can still show a rendered
+ * table: no scripts, no network, inline styles only, and images restricted to
+ * `data:`/`blob:`. That is also why the colours are literal hexes rather than
+ * `var(--text-default)` — under `default-src 'none'` this document cannot reach
+ * the app stylesheet, so a custom property would resolve to nothing. They come
+ * from the ACTIVE FAMILY (see `sandboxedSurface`), not a fixed light/dark pair.
+ */
+function safeNotebookHtml(html: string, resolvedTheme: 'light' | 'dark', themeFamily: ThemeFamily) {
+  const { background, foreground, border } = sandboxedSurface(themeFamily, resolvedTheme);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:12px}img,svg{max-width:100%;height:auto}table{border-collapse:collapse}td,th{border:1px solid ${border};padding:4px 7px}</style></head><body>${html}</body></html>`;
 }
 
 function NotebookOutputView({
   output,
   resolvedTheme,
+  themeFamily,
 }: {
   output: NotebookOutput;
   resolvedTheme: 'light' | 'dark';
+  themeFamily: ThemeFamily;
 }) {
   if (output.output_type === 'error') {
     const traceback =
@@ -114,9 +126,12 @@ function NotebookOutputView({
     return (
       <iframe
         title="HTML notebook output"
-        srcDoc={safeNotebookHtml(html, resolvedTheme)}
+        srcDoc={safeNotebookHtml(html, resolvedTheme, themeFamily)}
         sandbox=""
-        className="min-h-40 w-full bg-white"
+        // The frame's own document paints the family ground; this only covers
+        // the moment before it loads, so it must agree — `bg-white` flashed
+        // white over every dark theme.
+        className="min-h-40 w-full bg-background-default"
       />
     );
   }
@@ -244,7 +259,9 @@ export default function NotebookPreview({
                         language={language}
                         PreTag="div"
                         customStyle={{ margin: 0, padding: '12px 14px', background: 'transparent' }}
-                        codeTagProps={{ style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' } }}
+                        codeTagProps={{
+                          style: { fontFamily: CODE_FONT_FAMILY, whiteSpace: 'pre' },
+                        }}
                       >
                         {source.replace(/\r?\n$/, '')}
                       </SyntaxHighlighter>
@@ -257,7 +274,11 @@ export default function NotebookPreview({
                           key={outputIndex}
                           className={cn(outputIndex > 0 && 'border-t border-border-subtle')}
                         >
-                          <NotebookOutputView output={output} resolvedTheme={resolvedTheme} />
+                          <NotebookOutputView
+                            output={output}
+                            resolvedTheme={resolvedTheme}
+                            themeFamily={themeFamily}
+                          />
                         </div>
                       ))}
                     </div>

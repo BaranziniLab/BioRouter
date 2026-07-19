@@ -185,8 +185,6 @@ type ElectronAPI = {
   reactReady: () => void;
   getConfig: () => Record<string, unknown>;
   hideWindow: () => void;
-  dashboardEnter: () => Promise<void>;
-  dashboardExit: () => Promise<void>;
   directoryChooser: () => Promise<Electron.OpenDialogReturnValue>;
   createChatWindow: (
     query?: string,
@@ -401,8 +399,6 @@ const electronAPI: ElectronAPI = {
     return config;
   },
   hideWindow: () => ipcRenderer.send('hide-window'),
-  dashboardEnter: () => ipcRenderer.invoke('dashboard:enter'),
-  dashboardExit: () => ipcRenderer.invoke('dashboard:exit'),
   directoryChooser: () => ipcRenderer.invoke('directory-chooser'),
   createChatWindow: (
     query?: string,

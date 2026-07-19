@@ -1,9 +1,20 @@
 # Diverge — comprehensive behavior checklist
 
-A catalog of ~100 concrete user actions for the **Diverge** feature and the
-behavior BioRouter must exhibit for each. Use it as a manual QA script and as
-the spec the automated tests encode. Items marked **[T]** are covered by an
-automated test; **[UI]** require driving the real app.
+A catalog of concrete user actions for the **Diverge** feature and the behavior
+BioRouter must exhibit for each. Use it as a manual QA script and as the spec
+the automated tests encode. Items marked **[T]** are covered by an automated
+test; **[UI]** require driving the real app.
+
+> **2026-07-18 — dashboard mode removed.** This checklist previously carried
+> ~25 items about diverging on the free-floating dashboard canvas, including a
+> whole section on "Chat ⇄ Dashboard isolation". Dashboard mode has been
+> removed in favour of tabs / chat groups / split panes, so diverge no longer
+> branches on canvas-vs-chat — it *always* opens a new Electron window. Those
+> items were vacuous and have been deleted; everything below still describes
+> real behaviour. See
+> [`superpowers/specs/2026-07-18-dashboard-mode-removal.md`](superpowers/specs/2026-07-18-dashboard-mode-removal.md)
+> for what was removed. (Release notes and the dated dashboard plans/specs are
+> historical records and were left untouched.)
 
 Core invariants (everything below is a consequence of these):
 
@@ -11,11 +22,11 @@ Core invariants (everything below is a consequence of these):
   the full history; the **original session is never mutated**.
 - **I2.** Diverge only ever *spins up a new chat surface*. It changes nothing
   else about the agent, the current window, or other conversations.
-- **I3.** **Chat and Dashboard are isolated.** A diverge in the chat opens an
-  Electron **window**; a diverge on the dashboard spawns an on-canvas **box**.
-  Neither leaks into the other.
-- **I4.** Closing a chat surface **never deletes a real conversation.** History
-  is only removed for an empty throwaway spawn that was never used.
+- **I3.** Diverge **always opens a new, focused Electron window**. There is a
+  single diverge surface — it never navigates the current window and never
+  re-uses a tab or split pane.
+- **I4.** Closing a chat surface **never deletes a conversation.** A branch,
+  once created, stays in History until the user deletes it explicitly.
 
 ---
 
@@ -26,18 +37,18 @@ Core invariants (everything below is a consequence of these):
 3. **[UI]** On a message containing a tool call/result → Diverge is **not** shown (text-only messages only).
 4. **[UI]** On a user message → no Diverge (only assistant messages).
 5. **[T]** Button is disabled while a diverge is in flight (no double-trigger).
-6. **[UI]** Hover tooltip wording differs in chat ("new window") vs dashboard ("new chat box").
+6. **[UI]** Hover tooltip reads "Branch this conversation into a new window (keeps full history)" — one wording, on every chat surface.
 7. **[UI]** Diverge button has an accessible label ("Diverge conversation into a new chat").
 8. **[T]** Rapid triple-click triggers exactly **one** diverge.
 
-## B. Diverge in a single chat window (Hub / Pair)
+## B. Diverge in a chat window (Hub / Pair / tab / split pane)
 
 9. **[UI]** Diverge from a Pair window → a **second** Electron window opens.
 10. **[UI]** The new window is **focused / in front**; the original stays where it was.
 11. **[UI]** The new window is **offset** (~40px) from the original so both are visible.
 12. **[UI]** The new window shows the **full prior history** of the original.
 13. **[UI]** The original window is **unchanged** — same session id, same scroll, still interactive.
-14. **[T]** In a chat view the code path calls `createChatWindow(..., newSessionId, 'pair')`, **not** dashboard spawn.
+14. **[T]** The code path calls `window.electron.createDivergedChatWindow(workingDir, newSessionId)` — a new window, never an in-place navigation.
 15. **[UI]** Continue typing in the new window → it appends to the **branch**, not the original.
 16. **[UI]** Continue typing in the original window → unaffected by the branch.
 17. **[UI]** Diverge twice from the same message → two independent new windows/sessions.
@@ -67,93 +78,52 @@ Core invariants (everything below is a consequence of these):
 35. **[T]** A branch session row is created in the DB with full history + lineage.
 36. **[UI]** Classic CLI `/diverge` renders the success/"couldn't open" output.
 
-## E. Diverge on the Dashboard canvas
+## E. Closing surfaces & data preservation
 
-37. **[UI]** Diverge from a canvas chat window → a **new box** appears on the canvas.
-38. **[T]** On the canvas the code path calls `dashboard.spawnWindow({resumeSessionId})`, **not** `createChatWindow`.
-39. **[UI]** The new box is focused; the original box stays exactly in place.
-40. **[UI]** The new box shows the full inherited history.
-41. **[UI]** The new box is positioned without overlapping existing boxes.
-42. **[UI]** The original box keeps chatting independently of the branch.
-43. **[UI]** No new **Electron window** opens for a canvas diverge.
-44. **[UI]** Diverge several boxes → each is independent and closeable.
+37. **[UI]** Closing a branch window **never** deletes its session — it is still listed in History.
+38. **[UI]** Closing the *original* window never affects the branch, and vice-versa.
+39. **[UI]** Close a branch window, then reopen it from History → it still loads with the full inherited history.
 
-## F. Chat ⇄ Dashboard isolation (the core bug)
+## F. Naming & lineage
 
-45. **[T]** Diverge in chat (provider present, **not** on canvas) → **no** dashboard window is spawned.
-46. **[UI]** Diverge in chat, then open the Dashboard → the branch is **not** sitting there.
-47. **[UI]** Spawn boxes on the dashboard, then go to chat → chat is normal, boxes untouched.
-48. **[UI]** Switch chat ⇄ dashboard repeatedly → neither view gains/loses conversations.
-49. **[UI]** The dashboard "+ / Spawn" button creates a **fresh** (non-diverged) chat.
-50. **[UI]** A fresh spawned chat has no inherited history; a diverged box does.
-51. **[UI]** Diverge on dashboard does not open or affect any standalone chat window.
-52. **[UI]** Diverge in a standalone window does not add to the dashboard's persisted list.
+40. **[T]** Branch name = `"{parent} (branch 1)"`, `"(branch 2)"`, … (sibling-numbered).
+41. **[T]** Diverging a branch flattens numbering (no `(branch 1) (branch 1)`).
+42. **[T]** Placeholder parent name → branch name derived from the conversation.
+43. **[T]** Branch records `diverged_from = parent id`.
+44. **[T]** Branch token counts reset; the parent's are preserved.
+45. **[UI]** History shows "⑂ branched from {parent}" on a branch; parent shows none.
+46. **[T]** A custom name passed to diverge overrides the auto branch name.
 
-## G. Closing surfaces & data preservation (the data-loss bug)
+## G. Edge cases & failure modes
 
-53. **[T]** Close a **diverged** dashboard box → `stopAgent` is called, `deleteSession` is **not**.
-54. **[T]** Close a **resumed-from-history** box → history preserved (no delete).
-55. **[T]** Close a **created-here, used** box → history preserved (stopAgent, no delete).
-56. **[T]** Close a **created-here, empty** box → that throwaway session is deleted.
-57. **[UI]** Close a diverged box, immediately switch to chat → **no** "cannot load" error.
-58. **[UI]** Close a diverged box, reopen it from History → it still loads with full history.
-59. **[UI]** Closing a standalone branch **window** never deletes its session.
-60. **[UI]** Closing the *original* window/box never affects the branch, and vice-versa.
-61. **[UI]** Rapidly close a box and navigate to chat 10× → never a load error.
-62. **[T]** Diverged sessions are never even probed for emptiness on close.
+47. **[T]** Diverge with no session id → error toast, nothing opens.
+48. **[T]** Backend diverge fails → error toast, nothing opens, original intact.
+49. **[T]** Diverge response missing session id → error toast, nothing opens.
+50. **[T]** Nonexistent source session → backend 404.
+51. **[T]** Invalid session id → backend 400.
+52. **[T]** Name longer than 200 chars → backend 400.
+53. **[UI]** Diverge an empty conversation → branch created (empty), original intact.
+54. **[T]** Concurrent diverges from one session → unique branch ids, no collision.
+55. **[UI]** Diverge while the agent is mid-stream is not offered (button hidden while streaming).
+56. **[T]** LIKE-wildcard names (`100%_done`) don't break sibling counting.
 
-## H. Clear-all
+## H. Persistence & reload
 
-63. **[T]** `clearAll` removes all boxes from the canvas.
-64. **[T]** `clearAll` preserves diverged/resumed conversations (stopAgent only, no delete).
-65. **[UI]** After `clearAll`, those conversations are still in History.
-66. **[UI]** After `clearAll`, the Spawn button still works (no zombie LRU lock).
-67. **[UI]** `clearAll` then immediately Spawn → new fresh box appears.
+57. **[UI]** A branch window survives an app restart (the session is in History).
+58. **[UI]** Reload the app with a branch window open → it re-loads its session with full history.
 
-## I. Naming & lineage
+## I. "Changes nothing else" guarantees (I2)
 
-68. **[T]** Branch name = `"{parent} (branch 1)"`, `"(branch 2)"`, … (sibling-numbered).
-69. **[T]** Diverging a branch flattens numbering (no `(branch 1) (branch 1)`).
-70. **[T]** Placeholder parent name → branch name derived from the conversation.
-71. **[T]** Branch records `diverged_from = parent id`.
-72. **[T]** Branch token counts reset; the parent's are preserved.
-73. **[UI]** History shows "⑂ branched from {parent}" on a branch; parent shows none.
-74. **[T]** A custom name passed to diverge overrides the auto branch name.
-
-## J. Edge cases & failure modes
-
-75. **[T]** Diverge with no session id → error toast, nothing opens.
-76. **[T]** Backend diverge fails → error toast, nothing opens, original intact.
-77. **[T]** Diverge response missing session id → error toast, nothing opens.
-78. **[T]** Nonexistent source session → backend 404.
-79. **[T]** Invalid session id → backend 400.
-80. **[T]** Name longer than 200 chars → backend 400.
-81. **[UI]** Diverge an empty conversation → branch created (empty), original intact.
-82. **[T]** Concurrent diverges from one session → unique branch ids, no collision.
-83. **[UI]** Diverge while the agent is mid-stream is not offered (button hidden while streaming).
-84. **[T]** LIKE-wildcard names (`100%_done`) don't break sibling counting.
-
-## K. Persistence & reload
-
-85. **[T]** `createdHere` persists across dashboard reload.
-86. **[T]** A box whose session was deleted (404) is dropped on hydrate.
-87. **[T]** A box is **kept** on hydrate if the backend errors transiently (no false drop).
-88. **[UI]** Reload the app with diverged boxes on the canvas → they re-appear and load.
-89. **[UI]** A branch window survives an app restart (session is in History).
-90. **[T]** `isBusy` / preview are not persisted; `folded` is.
-
-## L. "Changes nothing else" guarantees (I2)
-
-91. **[UI]** Diverge does not change the current window's model, mode, or extensions.
-92. **[UI]** Diverge does not interrupt a different conversation's in-flight stream.
-93. **[UI]** Diverge does not alter scroll position or input contents of other surfaces.
-94. **[UI]** Switching conversations in chat after a diverge behaves exactly as before.
-95. **[UI]** Spawning/closing/folding other dashboard boxes is unaffected by a diverge.
-96. **[UI]** Knowledge / workflow / scheduler views are unaffected by diverge.
-97. **[UI]** Diverge works regardless of the active provider/model.
-98. **[UI]** Diverge from a renamed session keeps the original's user-set name.
-99. **[UI]** The original conversation can still be exported/diverged/edited after a diverge.
-100. **[UI]** No extra biorouterd backends leak per diverge beyond the new window's own.
+59. **[UI]** Diverge does not change the current window's model, mode, or extensions.
+60. **[UI]** Diverge does not interrupt a different conversation's in-flight stream.
+61. **[UI]** Diverge does not alter scroll position or input contents of other surfaces.
+62. **[UI]** Switching conversations in chat after a diverge behaves exactly as before.
+63. **[UI]** Opening/closing/reordering other tabs and split panes is unaffected by a diverge.
+64. **[UI]** Knowledge / workflow / scheduler views are unaffected by diverge.
+65. **[UI]** Diverge works regardless of the active provider/model.
+66. **[UI]** Diverge from a renamed session keeps the original's user-set name.
+67. **[UI]** The original conversation can still be exported/diverged/edited after a diverge.
+68. **[UI]** No extra biorouterd backends leak per diverge beyond the new window's own.
 
 ---
 
@@ -161,8 +131,7 @@ Core invariants (everything below is a consequence of these):
 
 | Area | Test file |
 |------|-----------|
-| Isolation (chat vs canvas) | `src/hooks/useDiverge.test.tsx`, `src/components/MessageDivergeLink.test.tsx` |
-| Close/clear/hydrate lifecycle | `src/components/Dashboard/DashboardProvider.diverge.test.tsx` |
+| Hook behaviour (always a new window, failure paths) | `src/hooks/useDiverge.test.tsx` |
 | Button affordance & failure modes | `src/components/MessageDivergeLink.test.tsx` |
 | CLI parsing + deeplink | `crates/biorouter-cli` (`session::input::tests`, `session::tests`) |
-| Backend naming/lineage/history | `crates/biorouter` (`session_manager::tests`), `crates/biorouter-server` (`diverge_tests`) |
+| Backend naming/lineage/history | `crates/biorouter` (`session_manager::tests`), `crates/biorouter-server` (`routes::session::diverge_tests`) |

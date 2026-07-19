@@ -70,17 +70,14 @@ import {
   Image as _Image,
   Info as _Info,
   Layers as _Layers,
-  LayoutDashboard as _LayoutDashboard,
   Link as _Link,
   Loader2 as _Loader2,
   LoaderCircle as _LoaderCircle,
   Lock as _Lock,
   Maximize2 as _Maximize2,
-  Minimize2 as _Minimize2,
   MessageSquare as _MessageSquare,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
-  Minus as _Minus,
   Monitor as _Monitor,
   Moon as _Moon,
   MoreHorizontal as _MoreHorizontal,
@@ -219,17 +216,14 @@ export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
 export const Layers = light(_Layers);
-export const LayoutDashboard = light(_LayoutDashboard);
 export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
 export const LoaderCircle = light(_LoaderCircle);
 export const Lock = light(_Lock);
 export const Maximize2 = light(_Maximize2);
-export const Minimize2 = light(_Minimize2);
 export const MessageSquare = light(_MessageSquare);
 export const MessageSquarePlus = light(_MessageSquarePlus);
 export const MessageSquareText = light(_MessageSquareText);
-export const Minus = light(_Minus);
 export const Monitor = light(_Monitor);
 export const Moon = light(_Moon);
 export const MoreHorizontal = light(_MoreHorizontal);

@@ -74,7 +74,14 @@ export default function MCPUIResourceRenderer({
   appendPromptToChat,
   onOpenArtifact,
 }: MCPUIResourceRendererProps) {
-  const { resolvedTheme } = useTheme();
+  // This component's own chrome (the artifact card, the pending-link and
+  // pending-prompt bars, the expand button) carries no colour literals — it is
+  // styled entirely in semantic Tailwind classes (`bg-background-default`,
+  // `text-text-muted`, `border-border-subtle`), which are CSS custom properties
+  // that main.css already re-points per `[data-theme]`. So the chrome is
+  // family-aware for free. What is NOT is the guest document inside the
+  // `UIResourceRenderer` iframe — see `iframeRenderData` below.
+  const { resolvedTheme, themeFamily } = useTheme();
   const [proxyUrl, setProxyUrl] = useState<string | undefined>(undefined);
   const [pendingExternalUrl, setPendingExternalUrl] = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
@@ -435,7 +442,9 @@ export default function MCPUIResourceRenderer({
             onClick={() => {
               try {
                 appendPromptToChat?.(pendingPrompt);
-                window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } }));
+                window.dispatchEvent(
+                  new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } })
+                );
                 setPendingPrompt(null);
               } catch (error) {
                 toastError({
@@ -487,6 +496,18 @@ export default function MCPUIResourceRenderer({
               // usage of this is experimental, leaving in place for demos
               host: 'biorouter',
               theme: resolvedTheme,
+              // The other half of the same fact. `theme` alone tells a guest
+              // light vs dark but not WHICH light — Parchment's warm white,
+              // Alma Mater's navy-inked white, or Roche Limit's neutral — so a
+              // guest that tried to blend with its host could only ever match
+              // Parchment. This is a declaration for guests that choose to read
+              // it (the field is a host-metadata bag, which is exactly what a
+              // family id is), not a fix to our own figures: the Auto Visualiser
+              // HTML is generated in `crates/` and currently resolves light/dark
+              // only, so it ignores this today. Costs nothing, weakens no CSP,
+              // and means a family-aware guest is possible without another
+              // protocol change.
+              themeFamily,
             },
             iframeProps: {
               // @ts-expect-error -- @mcp-ui/client narrows iframeProps to generic HTMLAttributes.

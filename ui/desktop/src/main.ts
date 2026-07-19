@@ -1737,36 +1737,6 @@ ipcMain.on('react-ready', (event) => {
   log.info('React ready - window is prepared for deep links');
 });
 
-// Per-window snapshot of the bounds we entered dashboard mode from, so the
-// exit handler can restore the user's pre-dashboard window size even if
-// `win.isMaximized()` returns false (which happens when the window was
-// already at max bounds via manual resize, or was launched maximized).
-const preDashboardBounds = new Map<number, Electron.Rectangle>();
-
-ipcMain.handle('dashboard:enter', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return;
-  if (!preDashboardBounds.has(win.id)) {
-    preDashboardBounds.set(win.id, win.getBounds());
-  }
-  if (!win.isMaximized()) win.maximize();
-});
-
-ipcMain.handle('dashboard:exit', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return;
-  // Try the normal path first; if the window is officially maximized this
-  // is the cleanest restore. Then *also* set bounds explicitly so we
-  // recover when isMaximized() returned false (e.g. the window was already
-  // at full bounds before the dashboardEnter call).
-  if (win.isMaximized()) win.unmaximize();
-  const saved = preDashboardBounds.get(win.id);
-  if (saved) {
-    win.setBounds(saved, true);
-    preDashboardBounds.delete(win.id);
-  }
-});
-
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || !Number.isFinite(minWidth)) {
@@ -4612,6 +4582,29 @@ async function appMain() {
         height: Math.min(Math.max(payload.height || 760, 360), 1200),
         resizable: true,
         // Match the figure's own background so there is no flash before scripts run.
+        //
+        // DELIBERATELY NOT THEME-FAMILY-AWARE, and not a stray hardcode to
+        // clean up. This paints for the few frames before the artifact's own
+        // scripts run, so its only job is to agree with what the artifact is
+        // about to paint over it. That is `colors.bg` in
+        // `crates/biorouter-mcp/src/autovisualiser/templates/_common.js`
+        // (`dark ? '#1c1f26' : '#f5f7fa'`), which the RUST backend bakes into
+        // every figure and report; it resolves light/dark only and has no
+        // notion of parchment / alma-mater / roche-limit. Substituting the
+        // app family's `--background-default` here would not make the window
+        // family-aware — the figure would still paint its own grey — it would
+        // only replace "no flash" with "a flash of the wrong colour", which is
+        // strictly worse on Alma Mater (navy `#08213f`) and Roche (`#1b1b19`).
+        //
+        // Making this genuinely family-aware means teaching `_common.js` to
+        // read a host palette (it already reads `window.__BR_VIZ_HOST_THEME__`
+        // for light/dark, injected by `injectArtifactHostTheme` just above, so
+        // the channel exists). That is a change in `crates/`, not here. Until
+        // the figure can honour a family, injecting one would be decoration.
+        //
+        // Known separate bug, left alone as it is a light/dark issue rather
+        // than a family one: light should be `#f5f7fa` to match `_common.js`,
+        // not `#ffffff`.
         backgroundColor: isDark ? '#1c1f26' : '#ffffff',
         webPreferences: {
           nodeIntegration: false,

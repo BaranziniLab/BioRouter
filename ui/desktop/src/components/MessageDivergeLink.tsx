@@ -20,9 +20,7 @@ interface MessageDivergeLinkProps {
  * full history (so the new conversation resumes from exactly here) while the
  * original session stays untouched and ready to keep chatting.
  *
- * - In the Dashboard (canvas) view, the branch opens as a new chat box inline.
- * - Everywhere else (single chat / pair window), the branch opens in a new
- *   Biorouter desktop window.
+ * The branch opens in a new Biorouter desktop window.
  */
 export default function MessageDivergeLink({
   sessionId,
@@ -30,7 +28,7 @@ export default function MessageDivergeLink({
   truncateAfterId,
 }: MessageDivergeLinkProps) {
   const [busy, setBusy] = useState(false);
-  const { diverge, inDashboard } = useDiverge();
+  const { diverge } = useDiverge();
 
   const handleDiverge = async () => {
     if (busy) return;
@@ -47,11 +45,7 @@ export default function MessageDivergeLink({
       onClick={handleDiverge}
       disabled={busy}
       aria-label="Diverge conversation into a new chat"
-      title={
-        inDashboard
-          ? 'Branch this conversation into a new chat box (keeps full history)'
-          : 'Branch this conversation into a new window (keeps full history)'
-      }
+      title="Branch this conversation into a new window (keeps full history)"
       className="flex font-sans items-center gap-1 text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-[transform,opacity,color] duration-150 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 disabled:opacity-50 disabled:cursor-default"
     >
       <GitBranch className="h-3 w-3" />

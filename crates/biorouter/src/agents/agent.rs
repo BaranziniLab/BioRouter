@@ -110,6 +110,37 @@ const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off — do not repeat what you already wrote.";
 
+/// The message id to stamp on the assistant-side messages the loop rebuilds for
+/// a reply that requested tools (the preserved thinking block and the tool
+/// requests themselves).
+///
+/// This must be the *provider's* id for the reply whenever there is one.
+/// `Conversation::push` merges a pushed message into the previous one only when
+/// their ids match, and on a streaming provider the thinking block and the
+/// tool_use block arrive as two separate chunks that share the provider's
+/// `message_id`: the thinking-only chunk is pushed verbatim (it requests no
+/// tools), and the tool-bearing chunk is rebuilt here. Stamping a fresh uuid on
+/// the rebuilt message leaves the two unmerged, so the request body carries two
+/// consecutive `assistant` entries and the tool-bearing one opens with
+/// `tool_use`. Anthropic rejects that outright when extended thinking is on —
+/// the final assistant message must begin with a thinking block.
+///
+/// Falls back to a fresh uuid only when the provider supplied no id, which is
+/// exactly the pre-existing behaviour for those providers.
+///
+/// The caller must use this id for at most ONE message per reply — the session
+/// store enforces `UNIQUE (session_id, msg_uid)`, so a second message carrying
+/// the same id fails the whole turn at persist time. Only the first rebuilt
+/// message can merge anyway: consecutive tool requests are separated by their
+/// tool-response (user) messages, which breaks the `Conversation::push`
+/// last-message match.
+pub(crate) fn assistant_turn_message_id(response: &Message) -> String {
+    response
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
+}
+
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
 /// body every turn.
@@ -1241,6 +1272,9 @@ impl Agent {
         conversation: &Conversation,
         working_dir: &std::path::Path,
     ) -> Conversation {
+        let _phase = super::phase_timing::Phase::start("agent.assemble_turn_context");
+
+        let moim_phase = super::phase_timing::Phase::start("agent.inject_moim");
         let (conversation, moim_injected) = super::moim::inject_moim(
             session_id,
             conversation.clone(),
@@ -1249,11 +1283,13 @@ impl Agent {
             &self.normalizer,
         )
         .await;
+        drop(moim_phase);
 
         if moim_injected || !normalize_each_turn() {
             // MOIM injection normalizes on its way through.
             return conversation;
         }
+        let _normalize_phase = super::phase_timing::Phase::start("agent.normalize_conversation");
         self.normalizer.normalize(conversation).0
     }
 
@@ -1380,6 +1416,7 @@ impl Agent {
         tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
         tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
+        let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let output = call_tool_result::validate(output);
 
         // Scan tool output for injection markers + PII/PHI before it re-enters
@@ -2156,6 +2193,14 @@ impl Agent {
         // path lock, so a lock holder always makes progress — no deadlock).
         let dispatch_args = tool_call.arguments.clone();
         let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+        // Stage 0 instrumentation: the existing WAITING_TOOL_START/END pair
+        // above brackets only dispatch *setup* — the future below is returned
+        // un-awaited and driven later by `select_all`, so those markers close
+        // in microseconds while the tool runs for seconds. Any claim about
+        // tools running serially has to be measured HERE, inside the future,
+        // around the actual await. This is the gate for the H5/H6 work.
+        let exec_tool_name = tool_call.name.to_string();
+        let exec_request_id = request_id.clone();
 
         (
             request_id,
@@ -2174,8 +2219,24 @@ impl Agent {
                     } else {
                         None
                     };
+                    // Timed after the dispatch guard is acquired, so this span
+                    // is execution only and excludes time parked on the
+                    // concurrency semaphore.
+                    let exec_started = std::time::Instant::now();
+                    debug!(
+                        name = %exec_tool_name,
+                        id = %exec_request_id,
+                        "TOOL_EXEC_START"
+                    );
+                    let inner_result = inner.await;
+                    debug!(
+                        name = %exec_tool_name,
+                        id = %exec_request_id,
+                        dur_ms = exec_started.elapsed().as_millis() as u64,
+                        "TOOL_EXEC_END"
+                    );
                     super::large_response_handler::process_tool_response(
-                        inner.await,
+                        inner_result,
                         &large_response_ctx,
                     )
                     .await
@@ -3853,10 +3914,33 @@ impl Agent {
                                     }
                                 }
 
+                                // The provider's own id for this reply, so the
+                                // rebuilt thinking + tool_use messages merge back
+                                // into one assistant message via Conversation::push.
+                                // See `assistant_turn_message_id`.
+                                //
+                                // Consumed exactly ONCE, by whichever rebuilt
+                                // assistant message comes first. Every later one
+                                // gets a fresh uuid: a tool response (a user
+                                // message) is pushed between consecutive tool
+                                // requests, so they cannot merge anyway, and
+                                // reusing the id would persist two rows with the
+                                // same msg_uid — which the session store rejects
+                                // outright (UNIQUE session_id, msg_uid).
+                                let mut assistant_turn_id = Some(assistant_turn_message_id(&response));
+                                let mut next_assistant_id = move || {
+                                    assistant_turn_id
+                                        .take()
+                                        .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
+                                };
+
                                 // Preserve thinking content from the original response
-                                // Gemini (and other thinking models) require thinking to be echoed back
+                                // Gemini (and other thinking models) require thinking to be echoed back.
+                                // RedactedThinking counts too: Anthropic accepts it as the
+                                // leading block of a tool-bearing assistant message, and
+                                // dropping it breaks replay exactly like dropping Thinking.
                                 let thinking_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
+                                    .filter(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
                                     .cloned()
                                     .collect();
                                 if !thinking_content.is_empty() {
@@ -3864,14 +3948,14 @@ impl Agent {
                                         response.role.clone(),
                                         response.created,
                                         thinking_content,
-                                    ).with_id(format!("msg_{}", Uuid::new_v4()));
+                                    ).with_id(next_assistant_id());
                                     messages_to_add.push(thinking_msg);
                                 }
 
                                 for (idx, request) in frontend_requests.iter().chain(remaining_requests.iter()).enumerate() {
                                     if request.tool_call.is_ok() {
                                         let request_msg = Message::assistant()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_id(next_assistant_id())
                                             .with_tool_request_with_metadata(
                                                 request.id.clone(),
                                                 request.tool_call.clone(),

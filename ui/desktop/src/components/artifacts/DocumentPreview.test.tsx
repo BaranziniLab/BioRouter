@@ -1,5 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ThemeProvider } from '../../contexts/ThemeContext';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import DocumentPreview from './DocumentPreview';
 import type { ArtifactDocumentFormat, ArtifactFilePreview } from './artifactTypes';
 
@@ -136,5 +138,55 @@ describe('DocumentPreview', () => {
     expect(renderPresentation).toHaveBeenCalledOnce();
     view.unmount();
     expect(destroyPresentation).toHaveBeenCalledOnce();
+  });
+});
+
+describe('workbook sheet theming', () => {
+  afterEach(() => localStorage.clear());
+
+  async function srcdocFor(family: string, resolvedTheme: 'light' | 'dark') {
+    localStorage.setItem('theme_family', family);
+    const view = render(
+      <ThemeProvider>
+        <DocumentPreview
+          file={documentFile('xlsx')}
+          resolvedTheme={resolvedTheme}
+          isResizing={false}
+        />
+      </ThemeProvider>
+    );
+    const frame = await screen.findByLabelText('preview.xlsx, sheet 1');
+    await waitFor(() => expect(frame.getAttribute('srcdoc')).toContain('Gene'));
+    const srcdoc = frame.getAttribute('srcdoc') ?? '';
+    view.unmount();
+    return srcdoc;
+  }
+
+  // The sheet document is sandboxed under `default-src 'none'`, so it cannot
+  // load the app stylesheet and must inline literal colours. They used to be a
+  // single hardcoded light/dark pair, which pinned every family to Parchment.
+  it.each(THEME_FAMILY_IDS)('paints the %s ground, ink and table fill', async (family) => {
+    for (const mode of ['light', 'dark'] as const) {
+      const { background, foreground, card } = GENERATED_THEMES[family][mode].surface;
+      const srcdoc = await srcdocFor(family, mode);
+      expect(srcdoc).toContain(`color: ${foreground}`);
+      expect(srcdoc).toContain(`background: ${background}`);
+      expect(srcdoc).toContain(`table { background: ${card}; }`);
+    }
+  });
+
+  // Without this, re-hardcoding a colour would leave every per-family
+  // assertion above still passing for whichever family the hardcode matched.
+  it('gives each family a distinct dark sheet', async () => {
+    const rendered: string[] = [];
+    for (const family of THEME_FAMILY_IDS) rendered.push(await srcdocFor(family, 'dark'));
+    expect(new Set(rendered).size).toBe(THEME_FAMILY_IDS.length);
+  });
+
+  // Theming must not have loosened the sandbox that makes this safe to render.
+  it('keeps the strict CSP and script stripping', async () => {
+    const srcdoc = await srcdocFor('alma-mater', 'dark');
+    expect(srcdoc).toContain("default-src 'none'");
+    expect(srcdoc).not.toContain('<script');
   });
 });

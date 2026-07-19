@@ -134,6 +134,9 @@ pub fn workspace_summary(working_dir: &Path) -> Option<String> {
     if !enabled() {
         return None;
     }
+    // Started after the disabled bail so the span covers only real work (this
+    // does synchronous directory walking on the turn path when the cache misses).
+    let _phase = crate::agents::phase_timing::Phase::start("agent.workspace_summary");
 
     let ttl = Duration::from_secs(config_u64(
         "CONTEXT_WORKSPACE_SUMMARY_TTL_SECS",

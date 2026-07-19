@@ -58,7 +58,7 @@ describe('TitlebarControls', () => {
       </SidebarProvider>
     );
 
-    // Dashboard mode is discontinued — its titlebar entry point is gone, and
+    // Dashboard mode is removed — its titlebar entry point is gone, and
     // the strip width (and therefore the reserve) assumes it stays gone.
     expect(screen.queryByTestId('titlebar-dashboard-toggle')).not.toBeInTheDocument();
     expect(screen.getByTestId('titlebar-sidebar-toggle')).toBeInTheDocument();

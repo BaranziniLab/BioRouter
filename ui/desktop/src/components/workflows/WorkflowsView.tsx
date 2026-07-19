@@ -13,7 +13,6 @@ import {
   Share2,
   Copy,
   Download,
-  LayoutDashboard,
 } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { ScrollArea } from '../ui/scroll-area';
@@ -33,8 +32,6 @@ import ImportWorkflowForm, { ImportWorkflowButton } from './ImportWorkflowForm';
 import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
-import { useNavigate } from 'react-router-dom';
-import { useDashboard } from '../../contexts/DashboardContext';
 import { CronPicker } from '../schedule/CronPicker';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { SearchView } from '../conversation/SearchView';
@@ -58,8 +55,6 @@ const WorkflowIcon = ENTITY_ICONS.workflow;
 
 export default function WorkflowsView() {
   const setView = useNavigation();
-  const navigate = useNavigate();
-  const dashboard = useDashboard();
   const [savedWorkflows, setSavedWorkflows] = useState<WorkflowManifest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -156,23 +151,6 @@ export default function WorkflowsView() {
       );
     } catch (error) {
       console.error('Failed to open workflow in new window:', error);
-    }
-  };
-
-  const handleStartWorkflowChatInDashboard = async (workflowId: string, workflowTitle?: string) => {
-    try {
-      await dashboard.spawnWindow({
-        workflowId,
-        cwd: getInitialWorkingDir(),
-        name: workflowTitle,
-      });
-      navigate('/dashboard');
-    } catch (error) {
-      console.error('Failed to add workflow to dashboard:', error);
-      toastError({
-        title: 'Failed to add workflow to dashboard',
-        msg: error instanceof Error ? error.message : String(error),
-      });
     }
   };
 
@@ -512,14 +490,6 @@ export default function WorkflowsView() {
               >
                 <NewWindow className="w-4 h-4" />
                 Open in new window
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() =>
-                  handleStartWorkflowChatInDashboard(workflowManifestResponse.id, workflow.title)
-                }
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                Add to dashboard
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

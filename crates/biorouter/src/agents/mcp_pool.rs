@@ -178,13 +178,14 @@ fn flag_is_truthy(value: Option<&str>) -> bool {
     }
 }
 
-/// Whether a pooled entry's client is still usable. Never blocks on an in-flight
-/// call: if the client lock is held (a call is running) the transport is alive.
+/// Whether a pooled entry's client is still usable.
+///
+/// H6: `McpClientBox` is no longer `Arc<Mutex<..>>`, so this can query the
+/// transport directly instead of `try_lock`-ing and optimistically assuming
+/// "alive" whenever a call happened to be in flight. Strictly more accurate,
+/// and still non-blocking.
 async fn entry_is_alive(entry: &PooledEntry) -> bool {
-    match entry.client.try_lock() {
-        Ok(client) => client.is_running(),
-        Err(_) => true,
-    }
+    entry.client.is_running()
 }
 
 #[cfg(test)]
@@ -242,13 +243,7 @@ mod tests {
     }
 
     fn mock_entry(running: bool) -> PooledEntry {
-        PooledEntry::new(
-            Arc::new(Mutex::new(
-                Box::new(MockPoolClient { running }) as Box<dyn McpClientTrait>
-            )),
-            None,
-            None,
-        )
+        PooledEntry::new(Arc::new(MockPoolClient { running }), None, None)
     }
 
     #[tokio::test]

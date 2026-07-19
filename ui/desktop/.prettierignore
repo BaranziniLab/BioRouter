@@ -3,3 +3,9 @@ dist
 out
 src/api
 *.lock
+
+# Generated theme token blocks live in src/styles/main.css. Prettier reflows
+# the multi-line shadow declarations the generator emits, which then makes
+# `npm run check:themes` report the file stale — the two tools cannot both be
+# satisfied. The generator owns this file's formatting inside its region.
+src/styles/main.css
