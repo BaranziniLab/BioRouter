@@ -42,7 +42,7 @@ import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { CodeAnalysis, Pipeline, ScrollText, Terminal } from './icons/app-icons';
+import { AlignLeft, CodeAnalysis, Pipeline, Terminal } from './icons/app-icons';
 import {
   createArtifactRenderRepairMessage,
   getThinkingMessage,
@@ -1682,7 +1682,7 @@ function BaseChatContent({
                 )}
                 aria-label="Session review"
               >
-                <ScrollText className="h-4 w-4" />
+                <AlignLeft className="h-4 w-4" />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>

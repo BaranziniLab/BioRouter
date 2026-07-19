@@ -8,6 +8,7 @@ import {
   Activity as _Activity,
   AlertCircle as _AlertCircle,
   AlertTriangle as _AlertTriangle,
+  AlignLeft as _AlignLeft,
   AppWindow as _AppWindow,
   AppWindowMac as _AppWindowMac,
   Archive as _Archive,
@@ -109,7 +110,7 @@ import {
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
   Square as _Square,
-  SquareArrowOutUpRight as _SquareArrowOutUpRight,
+  SquareStack as _SquareStack,
   StopCircle as _StopCircle,
   Sun as _Sun,
   Target as _Target,
@@ -152,6 +153,8 @@ export const Activity = light(_Activity);
 export const AlertCircle = light(_AlertCircle);
 export const Info = light(_Info);
 export const AlertTriangle = light(_AlertTriangle);
+// The session-review mark the cohesion spec draws (three descending rules).
+export const AlignLeft = light(_AlignLeft);
 export const AppWindow = light(_AppWindow);
 export const AppWindowMac = light(_AppWindowMac);
 export const Archive = light(_Archive);
@@ -258,10 +261,11 @@ export const Share2 = light(_Share2);
 export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);
-// Opening a *new window*. Deliberately not `Plus` (that is New Session) and not
-// `AppWindow` (that is the Applications route) — a window with an arrow leaving
-// it reads as "pop this out into its own window" and is used nowhere else.
-export const NewWindow = light(_SquareArrowOutUpRight);
+// Opening a *new window* — the ⧉ mark the cohesion spec draws for the titlebar
+// control (two offset windows). Deliberately not `Plus` (that is New Session),
+// not `AppWindow` (that is the Applications route), and not `Copy`, whose
+// geometry the spec's drawing actually matches but which already means copy.
+export const NewWindow = light(_SquareStack);
 // The original 'Square' icon was visually a circle-with-square (stop button),
 // which corresponds to lucide's StopCircle. Keep both names pointing to it.
 export const Square = light(_StopCircle);
