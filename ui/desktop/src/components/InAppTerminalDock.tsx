@@ -306,7 +306,7 @@ const TerminalPaneView: React.FC<{
         }}
         // The ground is painted ONCE, by the dock's terminal region (bg-background-muted).
         // This host is transparent and contributes only the inset xterm needs to
-        // breathe, so the token — not a hex — is what actually reaches the screen;
+        // breathe, so the generated palette — not a hand-typed hex — is what reaches the screen;
         // the theme `background` above is the forced mirror xterm needs internally
         // (it cannot read a CSS var). The bg-transparent! overrides are what keep
         // the token authoritative: without them xterm's own layers would repaint

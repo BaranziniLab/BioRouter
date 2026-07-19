@@ -1448,7 +1448,14 @@ function TextFilePreview({
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* `bg-background-code` when the code view is showing, for the same reason
+          MarkdownContent does it: the syntax palette is measured against
+          --background-code, but the panel root paints --background-muted, and the
+          highlighter renders transparent — so the reader was seeing the palette
+          on a surface it was never verified against. In Parchment dark that put
+          `comment` at 4.14:1, under AA. Only the code view switches ground; the
+          markdown and preview branches keep the panel's own surface. */}
+      <div className={cn('min-h-0 flex-1 overflow-auto', showingCode && 'bg-background-code')}>
         {showingCode ? (
           code
         ) : markdown ? (

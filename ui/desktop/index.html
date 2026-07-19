@@ -98,10 +98,16 @@
            paint — so a var() here resolves to its fallback during exactly the
            window the splash exists to fill. Hence literals.
 
-           They are no longer hand-copied, though: `npm run themes` generates
-           every rule below from each family's --background-muted, so the
-           duplication that used to rot is now derived. Edit the theme
-           definition, not this block.
+           Most are no longer hand-copied: `npm run themes` generates every rule
+           inside the THEMES:GENERATED:SPLASH region below, from each family's
+           --background-muted. Edit the theme definition, not that region.
+
+           THIS BLOCK IS THE EXCEPTION. These four values are Parchment LIGHT,
+           and they are hand-written because this `#br-boot` rule is also the
+           base every other rule cascades from — emitting a generated
+           `html #br-boot` duplicate would give two rules the same ground and
+           trip the distinctness check in boot-splash.test.ts. They are pinned
+           to parchment.theme.mjs by a test instead, so they cannot drift.
 
            The values mirror --background-muted per family, which is the ground
            the post-boot Hub uses, so handing off to the app has no colour jump.

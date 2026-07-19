@@ -6,8 +6,9 @@
  * pasted-in foreign object. Every foreground below clears WCAG AA (4.5:1)
  * against its stated background; the ratios are asserted in codeTheme.test.ts.
  *
- * This is the ONLY place a syntax colour may be defined. Both the chat markdown
- * renderer and the artifact preview import from here.
+ * Syntax colours are DEFINED in themes/<id>.theme.mjs and reach this file via
+ * themes.generated.ts. This module owns the Prism token MAPPING, not the values.
+ * Both the chat markdown renderer and the artifact preview import from here.
  */
 import type { CSSProperties } from 'react';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from './themes.generated';

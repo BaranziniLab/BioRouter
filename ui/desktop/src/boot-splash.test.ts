@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { THEME_FAMILY_IDS } from './styles/themes.generated';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from './styles/themes.generated';
 
 /**
  * These tests run the boot splash's REAL source, extracted out of
@@ -111,9 +111,16 @@ describe('boot splash', () => {
    * a new theme silently boots on Parchment cream — including, at its worst, a
    * cream flash on a dark ground.
    *
-   * Deriving the colours from tokens instead is not an option: Tailwind v4's
-   * `@theme inline` compiles --background-muted and friends away, so they do
-   * not exist as runtime custom properties. See the comment in index.html.
+   * The splash uses literal hexes rather than var() because it paints before the
+   * stylesheet is applied — in dev, Vite injects main.css via JS after first
+   * paint, so a var() would resolve to its fallback during exactly the window
+   * the splash exists to fill. (An earlier version of this comment, and of the
+   * one in index.html, blamed `@theme inline` for compiling the tokens away.
+   * That is false: they are ordinary custom properties, verified by probe.)
+   *
+   * Most of those literals are now GENERATED from each family's
+   * --background-muted, so only the base family's light values are hand-written
+   * — and those are pinned to parchment.theme.mjs by a test below.
    */
   describe('theme coverage', () => {
     /**
@@ -160,6 +167,29 @@ describe('boot splash', () => {
       // One per family per mode; duplicates would mean a family is wearing
       // another family's background.
       expect(new Set(grounds).size).toBe(grounds.length);
+    });
+
+    it("pins the base family's hand-written splash values to its definition", () => {
+      // The generator deliberately skips the base family's LIGHT rule: this
+      // `#br-boot` block IS that rule, and emitting a duplicate would give two
+      // rules the same ground and trip the distinctness check below. That makes
+      // these four values the one splash cell no generator gate covers — so it
+      // is covered here instead, or it drifts silently.
+      const html = readIndexHtml();
+      const base = html.match(/\n\s*#br-boot\s*\{([\s\S]*?)\n\s*\}/)?.[1] ?? '';
+      const read = (name: string) =>
+        base.match(new RegExp(`--br-${name}\\s*:\\s*([^;]+);`))?.[1].trim();
+
+      const parchment = GENERATED_THEMES.parchment.light;
+      expect(read('navy'), '--br-navy must match parchment.light mark.navy').toBe(
+        parchment.mark.navy
+      );
+      expect(read('coral'), '--br-coral must match parchment.light mark.coral').toBe(
+        parchment.mark.coral
+      );
+      // The ground is the family's own --background-muted, which is what makes
+      // the hand-off to the booted app free of a colour jump.
+      expect(read('bg'), '--br-bg must be parchment light --background-muted').toBe('#faf8f3');
     });
 
     it('uses CSS comments inside <style>, never HTML comments', () => {
