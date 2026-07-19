@@ -17,15 +17,24 @@ let navCount = 0;
 function Harness({
   onOpen,
   initialActive = '',
+  activateOnOpen = false,
 }: {
   onOpen: (r: UrlOpenRequest) => void;
   initialActive?: string;
+  /** Mimic the reducer: opening a tab also activates it. */
+  activateOnOpen?: boolean;
 }) {
   renderCount++;
   const [activeSessionId, setActiveSessionId] = useState(initialActive);
   const location = useLocation();
 
-  useChatGroupsUrlSync({ activeSessionId, onOpen });
+  useChatGroupsUrlSync({
+    activeSessionId,
+    onOpen: (request) => {
+      onOpen(request);
+      if (activateOnOpen) setActiveSessionId(request.sessionId);
+    },
+  });
 
   return (
     <div>
@@ -33,6 +42,9 @@ function Harness({
       <span data-testid="active">{activeSessionId}</span>
       <button data-testid="activate-b" onClick={() => setActiveSessionId('sB')}>
         activate
+      </button>
+      <button data-testid="activate-empty" onClick={() => setActiveSessionId('')}>
+        activate empty
       </button>
     </div>
   );
@@ -50,12 +62,22 @@ function NavSpy() {
   return null;
 }
 
-function renderAt(url: string, onOpen: (r: UrlOpenRequest) => void, initialActive = '') {
+function renderAt(
+  url: string,
+  onOpen: (r: UrlOpenRequest) => void,
+  initialActive = '',
+  activateOnOpen = false
+) {
   return render(
     <MemoryRouter initialEntries={[url]}>
       <NavSpy />
       <Routes>
-        <Route path="/pair" element={<Harness onOpen={onOpen} initialActive={initialActive} />} />
+        <Route
+          path="/pair"
+          element={
+            <Harness onOpen={onOpen} initialActive={initialActive} activateOnOpen={activateOnOpen} />
+          }
+        />
       </Routes>
     </MemoryRouter>
   );
@@ -187,6 +209,56 @@ describe('useChatGroupsUrlSync — the fixed point', () => {
     const { getByTestId } = renderAt('/pair', onOpen, '');
     expect(onOpen).not.toHaveBeenCalled();
     expect(getByTestId('url').textContent).toBe('/pair');
+  });
+
+  /**
+   * R1-01 — the sidebar Recents highlight reads ?resumeSessionId= off the URL,
+   * so an active EMPTY tab (New Session / strip "+") must clear the param.
+   * Before the fix OUT early-returned on '' and the URL kept pointing at the
+   * previous chat: the sidebar highlighted the wrong row and a reload resumed
+   * a session the strip said was not focused.
+   */
+  it('activating an empty New Session tab clears the stale resumeSessionId from the URL', () => {
+    const onOpen = vi.fn();
+    const { getByTestId } = renderAt('/pair?resumeSessionId=sA', onOpen, 'sA');
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    act(() => getByTestId('activate-empty').click());
+
+    expect(getByTestId('url').textContent).toBe('/pair');
+    // Clearing must not re-dispatch anything: there is no param left to read.
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-activating a real tab after an empty one mirrors its id back into the URL', () => {
+    const onOpen = vi.fn();
+    const { getByTestId } = renderAt('/pair?resumeSessionId=sA', onOpen, 'sA');
+
+    act(() => getByTestId('activate-empty').click());
+    expect(getByTestId('url').textContent).toBe('/pair');
+
+    act(() => getByTestId('activate-b').click());
+    expect(getByTestId('url').textContent).toBe('/pair?resumeSessionId=sB');
+    // The write is OUT's own echo, never a re-open.
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The empty-tab clear must NOT clobber a deep link in the commit that
+   * consumes it: IN dispatches openTab and the reducer state only catches up on
+   * the NEXT render, so OUT momentarily sees activeSessionId '' beside the very
+   * param IN just consumed. That is a consumption in flight, not a stale param.
+   */
+  it('does not bounce the URL when a deep link is consumed while the group is still empty', () => {
+    const onOpen = vi.fn();
+    const { getByTestId } = renderAt('/pair?resumeSessionId=sA', onOpen, '', true);
+
+    act(() => {});
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(getByTestId('url').textContent).toBe('/pair?resumeSessionId=sA');
+    // One location only: the initial mount. A clear+rewrite churn shows up here.
+    expect(navCount).toBe(1);
   });
 
   it('OUT does not fire when focus already matches the URL', () => {

@@ -69,6 +69,13 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
   const lastAppliedParamRef = useRef<string | null>(null);
   const lastAppliedKeyRef = useRef<string | null>(null);
   const selfWriteRef = useRef<string | null>(null);
+  // The param IN consumed in THIS commit. openTab is a dispatch, so the reducer
+  // state (and with it activeSessionId) only catches up on the next render —
+  // OUT must not read the momentary '' beside a just-consumed param as "an
+  // empty tab is focused" and clear the very deep link being opened. Lifetime
+  // is exactly IN→OUT within one commit: OUT always runs after IN here (hook
+  // order) and clears it on every pass.
+  const justOpenedRef = useRef<string | null>(null);
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
 
@@ -91,6 +98,7 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
 
     lastAppliedParamRef.current = param;
     lastAppliedKeyRef.current = locationKey;
+    justOpenedRef.current = param;
 
     const state = (location.state ?? {}) as {
       initialMessage?: string;
@@ -112,7 +120,21 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
 
   // OUT — mirror of focus.
   useEffect(() => {
-    if (!activeSessionId) return;
+    const justOpened = justOpenedRef.current;
+    justOpenedRef.current = null;
+
+    if (!activeSessionId) {
+      // The mirror covers the EMPTY case too (R1-01): when a New Session tab
+      // (sidebar button, strip "+", Cmd+T) takes focus, a lingering
+      // ?resumeSessionId= points at a chat that is no longer active — the
+      // sidebar Recents highlight reads exactly that param, so it kept the
+      // previous chat lit. Clear it — unless the param is IN's consumption
+      // still in flight this commit (see justOpenedRef).
+      if (param && param !== justOpened) {
+        navigate('/pair', { replace: true });
+      }
+      return;
+    }
     if (activeSessionId === param) return;
 
     selfWriteRef.current = activeSessionId;
