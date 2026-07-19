@@ -1,0 +1,153 @@
+name: Frontend
+
+# The desktop app had NO CI gate of any kind until this workflow. `just
+# check-everything` wires up `npm run lint:check`, and package.json declares a
+# lint-staged block, but neither ever runs automatically: core.hooksPath points
+# at an absolute developer-specific directory containing only `commit-msg`, so
+# husky's hooks are never consulted. Every frontend gate ran only on whichever
+# machine last happened to run it by hand.
+#
+# Scope is deliberately narrow. This workflow runs the four cheap static gates
+# and the vitest suite on ubuntu-latest, and nothing else. It does not build,
+# package, sign, notarize, or stage any binary, and it never writes to `target/`
+# or `ui/desktop/src/bin/` — so the release pipeline's "one platform at a time"
+# and "reinstall node_modules after a Docker build" invariants are untouched.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Deliberately NOT path-filtered. A path-filtered job that is also a required
+# status check blocks merges forever on PRs that do not touch the filter (GitHub
+# reports "expected — waiting for status" and never resolves). Always running is
+# free on a public repo and keeps the check safe to mark required.
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: ui/desktop
+
+env:
+  # `electron` is a non-optional devDependency whose install script downloads a
+  # ~150 MB platform binary. No vitest test needs the Electron runtime — the one
+  # file that references it (src/biorouterd.test.ts) imports `electron` as
+  # `import type`, which TypeScript erases. Skipping the download removes ~30s
+  # and a network flake source from every run.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  # ── Static gates: typecheck, lint, theme codegen freshness, WCAG contrast ──
+  # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the two node
+  # scripts). eslint is NOT type-aware here — eslint.config.js declares no
+  # parserOptions.project — so it is pure syntactic linting over 656 files.
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # package.json declares engines ^24.0.0 and hermit pins 24.10.0.
+          # (Note: apps-smoke.yml still pins 22 — that is a pre-existing
+          # inconsistency, not something this workflow should copy.)
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Each gate is its own step rather than a single `npm run lint:check`, and
+      # each runs even if an earlier one failed. `lint:check` chains with && and
+      # stops at the first failure, which means a contributor fixes one gate,
+      # pushes, waits, and discovers the next — four round trips instead of one.
+      # `!cancelled()` (not `always()`) still honours a cancelled run.
+      - name: Typecheck (tsc --noEmit)
+        if: ${{ !cancelled() }}
+        run: npm run typecheck
+
+      - name: Lint (eslint, zero warnings)
+        if: ${{ !cancelled() }}
+        run: npx eslint "src/**/*.{ts,tsx}" --max-warnings 0 --no-warn-ignored
+
+      - name: Theme codegen is current
+        if: ${{ !cancelled() }}
+        run: npm run check:themes
+
+      - name: Contrast assertions (WCAG)
+        if: ${{ !cancelled() }}
+        run: npm run check:contrast
+
+  # ── Unit tests ────────────────────────────────────────────────────────────
+  unit:
+    name: Unit tests (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The reported "flakiness under parallelism" is a timeout budget defect,
+      # not test-order pollution:
+      #
+      #   * vitest.config.ts sets no `pool` or `isolate`, so the defaults apply
+      #     (pool: 'forks', isolate: true). Every file gets a fresh process and
+      #     module registry, so cross-file state bleed is structurally
+      #     impossible — which rules out the usual parallelism explanation.
+      #   * In a full local run, 40 of 42 failures had a recorded duration of
+      #     >= 5000ms, exactly vitest's default testTimeout. Failure is almost
+      #     perfectly predicted by crossing that line.
+      #   * src/test/setup.ts sets asyncUtilTimeout to *exactly* 5000ms, equal
+      #     to the test timeout — so any waitFor/findBy that actually uses its
+      #     budget kills the test before the async helper can succeed.
+      #   * Controlled single-variable check: dialog.test.tsx run alone FAILED
+      #     at the 5000ms default (test took 8005ms) and PASSED at 30000ms
+      #     (same test, 8358ms). Only the flag changed.
+      #
+      # So the fix is a timeout, applied here on the CLI so this workflow can
+      # merge without touching source. Raising a timeout costs nothing on a
+      # green run — it bounds failures only.
+      #
+      # `--no-file-parallelism` is explicitly the WRONG lever: per-file fixed
+      # overhead dominates (one measured file: 44.15s wall, of which ~34s was
+      # jsdom environment + setup + import versus 12.6s of actual test time).
+      # Serialising 159 files multiplies that overhead and would trade a red
+      # 14-minute build for a green multi-hour one nobody waits for.
+      #
+      # `--retry=1` is insurance against residual nondeterminism on a 4-vCPU
+      # runner. Retried tests are reported in the summary; if a specific file
+      # starts relying on the retry, fix that file rather than raising this.
+      - name: Run vitest
+        run: |
+          npx vitest run \
+            --testTimeout=30000 \
+            --hookTimeout=30000 \
+            --retry=1 \
+            --reporter=default \
+            --reporter=junit \
+            --outputFile.junit=./vitest-junit.xml
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-junit
+          path: ui/desktop/vitest-junit.xml
+          if-no-files-found: warn
+          retention-days: 7

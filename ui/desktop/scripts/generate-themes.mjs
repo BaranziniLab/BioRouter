@@ -27,6 +27,7 @@
  *   terminal.cursorAccent = the same ground
  *   code ground (CODE_BG) = `--background-code`
  *   splash.bg             = `--background-muted`
+ *   surface.*             = the five semantic tokens in SURFACE_TOKENS
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -142,6 +143,31 @@ const scopeFor = (theme, mode) => {
 const ground = (theme, mode) => resolveRaw(theme.terminalGround[mode], scopeFor(theme, mode));
 const codeGround = (theme, mode) => resolveRaw('--background-code', scopeFor(theme, mode));
 
+/**
+ * The semantic tokens that a sandboxed surface has to inline as a literal hex.
+ *
+ * A `srcdoc` iframe under `default-src 'none'` cannot load the app stylesheet,
+ * so `var(--text-default)` resolves to nothing inside it — the document paints
+ * unstyled black-on-white. Those surfaces used to carry hand-picked hexes that
+ * only knew light vs dark, which pinned every family to Parchment's ground.
+ * Resolving the same tokens here keeps one source of truth: change a family's
+ * `background-default` and the notebook/spreadsheet previews follow.
+ */
+const SURFACE_TOKENS = {
+  background: '--background-default',
+  foreground: '--text-default',
+  muted: '--text-muted',
+  card: '--background-card',
+  border: '--border-subtle',
+};
+const surface = (theme, mode) =>
+  Object.fromEntries(
+    Object.entries(SURFACE_TOKENS).map(([key, token]) => [
+      key,
+      resolveRaw(token, scopeFor(theme, mode)),
+    ])
+  );
+
 const obj = (o, indent = 4) =>
   Object.entries(o)
     .map(([k, v]) => `${' '.repeat(indent)}${/^[a-z]\w*$/i.test(k) ? k : `'${k}'`}: '${v}',`)
@@ -160,6 +186,9 @@ function tsFor(theme) {
 ${obj(d.syntax, 6)}
     },
     codeGround: '${codeGround(theme, mode)}',
+    surface: {
+${obj(surface(theme, mode), 6)}
+    },
     terminalGround: '${theme.terminalGround[mode]}',
     terminal: {
 ${obj(terminal, 6)}
@@ -210,6 +239,29 @@ export type ThemeModeData = {
   syntax: SyntaxPalette;
   /** The surface the syntax palette is measured against (--background-code). */
   codeGround: string;
+  /**
+   * Resolved literal values for the five semantic tokens a CSP-sandboxed
+   * surface has to inline.
+   *
+   * A \`srcdoc\` iframe under \`default-src 'none'\` cannot reach the app
+   * stylesheet, so \`var(--text-default)\` is empty inside it. The notebook and
+   * spreadsheet previews build their own document and must write real hexes —
+   * these, so the inlined values track the family instead of being frozen to
+   * Parchment. Do not add hand-picked colours next to a preview; add the token
+   * to SURFACE_TOKENS in scripts/generate-themes.mjs instead.
+   */
+  surface: {
+    /** --background-default — the document ground. */
+    background: string;
+    /** --text-default — body ink, held to 4.5:1 against \`background\`. */
+    foreground: string;
+    /** --text-muted — secondary ink. */
+    muted: string;
+    /** --background-card — a table/cell ground that sits on \`background\`. */
+    card: string;
+    /** --border-subtle — hairlines and table cell rules. */
+    border: string;
+  };
   /** Which token the terminal dock paints. Families genuinely differ. */
   terminalGround: string;
   terminal: TerminalPalette;
@@ -305,6 +357,26 @@ const failures = [];
           );
         }
       }
+
+      // The sandboxed previews (notebook HTML output, spreadsheet sheets) paint
+      // `surface.foreground` on `surface.background` inside an iframe that
+      // cannot load the app stylesheet, so nothing downstream can rescue a bad
+      // pair — no cascade, no user stylesheet, just body text on a ground. Hold
+      // it to the normal 4.5:1 body-text floor here, where a family is defined.
+      const surfaceBg = resolveRaw('--background-default', scope);
+      for (const [ink, token] of [
+        ['foreground', '--text-default'],
+        ['muted', '--text-muted'],
+      ]) {
+        const value = resolveRaw(token, scope);
+        const c = contrast(value, surfaceBg);
+        if (c < 4.5) {
+          failures.push(
+            `${t.id}.${mode}: sandboxed surface "${ink}" ${value} on ${surfaceBg} = ${c.toFixed(2)}:1 (need 4.5)`
+          );
+        }
+      }
+
       // The boot splash paints the BR mark before React exists. Its two inks
       // must be legible on the splash ground — which is NOT automatic: a
       // regression once left every dark splash carrying the LIGHT navy, making

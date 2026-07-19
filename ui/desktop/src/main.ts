@@ -4582,6 +4582,29 @@ async function appMain() {
         height: Math.min(Math.max(payload.height || 760, 360), 1200),
         resizable: true,
         // Match the figure's own background so there is no flash before scripts run.
+        //
+        // DELIBERATELY NOT THEME-FAMILY-AWARE, and not a stray hardcode to
+        // clean up. This paints for the few frames before the artifact's own
+        // scripts run, so its only job is to agree with what the artifact is
+        // about to paint over it. That is `colors.bg` in
+        // `crates/biorouter-mcp/src/autovisualiser/templates/_common.js`
+        // (`dark ? '#1c1f26' : '#f5f7fa'`), which the RUST backend bakes into
+        // every figure and report; it resolves light/dark only and has no
+        // notion of parchment / alma-mater / roche-limit. Substituting the
+        // app family's `--background-default` here would not make the window
+        // family-aware — the figure would still paint its own grey — it would
+        // only replace "no flash" with "a flash of the wrong colour", which is
+        // strictly worse on Alma Mater (navy `#08213f`) and Roche (`#1b1b19`).
+        //
+        // Making this genuinely family-aware means teaching `_common.js` to
+        // read a host palette (it already reads `window.__BR_VIZ_HOST_THEME__`
+        // for light/dark, injected by `injectArtifactHostTheme` just above, so
+        // the channel exists). That is a change in `crates/`, not here. Until
+        // the figure can honour a family, injecting one would be decoration.
+        //
+        // Known separate bug, left alone as it is a light/dark issue rather
+        // than a family one: light should be `#f5f7fa` to match `_common.js`,
+        // not `#ffffff`.
         backgroundColor: isDark ? '#1c1f26' : '#ffffff',
         webPreferences: {
           nodeIntegration: false,

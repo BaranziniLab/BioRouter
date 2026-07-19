@@ -57,6 +57,29 @@ export type ThemeModeData = {
   syntax: SyntaxPalette;
   /** The surface the syntax palette is measured against (--background-code). */
   codeGround: string;
+  /**
+   * Resolved literal values for the five semantic tokens a CSP-sandboxed
+   * surface has to inline.
+   *
+   * A `srcdoc` iframe under `default-src 'none'` cannot reach the app
+   * stylesheet, so `var(--text-default)` is empty inside it. The notebook and
+   * spreadsheet previews build their own document and must write real hexes —
+   * these, so the inlined values track the family instead of being frozen to
+   * Parchment. Do not add hand-picked colours next to a preview; add the token
+   * to SURFACE_TOKENS in scripts/generate-themes.mjs instead.
+   */
+  surface: {
+    /** --background-default — the document ground. */
+    background: string;
+    /** --text-default — body ink, held to 4.5:1 against `background`. */
+    foreground: string;
+    /** --text-muted — secondary ink. */
+    muted: string;
+    /** --background-card — a table/cell ground that sits on `background`. */
+    card: string;
+    /** --border-subtle — hairlines and table cell rules. */
+    border: string;
+  };
   /** Which token the terminal dock paints. Families genuinely differ. */
   terminalGround: string;
   terminal: TerminalPalette;
@@ -90,6 +113,13 @@ export const GENERATED_THEMES = {
         inserted: '#1f7a3d',
       },
       codeGround: '#faf8f3',
+      surface: {
+        background: '#ffffff',
+        foreground: '#2a2520',
+        muted: '#635c54',
+        card: '#ffffff',
+        border: '#e8e1d2',
+      },
       terminalGround: '--background-muted',
       terminal: {
         background: '#faf8f3',
@@ -130,6 +160,13 @@ export const GENERATED_THEMES = {
         inserted: '#7ac87c',
       },
       codeGround: '#16120c',
+      surface: {
+        background: '#16120c',
+        foreground: '#f4f0e6',
+        muted: '#b0a892',
+        card: '#16120c',
+        border: '#282217',
+      },
       terminalGround: '--background-code',
       terminal: {
         background: '#16120c',
@@ -175,6 +212,13 @@ export const GENERATED_THEMES = {
         inserted: '#007242',
       },
       codeGround: '#f2f3f4',
+      surface: {
+        background: '#ffffff',
+        foreground: '#052049',
+        muted: '#506380',
+        card: '#ffffff',
+        border: '#e1e3e5',
+      },
       terminalGround: '--background-muted',
       terminal: {
         background: '#f2f3f4',
@@ -215,6 +259,13 @@ export const GENERATED_THEMES = {
         inserted: '#5fbf74',
       },
       codeGround: '#08213f',
+      surface: {
+        background: '#08213f',
+        foreground: '#f2f3f4',
+        muted: '#b4b9bf',
+        card: '#08213f',
+        border: '#17386a',
+      },
       terminalGround: '--background-muted',
       terminal: {
         background: '#0d2a50',
@@ -260,6 +311,13 @@ export const GENERATED_THEMES = {
         inserted: '#12805c',
       },
       codeGround: '#f5f5f3',
+      surface: {
+        background: '#ffffff',
+        foreground: '#1f1e1c',
+        muted: '#5c5a55',
+        card: '#ffffff',
+        border: '#e4e4e0',
+      },
       terminalGround: '--background-muted',
       terminal: {
         background: '#f4f4f2',
@@ -300,6 +358,13 @@ export const GENERATED_THEMES = {
         inserted: '#3dd68c',
       },
       codeGround: '#1b1b19',
+      surface: {
+        background: '#1b1b19',
+        foreground: '#ededea',
+        muted: '#a5a39d',
+        card: '#1b1b19',
+        border: '#302f2c',
+      },
       terminalGround: '--background-muted',
       terminal: {
         background: '#232320',
