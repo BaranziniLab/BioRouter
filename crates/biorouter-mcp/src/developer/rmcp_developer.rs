@@ -342,6 +342,13 @@ impl ServerHandler for DeveloperServer {
 
                 Use the shell tool as needed to locate files or interact with the project.
 
+                This extension is the default, first-choice tool for everyday file and system work: use `shell`
+                to list, copy, move, delete, or find files and to run commands, and use `text_editor` to read
+                (`view`), create/overwrite (`write`), and edit (`str_replace`, `insert`) files. Prefer these
+                direct tools over routing a simple file or shell operation through a code-execution script or
+                another extension — reach for those only when a task needs real computation, control flow, or a
+                specialized capability.
+
                 Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
                 - delegate analysis, retain summaries
 
@@ -365,6 +372,14 @@ impl ServerHandler for DeveloperServer {
 
             You can use the shell tool to run any command that would work on the relevant operating system.
             Use the shell tool as needed to locate files or interact with the project.
+
+            This extension is the default, first-choice tool for everyday file and system work: use `shell`
+            to list, copy, move, delete, or find files (`ls`, `cp`, `mv`, `rm`, `mkdir`, `rg`) and to run
+            commands, and use `text_editor` to read (`view`), create/overwrite (`write`), and edit
+            (`str_replace`, `insert`) files. Prefer these direct tools over routing a simple file or shell
+            operation through a code-execution script or another extension — reach for those only when a task
+            needs real computation, control flow, or a specialized capability. When you just need a file's
+            contents, use `text_editor` view rather than `cat`/`head` in shell.
 
             Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
             - delegate analysis, retain summaries
@@ -458,6 +473,10 @@ impl ServerHandler for DeveloperServer {
             of if the command succeeded or failed.
 
             Avoid commands that produce a large amount of output, and consider piping those outputs to files.
+
+            Use this shell tool directly for filesystem operations (ls, cp, mv, rm, mkdir, rg) rather than
+            wrapping them in a code-execution script. To read or write a file's contents, prefer the
+            `text_editor` tool (view/write/str_replace) over `cat`/`head`/`sed`/`echo >` in the shell.
 
             **Important**: Each shell command runs in its own process. Things like directory changes or
             sourcing files do not persist between tool calls. So you may need to repeat them each time by

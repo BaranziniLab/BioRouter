@@ -621,6 +621,18 @@ mod tests {
             p.contains("file_path:line_number"),
             "missing code-reference citation convention"
         );
+        // Tool-routing discipline (prefer primitives; keep basic file/shell ops
+        // off code-execution). Renders in every mode, including code-execution
+        // mode where per-extension instructions are hidden.
+        assert!(p.contains("# Tool Routing"), "missing Tool Routing section");
+        assert!(
+            p.contains("Prefer the simplest tool that does the job"),
+            "missing prefer-the-simplest-tool rule"
+        );
+        assert!(
+            p.contains("Use a code-execution tool ONLY when"),
+            "missing code-execution-only-for-computation rule"
+        );
     }
 
     /// The pillar-awareness paragraph (about-biorouter + Soul) must render only
@@ -782,6 +794,10 @@ mod tests {
         assert!(
             p.contains("Before saying a task is done"),
             "missing verify-before-done discipline"
+        );
+        assert!(
+            p.contains("Prefer the simplest tool for the job"),
+            "missing small-local tool-routing discipline"
         );
     }
 

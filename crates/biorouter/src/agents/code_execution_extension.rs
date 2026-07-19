@@ -937,15 +937,24 @@ impl CodeExecutionClient {
                 website_url: None,
             },
             instructions: Some(indoc! {r#"
-                BATCH MULTIPLE TOOL CALLS INTO ONE execute_code CALL.
+                Use execute_code to CHAIN MULTIPLE DEPENDENT TOOL CALLS INTO ONE round-trip.
 
-                This extension exists to reduce round-trips. When a task requires multiple tool calls:
-                - WRONG: Multiple execute_code calls, each with one tool
-                - RIGHT: One execute_code call with a script that calls all needed tools
+                This extension exists to reduce round-trips when a task genuinely needs several
+                tool calls whose outputs feed each other, or real computation / control flow
+                (loops, conditionals, aggregation) over their results.
+
+                WHEN NOT TO USE THIS EXTENSION:
+                - Do NOT use execute_code for basic file or system operations. Listing a directory,
+                  reading or writing a single file, copying, moving, deleting, or finding files, and
+                  running a single command are simpler and clearer with the developer extension —
+                  call `developer/shell` (ls, cp, mv, rm, mkdir, rg) or `developer/text_editor`
+                  (view, write, str_replace) DIRECTLY, not wrapped in a JavaScript script.
+                - A single tool call is a single tool call. Only reach for execute_code once you
+                  have two or more calls that must be chained, or logic to run between them.
 
                 IMPORTANT: All tool calls are SYNCHRONOUS. Do NOT use async/await.
 
-                Workflow:
+                Workflow (for genuine multi-call chaining only):
                     1. If you do not know the tool, call search_modules once. Its results include complete imports and signatures.
                     2. Use read_module only when you already know a module but need a tool that search_modules did not return.
                     3. Write ONE script that imports and calls ALL tools needed for the task.
@@ -1329,27 +1338,40 @@ impl McpClientTrait for CodeExecutionClient {
                 McpTool::new(
                     "execute_code".to_string(),
                     indoc! {r#"
-                        Batch multiple MCP tool calls into ONE execution. This is the primary purpose of this tool.
+                        Chain multiple DEPENDENT MCP tool calls, or run computation/control flow over their
+                        results, in ONE execution. This is the purpose of this tool: fewer round-trips when a
+                        task genuinely needs several calls whose outputs feed each other.
 
-                        CRITICAL: Always combine related operations into a single execute_code call.
-                        - WRONG: execute_code to read → execute_code to write (2 calls)
-                        - RIGHT: execute_code that reads AND writes in one script (1 call)
+                        DO NOT use this for basic file or system operations. Listing a directory, reading or
+                        writing a single file, copying, moving, deleting, or finding files, and running one
+                        command are simpler with the developer extension — call `developer/shell` (ls, cp, mv,
+                        rm, mkdir, rg) or `developer/text_editor` (view, write, str_replace) DIRECTLY instead
+                        of wrapping them in a script here.
+                        - WRONG: execute_code to `ls`, copy a file, or `rm` — use developer/shell directly.
+                        - WRONG: one execute_code call that wraps a single tool call — just call that tool.
+                        - RIGHT: several dependent calls, or a loop/aggregation over their outputs, in one script.
 
-                        EXAMPLE - Read file and write to another (ONE call):
+                        EXAMPLE - Chain dependent calls with logic between them (ONE call):
                         ```javascript
-                        import { text_editor } from "developer";
-                        const content = text_editor({ path: "/path/to/source.md", command: "view" });
-                        text_editor({ path: "/path/to/dest.md", command: "write", file_text: content });
-                        record_result({ copied: true });
+                        import { shell } from "developer";
+                        const branches = shell({ command: "git branch --format='%(refname:short)'" })
+                          .split("\n").filter(Boolean);
+                        const ahead = branches.map((b) => ({
+                          branch: b,
+                          count: shell({ command: `git rev-list --count main..${b}` }).trim(),
+                        }));
+                        record_result({ ahead });
                         ```
 
-                        EXAMPLE - Multiple operations chained:
+                        EXAMPLE - Fan out one call's output into follow-up calls (ONE call):
                         ```javascript
                         import { shell, text_editor } from "developer";
-                        const files = shell({ command: "ls -la" });
-                        const readme = text_editor({ path: "./README.md", command: "view" });
-                        const status = shell({ command: "git status" });
-                        record_result({ files, readme, status });
+                        const files = shell({ command: "rg --files -g '*.md' docs" }).split("\n").filter(Boolean);
+                        const headings = files.map((f) => ({
+                          file: f,
+                          first: text_editor({ path: f, command: "view" }).split("\n")[0],
+                        }));
+                        record_result({ headings });
                         ```
 
                         SYNTAX:
@@ -1419,7 +1441,10 @@ impl McpClientTrait for CodeExecutionClient {
                 McpTool::new(
                     "search_modules".to_string(),
                     indoc! {r#"
-                        Search for tools by name or description across all available modules.
+                        Find which MCP TOOL/MODULE to import inside an execute_code script, by matching a
+                        tool's name or description. This searches the local catalog of installed tools only —
+                        it does NOT search the web, documents, or knowledge bases, and it does not answer
+                        questions. Use it solely to locate a tool you intend to call from execute_code.
 
                         USAGE:
                         - Single term: terms="github" (just a plain string)
@@ -1429,7 +1454,9 @@ impl McpClientTrait for CodeExecutionClient {
                         IMPORTANT: Do NOT stringify arrays. Use terms=["a","b"] not terms="[\"a\",\"b\"]"
 
                         Returns ranked tools with complete import syntax and parameter signatures, ready for execute_code.
-                        Use this when you don't know which module contains the tool you need.
+                        Use this only when you are about to write an execute_code script and don't know which
+                        module contains the tool you need. For a web-research or factual question, use a web
+                        tool or answer directly — not this.
                         Do not follow it with read_module unless the needed tool was not returned.
                     "#}
                     .to_string(),
