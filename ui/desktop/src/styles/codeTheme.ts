@@ -10,42 +10,27 @@
  * renderer and the artifact preview import from here.
  */
 import type { CSSProperties } from 'react';
+import { GENERATED_THEMES, THEME_FAMILY_IDS } from './themes.generated';
+import type { ThemeFamilyId } from './themes.generated';
 
 type PrismTheme = Record<string, CSSProperties>;
 
-/** Ground each palette is measured against. Matches --background-muted. */
-export const CODE_BG = { light: '#faf8f3', dark: '#16120c' } as const;
+/**
+ * Ground each palette is measured against — DERIVED from --background-code by
+ * the theme generator, not typed twice. This value used to be hand-copied here
+ * and in main.css and InAppTerminalDock, and drifted: a palette was once
+ * verified against a surface the app never painted, rendering `comment` at
+ * 4.15:1 with every check green.
+ */
+export const CODE_BG = {
+  light: GENERATED_THEMES.parchment.light.codeGround,
+  dark: GENERATED_THEMES.parchment.dark.codeGround,
+} as const;
 
 /** Shared with the xterm terminal so a pasted command and its output match. */
 export const CODE_FONT_FAMILY = 'var(--font-mono)';
 export const CODE_FONT_SIZE = '13px';
 export const CODE_LINE_HEIGHT = '20px';
-
-const LIGHT = {
-  plain: '#2a2520', // 14.4:1
-  comment: '#6f6659', //  5.6:1
-  keyword: '#a94f2a', //  5.5:1
-  string: '#22784f', //  5.3:1
-  number: '#8a5a00', //  5.6:1
-  func: '#255fb5', //  5.8:1
-  type: '#7847b8', //  6.1:1
-  operator: '#6e6760', //  5.3:1
-  deleted: '#b3261e',
-  inserted: '#1f7a3d',
-} as const;
-
-const DARK = {
-  plain: '#e8e1d2', // 14.3:1
-  comment: '#8d8266', //  4.9:1
-  keyword: '#e8895f', //  7.3:1
-  string: '#7fbf6a', //  8.5:1
-  number: '#d9a441', //  8.3:1
-  func: '#8fb8e8', //  9.1:1
-  type: '#b98ad6', //  6.8:1
-  operator: '#b0a892', //  8.3:1
-  deleted: '#f07575',
-  inserted: '#7ac87c',
-} as const;
 
 /**
  * Alma Mater (UCSF) syntax palette — recoloured to UCSF hue families, measured
@@ -58,32 +43,6 @@ const DARK = {
  * Every stop clears WCAG AA; ratios asserted in codeTheme.test.ts.
  * See docs/design/alma-mater-theme.md §5g.
  */
-const ALMA_LIGHT = {
-  plain: '#052049', // Navy
-  comment: '#586780', //  4.65:1
-  keyword: '#0f388a', //  9.68:1  (A2 Blue)
-  string: '#007242', //  5.42:1  (D2 Green)
-  number: '#8a5a00', //  5.33:1
-  func: '#6c247c', //  8.67:1  (G2 Violet)
-  type: '#0e5258', //  7.99:1  (C1 Teal — the accent family)
-  operator: '#506380', //  5.50:1  (I3)
-  deleted: '#c40d3e',
-  inserted: '#007242',
-} as const;
-
-const ALMA_DARK = {
-  plain: '#e1e3e5', // J5
-  comment: '#8a93a6', //  5.24:1
-  keyword: '#7fb3e6', //  7.30:1
-  string: '#6fc084', //  7.35:1
-  number: '#e0a44a', //  7.37:1
-  func: '#c58ad6', //  6.14:1  (→G4 orchid)
-  type: '#5cc6d0', //  8.04:1  (→C4 teal — the accent family)
-  operator: '#b4b9bf', //  8.18:1  (J3)
-  deleted: '#f5768a',
-  inserted: '#5fbf74',
-} as const;
-
 /**
  * Roche Limit syntax palette — JupyterLab's own IPython/Pygments hues, darkened
  * (light) and lifted (dark) until every stop clears WCAG AA on the Roche code
@@ -93,32 +52,6 @@ const ALMA_DARK = {
  * unchanged in dark at ~2.8:1, and their dark `func` (#1e88e5) at ~3.4:1 —
  * both fail AA. See docs/design/roche-limit-theme.md §4.10 / §5.8.
  */
-const ROCHE_LIGHT = {
-  plain: '#1f1e1c', // 15.26:1
-  comment: '#3f6e6e', //  5.25:1  (Jupyter #408080 teal, darkened)
-  keyword: '#0a7a32', //  5.01:1  (Jupyter #008000 green)
-  string: '#b02121', //  6.23:1  (Jupyter #ba2121 brick)
-  number: '#0f6e38', //  5.82:1
-  func: '#1849b8', //  7.17:1  (Jupyter #0000ff def-blue)
-  type: '#0f6e38', //  5.82:1  (Jupyter #008000 builtin)
-  operator: '#7024b0', //  7.49:1  (Jupyter #7800c2)
-  deleted: '#c4232b',
-  inserted: '#12805c',
-} as const;
-
-const ROCHE_DARK = {
-  plain: '#ededea', // 14.71:1
-  comment: '#7fa3a3', //  6.30:1  (Jupyter #408080 lifted)
-  keyword: '#6fcb78', //  8.62:1  (Jupyter #4caf50)
-  string: '#ff8f8f', //  7.87:1  (Jupyter #ff7070)
-  number: '#84d089', //  9.34:1  (Jupyter #66bb6a)
-  func: '#7fbef7', //  8.72:1  (Jupyter #1e88e5 lifted)
-  type: '#84d089', //  9.34:1  (Jupyter #43a047 builtin)
-  operator: '#d9a0ff', //  8.56:1  (Jupyter #d48fff)
-  deleted: '#ff9592',
-  inserted: '#3dd68c',
-} as const;
-
 type SyntaxPalette = {
   plain: string;
   comment: string;
@@ -197,12 +130,12 @@ function build(p: SyntaxPalette, tint: string): PrismTheme {
   };
 }
 
-export const codeThemeLight = build(LIGHT, '9%');
-export const codeThemeDark = build(DARK, '10%');
-export const codeThemeAlmaLight = build(ALMA_LIGHT, '9%');
-export const codeThemeAlmaDark = build(ALMA_DARK, '10%');
-export const codeThemeRocheLight = build(ROCHE_LIGHT, '9%');
-export const codeThemeRocheDark = build(ROCHE_DARK, '10%');
+export const codeThemeLight = build(GENERATED_THEMES.parchment.light.syntax, '9%');
+export const codeThemeDark = build(GENERATED_THEMES.parchment.dark.syntax, '10%');
+export const codeThemeAlmaLight = build(GENERATED_THEMES['alma-mater'].light.syntax, '9%');
+export const codeThemeAlmaDark = build(GENERATED_THEMES['alma-mater'].dark.syntax, '10%');
+export const codeThemeRocheLight = build(GENERATED_THEMES['roche-limit'].light.syntax, '9%');
+export const codeThemeRocheDark = build(GENERATED_THEMES['roche-limit'].dark.syntax, '10%');
 
 /** Parchment themes, keyed by resolved mode (kept for back-compat). */
 export const codeThemes = { light: codeThemeLight, dark: codeThemeDark } as const;
@@ -212,34 +145,37 @@ export const codeThemes = { light: codeThemeLight, dark: codeThemeDark } as cons
  * with `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]` so code
  * matches whichever theme (Parchment / Alma Mater / Roche Limit) is active.
  */
-export const codeThemesByFamily = {
-  parchment: { light: codeThemeLight, dark: codeThemeDark },
-  'alma-mater': { light: codeThemeAlmaLight, dark: codeThemeAlmaDark },
-  'roche-limit': { light: codeThemeRocheLight, dark: codeThemeRocheDark },
+export const codeThemesByFamily = Object.fromEntries(
+  THEME_FAMILY_IDS.map((id) => [
+    id,
+    {
+      light: build(GENERATED_THEMES[id].light.syntax, '9%'),
+      dark: build(GENERATED_THEMES[id].dark.syntax, '10%'),
+    },
+  ])
+) as Record<ThemeFamilyId, { light: PrismTheme; dark: PrismTheme }>;
+
+export const CODE_BG_ALMA = {
+  light: GENERATED_THEMES['alma-mater'].light.codeGround,
+  dark: GENERATED_THEMES['alma-mater'].dark.codeGround,
 } as const;
 
-/** Ground each Alma Mater palette is measured against (--background-muted). */
-export const CODE_BG_ALMA = { light: '#f2f3f4', dark: '#08213f' } as const;
-
-/**
- * Ground each Roche Limit palette is measured against. Light uses
- * `--background-code` (#f5f5f3), which is deliberately a hair lighter than
- * `--background-muted`; dark uses `--background-code` (#1b1b19), which equals
- * `--background-default`, exactly as both shipping families do.
- */
-export const CODE_BG_ROCHE = { light: '#f5f5f3', dark: '#1b1b19' } as const;
+export const CODE_BG_ROCHE = {
+  light: GENERATED_THEMES['roche-limit'].light.codeGround,
+  dark: GENERATED_THEMES['roche-limit'].dark.codeGround,
+} as const;
 
 /** Palette values, exported so tests can assert the contrast ratios. */
-export const codePalettes = { light: LIGHT, dark: DARK } as const;
+export const codePalettes = { light: GENERATED_THEMES.parchment.light.syntax, dark: GENERATED_THEMES.parchment.dark.syntax } as const;
 
 /** Alma Mater palettes + their grounds, exported for the contrast test. */
 export const codePalettesAlma = {
-  light: { palette: ALMA_LIGHT, bg: CODE_BG_ALMA.light },
-  dark: { palette: ALMA_DARK, bg: CODE_BG_ALMA.dark },
+  light: { palette: GENERATED_THEMES['alma-mater'].light.syntax, bg: CODE_BG_ALMA.light },
+  dark: { palette: GENERATED_THEMES['alma-mater'].dark.syntax, bg: CODE_BG_ALMA.dark },
 } as const;
 
 /** Roche Limit palettes + their grounds, exported for the contrast test. */
 export const codePalettesRoche = {
-  light: { palette: ROCHE_LIGHT, bg: CODE_BG_ROCHE.light },
-  dark: { palette: ROCHE_DARK, bg: CODE_BG_ROCHE.dark },
+  light: { palette: GENERATED_THEMES['roche-limit'].light.syntax, bg: CODE_BG_ROCHE.light },
+  dark: { palette: GENERATED_THEMES['roche-limit'].dark.syntax, bg: CODE_BG_ROCHE.dark },
 } as const;

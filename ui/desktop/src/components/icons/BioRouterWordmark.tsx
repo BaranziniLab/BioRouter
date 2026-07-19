@@ -21,6 +21,27 @@ import { useResolvedTheme } from '../../contexts/ThemeContext';
  * every other label), so it needs no embedded font.
  */
 
+/**
+ * DELIBERATELY FIXED — the wordmark does NOT follow the theme family.
+ *
+ * These are module constants on purpose, and a reviewer who notices that the BR
+ * *mark* reads its inks from the active family (BioRouterMark.tsx) will be
+ * tempted to "fix" this the same way. Do not. The two are different things:
+ *
+ *   BioRouterMark  — the BR monogram, treated as an in-app graphic. Roche Limit
+ *                    explicitly rebrands it (roche-limit-theme.md), so it is
+ *                    family-aware and reads GENERATED_THEMES[family][mode].mark.
+ *   BioRouterWordmark — the "BioRouter" brand lockup. It stays in the brand's
+ *                    own colours whichever palette the app is wearing, exactly
+ *                    as a logo does on a coloured page.
+ *
+ * The light/dark flip below is a DIFFERENT axis and is kept: navy is unreadable
+ * on a dark ground, so the primary ink lifts to the brand teal. That is a
+ * legibility rule, not a theming rule.
+ *
+ * Locked by BioRouterWordmark.test.tsx, which asserts these render identically
+ * across every theme family.
+ */
 const NAVY = '#052049';
 const CORAL = '#b85a32';
 const TEAL = '#18a3ac';

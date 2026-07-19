@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type SVGProps } from 'react';
-import { useResolvedTheme } from '../../contexts/ThemeContext';
+import { useResolvedTheme, useThemeFamily } from '../../contexts/ThemeContext';
+import { GENERATED_THEMES } from '../../styles/themes.generated';
 
 /**
  * The BioRouter square MARK — the "BR" monogram, for the spots too small for the
@@ -15,9 +16,24 @@ import { useResolvedTheme } from '../../contexts/ThemeContext';
  * correct in any font and re-centers once webfonts settle.
  */
 
-const NAVY = '#052049';
-const CORAL = '#b85a32';
-const TEAL = '#18a3ac';
+/**
+ * The mark's inks are PER FAMILY, read from the generated theme data — the same
+ * source the pre-React boot splash paints from. They used to be fixed module
+ * constants, which is why Roche Limit flashed an orange mark on the splash and
+ * then hydrated a Parchment coral/navy one: the splash was family-aware and the
+ * component was not.
+ *
+ * `dark` swaps the primary ink for the family's own dark-mode value (Parchment
+ * and Alma Mater lift to a teal; Roche lifts to its light ink), which is what
+ * the splash's `--br-navy` does too.
+ */
+/**
+ * The plate is deliberately NOT themed. `plate` renders the OS app-icon variant
+ * — fixed brand artwork that should not shift with whatever palette the app is
+ * wearing — and it is not used anywhere in-app (only the icon-generation path).
+ * The letters stay navy on it for the same reason: on a cream plate they sit on
+ * a light ground regardless of the app's mode.
+ */
 const PLATE = '#faf8f3';
 
 const WEIGHT = 800;
@@ -62,11 +78,13 @@ export function BioRouterMark({
   const rRef = useRef<SVGTextElement>(null);
   const [geo, setGeo] = useState<Geo | null>(null);
   const resolved = useResolvedTheme();
+  const family = useThemeFamily();
+  const marks = GENERATED_THEMES[family] ?? GENERATED_THEMES.parchment;
   const dark = darkProp ?? resolved === 'dark';
   // Teal only replaces navy when the mark drops onto a dark surface. On the
   // cream `plate` the letters always sit on a light ground, so they stay navy
   // regardless of the app theme.
-  const navy = dark && !plate ? TEAL : NAVY;
+  const navy = dark && !plate ? marks.dark.mark.navy : marks.light.mark.navy;
 
   const measure = () => {
     const b = bRef.current;
@@ -169,7 +187,7 @@ export function BioRouterMark({
         fontFamily={SANS}
         fontWeight={WEIGHT}
         fontSize={geo ? geo.sR : WORK_SIZE * R_RATIO}
-        fill={CORAL}
+        fill={marks[dark && !plate ? 'dark' : 'light'].mark.coral}
       >
         R
       </text>
@@ -187,7 +205,7 @@ export function BioRouterMark({
             y={geo.ulTop}
             width={Math.max(0, geo.barRight - geo.splitX)}
             height={geo.thick}
-            fill={CORAL}
+            fill={marks[dark && !plate ? 'dark' : 'light'].mark.coral}
           />
         </>
       )}

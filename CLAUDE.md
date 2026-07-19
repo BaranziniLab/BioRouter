@@ -320,6 +320,47 @@ visualizations. It opens automatically on the newest artifact.
   agent-browser/Playwright runs fail in ways that look like app bugs. Combine with
   the sandboxing and CDP port from `just agent-browser-ui`.
 
+### Theme families (Parchment / Alma Mater / Roche Limit)
+
+Two orthogonal axes: light/dark mode (a `.dark` class on `<html>`) and **theme
+family** (a `data-theme` attribute). Three families ship — Parchment (default,
+warm), Alma Mater (UCSF navy + teal), Roche Limit (JupyterLab-inspired). Themes
+are **baked into the app by decision**; they are not user-installable.
+
+**A theme is ONE file.** `ui/desktop/themes/<id>.theme.mjs` is the source of
+truth; `npm run themes` generates everything else:
+
+- `src/styles/main.css` — the `:root[data-theme=X]` / `.dark[data-theme=X]` token
+  blocks (inside a `THEMES:GENERATED` marker region)
+- `src/styles/themes.generated.ts` — syntax palettes, terminal ANSI palettes,
+  brand-mark inks, the family manifest and `THEME_FAMILY_IDS`
+- `index.html` — the pre-hydration family list and the boot-splash CSS
+
+Do **not** hand-edit those regions. `npm run themes -- --check` runs inside
+`lint:check` and fails CI if they are stale.
+
+Key invariants, each learned from a real bug:
+
+- **`@theme inline` is load-bearing.** It emits `.bg-sidebar { background-color:
+  var(--sidebar) }` and keeps `--color-sidebar` out of the cascade, so utilities
+  are late-bound to the semantic token. Plain `@theme` would freeze values at
+  build time and break scoped theming with no test failing.
+- **Light block must precede dark.** `:root[data-theme=X]` and
+  `.dark[data-theme=X]` have identical specificity (0,2,0) — only source order
+  separates them. Reversing the pair renders light tokens in dark mode while
+  every contrast ratio still passes. `check-contrast.mjs` asserts the ordering.
+- **`terminalGround` is per family.** Parchment dark paints `--background-code`;
+  the others paint `--background-muted`. Never assume they agree — doing so
+  re-grounds terminals under palettes tuned for a different surface.
+- **Derived, never authored:** terminal/code/splash grounds, picker label and
+  swatch, the family list. These are the values that historically drifted.
+- **`check-contrast.mjs` discovers families** from the stylesheet; a new family
+  is audited with zero edits to it (228 assertions at three families).
+
+Design docs: [`docs/design/theme-system-architecture.md`](docs/design/theme-system-architecture.md)
+(architecture + the decisions and their reasons), plus one per family —
+`design.md` (Parchment), `alma-mater-theme.md`, `roche-limit-theme.md`.
+
 ### Auto Visualiser feature
 
 The Auto Visualiser (`autovisualiser`) built-in MCP server turns structured data
