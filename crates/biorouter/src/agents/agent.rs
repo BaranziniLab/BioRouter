@@ -2251,12 +2251,58 @@ impl Agent {
                         "TOOL_EXEC_START"
                     );
                     let inner_result = inner.await;
+                    let dur_ms = exec_started.elapsed().as_millis() as u64;
                     debug!(
                         name = %exec_tool_name,
                         id = %exec_request_id,
-                        dur_ms = exec_started.elapsed().as_millis() as u64,
+                        dur_ms,
                         "TOOL_EXEC_END"
                     );
+                    // Single, always-on, structured record of every tool result:
+                    // one info line per tool call keyed `target: "tool_result"`,
+                    // carrying tool name, ok/error, and (on failure) the error
+                    // text. This is the one place every dispatched tool call's
+                    // outcome is inspectable regardless of extension, error
+                    // surface (a hard `Err(ErrorData)` OR an `Ok` result flagged
+                    // `is_error`), or interface (GUI/CLI). Kept cheap: the error
+                    // string is only materialised on the failure path. See
+                    // docs/tool-routing.md ("Tool-result logging").
+                    match &inner_result {
+                        Err(e) => tracing::info!(
+                            target: "tool_result",
+                            tool = %exec_tool_name,
+                            id = %exec_request_id,
+                            ok = false,
+                            dur_ms,
+                            error = %e.message,
+                            "tool call failed",
+                        ),
+                        Ok(r) if r.is_error == Some(true) => {
+                            let error_text = r
+                                .content
+                                .iter()
+                                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            tracing::info!(
+                                target: "tool_result",
+                                tool = %exec_tool_name,
+                                id = %exec_request_id,
+                                ok = false,
+                                dur_ms,
+                                error = %error_text,
+                                "tool call returned error result",
+                            );
+                        }
+                        Ok(_) => tracing::info!(
+                            target: "tool_result",
+                            tool = %exec_tool_name,
+                            id = %exec_request_id,
+                            ok = true,
+                            dur_ms,
+                            "tool call ok",
+                        ),
+                    }
                     super::large_response_handler::process_tool_response(
                         inner_result,
                         &large_response_ctx,

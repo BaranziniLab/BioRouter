@@ -163,3 +163,31 @@ without explicit approval; each carries a migration note.
 
 No tool is deprecated by merging this document. Approval is required before any of
 candidates 1–3 are implemented.
+
+## Tool-result logging (observability of every tool call)
+
+There is now **one always-on place where every dispatched tool call's outcome is
+inspectable**, regardless of extension, error surface, or interface (GUI/CLI).
+`Agent::dispatch_tool_call` (`crates/biorouter/src/agents/agent.rs`) emits a single
+structured `tracing` line at **`info`** level, keyed **`target: "tool_result"`**,
+immediately after the tool future resolves — the universal choke point every tool
+call passes through:
+
+- `tool` — the tool name (e.g. `code_execution__execute_code`, `developer__text_editor`)
+- `id` — the request id
+- `ok` — `true` / `false`
+- `dur_ms` — execution duration (excludes time parked on the concurrency semaphore)
+- `error` — present only on failure; the error message text
+
+It captures **both** error surfaces: a hard `Err(ErrorData)` (e.g. the developer
+`text_editor` jail's `INVALID_PARAMS "… is outside the working directory"`) **and**
+an `Ok(CallToolResult)` flagged `is_error: Some(true)` (the MCP "tool ran and reported
+a failure" path, e.g. a `code_execution` script whose inner tool failed). Kept cheap:
+the error string is only materialised on the failure path; the success path logs no
+payload.
+
+Filter the logs with `RUST_LOG=tool_result=info` (or grep `target="tool_result"`)
+to get a clean, one-line-per-call ledger of what the agent did and what failed. This
+complements the pre-existing `TOOL_EXEC_START`/`TOOL_EXEC_END` **`debug`** markers
+(timing only, no ok/error) and the raw `rmcp::service` `WARN response error …` lines
+(per-server, no tool-name/ok context).
