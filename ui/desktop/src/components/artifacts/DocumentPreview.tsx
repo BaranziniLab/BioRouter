@@ -5,8 +5,10 @@ import type {
   PDFPageProxy,
   RenderTask,
 } from 'pdfjs-dist';
+import { useThemeFamily, type ThemeFamily } from '../../contexts/ThemeContext';
 import { cn } from '../../utils';
 import type { ArtifactFilePreview } from './artifactTypes';
+import { sandboxedSurface } from './artifactUtils';
 
 type DocumentFile = Extract<ArtifactFilePreview, { kind: 'document' }>;
 
@@ -279,7 +281,11 @@ function WordPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
   );
 }
 
-function prepareSpreadsheetHtml(source: string, resolvedTheme: 'light' | 'dark') {
+function prepareSpreadsheetHtml(
+  source: string,
+  resolvedTheme: 'light' | 'dark',
+  themeFamily: ThemeFamily
+) {
   const document = new DOMParser().parseFromString(source, 'text/html');
   document.querySelectorAll('script').forEach((script) => script.remove());
   document.querySelectorAll<HTMLElement>('[style]').forEach((element) => {
@@ -306,16 +312,21 @@ function prepareSpreadsheetHtml(source: string, resolvedTheme: 'light' | 'dark')
     "default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:";
   document.head.prepend(meta);
 
+  // Literal hexes, not `var(--…)`: the CSP above is `default-src 'none'`, so
+  // this document cannot load the app stylesheet and a custom property would
+  // resolve to nothing. `sandboxedSurface` supplies the ACTIVE FAMILY's values
+  // — these were a fixed light/dark pair that painted every family Parchment.
+  const surface = sandboxedSurface(themeFamily, resolvedTheme);
   const style = document.createElement('style');
   style.textContent = `
     html, body { min-height: 100%; }
     body {
       margin: 0;
-      color: ${resolvedTheme === 'dark' ? '#e8e5df' : '#282724'};
-      background: ${resolvedTheme === 'dark' ? '#242321' : '#fffdf8'};
+      color: ${surface.foreground};
+      background: ${surface.background};
       font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    table { background: ${resolvedTheme === 'dark' ? '#2d2b28' : '#ffffff'}; }
+    table { background: ${surface.card}; }
     td { min-width: 4rem; }
   `;
   document.head.append(style);
@@ -327,6 +338,7 @@ function SpreadsheetPreview({
   resolvedTheme,
   isResizing,
 }: Pick<DocumentPreviewProps, 'file' | 'resolvedTheme' | 'isResizing'>) {
+  const themeFamily = useThemeFamily();
   const [sheets, setSheets] = useState<string[]>([]);
   const [activeSheet, setActiveSheet] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -349,7 +361,7 @@ function SpreadsheetPreview({
         if (!Array.isArray(result) || !result.every((sheet) => typeof sheet === 'string')) {
           throw new Error('Could not read the workbook sheets.');
         }
-        setSheets(result.map((sheet) => prepareSpreadsheetHtml(sheet, resolvedTheme)));
+        setSheets(result.map((sheet) => prepareSpreadsheetHtml(sheet, resolvedTheme, themeFamily)));
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
@@ -360,7 +372,10 @@ function SpreadsheetPreview({
     return () => {
       cancelled = true;
     };
-  }, [file.data, file.path, resolvedTheme]);
+    // `themeFamily` belongs here for the same reason `resolvedTheme` does: the
+    // sheet HTML is built once and cached in state, so switching family has to
+    // re-render it or the workbook keeps the previous family's ground.
+  }, [file.data, file.path, resolvedTheme, themeFamily]);
 
   if (error) return <PreviewStatus message={error} />;
   if (sheets.length === 0) return <PreviewStatus message="Rendering workbook" />;
@@ -372,7 +387,10 @@ function SpreadsheetPreview({
         srcDoc={sheets[activeSheet]}
         sandbox=""
         aria-label={`${file.title}, sheet ${activeSheet + 1}`}
-        className={cn('min-h-0 flex-1 bg-white', isResizing && 'pointer-events-none')}
+        // The sheet document paints the family ground itself; this only shows
+        // before it loads, so it must agree rather than flash white on a dark
+        // theme.
+        className={cn('min-h-0 flex-1 bg-background-default', isResizing && 'pointer-events-none')}
       />
       {sheets.length > 1 && (
         <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-t border-border-subtle bg-background-muted px-2">
