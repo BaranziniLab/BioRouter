@@ -3,6 +3,7 @@ pub mod patterns;
 pub mod policy;
 pub mod scanner;
 pub mod security_inspector;
+pub mod sensitive_ops;
 
 use crate::config::Config;
 use crate::conversation::message::{Message, ToolRequest};

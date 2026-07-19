@@ -36,7 +36,7 @@ import 'dotenv/config';
 import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
-import { isPathContained } from './utils/pathContainment';
+import { isFilePathAllowedForPreview } from './utils/pathContainment';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
@@ -142,9 +142,55 @@ export function allowedFileRoots(): string[] {
   ];
 }
 
+/** The biorouter config.yaml path in the main process (honours the test-only
+ *  BIOROUTER_PATH_ROOT redirect used by expandBiorouterPath). */
+function biorouterConfigYamlPath(): string {
+  const pathRoot = process.env.BIOROUTER_PATH_ROOT;
+  const dir = pathRoot
+    ? path.join(pathRoot, 'config')
+    : path.join(os.homedir(), '.config', 'biorouter');
+  return path.join(dir, 'config.yaml');
+}
+
+// The preview allowlist must know the permission mode, but MUST read it from the
+// config file in the MAIN process — never trust a renderer IPC message to
+// declare it, or a compromised renderer could unlock the whole filesystem.
+// Cached briefly so a burst of preview reads does not re-parse the file; a
+// settings change is picked up within the TTL. Fail-closed: an unreadable
+// config yields '' (not 'auto'), keeping the narrow home/temp allowlist.
+let cachedBiorouterMode: { value: string; at: number } | null = null;
+const BIOROUTER_MODE_CACHE_MS = 1500;
+
+function readBiorouterMode(): string {
+  const now = Date.now();
+  if (cachedBiorouterMode && now - cachedBiorouterMode.at <= BIOROUTER_MODE_CACHE_MS) {
+    return cachedBiorouterMode.value;
+  }
+  let value = '';
+  try {
+    const raw = fsSync.readFileSync(biorouterConfigYamlPath(), 'utf8');
+    const parsed = yaml.parse(raw) as Record<string, unknown> | null;
+    const mode = parsed?.BIOROUTER_MODE;
+    if (typeof mode === 'string') value = mode.trim().toLowerCase();
+  } catch {
+    value = '';
+  }
+  cachedBiorouterMode = { value, at: now };
+  return value;
+}
+
+export function isFullyAutomaticMode(): boolean {
+  return readBiorouterMode() === 'auto';
+}
+
 export function isAllowedFilePath(resolvedPath: string): boolean {
-  // Symlink-aware containment (see utils/pathContainment.ts for why).
-  return isPathContained(resolvedPath, allowedFileRoots());
+  // Symlink-aware containment + Directive 2 mode-aware scope: Fully-Automatic
+  // mode admits any non-sensitive path (parity with the backend, which lets the
+  // agent write anywhere); sensitive paths stay denied regardless of mode. See
+  // utils/pathContainment.ts.
+  return isFilePathAllowedForPreview(resolvedPath, allowedFileRoots(), {
+    fullyAutomatic: isFullyAutomaticMode(),
+  });
 }
 
 /**

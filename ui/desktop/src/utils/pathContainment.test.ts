@@ -2,7 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalizeForContainment, isPathContained } from './pathContainment';
+import {
+  canonicalizeForContainment,
+  isFilePathAllowedForPreview,
+  isPathContained,
+  isSensitivePreviewPath,
+} from './pathContainment';
 
 /**
  * Gate for the live false-denial: a session tool call wrote /tmp/qa-r1b/hi.txt
@@ -72,5 +77,70 @@ describe('isPathContained', () => {
     expect(canonicalizeForContainment(path.join(alias, 'nope', 'deep.txt'))).toBe(
       path.join(real, 'nope', 'deep.txt')
     );
+  });
+});
+
+/**
+ * Directive 2 — the preview allowlist is mode-aware, but a small sensitive set
+ * stays denied in EVERY mode.
+ */
+describe('isSensitivePreviewPath', () => {
+  const home = os.homedir();
+
+  it('denies protected system directories', () => {
+    for (const p of ['/etc/hosts', '/usr/bin/x', '/bin/ls', '/System/Library/x', '/Library/y']) {
+      expect(isSensitivePreviewPath(p)).toBe(true);
+    }
+  });
+
+  it('denies credential and persistence paths under home', () => {
+    for (const rel of [
+      '.ssh/id_rsa',
+      '.aws/credentials',
+      '.gnupg/secring.gpg',
+      'Library/Keychains/login.keychain-db',
+      'Library/Application Support/Google/Chrome/Default/Login Data',
+    ]) {
+      expect(isSensitivePreviewPath(path.join(home, rel))).toBe(true);
+    }
+  });
+
+  it('allows ordinary files, temp scratch, and workspace outputs', () => {
+    expect(isSensitivePreviewPath(path.join(home, 'Documents', 'notes.txt'))).toBe(false);
+    expect(isSensitivePreviewPath(path.join(home, 'project', 'out.csv'))).toBe(false);
+    expect(isSensitivePreviewPath(path.join(os.tmpdir(), 'scratch.txt'))).toBe(false);
+    expect(isSensitivePreviewPath('/tmp/qa/hi.txt')).toBe(false);
+  });
+});
+
+describe('isFilePathAllowedForPreview', () => {
+  const home = os.homedir();
+
+  it('in a non-auto mode, only contained non-sensitive paths are allowed', () => {
+    expect(
+      isFilePathAllowedForPreview(path.join(home, 'a.txt'), [home], { fullyAutomatic: false })
+    ).toBe(true);
+    // Outside the allowed roots → denied when not fully automatic.
+    expect(
+      isFilePathAllowedForPreview('/data/out.csv', [home], { fullyAutomatic: false })
+    ).toBe(false);
+    // Sensitive even though it would be "contained" → denied.
+    expect(isFilePathAllowedForPreview('/etc/hosts', [home], { fullyAutomatic: false })).toBe(false);
+  });
+
+  it('in Fully-Automatic mode, any non-sensitive path is allowed (parity with backend)', () => {
+    expect(isFilePathAllowedForPreview('/data/out.csv', [home], { fullyAutomatic: true })).toBe(
+      true
+    );
+    expect(
+      isFilePathAllowedForPreview('/srv/results/plot.png', [home], { fullyAutomatic: true })
+    ).toBe(true);
+  });
+
+  it('keeps sensitive paths denied even in Fully-Automatic mode', () => {
+    expect(isFilePathAllowedForPreview('/etc/hosts', [home], { fullyAutomatic: true })).toBe(false);
+    expect(
+      isFilePathAllowedForPreview(path.join(home, '.ssh', 'id_rsa'), [home], { fullyAutomatic: true })
+    ).toBe(false);
   });
 });

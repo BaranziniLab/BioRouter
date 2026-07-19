@@ -645,6 +645,17 @@ impl Agent {
         // Add security inspector (runs after managed)
         tool_inspection_manager.add_inspector(Box::new(SecurityInspector::new()));
 
+        // Directive 2: in Fully-Automatic (Auto) mode, escalate the small set of
+        // extremely-sensitive file operations (writes/deletes under system dirs,
+        // SSH keys, keychains, launchd, browser credential stores, …) to the
+        // standard approval flow. Inert in every other mode (see
+        // `security::sensitive_ops`), so non-Auto behaviour is unchanged. It
+        // emits `RequireApproval`, never `Deny`, so the catastrophic denylist and
+        // command policy engine remain the non-bypassable floor.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::sensitive_ops::SensitiveOpsInspector,
+        ));
+
         // Add permission inspector (medium-high priority). BR-18: it reads the
         // shared risk registry the agent refreshes each turn from the model's
         // tool list, so `SmartApprove` auto-approves read-only-annotated tools

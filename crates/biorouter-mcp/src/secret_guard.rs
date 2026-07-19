@@ -371,6 +371,35 @@ mod tests {
         assert!(!g.is_denied(Path::new("data.csv")));
     }
 
+    /// Directive 2, gate (d): `.biorouterignore`/secret denial is ABSOLUTE and
+    /// mode-independent. `SecretGuard` takes no permission mode, and the
+    /// extension-manager dispatch boundary (`extension_manager.rs`, the single
+    /// choke point every tool call flows through) applies it with no mode
+    /// branch — so a user-declared secret stays blocked even in Fully-Automatic
+    /// mode, where ordinary file ops run without a prompt. This guards against a
+    /// future refactor accidentally making the secret boundary mode-conditional.
+    #[test]
+    fn biorouterignore_denial_is_mode_independent() {
+        let dir = tempdir().unwrap();
+        // A user-declared secret via .biorouterignore, plus a built-in floor pattern.
+        fs::write(dir.path().join(".biorouterignore"), "private-notes.txt\n").unwrap();
+        fs::write(dir.path().join("private-notes.txt"), "top secret").unwrap();
+        fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+        let g = guard_at(dir.path());
+
+        // Denial does not depend on any mode argument — there is none to pass.
+        assert!(g.is_denied(Path::new("private-notes.txt")));
+        assert!(g.is_denied(Path::new(".env")));
+        for key in ["path", "file_path", "command"] {
+            let args = json!({ key: "private-notes.txt" });
+            assert_eq!(
+                g.find_denied_path(args.as_object().unwrap()),
+                Some("private-notes.txt".to_string()),
+                "a .biorouterignore secret must stay blocked regardless of mode ({key})"
+            );
+        }
+    }
+
     #[test]
     fn find_denied_requires_existing_file() {
         let dir = tempdir().unwrap();
