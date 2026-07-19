@@ -7,6 +7,7 @@ import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
 import { registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
+import { GENERATED_THEMES } from '../styles/themes.generated';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -69,199 +70,27 @@ const TERMINAL_FONT =
 const TERMINAL_FONT_SIZE = 13;
 const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13/20
 
-/**
- * ANSI 16 for both themes (design.md §5.2, decision D-11).
- *
- * The ground is --background-muted, not a bespoke cream, so the terminal, the
- * chat code block and the page all share one surface. Previously a single light
- * theme was applied unconditionally, which left the terminal a glowing cream
- * rectangle in dark mode.
- *
- * Every colour clears WCAG AA (4.5:1) on its own ground. The old palette's
- * `blue` (4.45:1) and `brightBlack` — what most CLIs use for dimmed text
- * (4.32:1) — both failed; they are corrected here.
- */
-const TERMINAL_THEMES = {
-  light: {
-    background: '#faf8f3',
-    foreground: '#2d2a26',
-    cursor: '#b85a32', // the focus-ring accent
-    cursorAccent: '#faf8f3',
-    selectionBackground: '#e4d9c3',
-    black: '#2d2a26',
-    red: '#b63f3f',
-    green: '#22784f',
-    yellow: '#9b6818',
-    blue: '#255fb5',
-    magenta: '#7847b8',
-    cyan: '#16818c',
-    white: '#574f46',
-    brightBlack: '#6f6659',
-    brightRed: '#d45252',
-    brightGreen: '#1f7a3d',
-    brightYellow: '#8a5a00',
-    brightBlue: '#2f75d6',
-    brightMagenta: '#9462d6',
-    brightCyan: '#1f9aa6',
-    brightWhite: '#2d2a26',
-  },
-  dark: {
-    background: '#16120c',
-    foreground: '#e8e1d2',
-    cursor: '#e8895f',
-    cursorAccent: '#16120c',
-    selectionBackground: '#403928',
-    black: '#3a3324',
-    red: '#e2665c',
-    green: '#7fbf6a',
-    yellow: '#d9a441',
-    blue: '#6f9fd8',
-    magenta: '#b98ad6',
-    cyan: '#5fb8b8',
-    white: '#d4cab6',
-    brightBlack: '#8d8266',
-    brightRed: '#f0857b',
-    brightGreen: '#9ad686',
-    brightYellow: '#ecc063',
-    brightBlue: '#8fb8e8',
-    brightMagenta: '#d0a6e8',
-    brightCyan: '#7fd0d0',
-    brightWhite: '#e8e1d2',
-  },
-} as const;
+
+
 
 /**
- * Alma Mater (UCSF) terminal palette — the same design as TERMINAL_THEMES but on
- * the cool navy grounds, with a UCSF ANSI-16. Grounds are --background-muted for
- * the family: light #f2f3f4, dark #0d2a50.
+ * Terminal palettes, keyed by family then resolved mode — GENERATED.
  *
- * The dark ground used to be stated as #08213f. That is wrong twice over: it is
- * --background-default (the navy *card*, two steps darker than --background-muted),
- * and it is this palette's own `black`. The ratios were therefore measured against
- * a surface the dock never paints. Corrected here, which forced two follow-ons:
- * `black` was #0d2a50 — now the ground itself, i.e. invisible — so it moves to
- * --background-strong, and `cursor` fell to 4.06:1 on the true ground so it lifts
- * to --background-accent-hover (the light teal C4 stop, 9.50:1).
+ * xterm paints to a canvas and cannot read a CSS custom property, so these
+ * values must exist as JS. They used to be hand-typed here: 126 hexes across
+ * three families, with per-stop ratios documented in comments and NOT ONE TEST
+ * covering them. The generator now derives them from the same theme definition
+ * that produces the CSS, and checks every stop against its own ground before it
+ * will emit — which is how five Parchment light stops were found sitting below
+ * the AA floor their comment claimed they cleared.
  *
- * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
- * which is the ANSI dim slot and is a lifted ground by convention (1.55:1 here,
- * matching TERMINAL_THEMES.dark's 1.49:1). See docs/design/alma-mater-theme.md.
+ * `background` and `cursorAccent` are derived from each family's own
+ * `terminalGround` token. That token is per-family on purpose: Parchment dark
+ * paints --background-code, while Alma Mater and Roche Limit paint
+ * --background-muted. Assuming they agreed would silently re-ground two
+ * terminals under palettes tuned for a different surface.
  */
-const ALMA_TERMINAL_THEMES = {
-  light: {
-    background: '#f2f3f4',
-    foreground: '#052049',
-    cursor: '#0e5258', // C1 teal — the accent family; C2 is 4.11:1 here
-    cursorAccent: '#f2f3f4',
-    selectionBackground: '#d8d9da',
-    black: '#052049',
-    red: '#c40d3e',
-    green: '#007242',
-    yellow: '#8a5a00',
-    blue: '#0f388a',
-    magenta: '#6c247c',
-    cyan: '#0e5258',
-    white: '#506380',
-    brightBlack: '#586780',
-    brightRed: '#d0143f',
-    brightGreen: '#1f7a3d',
-    brightYellow: '#8a5a00',
-    brightBlue: '#255fb5',
-    brightMagenta: '#8a1fa0',
-    brightCyan: '#106a72',
-    brightWhite: '#052049',
-  },
-  dark: {
-    background: '#0d2a50', // --background-muted, alma-mater dark
-    foreground: '#e1e3e5', // 11.15:1
-    cursor: '#8ae0e8', // --background-accent-hover, teal C4-light, 9.50:1
-    cursorAccent: '#0d2a50',
-    selectionBackground: '#163864',
-    black: '#1e477f', // --background-strong — the ANSI dim slot, 1.55:1
-    red: '#f5768a',
-    green: '#5fbf74',
-    yellow: '#feb80a',
-    blue: '#7fb3e6',
-    magenta: '#c58ad6',
-    cyan: '#5cc6d0',
-    white: '#b4b9bf',
-    brightBlack: '#909aa6',
-    brightRed: '#ff8fa0',
-    brightGreen: '#7fd08f',
-    brightYellow: '#ffca4a',
-    brightBlue: '#a3c9f0',
-    brightMagenta: '#d7a5e8',
-    brightCyan: '#7fd8e0',
-    brightWhite: '#f2f3f4',
-  },
-} as const;
-
-/**
- * Roche Limit terminal palette — grounded on --background-muted (light #f4f4f2,
- * dark #232320), the same rule the other two families follow. Hues match the
- * theme's status + syntax stops so the terminal reads as part of the app.
- *
- * Every colour clears WCAG AA (4.5:1) on its own ground (D-11), except `black`,
- * which is the ANSI dim slot and is a lifted ground by convention (1.38:1 here,
- * matching ALMA_TERMINAL_THEMES.dark's 1.55:1 and TERMINAL_THEMES.dark's 1.49:1),
- * and `cursor`, which is non-text and holds the 3:1 bar.
- * See docs/design/roche-limit-theme.md §4.11 / §5.9.
- */
-const ROCHE_TERMINAL_THEMES = {
-  light: {
-    background: '#f4f4f2', // --background-muted, roche-limit light
-    foreground: '#1f1e1c', // 15.13:1
-    cursor: '#d95b08', // --accent-bar; the bright anchor is only 2.81:1 here
-    cursorAccent: '#f4f4f2',
-    selectionBackground: '#fadbbb', // accent ramp step 4
-    black: '#1f1e1c',
-    red: '#c4232b', // 5.26:1
-    green: '#0f7150', // 5.45:1
-    yellow: '#6e6300', // 5.53:1
-    blue: '#0a69bc', // 5.07:1
-    magenta: '#7024b0', // 7.43:1
-    cyan: '#3f6e6e', // 5.20:1
-    white: '#69675f', // 4.94:1 — --text-subtle
-    brightBlack: '#5c5a55', // 6.25:1
-    brightRed: '#a8161e', // 6.81:1
-    brightGreen: '#0a5e42', // 7.08:1
-    brightYellow: '#5a5100', // 7.30:1
-    brightBlue: '#08579c', // 6.68:1
-    brightMagenta: '#5c1d91', // 9.35:1
-    brightCyan: '#2f5a5a', // 6.98:1
-    brightWhite: '#1f1e1c', // 15.13:1
-  },
-  dark: {
-    background: '#232320', // --background-muted, roche-limit dark
-    foreground: '#ededea', // 12.86:1
-    cursor: '#ee6c1a', // the bright anchor works on dark, 5.10:1
-    cursorAccent: '#232320',
-    selectionBackground: '#452201', // accent ramp step 4
-    black: '#3a3a36', // --background-strong — the ANSI dim slot, 1.38:1
-    red: '#ff9592', // 7.48:1
-    green: '#3dd68c', // 8.40:1
-    yellow: '#f2e06b', // 11.74:1
-    blue: '#70b8ff', // 7.50:1
-    magenta: '#d9a0ff', // 7.82:1
-    cyan: '#7fa3a3', // 5.76:1
-    white: '#a5a39d', // 6.25:1
-    brightBlack: '#9c9a93', // 5.60:1
-    brightRed: '#ffb3b0', // 9.25:1
-    brightGreen: '#6fe5a6', // 10.08:1
-    brightYellow: '#f7ec9a', // 13.07:1
-    brightBlue: '#9ccdff', // 9.45:1
-    brightMagenta: '#e6bcff', // 9.76:1
-    brightCyan: '#a0c0c0', // 8.10:1
-    brightWhite: '#ffffff', // 15.76:1
-  },
-} as const;
-
-/** Terminal palettes keyed by theme family, then resolved mode. */
-const TERMINAL_THEMES_BY_FAMILY = {
-  parchment: TERMINAL_THEMES,
-  'alma-mater': ALMA_TERMINAL_THEMES,
-  'roche-limit': ROCHE_TERMINAL_THEMES,
-} as const;
+const TERMINAL_THEMES_BY_FAMILY = GENERATED_THEMES;
 
 const TerminalPaneView: React.FC<{
   active: boolean;
@@ -292,7 +121,7 @@ const TerminalPaneView: React.FC<{
 
   useEffect(() => {
     const term = terminalRef.current;
-    if (term) term.options.theme = TERMINAL_THEMES_BY_FAMILY[themeFamily][resolvedTheme];
+    if (term) term.options.theme = TERMINAL_THEMES_BY_FAMILY[themeFamily][resolvedTheme].terminal;
   }, [resolvedTheme, themeFamily]);
 
   const focusTerminal = useCallback(() => {
@@ -357,7 +186,7 @@ const TerminalPaneView: React.FC<{
       fontSize: TERMINAL_FONT_SIZE,
       lineHeight: TERMINAL_LINE_HEIGHT,
       scrollback: 8000,
-      theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current],
+      theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current].terminal,
     });
 
     terminalRef.current = term;

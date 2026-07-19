@@ -31,7 +31,7 @@
     "test-e2e:report": "playwright show-report",
     "test-e2e:single": "npm run generate-api && playwright test -g",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --fix --no-warn-ignored",
-    "lint:check": "npm run typecheck && eslint \"src/**/*.{ts,tsx}\" --max-warnings 0 --no-warn-ignored && npm run check:contrast",
+    "lint:check": "npm run typecheck && eslint \"src/**/*.{ts,tsx}\" --max-warnings 0 --no-warn-ignored && npm run check:themes && npm run check:contrast",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest",
@@ -40,7 +40,9 @@
     "test:coverage": "vitest run --coverage",
     "prepare": "husky",
     "start-alpha-gui": "ALPHA=true npm run start-gui",
-    "check:contrast": "node scripts/check-contrast.mjs"
+    "check:contrast": "node scripts/check-contrast.mjs",
+    "themes": "node scripts/generate-themes.mjs",
+    "check:themes": "node scripts/generate-themes.mjs --check"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.2.4",

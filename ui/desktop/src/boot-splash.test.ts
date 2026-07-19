@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { THEME_FAMILY_IDS } from './styles/themes.generated';
 
 /**
  * These tests run the boot splash's REAL source, extracted out of
@@ -116,18 +117,14 @@ describe('boot splash', () => {
    */
   describe('theme coverage', () => {
     /**
-     * Reads the canonical family list in either shape it has taken: the runtime
-     * `THEME_FAMILIES` array, or the older `ThemeFamily` type union it replaced.
-     * Supporting both keeps this test from becoming a merge blocker depending on
-     * which branch lands first.
+     * The canonical family list. It is GENERATED from themes/*.theme.mjs, so
+     * this imports it rather than scraping a source file — the list used to be
+     * hand-maintained in three places and this test existed to keep them in
+     * step. Now there is one list; the test's job is to prove index.html's
+     * pre-React copy still matches it.
      */
     function themeFamilies(): string[] {
-      const src = readFileSync(resolveFromPackage('src/contexts/ThemeContext.tsx'), 'utf-8');
-      const runtimeList = src.match(/export const THEME_FAMILIES\s*=\s*\[([^\]]+)\]/);
-      if (runtimeList) return [...runtimeList[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-      const typeUnion = src.match(/export type ThemeFamily\s*=\s*([^;]+);/);
-      if (typeUnion) return [...typeUnion[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-      throw new Error('could not determine the theme family list from ThemeContext.tsx');
+      return [...THEME_FAMILY_IDS];
     }
 
     it('finds more than one family, so the checks below are not vacuous', () => {

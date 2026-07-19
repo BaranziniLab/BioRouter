@@ -1,3 +1,4 @@
+import { THEME_FAMILY_IDS } from '../styles/themes.generated';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
 type ThemePreference = 'light' | 'dark' | 'system';
@@ -13,7 +14,13 @@ type ResolvedTheme = 'light' | 'dark';
  * this list deliberately — keep the two in lockstep, exactly as
  * `loadThemePreference` already is.
  */
-export const THEME_FAMILIES = ['parchment', 'alma-mater', 'roche-limit'] as const;
+/**
+ * Every theme family, derived from the generated theme data — the ONE list.
+ * There used to be three hand-maintained copies of this (here, index.html's
+ * pre-hydration script, and the picker), kept in step by a test rather than by
+ * construction. Adding a family is now a single file in themes/.
+ */
+export const THEME_FAMILIES = THEME_FAMILY_IDS;
 
 /**
  * The theme *family* — orthogonal to light/dark. `parchment` is the warm

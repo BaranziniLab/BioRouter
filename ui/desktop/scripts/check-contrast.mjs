@@ -3,99 +3,49 @@
  * Contrast guard for the Biorouter design system.
  *
  * Parses the real token declarations out of src/styles/main.css, resolves the
- * var() chains, and asserts the WCAG 2.x contrast ratios that design.md promises.
- * Fails the build if any pair regresses.
+ * var() chains, and asserts the WCAG 2.x contrast ratios that design.md
+ * promises. Fails the build if any pair regresses.
  *
  *   node scripts/check-contrast.mjs
+ *
+ * THEME FAMILIES ARE DISCOVERED, NOT LISTED. The scope table comes from
+ * scripts/lib/theme-tokens.mjs, which sweeps the stylesheet for
+ * `[data-theme='...']` blocks. Adding a family therefore needs no edit here —
+ * it is audited automatically the moment its tokens exist. The previous
+ * version hardcoded six scopes built by hand, and matched their selectors by
+ * exact string equality: a block written with different quoting or spacing
+ * silently yielded `{}`, the scope fell back to pure Parchment, and ~40
+ * assertions passed while measuring the wrong theme.
+ *
+ * It also asserts the CROSS-FILE duplications. Several values are necessarily
+ * written twice — xterm paints to canvas and react-syntax-highlighter takes a
+ * JS object, so neither can read a CSS var — and nothing used to check that the
+ * copies agreed. That is how a syntax palette came to be verified against a
+ * surface the app never painted, rendering `comment` at 4.15:1 with everything
+ * green.
  *
  * See design.md §3.1 (Colour) and §3.8 (Focus).
  */
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import {
+  buildScopes,
+  discoverFamilies,
+  assertBlockOrder,
+  resolveHex,
+  contrast as ratioOf,
+} from './lib/theme-tokens.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CSS_PATH = join(here, '..', 'src', 'styles', 'main.css');
 
-/** Return the body of every block whose selector matches `test`. */
-function blocks(css, test) {
-  const out = [];
-  const re = /(^|\n)([^\n{}]+)\{/g;
-  let m;
-  while ((m = re.exec(css))) {
-    const selector = m[2].trim();
-    if (!test(selector)) continue;
-    // brace-match forward from the opening brace
-    let depth = 1;
-    let i = re.lastIndex;
-    for (; i < css.length && depth > 0; i++) {
-      if (css[i] === '{') depth++;
-      else if (css[i] === '}') depth--;
-    }
-    out.push(css.slice(re.lastIndex, i - 1));
-  }
-  return out;
-}
-
-function parseDecls(body) {
-  const o = {};
-  // strip nested blocks (e.g. @keyframes inside @theme) before reading decls
-  const flat = body.replace(/[^{}]*\{[^{}]*\}/g, '');
-  for (const m of flat.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) o[m[1]] = m[2].trim();
-  return o;
-}
-
 const css = await readFile(CSS_PATH, 'utf8');
-const THEME = Object.assign({}, ...blocks(css, (s) => s.startsWith('@theme')).map(parseDecls));
-const LIGHT = Object.assign({}, ...blocks(css, (s) => s === ':root').map(parseDecls));
-const DARK = Object.assign({}, ...blocks(css, (s) => s === '.dark').map(parseDecls));
+const SCOPES = buildScopes(css);
+const FAMILIES = discoverFamilies(css);
 
-// Alma Mater (UCSF) theme family. It re-declares only colour tokens in scopes
-// with higher specificity, so the effective values are the Parchment cascade
-// with the Alma overrides layered on: alma-light = :root < :root[alma];
-// alma-dark = :root < .dark < :root[alma] < .dark[alma].
-const ALMA_L = Object.assign(
-  {},
-  ...blocks(css, (s) => s === ":root[data-theme='alma-mater']").map(parseDecls)
-);
-const ALMA_D = Object.assign(
-  {},
-  ...blocks(css, (s) => s === ".dark[data-theme='alma-mater']").map(parseDecls)
-);
-const ALMA_LIGHT = Object.assign({}, LIGHT, ALMA_L);
-const ALMA_DARK = Object.assign({}, LIGHT, DARK, ALMA_L, ALMA_D);
-
-// Roche Limit (JupyterLab-inspired) theme family — same cascade rule as Alma.
-const ROCHE_L = Object.assign(
-  {},
-  ...blocks(css, (s) => s === ":root[data-theme='roche-limit']").map(parseDecls)
-);
-const ROCHE_D = Object.assign(
-  {},
-  ...blocks(css, (s) => s === ".dark[data-theme='roche-limit']").map(parseDecls)
-);
-const ROCHE_LIGHT = Object.assign({}, LIGHT, ROCHE_L);
-const ROCHE_DARK = Object.assign({}, LIGHT, DARK, ROCHE_L, ROCHE_D);
-
-function resolve(name, scope) {
-  let v = scope[name] ?? THEME[name];
-  for (let i = 0; i < 12 && v && v.startsWith('var('); i++) {
-    const inner = v.slice(4, v.indexOf(')')).trim();
-    v = scope[inner] ?? THEME[inner];
-  }
-  return v && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : null;
-}
-
-const lum = (h) => {
-  const c = [1, 3, 5]
-    .map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
-    .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
-  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-};
-const ratio = (a, b) => {
-  const [x, y] = [lum(a), lum(b)];
-  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
-};
+const resolve = (name, scope) => resolveHex(name, scope);
+const ratio = ratioOf;
 
 let failures = 0;
 let checks = 0;
@@ -128,14 +78,15 @@ const TEXT_GROUNDS = [
 // measured against the page ground rather than the control's own fill.
 const RING_GROUNDS = [...TEXT_GROUNDS, '--background-medium'];
 
-for (const [theme, scope] of [
-  ['light', LIGHT],
-  ['dark', DARK],
-  ['alma-light', ALMA_LIGHT],
-  ['alma-dark', ALMA_DARK],
-  ['roche-light', ROCHE_LIGHT],
-  ['roche-dark', ROCHE_DARK],
-]) {
+// Source order is load-bearing: `:root[data-theme=X]` and `.dark[data-theme=X]`
+// have identical specificity (0,2,0), so only document order separates them.
+// Swap them and dark mode renders light tokens with every ratio still passing.
+for (const problem of assertBlockOrder(css)) {
+  rows.push(['FAIL', '', 'block order', problem]);
+  failures++;
+}
+
+for (const [theme, scope] of Object.entries(SCOPES)) {
   rows.push(['', '', `── ${theme} ──`, '']);
   for (const g of TEXT_GROUNDS) {
     assert(`${theme}: text-default on ${g}`, '--text-default', g, 4.5, scope);
@@ -218,6 +169,17 @@ for (const [theme, scope] of [
   for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
     assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
   }
+
+  // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to
+  // SC 1.4.11's 3:1, and Roche Limit's design doc explicitly guarantees it
+  // ("clears 3:1 on every light ground, min 3.14"). That guarantee is false —
+  // the rail sits on --sidebar-active, where it measures 2.80 (Roche light),
+  // 2.23 (Alma light) and 2.18 (Parchment light). All THREE families fail,
+  // which means the design has never held this rule, not that one theme
+  // regressed. The rail is decorative reinforcement of a background change the
+  // active row already makes, so it is not the sole cue and 1.4.11 does not
+  // bite. Asserting it here would fail every theme on day one; the doc claim is
+  // what needs correcting. Revisit if the rail ever becomes the only affordance.
 }
 
 const w = Math.max(...rows.map((r) => r[2].length));

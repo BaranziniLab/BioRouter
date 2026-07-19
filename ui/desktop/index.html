@@ -15,7 +15,9 @@
           // This list duplicates THEME_FAMILIES in src/contexts/ThemeContext.tsx
           // on purpose — this script runs ahead of the bundle and cannot import
           // TypeScript. Keep the two in lockstep when adding a family.
+          /* THEMES:GENERATED:FAMILYLIST:START */
           const FAMILIES = ['parchment', 'alma-mater', 'roche-limit'];
+/* THEMES:GENERATED:FAMILYLIST:END */
           try {
             const stored = window.localStorage && localStorage.getItem('theme_family');
             const fam = FAMILIES.indexOf(stored) !== -1 ? stored : 'parchment';
@@ -119,41 +121,38 @@
       #br-boot[hidden] { display: none; }
       #br-boot.br-out { opacity: 0; }
 
-      /* Parchment dark. Navy becomes UCSF teal on a dark surface, matching
-         BioRouterMark.tsx. Each combined dark+family selector below is
-         deliberately more specific than these single-condition rules, so it
-         wins regardless of source order. */
+      <!-- THEMES:GENERATED:SPLASH:START -->
       html.dark #br-boot {
         --br-bg: #282217;
-        --br-navy: #18a3ac;
-        --br-track: #3a3223;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
+        --br-track: #e8e1d2;
       }
-      /* Alma Mater keeps the UCSF mark; only the ground changes. */
       html[data-theme='alma-mater'] #br-boot {
         --br-bg: #f2f3f4;
         --br-navy: #052049;
-        --br-track: #e1e3e5;
+        --br-coral: #16a0ac;
+        --br-track: #e8e1d2;
       }
       html.dark[data-theme='alma-mater'] #br-boot {
         --br-bg: #0d2a50;
-        --br-navy: #18a3ac;
-        --br-track: #17386a;
+        --br-navy: #052049;
+        --br-coral: #16a0ac;
+        --br-track: #e8e1d2;
       }
-      /* Roche Limit rebrands the mark itself: the ink goes warm near-black on
-         the grey panel and lifts to the light ink in dark, and coral becomes
-         the bright orange. */
       html[data-theme='roche-limit'] #br-boot {
         --br-bg: #f4f4f2;
-        --br-navy: #1f1e1c;
-        --br-coral: #ee6c1a;
-        --br-track: #e4e4e0;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
+        --br-track: #e8e1d2;
       }
       html.dark[data-theme='roche-limit'] #br-boot {
         --br-bg: #232320;
-        --br-navy: #ededea;
-        --br-coral: #ee6c1a;
-        --br-track: #302f2c;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
+        --br-track: #e8e1d2;
       }
+<!-- THEMES:GENERATED:SPLASH:END -->
 
       #br-boot .br-mark { width: 84px; height: 84px; display: block; }
       /* The mark is set in Inter (bundled @font-face in main.css), like the
