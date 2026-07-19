@@ -57,6 +57,7 @@ import type {
 } from './artifactTypes';
 import {
   basenameFromPath,
+  dirnameFromPath,
   extensionFromPath,
   isDelimitedPath,
   isMarkdownPath,
@@ -968,7 +969,14 @@ function ArtifactPreviewBody({
   // the panel stays mounted across artifacts, so the state would otherwise stick
   // and show a CSV as raw text just because the last markdown was.
   if (file.kind === 'text' || file.kind === 'html') {
-    return <TextFilePreview key={file.path} file={file} resolvedTheme={resolvedTheme} />;
+    return (
+      <TextFilePreview
+        key={file.path}
+        file={file}
+        resolvedTheme={resolvedTheme}
+        onOpenArtifact={onOpenArtifactInTab}
+      />
+    );
   }
   return null;
 }
@@ -1378,9 +1386,11 @@ function CopyButton({ text }: { text: string }) {
 function TextFilePreview({
   file,
   resolvedTheme,
+  onOpenArtifact,
 }: {
   file: Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
   resolvedTheme: 'light' | 'dark';
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }) {
   const markdown = isMarkdownPath(file.path);
   const delimited = isDelimitedPath(file.path);
@@ -1460,7 +1470,13 @@ function TextFilePreview({
           code
         ) : markdown ? (
           <div className="px-4 py-3">
-            <MarkdownContent content={file.text} />
+            {/* Anchor relative image/link paths against the FILE's own directory
+                (not the app cwd), and let sibling-file links open in this panel. */}
+            <MarkdownContent
+              content={file.text}
+              workingDir={dirnameFromPath(file.path)}
+              onOpenArtifact={onOpenArtifact}
+            />
           </div>
         ) : html ? (
           // Same sandbox + theme injection as the figure preview above. `allow-popups`

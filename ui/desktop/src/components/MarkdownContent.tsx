@@ -15,14 +15,15 @@ import {
 } from '../styles/codeTheme';
 import { Button } from './ui/button';
 
-import { Check, Copy } from './icons/app-icons';
+import { Check, Copy, Image as ImageIcon } from './icons/app-icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
-import type { ArtifactSource } from './artifacts/artifactTypes';
+import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
   basenameFromPath,
   looksLikePreviewableFile,
   pathFromArtifactHref,
   resolveArtifactPath,
+  resolveMarkdownImageSource,
 } from './artifacts/artifactUtils';
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
@@ -196,6 +197,123 @@ function ArtifactLinkButton({
   );
 }
 
+// A local image whose bytes could not be read (denied by the main-process
+// allowlist, missing, or not an image) and a remote image that failed to load
+// both collapse to this inline placeholder instead of a dead <img> with a
+// busted src. The alt text stays legible so the reader still knows what was
+// meant to be here.
+function BrokenImage({ alt }: { alt?: string }) {
+  const label = alt?.trim() || 'Image unavailable';
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={alt?.trim() ? `Image unavailable: ${alt}` : 'Image unavailable'}
+      className="inline-flex items-center gap-1 rounded-sm border border-border-subtle bg-background-medium px-1.5 py-0.5 align-middle text-[12px] text-text-muted"
+    >
+      <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+// Markdown images in the preview. Remote (`http(s)`/`data:`) srcs render
+// directly — the same reach chat already has. A LOCAL image (relative to the
+// previewed file, absolute, `~`, or `file://`) can't be loaded by the renderer
+// from disk, so it is read through the existing allowlisted `readArtifactFile`
+// IPC and inlined as a `data:` URI (CSP-safe). Anything the allowlist denies, or
+// that traverses out of the file's directory, degrades to `BrokenImage`.
+const MarkdownImage = memo(function MarkdownImage({
+  src,
+  alt,
+  workingDir,
+}: {
+  src?: string;
+  alt?: string;
+  workingDir?: string;
+}) {
+  const source = useMemo(() => resolveMarkdownImageSource(src ?? '', workingDir), [src, workingDir]);
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(
+    source.kind === 'remote' ? source.url : null
+  );
+  const [failed, setFailed] = useState(source.kind === 'blocked');
+
+  useEffect(() => {
+    if (source.kind === 'remote') {
+      setResolvedSrc(source.url);
+      setFailed(false);
+      return;
+    }
+    if (source.kind === 'blocked') {
+      setResolvedSrc(null);
+      setFailed(true);
+      return;
+    }
+
+    let cancelled = false;
+    setResolvedSrc(null);
+    setFailed(false);
+    const read = window.electron?.readArtifactFile;
+    if (!read) {
+      setFailed(true);
+      return;
+    }
+    void read(source.path)
+      .then((preview: ArtifactFilePreview) => {
+        if (cancelled) return;
+        if (preview && preview.kind === 'image' && typeof preview.dataUrl === 'string') {
+          setResolvedSrc(preview.dataUrl);
+        } else {
+          setFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source]);
+
+  if (failed) return <BrokenImage alt={alt} />;
+  if (!resolvedSrc) {
+    return (
+      <span
+        aria-label={alt?.trim() || 'Loading image'}
+        className="inline-block h-4 w-24 animate-pulse rounded-sm bg-background-medium align-middle"
+      />
+    );
+  }
+  return (
+    <img
+      src={resolvedSrc}
+      alt={alt ?? ''}
+      className="mx-auto my-2 h-auto max-w-full rounded-md"
+      onError={() => setFailed(true)}
+    />
+  );
+});
+
+// External links open in the SYSTEM browser through the existing IPC — never by
+// navigating the renderer/panel (a top-frame navigation would drop the CSP and
+// keep the preload bridge). target=_blank alone leans on the main process's
+// window-open handler; calling openExternal here makes it explicit and testable.
+function openExternalLink(event: React.MouseEvent<HTMLAnchorElement>, href: string) {
+  if (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  const opener = window.electron?.openExternal;
+  if (!opener) return;
+  event.preventDefault();
+  void opener(href);
+}
+
 const MarkdownCode = memo(
   React.forwardRef(function MarkdownCode(
     { inline, className, children, onOpenArtifact, workingDir, ...props }: CodeProps,
@@ -363,19 +481,32 @@ const MarkdownContent = memo(function MarkdownContent({
             if (!href) return <>{children}</>;
             const artifactPath =
               href && looksLikePreviewableFile(href) ? pathFromArtifactHref(href) : null;
-            if (artifactPath && onOpenArtifact) {
-              const resolvedPath = resolveArtifactPath(artifactPath, workingDir) ?? artifactPath;
+            if (artifactPath) {
+              // A link to a sibling/local file. If there is a panel to open it in,
+              // preview it there; otherwise render it as styled, inert text with a
+              // tooltip rather than an <a> that would dead-navigate the renderer.
+              if (onOpenArtifact) {
+                const resolvedPath = resolveArtifactPath(artifactPath, workingDir) ?? artifactPath;
+                return (
+                  <ArtifactLinkButton
+                    artifact={{
+                      kind: 'file',
+                      title: basenameFromPath(resolvedPath),
+                      path: resolvedPath,
+                    }}
+                    onOpenArtifact={onOpenArtifact}
+                  >
+                    {children}
+                  </ArtifactLinkButton>
+                );
+              }
               return (
-                <ArtifactLinkButton
-                  artifact={{
-                    kind: 'file',
-                    title: basenameFromPath(resolvedPath),
-                    path: resolvedPath,
-                  }}
-                  onOpenArtifact={onOpenArtifact}
+                <span
+                  className="cursor-default font-medium text-text-muted underline decoration-dotted decoration-text-muted/40 underline-offset-2"
+                  title={artifactPath}
                 >
                   {children}
-                </ArtifactLinkButton>
+                </span>
               );
             }
             // Loopback/app URLs (the daemon serves Biorouter apps on 127.0.0.1)
@@ -396,11 +527,24 @@ const MarkdownContent = memo(function MarkdownContent({
               );
             }
             return (
-              <a href={href} {...props} target="_blank" rel="noopener noreferrer">
+              <a
+                href={href}
+                {...props}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(event) => openExternalLink(event, href)}
+              >
                 {children}
               </a>
             );
           },
+          img: ({ src, alt, node: _node }) => (
+            <MarkdownImage
+              src={typeof src === 'string' ? src : undefined}
+              alt={typeof alt === 'string' ? alt : undefined}
+              workingDir={workingDir}
+            />
+          ),
           code: ({ node: _node, ...props }) => (
             <MarkdownCode {...props} onOpenArtifact={onOpenArtifact} workingDir={workingDir} />
           ),

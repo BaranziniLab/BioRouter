@@ -520,6 +520,45 @@ function isPreviewableArtifactPath(path: string): boolean {
   return TEXT_EXTENSIONS.has(ext) || IMAGE_EXTENSIONS.has(ext) || HTML_EXTENSIONS.has(ext);
 }
 
+/** The directory portion of a path, without a trailing separator (`''` if none).
+ *  Used to anchor a previewed markdown file's relative `![](…)` / `[](…)` links
+ *  against the FILE's own directory rather than the app's working directory. */
+export function dirnameFromPath(value: string): string {
+  const clean = pathFromArtifactHref(value.trim());
+  const name = basenameFromPath(clean);
+  return clean.slice(0, clean.length - name.length).replace(/[/\\]+$/, '');
+}
+
+export type MarkdownImageSource =
+  | { kind: 'remote'; url: string }
+  | { kind: 'local'; path: string }
+  | { kind: 'blocked' };
+
+/**
+ * Where a markdown `<img>` src should load from inside the artifact preview.
+ *   - `http(s)` and `data:` URIs pass through unchanged (rendered as `<img src>`),
+ *     i.e. remote images are honoured exactly as chat already does — no new fetch.
+ *   - A local reference (relative, absolute, `~`, or `file://`) is resolved
+ *     against `baseDir` — the PREVIEWED FILE's directory — and returned as a
+ *     `local` path for the caller to read through the main-process allowlisted
+ *     read-file IPC and inline as a `data:` URI (CSP-safe).
+ *   - A relative traversal that escapes `baseDir` (`../…`) or a bare relative
+ *     path with no `baseDir` cannot be resolved and is `blocked` — the renderer
+ *     shows a broken-image placeholder rather than a dead `<img>`.
+ *
+ * The main-process allowlist (`isFilePathAllowedForPreview`) is the authoritative
+ * gate on what actually gets read; this helper only classifies the src and
+ * anchors relative paths, so it never widens that allowlist.
+ */
+export function resolveMarkdownImageSource(src: string, baseDir?: string): MarkdownImageSource {
+  const value = src.trim();
+  if (!value) return { kind: 'blocked' };
+  if (/^data:/i.test(value)) return { kind: 'remote', url: value };
+  if (/^https?:\/\//i.test(value)) return { kind: 'remote', url: value };
+  const resolved = resolveArtifactPath(value, baseDir);
+  return resolved ? { kind: 'local', path: resolved } : { kind: 'blocked' };
+}
+
 // File paths a tool call is about to create, read off its arguments.
 //
 // Returns absolute paths only — a relative one without a `workingDir` to anchor

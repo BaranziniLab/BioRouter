@@ -5,6 +5,7 @@ import {
   baseToolName,
   basenameFromPath,
   decodeResourceHtml,
+  dirnameFromPath,
   extensionFromPath,
   fileArtifactPathsFromToolCall,
   languageFromPath,
@@ -13,6 +14,7 @@ import {
   parseDelimitedTable,
   pathFromArtifactHref,
   resolveArtifactPath,
+  resolveMarkdownImageSource,
   sandboxedSurface,
   withHostTheme,
 } from './artifactUtils';
@@ -391,6 +393,72 @@ describe('resolveArtifactPath', () => {
   it('unwraps file:// urls and surrounding quotes', () => {
     expect(resolveArtifactPath('file:///tmp/a%20b.md')).toBe('/tmp/a b.md');
     expect(resolveArtifactPath('"/tmp/quoted.md"')).toBe('/tmp/quoted.md');
+  });
+});
+
+describe('dirnameFromPath', () => {
+  it('returns the directory of a file, without a trailing separator', () => {
+    expect(dirnameFromPath('/home/ada/project/report.md')).toBe('/home/ada/project');
+    expect(dirnameFromPath('/home/ada/project/sub/fig.png')).toBe('/home/ada/project/sub');
+  });
+
+  it('handles Windows separators', () => {
+    expect(dirnameFromPath('C:\\Users\\me\\proj\\report.md')).toBe('C:\\Users\\me\\proj');
+  });
+
+  it("is empty for a bare filename (nothing to anchor against)", () => {
+    expect(dirnameFromPath('report.md')).toBe('');
+  });
+
+  it('unwraps file:// urls before splitting', () => {
+    expect(dirnameFromPath('file:///tmp/docs/report.md')).toBe('/tmp/docs');
+  });
+});
+
+describe('resolveMarkdownImageSource', () => {
+  const FILE_DIR = '/home/ada/project/docs';
+
+  it('resolves a relative image against the previewed file directory', () => {
+    expect(resolveMarkdownImageSource('./fig.png', FILE_DIR)).toEqual({
+      kind: 'local',
+      path: '/home/ada/project/docs/fig.png',
+    });
+    expect(resolveMarkdownImageSource('img/plot.png', FILE_DIR)).toEqual({
+      kind: 'local',
+      path: '/home/ada/project/docs/img/plot.png',
+    });
+  });
+
+  it('keeps an absolute local image path as a local read', () => {
+    expect(resolveMarkdownImageSource('/tmp/out/fig.png', FILE_DIR)).toEqual({
+      kind: 'local',
+      path: '/tmp/out/fig.png',
+    });
+    expect(resolveMarkdownImageSource('file:///tmp/out/fig%20a.png')).toEqual({
+      kind: 'local',
+      path: '/tmp/out/fig a.png',
+    });
+  });
+
+  it('blocks a relative image that traverses out of the file directory', () => {
+    expect(resolveMarkdownImageSource('../../secret.png', FILE_DIR)).toEqual({ kind: 'blocked' });
+    expect(resolveMarkdownImageSource('fig.png')).toEqual({ kind: 'blocked' });
+    expect(resolveMarkdownImageSource('   ')).toEqual({ kind: 'blocked' });
+  });
+
+  it('passes remote http(s) and data URIs straight through', () => {
+    expect(resolveMarkdownImageSource('https://example.com/a.png', FILE_DIR)).toEqual({
+      kind: 'remote',
+      url: 'https://example.com/a.png',
+    });
+    expect(resolveMarkdownImageSource('http://example.com/a.png')).toEqual({
+      kind: 'remote',
+      url: 'http://example.com/a.png',
+    });
+    expect(resolveMarkdownImageSource('data:image/png;base64,AAAA')).toEqual({
+      kind: 'remote',
+      url: 'data:image/png;base64,AAAA',
+    });
   });
 });
 

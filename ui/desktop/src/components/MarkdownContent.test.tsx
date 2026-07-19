@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
@@ -8,6 +8,33 @@ vi.mock('./icons', () => ({
   Check: () => <div data-testid="check-icon">✓</div>,
   Copy: () => <div data-testid="copy-icon">📋</div>,
 }));
+
+function installElectronMock(
+  overrides: Partial<{
+    readArtifactFile: ReturnType<typeof vi.fn>;
+    openExternal: ReturnType<typeof vi.fn>;
+  }> = {}
+) {
+  const electron = {
+    readArtifactFile:
+      overrides.readArtifactFile ??
+      vi.fn(async (path: string) => ({
+        kind: 'image',
+        title: path.split('/').pop() ?? 'image',
+        path,
+        mimeType: 'image/png',
+        dataUrl: 'data:image/png;base64,AAAA',
+        size: 3,
+        found: true,
+      })),
+    openExternal: overrides.openExternal ?? vi.fn(async () => undefined),
+  };
+  Object.defineProperty(window, 'electron', {
+    configurable: true,
+    value: electron,
+  });
+  return electron;
+}
 
 describe('MarkdownContent', () => {
   describe('HTML Security Integration', () => {
@@ -757,6 +784,102 @@ for the result.`;
       await waitFor(() => {
         expect(container).toHaveTextContent('x^2');
       });
+    });
+  });
+
+  describe('Image rendering in the preview', () => {
+    afterEach(() => {
+      // @ts-expect-error — remove the per-test electron stub.
+      delete window.electron;
+      vi.restoreAllMocks();
+    });
+
+    it('inlines a relative local image via the allowlisted read IPC as a data URI', async () => {
+      const electron = installElectronMock();
+      const content = '![Figure one](./fig.png)';
+
+      render(<MarkdownContent content={content} workingDir="/home/ada/project/docs" />);
+
+      await waitFor(() => {
+        expect(electron.readArtifactFile).toHaveBeenCalledWith('/home/ada/project/docs/fig.png');
+      });
+
+      const img = await waitFor(() => {
+        const el = document.querySelector('img');
+        expect(el).not.toBeNull();
+        return el as HTMLImageElement;
+      });
+      expect(img.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+      expect(img).toHaveAttribute('alt', 'Figure one');
+    });
+
+    it('renders a remote https image directly without touching the read IPC', async () => {
+      const electron = installElectronMock();
+      const content = '![Remote](https://example.com/plot.png)';
+
+      render(<MarkdownContent content={content} workingDir="/home/ada/project/docs" />);
+
+      const img = await waitFor(() => {
+        const el = document.querySelector('img');
+        expect(el).not.toBeNull();
+        return el as HTMLImageElement;
+      });
+      expect(img.getAttribute('src')).toBe('https://example.com/plot.png');
+      expect(electron.readArtifactFile).not.toHaveBeenCalled();
+    });
+
+    it('shows a broken-image placeholder for a traversal path and never reads it', async () => {
+      const electron = installElectronMock();
+      const content = '![Secret](../../secret.png)';
+
+      render(<MarkdownContent content={content} workingDir="/home/ada/project/docs" />);
+
+      const placeholder = await screen.findByRole('img', { name: 'Secret' });
+      expect(placeholder.tagName).toBe('SPAN');
+      expect(document.querySelector('img')).toBeNull();
+      expect(electron.readArtifactFile).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a placeholder when the allowlist denies the local image', async () => {
+      const electron = installElectronMock({
+        readArtifactFile: vi.fn(async (path: string) => ({
+          kind: 'error',
+          title: 'fig.png',
+          path,
+          error: `Access denied: path '${path}' is outside allowed directories`,
+          found: false,
+        })),
+      });
+      const content = '![Denied](/etc/shadow.png)';
+
+      render(<MarkdownContent content={content} workingDir="/home/ada/project/docs" />);
+
+      await waitFor(() => expect(electron.readArtifactFile).toHaveBeenCalled());
+      expect(await screen.findByRole('img', { name: 'Denied' })).toHaveProperty('tagName', 'SPAN');
+      expect(document.querySelector('img')).toBeNull();
+    });
+  });
+
+  describe('External link handler', () => {
+    afterEach(() => {
+      // @ts-expect-error — remove the per-test electron stub.
+      delete window.electron;
+      vi.restoreAllMocks();
+    });
+
+    it('opens an external link in the system browser and does not navigate', async () => {
+      const electron = installElectronMock();
+      const content = '[Docs](https://example.com/docs)';
+
+      render(<MarkdownContent content={content} />);
+
+      const link = await screen.findByRole('link', { name: 'Docs' });
+      // fireEvent.click returns false when the handler called preventDefault, i.e.
+      // the renderer will NOT navigate to the href — the browser opens it instead.
+      const notPrevented = fireEvent.click(link);
+
+      expect(electron.openExternal).toHaveBeenCalledWith('https://example.com/docs');
+      expect(notPrevented).toBe(false);
     });
   });
 });
