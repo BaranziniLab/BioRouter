@@ -91,5 +91,12 @@ describe('ExtensionModal', () => {
     expect(submittedData.headers).toEqual([
       { key: 'Authorization', value: 'Bearer abc123', isEdited: true },
     ]);
-  }, 20000);
+    // 60s, not 20s. This inline per-test timeout WINS over the CLI
+    // --testTimeout the CI workflow passes, so a 20s budget here makes the
+    // whole gate red regardless of the flag: the test types ~50 characters
+    // through user-event at its default inter-event delay and has been measured
+    // at 31s on a CI-class runner. The better fix is
+    // `userEvent.setup({ delay: null })` in this file; this is the zero-risk
+    // version of it.
+  }, 60000);
 });
