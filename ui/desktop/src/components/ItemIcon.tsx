@@ -13,10 +13,9 @@ import {
   Settings,
   Terminal,
   Zap,
-  BookOpen,
   Wrench,
-  Layers,
 } from './icons/app-icons';
+import { ENTITY_ICONS } from './icons/entity-icons';
 import { DisplayItem } from './MentionPopover';
 
 interface FileIconProps {
@@ -39,13 +38,13 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
     case 'Builtin':
       return { Icon: Zap, color: CURRENT };
     case 'Workflow':
-      return { Icon: BookOpen, color: CURRENT };
+      return { Icon: ENTITY_ICONS.workflow, color: CURRENT };
     case 'KnowledgeBase':
-      return { Icon: Database, color: CURRENT };
+      return { Icon: ENTITY_ICONS.knowledge, color: CURRENT };
     case 'Skill':
-      return { Icon: Layers, color: CURRENT };
+      return { Icon: ENTITY_ICONS.skill, color: CURRENT };
     case 'Extension':
-      return { Icon: Wrench, color: CURRENT };
+      return { Icon: ENTITY_ICONS.extension, color: CURRENT };
     case 'Directory':
       return { Icon: Folder, color: CURRENT };
     default: {

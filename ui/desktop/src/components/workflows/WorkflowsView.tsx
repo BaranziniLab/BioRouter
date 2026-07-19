@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { listSavedWorkflows, convertToLocaleDateString } from '../../workflow/workflow_management';
 import {
-  FileText,
   Edit,
   Trash2,
   Play,
@@ -10,11 +9,12 @@ import {
   Link,
   Clock,
   Terminal,
-  ExternalLink,
+  NewWindow,
   Share2,
   Copy,
   Download,
 } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';
@@ -50,6 +50,8 @@ import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
+
+const WorkflowIcon = ENTITY_ICONS.workflow;
 
 export default function WorkflowsView() {
   const setView = useNavigation();
@@ -479,14 +481,14 @@ export default function WorkflowsView() {
                 className="h-7 w-7 p-0"
                 title="Launch workflow"
               >
-                <ExternalLink className="w-4 h-4" />
+                <NewWindow className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem
                 onClick={() => handleStartWorkflowChatInNewWindow(workflowManifestResponse.id)}
               >
-                <ExternalLink className="w-4 h-4" />
+                <NewWindow className="w-4 h-4" />
                 Open in new window
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -611,13 +613,13 @@ export default function WorkflowsView() {
     if (savedWorkflows.length === 0) {
       return (
         <EmptyState
-          icon={FileText}
+          icon={WorkflowIcon}
           title="No workflows yet"
           description="Create a reusable workflow here, save one from a conversation, or import an existing workflow."
           actions={
             <>
               <Button onClick={() => setShowCreateDialog(true)}>
-                <FileText className="h-4 w-4" />
+                <WorkflowIcon className="h-4 w-4" />
                 Create workflow
               </Button>
               <Button onClick={() => setShowImportDialog(true)} variant="outline">
@@ -632,7 +634,7 @@ export default function WorkflowsView() {
     if (filteredWorkflows.length === 0 && searchTerm) {
       return (
         <EmptyState
-          icon={FileText}
+          icon={WorkflowIcon}
           title="No matching workflows"
           description="Try a different title, description, or slash command."
           compact
@@ -672,7 +674,7 @@ export default function WorkflowsView() {
                   variant="default"
                   className="flex items-center gap-2"
                 >
-                  <FileText className="w-4 h-4" />
+                  <WorkflowIcon className="w-4 h-4" />
                   Create Workflow
                 </Button>
                 <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />

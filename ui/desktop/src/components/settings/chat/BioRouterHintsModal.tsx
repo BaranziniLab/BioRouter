@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
-import { Check } from '../../icons';
+import { Check } from '../../icons/app-icons';
 import {
   Dialog,
   DialogContent,

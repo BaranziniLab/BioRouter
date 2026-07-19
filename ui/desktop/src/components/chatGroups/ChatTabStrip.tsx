@@ -207,7 +207,7 @@ export function ChatTabStrip({
                     type="button"
                     aria-label={`Close ${tab.title}`}
                     data-testid={`chat-tab-close-${tab.tabId}`}
-                    className="hidden flex-none rounded-full p-0.5 text-text-muted hover:bg-background-medium hover:text-text-default group-hover:block"
+                    className="hidden flex-none rounded-sm p-0.5 text-text-muted hover:bg-background-medium hover:text-text-default group-hover:block"
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -222,7 +222,7 @@ export function ChatTabStrip({
                   type="button"
                   aria-label={`Close ${tab.title}`}
                   data-testid={`chat-tab-close-${tab.tabId}`}
-                  className="flex-none rounded-full p-0.5 text-text-muted opacity-0 transition-opacity hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100"
+                  className="flex-none rounded-sm p-0.5 text-text-muted opacity-0 transition-opacity hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100"
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();

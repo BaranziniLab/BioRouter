@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, EyeOff, FolderInput, FolderPlus, Pencil, Search, Trash2 } from '../../icons/app-icons';
+import {
+  Download,
+  EyeOff,
+  FolderInput,
+  FolderPlus,
+  Pencil,
+  Search,
+  Trash2,
+} from '../../icons/app-icons';
 import type { Manifest } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -194,7 +202,7 @@ export function KBSelectorPalette({ onClose }: Props) {
 
           <div className="px-6 py-4 border-b border-border-subtle">
             <div className="flex h-9 items-center gap-2 rounded-md border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
-              <Search className="h-4 w-4 text-text-muted" strokeWidth={1.5} />
+              <Search className="h-4 w-4 text-text-muted" />
               <input
                 data-testid="knowledge-kb-search"
                 ref={searchRef}
@@ -214,7 +222,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                 size="sm"
                 onClick={startCreate}
               >
-                <FolderPlus className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+                <FolderPlus className="mr-1.5 h-4 w-4" />
                 Create Knowledge Base
               </Button>
               <Button
@@ -225,7 +233,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                 onClick={() => importRef.current?.click()}
                 disabled={busyId === '__import'}
               >
-                <FolderInput className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+                <FolderInput className="mr-1.5 h-4 w-4" />
                 {busyId === '__import' ? 'Importing…' : 'Import from .brkb'}
               </Button>
               <input
@@ -339,7 +347,7 @@ export function KBSelectorPalette({ onClose }: Props) {
 
                       <div className="flex items-center gap-2">
                         <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 py-1">
-                          <EyeOff className="h-3.5 w-3.5 text-text-muted" strokeWidth={1.5} />
+                          <EyeOff className="h-3.5 w-3.5 text-text-muted" />
                           <Switch
                             checked={!hidden}
                             onCheckedChange={() => toggleKbHidden(base.id)}
@@ -357,7 +365,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                           title="Export as .brkb"
                           aria-label={`Export ${base.name} as .brkb`}
                         >
-                          <Download className="h-4 w-4" strokeWidth={1.5} />
+                          <Download className="h-4 w-4" />
                         </Button>
                         <Button
                           type="button"
@@ -369,7 +377,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                           title="Rename knowledge base"
                           aria-label={`Rename ${base.name}`}
                         >
-                          <Pencil className="h-4 w-4" strokeWidth={1.5} />
+                          <Pencil className="h-4 w-4" />
                         </Button>
                         <Button
                           type="button"
@@ -381,7 +389,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                           title="Delete knowledge base"
                           aria-label={`Delete ${base.name}`}
                         >
-                          <Trash2 className="h-4 w-4" strokeWidth={1.5} />
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </div>

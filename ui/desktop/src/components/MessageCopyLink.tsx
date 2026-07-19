@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy } from './icons';
+import { Copy } from './icons/app-icons';
 
 interface MessageCopyLinkProps {
   text: string;

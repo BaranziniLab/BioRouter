@@ -3,8 +3,7 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Workflow, generateDeepLink } from '../../workflow';
-import Copy from '../icons/Copy';
-import { Check } from '../icons/app-icons';
+import { Check, Copy } from '../icons/app-icons';
 
 interface ScheduleFromWorkflowModalProps {
   isOpen: boolean;

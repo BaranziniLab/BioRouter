@@ -54,7 +54,7 @@ export const ToolIconWithStatus: React.FC<ToolIconWithStatusProps> = ({
 }) => {
   return (
     <div className={cn('relative inline-block', className)}>
-      <ToolIcon className="w-3 h-3 flex-shrink-0" />
+      <ToolIcon className="h-4 w-4 flex-shrink-0" />
       <ToolCallStatusIndicator status={status} />
     </div>
   );

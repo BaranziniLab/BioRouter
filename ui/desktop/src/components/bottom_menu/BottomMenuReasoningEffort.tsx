@@ -43,7 +43,7 @@ export function BottomMenuReasoningEffort() {
               className="flex h-7 items-center gap-0.5 rounded-md px-0.5 cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
               aria-label={`Reasoning effort: ${REASONING_EFFORT_LABELS[effort]}`}
             >
-              <Gauge className="size-[18px]" strokeWidth={1.75} />
+              <Gauge className="size-[18px]" />
               {/* The default is the quiet state — only a deliberate quick/deep
                   choice is worth spending composer width on. */}
               {!isDefault && <span>{REASONING_EFFORT_LABELS[effort]}</span>}

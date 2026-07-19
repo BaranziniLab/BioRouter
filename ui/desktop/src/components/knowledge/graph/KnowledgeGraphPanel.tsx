@@ -72,7 +72,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             disabled={!activeKbId || loading}
             title="Refresh graph"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
           <Button
             variant="ghost"
@@ -81,7 +81,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             disabled={!activeKb}
             title="Export current knowledge base as .brkb"
           >
-            <Download className="mr-1 h-4 w-4" strokeWidth={1.5} />
+            <Download className="mr-1 h-4 w-4" />
             Export as .brkb
           </Button>
           <Button
@@ -91,7 +91,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             disabled={!activeKbId}
             title="Open change log"
           >
-            <History className="h-4 w-4 mr-1" strokeWidth={1.5} />
+            <History className="h-4 w-4 mr-1" />
             Change log
           </Button>
           <Button
@@ -101,7 +101,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             disabled={!activeKbId}
             title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
           >
-            <FolderOpen className="h-4 w-4 mr-1" strokeWidth={1.5} />
+            <FolderOpen className="h-4 w-4 mr-1" />
             Open folder
           </Button>
         </div>

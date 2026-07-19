@@ -1,5 +1,5 @@
 import React from 'react';
-import { Moon, Sliders, Sun } from '../icons/app-icons';
+import { Monitor, Moon, Sun } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -63,7 +63,7 @@ const ThemeSelector: React.FC<ThemeSelectorProps> = ({
           variant="ghost"
           size="sm"
         >
-          <Sliders className="h-3 w-3" />
+          <Monitor className="h-3 w-3" />
           <span>System</span>
         </Button>
       </div>

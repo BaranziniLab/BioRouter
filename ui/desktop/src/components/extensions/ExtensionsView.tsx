@@ -3,8 +3,7 @@ import ExtensionsSection from '../settings/extensions/ExtensionsSection';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
-import { Plus } from '../icons/app-icons';
-import { GPSIcon } from '../ui/icons';
+import { Plus, Search } from '../icons/app-icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import kebabCase from 'lodash/kebabCase';
 import ExtensionModal from '../settings/extensions/modal/ExtensionModal';
@@ -172,7 +171,7 @@ export default function ExtensionsView({
                 variant="outline"
                 onClick={() => setIsBrowseModalOpen(true)}
               >
-                <GPSIcon size={12} />
+                <Search className="h-4 w-4" />
                 Browse Extensions
               </Button>
               <Button

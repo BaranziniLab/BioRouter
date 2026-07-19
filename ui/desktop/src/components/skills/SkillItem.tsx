@@ -2,7 +2,7 @@ import { Skill, BIOROUTER_SKILLS_DIR, isBuiltinSkill } from './skillUtils';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
 import BuiltInBadge from '../ui/BuiltInBadge';
-import { Share2, Trash2, FolderDot } from '../icons/app-icons';
+import { Copy, Trash2, FolderDot } from '../icons/app-icons';
 
 interface SkillItemProps {
   skill: Skill;
@@ -62,7 +62,7 @@ export default function SkillItem({
             title="Copy SKILL.md to clipboard"
             aria-label={`Copy ${skill.name} SKILL.md to clipboard`}
           >
-            <Share2 className="h-3.5 w-3.5" />
+            <Copy className="h-3.5 w-3.5" />
           </Button>
           {!builtin && (
             <Button

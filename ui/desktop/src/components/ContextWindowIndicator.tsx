@@ -270,11 +270,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
               aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
               className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${current === 0 ? 'cursor-not-allowed text-text-default/40' : 'cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default'}`}
             >
-              <ChevronsDownUp
-                data-testid="compact-conversation-icon"
-                className="size-4"
-                strokeWidth={1.75}
-              />
+              <ChevronsDownUp data-testid="compact-conversation-icon" className="size-4" />
             </button>
           </span>
         </TooltipTrigger>

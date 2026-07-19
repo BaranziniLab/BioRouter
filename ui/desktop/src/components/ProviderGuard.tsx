@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
+import { ChevronDown } from './icons/app-icons';
 import { BioRouterMark } from './icons/BioRouterMark';
 import { BioRouterWordmark } from './icons/BioRouterWordmark';
 import { toastService } from '../toasts';
@@ -11,7 +12,6 @@ import CommercialSetupCard from './onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
 import { createNavigationHandler } from '../utils/navigationUtils';
-
 
 interface ProviderGuardProps {
   didSelectProvider: boolean;
@@ -191,14 +191,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           >
             <div className="flex flex-col items-center gap-1 text-text-muted">
               <span className="text-xs">Scroll for more</span>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
+              <ChevronDown className="w-4 h-4" />
             </div>
           </div>
         </div>

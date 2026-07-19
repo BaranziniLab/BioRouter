@@ -1,22 +1,24 @@
 import React from 'react';
 import {
   Archive,
-  Brain,
+  BookMarked,
+  Bookmark,
+  BookmarkPlus,
   Camera,
-  Code2,
+  CheckCircle,
+  Code,
+  Edit,
   Eye,
-  FileEdit,
   FilePlus,
+  FileSpreadsheet,
   FileText,
   Globe,
   Monitor,
-  Numbers,
-  Save,
   Search,
   Settings,
   Terminal,
-  Tool,
-} from '../components/icons/toolcalls';
+  Wrench,
+} from '../components/icons/app-icons';
 
 export type ToolIconProps = {
   className?: string;
@@ -31,15 +33,15 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
   switch (toolName) {
     // Developer Extension Tools
     case 'text_editor':
-      return FileEdit;
+      return Edit;
     case 'shell':
       return Terminal;
 
     // Memory Extension Tools
     case 'remember_memory':
-      return Save;
+      return BookmarkPlus;
     case 'retrieve_memories':
-      return Brain;
+      return BookMarked;
 
     // Computer Controller Extension Tools
     case 'automation_script':
@@ -55,7 +57,7 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
     case 'docx_tool':
       return FileText;
     case 'xlsx_tool':
-      return Numbers;
+      return FileSpreadsheet;
     case 'cache':
       return Archive;
 
@@ -67,21 +69,21 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
     case 'create_file':
       return FilePlus;
     case 'update_file':
-      return FileEdit;
+      return Edit;
 
     // Google Workspace Tools (if still supported)
     case 'sheets_tool':
-      return Numbers;
+      return FileSpreadsheet;
     case 'docs_tool':
       return FileText;
 
     // Special Tools
     case 'final_output':
-      return Tool; // Could be a checkmark icon if we had one
+      return CheckCircle;
 
     // Default fallback for unknown tools
     default:
-      return Tool;
+      return Wrench;
   }
 };
 
@@ -93,13 +95,13 @@ export const getToolIcon = (toolName: string): React.ComponentType<ToolIconProps
 export const getExtensionIcon = (extensionName: string): React.ComponentType<ToolIconProps> => {
   switch (extensionName) {
     case 'developer':
-      return Code2;
+      return Code;
     case 'memory':
-      return Brain;
+      return Bookmark;
     case 'computercontroller':
       return Monitor;
     default:
-      return Tool;
+      return Wrench;
   }
 };
 

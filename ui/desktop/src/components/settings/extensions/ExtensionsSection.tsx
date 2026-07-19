@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Button } from '../../ui/button';
-import { Plus } from '../../icons/app-icons';
-import { GPSIcon } from '../../ui/icons';
+import { Plus, Search } from '../../icons/app-icons';
 import { useConfig, FixedExtensionEntry } from '../../ConfigContext';
 import ExtensionList from './subcomponents/ExtensionList';
 import ExtensionModal from './modal/ExtensionModal';
@@ -255,7 +254,7 @@ export default function ExtensionsSection({
               variant="outline"
               onClick={() => setIsBrowseModalOpen(true)}
             >
-              <GPSIcon size={12} />
+              <Search className="h-4 w-4" />
               Browse Extensions
             </Button>
             <Button

@@ -6,7 +6,7 @@ import { getTextContent } from '../types/message';
 import { Message } from '../api';
 import MessageCopyLink from './MessageCopyLink';
 import { formatMessageTimestamp } from '../utils/timeUtils';
-import Edit from './icons/Edit';
+import { Edit } from './icons/app-icons';
 import { Button } from './ui/button';
 
 interface UserMessageProps {

@@ -42,7 +42,7 @@ import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { CodeAnalysis, Pipeline, ScrollText, Terminal } from './icons/app-icons';
+import { AlignLeft, CodeAnalysis, Pipeline, Terminal } from './icons/app-icons';
 import {
   createArtifactRenderRepairMessage,
   getThinkingMessage,
@@ -125,7 +125,7 @@ const ARTIFACT_PANEL_EXIT_MS = 120;
 // deleting it — and must not silently resume the chat.
 const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
 const HEADER_ACTION_BUTTON_CLASS =
-  'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
+  'no-drag flex items-center justify-center text-text-muted transition-colors hover:bg-background-medium hover:text-text-default';
 const PREVIEWABLE_TEXT_ARTIFACT_RE =
   /(?<![\w:/\\@])(?:file:\/\/|~[\\/]|\.{1,2}[\\/]|[a-z]:[\\/]|\/|\\\\)[^\s)\]}\x60"'<>]+\.(?:html?|png|jpe?g|gif|webp|svg|pdf|docx|xlsx|pptx|ipynb|sql|md|qmd|rmd|txt|log|json|csv|tsv|ya?ml|toml|xml|css|ts|tsx|js|jsx|py|r|rs|go|java|c|cpp|h|hpp)(?:[?#][^\s)\]}\x60"'<>]*)?(?![\w./\\])/gi;
 
@@ -1604,14 +1604,17 @@ function BaseChatContent({
                 variant="ghost"
                 size="sm"
                 shape="round"
-                className={HEADER_ACTION_BUTTON_CLASS}
-                aria-label="Review session summary"
+                className={cn(
+                  HEADER_ACTION_BUTTON_CLASS,
+                  reviewOpen && 'bg-background-medium text-text-default'
+                )}
+                aria-label="Session review"
               >
-                <ScrollText className="h-4 w-4" />
+                <AlignLeft className="h-4 w-4" />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent>Review session summary</TooltipContent>
+          <TooltipContent>Session review</TooltipContent>
         </Tooltip>
         <PopoverContent side="bottom" align="end" className="w-96 p-3">
           <div className="space-y-3">
@@ -1649,7 +1652,7 @@ function BaseChatContent({
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleWorkflowReviewAction}
               >
-                <Pipeline className="h-3.5 w-3.5 shrink-0" />
+                <Pipeline className="shrink-0" />
                 <span className="whitespace-nowrap">{workflow ? 'Workflow' : 'Make workflow'}</span>
               </Button>
               <Button
@@ -1659,7 +1662,7 @@ function BaseChatContent({
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleDiagnosticsReviewAction}
               >
-                <CodeAnalysis className="h-3.5 w-3.5 shrink-0" />
+                <CodeAnalysis className="shrink-0" />
                 <span className="whitespace-nowrap">Diagnostics</span>
               </Button>
             </div>

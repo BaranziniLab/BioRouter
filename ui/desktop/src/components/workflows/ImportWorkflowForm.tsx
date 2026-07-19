@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { Upload, Download } from '../icons/app-icons';
+import { Upload } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
   Dialog,
@@ -172,7 +172,7 @@ export default function ImportWorkflowForm({
 export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
   return (
     <Button onClick={onClick} variant="outline" className="flex items-center gap-2">
-      <Download className="w-4 h-4" />
+      <Upload className="w-4 h-4" />
       Import Workflow
     </Button>
   );

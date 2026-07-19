@@ -75,12 +75,12 @@ export function TitlebarControls({ hidden, isMacOS, onNewWindow }: TitlebarContr
         data-testid="titlebar-sidebar-toggle"
         size="sm"
         shape="round"
-        className="no-drag hover:!bg-background-medium"
+        className="no-drag text-text-muted hover:!bg-background-medium hover:text-text-default"
       />
       <Button
         data-testid="titlebar-new-window"
         onClick={onNewWindow}
-        className="no-drag hover:!bg-background-medium"
+        className="no-drag text-text-muted hover:!bg-background-medium hover:text-text-default"
         variant="ghost"
         size="sm"
         shape="round"

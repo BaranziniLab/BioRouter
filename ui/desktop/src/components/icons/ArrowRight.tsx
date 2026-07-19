@@ -15,6 +15,7 @@ export function ArrowRight({ className = '' }: ArrowRightProps) {
       <path
         d="M3.33678 8.00138L12.6701 8.00555M12.6701 8.00555L8.00553 3.3368M12.6701 8.00555L8.00136 12.6701"
         stroke="currentColor"
+        strokeWidth={1.5}
         strokeLinecap="round"
         strokeLinejoin="round"
       />

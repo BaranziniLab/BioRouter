@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, generateDeepLink, Parameter } from '../../workflow';
-import { Check, ExternalLink, Play, Save } from '../icons/app-icons';
-import Copy from '../icons/Copy';
+import { Check, Copy, ExternalLink, Play, Save } from '../icons/app-icons';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
