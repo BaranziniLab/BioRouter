@@ -131,6 +131,20 @@ export function resolveHex(name, scope) {
 /* ── WCAG maths — the single implementation ── */
 
 export const luminance = (h) => {
+  // FAIL CLOSED. This slices fixed hex offsets, so any other notation silently
+  // yields NaN — and `if (ratio < floor)` is FALSE for NaN, which means a
+  // non-hex colour would quietly exempt itself from every contrast check that
+  // uses a bare comparison. The generator's terminal and splash assertions had
+  // exactly that hole: `mark.navy: 'rgb(27, 27, 25)'` emitted an invisible
+  // 1.09:1 boot mark with every gate green. Throwing here closes it for every
+  // caller at once rather than per-assertion.
+  if (typeof h !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(h.trim())) {
+    throw new TypeError(
+      `luminance() needs a 6-digit hex, got ${JSON.stringify(h)}. ` +
+        `Non-hex values cannot be contrast-checked — give the token a hex, or ` +
+        `exclude it from the check explicitly.`
+    );
+  }
   const c = [1, 3, 5]
     .map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
     .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));

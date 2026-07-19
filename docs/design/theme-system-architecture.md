@@ -204,10 +204,15 @@ copied its surfaces verbatim.
 
 ### Migration was proven, not asserted
 
-`scripts/extract-themes.mjs` pulled the shipping values into definitions; resolved-token output was
-then diffed against a pre-change baseline. **All 104 tokens per family identical; Parchment 77/77
-untouched.** The only differences were the two intended ones. The extractor is kept only so the
-migration is reproducible; it is not part of the build.
+A one-shot extractor pulled the shipping values into definitions; resolved-token output was then
+diffed against a pre-change baseline. **All 104 tokens per family identical; Parchment 77/77
+untouched.** The only differences were the two intended ones.
+
+That extractor has since been **deleted**, deliberately. It read the hand-written values out of
+`main.css` / `codeTheme.ts` / `InAppTerminalDock.tsx` — which no longer hold them, because those
+files are now generated or read from the generated module. Re-running it would have emptied all
+three definitions and exited 0. The migration is recorded in commit `74a8fe01`; recovering the tool
+means recovering it from there, with fresh eyes on what it reads.
 
 ---
 
