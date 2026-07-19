@@ -11,11 +11,17 @@ import {
   AppWindow as _AppWindow,
   AppWindowMac as _AppWindowMac,
   Archive as _Archive,
+  ArrowDown as _ArrowDown,
   ArrowLeft as _ArrowLeft,
+  ArrowUp as _ArrowUp,
+  BookMarked as _BookMarked,
   BookOpen as _BookOpen,
+  Bookmark as _Bookmark,
+  BookmarkPlus as _BookmarkPlus,
   Bot as _Bot,
   Brain as _Brain,
   Calendar as _Calendar,
+  Camera as _Camera,
   Check as _Check,
   CheckCircle as _CheckCircle,
   CheckCircle2 as _CheckCircle2,
@@ -40,6 +46,8 @@ import {
   EyeOff as _EyeOff,
   File as _File,
   FileCode2 as _FileCode2,
+  FilePlus as _FilePlus,
+  FileSpreadsheet as _FileSpreadsheet,
   FileStack as _FileStack,
   FileText as _FileText,
   FlaskConical as _FlaskConical,
@@ -74,6 +82,7 @@ import {
   Minus as _Minus,
   Monitor as _Monitor,
   Moon as _Moon,
+  MoreHorizontal as _MoreHorizontal,
   Music as _Music,
   Package as _Package,
   Palette as _Palette,
@@ -136,18 +145,6 @@ const light = (Icon: LucideIcon): React.FC<LucideProps> => {
 };
 
 // ---------------------------------------------------------------------------
-// Canonical icon sizes (design.md §3.9). Pass as the `size` prop, e.g.
-// <Search size={ICON_SIZE.dense} />.
-// ---------------------------------------------------------------------------
-export const ICON_SIZE = {
-  dense: 16, // inline / dense rows
-  default: 20, // default
-  page: 24, // page-level / empty-state
-} as const;
-
-export type IconSizeName = keyof typeof ICON_SIZE;
-
-// ---------------------------------------------------------------------------
 // Named exports — same names as the original file so no consumer changes.
 // ---------------------------------------------------------------------------
 
@@ -158,11 +155,17 @@ export const AlertTriangle = light(_AlertTriangle);
 export const AppWindow = light(_AppWindow);
 export const AppWindowMac = light(_AppWindowMac);
 export const Archive = light(_Archive);
+export const ArrowDown = light(_ArrowDown);
 export const ArrowLeft = light(_ArrowLeft);
+export const ArrowUp = light(_ArrowUp);
+export const BookMarked = light(_BookMarked);
 export const BookOpen = light(_BookOpen);
+export const Bookmark = light(_Bookmark);
+export const BookmarkPlus = light(_BookmarkPlus);
 export const Bot = light(_Bot);
 export const Brain = light(_Brain);
 export const Calendar = light(_Calendar);
+export const Camera = light(_Camera);
 export const Check = light(_Check);
 export const CheckIcon = Check;
 export const CheckCircle = light(_CheckCircle);
@@ -191,6 +194,8 @@ export const Eye = light(_Eye);
 export const EyeOff = light(_EyeOff);
 export const File = light(_File);
 export const FileCode2 = light(_FileCode2);
+export const FilePlus = light(_FilePlus);
+export const FileSpreadsheet = light(_FileSpreadsheet);
 export const FileStack = light(_FileStack);
 export const FileText = light(_FileText);
 export const FlaskConical = light(_FlaskConical);
@@ -224,6 +229,7 @@ export const MessageSquareText = light(_MessageSquareText);
 export const Minus = light(_Minus);
 export const Monitor = light(_Monitor);
 export const Moon = light(_Moon);
+export const MoreHorizontal = light(_MoreHorizontal);
 export const Music = light(_Music);
 export const Package = light(_Package);
 export const Palette = light(_Palette);
@@ -281,15 +287,15 @@ export const Zap = light(_Zap);
 // ---------------------------------------------------------------------------
 
 /** Central node with rays — represents a knowledge graph / KB. */
-export const KnowledgeIcon: React.FC<LucideProps> = ({ strokeWidth = 1.5, ...props }) => (
+export const KnowledgeIcon: React.FC<LucideProps> = (props) => (
   <svg
     viewBox="0 0 24 24"
     fill="none"
-    stroke="currentColor"
-    strokeWidth={strokeWidth}
     strokeLinecap="round"
     strokeLinejoin="round"
     {...props}
+    stroke="currentColor"
+    strokeWidth={1.5}
   >
     <circle cx="12" cy="12" r="3" />
     <circle cx="5" cy="6" r="1.6" />
