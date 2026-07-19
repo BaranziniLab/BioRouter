@@ -43,7 +43,15 @@ pub type Error = rmcp::ServiceError;
 /// The shared handle type for an MCP client. A `SharedMcpPool` hands out clones
 /// of one of these so N agents address one process (BR-54); the unpooled path
 /// still owns a unique one per extension.
-pub type McpClientBox = Arc<Mutex<Box<dyn McpClientTrait>>>;
+///
+/// H6: this is deliberately NOT wrapped in a `Mutex`. `McpClientTrait::call_tool`
+/// takes `&self` and every implementation is internally synchronized (the rmcp
+/// transport guards its own framing; in-process servers guard their own state),
+/// so an outer mutex bought nothing and cost everything: it was held across the
+/// entire `call_tool` await, converting `max(tool durations)` into
+/// `sum(tool durations)` for concurrent calls on one extension.
+/// See `h6_parallel_same_extension` in `extension_manager.rs`.
+pub type McpClientBox = Arc<dyn McpClientTrait>;
 
 /// Per-dispatch notification routes, keyed by the MCP progress token assigned to
 /// a single tool call. Shared between the [`McpClient`] and its [`BioRouterClient`]

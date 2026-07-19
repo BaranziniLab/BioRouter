@@ -223,7 +223,7 @@ where
                 bundled: None,
                 available_tools: vec![],
             },
-            Arc::new(Mutex::new(Box::new(mock_client))),
+            Arc::new(mock_client),
             None,
             None,
         )
