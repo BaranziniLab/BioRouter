@@ -350,3 +350,65 @@ Tools fire 20 ms after the response arrives and take ~70 ms; inter-turn
 bookkeeping is ~50 ms. The 2–5 s gap is model time essentially in full. This
 **empirically confirms the investigation's ~90%-intrinsic conclusion** and is
 why Track 2 (make the wait legible), not optimization, was the correct fix.
+
+---
+
+## 10. Two bugs found by live GUI testing that the unit tests missed
+
+Both were invisible to the test suites and only surfaced when the app was
+actually driven. Recorded because each shows a specific blind spot.
+
+### 10.1 "Maximum update depth exceeded" — PRE-EXISTING, fixed (`d789c6ab`)
+
+Fired on every turn, tearing the transcript down via the ErrorBoundary.
+**Confirmed pre-existing**: reproduced identically with the trailing-indicator
+commit reverted (1 depth-error either way), so it is not a regression from this
+track.
+
+`ProgressiveMessageList`'s batching effect listed `renderedCount` in its own
+dependency array while only ever WRITING it through `setRenderedCount(cur => …)`
+— it never reads it. It also listed `onRenderingComplete`, whose identity
+`BaseChat` rebuilds on every `messages.length` change
+(`useCallback(…, [messages.length])`). During a stream the two re-armed each
+other: effect → setState → parent re-render → new callback identity → effect.
+
+Fix: hold the callback in a ref, drop both from the dependency array. Verified
+live with a `console.error` collector: **1 depth-error before, 0 after.**
+
+**The accompanying test is NOT a gate and says so in-place.** It was checked
+against the unfixed component and still passed — jsdom plus Testing Library's
+`act()` batching do not reproduce the cascade. The load-bearing evidence is the
+live check, not the test.
+
+### 10.2 One transcript bubble per token on Bedrock — REGRESSION, fixed (`0a4b0e57`)
+
+A streamed Bedrock reply rendered a separate message bubble per token, each with
+its own timestamp. **This was a real regression from §4's ConverseStream work.**
+
+The desktop store merges streamed messages by `Message::id`
+(`chatStreamStore.pushMessage`). The new decoder built every message with
+`Message::new(..)` and never set an id, so nothing merged. The Anthropic decoder
+gets this for free by reusing the `message_start` id
+(`formats/anthropic.rs:629`); ConverseStream's `messageStart` carries only a
+role, so the decoder now mints one id per response and stamps every message.
+
+**Why 20 tests missed it:** they all asserted decoded *content* — text, tool
+names, arguments, usage — and never once asserted message *identity*. The bug
+was structurally outside what they looked at. Two tests added that do gate it,
+both verified to FAIL with the id assignment removed
+(`every streamed message needs an id: [None, None, None, None]`).
+
+**Generalisable lesson:** a decoder's contract includes the envelope, not just
+the payload. Any future streaming decoder needs an "all messages of one response
+share one id, and two responses do not" test.
+
+### 10.3 Final GUI verification, both providers
+
+| Check | versa_bedrock (claude-sonnet-4-6) | versa_azure (gpt-5.5) |
+|---|---|---|
+| Tool call executes, result rendered | PASS | PASS |
+| Response is ONE message, one timestamp | PASS (after 10.2) | PASS |
+| Trailing activity indicator + elapsed timer | PASS (`Thinking · 23s`) | PASS |
+| Tool card status honest while running | PASS | PASS |
+| React depth errors | 0 | 0 |
+| Cost tracking non-zero | PASS | PASS ($0.04) |
