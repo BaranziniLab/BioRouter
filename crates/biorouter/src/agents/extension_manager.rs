@@ -696,11 +696,9 @@ impl ExtensionManager {
                 };
 
                 let server_info = client.get_info().cloned();
-                Ok(PooledEntry::new(
-                    Arc::new(Mutex::new(client)),
-                    server_info,
-                    temp_dir,
-                ))
+                // `Box<dyn McpClientTrait>` -> `Arc<dyn McpClientTrait>` (H6:
+                // the handle is no longer mutex-wrapped).
+                Ok(PooledEntry::new(Arc::from(client), server_info, temp_dir))
             }
         };
 
@@ -805,7 +803,7 @@ impl ExtensionManager {
             name.to_string(),
             Extension {
                 config,
-                client: Arc::new(Mutex::new(Box::new(client) as Box<dyn McpClientTrait>)),
+                client: Arc::new(client),
                 server_info: info,
                 _temp_dir: None,
                 inprocess: true,
@@ -954,7 +952,7 @@ impl ExtensionManager {
                 let per_ext = async {
                     let cancel_token = CancellationToken::default();
                     let mut tools = Vec::new();
-                    let client_guard = client.lock().await;
+                    let client_guard = &*client;
                     let mut client_tools = match client_guard
                         .list_tools(None, cancel_token.clone())
                         .await
@@ -1139,7 +1137,7 @@ impl ExtensionManager {
             .await
             .ok_or(ErrorData::new(ErrorCode::INVALID_PARAMS, error_msg, None))?;
 
-        let client_guard = client.lock().await;
+        let client_guard = &*client;
         client_guard
             .read_resource(uri, cancellation_token)
             .await
@@ -1164,7 +1162,7 @@ impl ExtensionManager {
         };
 
         for (extension_name, client) in extensions_to_check {
-            let client_guard = client.lock().await;
+            let client_guard = &*client;
 
             match client_guard
                 .list_resources(None, CancellationToken::default())
@@ -1202,7 +1200,7 @@ impl ExtensionManager {
                 )
             })?;
 
-        let client_guard = client.lock().await;
+        let client_guard = &*client;
         client_guard
             .list_resources(None, cancellation_token)
             .await
@@ -1381,24 +1379,13 @@ impl ExtensionManager {
         // token and returns a receiver that gets ONLY this dispatch's
         // notifications; on an unpooled client it is the legacy broadcast
         // subscription with no token.
-        // This lock is taken on the dispatch loop itself (not inside the
-        // returned future), so contention here stalls the dispatch of every
-        // *subsequent* tool in the same turn — measured separately from the
-        // in-future lock below.
-        //
-        // Two spans, not one: `register_dispatch()` is real work (it mints a
-        // progress token and installs a routing entry), so timing the lock
-        // acquisition and the call together would report registration cost as
-        // mutex contention and vice versa. The guard is bound rather than left
-        // a temporary so the lock-wait span closes before the call span opens.
-        let register_wait = crate::agents::phase_timing::Phase::start("mcp.register_dispatch_wait");
-        let client_guard = client.lock().await;
-        drop(register_wait);
-
+        // H6: there is no client-wide lock to wait on any more, so the former
+        // `mcp.register_dispatch_wait` span is gone. `register_dispatch()` is
+        // still real work (it mints a progress token and installs a routing
+        // entry) and keeps its own span.
         let register_call = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
-        let (progress_token, notifications_receiver) = client_guard.register_dispatch().await;
+        let (progress_token, notifications_receiver) = client.register_dispatch().await;
         drop(register_call);
-        drop(client_guard);
         let session_id = session_id.to_string();
 
         let fut = async move {
@@ -1407,22 +1394,18 @@ impl ExtensionManager {
                 tool_name,
                 session_id
             );
-            // H6 measurement. Two tool calls on the SAME extension client
-            // serialize on this mutex, which converts `max(durations)` into
-            // `sum(durations)`. Wait time and call time must be logged as
-            // separate spans: a large `mcp.client_lock_wait` next to a small
-            // `mcp.call_tool` is the signature of that serialization, and the
-            // combined span cannot distinguish it from a genuinely slow tool.
-            let lock_wait = crate::agents::phase_timing::Phase::start("mcp.client_lock_wait");
-            let client_guard = client.lock().await;
-            drop(lock_wait);
-
+            // H6 (fixed): this used to take a client-wide mutex and hold it
+            // across the whole `call_tool` await, so two tool calls on the SAME
+            // extension ran back-to-back — `sum(durations)` instead of
+            // `max(durations)`. `call_tool` takes `&self` and implementations
+            // are internally synchronized, so the guard (and its
+            // `mcp.client_lock_wait` span) is gone and calls now overlap.
             let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             let mut meta = McpMeta::new(&session_id);
             if let Some(token) = progress_token {
                 meta = meta.with_progress_token(token);
             }
-            client_guard
+            client
                 .call_tool(&tool_name, arguments, meta, cancellation_token)
                 .await
                 .map_err(|e| match e {
@@ -1455,7 +1438,7 @@ impl ExtensionManager {
                 )
             })?;
 
-        let client_guard = client.lock().await;
+        let client_guard = &*client;
         client_guard
             .list_prompts(None, cancellation_token)
             .await
@@ -1528,7 +1511,7 @@ impl ExtensionManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("Extension {} not found", extension_name))?;
 
-        let client_guard = client.lock().await;
+        let client_guard = &*client;
         client_guard
             .get_prompt(name, arguments, cancellation_token)
             .await
@@ -1641,7 +1624,7 @@ impl ExtensionManager {
         };
 
         for (name, client) in platform_clients {
-            let client_guard = client.lock().await;
+            let client_guard = &*client;
             if let Some(moim_content) = client_guard.get_moim(session_id).await {
                 tracing::debug!("MOIM content from {}: {} chars", name, moim_content.len());
                 content.push('\n');
@@ -1795,6 +1778,139 @@ mod tests {
         }
     }
 
+    /// H6 regression guard. A client whose `call_tool` sleeps, so that N
+    /// concurrent dispatches against the SAME extension take `max(durations)`
+    /// when they truly run in parallel and `sum(durations)` when something
+    /// serializes them.
+    struct SlowMockClient {
+        delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for SlowMockClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            tokio::time::sleep(self.delay).await;
+            Ok(CallToolResult {
+                content: vec![],
+                is_error: None,
+                structured_content: None,
+                meta: None,
+            })
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// H6: three tool calls on ONE extension client must overlap.
+    ///
+    /// Before the redundant `McpClientBox` mutex was removed, `dispatch_tool_call`
+    /// held the client guard across the whole `call_tool` await, turning
+    /// `max(400ms, 400ms, 400ms)` into `sum(...)` = ~1200ms. This test fails
+    /// (~1.2s elapsed) with the mutex in place and passes (~0.4s) without it.
+    #[tokio::test]
+    async fn h6_parallel_same_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        extension_manager
+            .add_mock_extension(
+                "slow".to_string(),
+                Arc::new(SlowMockClient {
+                    delay: std::time::Duration::from_millis(400),
+                }),
+            )
+            .await;
+
+        // Dispatch all three first: `register_dispatch` runs on the dispatch
+        // loop, the actual `call_tool` runs inside the returned future.
+        let mut futures = Vec::new();
+        for _ in 0..3 {
+            let tool_call = CallToolRequestParams {
+                task: None,
+                name: "slow__tool".to_string().into(),
+                arguments: Some(object!({})),
+                meta: None,
+            };
+            let dispatched = extension_manager
+                .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+                .await
+                .expect("dispatch should succeed");
+            futures.push(dispatched.result);
+        }
+
+        let start = std::time::Instant::now();
+        let results = futures::future::join_all(futures).await;
+        let elapsed = start.elapsed();
+
+        for result in results {
+            assert!(result.is_ok(), "each concurrent call should succeed");
+        }
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(700),
+            "3 concurrent calls on one extension took {elapsed:?}; expected ~400ms. \
+             They are being serialized on a client-wide mutex (H6)."
+        );
+    }
+
     #[tokio::test]
     async fn test_get_client_for_tool() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1803,31 +1919,19 @@ mod tests {
 
         // Add some mock clients using the helper method
         extension_manager
-            .add_mock_extension(
-                "test_client".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
             .await;
 
         extension_manager
-            .add_mock_extension(
-                "__client".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("__client".to_string(), Arc::new(MockClient {}))
             .await;
 
         extension_manager
-            .add_mock_extension(
-                "__cli__ent__".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("__cli__ent__".to_string(), Arc::new(MockClient {}))
             .await;
 
         extension_manager
-            .add_mock_extension(
-                "client 🚀".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("client 🚀".to_string(), Arc::new(MockClient {}))
             .await;
 
         // Test basic case
@@ -1987,24 +2091,15 @@ mod tests {
 
         // Add some mock clients using the helper method
         extension_manager
-            .add_mock_extension(
-                "test_client".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
             .await;
 
         extension_manager
-            .add_mock_extension(
-                "__cli__ent__".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("__cli__ent__".to_string(), Arc::new(MockClient {}))
             .await;
 
         extension_manager
-            .add_mock_extension(
-                "client 🚀".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("client 🚀".to_string(), Arc::new(MockClient {}))
             .await;
 
         // verify a normal tool call
@@ -2133,10 +2228,7 @@ mod tests {
             .set_working_dir(temp_dir.path().to_path_buf())
             .await;
         extension_manager
-            .add_mock_extension(
-                "test_client".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
             .await;
 
         // A tool from an arbitrary extension that reads the existing .env is denied
@@ -2183,7 +2275,7 @@ mod tests {
         extension_manager
             .add_mock_extension_with_tools(
                 "test_extension".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
+                Arc::new(MockClient {}),
                 available_tools,
             )
             .await;
@@ -2210,7 +2302,7 @@ mod tests {
         extension_manager
             .add_mock_extension_with_tools(
                 "test_extension".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
+                Arc::new(MockClient {}),
                 vec![], // Empty available_tools means all tools are available by default
             )
             .await;
@@ -2239,7 +2331,7 @@ mod tests {
         extension_manager
             .add_mock_extension_with_tools(
                 "test_extension".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
+                Arc::new(MockClient {}),
                 available_tools,
             )
             .await;
@@ -2373,10 +2465,7 @@ mod tests {
             ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
 
         extension_manager
-            .add_mock_extension(
-                "ext_a".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_a".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools_after_first = extension_manager.get_prefixed_tools(None).await.unwrap();
@@ -2388,10 +2477,7 @@ mod tests {
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_b__")));
 
         extension_manager
-            .add_mock_extension(
-                "ext_b".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_b".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools_after_second = extension_manager.get_prefixed_tools(None).await.unwrap();
@@ -2410,16 +2496,10 @@ mod tests {
             ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
 
         extension_manager
-            .add_mock_extension(
-                "ext_a".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_a".to_string(), Arc::new(MockClient {}))
             .await;
         extension_manager
-            .add_mock_extension(
-                "ext_b".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_b".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools_before = extension_manager.get_prefixed_tools(None).await.unwrap();
@@ -2442,16 +2522,10 @@ mod tests {
             ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
 
         extension_manager
-            .add_mock_extension(
-                "ext_a".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_a".to_string(), Arc::new(MockClient {}))
             .await;
         extension_manager
-            .add_mock_extension(
-                "ext_b".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_b".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools = extension_manager
@@ -2471,16 +2545,10 @@ mod tests {
             ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
 
         extension_manager
-            .add_mock_extension(
-                "ext_a".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_a".to_string(), Arc::new(MockClient {}))
             .await;
         extension_manager
-            .add_mock_extension(
-                "ext_b".to_string(),
-                Arc::new(Mutex::new(Box::new(MockClient {}))),
-            )
+            .add_mock_extension("ext_b".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools = extension_manager
