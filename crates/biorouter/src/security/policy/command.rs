@@ -610,6 +610,17 @@ pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
             '>' if !in_single && !in_double => {
+                // A `>` that closes a contiguous `<word>` angle-bracket placeholder
+                // (markdown/HTML prose like `<type>/`, `<slug>`, `</section>`) is a
+                // tag close, not a shell redirect operator — no real shell writes via
+                // `<word>`. Without this, documentation prose scanned as an embedded
+                // command (sensitive_ops' execute_code body scan) mis-reads `<type>/`
+                // as a redirect to `/`. Guarded by the sensitive_ops regression test
+                // execute_code_markdown_angle_bracket_placeholder_is_not_flagged.
+                if closes_angle_bracket_tag(&bytes, i) {
+                    i += 1;
+                    continue;
+                }
                 let mut j = i + 1;
                 if bytes.get(j) == Some(&'>') {
                     j += 1;
@@ -633,6 +644,33 @@ pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// True when the `>` at `gt_index` closes a contiguous `<word>` angle-bracket
+/// placeholder: scanning left from just before it reaches a matching unquoted `<`
+/// through a non-empty run of tag-word chars (alphanumeric or `-_./:`), with no
+/// whitespace or other shell metacharacter in between. Contiguous only, so a real
+/// redirect with any space around the operator (`echo hi > out`, `cmd 2> err`,
+/// even `echo hi>fused.txt`) is never mistaken for a tag.
+fn closes_angle_bracket_tag(bytes: &[char], gt_index: usize) -> bool {
+    if gt_index == 0 {
+        return false;
+    }
+    let mut k = gt_index;
+    let mut saw_word = false;
+    while k > 0 {
+        let c = bytes[k - 1];
+        if c == '<' {
+            return saw_word;
+        }
+        if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':') {
+            saw_word = true;
+            k -= 1;
+        } else {
+            return false;
+        }
+    }
+    false
 }
 
 /// Drop leading wrapper binaries (`sudo`, `env`, …) plus their flags and

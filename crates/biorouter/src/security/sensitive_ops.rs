@@ -818,6 +818,36 @@ record_result(c);"#;
     }
 
     #[test]
+    fn execute_code_markdown_angle_bracket_placeholder_is_not_flagged() {
+        // Regression (BIOOKF-I1-DEFECT-1): a text_editor write whose file_text is a
+        // markdown doc containing an angle-bracket placeholder line like
+        // `knowledge/<type>/<slug>.md` must NOT be read as a shell redirect to `/`.
+        // The `>` of `<type>` was captured by redirect_targets, yielding target `/`
+        // → Blast::Root → a spurious "writes to / (the filesystem root or a whole
+        // volume)" approval prompt on an ordinary /tmp write.
+        let env = nix_env();
+        let code = r#"import { text_editor } from "developer";
+text_editor({ command: "write", path: "/tmp/biookf-rebuild/SPEC.md", file_text: `# BioOKF SPEC
+
+Directory layout:
+
+  raw/
+  knowledge/
+    <type>/
+      <slug>.md
+  index.md
+  log.md
+
+Every concept doc's type is one of the 28.
+` });
+record_result("done");"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "markdown prose with <type>/<slug> placeholders must not be flagged as a root write"
+        );
+    }
+
+    #[test]
     fn execute_code_ordinary_work_is_not_flagged() {
         let env = nix_env();
         let code = r#"import { shell, text_editor } from "developer";
