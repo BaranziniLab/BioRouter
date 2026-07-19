@@ -1323,9 +1323,6 @@ mod bedrock_stream_tests {
 
     // ---- text ---------------------------------------------------------------
 
-    /// The entire point of the change: each text delta must surface as its own
-    /// item, not be buffered until the turn ends.
-    #[test]
     /// REGRESSION (2026-07-18, found in the live GUI, not by these tests):
     /// every message a single response yields must share ONE id.
     ///
@@ -1388,6 +1385,9 @@ mod bedrock_stream_tests {
         assert_ne!(ida, idb, "two responses must not share a message id");
     }
 
+    /// The entire point of the change: each text delta must surface as its own
+    /// item, not be buffered until the turn ends.
+    #[test]
     fn text_is_yielded_incrementally_as_it_arrives() {
         let mut decoder = BedrockStreamDecoder::new("us.anthropic.claude-sonnet-4-6");
         let items = drain(

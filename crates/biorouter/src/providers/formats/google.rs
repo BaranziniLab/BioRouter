@@ -512,13 +512,14 @@ fn flush_pending_tool_contents(
     if pending.is_empty() {
         return None;
     }
-    let content: Vec<MessageContent> = pending.drain(..).collect();
+    let content: Vec<MessageContent> = std::mem::take(pending);
     Some(
         Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content)
             .with_id(stream_id.to_string()),
     )
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
 ) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static

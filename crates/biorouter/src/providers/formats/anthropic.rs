@@ -508,7 +508,7 @@ fn flush_pending_tool_contents(
     if pending.is_empty() {
         return None;
     }
-    let content: Vec<MessageContent> = pending.drain(..).collect();
+    let content: Vec<MessageContent> = std::mem::take(pending);
     let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
     message.id = message_id.clone();
     Some(message)

@@ -6,6 +6,7 @@
 //! tool calls dispatched as a single batch:
 //!   - `call_slow` (request order #1): `sleep 0.4 && echo slow`  → finishes LAST
 //!   - `call_fast` (request order #2): `sleep 0.02 && echo fast` → finishes FIRST
+//!
 //! so completion order (`fast`, `slow`) genuinely differs from request order
 //! (`slow`, `fast`). If the two shells ever serialized in dispatch order the slow
 //! one would finish first and this test would fail — so a pass also proves the
@@ -241,9 +242,7 @@ async fn streamed_responses_follow_completion_order_persisted_keeps_request_orde
     let provider = Arc::new(BatchShellProvider::new());
     let (agent, session_id, _work) = agent_with_provider(provider.clone()).await;
 
-    let streamed = drain(&agent, "run both shells", &session_id)
-        .await
-        .unwrap();
+    let streamed = drain(&agent, "run both shells", &session_id).await.unwrap();
 
     // Both tools must actually have executed — otherwise every ordering
     // assertion below is vacuous.

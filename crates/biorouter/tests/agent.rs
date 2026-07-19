@@ -458,6 +458,7 @@ mod tests {
                         responses.push(response);
                     }
                     Ok(AgentEvent::McpNotification(_)) => {}
+                    Ok(AgentEvent::ToolCallPending(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_updated_conversation)) => {
                         // We should update the conversation here, but we're not reading it
@@ -643,6 +644,7 @@ mod tests {
                         responses.push(response);
                     }
                     Ok(AgentEvent::McpNotification(_)) => {}
+                    Ok(AgentEvent::ToolCallPending(_)) => {}
                     Ok(AgentEvent::ModelChange { .. }) => {}
                     Ok(AgentEvent::HistoryReplaced(_)) => {}
                     Ok(AgentEvent::TokenUsage(_)) => {}
@@ -780,6 +782,7 @@ mod tests {
                         responses.push(response);
                     }
                     AgentEvent::McpNotification(_)
+                    | AgentEvent::ToolCallPending(_)
                     | AgentEvent::ModelChange { .. }
                     | AgentEvent::HistoryReplaced(_) => {}
                     AgentEvent::TurnAborted { code, message } => {
