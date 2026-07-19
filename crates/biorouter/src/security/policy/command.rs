@@ -598,7 +598,7 @@ fn blast_rank(b: Blast) -> u8 {
 }
 
 /// Capture `>` / `>>` (and `1>`, `2>`, `&>`) redirect targets from a raw stage.
-fn redirect_targets(stage: &str) -> Vec<String> {
+pub(crate) fn redirect_targets(stage: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes: Vec<char> = stage.chars().collect();
     let mut i = 0;

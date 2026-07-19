@@ -46,15 +46,32 @@
 //!
 //! # Boundary (documented for security review)
 //!
-//! This gate inspects the **path arguments of file-editor-style tool calls**
-//! (`text_editor` and `*_file` / `mkdir` / … tools). It does **not** parse
-//! arbitrary shell command lines — those are already governed by the command
-//! policy engine (system-dir destructive shapes are *denied*) and by
-//! `SecretGuard` (secret-file access is *denied*). A shell write to a non-secret
-//! user-credential path (e.g. `cp key ~/.ssh/authorized_keys`) is the one shape
-//! neither this gate nor the policy engine currently escalates; extending the
-//! policy engine's `ask` rules to those destinations is the recommended
-//! follow-up.
+//! This gate inspects three argument shapes on a tool call:
+//!   1. the **path arguments of file-editor-style tool calls** (`text_editor`
+//!      and `*_file` / `mkdir` / … tools) — the original behaviour;
+//!   2. **shell command lines** (`developer/shell` and any command-bearing tool)
+//!      — a redirect (`>` / `>>`) into a sensitive target, or the path argument
+//!      of a mutating binary (`cp`, `mv`, `tee`, `install`, `Set-Content`, …);
+//!   3. the **`code` body of `code_execution/execute_code`** — the opaque JS
+//!      blob the default code-execution mode wraps every file op in. Its
+//!      *inner* tool calls are dispatched straight through the extension
+//!      manager and never reach an agent-layer inspector, so a sensitive write
+//!      hidden inside a script would otherwise run with no prompt (the R2-01
+//!      regression: `echo … >> ~/.ssh/config` executed silently in Auto mode).
+//!      The body's string literals are scanned as embedded shell commands and,
+//!      when a mutating editor command is present, as sensitive path targets.
+//!
+//! Reads are never escalated: only redirect targets, mutating-binary targets,
+//! and mutating editor writes count. A `cat /etc/hosts` or a `view` of a
+//! sensitive path yields nothing.
+//!
+//! Known gap (documented, not silently ignored): a target *dynamically*
+//! constructed inside a script (`shell({command: \`… >> ${dir}/config\`})` with
+//! `dir` computed at runtime) cannot be resolved by static scanning and is not
+//! escalated. Gating the code-execution extension's *inner* dispatch boundary
+//! (`code_execution_extension::run_tool_handler`) against the same sensitivity
+//! check — with a deny, since that layer cannot surface an interactive ask — is
+//! the recommended deeper follow-up.
 
 use std::path::Path;
 
@@ -65,6 +82,8 @@ use uuid::Uuid;
 
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
+use crate::security::command_text_from;
+use crate::security::policy::command::{redirect_targets, ParsedCommand};
 use crate::security::policy::target::{classify, normalize_for, Blast, EnvFacts, TargetPath};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
@@ -264,29 +283,167 @@ fn path_values(args: &Map<String, Value>) -> Vec<String> {
     out
 }
 
+/// Shell binaries whose path arguments are *write* targets. POSIX basenames,
+/// PowerShell canonical cmdlets (matched case-insensitively — [`ParsedCommand`]
+/// normalizes `ri` → `Remove-Item`), and `cmd.exe` verbs. Read-only tools
+/// (`cat`, `less`, `grep`, `ls`) are deliberately absent, so reading a sensitive
+/// path is never escalated.
+const SHELL_MUTATING_BINARIES: &[&str] = &[
+    // POSIX
+    "cp", "mv", "rm", "rmdir", "unlink", "mkdir", "touch", "tee", "install", "ln", "dd",
+    "truncate", "shred", "chmod", "chown", "chgrp", "mkfifo", "mknod", "patch", "rsync",
+    // PowerShell cmdlets (canonicalized by the parser)
+    "set-content", "add-content", "out-file", "new-item", "copy-item", "move-item",
+    "remove-item", "clear-content", "rename-item",
+    // cmd.exe
+    "copy", "move", "del", "erase", "md", "rd", "ren", "rename", "xcopy", "robocopy",
+];
+
+/// Tokens whose presence in an `execute_code` body marks it as containing a
+/// mutating editor call (`text_editor({command:"write"…})`), gating the
+/// path-literal scan so a `view`-only script that merely *reads* a sensitive
+/// path is not escalated.
+const EDITOR_WRITE_INDICATORS: &[&str] =
+    &["write", "create", "str_replace", "insert", "append", "delete"];
+
+/// True for the code-execution `execute_code` tool, whose opaque JS body carries
+/// the real (inner) tool calls and must be scanned for embedded sensitive writes.
+fn is_execute_code(tool_name: &str) -> bool {
+    tool_name.to_ascii_lowercase().contains("execute_code")
+}
+
+/// A sensitive **write** in a shell command line: any redirect target (`>` /
+/// `>>`), or the path argument of a mutating binary. Returns the normalized
+/// target path + reason, or `None` for a read.
+fn command_writes_sensitively(command: &str, env: &EnvFacts) -> Option<(String, &'static str)> {
+    // Redirects are unconditional writes, wherever in the line they appear.
+    for rt in redirect_targets(command) {
+        let tp = normalize_for(env.platform, &rt, env);
+        if let Some(reason) = sensitivity_reason(&tp, env) {
+            return Some((tp.norm, reason));
+        }
+    }
+    // Mutating binaries: their (already classified) path/redirect targets.
+    let parsed = ParsedCommand::parse_for(command, env.platform, env);
+    for seg in &parsed.segments {
+        if !SHELL_MUTATING_BINARIES.contains(&seg.binary.to_ascii_lowercase().as_str()) {
+            continue;
+        }
+        for hit in &seg.targets {
+            if let Some(reason) = sensitivity_reason(&hit.path, env) {
+                return Some((hit.path.norm.clone(), reason));
+            }
+        }
+    }
+    None
+}
+
+/// Extract the raw inner text of every JS string / template literal in a script.
+/// Escapes are kept verbatim (a `\n` stays two characters, never a real newline)
+/// so an embedded path token is preserved exactly. Best-effort: interpolation
+/// (`${…}`) and other dynamic construction are not resolved (the documented gap).
+fn extract_string_literals(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' || c == '\'' || c == '`' {
+            let quote = c;
+            i += 1;
+            let mut cur = String::new();
+            while i < chars.len() {
+                let ch = chars[i];
+                if ch == '\\' && i + 1 < chars.len() {
+                    cur.push(ch);
+                    cur.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if ch == quote {
+                    i += 1;
+                    break;
+                }
+                cur.push(ch);
+                i += 1;
+            }
+            out.push(cur);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Scan an `execute_code` JS body for a sensitive write: every string literal is
+/// tried as an embedded shell command, and — when the script contains a mutating
+/// editor command — as a sensitive path target for a `text_editor` write.
+fn code_writes_sensitively(code: &str, env: &EnvFacts) -> Option<(String, &'static str)> {
+    let literals = extract_string_literals(code);
+    for lit in &literals {
+        if let Some(hit) = command_writes_sensitively(lit, env) {
+            return Some(hit);
+        }
+    }
+    let lc = code.to_ascii_lowercase();
+    if EDITOR_WRITE_INDICATORS.iter().any(|w| lc.contains(w)) {
+        for lit in &literals {
+            if lit.trim().is_empty() {
+                continue;
+            }
+            let tp = normalize_for(env.platform, lit, env);
+            if let Some(reason) = sensitivity_reason(&tp, env) {
+                return Some((tp.norm, reason));
+            }
+        }
+    }
+    None
+}
+
 /// Classify a tool call: `Some(reason)` when it is an extremely sensitive
 /// system operation that must be approved even in Auto mode; `None` otherwise.
 ///
-/// Pure over its inputs (path canonicalization never touches the filesystem —
-/// see [`normalize_for`]), so it is unit-testable without a live agent.
+/// Inspects three shapes (see the module boundary docs): file-editor path
+/// arguments, shell command lines, and the `execute_code` JS body. Pure over its
+/// inputs except for reading the host environment (`$HOME`, cwd) via
+/// [`EnvFacts::host`]; path canonicalization never touches the filesystem.
 pub fn sensitive_file_operation(
     tool_name: &str,
     args: &Map<String, Value>,
     working_dir: &Path,
 ) -> Option<String> {
-    if !operation_is_mutating(tool_name, args) {
-        return None;
-    }
     let env = EnvFacts::host(&working_dir.to_string_lossy());
-    for raw in path_values(args) {
-        if raw.trim().is_empty() {
-            continue;
-        }
-        let tp = normalize_for(env.platform, &raw, &env);
-        if let Some(reason) = sensitivity_reason(&tp, &env) {
-            return Some(format!("writes to {} ({reason})", tp.norm));
+
+    // 1. File-editor / file-tool path arguments (mutations only).
+    if operation_is_mutating(tool_name, args) {
+        for raw in path_values(args) {
+            if raw.trim().is_empty() {
+                continue;
+            }
+            let tp = normalize_for(env.platform, &raw, &env);
+            if let Some(reason) = sensitivity_reason(&tp, &env) {
+                return Some(format!("writes to {} ({reason})", tp.norm));
+            }
         }
     }
+
+    // 2. Shell command lines (developer/shell and any command-bearing tool).
+    if let Some(command) = command_text_from(tool_name, args) {
+        if let Some((path, reason)) = command_writes_sensitively(&command, &env) {
+            return Some(format!("writes to {path} ({reason})"));
+        }
+    }
+
+    // 3. code_execution/execute_code JS body — its inner tool calls bypass every
+    //    agent-layer inspector, so scan the script itself.
+    if is_execute_code(tool_name) {
+        if let Some(code) = args.get("code").and_then(Value::as_str) {
+            if let Some((path, reason)) = code_writes_sensitively(code, &env) {
+                return Some(format!("writes to {path} ({reason})"));
+            }
+        }
+    }
+
     None
 }
 
@@ -560,6 +717,183 @@ mod tests {
         assert!(
             results.is_empty(),
             "an ordinary write must not be escalated, got {results:?}"
+        );
+    }
+
+    // --- shell command lines (R2-01) --------------------------------------
+
+    #[test]
+    fn shell_redirect_into_ssh_config_is_flagged() {
+        let env = nix_env();
+        // The exact demonstrated exploit: a silent append to ~/.ssh/config.
+        let hit = command_writes_sensitively("echo 'Host x' >> ~/.ssh/config", &env);
+        assert!(
+            hit.is_some(),
+            "append-redirect into ~/.ssh/config must be flagged"
+        );
+    }
+
+    #[test]
+    fn shell_mutating_binary_into_sensitive_target_is_flagged() {
+        let env = nix_env();
+        for cmd in [
+            "cp ./key /etc/cron.d/backdoor",
+            "tee /etc/hosts",
+            "install -m 600 k ~/.ssh/authorized_keys",
+            "mv ./x ~/.aws/credentials",
+        ] {
+            assert!(
+                command_writes_sensitively(cmd, &env).is_some(),
+                "{cmd} must be flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_reads_of_sensitive_paths_are_not_flagged() {
+        let env = nix_env();
+        for cmd in [
+            "cat /etc/hosts",
+            "less ~/.ssh/config",
+            "grep x /etc/passwd",
+            "ls -la /etc",
+        ] {
+            assert!(
+                command_writes_sensitively(cmd, &env).is_none(),
+                "{cmd} is a read, must not be flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_ordinary_writes_are_not_flagged() {
+        let env = nix_env();
+        for cmd in [
+            "echo hi > /tmp/x",
+            "cp a /home/me/Downloads/b",
+            "tee /home/me/proj/out.txt",
+        ] {
+            assert!(
+                command_writes_sensitively(cmd, &env).is_none(),
+                "{cmd} must not be flagged"
+            );
+        }
+    }
+
+    // --- execute_code bodies (R2-01) --------------------------------------
+
+    #[test]
+    fn execute_code_embedded_ssh_write_is_flagged() {
+        let env = nix_env();
+        let code = r#"import { shell } from "developer";
+shell({ command: `printf 'Host evil\n' >> ~/.ssh/config` });
+record_result("done");"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_some(),
+            "an embedded shell redirect into ~/.ssh/config must be flagged"
+        );
+    }
+
+    #[test]
+    fn execute_code_editor_write_to_sensitive_path_is_flagged() {
+        let env = nix_env();
+        let code = r#"import { text_editor } from "developer";
+text_editor({ command: "write", path: "~/.ssh/authorized_keys", file_text: "ssh-rsa AAAA" });"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_some(),
+            "an embedded text_editor write to ~/.ssh must be flagged"
+        );
+    }
+
+    #[test]
+    fn execute_code_view_of_sensitive_path_is_not_flagged() {
+        let env = nix_env();
+        let code = r#"import { text_editor } from "developer";
+const c = text_editor({ command: "view", path: "/etc/hosts" });
+record_result(c);"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "a view of /etc/hosts must not be flagged"
+        );
+    }
+
+    #[test]
+    fn execute_code_ordinary_work_is_not_flagged() {
+        let env = nix_env();
+        let code = r#"import { shell, text_editor } from "developer";
+const files = shell({ command: "ls -la /tmp" });
+text_editor({ command: "write", path: "/tmp/out.txt", file_text: files });
+record_result("ok");"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "ordinary /tmp scratch work must not be flagged"
+        );
+    }
+
+    /// End-to-end at the inspector: a `developer/shell` sensitive write in Auto
+    /// mode is routed to approval (uses `/etc`, a host system dir, so the fixture
+    /// is deterministic regardless of `$HOME`).
+    #[tokio::test]
+    async fn auto_mode_routes_shell_sensitive_write_to_approval() {
+        let inspector = SensitiveOpsInspector;
+        let req = ToolRequest {
+            id: "req_shell".to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(args(json!({ "command": "cp ./k /etc/cron.d/backdoor" }))),
+                meta: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = inspector
+            .inspect(
+                &[req],
+                &[],
+                BioRouterMode::Auto,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            results.iter().any(|r| r.tool_request_id == "req_shell"
+                && matches!(r.action, InspectionAction::RequireApproval(_))),
+            "shell write to /etc must be routed to approval, got {results:?}"
+        );
+    }
+
+    /// End-to-end: an `execute_code` script that hides a sensitive shell write in
+    /// its body is routed to approval in Auto mode (the R2-01 gate).
+    #[tokio::test]
+    async fn auto_mode_routes_execute_code_sensitive_write_to_approval() {
+        let inspector = SensitiveOpsInspector;
+        let req = ToolRequest {
+            id: "req_code".to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None,
+                name: "code_execution__execute_code".into(),
+                arguments: Some(args(json!({
+                    "code": "import { shell } from \"developer\";\nshell({ command: \"echo pwn >> /etc/cron.d/x\" });"
+                }))),
+                meta: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = inspector
+            .inspect(
+                &[req],
+                &[],
+                BioRouterMode::Auto,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            results.iter().any(|r| r.tool_request_id == "req_code"
+                && matches!(r.action, InspectionAction::RequireApproval(_))),
+            "execute_code hiding a sensitive write must be routed to approval, got {results:?}"
         );
     }
 
