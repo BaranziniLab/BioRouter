@@ -36,6 +36,7 @@ import 'dotenv/config';
 import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
+import { isPathContained } from './utils/pathContainment';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
@@ -121,20 +122,29 @@ function expandBiorouterPath(filePath: string): string {
   return expandedPath;
 }
 
-function allowedFileRoots(): string[] {
+export function allowedFileRoots(): string[] {
   return [
     os.homedir(),
     app.getPath('userData'),
     app.getPath('temp'),
+    // The SYSTEM temp dir, distinct from Electron's per-app temp above. Agent
+    // tools (shell, text_editor) write to /tmp constantly, and the artifact
+    // panel must be able to preview what the session itself just created —
+    // "Access denied: path '/tmp/…' is outside allowed directories" on a file
+    // the task wrote is a false positive. Home is already an allowed root, so
+    // admitting tmp is a smaller exposure than the existing posture. (A
+    // "paths the task touched" registry would be tighter, but main never sees
+    // the tool stream, and letting the renderer register paths would let a
+    // compromised renderer register anything — voiding the boundary.)
+    os.tmpdir(),
+    ...(process.platform !== 'win32' ? ['/tmp'] : []),
     ...(process.env.BIOROUTER_PATH_ROOT ? [process.env.BIOROUTER_PATH_ROOT] : []),
   ];
 }
 
-function isAllowedFilePath(resolvedPath: string): boolean {
-  const allowedRoots = allowedFileRoots();
-  return allowedRoots.some(
-    (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
-  );
+export function isAllowedFilePath(resolvedPath: string): boolean {
+  // Symlink-aware containment (see utils/pathContainment.ts for why).
+  return isPathContained(resolvedPath, allowedFileRoots());
 }
 
 /**
