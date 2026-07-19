@@ -147,7 +147,6 @@ export default function ProgressiveMessageList({
     // effect re-arm itself on its own write, and `onRenderingComplete` (see the
     // ref above) re-armed it again on every stream event. Together they formed
     // the nested-update chain behind "Maximum update depth exceeded".
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, batchSize, batchDelay, showLoadingThreshold]);
 
   // Cleanup on unmount
