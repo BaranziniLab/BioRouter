@@ -177,6 +177,32 @@ reproduces the other.
 The module list is the session's live inventory, not a hardcoded set — `case24` asserts it
 reports the extensions that manager really has.
 
+### Live verification
+
+Two headless CLI runs against the configured provider (`versa_azure`,
+`gpt-5.5-2026-04-24`), sessions `20260720_24` and `20260720_25`.
+
+**Prevention.** Told explicitly to make `import fs from "fs";` the first line of its
+script, the model instead imported `{ shell, text_editor } from "developer"` and never
+attempted `fs` at all. Zero module errors in the session.
+
+**Self-correction.** The second run reproduced the real-world `not a callable function`
+naturally — the model wrote `shell({…}).trim()` (message 17848) and got the annotated
+error (17849). Its very next script (17850) applied the remedy the error names, checking
+the shape before calling a string method:
+
+```javascript
+dependencyCount: typeof depRaw === "string" ? depRaw.trim() : depRaw,
+```
+
+It kept that pattern for the rest of the run and answered correctly. One error, one
+recovery, no loop — against the historical pattern of three identical retries followed by
+a fallback to a Node builtin.
+
+Not verified: the desktop GUI path. The dispatch path these runs exercise is the same one
+the GUI drives, and the error text is produced below any interface, but no Electron run
+was made.
+
 ## Related documentation
 
 - [Streaming tool-call UI campaign](README.md) — the campaign index this audit belongs to.
