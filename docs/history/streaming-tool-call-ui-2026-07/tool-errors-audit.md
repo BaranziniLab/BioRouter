@@ -160,10 +160,22 @@ In `crates/biorouter/src/prompts/system.md`, one bullet in `# Tool Routing` carr
 same "those and only those" rule; the three `prompt_manager` snapshots were regenerated
 and their diff is that bullet alone.
 
-Gates: six tests in `code_execution_extension.rs`, each proven by revert. Restoring
-`MapModuleLoader` reproduces the user's verbatim string —
-`Module error: TypeError: Module could not be found.` — and neutering the annotator
-reproduces `Module error: TypeError: not a callable function`.
+### Gates
+
+Six unit tests in `code_execution_extension.rs` and two end-to-end tests in
+`tests/code_execution_integration.rs` (`case24`, `case25`), the latter driving a real
+`ExtensionManager` through `dispatch_tool_call` — the same path the agent loop uses, so
+they assert the text the model actually receives. Each is proven by revert: restoring
+`MapModuleLoader` reproduces the user's verbatim string, and neutering the annotator
+reproduces the other.
+
+| Under revert | Now |
+|---|---|
+| `Error: Module error: TypeError: Module could not be found.` | `Error: Module error: TypeError: Module "fs" could not be found. This sandbox has no Node.js or browser standard library, so there is no "fs", "path", "os", "child_process", "http", or "fetch". For filesystem and command work import from "developer" instead: import { shell, text_editor } from "developer"; Importable modules are exactly: developer — nothing else can be imported. Call search_modules to find which one holds the tool you need, or read_module("<module>") to list its tools.` |
+| `Error: Module error: TypeError: not a callable function` | the same, plus: `— you called something that is not a function. A tool call returns a parsed object when the tool's result is JSON, and a string otherwise, so string methods such as .trim()/.split() fail on a JSON result. Inspect the shape first (record_result(value)) or convert it with JSON.stringify(value).` |
+
+The module list is the session's live inventory, not a hardcoded set — `case24` asserts it
+reports the extensions that manager really has.
 
 ## Related documentation
 
