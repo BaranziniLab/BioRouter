@@ -8,7 +8,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC_FILE = ROOT / "docs/agentic-app-test-ideas-100.md"
+SPEC_FILE = ROOT / "docs/agent-drafter/testing/hundred-app-test-specs.md"
 STORE = ROOT / ".br-testdrive/runtime/config/biorouter/agent_drafter"
 SESSIONS = ROOT / ".br-testdrive/runtime/data/sessions/sessions.db"
 BUILTIN_EXTENSIONS = {

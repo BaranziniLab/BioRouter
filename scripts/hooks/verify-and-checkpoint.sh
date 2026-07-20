@@ -20,7 +20,7 @@
 # project (never ran cmake), shipped red Rust tests, or left everything
 # uncommitted. This hook turns "hope it's reproducible" into "checked".
 #
-# Wire it up (see docs/hooks/verify-and-checkpoint.md):
+# Wire it up (see docs/agent-loop/hooks/verify-and-checkpoint-stop-hook.md):
 #   "hooks": { "Stop": [ { "hooks": [ { "type": "command",
 #     "command": "/abs/path/to/scripts/hooks/verify-and-checkpoint.sh" } ] } ] }
 #

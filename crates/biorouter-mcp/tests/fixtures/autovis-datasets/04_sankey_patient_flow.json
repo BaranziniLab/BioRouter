@@ -1,0 +1,34 @@
+{
+  "links": [
+    {
+      "source": "Screened",
+      "target": "Eligible",
+      "value": 800
+    },
+    {
+      "source": "Screened",
+      "target": "Excluded",
+      "value": 200
+    },
+    {
+      "source": "Eligible",
+      "target": "Enrolled",
+      "value": 600
+    },
+    {
+      "source": "Eligible",
+      "target": "Declined",
+      "value": 200
+    },
+    {
+      "source": "Enrolled",
+      "target": "Completed",
+      "value": 420
+    },
+    {
+      "source": "Enrolled",
+      "target": "Withdrew",
+      "value": 180
+    }
+  ]
+}

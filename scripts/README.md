@@ -25,7 +25,7 @@ provider credentials, AWS credentials, SSH keys, macOS Keychain exports, or
 other user-specific configuration. Runtime secret migration, when needed for a
 private deployment, is handled separately by `scripts/sync-headless-secrets-macos.sh`.
 
-See `docs/headless-linux.md` for the full runbook.
+See `docs/deployment/headless-linux.md` for the full runbook.
 
 ## Benchmark scripts
 

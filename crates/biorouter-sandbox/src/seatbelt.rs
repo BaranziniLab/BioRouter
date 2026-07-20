@@ -1,6 +1,6 @@
 //! macOS Seatbelt (`sandbox-exec`) profile generation for tool execution.
 //!
-//! Slice 1 of BR-64 (see `docs/agent-loop-fixes/designs/BR-64-design.md`): a
+//! Slice 1 of BR-64 (see `docs/history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md`): a
 //! kernel-enforced, default-deny profile for the developer shell tool on macOS.
 //! It grants **read** of the whole filesystem, confines **writes** to a set of
 //! injected writable roots (the session working dir + the temp dir), and

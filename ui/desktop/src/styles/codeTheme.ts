@@ -42,7 +42,7 @@ export const CODE_LINE_HEIGHT = '20px';
  * keeps the two roles legibly apart. (The accent's own C2 #14828c is only
  * 4.11:1 on the code ground and could not be used here; C1 #0e5258 is 7.99:1.)
  * Every stop clears WCAG AA; ratios asserted in codeTheme.test.ts.
- * See docs/design/alma-mater-theme.md §5g.
+ * See docs/design/theming/alma-mater-theme-tokens.md §5g.
  */
 /**
  * Roche Limit syntax palette — JupyterLab's own IPython/Pygments hues, darkened

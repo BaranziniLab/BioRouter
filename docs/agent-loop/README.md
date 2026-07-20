@@ -1,0 +1,71 @@
+# The agent loop
+
+This folder documents the reasoning loop itself — everything that shapes what the agent
+knows, what it is allowed to do, and how it is interrupted or extended while a turn is
+running. That spans two audiences deliberately. The user-facing guides here cover the
+mechanisms you configure: durable context (memory, skills, workflows), delegation to
+subagents, and lifecycle hooks. The developer-facing subfolders hold the designs behind
+the loop's guardrails — the command policy engine, sandboxing, checkpoints, session
+branching, MCP process pooling and cross-session memory — most of which came out of the
+2026-07 agent-loop fix campaign and carry `BR-NN` proposal identifiers.
+
+Come here when you want to change how the agent behaves across a whole session rather
+than within one message. Go elsewhere if you are looking for: the **user-facing** rules
+on autonomy, admin policy and credentials, which live in
+[`docs/security/`](../security/README.md) (this folder holds the *design* behind them, not
+the how-to); the **narrative record** of when the campaign work landed and what it proved,
+which lives in [`docs/history/agent-loop-campaign/`](../history/agent-loop-campaign/README.md)
+— including its [cross-platform arm](../history/agent-loop-campaign/cross-platform/README.md),
+which holds the audits and shipped designs behind the loop's Windows and Linux behaviour;
+or the **packaged, shareable form** of a configured session, which is
+[`docs/workflows/`](../workflows/README.md). Several documents below are plans of record
+for work that is only partly built — each states its own status in its header, and the
+table repeats it, so check that before treating a design as a description of shipped code.
+
+## Documents in this folder
+
+| Document | What it covers |
+|---|---|
+| [Context engineering](context-engineering.md) | An index of the features that give the agent durable background knowledge, preferences and workflows — memory, skills, workflows, config, hooks and delegation — pointing at each one's own guide. Superseded in body: the 2026-05-07 plain-markdown migration stripped its card components, and only the opening definition and this pointer table survive. |
+| [Subagents](subagents.md) | A guide to subagents — the temporary biorouter instances the main agent spawns to run a task in isolation — covering natural-language invocation, workflow-file configuration, extension and return-mode control, and what subagents are forbidden to do. Current. |
+
+## Subfolders
+
+- [Agent lifecycle hooks](hooks/README.md) — the hook system reference and the shipped
+  verify-and-checkpoint Stop hook: the shell commands and LLM judges that run before a
+  tool call, around compaction, at session boundaries, and when the agent tries to finish
+  a turn.
+- [Designs](designs/) — seven subsystem designs from the fix campaign, each stating how
+  much of itself has shipped: the [command policy engine](designs/command-policy-engine.md)
+  (BR-21, replacing the evadable `THREAT_PATTERNS` regex table; slice 1 live),
+  [cross-session memory](designs/cross-session-memory.md) (BR-17; FTS5 chat recall live,
+  distillation and digest unbuilt),
+  [OS-level tool sandboxing on Linux and Windows](designs/linux-and-windows-sandboxing.md)
+  (BR-69; the `ShellSandbox` trait and its macOS and Linux backends shipped, real Windows
+  containment did not),
+  the [managed policy tier](designs/managed-policy-tier.md) (BR-65; first slice live,
+  `verify_trusted()` still a no-op on Windows),
+  [session branching](designs/session-branching.md) (BR-45; stable message ids landed, the
+  branch tree UX did not), [shadow-git checkpoints and `/rewind`](designs/shadow-git-checkpoints.md)
+  (BR-43; capture live behind `BIOROUTER_CHECKPOINTS`, the rewind UI not built), and the
+  [shared MCP server pool](designs/shared-mcp-server-pool.md) (BR-54; both slices shipped,
+  now the architecture reference for live pooling code).
+
+> **Identifier key.** `BR-NN` identifiers throughout this folder are proposals from the
+> campaign's numbering. `BR-1`…`BR-67` are defined in the 67-item master list in
+> [the agent-loop improvement proposals](../history/agent-loop-review/improvement-proposals.md);
+> `BR-68`, `BR-69` and `BR-70` were added mid-campaign and, like the `GAP-N` per-platform
+> findings, are defined in
+> [the platform parity audit](../history/agent-loop-campaign/cross-platform/platform-parity-audit.md).
+
+## Related documentation
+
+- [Agent-loop fix campaign](../history/agent-loop-campaign/README.md) — the historical
+  record of when the designs here were executed, which waves gated them, and what merged.
+- [Agent-loop improvement proposals](../history/agent-loop-review/improvement-proposals.md) —
+  the 67-item master list the `BR-NN` identifiers in these designs point back to.
+- [Security](../security/README.md) — the user- and admin-facing side of the same
+  guardrails: permission modes, managed policy, and secret storage.
+- [Biorouter agentic system explorer](../architecture/agentic-system-explorer.md) — the
+  code-aligned account of how one request becomes context, tool work, durable state and a
+  verified answer, if you want the loop end-to-end before reading a single subsystem.
