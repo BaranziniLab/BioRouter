@@ -105,4 +105,55 @@ describe('TurnActivityIndicator', () => {
     c.unmount();
     expect(clearInterval).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * BR-61 — the visible half of the steer acknowledgement. The derive layer
+   * decides WHEN to show it (utils/trailingActivity.test.ts); this is the
+   * evidence that a user actually sees their own words when it does.
+   */
+  describe('steering', () => {
+    const steerActivity = {
+      phase: 'steering' as const,
+      label: 'Steering the current turn',
+      steerText: 'actually, use R',
+      since: Date.now(),
+    };
+
+    it('shows the label and the user’s own words', () => {
+      vi.setSystemTime(steerActivity.since);
+      render(<TurnActivityIndicator activity={steerActivity} />);
+
+      expect(screen.getByTestId('turn-activity-steer-text')).toHaveTextContent('actually, use R');
+      // Visible label + the sr-only announcement.
+      expect(screen.getAllByText(/Steering the current turn/)).not.toHaveLength(0);
+    });
+
+    it('tags the phase on the container so the surface is inspectable', () => {
+      vi.setSystemTime(steerActivity.since);
+      render(<TurnActivityIndicator activity={steerActivity} />);
+
+      expect(screen.getByTestId('turn-activity-indicator')).toHaveAttribute(
+        'data-phase',
+        'steering'
+      );
+    });
+
+    it('announces the steer text to screen readers, not just the generic label', () => {
+      vi.setSystemTime(steerActivity.since);
+      const { container } = render(<TurnActivityIndicator activity={steerActivity} />);
+
+      const srOnly = container.querySelector('.sr-only');
+      expect(srOnly?.textContent).toContain('actually, use R');
+    });
+
+    it('renders no steer chip for the ordinary phases', () => {
+      render(
+        <TurnActivityIndicator
+          activity={{ phase: 'thinking', label: 'Thinking', since: Date.now() }}
+        />
+      );
+
+      expect(screen.queryByTestId('turn-activity-steer-text')).toBeNull();
+    });
+  });
 });
