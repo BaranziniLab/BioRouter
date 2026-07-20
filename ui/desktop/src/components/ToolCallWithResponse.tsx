@@ -494,6 +494,41 @@ const firstPresent = (args: Record<string, unknown>, keys: string[]): unknown =>
   return undefined;
 };
 
+/** Longest task snippet a delegation label carries before it is elided. */
+const MAX_DELEGATION_LABEL = 64;
+
+/** The opening sentence of `text`, trimmed to a label-sized snippet. */
+const headline = (text: string): string => {
+  const firstSentence = text.split(/(?<=[.!?])\s/)[0] ?? text;
+  // A very short leading fragment ("Do this.") says less than the whole
+  // instruction would, so fall back to the full text in that case.
+  const candidate = firstSentence.length >= 12 ? firstSentence : text;
+  if (candidate.length <= MAX_DELEGATION_LABEL) return candidate;
+  return `${candidate.slice(0, MAX_DELEGATION_LABEL - 1).trimEnd()}…`;
+};
+
+/**
+ * A label for a `subagent` call that names THIS delegation.
+ *
+ * Every subagent call carries the same argument *keys*, so the generic
+ * "<Tool> with <keys>" fallback rendered each one as the byte-identical
+ * "Subagent with instructions". Tool cards start collapsed, so a turn that fans
+ * out to five subagents was five identical rows: the user could not tell which
+ * result came from which without expanding all of them — the one thing a
+ * transcript of delegated work has to get right.
+ */
+const summarizeDelegation = (args: Record<string, unknown>): string => {
+  const workflow = compactValue(firstPresent(args, ['subworkflow']) ?? '');
+  const instructions = stringifySummaryValue(firstPresent(args, ['instructions']) ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const task = instructions ? headline(instructions) : '';
+  if (workflow && task) return `Delegating ${workflow}: ${task}`;
+  if (workflow) return `Delegating ${workflow}`;
+  if (task) return `Delegating: ${task}`;
+  return 'Delegating to a subagent';
+};
+
 const summarizeSearchQuery = (value: unknown): string | null => {
   if (!value) return null;
   if (typeof value === 'string') return compactValue(value);
@@ -529,6 +564,10 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   const targetName = target ? basename(target) : null;
   const command = firstPresent(args, ['cmd', 'command', 'script']);
   const operation = firstPresent(args, ['operation', 'action', 'method']);
+
+  // Before the generic name-matching chain: a delegation must be identifiable
+  // by its task, not by the fact that it is a delegation.
+  if (toolName === 'subagent') return summarizeDelegation(args);
 
   if (toolName === 'text_editor' || toolName.includes('editor')) {
     if (args.command === 'view' && targetName) return `Reading ${targetName}`;
