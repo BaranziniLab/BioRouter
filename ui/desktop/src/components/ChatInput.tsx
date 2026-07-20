@@ -31,6 +31,8 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
+import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
+import { cn } from '../utils';
 
 interface QueuedMessage {
   id: string;
@@ -1027,6 +1029,12 @@ export default function ChatInput({
   };
 
   // Helper function to handle interruption and queue logic when loading
+  // Every path that stops a running turn goes through `stopAck.trigger` rather
+  // than calling `onStop` directly, so the hard interrupt is confirmed the same
+  // way no matter which control fired it (the Stop button, "Stop and Send" on a
+  // queued message, or a typed interruption phrase).
+  const stopAck = useStopAcknowledgement(onStop);
+
   const handleInterruptionAndQueue = () => {
     if (!isLoading || !hasSubmittableContent) {
       return false;
@@ -1055,7 +1063,7 @@ export default function ChatInput({
     if (interruptionMatch && interruptionMatch.shouldInterrupt) {
       setLastInterruption(interruptionMatch.matchedText);
       setChatState?.(ChatState.Idle);
-      if (onStop) onStop();
+      stopAck.trigger();
       queuePausedRef.current = true;
 
       // For interruptions, we need to queue the message to be sent after the stop completes
@@ -1467,7 +1475,7 @@ export default function ChatInput({
     if (!messageToSend) return;
 
     // Stop current processing and temporarily pause queue to prevent double-send
-    if (onStop) onStop();
+    stopAck.trigger();
     const wasPaused = queuePausedRef.current;
     queuePausedRef.current = true;
 
@@ -1770,15 +1778,30 @@ export default function ChatInput({
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
-              onClick={onStop}
+              onClick={stopAck.trigger}
               size="sm"
               shape="round"
               variant="outline"
-              className={SEND_BUTTON_CLASS}
-              aria-label="Stop response"
-              title="Stop response"
+              className={cn(
+                SEND_BUTTON_CLASS,
+                'relative transition-transform duration-[var(--motion-fast)] ease-[var(--ease-out)]',
+                stopAck.acknowledged && 'scale-90'
+              )}
+              data-testid="chat-stop-button"
+              data-stop-acknowledged={stopAck.acknowledged}
+              aria-label={stopAck.acknowledged ? 'Stopping response' : 'Stop response'}
+              title={stopAck.acknowledged ? 'Stopping…' : 'Stop response'}
             >
               <Stop size={14} />
+              {/* The press recoils the button and sends one ring outward from
+                  it — motion that reads as "received", distinct from the
+                  looping pulses that mean "still working". */}
+              {stopAck.acknowledged && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-current animate-ping"
+                />
+              )}
             </Button>
           ) : (
             <Tooltip>

@@ -67,6 +67,19 @@ export default function TurnActivityIndicator({
 
         <span className="min-w-0 truncate text-text-muted">{activity.label}</span>
 
+        {/* BR-61: the user's own words, so the press is visibly acknowledged
+            with the exact text that left the composer — not just a generic
+            spinner they cannot connect to what they typed. */}
+        {activity.steerText && (
+          <span
+            data-testid="turn-activity-steer-text"
+            className="min-w-0 max-w-[32ch] truncate rounded-full bg-background-muted px-2 py-0.5 text-text-default/70"
+            title={activity.steerText}
+          >
+            “{activity.steerText}”
+          </span>
+        )}
+
         {elapsedLabel && (
           <span
             aria-hidden="true"
@@ -86,6 +99,7 @@ export default function TurnActivityIndicator({
         */}
         <span className="sr-only">
           {activity.label}
+          {activity.steerText ? `: ${activity.steerText}` : ''}
           {announcedSeconds !== null ? `, about ${announcedSeconds} seconds elapsed` : ''}
         </span>
       </div>
