@@ -96,7 +96,7 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 - [x] **H8** Soft interrupt must acknowledge immediately — `aaf24a22`
 - [x] **H9** Stop-and-Send needs a smooth confirming animation — `aaf24a22`
 - [~] **H10** Sending while scrolled up must smoothly return to the bottom
-- [~] **H11** GitHub issue #19 — verify, harden, close if fixed
+- [~] **H11** GitHub issue #19 — regression test landed (`9cc3d3a9`), **issue deliberately NOT closed**: live re-check still owed on an idle machine, and no release contains the fix yet
 
 ## J · Surfaced by the fixes — need your decision
 
@@ -104,6 +104,7 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 
 ## I · Remaining, in work order
 
+- [ ] **I0** Live re-verify GitHub #19 on an idle machine, then close it (blocked earlier by load average 289 from concurrent agents)
 - [ ] **I1** Parallel execution: agent running several tools/code at once — stress and edge cases
 - [ ] **I2** Subagents: edge cases, stress, and traceability of each subagent in the chat
 - [ ] **I3** Full regression + stress pass over everything above
