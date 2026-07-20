@@ -279,6 +279,42 @@ export function artifactPanelTargetContentWidth(opts: {
  * mounting two whole BaseChats — the exported factory IS what the effect uses,
  * so the guard under test cannot drift from the guard that ships.
  */
+/**
+ * Ask THIS chat to return to the bottom of its transcript.
+ *
+ * Deliberately routed through the same 'scroll-chat-to-bottom' broadcast that
+ * MCP UI prompt actions use, rather than poking `scrollRef` directly: that path
+ * already carries the session filter and the SCROLL_TO_BOTTOM_DELAY_MS wait for
+ * appended content to render, both of which a second, parallel mechanism would
+ * have to reimplement and could then drift from.
+ */
+export function requestScrollToBottom(sessionId: string): void {
+  window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } }));
+}
+
+/**
+ * The user's own submit ALWAYS returns them to the bottom.
+ *
+ * `handleRenderingComplete` force-scrolls only on the first render and
+ * otherwise defers to `isFollowing`, which scrolling up clears (see
+ * ui/scroll-area.tsx). So a user reading back through history who then typed a
+ * message was left stranded mid-transcript, with no evidence of where their
+ * prompt had landed.
+ *
+ * This is scoped to the SUBMIT, not to incoming content, which is the whole
+ * point: a user who scrolls up mid-stream must still NOT be yanked down by the
+ * agent's tokens. Their own send is the one act that unambiguously means "show
+ * me the live end of the conversation again".
+ */
+export function submitAndReturnToBottom<A>(
+  deps: { sessionId: string; submit: (text: string, attachments?: A) => void },
+  textValue: string,
+  attachments?: A
+): void {
+  deps.submit(textValue, attachments);
+  requestScrollToBottom(deps.sessionId);
+}
+
 export function createScrollToBottomHandler(deps: {
   sessionId: string;
   scrollToBottom: () => void;
@@ -1233,6 +1269,7 @@ function BaseChatContent({
     tokenState,
     turnStartedAt,
     lastMessageAt,
+    pendingSteer,
     agentReady,
     notifications: toolCallNotifications,
     pendingToolCalls,
@@ -1418,7 +1455,7 @@ function BaseChatContent({
     if (workflow && textValue.trim()) {
       setHasStartedUsingWorkflow(true);
     }
-    handleSubmit(textValue, attachments);
+    submitAndReturnToBottom({ sessionId, submit: handleSubmit }, textValue, attachments);
   };
 
   const { sessionCosts, modelRows } = useCostTracking({ session });
@@ -2059,6 +2096,7 @@ function BaseChatContent({
                               chatState={chatState}
                               turnStartedAt={turnStartedAt}
                               lastMessageAt={lastMessageAt}
+                              pendingSteer={pendingSteer}
                               onRenderingComplete={handleRenderingComplete}
                               onMessageUpdate={onMessageUpdate}
                               submitElicitationResponse={submitElicitationResponse}
