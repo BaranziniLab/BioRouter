@@ -233,6 +233,174 @@ legible on both.
 
 **Verdict: GO.** Nothing regressed; the merge is safe to fast-forward onto `main`.
 
+## Final regression and stress sweep — I3 (2026-07-20)
+
+The last gate before `main` is fast-forwarded. Every suite was re-run verbatim,
+every standing guarantee this campaign landed was re-driven in the running app
+where an LLM was not required, and the two guarantees that turned out to be
+drivable only with a live provider were driven against a local Ollama model.
+
+### Environment: the provider blocker persists, but is no longer total
+
+The UCSF gateway is still IP-blocked from this machine, in the GUI and the CLI
+alike:
+
+```
+Ran into this error: Authentication error: Authentication failed.
+Status: 403 Forbidden. Response: {"error":"The IP Address is invalid: 104.52.5.246"}
+```
+
+Unlike round I2, a local provider was available: Ollama serving `llama3.1`. It is
+competent at prose but **cannot drive the tool loop** — given the real extension
+set it hallucinates tool syntax as prose, and even against a minimal
+`developer`-only config it emitted `import { shell } from "developer";` as text
+rather than a tool call. So it buys real streaming turns — and with them the
+turn-scoped UI states — but not real tool calls.
+
+Everything driven through Ollama used an isolated `BIOROUTER_PATH_ROOT`
+(`/tmp/br-p4-root`), so the user's own config, secrets and session history were
+never mutated.
+
+### A · Suites, verbatim
+
+```
+cargo check --workspace                     Finished `dev` profile ... in 31.05s   (exit 0, 0 warnings)
+cargo test -p biorouter --lib               test result: ok. 1487 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.42s
+cargo test -p biorouter-mcp --lib           test result: ok. 809 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 21.43s
+cargo test --test mcp_integration_test      test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+cargo fmt --check                           pass (no output)
+./scripts/clippy-lint.sh                    ✅ All baseline clippy checks passed! · ✓ No banned TLS crates found
+npm run test:run (run 1)                    Test Files  164 passed (164) · Tests  1457 passed (1457)
+npm run test:run (run 2)                    Test Files  164 passed (164) · Tests  1457 passed (1457)
+npx tsc --noEmit                            pass (exit 0)
+npm run lint:check                          pass (exit 0)
+  └ check:themes                            OK — generated artifacts are current (3 themes)
+  └ check:contrast                          OK — all 252 contrast assertions pass
+```
+
+**Test-count deltas, fully accounted.** Both counts moved since the
+docs-reorganization baseline (`300d2cdb`), and neither is unexplained:
+
+| Suite | Baseline | Now | Delta | Source |
+|-------|----------|-----|-------|--------|
+| `biorouter --lib` | 1476 | 1487 | +11 | `101c7166` — 7 `#[test]` + one `#[test_case]` with 4 cases, all in the code-execution sandbox self-correcting-errors work |
+| frontend | 1406 (161 files) | 1457 (164 files) | +51 (+3 files) | 3 new files (`keyboardResubmitGuard` 6, `useStopAcknowledgement` 5, `terminalSessionRegistry` 12 = 23) + 28 added to 7 existing files |
+
+The contrast assertion count rose 228 → 252 with the `--background-canvas` work
+recorded under H2; the audit discovers families from the stylesheet, so the
+growth is the audit widening, not a threshold being relaxed.
+
+**Suites the task list omits, run anyway.** The gates that rounds I1 and I2
+actually landed live in `crates/biorouter/tests/`, which `--lib` does not
+compile. All were re-run:
+
+```
+13 parallel/subagent/streaming/interrupt/abort/code-execution binaries   54 passed; 0 failed
+6 permission, policy, path-resolution and apps-routing targets          115 passed; 0 failed
+```
+
+None of the known pre-existing frontend flakes (`App.test.tsx`,
+`ConfirmationModal`, `ResetPanel`, `InstructionsEditor`,
+`ProgressiveMessageList`) failed; each was observed passing in **both** runs.
+
+### B · Standing guarantees, re-driven
+
+Verdicts below are from the running app. The **detector is the session
+database**, not the DOM — the DOM double-counts a message across the sidebar
+title, the tab header and the bubble, which is exactly the trap the earlier
+rounds warned about.
+
+| Guarantee | Verdict | Evidence |
+|-----------|---------|----------|
+| Home submit lands exactly 1 message | **PASS** | DOM reported 3 occurrences; `messages` table holds exactly one row |
+| 3 tab open/close cycles do not duplicate | **PASS** | 3 × ⌘T/⌘W → back to 1 tab, 0 console errors; the submit that followed persisted exactly once |
+| Terminal cwd matches its session | **PASS** | dock opened at `/Users/wanjun/Desktop` matching the composer chip; a second session's dock showed `tmp/br-term-a/` |
+| >8 terminals open fine | **PASS** | 14 panes / 15 tabs concurrently, 0 console errors |
+| No terminal leak on reload | **PASS** | 14 panes → reload → 0 panes; `/bin/zsh -l` children of the Electron main process fell to exactly 2 (the 2 reopened), proving PTYs were reaped, not orphaned |
+| `/tmp` file previews | **PASS** | `readFile('/tmp/br-preview/demo.md')` → `found:true`; panel rendered it |
+| `~/.ssh` preview denied | **PASS** | `readFile('/Users/wanjun/.ssh/config')` → `{file:"", found:false, error:{}}` — and the file exists (619 bytes), so this is a denial, not a miss |
+| Markdown images + links render | **PASS** | preview panel on `demo.md` yielded 1 `h1`, 1 `a[href]`, 1 `img` — the neighbouring local PNG inlined |
+| Steer chip appears | **PASS** | typing during a live turn produced `● Next  also mention CRISPR` with `Add now` / `Stop & send` |
+| Steer chip retracts | **PASS** | chip gone within ~1s of the stop; composer returned to its idle Send face |
+| Stop acknowledges | **PASS** | activity indicator cleared ~1s after the press, transcript truncated mid-sentence as expected of a mid-stream cancel |
+| Sending while scrolled up returns to the bottom | **PASS** | scrolled to `scrollTop=0`, submitted; settled at `scrollTop 1859` of `sh 2591 − ch 685 = 1906`, the 48 px being trailing padding — newest message fully visible |
+| All 3 families × light/dark; canvas WHITE in Alma/Roche light; Parchment and Alma dark UNCHANGED | **PASS** | six-way sweep below |
+
+**Theme sweep.** Driven through Settings → App → Theme (never by writing
+`data-theme`, which desyncs React from the DOM and proves nothing):
+
+| Family | Mode | `--background-canvas` | Body bg | Body fg |
+|--------|------|----------------------|---------|---------|
+| Parchment | light | `#faf8f3` | `#ffffff` | `#2a2520` |
+| Parchment | dark | `#282217` | `#0d0a06` | `#f4f0e6` |
+| Alma Mater | light | **`#ffffff`** | `#ffffff` | `#052049` |
+| Alma Mater | dark | `#0d2a50` | `#04142e` | `#f2f3f4` |
+| Roche Limit | light | **`#ffffff`** | `#ffffff` | `#1f1e1c` |
+| Roche Limit | dark | `#131312` | `#131312` | `#ededea` |
+
+Every body pair matches the round-3 table verbatim, so Parchment and Alma dark
+are provably unchanged; the canvas is white in Alma and Roche light and stays
+warm (`#faf8f3`) in Parchment, which is exactly H2. 0 console errors across all
+six.
+
+### The one defect found — and why it is not a regression
+
+**Stop & send drops the queued message.** With a turn running and a message
+queued in the steer chip, pressing **Stop & send** stops the turn but never
+sends the queued message: it does not appear as a user message, does not start a
+new turn, and never reaches the `messages` table. Its own `aria-label` promises
+otherwise — *"Stop the current turn and send this message as a new turn"*.
+Reproduced twice, with two different markers.
+
+It is isolated to that one control: **Add now** on the same chip delivers
+correctly (marker present, turn continues).
+
+This branch *does* touch that function — `aaf24a22` swapped `if (onStop)
+onStop();` for `stopAck.trigger();`. So causality had to be settled rather than
+argued. It was settled by experiment: the line was temporarily reverted to
+main's original call in the running tree, the scenario re-driven, and **the
+message dropped identically**. The probe was then reverted and the tree
+confirmed clean.
+
+```
+handleStopAndSend with stopAck.trigger()     → queued message dropped
+handleStopAndSend with if (onStop) onStop()  → queued message dropped
+```
+
+`MessageQueue.tsx` carries no diff against `main` at all, and
+`useStopAcknowledgement.trigger` calls `onStop()` synchronously, so it cannot
+have reordered the stop against the submit. **The defect is pre-existing on
+`main` and is not introduced by this branch** — fast-forwarding neither creates
+nor worsens it. It is logged here rather than fixed because fixing it changes
+queue-flush semantics and deserves its own review, in the same spirit as J2.
+
+### What could not be verified, and why
+
+These four need a model that will actually emit tool calls, which no reachable
+provider would do. Each is named with the gate that does cover it, so the gap is
+bounded rather than waved away:
+
+| Not driven live | Covered by |
+|-----------------|-----------|
+| A multi-tool turn shows pending cards early with complete args | `streaming_pending_tool_calls` (2), `streaming_tool_response_ordering` (1); and the **persisted** card from an earlier round still renders — "Ran Coordinating 2 tool steps · 1 result ready" |
+| Cancel mid-tool leaves no orphan | `parallel_tool_batch_cancellation` (1), `subagent_cancellation` (1), `turn_abort_tests` (4) — the PAR-04 backfill |
+| `execute_code`-written files preview | `code_execution_integration` (27); the sibling `/tmp` preview path was driven live and passes |
+| A sensitive write prompts for approval | `smart_approve_tests` (10), `scoped_permission_tests` (6); the persisted round-3 session still shows *"The user has declined to run this tool"* |
+
+Also not re-driven: **the boot-splash logo shift (H7)**. A renderer reload
+rehydrates faster than a screenshot can be taken, and the driver's `launch`
+blocks until the window is ready, so neither path can catch the two splash
+states. It stands on its 22 passing `boot-splash.test.ts` assertions, the
+generated-splash CSS check inside `lint:check`, and the vision verification
+already recorded at `30d615f3`.
+
+### Verdict
+
+**GO.** Every suite is green and every count delta is explained. Thirteen
+standing guarantees were re-driven in the running app and all thirteen hold. The
+single defect found is demonstrated by experiment to pre-date this branch. The
+branch is safe to fast-forward onto `main`.
+
 ## Related documentation
 
 - [Streaming tool-call UI campaign](README.md) — the campaign index, and the shape of the whole effort.

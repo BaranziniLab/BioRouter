@@ -101,16 +101,17 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 ## J · Surfaced by the fixes — need your decision
 
 - [?] **J2** **TERM-04 (major, found not fixed):** switching chat tabs moves focus from the composer *into the shell* — a chat message typed next runs as a shell command. Deliberately documented rather than fixed: it changes focus semantics and deserves its own review. **Recommend fixing.**
-- [?] **J3** TERM-01 (minor): StrictMode double-invocation opens two panes per click in dev.
+- [?] **J3** TERM-01 (minor): StrictMode double-invocation opens two panes per click in dev. **Reconfirmed in I3** — one click on "Open in-app terminal" yields 2 panes; dev-only, unchanged.
+- [?] **J4** **Stop & send drops the queued message (found in I3, not fixed):** with a turn running and a message in the steer chip, **Stop & send** stops the turn but never sends the queued message — no user bubble, no new turn, no row in `messages` — contradicting its own aria-label. **Add now** on the same chip delivers correctly, so it is isolated to `handleStopAndSend`. **Proven pre-existing on `main`:** temporarily reverting that function's `stopAck.trigger()` to main's `if (onStop) onStop();` reproduced the drop identically, and `MessageQueue.tsx` carries no diff against `main`. Not a blocker for the fast-forward; fixing it changes queue-flush semantics and deserves its own review.
 
 - [?] **J1** Real contrast failures the old gate was hiding, now measured against the true canvas: Parchment light `text-accent` **4.35:1** (below AA 4.5); Parchment light `border-subtle` 1.23:1; Parchment dark `border-subtle` **1.00:1** (invisible); Alma dark `border-subtle` 1.24:1. All **pre-existing**, none introduced. Fixing them means changing Parchment and Alma dark, which you pinned as must-not-change — so this is your call.
 
 ## I · Remaining, in work order
 
-- [ ] **I0** Live re-verify GitHub #19 on an idle machine, then close it (blocked earlier by load average 289 from concurrent agents)
-- [ ] **I1** Parallel execution: agent running several tools/code at once — stress and edge cases
-- [ ] **I2** Subagents: edge cases, stress, and traceability of each subagent in the chat
-- [ ] **I3** Full regression + stress pass over everything above
+- [x] **I0** Live re-verify GitHub #19 on an idle machine — **done in I3 on an idle machine**: 3 × ⌘T/⌘W cycles then a submit persisted **exactly one** row in `messages`. Issue still to be closed by hand (no release contains the fix yet, per H11)
+- [x] **I1** Parallel execution: agent running several tools/code at once — stress and edge cases — 2 high-severity defects found and fixed (PAR-02, PAR-04), both revert-proven
+- [x] **I2** Subagents: edge cases, stress, and traceability of each subagent in the chat — 2 high-severity defects found and fixed (SUB-01, SUB-02), both revert-proven
+- [x] **I3** Full regression + stress pass over everything above — all suites green with every count delta accounted; 13 standing guarantees re-driven live, all hold; 1 defect found and **proven pre-existing on `main` by experiment** (J4). **Verdict: GO.** See the [final report](campaign-final-report.md#final-regression-and-stress-sweep--i3-2026-07-20)
 - [ ] **I4** Fast-forward `main`, push, and deliver the final summary
 
 ## Related documentation
