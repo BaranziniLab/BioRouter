@@ -1,5 +1,7 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { ChevronsDownUp, Send, X } from './icons/app-icons';
+import { ChevronsDownUp, Plus, Send, X } from './icons/app-icons';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { useComposerToolbarCollapsed } from './bottom_menu/useComposerToolbarCollapsed';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
@@ -370,6 +372,11 @@ export default function ChatInput({
   const [hasUserTyped, setHasUserTyped] = useState(false);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Rung 3b of the yield ladder: when the composer's control row is too narrow
+  // to lay every picker out, they collapse behind a single "+" at the lower-left
+  // instead of overlapping. Measured on the toolbar's own box (see the hook).
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const composerToolbarCollapsed = useComposerToolbarCollapsed(toolbarRef);
 
   // Re-populate the composer when a submit failed before the backend accepted it
   // (e.g. backend unreachable): BaseChat.handleCreateSessionError dispatches
@@ -1709,36 +1716,40 @@ export default function ChatInput({
 
       {/* Secondary actions and controls row below input. */}
       <div
+        ref={toolbarRef}
         data-testid="chat-input-toolbar"
         className="flex flex-row flex-nowrap items-center gap-1.5 px-2 pt-2 pb-1 relative min-w-0 overflow-hidden"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-          <DirSwitcher
-            className="mr-0"
-            sessionId={sessionId ?? undefined}
-            workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
-            onWorkingDirChange={(newDir) => {
-              setSessionWorkingDir(newDir);
-              if (onWorkingDirChange) {
-                onWorkingDirChange(newDir);
-              }
-            }}
-            onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
-            onRestartEnd={() => setChatState?.(ChatState.Idle)}
-          />
-
-          <div className={TOOLBAR_DIVIDER_CLASS} />
-
-          <div className={TOOLBAR_GROUP_CLASS}>
-            <BottomMenuExtensionSelection sessionId={sessionId} />
-            <BottomMenuSkillSelection sessionId={sessionId} />
-            <BottomMenuKnowledgeSelection />
-          </div>
-
-          <div className={TOOLBAR_DIVIDER_CLASS} />
-
-          <div className="flex min-w-0 flex-row items-center gap-0.5">
-            <BottomMenuReasoningEffort />
+        {(() => {
+          // Defined once, arranged two ways: inline when the row is wide enough,
+          // and stacked inside a "+" popover when it is not. Only the rendered
+          // branch mounts, and each control reads its own state, so composing
+          // them here rather than duplicating the JSX keeps the two layouts from
+          // drifting.
+          const dirSwitcher = (
+            <DirSwitcher
+              className="mr-0"
+              sessionId={sessionId ?? undefined}
+              workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+              onWorkingDirChange={(newDir) => {
+                setSessionWorkingDir(newDir);
+                if (onWorkingDirChange) {
+                  onWorkingDirChange(newDir);
+                }
+              }}
+              onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
+              onRestartEnd={() => setChatState?.(ChatState.Idle)}
+            />
+          );
+          const extensionsSkillsKnowledge = (
+            <>
+              <BottomMenuExtensionSelection sessionId={sessionId} />
+              <BottomMenuSkillSelection sessionId={sessionId} />
+              <BottomMenuKnowledgeSelection />
+            </>
+          );
+          const reasoning = <BottomMenuReasoningEffort />;
+          const model = (
             <div className="min-w-0">
               <ModelsBottomBar
                 sessionId={sessionId}
@@ -1748,6 +1759,8 @@ export default function ChatInput({
                 hideAlertPopover
               />
             </div>
+          );
+          const contextGauge = (
             <ContextWindowIndicator
               totalTokens={totalTokens}
               tokenLimit={tokenLimit}
@@ -1760,18 +1773,70 @@ export default function ChatInput({
                 );
               }}
             />
-            {COST_TRACKING_ENABLED && (
-              <div className={TOOLBAR_GROUP_CLASS}>
-                <CostTracker
-                  inputTokens={accumulatedInputTokens}
-                  outputTokens={accumulatedOutputTokens}
-                  sessionCosts={sessionCosts}
-                  modelCostRows={modelCostRows}
-                />
+          );
+          const cost = COST_TRACKING_ENABLED ? (
+            <CostTracker
+              inputTokens={accumulatedInputTokens}
+              outputTokens={accumulatedOutputTokens}
+              sessionCosts={sessionCosts}
+              modelCostRows={modelCostRows}
+            />
+          ) : null;
+
+          if (composerToolbarCollapsed) {
+            return (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Chat tools and settings"
+                    title="Chat tools and settings"
+                    data-testid="composer-tools-collapsed"
+                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                {/* Portaled, so the enclosing overflow-hidden never clips it.
+                    side/align place it above the "+", growing up out of the row. */}
+                <PopoverContent
+                  side="top"
+                  align="start"
+                  className="flex w-64 max-w-[80vw] flex-col gap-1.5 p-2"
+                  data-testid="composer-tools-popover"
+                >
+                  {dirSwitcher}
+                  <div className="h-px w-full bg-border-default/70" />
+                  <div className="flex flex-wrap items-center gap-0.5">
+                    {extensionsSkillsKnowledge}
+                  </div>
+                  <div className="h-px w-full bg-border-default/70" />
+                  <div className="flex flex-wrap items-center gap-0.5">
+                    {reasoning}
+                    {model}
+                    {contextGauge}
+                    {cost}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            );
+          }
+
+          return (
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+              {dirSwitcher}
+              <div className={TOOLBAR_DIVIDER_CLASS} />
+              <div className={TOOLBAR_GROUP_CLASS}>{extensionsSkillsKnowledge}</div>
+              <div className={TOOLBAR_DIVIDER_CLASS} />
+              <div className="flex min-w-0 flex-row items-center gap-0.5">
+                {reasoning}
+                {model}
+                {contextGauge}
+                {cost && <div className={TOOLBAR_GROUP_CLASS}>{cost}</div>}
               </div>
-            )}
-          </div>
-        </div>
+            </div>
+          );
+        })()}
 
         {/* Send / Stop button — on far right of picker row. */}
         <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
