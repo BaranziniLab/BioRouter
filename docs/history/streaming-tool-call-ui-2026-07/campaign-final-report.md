@@ -139,6 +139,100 @@ recurring environment hazards, worked around and documented. Transient Anthropic
 `feat/streaming-tool-call-ui` fully committed + pushed. `main` has the streaming
 track (78471bdc) but NOT the QA-campaign fixes — those await your merge decision.
 
+## Post-merge verification — documentation-reorganization integration (2026-07-19)
+
+After this campaign closed, its branch was merged with a large documentation
+reorganization on `integrate/docs-cleanup` and re-verified before fast-forwarding
+`main`. The merge resolved three source-file conflicts in the theme engine and
+repointed inbound documentation links in Rust and TypeScript comments, so the
+theme system was exercised in the running app rather than by tests alone.
+
+### What the merge actually changed in source
+
+The three conflicted files are byte-identical to `main` except for two comment
+lines in `ui/desktop/src/styles/codeTheme.ts`, which repoint moved design docs.
+`ui/desktop/src/styles/main.css` and `ui/desktop/src/components/InAppTerminalDock.tsx`
+carry no net diff against `main` at all.
+
+```bash
+git diff main...HEAD -- ui/desktop/src/styles/main.css \
+  ui/desktop/src/components/InAppTerminalDock.tsx   # empty
+```
+
+All 11 distinct documentation paths introduced into source comments resolve to
+files that exist, as do every `docs/*.md` reference in `.github/`, `scripts/`,
+`Justfile`, `CLAUDE.md` and `.claude/`.
+
+### Gate results
+
+Every gate matches the round-3 baseline recorded above, with no count drift.
+
+- `cargo check --workspace` — 0 warnings, 0 errors
+- `cargo test -p biorouter --lib` — `test result: ok. 1476 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`
+- `cargo test -p biorouter-mcp --lib` — `test result: ok. 809 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out`
+- `cargo test --test mcp_integration_test` — `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`
+- `cargo fmt --check` — pass (no output) · `./scripts/clippy-lint.sh` — pass, no banned TLS crates
+- `npm run test:run` ×2 — 1406 passed (161 files), both runs, exit 0 both times
+- `tsc --noEmit` — pass · `npm run lint:check` — pass
+
+The theme gates inside `lint:check` are the load-bearing ones for this merge:
+`generate-themes.mjs --check` reports generated artifacts current for 3 themes,
+and `check-contrast.mjs` reports `OK — all 228 contrast assertions pass`.
+
+None of the known pre-existing frontend flakes (`App.test.tsx`,
+`ConfirmationModal`, `ResetPanel`, `InstructionsEditor`, `ProgressiveMessageList`)
+appeared in either run.
+
+### Theme sweep in the running app
+
+A debug build was staged with `just copy-binary debug` and driven through the
+Playwright GUI driver. All six family/mode combinations were applied through
+Settings → App → Theme and screenshotted. Each produces distinct, family-correct
+tokens with no unstyled or black-on-black surface:
+
+| Family | Mode | Body background | Body foreground |
+|--------|------|-----------------|-----------------|
+| Parchment | light | `#ffffff` | `#2a2520` |
+| Parchment | dark | `#0d0a06` | `#f4f0e6` |
+| Alma Mater | light | `#ffffff` | `#052049` |
+| Alma Mater | dark | `#04142e` | `#f2f3f4` |
+| Roche Limit | light | `#ffffff` | `#1f1e1c` |
+| Roche Limit | dark | `#131312` | `#ededea` |
+
+The Roche Limit dark pair matches the value `check-contrast.mjs` audits at
+15.85:1, so the stylesheet the audit reads and the stylesheet the app renders
+are the same one.
+
+Syntax palettes were read off a live chat code block and are per family and per
+mode, as `codeThemesByFamily` intends — Parchment light resolves to rust/green
+(`#a94f2a`, `#22784f`), Alma Mater dark to blue/green (`#7fb3e6`, `#6fc084`),
+Roche Limit light to the Pygments hues its design doc specifies (`#0a7a32`,
+`#7024b0`, `#b02121`).
+
+The terminal dock was opened under several families and re-grounds per family:
+Parchment dark paints the warm code ground, Alma Mater light paints the muted
+ground, and ANSI output from `ls -G` and `git status --short --branch` stays
+legible on both.
+
+> **Note.** An early attempt to switch themes by writing `localStorage` and
+> toggling `data-theme` from the console produced identical syntax tokens across
+> families and looked like a regression. It was not. The palette is selected in
+> React via `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]`, so a
+> DOM-only change desyncs React state from the DOM and proves nothing. Theme
+> switching must be driven through the Settings UI.
+
+### Other flows exercised
+
+- A live turn (`run pwd using your shell tool`) streamed a tool card to
+  completion and returned `/Users/wanjun/Desktop`.
+- The artifact side panel auto-opened on an agent-created `demo.md`, rendered the
+  heading and link, and inlined the neighbouring local PNG — the data-URI image
+  path still works.
+- A `console.error` hook installed in the renderer recorded **0 errors** across a
+  four-way theme sweep, chat navigation, terminal use and the preview panel.
+
+**Verdict: GO.** Nothing regressed; the merge is safe to fast-forward onto `main`.
+
 ## Related documentation
 
 - [Streaming tool-call UI campaign](README.md) — the campaign index, and the shape of the whole effort.
