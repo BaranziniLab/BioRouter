@@ -26,10 +26,11 @@ These extensions ship with Biorouter and are available immediately:
 | **Knowledge** | Personal, LLM-maintained knowledge bases backed by markdown and git history | Enabled |
 | **Agent Drafter** | Builds interactive artifacts and exports them as standalone projects | Enabled |
 
-> **Note.** The default-state column for the first five rows predates the current
-> capability defaults in `ui/desktop/src/components/settings/capabilities/capabilities.ts`
-> and may be out of date — check that file, or Settings → Chat → Capabilities in the
-> desktop app, for what your build actually ships enabled.
+> **Note.** The default-state column in this table, and in the platform-extension table
+> below, predates the current capability defaults in
+> `ui/desktop/src/components/settings/capabilities/capabilities.ts` and is out of date in
+> several rows — check that file, or Settings → Chat → Capabilities in the desktop app,
+> for what your build actually ships enabled.
 
 Most built-ins have their own reference page in this folder — for example [Developer](built-in/developer.md), [Computer Controller](built-in/computer-controller.md), [Memory](built-in/memory.md), [Auto Visualiser](built-in/auto-visualiser.md), and [Tutorial](built-in/tutorial.md).
 

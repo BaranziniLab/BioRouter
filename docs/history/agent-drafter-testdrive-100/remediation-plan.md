@@ -18,7 +18,7 @@
 [layout-diversity-audit.md](layout-diversity-audit.md),
 [`data/ledger.json`](data/ledger.json), and the per-app rubrics in `app-results/`.
 
-### Identifiers and codes used below
+## Identifiers and codes used below
 
 - **Finding numbers (1–24)** index the [audit findings register](audit-findings-register.md), which
   numbers its entries 1–22 in document order. Findings **23 and 24 exist only here** — they were
@@ -39,6 +39,7 @@
 
 ## Contents
 
+- [Identifiers and codes used below](#identifiers-and-codes-used-below)
 - [The one-sentence thesis](#the-one-sentence-thesis)
 - [Findings to plan map](#findings-to-plan-map)
 - [How the waves are ordered](#how-the-waves-are-ordered)

@@ -1,5 +1,13 @@
 # Parallel tool-call batches — stress and edge-case results
 
+> **What this is.** Round I1 of the campaign's stress sweep: seven exercises that push the
+> parallel tool-dispatch path to its edges — a wide batch, a tool failing mid-batch, a cancel
+> mid-batch, same-file contention, the concurrency ceiling and both kill switches — with the
+> two defects they found and the gates that now hold them.
+> **Status:** Historical record (completed 2026-07-20). The two fixes it describes are current.
+> **Audience:** developers working on tool dispatch, the batch persistence path, and the
+> concurrency levers.
+
 The campaign that owns this folder rebuilt how one assistant turn dispatches *many* tool calls: an
 8-permit semaphore with per-path write locks (`tool_dispatch_limits.rs`), the MCP client mutex
 removed (`63b7e493`), decoder batching so several `tool_use` blocks arrive as one message
@@ -72,7 +80,7 @@ failed."* There was none. The tool did not honour its documented contract.
 **Fix.** `execute_shell_command` now returns `(String, Option<i32>)` — output plus exit code — and
 the `shell` tool appends an explicit status line for a non-zero exit and sets `is_error`:
 
-```
+```text
 [shell: command exited with status 7]
 ```
 
@@ -125,7 +133,7 @@ that has not yet returned — correct, that is what cancelling means. But the po
 loop still writes a `tool_use` for **every** request in the batch, and the abandoned ones had only
 their empty placeholder response, which is dropped as an empty message. The result:
 
-```
+```text
 [("req","call_quick"), ("resp","call_quick"), ("req","call_slow_a"), ("req","call_slow_b")]
 ```
 

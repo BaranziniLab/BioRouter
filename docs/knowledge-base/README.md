@@ -2,7 +2,7 @@
 
 The Knowledge base is BioRouter's personal, LLM-maintained wiki: it ingests a file, URL or pasted text, converts it deterministically to markdown, and lets a bounded sub-agent digest that markdown into interlinked wiki pages backed by a git history. This folder holds the **live working documents** for that subsystem — surveys of how a layer works today, and plans for extending it.
 
-Come here when you are changing the Knowledge subsystem and need to know the current shape of a layer or what work is still open on it. Two neighbours cover adjacent ground. The **build record** — the founding design and the six implementation plans that shipped the feature — lives in [`../history/knowledge-base-buildout/`](../history/knowledge-base-buildout/founding-design.md); go there for why a module is shaped the way it is, not for what to do next. Anything about the shipped code's present behaviour that is not open work is documented in `CLAUDE.md` and in `crates/biorouter-mcp/src/knowledge/` itself.
+Come here when you are changing the Knowledge subsystem and need to know the current shape of a layer or what work is still open on it. Two neighbours cover adjacent ground. The **build record** — the founding design and the six implementation plans that shipped the feature — lives in [`../history/knowledge-base-buildout/`](../history/knowledge-base-buildout/README.md); go there for why a module is shaped the way it is, not for what to do next. Anything about the shipped code's present behaviour that is not open work is documented in `CLAUDE.md` and in `crates/biorouter-mcp/src/knowledge/` itself.
 
 ## Documents
 

@@ -1,4 +1,4 @@
-# Alma Mater — a UCSF theme for BioRouter
+# Alma Mater theme tokens
 
 > **What this is.** The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme
 > family: the UCSF palette it draws from, the accent decision, a complete token-by-token light
@@ -30,7 +30,7 @@ stable reference scheme rather than decoration.
 
 ---
 
-## 1 · What this is
+## 1 · The theme families
 
 Named theme families, selected independently of light/dark. Three ship today:
 
@@ -42,9 +42,9 @@ Named theme families, selected independently of light/dark. Three ship today:
 
 **Alma Mater is a re-colouring, not a re-layout.** It changes colour tokens only. It keeps
 BioRouter's entire structure: flat surfaces, hairline borders, dense rows, the two-tone
-canvas, the type scale, the motion, and — per your instruction — **the exact same fonts.**
+canvas, the type scale, the motion, and — as the brief required — **the exact same fonts.**
 
-### Constraints honoured (your four asks)
+### Constraints honoured
 
 1. **Font unchanged.** `--font-sans` and `--font-mono` stay the current native stacks. UCSF's brand typefaces (Helvetica Neue / Granjon) are **not** adopted. Type scale, weights, tracking — untouched.
 2. **Real light *and* real dark.** Alma Mater ships a genuine light variant and a genuine dark variant — four token sets total (Parchment already has two). Not a filter over one mode.

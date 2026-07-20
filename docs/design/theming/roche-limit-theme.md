@@ -1,4 +1,4 @@
-# Roche Limit — a Jupyter-inspired theme for BioRouter
+# Roche Limit theme tokens
 
 > **What this is.** The colour-token reference for Roche Limit, BioRouter's third theme family:
 > the palette it draws from, the accent ramp, a complete token-by-token light and dark mapping,
@@ -28,7 +28,7 @@ points at §4.10 and §5.8 — so the numbering is a stable reference scheme, no
 
 ---
 
-## 1 · What this is
+## 1 · The theme families
 
 A **third** theme family, selected independently of light/dark:
 

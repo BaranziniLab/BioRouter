@@ -1,7 +1,7 @@
 # Code Execution extension
 
 > **What this is.** User guide to the built-in Code Execution extension, which backs Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution.
-> **Status:** Current — but note the correction below: the extension is enabled by default, so no manual setup is normally needed.
+> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 In Code Mode the model discovers which tools your enabled extensions expose, then writes JavaScript that BioRouter runs in one execution. Because the intermediate tool results stay inside that one script rather than round-tripping through the conversation, Code Mode uses the context window far more efficiently when several extensions are enabled or a workflow needs many tool calls.

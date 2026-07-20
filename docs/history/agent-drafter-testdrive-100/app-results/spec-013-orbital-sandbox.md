@@ -57,7 +57,7 @@ clipping is substantial and the live run reproduced the opaque-black-region them
 [Spec 012 — Contagion Studio](spec-012-contagion-studio.md). That corruption is registered as its
 own defect in the [audit findings register](../audit-findings-register.md).
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

@@ -135,7 +135,8 @@ comment explaining itself. These are live bugs in the shipping Dashboard today.
 
 ### R1 — `WebkitAppRegion` breaks tab drag on macOS: PASS, the risk is closed
 
-Measured with real OS-level input through CDP (`ui/desktop/scripts/debug/probe-dragregion.mjs`),
+Measured with real OS-level input through the Chrome DevTools Protocol (CDP)
+(`ui/desktop/scripts/debug/probe-dragregion.mjs`),
 not synthetic DOM events — synthetic events bypass the OS hit test entirely and would have
 reported a false PASS. A pointer drag on a `no-drag` child injected into the real 52px
 `WebkitAppRegion: 'drag'` header (`BaseChat.tsx:1663`) delivered
@@ -267,7 +268,7 @@ is not. This drops `reuse-dashboard`'s Risk 9 to zero by construction rather tha
   live turn is committed-to. (This resolves `lift-state`'s open question #8 in the safe
   direction.)
 
-### Storage
+### Storage and the per-window key
 
 **Storage** — `chatGroupsStorage.ts`, cloned from `dashboardStorage.ts`'s versioned-envelope
 shape. Key `biorouter.chatgroups.v1:${windowId}`, **per-window from day one** (`lift-state`
@@ -292,7 +293,7 @@ load. `load()` returns `null` on any shape mismatch → cold-boot path.
   a description of the window. `AppSidebar.tsx:137`'s `currentSessionId` highlight keeps
   working with **zero sidebar edits**.
 
-### Back button
+### Back button behaviour
 
 With one group today, `replace: true` on tab activation means Back no longer walks session
 history — it leaves `/pair`. This *is* a behaviour change (`minimal-shell` R5, correctly

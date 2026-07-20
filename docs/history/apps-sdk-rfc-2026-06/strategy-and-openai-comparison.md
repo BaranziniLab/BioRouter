@@ -29,6 +29,8 @@ capability areas, and the ADOPT/CONSIDER/SKIP inventory.
 |---|---|
 | **BRSDK** | BioRouter App SDK — the proposed client library (`templates/sdk.ts`) plus the server-side runner (`routes/apps.rs`) that a generated app talks to. |
 | **HITL** | Human-in-the-loop: the agent pauses before a sensitive tool call and waits for a person to approve or decline it. |
+| **KB** | Knowledge base — BioRouter's markdown + git + BM25 personal knowledge store (`crates/biorouter-mcp/src/knowledge/`). |
+| **PII / PHI** | Personally identifiable information / protected health information — the two categories of sensitive content the guardrail work in §11.3 targets. |
 | **`RunState`** | OpenAI's serializable snapshot of a paused agent run (pending tool calls, approvals, turn count) that can be written to disk and resumed, even in another process. |
 | **Tripwire** | A guardrail outcome that fires when a check fails, blocking the tool call or failing the turn. |
 | **AgentKit** | OpenAI's hosted product tier announced October 2025 (Agent Builder, ChatKit, Connector Registry, Evals). |
@@ -121,7 +123,7 @@ biggest advantage: it runs against *any* provider the user configures.
   BioRouter approves interactively but can't snapshot a paused run and resume it
   later/elsewhere.
 - **Structured outputs as a contract** (`outputType`/`output_type`). BioRouter
-  has none; it heuristically parses ` ```chart ` blocks.
+  has none; it heuristically parses `chart` code blocks.
 - **A formal trace tree + exporters.** BioRouter has hook events and token
   counters but no spanned trace or pluggable exporter.
 - **Two-phase "sandbox memory"** that distills lessons into a searchable
@@ -357,7 +359,7 @@ contract and `RunState` for pause/resume.
 
 - **Structured outputs**: add `output_type` (JSON Schema) to `SessionConfig`;
   validate the final message against it and re-prompt on mismatch (mirror
-  OpenAI's strict mode). This makes ` ```chart ` blocks a *typed contract*
+  OpenAI's strict mode). This makes `chart` code blocks a *typed contract*
   instead of heuristic parsing.
 - **Handoffs**: optional later — model as "swap the active manifest agent."
   Lower priority than agents-as-tools + structured outputs.
@@ -730,7 +732,7 @@ blunt **Adopt / Consider / Skip** call with rationale.
 | # | Feature (beyond the original asks) | Rec | One-line why |
 |---|---|---|---|
 | 11.1 | Reliability & control primitives | **ADOPT** | Cheap, makes apps not break; some already half-built |
-| 11.2 | Structured outputs as contracts | **ADOPT** | Turns ` ```chart ` guessing into typed guarantees |
+| 11.2 | Structured outputs as contracts | **ADOPT** | Turns `chart`-block guessing into typed guarantees |
 | 11.3 | Safety guardrails: **PII/PHI, prompt-injection, groundedness** | **ADOPT ★** | The biggest miss — mandatory for biomedical/clinical data |
 | 11.4 | Handoffs + agents-as-tools + deferred tools | **ADOPT** | Real multi-agent orchestration; the loop already exists |
 | 11.5 | Human-in-the-loop approvals + serializable resume | **ADOPT** | Already in the plan (§3.6); reinforced here |
@@ -782,7 +784,7 @@ guardrail work). High reliability ROI, low surface area.
 `outputType`/`output_type` (Zod/Pydantic → JSON Schema, `strict:true`) makes the
 final answer a *typed object*, not prose. Already proposed in §3.3 — restated
 here because it's squarely "a feature that was not asked for." For BioRouter it
-upgrades the heuristic ` ```chart ` block into a validated contract and lets apps
+upgrades the heuristic `chart` code block into a validated contract and lets apps
 declare "the agent must return `{gene, pathways[], citations[]}`."
 
 ### 11.3 Safety guardrails: PII/PHI, prompt-injection, groundedness — **ADOPT ★ (the standout)**

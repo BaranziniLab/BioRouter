@@ -6,7 +6,7 @@
 
 biorouter, like any system, may run into occasional issues. Use the contents below to jump to the entry that matches your symptom; entries are independent, so you do not need to read the page in order. If nothing here matches, generate a diagnostics bundle and open an issue — see [Getting further help](#getting-further-help).
 
-> **Tip.** The [GitHub issues page][github-issues] is here to help. For the fastest support, generate a [diagnostic report](diagnostics-and-bug-reports.md) first — it helps maintainers understand your setup quickly.
+> **Note.** The [GitHub issues page][github-issues] is here to help. For the fastest support, generate a [diagnostic report](diagnostics-and-bug-reports.md) first — it helps maintainers understand your setup quickly.
 
 ## Contents
 
@@ -50,7 +50,7 @@ In rare cases, biorouter may enter a "doom spiral" or become unresponsive during
    biorouter session
    ```
 
-> **Tip.** For particularly large or complex tasks, break them into smaller sessions.
+> **Note.** For particularly large or complex tasks, break them into smaller sessions.
 
 ### Preventing long-running commands
 
@@ -68,7 +68,9 @@ This error occurs when the input provided to biorouter exceeds the maximum token
 
 Ollama provides local LLMs, which means you must first [download Ollama and run a model](../getting-started/choosing-a-model-provider.md#ollama-local) before attempting to use this provider with biorouter. If you do not have the model downloaded, you'll run into the following error:
 
-> ExecutionError("error sending request for url (http://localhost:11434/v1/chat/completions)")
+```text
+ExecutionError("error sending request for url (http://localhost:11434/v1/chat/completions)")
+```
 
 Another thing to note is that the DeepSeek models do not support tool calling, so all biorouter [extensions must be disabled](../extensions/extensions-and-skills-guide.md#managing-extensions) to use one of these models. Unfortunately, without the use of tools, there is not much biorouter will be able to do autonomously if using DeepSeek. However, Ollama's other models such as `qwen2.5` do support tool calling and can be used with biorouter extensions.
 
@@ -112,7 +114,7 @@ biorouter may encounter a `429 error` (rate limit exceeded) when interacting wit
 
 You may run into an error like the one below when there are issues with your LLM API tokens, such as running out of credits or incorrect configuration:
 
-```sh
+```text
 Traceback (most recent call last):
   File "/Users/admin/.local/pipx/venvs/biorouter-ai/lib/python3.13/site-packages/exchange/providers/utils.py",
 line 30, in raise_for_status
@@ -192,7 +194,7 @@ See [Keychain and keyring errors](#keychain-and-keyring-errors) for more details
 
 biorouter tries to use the system keyring to store secrets. In environments where there is no keyring support, you may see an error like:
 
-```bash
+```text
 Error Failed to access secure storage (keyring): Platform secure storage failure: DBus error: The name org.freedesktop.secrets was not provided by any .service files
 Please check your system keychain and run 'biorouter configure' again.
 If your system is unable to use the keyring, please try setting secret key(s) via environment variables.
@@ -202,12 +204,12 @@ In this case, you will need to set your provider specific environment variable(s
 
 You can set them either by doing:
 
-* `export GOOGLE_API_KEY=$YOUR_KEY_HERE` - for the duration of your session
-* in your `~/.bashrc` or `~/.zshrc` - (or equivalents) so it persists on new shell each new session
+- `export GOOGLE_API_KEY=$YOUR_KEY_HERE` - for the duration of your session
+- in your `~/.bashrc` or `~/.zshrc` - (or equivalents) so it persists on new shell each new session
 
 Then select the `No` option when prompted to save the value to your keyring.
 
-```bash
+```text
 $ biorouter configure
 
 Welcome to biorouter! Let's get you set up with a provider.
@@ -231,8 +233,8 @@ You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which dis
 
 When the keyring is disabled, secrets are stored here:
 
-* macOS/Linux: `~/.config/biorouter/secrets.yaml`
-* Windows: `%APPDATA%\Biorouter\config\secrets.yaml`
+- macOS/Linux: `~/.config/biorouter/secrets.yaml`
+- Windows: `%APPDATA%\Biorouter\config\secrets.yaml`
 
 ## Extensions and package runners
 
@@ -371,7 +373,7 @@ If you encounter an issue where the biorouter Desktop app shows no window on lau
 
    Example output:
 
-   ```sh
+   ```text
    drwx------  7 yourusername  staff  224 Jan 15 12:00 /Users/yourusername/.config
    ```
 
@@ -490,7 +492,7 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 Still running into issues? [Open an issue on GitHub][github-issues] where the biorouter team and community members are happy to assist.
 
-> **Tip.** If you can share a [diagnostic report](diagnostics-and-bug-reports.md#diagnostics-bundle) along with your question, it helps maintainers understand your setup and provide more targeted solutions.
+> **Note.** If you can share a [diagnostic report](diagnostics-and-bug-reports.md#diagnostics-bundle) along with your question, it helps maintainers understand your setup and provide more targeted solutions.
 
 ## Related documentation
 

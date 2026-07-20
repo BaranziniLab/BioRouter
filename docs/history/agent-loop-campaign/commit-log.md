@@ -2,15 +2,21 @@
 
 > **What this is.** One line per commit on the `agent-loop-integration` branch for the
 > 67-proposal agent-loop improvement campaign, mapping each commit to the proposal
-> (`BR-NN`) it implements.
-> **Status:** Historical record — the campaign concluded; this is the branch as it stood
-> when the change catalogue was generated.
+> (`BR-NN`) it implements. The catalogue was generated at Gate 1: its last entry is the
+> commit that launched Wave 2, so it covers Waves 0 and 1 only, not the whole campaign.
+> **Status:** Historical record — the campaign concluded and its work merged to `main`;
+> this catalogue is the branch as it stood when it was generated, part-way through.
+> [The outcome report](outcome-report.md) carries the campaign's final commit total.
 > **Audience:** maintainers auditing what shipped in the campaign.
 
 `BR-NN` identifiers are the proposal numbers from [the improvement proposals list](../agent-loop-review/improvement-proposals.md). Commits with no `BR-NN` are campaign bookkeeping — plans, wave reports, and baseline regenerations rather than proposal implementations.
 
 Review any single proposal in isolation with `git show <sha>`, or the whole branch with
 `git diff main...agent-loop-integration`.
+
+> **Warning.** The `agent-loop-integration` branch was deleted after the campaign
+> merged, so the second command no longer resolves as written. The commits it names are
+> on `main`, where `git show <sha>` still works.
 
 69 commits, 43 of them carrying a proposal id.
 
@@ -91,4 +97,4 @@ Review any single proposal in isolation with `git show <sha>`, or the whole bran
 - [Campaign plan and gate log](README.md) — the waves, conventions, and dated gates this branch was built under
 - [Campaign outcome report](outcome-report.md) — what the campaign concluded
 - [Mid-flight review index](mid-flight-review-index.md) — status, decisions, and caveats recorded part-way through
-- [Wave reports](wave-reports/) — per-wave verification evidence
+- [Wave reports](wave-reports/README.md) — per-wave verification evidence

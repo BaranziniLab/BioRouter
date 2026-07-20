@@ -34,14 +34,6 @@ Plan 3 put the Knowledge backend behind HTTP. This plan builds the first user-fa
 > `SkillsView.tsx#L150` have moved and never resolved as rendered markdown links —
 > use the file paths and symbol names.
 
-## Risks to watch during execution
-
-- **Model picker reuse**: The chat's `ModelsBottomBar` is tangled with the chat-session state. If lifting it cleanly is hard, the Plan-4-simple read-only picker shipped above is acceptable; Plan 6 polishes it.
-- **SSE through axum without `axum-extra::sse`**: the backend returns `text/event-stream` framed manually. The frontend `useIngestStream` parses it manually. If the backend's framing changes (e.g., from comma-split to JSON-stream), the parser breaks. The current backend format is documented in the Plan 3 handlers.
-- **File upload from frontend**: Task 7's Digest button skips file uploads (only text/url). File uploads need multipart `FormData` against the `/raw` endpoint; the SDK may not generate a clean Blob-aware method. Hand-rolled `fetch` with `FormData` is the fallback.
-- **`MainPanelLayout` + nested provider**: wrapping `KnowledgeView` inside `KnowledgeProvider` means the provider's API call fires every time the user clicks the Knowledge sidebar entry. Cache via `useEffect`/`useMemo` if it becomes annoying.
-- **`crypto.randomUUID()`**: requires a secure context. The Electron renderer should provide one, but if the bundled environment doesn't, fall back to `Math.random().toString(36).substring(2)`.
-
 ## Scope and approach
 
 **Goal:** Add a Knowledge entry in the sidebar (between Skills and Settings), build the top-level `KnowledgeView` shell, the multi-KB selector (trigger + cmd-K-style palette), and the ingest panel (dropzone, paste box, staged list, model picker, live progress). After Plan 4, users can create knowledge bases, drop files / paste text / paste URLs to ingest, pick a model, hit Digest, and watch sub-agent events stream in. The graph view + change-log drawer come in Plan 5.
@@ -1151,6 +1143,14 @@ git commit -m "docs(claude): document Plan 4 Knowledge frontend (route + ingest)
 ```
 
 ---
+
+## Risks to watch during execution
+
+- **Model picker reuse**: The chat's `ModelsBottomBar` is tangled with the chat-session state. If lifting it cleanly is hard, the Plan-4-simple read-only picker shipped above is acceptable; Plan 6 polishes it.
+- **SSE through axum without `axum-extra::sse`**: the backend returns `text/event-stream` framed manually. The frontend `useIngestStream` parses it manually. If the backend's framing changes (e.g., from comma-split to JSON-stream), the parser breaks. The current backend format is documented in the Plan 3 handlers.
+- **File upload from frontend**: Task 7's Digest button skips file uploads (only text/url). File uploads need multipart `FormData` against the `/raw` endpoint; the SDK may not generate a clean Blob-aware method. Hand-rolled `fetch` with `FormData` is the fallback.
+- **`MainPanelLayout` + nested provider**: wrapping `KnowledgeView` inside `KnowledgeProvider` means the provider's API call fires every time the user clicks the Knowledge sidebar entry. Cache via `useEffect`/`useMemo` if it becomes annoying.
+- **`crypto.randomUUID()`**: requires a secure context. The Electron renderer should provide one, but if the bundled environment doesn't, fall back to `Math.random().toString(36).substring(2)`.
 
 ## Related documentation
 

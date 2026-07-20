@@ -8,7 +8,7 @@
 
 Scope: the **Computer Controller** extension (`crates/biorouter-mcp/src/computercontroller/`,
 tools `computer_control`, `automation_script`, `web_scrape`, `cache`, `pdf_tool`,
-`docx_tool`, `xlsx_tool`) plus the **screen_capture / list_windows** tools it relies
+`docx_tool`, `xlsx_tool`) plus the **`screen_capture` / `list_windows`** tools it relies
 on (in the `developer` extension, `crates/biorouter-mcp/src/developer/rmcp_developer.rs`).
 
 Per-case pass/fail is **not** recorded here. This plan carried an empty status column
@@ -39,7 +39,7 @@ Reported by the user; `K1`–`K5` are problem identifiers, not case IDs.
 | K4 | App nav (Slack etc.): doesn't know what's clickable | exact-string window matching; no guidance to prefer app-native automation over blind clicks | **T** (substring window match + list on miss) + **P** (clickability order) |
 | K5 | Mac-only specifics break on Win/Linux | per-OS instruction blocks existed but core guidance was thin | **P** (OS-invariant operating principles in shared instructions) |
 
-## A — Screenshots and vision (screen_capture / list_windows)
+## A — Screenshots and vision (`screen_capture` / `list_windows`)
 
 | ID | Task | Tool(s) | Expected | Targets | Fix |
 |----|------|---------|----------|---------|-----|
@@ -54,7 +54,7 @@ Reported by the user; `K1`–`K5` are problem identifiers, not case IDs.
 | A9 | "What app is currently focused?" | screen_capture + describe | Model identifies foreground app from the image | — | P |
 | A10 | "Compare the layout of my two monitors." | screen_capture x2 (display 0 and 1) | Two captures; model uses topology to pick indices, doesn't loop on display 0 | K3 | T |
 
-## B — Basic UI interaction (computer_control)
+## B — Basic UI interaction (`computer_control`)
 
 | ID | Task | Tool(s) | Expected | Targets | Fix |
 |----|------|---------|----------|---------|-----|
@@ -180,4 +180,4 @@ See [the executed test results](./executed-test-results.md) for the executed-run
 - [Computer Controller executed test results](./executed-test-results.md) — what was actually run on 2026-06-20, the code changes made, and the MiMo vision finding.
 - [Multi-app orchestration run](./multi-app-orchestration-run.md) — the 20-task multi-app stress scenario that exercised case G1's Slack path in anger, plus the watchdog and chat-app fixes it produced.
 - [Computer Controller extension reference](../../extensions/built-in/computer-controller.md) — current documentation for the tools this plan tests.
-- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — the provider used for live testing, including which models accept image input.
+- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup, host selection and the model list for the provider used for live testing.

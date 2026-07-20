@@ -12,7 +12,8 @@
 index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
 Pi's thesis is *subtractive*: "what you leave out matters more than what you put in." The
-core is deliberately tiny — a ~1000-token system prompt, a handful of tools, no MCP, no plan
+core is deliberately tiny — a ~1000-token system prompt, a handful of tools, no MCP (the
+Model Context Protocol), no plan
 mode, no built-in todos, no sub-agents, no permission popups, no background bash — and
 everything workflow-specific is pushed into extensions, skills, and external tools like tmux
 and containers
@@ -100,7 +101,8 @@ final `toolResult` messages are re-emitted in source order
 ([extensions.md tool events](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md)).
 
 Streaming is architecturally decoupled: `AssistantMessageStream` separates provider
-SSE/websocket transport reads from downstream consumption, so the harness can await hooks,
+Server-Sent Events (SSE) / websocket transport reads from downstream consumption, so the
+harness can await hooks,
 persistence, and save-points without stalling the transport reader
 ([agent-harness.md](https://github.com/badlogic/pi-mono/blob/main/packages/agent/docs/agent-harness.md)).
 Error handling uses `Result<TValue, TError>` for expected failures (shell, filesystem,

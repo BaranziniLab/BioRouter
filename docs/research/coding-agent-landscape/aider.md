@@ -14,7 +14,8 @@ index lives in [the improvement proposals register](../../history/agent-loop-rev
 
 A framing note up front: **Aider is deliberately *not* a free-running autonomous agent.**
 It is a tightly-scoped, human-in-the-loop edit/commit/verify loop. Many "agent" primitives
-(background shells, subagents, todo planners, MCP tool servers, hooks) simply do not exist
+(background shells, subagents, todo planners, MCP (Model Context Protocol) tool servers,
+hooks) simply do not exist
 — and that minimalism is itself the interesting design lesson. Where a dimension has no
 real analogue, this report says so plainly rather than inventing one.
 

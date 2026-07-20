@@ -6,9 +6,9 @@
 
 This plan implements [the image input design](image-input-design.md). Read that first for the problem statement, the rejected alternatives, and the non-goals; this document is the execution sequence.
 
-**Identifier scheme.** Work is grouped into **Phases** (1–6, roughly one per layer: model metadata, Gemini wire format, IPC and message construction, chat input, renderer, verification) and numbered **Tasks** (1–20) inside them. Task numbers are referenced by the commit sequence and are stable; they are not cited outside this folder. Steps use checkbox (`- [ ]`) syntax because the plan was executed by an agent under the `superpowers:subagent-driven-development` workflow (alternative: `superpowers:executing-plans`), which tracks progress by ticking them.
+**Identifier scheme.** Work is grouped into **Phases** (1–6, roughly one per layer: model metadata, Gemini wire format, inter-process communication (IPC) and message construction, chat input, renderer, verification) and numbered **Tasks** (1–20) inside them. Task numbers are referenced by the commit sequence and are stable; they are not cited outside this folder. Steps use checkbox (`- [ ]`) syntax because the plan was executed by an agent under the `superpowers:subagent-driven-development` workflow (alternative: `superpowers:executing-plans`), which tracks progress by ticking them.
 
-**Goal:** Let users drop a screenshot or image into the chat and have the active multimodal model see the image directly (no OCR).
+**Goal:** Let users drop a screenshot or image into the chat and have the active multimodal model see the image directly (no optical character recognition).
 
 **Architecture:** Frontend reads attached temp files as base64 only at send time and builds a structured `content[]` with `TextContent` + `ImageContent` blocks. Backend `MessageContent::Image` path already works for Anthropic / OpenAI / Bedrock / Databricks; this plan adds Gemini support and a per-model `supports_vision` flag so the UI can hide the attach button on text-only models.
 
@@ -1282,7 +1282,7 @@ git commit -m "test(e2e): attach hidden for non-vision model"
 
 **Files:** None — this is a runtime check.
 
-> **This is human QA, not an automatable task.** Every other task in this plan ends in a command an agent runs and a commit it makes. This one requires a person driving the GUI with real provider credentials, and it is the gate the design spec named as decisive: if any of these checks fail, the implementation is not done regardless of unit-test status.
+> **This is human quality assurance (QA), not an automatable task.** Every other task in this plan ends in a command an agent runs and a commit it makes. This one requires a person driving the GUI with real provider credentials, and it is the gate the design spec named as decisive: if any of these checks fail, the implementation is not done regardless of unit-test status.
 
 1. **Start the app.** Run `just run-ui`. Expected: BioRouter window opens.
 2. **Paste a screenshot to Claude Sonnet.** Select Claude Sonnet as the model. Take a screenshot (Cmd+Shift+4 on macOS) and paste (Cmd+V) into the chat box. Confirm thumbnail appears, then send "What do you see?" Expected: Model describes the screenshot content (not the file path).

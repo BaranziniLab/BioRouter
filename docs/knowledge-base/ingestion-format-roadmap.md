@@ -3,8 +3,8 @@
 > **What this is.** A survey of the knowledge-base conversion pipeline as it stood on
 > 2026-06-10, a licensed comparison of open-source document converters, and a phased plan
 > to extend ingestion to PowerPoint, Excel/ODS, and a higher-fidelity PDF path.
-> **Status:** Current — partially implemented. Phases 4.2, 4.3 and 5 remain open work; the earlier phases have shipped.
-> 2026-06-10; Phases 4.2, 4.3 and 5 are open work.
+> **Status:** Current — partially implemented. Phases 1, 2, 3 and 4.1 shipped and were
+> verified on 2026-06-10; Phases 4.2, 4.3 and 5 are open work.
 > **Audience:** developers working on the knowledge base and its conversion layer.
 
 The knowledge base ingests a file, converts it deterministically to markdown, then lets a
@@ -14,7 +14,8 @@ converters were losing in June 2026 and what to do about it.
 
 **Phase numbering.** `Phase N` and `Phase N.M` are identifiers local to this document —
 there is no external index. They are cited by the status block above and are the units the
-work was tracked in. All phase definitions live under [Plan](#plan) below.
+work was tracked in. All phase definitions live under
+[Plan for extending ingestion](#plan-for-extending-ingestion) below.
 
 **Three genres under one heading**, in reading order:
 
@@ -22,7 +23,7 @@ work was tracked in. All phase definitions live under [Plan](#plan) below.
 |---|---|---|
 | [Current architecture](#current-architecture-as-built) | Architecture survey, as built on 2026-06-10 | Reference; the known-gaps list is a snapshot of that date |
 | [Tool research summary](#tool-research-summary) | Competitive research, June 2026 data | Reference; licensing conclusions need re-checking before reuse |
-| [Plan](#plan) | Forward plan | Phases 4.2, 4.3 and 5 only |
+| [Plan for extending ingestion](#plan-for-extending-ingestion) | Forward plan | Phases 4.2, 4.3 and 5 only |
 
 **What shipped on 2026-06-10:** xlsx/xls/ods via `calamine`; pptx via an in-house
 converter with speaker notes; the PDF primary path upgraded to `pdf-inspector` with the
@@ -59,7 +60,7 @@ Key property: **conversion quality bounds digestion quality.** The sub-agent onl
 sees `source.md`; whatever the converter destroys (tables, reading order, slide notes) is
 unrecoverable downstream.
 
-### Conversion dispatch today
+### Conversion dispatch as of 2026-06-10
 
 `crates/biorouter-mcp/src/knowledge/convert/mod.rs` (`convert()`, `normalize_mime()`,
 `guess_mime()`):
@@ -183,7 +184,7 @@ does not reproduce layout.
 
 ---
 
-## Plan
+## Plan for extending ingestion
 
 Guiding principles:
 

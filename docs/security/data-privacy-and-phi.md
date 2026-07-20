@@ -1,4 +1,4 @@
-# Data privacy and patient data guidelines
+# Data privacy and protected health information
 
 > **What this is.** UCSF-specific guidance on which model providers are acceptable for
 > protected health information (PHI), clinical records, and other sensitive research data,
@@ -39,7 +39,8 @@ Different providers have fundamentally different data handling policies:
 ## Patient data and sensitive research data
 
 > **Warning.** If you need to work with patient data, PHI, clinical records, genomic data
-> linked to individuals, or any data subject to HIPAA, institutional data governance policies,
+> linked to individuals, or any data subject to the Health Insurance Portability and
+> Accountability Act (HIPAA), institutional data governance policies,
 > or other regulatory requirements:
 >
 > - **Use only institution-managed services or fully local models.**
@@ -79,7 +80,8 @@ BioRouter with any sensitive data:
 
 1. Confirm that your intended use case is covered by the institutional data use agreement for
    that provider.
-2. Check with UCSF IT or your IRB/compliance office if you are unsure.
+2. Check with UCSF IT or your Institutional Review Board (IRB) or compliance office if you are
+   unsure.
 3. Ensure that the data classification level of your data is compatible with the service tier
    you are using.
 

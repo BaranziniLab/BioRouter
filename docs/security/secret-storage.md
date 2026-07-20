@@ -27,8 +27,8 @@ prompts at all.
 | Platform | Store | Prompts | Notes |
 |---|---|---|---|
 | macOS | Keychain | Up to once per binary, ever | See [macOS](#macos-the-keychain-password-prompt) below |
-| Windows | Credential Manager | None | Credentials are protected per-user by DPAPI. BioRouter transparently splits large secret sets across multiple credentials to stay under Windows' 2560-byte per-credential limit. |
-| Linux | Secret Service | None on a desktop session | Desktop sessions unlock the Secret Service with your login. On headless machines, SSH sessions, WSL, or systems without a Secret Service daemon, BioRouter automatically falls back to file storage (`~/.config/biorouter/secrets.yaml`). |
+| Windows | Credential Manager | None | Credentials are protected per-user by the Windows Data Protection API (DPAPI). BioRouter transparently splits large secret sets across multiple credentials to stay under Windows' 2560-byte per-credential limit. |
+| Linux | Secret Service | None on a desktop session | Desktop sessions unlock the Secret Service with your login. On headless machines, SSH sessions, the Windows Subsystem for Linux (WSL), or systems without a Secret Service daemon, BioRouter automatically falls back to file storage (`~/.config/biorouter/secrets.yaml`). |
 
 ## macOS: the Keychain password prompt
 

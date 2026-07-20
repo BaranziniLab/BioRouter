@@ -1,4 +1,4 @@
-# Theme system — how it works today, and how to make adding themes cheap
+# Theme system architecture
 
 > **What this is.** The architecture of BioRouter's theme system: where a theme actually lives,
 > what is generated from what, the token contract, and what a fourth family costs.
@@ -18,7 +18,7 @@ number from the per-family token references, so the numbering is a stable refere
 
 ---
 
-## 1 · Where a theme actually lives today
+## 1 · Where a theme lived before the re-architecture
 
 **Nowhere central.** A theme is not a configuration object, a file, or a plugin. It is a *pattern of
 edits* spread across nine files, and it is 100% compile-time — there is no loading, no registry, no
@@ -64,7 +64,7 @@ Three things are better than they look and should be the model for everything el
   `THEME_FAMILIES` from `ThemeContext.tsx` and `FAMILIES` from `index.html` and asserts they match,
   then requires every family to have light + dark splash rules. **Two of the three "duplicated
   family lists" are therefore already CI-guarded** — only `ThemeFamilySelector.tsx` can silently
-  drift. *(This corrects an earlier claim of mine that all three were unguarded.)*
+  drift. *(This corrects an earlier claim that all three were unguarded.)*
 - **`ThemeFamilySelector.test.tsx`** is likewise registry-driven.
 - **`@theme inline` is load-bearing and correct.** It emits `.bg-sidebar { background-color:
   var(--sidebar) }` and deliberately does **not** emit `--color-sidebar` into the cascade (verified:

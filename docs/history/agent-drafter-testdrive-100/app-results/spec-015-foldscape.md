@@ -68,7 +68,7 @@ The default `biorouter` pack resolves correctly and the protein ribbon/funnel/Ra
 contact-map visuals are distinctive, but overlay collisions and below-fold transport materially harm
 the 720p composition.
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

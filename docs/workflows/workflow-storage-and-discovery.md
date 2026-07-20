@@ -11,7 +11,7 @@ Biorouter Desktop and the Biorouter CLI take different approaches to storage, an
 
 ## Understanding workflow storage
 
-Before saving workflows, it's important to understand where they can be stored and how this affects their availability.
+Where a workflow is stored determines which projects and sessions can use it.
 
 ### Workflow storage locations
 
@@ -122,7 +122,7 @@ Biorouter searches for workflows in the following locations (in order):
 #### Example output
 
 *Default text format:*
-```bash
+```text
 $ biorouter workflow list
 Available workflows:
 biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml
@@ -131,7 +131,7 @@ literature-scan - Summarize new PubMed papers on a topic - local: ~/.config/bior
 ```
 
 *Verbose mode:*
-```bash
+```text
 $ biorouter workflow list --verbose
 Available workflows:
   biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml

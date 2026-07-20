@@ -13,7 +13,9 @@
 Two identifier schemes appear below. **BR-NN** is a proposal from the agent-loop review's
 master list — BR-1, BR-2, BR-17, BR-20, BR-21, BR-23, BR-37, BR-42, BR-43, BR-44, BR-64
 and BR-65 are all cited here; each is defined in
-[improvement proposals](../../agent-loop-review/improvement-proposals.md).
+[improvement proposals](../../agent-loop-review/improvement-proposals.md). BR-68, BR-69 and
+BR-70 are also cited, in the remediation notes added after Wave 3; that register records
+them as numbers added later by this audit rather than by the master list itself.
 **GAP-N** is this document's own coinage for a per-platform degradation, numbered in the
 [GAP findings](#gap-findings--ranked-by-user-impact) section below; other campaign
 documents cite these numbers without redefining them, so this file is the canonical key.

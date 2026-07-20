@@ -32,6 +32,21 @@ back-and-forth, inconsistencies, inefficiencies, vulnerabilities, issues).
 | [run-results.md](run-results.md) | The per-run results log for all 100 scenarios, the 100/100 final verdict, the tool-coverage evidence, the double-`render_dashboard` rate, and the infrastructure findings the run surfaced. |
 | [hardening-log.md](hardening-log.md) | The fix applied after each batch (Batches 1–4), including the withdrawn server-side idempotency guard and the two platform bugs the run exposed. |
 
+The folder holds these three Markdown files and nothing else.
+
+### Where this folder ends
+
+This folder records one completed run and is not maintained as the extension changes. Neighbouring
+material lives elsewhere:
+
+- **How the Auto Visualiser works now** — [the extension guide](../../extensions/built-in/auto-visualiser.md),
+  which is the living documentation for `render_dashboard` and the figure tools these scenarios drive.
+- **Tool *selection* rather than tool *output*** — the fixture corpus at
+  [`crates/biorouter-mcp/tests/fixtures/autovis-datasets/`](../../../crates/biorouter-mcp/tests/fixtures/autovis-datasets/README.md),
+  which lives with the tests that read it rather than under `docs/`.
+- **The sibling campaign** — [`history/agent-drafter-stress-test/`](../agent-drafter-stress-test/README.md),
+  the equivalent 100-prompt run against the app-authoring extension.
+
 > **Note.** This file and `run-results.md` disagree about several scenarios: the six plan swaps
 > were recorded in `run-results.md` as they happened and only later reflected here. Where the two
 > differ on what a scenario asked for, `run-results.md` records what was actually executed.
@@ -754,10 +769,9 @@ Two notes on the index:
 
 ## Related documentation
 
-- [Tool-selection fixtures](../../../crates/biorouter-mcp/tests/fixtures/autovis-datasets/README.md) — the companion probe: ten datasets that check tool *selection* rather than tool *output*, with its own recorded baseline.
-
 - [run-results.md](run-results.md) — what actually happened when these 100 scenarios were run, per visualization and per batch.
 - [hardening-log.md](hardening-log.md) — the fixes made between batches while this corpus was being executed.
 - [Auto Visualiser extension guide](../../extensions/built-in/auto-visualiser.md) — what the extension is, how to enable it, and the full tool catalogue these scenarios exercise.
+- [Tool-selection fixtures](../../../crates/biorouter-mcp/tests/fixtures/autovis-datasets/README.md) — the companion probe: ten datasets that check tool *selection* rather than tool *output*, with its own recorded baseline.
 - [Agent Drafter stress test](../agent-drafter-stress-test/README.md) — the sibling 100-prompt stress campaign, run the same way against the app-authoring extension.
 - [Agent Browser debugging guide](../../desktop-ui/agent-browser-debugging.md) — how the dev GUI was driven and inspected to verify each report.

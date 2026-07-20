@@ -55,8 +55,8 @@ tamper model):
 | Linux | `/etc/biorouter/managed-policy.yaml` |
 | Windows | `%ProgramData%\Biorouter\managed-policy.yaml` |
 
-Deploy it via MDM/Jamf (macOS), a package postinstall or Ansible (Linux), or Group Policy or an
-installer (Windows).
+Deploy it via mobile device management (MDM) tooling such as Jamf (macOS), a package postinstall
+or Ansible (Linux), or Group Policy or an installer (Windows).
 
 ## Ownership verification
 
@@ -76,7 +76,7 @@ against privilege escalation):
   ```
 
 - **Windows** — `%ProgramData%` is admin-writable-only by default, so phase 1 trusts the
-  location; deep ACL owner verification is a planned follow-up.
+  location; deep access control list (ACL) owner verification is a planned follow-up.
 
 > **Warning — Windows.** Because the Windows path is trusted by location rather than verified,
 > the ownership guarantee this tier's trust model rests on is absent on that platform. Treat a

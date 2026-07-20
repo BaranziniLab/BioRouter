@@ -1,7 +1,7 @@
 # Agent Drafter 100-app test-drive runbook
 
 > **What this is.** The operational runbook for driving BioRouter's Agent Drafter across the 100 app specs in the companion corpus: bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect, gap and friction point.
-> **Status:** Superseded in part — written 2026-07-12 against a `feat/apps-sdk-v2` git worktree at `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`, which no longer exists and is not a registered worktree. The Apps SDK v2 primitives it depends on now live in the main tree (`crates/biorouter-mcp/src/agent_drafter/`), so the worktree requirement in "Where the code lives" is void — run everything else from an ordinary checkout. The campaign this runbook drove is recorded in [the 100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md).
+> **Status:** Current, with one rotted section named here. The runbook was written 2026-07-12 against a `feat/apps-sdk-v2` git worktree at `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`, which no longer exists and is not a registered worktree. The Apps SDK v2 primitives it depends on now live in the main tree (`crates/biorouter-mcp/src/agent_drafter/`), so the worktree requirement in "Where the code lives" (§0.1) is void — run everything else from an ordinary checkout. The campaign this runbook drove is recorded in [the 100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md).
 > **Audience:** coding agents running an Agent Drafter test campaign, and the maintainers supervising them.
 
 Agent Drafter is BioRouter's app-authoring MCP extension: it builds **BioRouter apps**, each a served TypeScript front-end wired to its own per-app BioRouter agent over a WebSocket. This runbook tests it end to end — not by hand-writing apps, but by making the agent author them from a spec and then checking whether what came out is the app the spec asked for.
@@ -324,14 +324,14 @@ Navigate with your computer-use tool. Core moves you'll use: `browser_navigate`,
 `browser_evaluate` (run JS in the page — your most powerful verification tool),
 `browser_console_messages`, `browser_wait_for`, `browser_resize`.
 
-> **Gotcha — stale browser profile lock.** If navigation fails with *"Browser is already in use … mcp-chrome-…"*, a stale Chrome holds the profile. Clear it:
+> **Warning.** Stale browser profile lock: if navigation fails with *"Browser is already in use … mcp-chrome-…"*, a stale Chrome holds the profile. Clear it:
 
 ```bash
 pkill -9 -f "mcp-chrome" 2>/dev/null; sleep 1
 rm -f "$HOME/Library/Caches/ms-playwright-mcp/"*/SingletonLock 2>/dev/null
 ```
 
-> **Gotcha — a `favicon.ico` 401 console error is benign** (the app doesn't serve a favicon). Ignore it; any *other* console error is a real defect.
+> **Note.** A `favicon.ico` 401 console error is benign (the app doesn't serve a favicon). Ignore it; any *other* console error is a real defect.
 
 ### 4.3 Optional: the repo's own harnesses (fast, headless sanity)
 
@@ -439,7 +439,7 @@ spec's pack. Spot-check the palette and type against the pack's intent:
            surface: cs.getPropertyValue('--br-surface').trim() }; }
 ```
 
-> **Known SDK behavior to account for (not an app bug).** The pack attribute is set on `<html>`, but the *grounds* render in **light** mode unless the app opts into `theme:"auto"` in `createApp`. So a spec that asks for a dark pack (e.g. `midnight`, `terminal`) may render on light grounds with the pack's accent/typography applied. Judge the accent/typography/density against the pack; if the spec truly needs full dark, that's a legitimate finding to log (and you can prompt the agent to set `theme:"auto"`).
+> **Note.** Known SDK behavior to account for, not an app bug: the pack attribute is set on `<html>`, but the *grounds* render in **light** mode unless the app opts into `theme:"auto"` in `createApp`. So a spec that asks for a dark pack (e.g. `midnight`, `terminal`) may render on light grounds with the pack's accent/typography applied. Judge the accent/typography/density against the pack; if the spec truly needs full dark, that's a legitimate finding to log (and you can prompt the agent to set `theme:"auto"`).
 
 **6.2 Density, chrome, motion.** Compare the screenshot to the spec's motif ("dense stacked tracks,
 near-zero chrome, amber only on live state"; "generous whitespace, serif headers"). Confirm accent is
@@ -465,7 +465,7 @@ Record an aesthetic verdict: **ALIGNED / PARTIAL / OFF**, with the specific mism
 can be improved.** Keep two artifacts under `/tmp/br-testdrive/` (or a repo path you choose), and keep
 them current as you go — do not reconstruct from memory at the end.
 
-> **Where the executed run put these.** The 2026-07 campaign committed its deliverables into the repo, and they now live under [`docs/history/agent-drafter-testdrive-100/`](../../history/agent-drafter-testdrive-100/README.md): per-app results in `app-results/spec-NNN-<slug>.md`, the rollup as [`audit-findings-register.md`](../../history/agent-drafter-testdrive-100/audit-findings-register.md), and the machine-readable ledger in `data/ledger.json`. For a new run, prefer those kebab-case names over the `FINDINGS.md` spelling used in the templates below.
+> **Note.** Where the executed run put these: the 2026-07 campaign committed its deliverables into the repo, and they now live under [`docs/history/agent-drafter-testdrive-100/`](../../history/agent-drafter-testdrive-100/README.md): per-app results in `app-results/spec-NNN-<slug>.md`, the rollup as [`audit-findings-register.md`](../../history/agent-drafter-testdrive-100/audit-findings-register.md), and the machine-readable ledger in `data/ledger.json`. For a new run, prefer those kebab-case names over the `FINDINGS.md` spelling used in the templates below.
 
 ### 7.1 Per-app result file — `results/spec-NNN.md`
 

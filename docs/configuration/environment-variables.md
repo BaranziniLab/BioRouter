@@ -32,7 +32,7 @@ These are the minimum variables required to get started with biorouter.
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_PROVIDER` | Specifies the LLM provider to use | [See available providers](../getting-started/choosing-a-model-provider.md) | None (must be configured) |
+| `BIOROUTER_PROVIDER` | Specifies the large language model (LLM) provider to use | [See available providers](../getting-started/choosing-a-model-provider.md) | None (must be configured) |
 | `BIOROUTER_MODEL` | Specifies which model to use from the provider | Model name (e.g. `"gpt-4"`, `"claude-sonnet-4-20250514"`) | None (must be configured) |
 | `BIOROUTER_TEMPERATURE` | Sets the [temperature](https://medium.com/@kelseyywang/a-comprehensive-guide-to-llm-temperature-%EF%B8%8F-363a40bbc91f) for model responses | Float between 0.0 and 1.0 | Model-specific default |
 

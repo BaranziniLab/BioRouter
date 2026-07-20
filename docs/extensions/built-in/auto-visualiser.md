@@ -1,7 +1,7 @@
 # Auto Visualiser extension
 
 > **What this is.** User guide to the built-in Auto Visualiser extension: how to enable it, which figures it can produce, and a worked cohort-data example.
-> **Status:** Superseded in part — the extension is live and healthy, but the chart catalogue below covers only 8 of the 34 tools the code now registers. The current truth is the source: `crates/biorouter-mcp/src/autovisualiser/` (`mod.rs`, `tools_charts.rs`, `tools_d3.rs`, `tools_extra.rs`, `tools_geo.rs`, `tools_dashboard.rs`).
+> **Status:** Current. The extension is live and healthy, but the chart catalogue in [Visualization types](#visualization-types) covers only 8 of the 34 tools the code now registers — see the warning below. For the full tool list the current truth is the source: `crates/biorouter-mcp/src/autovisualiser/` (`mod.rs`, `tools_charts.rs`, `tools_d3.rs`, `tools_extra.rs`, `tools_geo.rs`, `tools_dashboard.rs`).
 > **Audience:** end users.
 
 The Auto Visualiser extension lets BioRouter generate interactive data visualizations directly inside a conversation. It uses MCP-UI — the emerging Model Context Protocol standard for returning renderable UI from a tool — to return charts, graphs, maps and diagrams as `ui://` resources that the chat renders inline, without you having to ask for a figure explicitly.

@@ -10,7 +10,7 @@ Subagents are independent instances that execute tasks while keeping your main c
 
 ## How to use subagents
 
-> **Tip:** biorouter can autonomously decide to use subagents when it determines they would be beneficial for your task - you don't always need to explicitly request them. This happens automatically in autonomous [permission mode](../security/permission-modes.md) (the default). Subagents are disabled in manual approval, smart approval, and chat-only modes.
+> **Note.** biorouter can autonomously decide to use subagents when it determines they would be beneficial for your task - you don't always need to explicitly request them. This happens automatically in autonomous [permission mode](../security/permission-modes.md) (the default). Subagents are disabled in manual approval, smart approval, and chat-only modes.
 
 To use subagents, ask biorouter to delegate tasks using natural language. biorouter automatically decides when to spawn subagents and handles their lifecycle. You can:
 
@@ -27,7 +27,7 @@ You can run multiple subagents sequentially or in parallel.
 | **Sequential** (Default) | Tasks execute one after another | "first...then", "after" | `"First analyze the code, then generate documentation"` |
 | **Parallel** | Tasks execute simultaneously | "parallel", "simultaneously", "at the same time", "concurrently" | `"Create three HTML templates in parallel"` |
 
-> **Info:** If a subagent fails or times out (5-minute default), you will receive no output from that subagent. For parallel execution, if any subagent fails, you get results only from the successful ones.
+> **Note.** If a subagent fails or times out (5-minute default), you will receive no output from that subagent. For parallel execution, if any subagent fails, you get results only from the successful ones.
 
 ## Internal subagents
 
@@ -38,7 +38,7 @@ Internal subagents spawn biorouter instances to handle tasks using your current 
 
 ### Direct prompts
 
-Direct prompts provided for one-off tasks using natural language prompts. The main agent automatically configures the subagent based on your request.
+Direct prompts are for one-off tasks, expressed in natural language. The main agent automatically configures the subagent based on your request.
 
 Prompt:
 
@@ -144,7 +144,7 @@ I'll use your code-reviewer workflow to create a specialized subagent for this a
 
 ## External subagents
 
-External subagents let you bring in AI agents from other providers and platforms, enabling biorouter to coordinate and integrate your workflow with the broader ecosystem. The example below — running OpenAI's Codex CLI as an MCP server — is the only external subagent configuration documented here; adapting it to another agent means substituting that agent's own command and configuration file.
+External subagents let you bring in AI agents from other providers and platforms, enabling biorouter to coordinate and integrate your workflow with the broader ecosystem. The example below — running OpenAI's Codex CLI as an MCP (Model Context Protocol) server — is the only external subagent configuration documented here; adapting it to another agent means substituting that agent's own command and configuration file.
 
 [Biorouter configuration file](../configuration/config-file-reference.md) (`~/.config/biorouter/config.yaml`):
 
@@ -233,7 +233,7 @@ The architecture follows a modular design with clear separation between the core
 
 Subagents are temporary instances that exist only for task execution. After the task is completed, no manual intervention is needed for cleanup.
 
-## Configuration
+## Subagent configuration
 
 Subagents use the following pre-configured settings, but you can override any defaults using natural language in your prompts.
 
@@ -308,7 +308,7 @@ The following operations are blocked to ensure subagents remain focused on their
 - **Extension management**: Cannot enable, disable, or modify extensions to avoid conflicts with the main session
 - **Schedule management**: Cannot create, modify, or delete scheduled tasks to prevent interference with parent workflows
 
-> **Info:** Subagents can browse extensions for suggestions but cannot enable them to avoid modifying the parent session.
+> **Note.** Subagents can browse extensions for suggestions but cannot enable them to avoid modifying the parent session.
 
 ## Related documentation
 

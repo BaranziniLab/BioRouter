@@ -10,7 +10,7 @@
 
 This is the second of two independent performance efforts in June 2026. The first, driven by an internal review rather than an external comparison, is recorded in [the performance fixes implementation log](implementation-log.md).
 
-> **Recoverability (as of 2026-06-24).** All work is on the `perf/jcode-borrows` branch in a separate worktree at `/Users/wanjun/Desktop/biorouter-perf`. `main`'s uncommitted work-in-progress is untouched and fully intact. Every change is its own commit, so any of them can be reverted individually (`git revert <hash>`) or the whole branch dropped. The shared `target/` build cache was reused for speed; main's source is unaffected (rebuild main any time to regenerate its binaries).
+> **Note.** Recoverability, as of 2026-06-24: all work is on the `perf/jcode-borrows` branch in a separate worktree at `/Users/wanjun/Desktop/biorouter-perf`. `main`'s uncommitted work-in-progress is untouched and fully intact. Every change is its own commit, so any of them can be reverted individually (`git revert <hash>`) or the whole branch dropped. The shared `target/` build cache was reused for speed; main's source is unaffected (rebuild main any time to regenerate its binaries).
 
 > **Warning.** That worktree no longer exists, so the recoverability commands recorded in this report are a historical record of how the work was organized, not instructions that run today. The report refers to the same worktree by two spellings, `biorouter-perf` and `../BioRouter-perf`; both mean the one path above.
 

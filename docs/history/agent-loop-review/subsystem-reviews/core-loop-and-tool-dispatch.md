@@ -60,7 +60,7 @@ reply(user_message) [agent.rs:1240]
        }
 ```
 
-Streaming is real: provider SSE deltas become `MessageStream` items
+Streaming is real: provider Server-Sent Events (SSE) deltas become `MessageStream` items
 (`(Option<Message>, Option<ProviderUsage>)`), the agent forwards each as an
 `AgentEvent` to the SSE consumer (`routes/reply.rs`), which relays to the
 Electron GUI over its own HTTP/WS channel.

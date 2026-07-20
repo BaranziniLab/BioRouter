@@ -56,14 +56,16 @@ def strip_fences(text: str) -> str:
     """
     out, in_fence, fence = [], False, ""
     for line in text.split("\n"):
-        m = re.match(r"^[ \t]*(`{3,}|~{3,})", line)
+        m = re.match(r"^[ \t]*((`{3,})|(~{3,}))(.*)$", line)
         if m:
-            tok = m.group(1)[0] * 3
+            run = m.group(1)                       # the exact fence run, e.g. ``` or ````
+            info = m.group(4).strip()
             if not in_fence:
-                in_fence, fence = True, tok
-                out.append(line)          # keep the opening fence for the language check
+                in_fence, fence = True, run
+                out.append(line)                   # keep the opener for the language check
                 continue
-            if tok == fence:
+            # CommonMark: a closing fence is the same char, at least as long, no info.
+            if run[0] == fence[0] and len(run) >= len(fence) and not info:
                 in_fence = False
                 out.append("")
                 continue
@@ -148,13 +150,23 @@ def check_file(path: str, findings: list[dict]) -> None:
                              "detail": "marked `Current` but lives under docs/history/"})
 
     # --- fenced code blocks carry a language (style §5) ---
-    for mm in FENCE_RE.finditer(text):
-        # only opening fences: count fences before this one
-        before = text[: mm.start()].count("```")
-        if before % 2 == 0 and not mm.group(2):
-            line = text[: mm.start()].count("\n") + 1
-            findings.append({"file": r, "rule": "code/no-language",
-                             "detail": f"unlabelled ``` at line {line}"})
+    # Walk lines with a state machine so a CLOSING fence (correctly bare) is
+    # never mistaken for an unlabelled opening one. Substring parity counting
+    # miscounts whenever a fence token appears indented or inside another block.
+    in_fence, fence_run = False, ""
+    for ln, line in enumerate(text.split("\n"), start=1):
+        m = re.match(r"^[ \t]*((`{3,})|(~{3,}))(.*)$", line)
+        if not m:
+            continue
+        run = m.group(1)
+        info = m.group(4).strip()
+        if not in_fence:
+            in_fence, fence_run = True, run
+            if not info:
+                findings.append({"file": r, "rule": "code/no-language",
+                                 "detail": f"unlabelled ``` at line {ln}"})
+        elif run[0] == fence_run[0] and len(run) >= len(fence_run) and not info:
+            in_fence = False
 
     # --- Related documentation closer (style §1) ---
     if not is_readme and not header_exempt:

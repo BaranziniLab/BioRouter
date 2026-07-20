@@ -1,7 +1,7 @@
 # Image input design
 
 > **What this is.** The design spec for sending pasted, dropped, or picked images to vision-capable models as inline base64 content blocks — adding a `supports_vision` capability flag to per-model metadata and fixing Gemini's silent image drop.
-> **Status:** Historical record — written 2026-05-30 and implemented the same day; the work shipped in **v1.76.1** (released 2026-06-01). `supports_vision: Option<bool>` is on `ModelInfo` in `crates/biorouter/src/providers/base.rs`, the `readTempImageAsBase64` IPC binding exists in `ui/desktop/src/preload.ts`, and the Gemini `inline_data` arm is in `crates/biorouter/src/providers/formats/google.rs`.
+> **Status:** Historical record — written 2026-05-30 and implemented the same day; the work shipped in **v1.76.1** (released 2026-06-01). `supports_vision: Option<bool>` is on `ModelInfo` in `crates/biorouter/src/providers/base.rs`, the `readTempImageAsBase64` inter-process communication (IPC) binding exists in `ui/desktop/src/preload.ts`, and the Gemini `inline_data` arm is in `crates/biorouter/src/providers/formats/google.rs`.
 > **Audience:** developers working on providers, chat input, and message rendering.
 
 BioRouter shipped several vision-capable models but had no way to get image bytes to them: the chat box collected images and then flattened them into file-path text. This spec describes the fix that landed — structured `ImageContent` blocks end to end, plus a per-model capability flag so the UI can hide the attach button on text-only models. The companion task-by-task plan is [the image input implementation plan](image-input-plan.md); this document is the *why*, that one is the *how*.
@@ -26,7 +26,7 @@ BioRouter ships several multimodal LLMs (Claude, GPT-4o, Gemini, Bedrock-Claude)
 
 The backend is in better shape: `MessageContent::Image` exists, sessions store it, and four providers (Anthropic, OpenAI, Bedrock, Databricks) already translate it to wire format. Google/Gemini silently drops it via a catch-all match arm. Snowflake is explicitly skipped with a TODO comment. No provider/model exposes a `supports_vision` capability flag, so the UI cannot gate on it.
 
-The user goal is direct multimodal input: drop a screenshot, the model sees the bytes. No OCR fallback, no auto-routing through tools.
+The user goal is direct multimodal input: drop a screenshot, the model sees the bytes. No optical character recognition (OCR) fallback, no auto-routing through tools.
 
 ## Goals
 

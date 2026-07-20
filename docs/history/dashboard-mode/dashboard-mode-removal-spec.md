@@ -12,10 +12,11 @@ Dashboard mode has been removed from the desktop app. The forward-looking part o
 document — what was deliberately kept, and what shares the name but must not be cleaned up —
 is still load-bearing.
 
-> **Warning.** This document and the [folder index](README.md) disagree about which releases
-> shipped dashboard mode and fold mode. Neither has been corrected here, because doing so would
-> mean picking a version number without evidence. Treat both as unverified until someone checks
-> the changelog.
+> **Note.** This document and the [folder index](README.md) used to disagree about which
+> releases shipped dashboard mode and fold mode. The changelog was checked on 2026-07-20 and
+> this document's numbers were the correct ones: [release notes
+> v1.76.0](../../releases/notes/v1.76.0.md) headline fold mode, and the `landing/about.html`
+> changelog records v1.75.0 as "Dashboard Mode". The index has been corrected to match.
 
 Companion historical documents — **do not rewrite them**, they remain true of
 their own moment:

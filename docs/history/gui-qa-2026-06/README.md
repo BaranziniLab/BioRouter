@@ -3,10 +3,10 @@
 This folder holds the two records produced by a single desktop-GUI QA session that ran on
 **2026-06-24/25** against dev build **1.86.1**. It happened: the session drove the real
 Electron app over the Chrome DevTools Protocol, verified roughly 40 rows live, and fixed
-nine defects — session auto-naming (three separate causes), the Expand window's blocked
+eight defects — session auto-naming (three separate causes), the Expand window's blocked
 scripts, two CLI status-line errors, and the human-in-the-loop permission card. Those
 fixes shipped. Everything here is a **historical record**, kept for provenance rather than
-as current guidance: the current release is 1.87.2, neither document is a checklist to
+as current guidance: the current release is 1.88.3, neither document is a checklist to
 re-run, and at least one row (`G3`, diverge on the Dashboard canvas) covers a feature that
 has since been removed from the product entirely.
 

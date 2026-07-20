@@ -7,7 +7,7 @@
 > `DashboardContext.tsx` and the rest of the dashboard tree are gone as of
 > 2026-07-18 — see the [removal record](README.md). Only the `BaseChat.tsx`
 > touchpoint survives. The unticked `- [ ]` checkboxes below were ticked during
-> execution in a working copy (fold mode shipped in v1.85.3); they are not a
+> execution in a working copy (fold mode shipped in v1.76.0); they are not a
 > record of unfinished work.
 > **Audience:** maintainers reading the dashboard-mode archive.
 > **Cross-reference key.** Two schemes are used below and they are not
@@ -1390,5 +1390,5 @@ If any step fails, add a Task 14+ to this plan with the specific fix needed befo
 
 - [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md) — the spec this plan implements, and the target of the self-review's quoted-heading references.
 - [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) — builds the canvas, `canvasLayout.ts` and `organize()` that this plan folds cards onto.
-- [Dashboard mode — removal record and archive index](README.md) — records fold mode shipping in v1.85.3 and its removal on 2026-07-18.
+- [Dashboard mode — removal record and archive index](README.md) — records fold mode shipping in v1.76.0 and its removal on 2026-07-18.
 - [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md) — introduces the `palette.ts` and `DashboardProvider` that Tasks 1 and 4 modify.

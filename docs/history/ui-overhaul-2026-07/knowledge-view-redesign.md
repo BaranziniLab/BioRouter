@@ -46,11 +46,11 @@ Everything flagged in review — awkward positioning, off styling, inconsistent
 rounding, the way compartments are divided — traces back to these three, in
 order of how loudly they register.
 
-**Corners don't round by role.** The "Soul · KB" selector and the MODEL row are
-**12px** (a card radius) where a select should be **8px**; the graph panel is
-**16px** (a modal radius) where a panel should be **12px**; every chip — the
-"KB" tag, the `.pdf`/`.pptx` file types, the status pills — is **8px** where a
-chip should be **4px**. Big things and small things round almost the same
+**Corners don't round by role.** The "Soul · KB" selector (KB = knowledge base)
+and the MODEL row are **12px** (a card radius) where a select should be **8px**;
+the graph panel is **16px** (a modal radius) where a panel should be **12px**;
+every chip — the "KB" tag, the `.pdf`/`.pptx` file types, the status pills — is
+**8px** where a chip should be **4px**. Big things and small things round almost the same
 amount, so the whole surface reads slightly mushy without the viewer being able
 to name why.
 
@@ -150,7 +150,7 @@ and list-row primitives. One control, one look.
 | KB list (palette) | Hairline **rows** (40px), not gapped cards. Selection is a background shift, not a heavier border. |
 | Dropzone | Flat 12px panel on `background-muted`. File types become 4px neutral Badges. Drag-active firms the hairline (drop the deprecated teal). |
 | Paste Cancel / Stage | **Button** ghost + **Button** primary (coral) — replacing the raw near-black button. |
-| "Paste text" CTA | Plain `outline` Button — drop the height/border/fill overrides. |
+| "Paste text" CTA (call to action) | Plain `outline` Button — drop the height/border/fill overrides. |
 | Model row + menu | Input-shaped Select (8px); "Set default" becomes a pill; selected model shows a leading check, not a fill. |
 | Digest button | Coral primary stays. Full opacity with a helper line when empty, so the one primary action never sits half-lit (see `D-04`). |
 | Graph header buttons | One variant across all four (`ghost`), refresh stays a round icon. No bordered-secondary override. |
@@ -286,7 +286,7 @@ is marked complete in the source page.
   record: the 20-step list, gates, commits, and the register of open items.
 - [UI cohesion redesign](../../design/ui-overhaul/ui-cohesion-redesign.html) — the app-wide visual spec
   this Knowledge pass aligns to, with a Current ⇄ Redesigned toggle.
-- [Home screen redesign](home-screen-redesign.html) — the sibling view-level
+- [Home screen redesign](home-screen-redesign.md) — the sibling view-level
   redesign from the same overhaul.
 - [BioRouter design system](../../../design.md) — the `D-NN` decision register
   and the radius, surface, and component tokens every value above comes from.

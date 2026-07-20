@@ -53,7 +53,7 @@ All live runs used **Xiaomi MiMo** — `mimo-v2.5-pro` for non-vision cases, and
 | Multi-monitor | `developer/rmcp_developer.rs` `screen_capture` | defaults to the **primary** display; reports full display topology on every capture; out-of-range error lists valid indices | T |
 | App/window matching | `developer/rmcp_developer.rs` `screen_capture` | case-insensitive **substring** window match; on miss, lists open window titles | T |
 | Progressive/clickability | `computercontroller/mod.rs` instructions | OS-invariant operating principles: progressive verification, stop-after-2-failures, permission handling, method-preference order, multi-monitor awareness | P |
-| Rename | `computercontroller/mod.rs` `get_info` | MCP server `title` = "Computer Controller" | P |
+| Rename | `computercontroller/mod.rs` `get_info` | Model Context Protocol (MCP) server `title` = "Computer Controller" | P |
 | MiMo vision | `providers/xiaomi_mimo.rs` | declare models `with_vision()` so the harness/UI treat MiMo as image-capable (GUI image-upload was gated off before) | T |
 
 ## Automated tests added
@@ -77,7 +77,7 @@ Full suites green: `biorouter-mcp` lib (68 computercontroller/developer tests), 
 | H4 no-output success | mimo-v2.5-pro | ✅ Returned the "ran with no errors and produced no output … verify … do not blindly repeat" guidance |
 | C4 frontmost-app automation | mimo-v2.5-pro | ✅ `Script completed successfully. Output: Claude` (System Events automation permitted) |
 | GUI backend: screen_capture | (GUI biorouterd) | ✅ via `/agent/call_tool`: topology text + image block returned (HTTP 200) |
-| GUI backend: failing control | (GUI biorouterd) | ✅ HTTP 500 (tool `Err` surfaced; in the `/reply` agent loop this becomes a model-visible error, as the TUI run confirms) |
+| GUI backend: failing control | (GUI biorouterd) | ✅ HTTP 500 (tool `Err` surfaced; in the `/reply` agent loop this becomes a model-visible error, as the terminal-UI (TUI) run confirms) |
 | GUI backend: no-output success | (GUI biorouterd) | ✅ HTTP 200 + verify-guidance |
 
 ## Live runs on mimo-v2-omni, full Computer Controller flow
@@ -115,4 +115,4 @@ prefer keystrokes over brittle named-button clicks).
 - [Computer Controller test plan and root causes](./test-plan-and-root-causes.md) — the case matrix and the K1–K5 root-cause table these results were run against.
 - [Multi-app orchestration run](./multi-app-orchestration-run.md) — the sibling run record covering Slack, web literature and Word workflows, and the watchdog/playbook fixes that came out of it.
 - [Computer Controller extension reference](../../extensions/built-in/computer-controller.md) — the current user-facing documentation for the tools exercised here.
-- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup and model list, including which MiMo models accept image input.
+- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup, host selection and the model list for the provider used in these runs.

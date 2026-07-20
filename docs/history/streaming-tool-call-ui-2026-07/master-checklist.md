@@ -5,8 +5,10 @@
 > was raised, with a checkbox and the evidence for each. It supersedes nothing — the
 > [work register](user-requested-work-register.md) stays as the narrative table; this
 > is the tick-list you work down.
-> **Status:** Current — updated as items land.
-> **Audience:** the user checking progress, and whoever picks this up next.
+> **Status:** Historical record — the tick-list as it stood when the campaign closed on
+> 2026-07-20. Item `I4` and the `[?]` decision items were still open at that point and are
+> recorded here unresolved; it is no longer updated.
+> **Audience:** anyone auditing what the campaign was asked for against what it delivered.
 
 Work order is **top to bottom**. Every fix is followed by a stress/regression pass
 before the next item starts. `[x]` means fixed *and* verified; `[~]` means an agent

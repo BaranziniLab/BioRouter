@@ -1,7 +1,7 @@
 # Developer extension
 
 > **What this is.** Two things in one file: a walkthrough of the built-in Developer extension (enabling it, a worked project-setup example, its five tools), and a reference on constraining it with permission modes, tool permissions and `.biorouterignore`.
-> **Status:** Current — the extension and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
+> **Status:** Current. The extension and its `shell` / `text_editor` / `analyze` / `screen_capture` / `image_processor` tools ship in `crates/biorouter-mcp/src/developer`, and the permission modes described match `crates/biorouter/src/security`.
 > **Audience:** end users, and anyone deciding how much autonomy to grant BioRouter.
 
 The Developer extension lets BioRouter automate developer-centric tasks: editing files, running shell commands, and setting up projects. It also provides enhanced code editing and codebase analysis tools. It is enabled by default when BioRouter is installed.

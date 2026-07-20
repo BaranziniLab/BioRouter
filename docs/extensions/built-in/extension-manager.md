@@ -1,7 +1,7 @@
 # Extension Manager extension
 
 > **What this is.** User guide to the built-in Extension Manager: how BioRouter discovers, enables and disables other extensions mid-session so the active tool count stays small.
-> **Status:** Current — but note the correction below: the extension is enabled by default, so no manual setup is normally needed.
+> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 You don't always need to manage extensions by hand. The Extension Manager lets BioRouter discover, enable and disable extensions during an active session. Based on the task you give it, BioRouter recognizes when it needs a specific extension, enables it, and suggests disabling unused ones when the tool bloat starts eating your context window. Describe your task and BioRouter handles the extension management.

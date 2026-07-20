@@ -20,7 +20,7 @@ Three binaries ship in the artifact:
 
 | Binary | Role |
 |---|---|
-| `biorouter` | The CLI. |
+| `biorouter` | The command-line interface (CLI). |
 | `biorouterd` | The daemon that does the agent compute. |
 | `biorouter-headless` | The front door: serves the static browser UI, proxies `/api/*` to `biorouterd`, exposes `/headless/*`, and supervises the `biorouterd` process. |
 
@@ -46,7 +46,7 @@ directory for deployment and inspection.
 The remaining sections unpack that one command into the individual operator
 steps, and cover deployment, secrets, and verification on the host.
 
-## Build the artifact locally
+## Build the artifact without packaging
 
 ```bash
 source bin/activate-hermit

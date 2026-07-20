@@ -40,6 +40,7 @@ evidence and retrospective write-ups follow it.
 |---|---|
 | `execution-status.md` (this file) | Status, step list, what's done, what's left, what's known-broken |
 | [`ui-cohesion-redesign.html`](ui-cohesion-redesign.html) | The approved visual spec. Interactive: Current ⇄ Redesigned, light/dark, Highlight |
+| [`ui-cohesion-redesign.md`](ui-cohesion-redesign.md) | The written half of that spec — the forensics and the per-change specifications, each individually tagged. Readable without a browser |
 | [Chat-groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) | The chat-groups plan (3 designs → adversarial judge). Carries the MEASURED banner for R1/R4 |
 | [Nested `KnowledgeProvider` blocker](../chat-groups/knowledge-provider-nesting-blocker.md) | Proof that two `KnowledgeProvider`s clobber each other through the server |
 | [`design.md`](../../../design.md) | The design system. Decisions D-01…D-37; Part 6b is this pass; Part 7 is the drift register |
@@ -809,6 +810,8 @@ Each has a reason, not a shrug.
 
 - [UI cohesion redesign spec](ui-cohesion-redesign.html) — the approved visual
   spec this branch implements, with a Current ⇄ Redesigned toggle.
+- [UI cohesion redesign, the written spec](ui-cohesion-redesign.md) — the
+  reasoning behind each tagged change; read it when you have no browser.
 - [Chat-groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) —
   the three candidate designs, the adversarial judge, and the shipped subset that
   steps 8–10 above execute.

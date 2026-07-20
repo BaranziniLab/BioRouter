@@ -1,7 +1,7 @@
 # Agent Drafter stress test — per-app results
 
 > **What this is.** The outcome log for the 100-app Agent Drafter stress test: per-app build and pass verdicts, refine-round counts, what each app rendered in the browser, the defects it surfaced, per-batch rollups, and a closing marathon summary.
-> **Status:** Historical record — the run finished. It closes with a marathon summary recording 100/100 apps built, a 100/100 static gate, roughly 18 apps deep-driven, and the H1–H8 drafter fixes shipped on 2026-07-11 in commit `679deed5`, "Cherry-pick Agent Drafter H1-H8 fixes from the 100-app stress test". This is evidence of a completed run, not instruction.
+> **Status:** Historical record — the run finished. It closes with a marathon summary recording 100/100 apps built, a 100/100 static gate, roughly 18 apps deep-driven, and the shipped H1–H8 drafter fixes landing on 2026-07-11 in commit `679deed5`, "Cherry-pick Agent Drafter H1-H8 fixes from the 100-app stress test" (H4 excepted — it was deferred by design). This is evidence of a completed run, not instruction.
 > **Audience:** maintainers of the Agent Drafter looking for the live behaviour behind an `H<n>` fix or an example app.
 > **Identifier key:** `H<n>` (H1…H8) numbers a drafter fix made during this campaign; the definitions live in [hardening-fixes.md](hardening-fixes.md). App slugs such as `caravan-route-broker` are the `id` field of the corresponding spec in [`data/prompts.json`](data/prompts.json).
 

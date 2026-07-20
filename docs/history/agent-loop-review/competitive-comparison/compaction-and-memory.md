@@ -19,8 +19,14 @@ what the agent remembers between sessions. Read it as a snapshot of the state of
 the art at that date and of BioRouter's position in it — not as a description of
 current BioRouter behaviour.
 
-Three conventions used throughout:
+Four conventions used throughout:
 
+- **MOIM** is BioRouter's per-action ambient-context block: a fresh `<info-msg>`
+  user message carrying the current time, the working directory, and each
+  platform extension's contribution, re-injected before every provider call. The
+  acronym is not expanded anywhere in the codebase;
+  [the context-injection review](../subsystem-reviews/context-injection-and-system-prompt.md)
+  treats it as "message of the moment".
 - **`BR-NN` identifiers** are proposal numbers from the same review.
   [The improvement proposals register](../improvement-proposals.md) defines
   BR-1…BR-67 with Problem / Proposal / Affected code / Impact / Effort / Risk.
@@ -210,7 +216,7 @@ the mapping is one-to-one.
    Gemini/Aider's split: keep the last ~30% (or a `keepRecentTokens` budget)
    verbatim, summarize only the older prefix, and snap the cut to a clean user
    turn that has no pending tool responses. This is the single biggest fidelity
-   regression vs SOTA and directly reuses BioRouter's existing visibility-flag
+   regression vs the state of the art and directly reuses BioRouter's existing visibility-flag
    machinery.
 
 2. **Offload large tool outputs instead of summarizing them** (became **BR-6**,

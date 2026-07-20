@@ -1,6 +1,6 @@
 # Computer Controller — multi-app orchestration run
 
-> **What this is.** A 20-task multi-app stress scenario for the Computer Controller — Slack messaging, web literature gathering, GWAS resource-site tours and Word report writing — together with the live findings from running it and the prompt and tool fixes that came out of those findings.
+> **What this is.** A 20-task multi-app stress scenario for the Computer Controller — Slack messaging, web literature gathering, genome-wide association study (GWAS) resource-site tours and Word report writing — together with the live findings from running it and the prompt and tool fixes that came out of those findings.
 > **Status:** Historical record — a completed 2026-06-20 hardening pass. The fixes described here (the `computer_control` watchdog timeout, the chat-app playbook, recovery principle #6) landed in that commit. The one recommendation left open, a Slack Web-API path, is carried by [the Slack posting investigation](../../extensions/slack-posting-investigation.md).
 > **Audience:** maintainers working on the Computer Controller extension.
 

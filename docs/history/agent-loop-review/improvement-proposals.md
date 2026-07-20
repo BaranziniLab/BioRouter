@@ -58,7 +58,7 @@ Each entry carries **Problem / Proposal / Inspired by / Affected code / Impact /
 | [UX & agent ergonomics](#ux--agent-ergonomics) | BR-60 … BR-63 | 4 |
 | **Total** | | **67** |
 
-> **Why four category ranges are discontinuous.** `BR-64` … `BR-67` were originally
+> **Why two category ranges are discontinuous.** `BR-64` … `BR-67` were originally
 > folded into broader clusters and were promoted late to standalone proposals (OS
 > sandbox, managed policy tier, mistake-streak counter, loop-safety observability) so
 > that no distinct source proposal was bundled away. They therefore count towards
@@ -172,7 +172,7 @@ Each entry carries **Problem / Proposal / Inspired by / Affected code / Impact /
 - **Risk:** A skill body edited mid-session would be stale until cache invalidation.
 
 ### BR-9: Treat project context files as lower-trust
-- **Lens:** (competitive-comparison/context-and-prompts.md implication #3 — cross-cutting, surfaced in the comparison layer).
+- **Lens:** (`competitive-comparison/context-and-prompts.md` implication #3 — cross-cutting, surfaced in the comparison layer).
 - **Problem:** BioRouter inserts hint bodies and their `@import` expansions verbatim (Unicode-tag-stripped only) with no "treat as untrusted data" framing (`subsystem-reviews/context-injection-and-system-prompt.md` gap #5), so a malicious repo `AGENTS.md` becomes system-prompt-level instruction. Worst-in-class for trust, tied with Pi.
 - **Proposal:** Wrap hint/`@import` bodies in explicit data-not-instruction framing and/or gate loading behind a per-directory trust decision (Pi's Project Trust `ask/always/never`). Keep the existing Unicode-tag sanitization; extend the trust boundary to content semantics, not just character classes.
 - **Inspired by:** Claude Code (lower-trust project files), Pi (`~/.pi/agent/trust.json`).
@@ -236,7 +236,7 @@ Each entry carries **Problem / Proposal / Inspired by / Affected code / Impact /
 - **Risk:** Using a stronger model raises compaction cost.
 
 ### BR-15: Fix token accounting — per-provider tokenizer + system/tools in the cold-path estimate
-- **Lens:** (competitive-comparison/compaction-and-memory.md implication #3 — worst-in-class token counting).
+- **Lens:** (`competitive-comparison/compaction-and-memory.md` implication #3 — worst-in-class token counting).
 - **Problem:** `o200k_base` (OpenAI) is used for Claude/Gemini/Bedrock/Ollama alike, and the fallback estimate uses `count_chat_tokens("", &[msg], &[])` — no system prompt, no tool schemas, the two largest contributors (`subsystem-reviews/compaction-and-context-management.md` gaps #4-5). This makes the 0.8 threshold an uncalibrated guess for every non-OpenAI model.
 - **Proposal:** At minimum, include the system prompt and tool schemas in the cold-path estimate; ideally add per-provider tokenizers or a model-callable budget (Codex `get_context_remaining`/`new_context_window`).
 - **Inspired by:** Codex CLI (model-callable budget).

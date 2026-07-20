@@ -10,7 +10,7 @@ Despite the `-design` filename, the body below is a migration checklist: file-by
 
 > **Note.** The target paths in the tables below describe the layout as it stood after this migration, in May 2026. `docs/` was reorganized again in July 2026, so those paths are a record of the intended destination at the time rather than links you can follow today.
 
-## Goal
+## Migration goal
 
 Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` folder. Drop the Docusaurus infrastructure entirely. Purge all Goose/Block branding. Rename `recipe` → `workflow` throughout. Keep only built-in BioRouter extensions; discard all third-party MCP pages.
 

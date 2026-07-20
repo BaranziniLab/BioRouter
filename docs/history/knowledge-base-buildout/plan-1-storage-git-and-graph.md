@@ -4280,7 +4280,7 @@ If clippy / fmt fixed anything, commit those tweaks separately under a `chore(kn
 
 ---
 
-## What this plan does NOT cover (handled by later plans)
+## What this plan does not cover (handled by later plans)
 
 - `kb_set_active` / `kb_get_active` (session-state binding) — Plan 2.
 - `kb_search` (BM25 search over knowledge pages) — Plan 2.

@@ -15,7 +15,7 @@ place for the permission system — approval prompts and permission modes are a 
 mechanism documented under [`docs/security/`](../../security/permission-modes.md), and
 hooks only intersect with it through the `PermissionRequest` event. Nor is it the place
 for the other ways of shaping agent behaviour: subagents, memory, and reusable
-instruction sets live in the parent [`docs/agent-loop/`](../subagents.md) folder. Note
+instruction sets live in the parent [`docs/agent-loop/`](../README.md) folder. Note
 also that the hook scripts themselves ship in the repository under `scripts/hooks/` —
 this folder holds only the prose that explains them.
 

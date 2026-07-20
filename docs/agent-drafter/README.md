@@ -2,7 +2,7 @@
 
 Agent Drafter is BioRouter's app-authoring MCP extension: it builds **BioRouter apps**, each a served TypeScript front-end wired to its own per-app BioRouter agent over a WebSocket. This folder holds the subsystem's design map — what an app is, how the Apps SDK v2 surface is organised, and how protocol, capabilities, themes, export modes and multi-agent orchestration fit together — plus the frozen 100-spec corpus and runbook used to stress-test it.
 
-Come here when you want to understand the Agent Drafter subsystem as a whole, or when you are about to run a test campaign against it. Two neighbours own adjacent ground. [`docs/apps-sdk/`](../apps-sdk/sdk-reference.md) holds the SDK contract itself — every `br.*` signature, the manifest schema, the frame tables, the v2 design and its phase roadmap; go there when you need to know what actually ships or how to author an app. [`docs/history/agent-drafter-testdrive-100/`](../history/agent-drafter-testdrive-100/README.md) holds the archived evidence from the one large campaign that consumed this folder's corpus — per-app verdicts, audits, and the remediation that closed it; go there for what a run found, not for how to run one.
+Come here when you want to understand the Agent Drafter subsystem as a whole, or when you are about to run a test campaign against it. Two neighbours own adjacent ground. [`docs/apps-sdk/`](../apps-sdk/README.md) holds the SDK contract itself — every `br.*` signature, the manifest schema, the frame tables, the v2 design and its phase roadmap; go there when you need to know what actually ships or how to author an app. [`docs/history/agent-drafter-testdrive-100/`](../history/agent-drafter-testdrive-100/README.md) holds the archived evidence from the one large campaign that consumed this folder's corpus — per-app verdicts, audits, and the remediation that closed it; go there for what a run found, not for how to run one.
 
 ## Documents
 
@@ -12,11 +12,11 @@ Come here when you want to understand the Agent Drafter subsystem as a whole, or
 
 ## Subdirectories
 
-- **[`testing/`](testing/app-test-drive-runbook.md)** — the test-drive workload for Agent Drafter: the operational runbook and the frozen 100-spec corpus it consumes. The folder has no index of its own; the two documents are listed below.
+- **[`testing/`](testing/README.md)** — the test-drive workload for Agent Drafter: the operational runbook and the frozen 100-spec corpus it consumes. It carries its own index; its two documents are summarised below.
 
 | Document | What it covers |
 |---|---|
-| [Agent Drafter 100-app test-drive runbook](testing/app-test-drive-runbook.md) | The operational procedure for driving Agent Drafter across the 100 app specs — bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect. Superseded in part: the git worktree its "Where the code lives" section requires no longer exists, since the Apps SDK v2 primitives now live in the main tree; everything else runs from an ordinary checkout. |
+| [Agent Drafter 100-app test-drive runbook](testing/app-test-drive-runbook.md) | The operational procedure for driving Agent Drafter across the 100 app specs — bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect. Current, with one rotted section: the git worktree its "Where the code lives" section requires no longer exists, since the Apps SDK v2 primitives now live in the main tree; everything else runs from an ordinary checkout. |
 | [Hundred-app test specs for Agent Drafter](testing/hundred-app-test-specs.md) | The frozen corpus of 100 ambitious app briefs — concept, theme, layout, agent profiles, declared actions, signals, bidirectional loop, platform integration — expressed in still-shipping SDK v2 primitives. Current and reusable, but locked: specs are cited by number in run results, so amend a brief in place rather than renumbering. |
 
 ## Related documentation

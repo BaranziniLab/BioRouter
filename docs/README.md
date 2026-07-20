@@ -11,7 +11,7 @@ Two kinds of document live here, and the difference matters more than any other 
 - **Living documentation is filed by subsystem at the top level.** One folder per area — `providers/`, `security/`, `agent-loop/`, and so on. These describe how BioRouter behaves now, and they are maintained.
 - **`history/` holds records of completed or abandoned work.** Executed plans, closed review campaigns, finished stress tests, and a few designs that were removed or never built. It is kept so decisions stay auditable and so you can find out *why* a subsystem is shaped the way it is. It is explicitly **not** current guidance, and reading it as such will mislead you.
 
-**Every document carries a status in its header** saying which it is. Trust that line over the filename, the folder, or your memory of the feature. A living document may still be marked `Superseded` in part, and the header names its successor when so.
+**Every document carries a status in its header** saying which it is. Trust that line over the filename, the folder, or your memory of the feature. A living document whose one section has rotted stays `Current` and carries a warning naming that section, rather than being restatused.
 
 ## Start here
 
@@ -36,7 +36,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [agent-loop](agent-loop/README.md) | The reasoning loop itself — durable context, subagents, lifecycle hooks, tool routing — plus the designs behind its guardrails: command policy, sandboxing, checkpoints, session branching. |
 | [agent-drafter](agent-drafter/README.md) | The app-authoring MCP extension that builds BioRouter apps, and the frozen 100-spec corpus and runbook used to stress-test it. |
 | [apps-sdk](apps-sdk/README.md) | The contract behind BioRouter apps in three layers: the shipped reference, the v2 design of record, and the phase roadmap. |
-| [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension. |
+| [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension, plus an open investigation into Slack posting that has not been built. |
 | [knowledge-base](knowledge-base/README.md) | The live working documents for the personal, LLM-maintained wiki: surveys of the ingestion pipeline and plans for extending it. |
 | [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. |
 | [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, and which providers are acceptable for patient and other sensitive data. |
@@ -47,8 +47,9 @@ Two kinds of document live here, and the difference matters more than any other 
 | [deployment](deployment/README.md) | Running BioRouter as a shared server rather than a desktop app: building the Linux headless artifact, deploying it, and migrating secrets. |
 | [releases](releases/README.md) | Shipping to users: the auto-update QA checklist, a local cross-compilation recipe, and the published per-version release notes. |
 | [troubleshooting](troubleshooting/README.md) | Known problems and their fixes, the diagnostics bundle, and how to file a useful bug report. |
-| [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, the design-system gallery, and the desktop UI overhaul. |
+| [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, chat-group design spikes, the desktop UI overhaul, and the browser-only design-system and boot-splash studios. |
 | [research](research/README.md) | External research — studies of other agentic coding tools, written to inform BioRouter's own design. |
+| [contributing](contributing/README.md) | How this documentation tree itself is written and maintained: the house style every file follows, and the live register of unresolved problems found in it. |
 
 ## Historical records
 
@@ -71,7 +72,7 @@ The largest campaigns in there:
 ## Conventions
 
 - **Every file opens with a context header** — a blockquote giving *What this is*, *Status*, and *Audience* — before any other content. `README.md` index files are the exception: they open with a paragraph describing the folder's scope instead.
-- **Status is one of three values:** `Current`, `Historical record` (with the completion date), or `Superseded by <link>`. Anything dated, planned, or reporting completed work must carry one.
+- **Status is one of three values:** `Current`, `Historical record — <what completed, and when>`, or `Superseded — <what changed, and where the current truth lives>`. Anything dated, planned, or reporting completed work must carry one.
 - **Folders are topic-specific and each carries a `README.md`** listing its documents with a one-line description each.
 - **Filenames are kebab-case and name the document's purpose,** not the process that produced it — `defects-found-and-fixed.md`, not `findings.md`. `README.md` is the only `ALL_CAPS` name. Dated reports carry an ISO date suffix when the date is load-bearing.
 - **Where a document goes** is governed by [how this documentation is organized](organization.md) — the sorting rules, when a new folder is justified, and what to do when the rules do not fit. **Read it before adding a document or creating a folder.**

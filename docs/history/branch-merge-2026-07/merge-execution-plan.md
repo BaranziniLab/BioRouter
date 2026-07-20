@@ -1,10 +1,10 @@
 # BioRouter merge execution plan and record
 
 > **What this is.** The execution record of the July 2026 branch and pull-request merge campaign for `BaranziniLab/biorouter` — the decisions taken, the conflicts resolved, the qualification evidence gathered, and the commit-level inventory of everything that landed.
-> **Status:** Historical record. The campaign completed on 2026-07-13, with execution evidence captured through 2026-07-14T15:51:26-07:00. All nine examined pull requests are merged; nothing here is an open plan.
+> **Status:** Historical record — the campaign completed on 2026-07-13, with execution evidence captured through 2026-07-14T15:51:26-07:00. All nine examined pull requests are merged; nothing here is an open plan.
 > **Audience:** Maintainers and release owners auditing what merged and why, and agents reconstructing the state of the repository at the end of the campaign.
 
-Nine pull requests were examined and all nine merged. Three carried live feature work — #12 (Apps SDK v2), #13 (usage reporting), and #11 (the agent-loop overhaul) — and were integrated in that order so the high-overlap branch landed last, onto a baseline that already contained the other two. Six older PRs were already on `main` at the audit snapshot and are recorded here as the historical baseline. Decisions are identified as `D1`–`D10` and indexed in the decision table in the action brief; agent-loop proposals carry `BR-<n>` identifiers from the 70-item campaign that produced PR #11. Section numbers below are cited by the document's own cross-references and are retained.
+Nine pull requests were examined and all nine merged. Three carried live feature work — #12 (Apps SDK v2), #13 (usage reporting), and #11 (the agent-loop overhaul) — and were integrated in that order so the high-overlap branch landed last, onto a baseline that already contained the other two. Six older PRs were already on `main` at the audit snapshot and are recorded here as the historical baseline. Decisions are identified as `D1`–`D10` and indexed in the decision table in the action brief; agent-loop proposals carry `BR-<n>` identifiers from the 70-item campaign that produced PR #11.
 
 ## Report metadata
 
@@ -16,7 +16,7 @@ Nine pull requests were examined and all nine merged. Three carried live feature
 | Final PR #11 source | 822c7c3daf49 |
 | Feature-merge baseline | 0e576948a843 · all 9 PRs merged · same-head CI passed |
 | GitHub branches | main only · merged-branch auto-delete enabled |
-| UI authority | `design.md` v1.87.2 (signed off; the repo-root UI specification of the time, no longer present in the tree) |
+| UI authority | `design.md` v1.87.2 (signed off; the repo-root UI specification) |
 | PRs examined | 9 |
 | Initial audited commits | 216 |
 | Final portfolio commits | 240 under the selected counting convention |
@@ -89,7 +89,7 @@ None requires reopening the completed feature integration or its owner approval.
 
 > **What needs a response.** Assign owners and milestones for process-tree hardening, D6 coverage, tag governance, and issue #14. D9 owner review and approval is complete; no response is needed for D9 or the CI rule.
 
-## 1. Execution summary
+## Execution summary
 
 | Measure | Value | Detail |
 |---|---|---|
@@ -114,7 +114,7 @@ None requires reopening the completed feature integration or its owner approval.
 
 > **Warning.** Release-history warning remains: 11 of 20 tag names resolve to different local and remote objects. The integration intentionally preserved both lineages; tag reconciliation remains a separate, user-owned release-governance decision.
 
-## 2. Audit scope and repository reconciliation
+## Audit scope and repository reconciliation
 
 The initial audit used Git object and tree comparisons, GitHub pull-request/issue/check metadata, commit lists, path-level diffs, synthetic merge trees, worktree inspection, and targeted test execution. The subsequent authorized execution added real merge commits, combined-source qualification, and Electron interaction evidence. GitHub issue numbers 1, 2, 9, 10, and 14 explain the pull-request numbering gaps; there are no hidden or missing PRs between #3 and #13.
 
@@ -180,7 +180,7 @@ This table preserves the initial audit snapshot so its commit evidence remains r
 
 > **Issue #14 disposition.** The coordination issue says #11 contains 104 commits and describes wave-three branches as empty placeholders. That was already stale at the 139-commit initial audit and is now superseded by the 150-commit final source head `822c7c3daf49499d7c39d92d303d24e80d042b07`, successful same-head CI, and merge `0e576948a843`. Issue #14 remains OPEN and stale at this report cutoff; updating it with the final head, CI links, merge result, and this report is pending external coordination. Preserve its history and use the Git graph as merge authority.
 
-## 3. Pull-request portfolio: execution state and audit scope
+## Pull-request portfolio: execution state and audit scope
 
 State and anchors below reflect completed execution through 2026-07-14. Except for the explicitly updated #11 row, size columns preserve the initial audit snapshot so the original conflict forecast remains reproducible; they are historical measurements, not claims about each final merge diff.
 
@@ -191,7 +191,7 @@ State and anchors below reflect completed execution through 2026-07-14. Except f
 | [#5](https://github.com/BaranziniLab/biorouter/pull/5) | Merged | Five agent improvements, 36-app QA corpus, Autovis hardening, Agent Drafter work, and release assets. | 16 | 919 | +116,606/−1,363 | Baseline; exceptionally broad. |
 | [#6](https://github.com/BaranziniLab/biorouter/pull/6) | Merged | Agent Drafter rebuilt as the Apps v1 platform with TypeScript apps and live agent backend. | 1 | 35 | +4,172/−790 | Foundation for #12. |
 | [#7](https://github.com/BaranziniLab/biorouter/pull/7) | Merged | jcode-inspired performance: allocator, strip, AWS gating, interrupt, HTTP/render/scheduler tuning. | 15 | 53 | +1,848/−22 | Baseline; regression reference for #11 performance. |
-| [#8](https://github.com/BaranziniLab/biorouter/pull/8) | Merged | Warm two-tone UI theme and chat/sidebar polish. | 14 | 38 | +188/−142 | Visual baseline governed by design.md. |
+| [#8](https://github.com/BaranziniLab/biorouter/pull/8) | Merged | Warm two-tone UI theme and chat/sidebar polish. | 14 | 38 | +188/−142 | Visual baseline governed by `design.md`. |
 | [#11](https://github.com/BaranziniLab/biorouter/pull/11) | Merged | Agent-loop overhaul plus completed #12/#13 integration, conflict resolution, CI portability, and qualification fixes. | 150 | 317 | +74,383/−5,456 | Source `822c7c3d`; exact-head CI passed and merge `0e576948` landed third. |
 | [#12](https://github.com/BaranziniLab/biorouter/pull/12) | Merged | Apps SDK v2 phases 1–6, typed contracts/platform APIs, 100-app corpus, remediation and smoke tooling. | 15 | 153 | +40,116/−1,864 | Source `b719aa9f`; merged first at `5cec0ae3`. |
 | [#13](https://github.com/BaranziniLab/biorouter/pull/13) | Merged | Usage reporting: model-aware billed/cache tokens, price attribution, server/CLI/UI reports. | 11 | 39 | +5,257/−217 | Source `0e76b382`; merged second at `9c3f70c6`. |
@@ -216,7 +216,7 @@ At the initial audit, GitHub permitted merge commits, squash, and rebase; auto-m
 
 Feature-merge and branch-cleanup anchor: `0e576948a84309f31a16fa26c0629c45496e3bfc`. Later documentation/assets commits do not alter the qualified source or merge result.
 
-## 4. Historical merged baseline and how it achieved its goals
+## Historical merged baseline and how it achieved its goals
 
 This section preserves the six PRs that were already on `main` at the initial audit. PR #12 and #13 are recorded in the execution chapter because they merged during this work.
 
@@ -244,7 +244,7 @@ Performance improvements were distributed across build configuration and runtime
 
 Theme tokens and chat/sidebar surfaces were adjusted into the warm, quiet visual language formalized by the repository design specification (`design.md`). This establishes the visual contract for UI added by #11–#13: semantic tokens, flat surfaces, hairlines, shared primitives, both themes, and dense row-oriented layouts.
 
-## 5. Feature execution record
+## Feature execution record
 
 ### #12 — Apps SDK v2
 
@@ -300,7 +300,7 @@ High-value slices include BR46 finish reasons, BR18 SmartApprove, BR19 hooks, BR
 | Windows Agent Drafter launcher validation | Passing a native `C:\…` launcher path to Bash caused `bash -n` to fail before parsing the script, and the `System32` WSL shim could be discovered even when it was unusable. | Streamed launcher source to `bash -n` through standard input, ran the harness from a controlled working directory, and selected only a successfully probed Git-for-Windows Bash—rejecting the unusable `System32` WSL shim. |
 | Windows background kill confirmation | `taskkill` commands were launched without being awaited, so `kill()` could report success while the supervisor still observed the job as running. | Bounded and awaited `taskkill /T`, and made successful `kill()` wait for supervisor-observed terminal leader state. Whole-descendant guarantees and identity lookup beyond the 12-second confirmation window remain explicit hardening work. |
 
-## 6. Compatibility, file overlap, and executed conflict ownership
+## Compatibility, file overlap, and executed conflict ownership
 
 Counts in this section are the historical pre-integration forecast. They are retained to show why the chosen order mattered and how each known conflict was resolved on the final source branch.
 
@@ -358,7 +358,7 @@ These components are not true peers: #11's RepetitionInspector detects and class
 
 The combined session test suite qualified the monotonic migration implementation. Retain explicit fresh database → v16, v10 → v16, and v12 → v16 coverage, and rehearse rollback/reopen behavior on a copy of a real v10 database before any production migration. Never "solve" a future collision by skipping a version or treating an unrelated schema as equivalent.
 
-## 7. Merge execution record
+## Merge execution record
 
 1. **Complete · freeze audit evidence.** The audit fetched all remote branch/PR/tag material without overwriting divergent local tags, anchored 29 recovered commits, retained PR/remote-tag refs, inspected every local branch and nine worktree paths, and explicitly included `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`. This produced 61 durable audit refs and a reproducible historical baseline.
 2. **Complete · refresh and merge #12 Apps SDK v2.** Main was merged into the feature history without rebasing. The final source head `b719aa9f024e` retained the typed Apps contract, corpus remediation, runtime smoke, and signed-off `design.md` treatment. PR #12 then landed first with merge commit `5cec0ae3`.
@@ -376,7 +376,7 @@ The combined session test suite qualified the monotonic migration implementation
 - #12's phased commits and #13's progressive data→server→CLI/UI commits provide review and incident-localization value.
 - Merging main into the branches preserved source SHAs and audit refs; rebasing would have rewritten the evidence used for qualification.
 
-## 8. Combined qualification evidence
+## Combined qualification evidence
 
 The rows below combine evidence executed in the integration worktree before its clean removal with the completed same-head GitHub gate. Linux, macOS, Windows native, both cross-checks, guards, and Apps smoke passed from the exact final source head.
 
@@ -409,7 +409,7 @@ The rows below combine evidence executed in the integration worktree before its 
 
 > **Warning.** Residual timeout hardening risk: Windows termination now uses bounded, awaited `taskkill /T`, and a successful `kill()` requires supervisor-observed terminal leader state. That closes the observed false-success failure, but the tests do not prove that every descendant is gone on every platform. A focused follow-up should use Windows job objects and strengthen POSIX process-group guarantees. Identity lookup that exceeds the 12-second caller confirmation window also needs a clearer final classification. These residuals remain explicit decisions rather than unqualified claims of complete process-tree termination.
 
-## 9. Alignment with design.md
+## Alignment with `design.md`
 
 The authoritative UI source is `design.md`. The integration applied its principles: flat surfaces and hairlines, rows rather than cards, color as evidence, shared primitives, reachable focus states, a deliberate monospace layer, both themes, and the 40px density rhythm. The following table maps the original audit findings to their executed treatment.
 
@@ -423,7 +423,7 @@ The authoritative UI source is `design.md`. The integration applied its principl
 
 Dynamic inline widths for usage bars remain geometry; their colors use semantic treatment. Local typecheck, format, lint, contrast, unit, and Electron smoke evidence passed. Continue both-theme, keyboard-only, and narrow-width review for future changes against `design.md`.
 
-## 10. Local/remote history and release risks
+## Local/remote history and release risks
 
 ### Branch containment
 
@@ -489,7 +489,7 @@ The initial object scan found 29 dangling commits: eight patch-equivalent to rea
 | `a928601d5bc0` | 2026-07-13 | On agent-loop-polish: polish-prettier-check |
 | `443aed9df848` | 2026-07-13 | BR-59: cache tree-sitter Query per (language, kind) instead of recompiling per file |
 
-## 11. Residual risk register and rollback strategy
+## Residual risk register and rollback strategy
 
 | Risk | Likelihood / impact | Control | Rollback boundary |
 |---|---|---|---|
@@ -506,7 +506,7 @@ The initial object scan found 29 dangling commits: eight patch-equivalent to rea
 
 Conflict resolutions were kept in reviewable commits on #11's integration branch: migration and loop-safety unions, Apps/server integration, generated API, design cleanup, and CI/platform repairs. Those boundaries remain available for targeted rollback now that #11 has landed as a merge commit.
 
-## 12. Historical commit-level inventory and final anchors
+## Historical commit-level inventory and final anchors
 
 The detailed lists below preserve the commit-subject inventory returned by GitHub at the initial audit snapshot. They are intentionally historical: #11 subsequently grew from the listed 139 commits to 150 while integrating #12/#13 and qualification repairs. Use the final anchors below—not the old detail count—as execution authority.
 
@@ -522,7 +522,7 @@ The detailed lists below preserve the commit-subject inventory returned by GitHu
 |---|---|---|
 | `c7e8df3b898e` | 2026-06-19 | feat(cli/tui): wrapping input, bottom-pinned bar, live streaming, richer rendering |
 
-### PR #4 — Provider future-proofing and language/provider expansion (4 commits)
+### PR #4 — provider future-proofing and language/provider expansion (4 commits)
 
 | Commit | Date | Subject |
 |---|---|---|
@@ -578,7 +578,7 @@ The detailed lists below preserve the commit-subject inventory returned by GitHu
 | `573ccebb5d10` | 2026-06-24 | docs(perf): implementation & benchmark report for jcode borrows |
 | `5bde984a6d5a` | 2026-06-24 | docs(perf): finalize report with clean cumulative numbers + SW1 live check |
 
-### PR #8 — Warm two-tone UI (14 commits)
+### PR #8 — warm two-tone UI (14 commits)
 
 | Commit | Date | Subject |
 |---|---|---|
@@ -761,7 +761,7 @@ The detailed lists below preserve the commit-subject inventory returned by GitHu
 | `6310341e9acf` | 2026-07-13 | Repair a broken test-drive app with the fixed platform's own agent; fix 2 bugs it found |
 | `370c478a8cc2` | 2026-07-13 | Wave 6: app-smoke.mjs — lint that RUNS the app |
 
-### PR #13 — Usage reporting (11 commits)
+### PR #13 — usage reporting (11 commits)
 
 | Commit | Date | Subject |
 |---|---|---|
@@ -785,6 +785,3 @@ Prepared from the initial read-only repository/GitHub audit and the subsequent u
 
 - [Agent-loop campaign record](../agent-loop-campaign/README.md) — the 70-item BR-numbered campaign whose 150 commits became PR #11, the largest branch merged here.
 - [Documentation index](../../README.md) — the top-level map of BioRouter's documentation, including the other historical records.
-
-
-

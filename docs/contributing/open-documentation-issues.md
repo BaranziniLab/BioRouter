@@ -8,8 +8,8 @@
 
 On 2026-07-18 every Markdown file under `docs/` was rewritten to the
 [documentation house style](documentation-style.md). Fifty-eight rewrite agents reported
-409 free-text concerns. Most were fixed in the pass itself. The 44 below were **deliberately
-not fixed**: each one is a place where the documentation and the code disagree, or two
+409 free-text concerns. Most were fixed in the pass itself. The entries below were
+**deliberately not fixed**: each one is a place where the documentation and the code disagree, or two
 documents disagree, or the source material is simply gone. Silently picking a side would
 have meant inventing a fact. Every claim marked *verified* was checked against the code in
 this worktree; `file:line` references point at real current lines.
@@ -23,9 +23,9 @@ this worktree; `file:line` references point at real current lines.
 | Severity | Meaning | Open |
 |---|---|---|
 | [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 8 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 14 |
-| [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 8 |
-| [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 8 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 16 |
+| [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 7 |
+| [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 7 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
 | **Total** | | **46** |
 
@@ -312,15 +312,6 @@ before/after theme argument rested on three images. The cleanup converted the li
 text. **Decision needed:** are these archived anywhere? If not, the repro instructions need
 rewording.
 
-### `docs/README.md` does not exist, breaking five links
-
-**Verified by link sweep:** exactly seven relative `.md` links in the tree do not resolve, and
-five of them are `../README.md` / `../../README.md` pointing at a `docs/README.md` that was
-never written (from `design/agentic-system-explorer.md`, three `design/ui-overhaul/*.md` files,
-and `history/branch-merge-2026-07/merge-execution-plan.md`). The remaining two are the house
-style's own illustrative placeholder. **Decision needed:** write `docs/README.md`; it fixes all
-five at once.
-
 ### BR-20 and BR-53 have register entries but no design documents
 
 BR-20 (always-on catastrophic denylist) is cited as a live dependency by BR-21, BR-64 and BR-65;
@@ -381,17 +372,6 @@ greps three design HTML files at their pre-reorganization paths. The convert pla
 `convert/xlsx.rs` is really `convert/spreadsheet.rs`. **Decision needed:** low-effort sweep.
 
 ## Coverage gaps
-
-### Thirty-nine folders and `docs/` itself have no `README.md`
-
-House style rule 3 requires every folder to carry an index. **Verified by sweep**, the folders
-still missing one are: `docs/` itself, `contributing/`, `design/`, `extensions/`,
-`extensions/built-in/`, `getting-started/`, `history/`, `knowledge-base/`, `providers/`,
-`providers/llama-server/`, `releases/`, `releases/notes/`, `research/`,
-`research/coding-agent-landscape/`, and every `history/*` subfolder except those already
-indexed. `extensions/built-in/` matters most — ten reference pages with no landing page, reachable
-only through the guide's tables. **Decision needed:** assign; this was outside every rewrite
-agent's per-file remit, which is why it is uniformly unaddressed.
 
 ### Migration damage: code blocks that survived as comments with no commands
 
@@ -587,6 +567,6 @@ recorded here so nobody re-opens them.
 ## Related documentation
 
 - [Documentation house style](documentation-style.md) — the rules the 2026-07-18 pass applied, and the rules any fix to the issues above must follow
-- [Docs migration history](../history/docs-migration/) — the May 2026 Docusaurus-to-Markdown migration that caused the stripped code blocks and lost pages catalogued under Coverage gaps
+- [Docs migration history](../history/docs-migration/README.md) — the May 2026 Docusaurus-to-Markdown migration that caused the stripped code blocks and lost pages catalogued under Coverage gaps
 - [Improvement proposals register](../history/agent-loop-review/improvement-proposals.md) — the authoritative index for every `BR-NN` identifier cited above
 - [Agent-loop campaign outcome report](../history/agent-loop-campaign/outcome-report.md) — the merge-status document that several contradictions above turn on

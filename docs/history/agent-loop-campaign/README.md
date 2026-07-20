@@ -4,7 +4,7 @@
 > worktree conventions, the wave-to-cluster-to-proposal mapping, the regression-gate
 > rule, and a dated log of every gate and merge decision.
 > **Status:** Historical record — the campaign is finished and its work is merged to
-> `main` (86 `BR-`prefixed commits landed; the modules it created —
+> `main` (86 `BR-`-prefixed commits landed; the modules it created —
 > `crates/biorouter/src/agents/{budget,mistakes,stall,effort,mcp_pool}.rs`,
 > `crates/biorouter/src/checkpoint/`, `crates/biorouter/src/security/policy/`, the
 > `biorouter-sandbox` crate and `.github/workflows/rust.yml` — are all present in the
@@ -22,9 +22,11 @@
 > carry the `BR-NN:` prefix, so these identifiers are cited across git history and cannot
 > be renumbered.
 
-The campaign implemented the 67 proposals raised by the agentic-loop review. The
-strategy was clustered worktrees in dependency-ordered waves off a single integration
-branch, with every wave regression-gated against a fixed baseline before merging. The
+The campaign ran from 2026-07-12 to 2026-07-13 and implemented the 67 proposals raised
+by the agentic-loop review. The strategy was clustered worktrees in dependency-ordered
+waves off a single integration branch, with every wave regression-gated against a fixed
+baseline before merging. It ended by shipping: all four gates closed GREEN and the work
+merged to `main`. The
 outcome — what actually landed, the final test counts, and the caveats — is recorded
 separately in [the outcome report](outcome-report.md).
 
@@ -147,7 +149,8 @@ day holds several entries they are ordered by the sequence their content implies
   guardrails 29, prompt_manager 18, moim 11, agents 216). Full-workspace
   regression running as the final gate check. BR-40 async-handle remainder
   deferred to Wave 3. Known environment notes: cluster verifiers hit ENOSPC
-  during parallel builds (mitigated: prune ~/.cache/br-targets between waves);
+  during parallel builds (the host disk filled; mitigated by pruning
+  `~/.cache/br-targets` between waves);
   pre-existing frontend lint/vitest failures on base (biorouterd.test.ts,
   ExtensionModal.test.tsx) queued for Wave-3 cleanup.
 - **2026-07-12** — Wave 0 MERGED (129589ba): 10 BRs + seams + 6 designs, gate GREEN (zero new failures; lib 782 vs 755, mcp 584 vs 582, server 50/49 vs 47/46). Evidence: [wave-0-foundation.md](wave-reports/wave-0-foundation.md). Wave 1 launched: 5 cluster worktrees off 129589ba.

@@ -23,6 +23,8 @@ Plan 4 shipped the Knowledge route with a live ingest panel and a placeholder wh
 > references into source files (for example `IngestPanel.tsx` "line 97-99") have
 > long since moved — use the symbol names quoted alongside them.
 
+## Scope and approach
+
 **Goal:** Replace the Plan-4 `RightSidePlaceholder` in `KnowledgeView` with (a) a live `KnowledgeGraph` rendered via `react-force-graph-2d` (credibility-coloured nodes, hover dimming, click → side preview), and (b) a `ChangeLogDrawer` (slide-in sheet listing git history, click → preview at SHA, "Restore" → POST `/restore`). The graph auto-refreshes after every ingest. Also tighten `schema_default.md` so the sub-agent reliably emits `[[knowledge-link]]` cross-references (the verified gap from Plan 4 e2e: 11 nodes, 0 edges).
 
 **Architecture:**

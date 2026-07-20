@@ -18,7 +18,7 @@ This plan executes the spec in [the Versa providers design](versa-providers-desi
 
 **Architecture:** Two new Rust provider files duplicate the commercial Azure/Bedrock providers with UCSF-specific hardcoded defaults and separately namespaced credential keys. The frontend ProviderGrid splits providers into three sections using a static category map — no API changes required. Playwright validation runs against the app built with `just dev-ui-playwright`.
 
-**Tech stack:** Rust (async_trait, anyhow, aws-config, aws-sdk-bedrockruntime), React 19 + TypeScript, Tailwind CSS, Playwright MCP via CDP on port 9222.
+**Tech stack:** Rust (async_trait, anyhow, aws-config, aws-sdk-bedrockruntime), React 19 + TypeScript, Tailwind CSS, Playwright Model Context Protocol (MCP) via the Chrome DevTools Protocol (CDP) on port 9222.
 
 ## Files changed
 

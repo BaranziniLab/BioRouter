@@ -50,6 +50,15 @@ these locations.
 | `compare/execution.md` | [Execution and verification, compared](../competitive-comparison/execution-and-verification.md) |
 | `compare/memory.md` | [Compaction and memory, compared](../competitive-comparison/compaction-and-memory.md) |
 
+> **Terms used below.** **MOIM** is BioRouter's per-action ambient-context block — a fresh
+> `<info-msg>` user message carrying the current time, working directory and each platform
+> extension's contribution, re-injected before every provider call; the acronym is never expanded in
+> the codebase, and the companion
+> [context-injection review](../subsystem-reviews/context-injection-and-system-prompt.md) treats it
+> as "message of the moment". **BRSDK** is the BioRouter App SDK — the client library plus the
+> server-side runner that a generated Agent Drafter app talks to. **LSP** is the Language Server
+> Protocol.
+
 ## Contents
 
 - [User-facing controls: undo, plan, todos, approvals, visibility](#user-facing-controls-undo-plan-todos-approvals-visibility) — P-1 … P-16

@@ -33,4 +33,4 @@ Because the history is a local database, features that search across past conver
 - [Environment variables](../configuration/environment-variables.md) — the turn-limit and auto-compaction settings that shape how long a session can run.
 - [Context engineering](../agent-loop/context-engineering.md) — how to carry knowledge across sessions instead of re-explaining it each time.
 - [Chat recall extension](../extensions/built-in/chat-recall.md) — searching the local SQLite history of past sessions.
-- [Usage tips](../getting-started/usage-tips.md) — practical habits, including when to start a fresh session rather than continue one.
+- [Usage tips](usage-tips.md) — practical habits, including when to start a fresh session rather than continue one.

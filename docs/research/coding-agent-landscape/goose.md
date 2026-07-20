@@ -61,7 +61,7 @@ Each turn: the provider is streamed via `stream_response_from_provider` yielding
 `(response, usage)` tuples; the loop checks a cancellation token per chunk. Tool requests in
 the assistant message are split by `categorize_tools` into `frontend_requests` (handled by
 `handle_frontend_tool_request`, streamed straight to the UI) and `remaining_requests` (real
-MCP/extension tools).
+MCP/extension tools — MCP is the Model Context Protocol).
 [agent.rs source](https://raw.githubusercontent.com/block/goose/main/crates/goose/src/agents/agent.rs)
 
 **Parallelism and streaming.** Remaining tools are first run through the permission
@@ -140,9 +140,9 @@ change and almost certainly absent from a mid-2025 fork.
 > git-hook-style model. The safe reading is that `PreToolUse`/`Stop` can veto via exit code,
 > but confirm against the Open Plugins spec before relying on injection.
 
-The broader extensibility layer is **MCP**: extensions are stdio, SSE, or streamable-HTTP
-MCP servers providing tools/prompts/resources. The built-in **Developer** extension
-supplies the core `shell` and `text_editor` tools.
+The broader extensibility layer is **MCP**: extensions are stdio, Server-Sent Events (SSE),
+or streamable-HTTP MCP servers providing tools/prompts/resources. The built-in **Developer**
+extension supplies the core `shell` and `text_editor` tools.
 
 ## Guardrails and permissions
 

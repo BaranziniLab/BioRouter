@@ -32,7 +32,7 @@ Plan 1 built the storage, git, conversion, credibility and graph layers behind a
 
 **Goal:** Layer high-level macro tools (`kb_ingest_source`, `kb_query`, `kb_lint`) and an in-process sub-agent loop on top of Plan 1's primitives, plus fill in the missing primitive surface (`kb_search`, `kb_set_active` / `kb_get_active`, `kb_append_log`, MCP-exposed transaction tools), and replace the Plan-1 agentic-credibility stub with the real bounded-agent implementation.
 
-**Explicitly out of scope:** streaming progress. MCP `CallToolResult` is request/response only in rmcp 0.14, so macros return a single final result. SSE-streamed progress lands in [Plan 3](plan-3-http-routes-and-export.md) when the HTTP routes wrap these macros. Everything else deferred is listed under "What this plan does NOT cover" near the end.
+**Explicitly out of scope:** streaming progress. MCP `CallToolResult` is request/response only in rmcp 0.14, so macros return a single final result. SSE-streamed progress lands in [Plan 3](plan-3-http-routes-and-export.md) when the HTTP routes wrap these macros. Everything else deferred is listed under "What this plan does not cover" near the end.
 
 **Architecture:**
 - A `SubAgent` runs an LLM in a bounded loop (max steps, max wall time, max tokens) with the KB primitives as its tool surface and the per-KB `schema.md` + a macro-specific operating procedure as its system prompt. It uses `biorouter::providers::factory::create()` to instantiate the user-chosen provider.
@@ -1467,7 +1467,7 @@ git commit -m "docs(claude): document Plan 2 macros + sub-agent loop"
 
 ---
 
-## What this plan does NOT cover (handled by Plan 3+)
+## What this plan does not cover (handled by Plan 3+)
 
 - HTTP routes (REST + SSE streaming of sub-agent events) → Plan 3.
 - The frontend route, KB selector, ingest panel, graph view, change-log drawer → Plans 4 & 5.

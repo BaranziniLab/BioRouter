@@ -13,7 +13,7 @@ happened when that search result was not good enough, and what changed as a resu
 
 **Date:** July 2026.
 
-## Reproduction
+## The reproduction case
 
 The reproduction case is an exported chat session titled `Apple Watch news`. The
 export itself is not stored in this repository and is not linked from here; it is
@@ -57,7 +57,7 @@ not whether it happens.
 - Existing plain-text and regex module searches, code execution, artifacts, and
   default extension behavior remain covered by their existing suites.
 
-## Verification
+## Final verification checks
 
 All final checks ran from a clean checkout of `main` with an isolated Cargo
 target directory.

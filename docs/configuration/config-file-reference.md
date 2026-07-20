@@ -24,7 +24,7 @@ Set these at the root level of `config.yaml`.
 
 | Setting | Purpose | Values | Default | Required |
 |---------|---------|---------|---------|-----------|
-| `BIOROUTER_PROVIDER` | Primary [LLM provider](../getting-started/choosing-a-model-provider.md) | `"anthropic"`, `"openai"`, etc. | None | Yes |
+| `BIOROUTER_PROVIDER` | Primary [large language model (LLM) provider](../getting-started/choosing-a-model-provider.md) | `"anthropic"`, `"openai"`, etc. | None | Yes |
 | `BIOROUTER_MODEL` | Default model to use | Model name (e.g. `"claude-4.5-sonnet"`, `"gpt-4"`) | None | Yes |
 | `BIOROUTER_TEMPERATURE` | Model response randomness | Float between 0.0 and 1.0 | Model-specific | No |
 | `BIOROUTER_MODE` | [Tool execution behaviour](../security/permission-modes.md) | `"auto"`, `"approve"`, `"chat"`, `"smart_approve"` | `"auto"` | No |
@@ -41,7 +41,7 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_ALLOWLIST` | URL for allowed extensions | Valid URL | None | No |
 | `BIOROUTER_WORKFLOW_GITHUB_REPO` | GitHub repository for workflows | Format: `"org/repo"` | None | No |
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 | No |
-| `otel_exporter_otlp_endpoint` | OTLP endpoint URL for [observability](environment-variables.md#opentelemetry-protocol-otlp) | URL (e.g. `http://localhost:4318`) | None | No |
+| `otel_exporter_otlp_endpoint` | OpenTelemetry protocol (OTLP) endpoint URL for [observability](environment-variables.md#opentelemetry-protocol-otlp) | URL (e.g. `http://localhost:4318`) | None | No |
 | `otel_exporter_otlp_timeout` | Export timeout in milliseconds for [observability](environment-variables.md#opentelemetry-protocol-otlp) | Integer (ms) | 10000 | No |
 | `SECURITY_PROMPT_ENABLED` | Enable prompt injection detection to identify potentially harmful commands | true/false | false | No |
 | `SECURITY_PROMPT_THRESHOLD` | Sensitivity threshold for prompt injection detection (higher = stricter) | Float between 0.01 and 1.0 | 0.7 | No |

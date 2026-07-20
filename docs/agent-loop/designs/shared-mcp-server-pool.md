@@ -10,7 +10,7 @@
 > **Audience:** developers working on BioRouter's extension manager, MCP client, and the
 > Electron main process.
 
-BioRouter multiplies MCP child processes on two independent axes that compound: every `Agent`
+BioRouter multiplies MCP (Model Context Protocol) child processes on two independent axes that compound: every `Agent`
 builds its own `ExtensionManager` and spawns its own copy of every enabled server, and every
 Electron window spawns a whole additional `biorouterd`. With 100 cached agents and a handful
 of 40–150 MB `uvx`/Node servers, this is the dominant RAM story. The hard part is not sharing
@@ -31,11 +31,11 @@ and notification routing once the process *is* shared.
 | Inspired by | jcode's `mcp/pool.rs` — *"one process that owns all sessions"*, `Arc<OnceCell<Arc<SharedMcpPool>>>`. See the [jcode comparison analysis](../../history/performance-2026-06/jcode-comparison-analysis.md). |
 | Shipped | Slice A as `4cdf3f86`, Slice B (flag-gated) as `d856a00e`, during the [agent-loop fix campaign](../../history/agent-loop-campaign/README.md) |
 
-> **Warning — a neighbouring document disagrees.** The
-> [mid-flight review index](../../history/agent-loop-campaign/mid-flight-review-index.md) still
-> describes BR-54 as "designed, not implemented". That snapshot was taken before Slice B
-> landed and is stale. This document and `crates/biorouter/src/agents/mcp_pool.rs` are
-> authoritative.
+> **Note — a neighbouring document carries a stale label.** The
+> [mid-flight review index](../../history/agent-loop-campaign/mid-flight-review-index.md) lists
+> BR-54 as "designed, not implemented". That snapshot was taken before Slice B landed; the
+> index now annotates the label as stale. This document and
+> `crates/biorouter/src/agents/mcp_pool.rs` are authoritative.
 
 > **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
 > the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have

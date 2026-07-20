@@ -2,7 +2,7 @@
 
 This folder documents the `biorouter` command-line interface: the subcommands and flags you run from your shell, the slash commands, themes, and keyboard shortcuts available once you are inside an interactive session, and the manual QA script that verifies all of it. Two documents sit here in a define/verify pair — the reference states what the CLI surface is supposed to do, and the checklist is the pass that confirms a build actually does it.
 
-Come here when you need to look up a command or flag, when you are learning the interactive terminal UI, or when you are running a QA pass before a release. Go elsewhere if you are still setting biorouter up — installation, provider configuration, and your first session live in [getting-started](../getting-started/quickstart.md), and the settings that change how commands behave live in [configuration](../configuration/environment-variables.md). The desktop GUI is a separate interface with its own folder, `desktop-ui`; nothing here describes the Electron app.
+Come here when you need to look up a command or flag, when you are learning the interactive terminal UI, or when you are running a QA pass before a release. Go elsewhere if you are still setting biorouter up — installation, provider configuration, and your first session live in [getting-started](../getting-started/quickstart.md), and the settings that change how commands behave live in [configuration](../configuration/environment-variables.md). The desktop GUI is a separate interface with its own folder, [desktop-ui](../desktop-ui/README.md); nothing here describes the Electron app.
 
 ## Documents in this folder
 

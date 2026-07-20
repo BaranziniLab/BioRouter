@@ -413,8 +413,8 @@ schema kept; from here forward every turn is stamped when it is spent (H-02).
   and open items for the UI cohesion pass
 - [`ui-cohesion-redesign.html`](../../design/ui-overhaul/ui-cohesion-redesign.html) — the approved visual spec for
   the app-wide cohesion pass, with Current ⇄ Redesigned toggles
-- [`knowledge-view-redesign.html`](knowledge-view-redesign.html) — the sibling redesign
-  spec for the Knowledge view
+- [Knowledge view redesign](knowledge-view-redesign.md) — the sibling redesign
+  spec for the Knowledge view, from the same overhaul
 - [`design.md`](../../../design.md) — the design system; `DR-52` (the content-width drift)
   lives in the drift register
 - [Documentation index](../../README.md) — the map of everything under `docs/`

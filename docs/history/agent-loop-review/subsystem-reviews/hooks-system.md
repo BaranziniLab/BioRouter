@@ -291,7 +291,8 @@ review cite as `hooks.md #N`; the numbering below is that scheme and is stable.
 12. **Two config tiers only, no managed/enterprise layer** — no way for an org to enforce a
     non-overridable security hook, and project hooks are all-or-nothing (one global opt-in, no
     per-project trust or per-command allowlist).
-13. **TOCTOU in project-config caching.** `project_hooks_mtime` then `read_project_hooks` are
+13. **Time-of-check-to-time-of-use (TOCTOU) in project-config caching.**
+    `project_hooks_mtime` then `read_project_hooks` are
     separate stat+read (`mod.rs:171-188`); a coarse filesystem clock can serve a stale config
     (the tests themselves have to force `+2s`, `mod.rs:866-868`).
 

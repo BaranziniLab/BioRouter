@@ -95,7 +95,8 @@ hook-matcher identifiers: `Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Agen
   notice and `offset`/`limit` paging. Handles images, PDFs (`pages` ranges), and notebooks.
 - **Error handling.** A failed tool returns its error to the model as the tool result so it can
   self-correct; WebFetch is "lossy by design" (a small model extracts against a prompt). MCP
-  tool schemas can be **deferred** — only names are listed until `ToolSearch` loads the schema.
+  (Model Context Protocol) tool schemas can be **deferred** — only names are listed until
+  `ToolSearch` loads the schema.
 
 ## Compaction and memory
 
@@ -254,8 +255,9 @@ Claude Code has an unusually rich set of background/async primitives:
 
 Claude Code bakes verification into the loop at several points:
 
-- **LSP after-edit diagnostics.** The `LSP` tool **automatically reports type errors and
-  warnings after each file edit**, so Claude fixes issues without a separate build step — a
+- **LSP after-edit diagnostics.** The `LSP` (Language Server Protocol) tool **automatically
+  reports type errors and warnings after each file edit**, so Claude fixes issues without a
+  separate build step — a
   built-in edit→check→fix micro-loop.
   [tools reference: LSP tool behavior](https://code.claude.com/docs/en/tools-reference#lsp-tool-behavior)
 - **PostToolUse verification hooks.** The canonical pattern is a `Write|Edit` PostToolUse hook

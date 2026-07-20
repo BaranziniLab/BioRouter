@@ -27,7 +27,7 @@ audit asked whether they broke anything there.
   worth retrying) versus authentication, quota, invalid-request and other permanent
   kinds.
 
-## Scope
+## What this review covers
 
 This review checks whether the July 2026 desktop and provider hardening changes
 alter the terminal UI's stability or agent execution loop. It covers the shared

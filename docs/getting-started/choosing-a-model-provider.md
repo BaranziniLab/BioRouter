@@ -1,7 +1,7 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Superseded in part — the provider inventory and panel ordering below no longer match the shipping app. The live truth for panel ordering and grouping is [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts); the live truth for which providers exist is the module list in `crates/biorouter/src/providers/`, and the Settings > Models panel in the app. The switching, orchestration, and custom-provider sections at the end remain accurate.
+> **Status:** Current, with one rotted section named here — the provider inventory and panel ordering below no longer match the shipping app. The live truth for panel ordering and grouping is [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts); the live truth for which providers exist is the module list in `crates/biorouter/src/providers/`, and the Settings > Models panel in the app. The switching, orchestration, and custom-provider sections at the end remain accurate.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers — commercial cloud APIs, institution-hosted services, and local models. You select and configure providers through the Provider Settings panel in the app (Settings > Models > Providers).

@@ -1,7 +1,7 @@
 # BioRouter Apps SDK v2 phase roadmap
 
 > **What this is.** The six-phase implementation plan for Apps SDK v2 — shared state document, catalog v2 with `ui_patch`, typed RPC and signals, `br.kb` and multi-agent profiles, theme packs, and hardening plus standalone export v2. Each phase is independently shippable and mergeable.
-> **Status:** Current, and partly executed. Written 2026-07-12 (revised after adversarial review); it records the *intended* sequence, not the achieved state. [The SDK reference](sdk-reference.md) is the authority on what actually ships — see the [phase status map](#which-phases-have-landed) below.
+> **Status:** Current. Partly executed: written 2026-07-12 (revised after adversarial review), it records the *intended* sequence, not the achieved state. [The SDK reference](sdk-reference.md) is the authority on what actually ships — see the [phase status map](#which-phases-have-landed) below.
 > **Audience:** developers implementing the Apps SDK v2 phases.
 > **Identifier key.** *Phase 1–6* (with *Phase 4b* as a distinct multi-agent slice) are the units of work referenced from the design and from commit messages. Section references like "design Pillar 9" point into [the Apps SDK v2 design](v2-design.md), which numbers its nine pillars; those numbers are stable and are cited from the code and the reference too.
 

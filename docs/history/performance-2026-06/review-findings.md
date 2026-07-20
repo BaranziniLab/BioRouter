@@ -1,4 +1,4 @@
-# BioRouter performance and responsiveness review
+# Performance and responsiveness review findings
 
 > **What this is.** A whole-app latency and resource review across 12 subsystems, synthesizing five cross-cutting themes — per-token streaming cost, blocking I/O on the async runtime, recompute-instead-of-cache, whole-object copies, and polling — into a tiered roadmap backed by `file:line` evidence.
 > **Status:** Historical record — review conducted 2026-06-22 against v1.86.0. Its Tier 0 and part of its Tier 1 items were implemented the next day and are recorded in [the implementation log](implementation-log.md); the untouched Tier 2 and Tier 3 items were never scheduled here.

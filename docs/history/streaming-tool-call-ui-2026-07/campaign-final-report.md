@@ -245,7 +245,7 @@ drivable only with a live provider were driven against a local Ollama model.
 The UCSF gateway is still IP-blocked from this machine, in the GUI and the CLI
 alike:
 
-```
+```text
 Ran into this error: Authentication error: Authentication failed.
 Status: 403 Forbidden. Response: {"error":"The IP Address is invalid: 104.52.5.246"}
 ```
@@ -263,7 +263,7 @@ never mutated.
 
 ### A · Suites, verbatim
 
-```
+```text
 cargo check --workspace                     Finished `dev` profile ... in 31.05s   (exit 0, 0 warnings)
 cargo test -p biorouter --lib               test result: ok. 1487 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.42s
 cargo test -p biorouter-mcp --lib           test result: ok. 809 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 21.43s
@@ -294,7 +294,7 @@ growth is the audit widening, not a threshold being relaxed.
 actually landed live in `crates/biorouter/tests/`, which `--lib` does not
 compile. All were re-run:
 
-```
+```text
 13 parallel/subagent/streaming/interrupt/abort/code-execution binaries   54 passed; 0 failed
 6 permission, policy, path-resolution and apps-routing targets          115 passed; 0 failed
 ```
@@ -362,7 +362,7 @@ main's original call in the running tree, the scenario re-driven, and **the
 message dropped identically**. The probe was then reverted and the tree
 confirmed clean.
 
-```
+```text
 handleStopAndSend with stopAck.trigger()     → queued message dropped
 handleStopAndSend with if (onStop) onStop()  → queued message dropped
 ```

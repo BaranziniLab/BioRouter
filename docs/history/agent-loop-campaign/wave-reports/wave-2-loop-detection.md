@@ -1,4 +1,4 @@
-# Wave 2 — loop and budgets cluster verification report
+# Wave 2 — loop detection and budgets cluster verification report
 
 > **What this is.** Gate evidence for the Wave 2 loop-detection cluster — BR-29 staged
 > repetition stop, BR-30 semantic and oscillation detection, BR-31 failure streaks, BR-32 stall

@@ -8,12 +8,12 @@ Roche Limit — and both non-default families are specified here in full, alongs
 architecture that generates every one of them from a single file per family.
 
 Come here when you need the authoritative value for a colour token, when you are adding a
-component that reads colour tokens and need to know what it will look like in all four
-environments, or when you are proposing a new theme family. This folder is colour only — it
+component that reads colour tokens and need to know what it will look like in every family, in
+light and dark, or when you are proposing a new theme family. This folder is colour only — it
 deliberately does not cover layout, typography or motion. For the parent design system and its
 numbered decisions see [`design.md`](../../../design.md) at the repo root; for the app-wide
-structural redesign work see [`../ui-overhaul/`](../ui-overhaul/); for the logo, wordmark and
-brand assets see [`../branding/`](../branding/).
+structural redesign work see [`ui-overhaul/`](../ui-overhaul/README.md); for the logo, wordmark
+and brand assets see [`branding/`](../branding/README.md).
 
 ## Documents
 

@@ -10,7 +10,7 @@ which supersedes the Rust code in Task 1.
 
 Come here when you are asking why the disabled-skill enforcement or the import-modal code
 looks the way it does, or when you are reconstructing what v1.72.1 announced — that
-release never got a notes file under [`docs/releases/notes/`](../../releases/README.md),
+release never got a notes file under [`docs/releases/notes/`](../../releases/notes/README.md),
 so the heredoc at the end of the plan is the only surviving record of its changelog. If
 you instead want to *run* the desktop app and check its current behaviour, leave for
 [`docs/desktop-ui/`](../../desktop-ui/README.md). For later, broader desktop defect

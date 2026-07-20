@@ -44,7 +44,8 @@ both. They map as follows:
 ## Scope and provenance
 
 Scope = everything in the original seven asks **plus** the "✅ worth adding" set (content
-guardrails incl. PII/PHI, structured outputs, the reliability cluster, handoffs /
+guardrails incl. PII/PHI [personally identifiable information and protected health
+information], structured outputs, the reliability cluster, handoffs /
 agents-as-tools / lazy tools, HITL + serializable RunState, spanned tracing + GUI timeline,
 per-app model surface) **plus** interactive widgets (agent-emitted forms/tables that call
 back into the loop).
@@ -185,8 +186,8 @@ Per-cluster sub-structs (`FilesCapability`, `DataCapability`, `ComputeCapability
 `ReliabilityConfig`, `ModelSettings`, `SubAgentManifest`, `WorkflowManifest`)
 are defined in their cluster sections. The `create_app`/`configure_app` MCP tool
 params (`agent_drafter/mod.rs`) gain matching optional fields; `bundle.rs::lint_app`
-validates them (e.g. groundedness-without-KB → warn; `needs_approval` naming an
-absent tool → warn).
+validates them (e.g. groundedness declared without a knowledge base (KB) → warn;
+`needs_approval` naming an absent tool → warn).
 
 ### 1.3 WebSocket protocol v2 (full frame set)
 
@@ -575,7 +576,7 @@ agents/subagent/mod.rs` re-exports `SubAgent`/`Completer`/`ToolDispatch`/
 `SessionConfig` (`agents/types.rs:84`) gains `output_type: Option<Value>` +
 `output_retries: Option<u32>`. New `agents/structured_output.rs`:
 `validate(value, schema)` (crate `jsonschema`). At natural completion
-(`agent.rs:1717-1778`), if `output_type` set: strip ```json fences (like
+(`agent.rs:1717-1778`), if `output_type` set: strip `json` code fences (like
 `create_workflow`, `agent.rs:2124`), validate; on success set `exit_chat` + emit
 `AgentEvent::Output{schema,value}`; on failure with attempts left, push a
 corrective user message (errors listed) and continue the loop (bounded by

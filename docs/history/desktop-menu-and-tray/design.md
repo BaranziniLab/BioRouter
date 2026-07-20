@@ -6,9 +6,9 @@
 
 Before this change, BioRouter shipped Electron's default application menu with a handful of items patched onto it at startup, so the app's own surfaces — chat history, workflows, the scheduler, extensions, skills, providers — had no menu-bar route at all, and the macOS tray icon opened a dropdown on left-click instead of simply showing the window. This spec defines the menu bar and tray as a single deliberate structure. The task-by-task implementation is in [the implementation plan](plan.md), which is the companion to this document; the plan carries the exact code, the concrete URLs, and the verification walkthrough.
 
-## Approach
+## Implementation approach
 
-All changes are in `ui/desktop/src/main.ts` and `ui/desktop/src/utils/autoUpdater.ts`. The menu bar is rebuilt with `Menu.buildFromTemplate` and set via `Menu.setApplicationMenu`. Tray behaviour is updated on the `tray` instance already managed in `autoUpdater.ts`. Navigation items send IPC messages to the focused renderer window (`webContents.send('set-view', routeName)`), matching the existing pattern used for Settings.
+All changes are in `ui/desktop/src/main.ts` and `ui/desktop/src/utils/autoUpdater.ts`. The menu bar is rebuilt with `Menu.buildFromTemplate` and set via `Menu.setApplicationMenu`. Tray behaviour is updated on the `tray` instance already managed in `autoUpdater.ts`. Navigation items send IPC (inter-process communication) messages to the focused renderer window (`webContents.send('set-view', routeName)`), matching the existing pattern used for Settings.
 
 The technologies involved are Electron's `Menu`, `MenuItem` and `Tray` classes, plus `shell.openExternal` for external links.
 

@@ -31,11 +31,11 @@ checks can be compared line for line.
 
 ## Subdirectories
 
-- **[`llama-server/`](llama-server/model-catalog-qa-checklist.md)** — verification material
+- **[`llama-server/`](llama-server/README.md)** — verification material
   for the bundled **Llama Server** (`llamacpp`) local provider and its managed sidecar.
-  It currently holds a single document, the
-  [Llama Server model catalog QA checklist](llama-server/model-catalog-qa-checklist.md),
-  and has no index of its own. That checklist — plus the automated
+  It has its own index and currently holds a single document, the
+  [Llama Server model catalog QA checklist](llama-server/model-catalog-qa-checklist.md).
+  That checklist — plus the automated
   `llamacpp_survey` harness that executes most of it — walks every model in the catalog
   for availability, correctness, tool-calling, streaming, speed, and robustness, and
   records the security invariants the sidecar must not regress. It is **superseded in

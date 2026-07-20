@@ -243,7 +243,7 @@ biorouter configure
 
 You'll see the following prompts:
 
-```sh
+```text
 ┌  biorouter-configure 
 │
 ◆  What would you like to configure?
@@ -314,7 +314,7 @@ biorouter run --workflow workflow.yaml --interactive
 
 The interactive mode will prompt for required values:
 
-```sh
+```text
 ◆ Enter value for required parameter 'language':
 │ Python
 │
@@ -368,7 +368,7 @@ biorouter run --workflow code-review --interactive
 
 The interactive mode will prompt for required values:
 
-```sh
+```text
 ◆ Enter value for required parameter 'project_name':
 │ MyProject
 │

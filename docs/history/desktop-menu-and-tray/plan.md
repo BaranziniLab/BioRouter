@@ -746,7 +746,7 @@ Spec coverage against [the design spec](design.md):
 | Help menu with docs, bug, feature, version | Task 5 |
 | Tray left-click on macOS | Task 1 |
 | Tray right-click menu | Task 4 |
-| No new IPC channels | Confirmed — all use existing `set-view` and `theme-changed` |
+| No new IPC (inter-process communication) channels | Confirmed — all use existing `set-view` and `theme-changed` |
 | External links via `shell.openExternal` | Confirmed |
 
 Placeholder scan: none found.

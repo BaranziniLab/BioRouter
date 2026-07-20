@@ -63,7 +63,7 @@ Baseline strongly matches the `terminal` pack and cyan→amber CFD HUD, but the 
 covered most of the rail/canvas/inspector with opaque black regions, making the app unusable during
 optimization.
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

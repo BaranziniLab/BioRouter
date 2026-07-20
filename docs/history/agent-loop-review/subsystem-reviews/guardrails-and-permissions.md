@@ -4,7 +4,7 @@
 > **Status:** Historical record — a snapshot of the code *before* the agent-loop fix campaign, whose central findings were then implemented. Gaps #1 and #2 (empty read-only sets and a dead LLM judge, which together made `SmartApprove` identical to `Approve`) were fixed by BR-18, #3 (no screening in `Auto` mode) by BR-20, #4 (the evadable regex scanner) by BR-21, #6 and #9 (unused `ToolOutput` guardrail stages) by BR-22, #7 (`.biorouterignore` confined to the Developer server) by BR-23, #8 (exact-args permission keys) by BR-24, and #10 (`unwrap` panics) by BR-25.
 > **Audience:** developers working on permissions, guardrails, or the security scanner.
 
-Reviewed at commit `24cdc3a2` on branch `main`. This is the only one of the ten subsystem reviews that pins a commit — the other nine record no revision, so their line citations cannot be anchored the same way. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `guardrails-permissions.md #N` (the file's former name), and `SEC-<uuid>` / `REP-001` are runtime finding ids emitted by the inspectors themselves.
+Reviewed at commit `24cdc3a2` on branch `main`. This is the only one of the ten subsystem reviews that pins a commit: [self-verification and done-ness](self-verification-and-doneness.md) records only the date 2026-07-12, [state awareness and version control](state-awareness-and-version-control.md) records the unrelated branch `ui-hardening-a11y-tests`, and the remaining seven record no revision at all — so no sibling's line citations can be anchored the same way. Identifier key: `BR-NN` are proposal ids from the [master improvement-proposal list](../improvement-proposals.md); the numbered items under "Gaps and weaknesses" are what sibling reviews cite as `guardrails-permissions.md #N` (the file's former name), and `SEC-<uuid>` / `REP-001` are runtime finding ids emitted by the inspectors themselves.
 
 ## Overview
 
@@ -17,7 +17,7 @@ BioRouter's guard rail surface is split across three loosely coupled subsystems 
 
 2. **The permission model** (`permission/`) — decides, per tool call, whether it is auto-approved, needs a human, or is denied, based on the session's `BioRouterMode` and per-tool user-stored `PermissionLevel`. Human approvals flow over an mpsc channel and can be persisted as `AlwaysAllow`/`NeverAllow`.
 
-3. **Content guardrails** (`guardrails/`) — an on-device PII/PHI masker (`pii.rs`) plus a serializable human-in-the-loop pause state (`run_state.rs`). These are **BRSDK-app-only** (Agent Drafter apps), wired in `biorouter-server/src/routes/apps.rs`, not in the main CLI/GUI agent loop.
+3. **Content guardrails** (`guardrails/`) — an on-device masker for personally identifiable information and protected health information (PII/PHI, `pii.rs`) plus a serializable human-in-the-loop pause state (`run_state.rs`). These are **BRSDK-app-only** (Agent Drafter apps), wired in `biorouter-server/src/routes/apps.rs`, not in the main CLI/GUI agent loop.
 
 Two more pieces sit outside the inspector chain:
 - **Extension malware check** (`agents/extension_malware_check.rs`) — an OSV.dev lookup run at *extension launch* time (not tool-call time).

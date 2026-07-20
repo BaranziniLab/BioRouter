@@ -4,7 +4,7 @@
 > **Status:** Historical record — approved 2026-05-07 and shipped. Both providers exist in the tree today as `crates/biorouter/src/providers/versa_azure.rs` and `crates/biorouter/src/providers/versa_bedrock.rs`, and are registered in `crates/biorouter/src/providers/factory.rs`. The sectioned provider grid also shipped, but its section order has since changed (see the note below).
 > **Audience:** developers working on LLM providers or the desktop settings UI.
 
-BioRouter ships a long flat list of LLM providers. UCSF users reach commercial Azure OpenAI and Amazon Bedrock through a UCSF-operated gateway ("Versa"), which means a fixed endpoint, a fixed deployment, and credentials issued by the university rather than by Microsoft or AWS. This spec adds two dedicated providers that hardcode those connection details so a UCSF user only supplies a key, and it groups the provider grid so institution-managed options are visually distinct from commercial and local ones.
+BioRouter ships a long flat list of large language model (LLM) providers. UCSF users reach commercial Azure OpenAI and Amazon Bedrock through a UCSF-operated gateway ("Versa"), which means a fixed endpoint, a fixed deployment, and credentials issued by the university rather than by Microsoft or AWS. This spec adds two dedicated providers that hardcode those connection details so a UCSF user only supplies a key, and it groups the provider grid so institution-managed options are visually distinct from commercial and local ones.
 
 > **Note.** The section ordering specified here — Institutional, then Local, then Commercial — is no longer what ships. `ui/desktop/src/components/settings/providers/ProviderGrid.tsx` now renders **Local Models first**, and the Llama Server (`llamacpp`) card that leads the grid post-dates this spec entirely. The live truth for section order and grouping is `ProviderGrid.tsx` together with `ui/desktop/src/components/settings/providers/providerOrdering.ts`. Everything in this document about the two Versa providers themselves is still structurally accurate; the ordering half is superseded.
 
@@ -21,7 +21,7 @@ The spec covers four separate layers, in the order a change would land in them:
 3. **Form pre-population** — which fields arrive pre-filled in the setup modal.
 4. **Dependency checker** — one new optional tool probe.
 
-A fifth section records the Playwright script used to validate the result in the running desktop app, and a final table lists every file the change touches.
+A fifth section records the Playwright verification pass used to check the result in the running desktop app, and a final table lists every file the change touches.
 
 ## Rust providers
 
@@ -179,8 +179,8 @@ Non-blocking: shown as a warning in the Dependency Setup Modal, not an error. Th
 
 ## Validating in the running app with Playwright
 
-1. Start the app: `just dev-ui-playwright` (debug binary plus `ENABLE_PLAYWRIGHT=true`, CDP on port 9222).
-2. Connect via the `.mcp.json` Playwright MCP config, already present at the repo root.
+1. Start the app: `just dev-ui-playwright` (debug binary plus `ENABLE_PLAYWRIGHT=true`, Chrome DevTools Protocol (CDP) on port 9222).
+2. Connect via the `.mcp.json` Playwright Model Context Protocol (MCP) config, already present at the repo root.
 3. Verify each of the following:
    - The Provider Configuration page shows three labeled sections.
    - `versa_azure` and `versa_bedrock` appear under Institutional Models.

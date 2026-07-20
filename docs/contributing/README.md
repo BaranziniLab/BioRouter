@@ -24,7 +24,7 @@ where the truth lives>`. That line is what lets a reader trust a document withou
 the git log, and it is the convention most worth protecting.
 
 Folders are topics, not buckets. Each one carries a `README.md` index listing its files.
-Records of completed work live under [`history/`](../history/), not beside living guidance.
+Records of completed work live under [`history/`](../history/README.md), not beside living guidance.
 
 ## If you find a document that is wrong
 
@@ -37,5 +37,5 @@ confidently invented resolution.
 ## Related documentation
 
 - [Documentation index](../README.md) — the entry point this folder's conventions serve
-- [`history/`](../history/) — where records of completed work belong
+- [`history/`](../history/README.md) — where records of completed work belong
 - [`CLAUDE.md`](../../CLAUDE.md) — repository-level guidance for agents working in this codebase

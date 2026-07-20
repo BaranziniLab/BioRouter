@@ -20,15 +20,15 @@ mechanism-named call site with a capability-named one, adds a real Linux backend
 plainly what Windows can and cannot enforce, and makes the resulting tier visible to the
 user instead of buried in a daemon log.
 
-**Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list,
-defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md);
-this design is BR-69. *Lens* records which review raised it — **R** = robustness, and
-*P-32* is that proposal's number within the robustness lens review.
+> **Identifier key.** *BR-NN* is a proposal from the agent-loop review's master list,
+> defined in [improvement proposals](../../history/agent-loop-review/improvement-proposals.md);
+> this design is BR-69. *Lens* records which review raised it — **R** = robustness, and
+> *P-32* is that proposal's number within the robustness lens review.
 
-**Extends:** BR-64 (macOS Seatbelt, Slice 1 shipped; designed in
-[macOS Seatbelt sandbox](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md)) — this is BR-64's Slice 3
-generalized. **Complements:** BR-20 (catastrophic denylist) and BR-21 (policy engine),
-which this design shows are POSIX-only and therefore near-vacuous on Windows.
+> **Note — what this extends.** BR-64 (macOS Seatbelt, Slice 1 shipped; designed in
+> [macOS Seatbelt sandbox](../../history/agent-loop-campaign/cross-platform/macos-seatbelt-sandbox.md)) — this is BR-64's Slice 3
+> generalized. It complements BR-20 (catastrophic denylist) and BR-21 (policy engine),
+> which this design shows are POSIX-only and therefore near-vacuous on Windows.
 
 > **Overlap to be aware of.** The Problem section's account of the POSIX-only command
 > safety net restates the premise of
@@ -39,7 +39,7 @@ which this design shows are POSIX-only and therefore near-vacuous on Windows.
 
 ## Contents
 
-- [Problem](#problem)
+- [The problem, grounded in code](#the-problem-grounded-in-code)
 - [Design](#design) — Slice 0 rules, Slice 1 the trait, Slice 2 Linux, Slice 3 Windows, Slice 4 reporting
 - [Alternatives considered](#alternatives-considered)
 - [Migration and compatibility](#migration-and-compatibility)
@@ -49,7 +49,7 @@ which this design shows are POSIX-only and therefore near-vacuous on Windows.
 - [Sources](#sources)
 - [Related documentation](#related-documentation)
 
-## Problem
+## The problem, grounded in code
 
 BioRouter ships on macOS (dmg), Windows (zip) and Linux (deb/rpm). Its security
 posture does not.

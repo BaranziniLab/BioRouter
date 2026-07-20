@@ -1,7 +1,8 @@
 # Streaming tool-call UI, July 2026
 
-This folder is the complete record of one campaign that ran on 2026-07-18 and 2026-07-19 on the
-branch `feat/streaming-tool-call-ui`. It began as an investigation into two user-reported
+This folder is the complete record of one campaign that ran from 2026-07-18 to 2026-07-20,
+opening on the branch `feat/streaming-tool-call-ui` and closing on `integrate/docs-cleanup`,
+where its last three stress rounds were run. It began as an investigation into two user-reported
 symptoms — a tool card that appeared late and already looked finished, and a two-to-five second
 dead gap between consecutive tool calls — and ended as a three-round QA campaign over the fixes
 that investigation produced. The work shipped: the streaming track merged to `main` at
@@ -33,6 +34,8 @@ to the end, including the five that were deliberately left unfixed.
 | Document | What it covers |
 |---|---|
 | [Campaign final report](campaign-final-report.md) | The closing summary: per-round problems found and fixed, the final gate status, the five deferred items that were documented rather than fixed, a tool deprecation proposal awaiting approval, and the security review checklist. Start here. |
+| [Master checklist](master-checklist.md) | The exhaustive tick-list of every instruction, bug report and test directive the user gave, grouped A–J, with the commit or evidence beside each. Records the closing state, including the one item never ticked (`I4`, fast-forwarding `main`) and the items left needing a decision. |
+| [User-requested work register](user-requested-work-register.md) | The same instructions as a numbered narrative table with a status per row, plus three long-form entries: the terminal cap and why it fired early, the audit proving no information was lost when 27 loose `docs/` root files were migrated, and why GitHub issue #19 is gated but not closed. Last updated mid-session, so the checklist above is the later word. |
 | [Session trace](session-trace.md) | Every user instruction in the order it was given, mapped to the tests run and the commit that answered it. The traceability spine for the whole campaign. |
 | [Tool-call UI latency investigation](tool-call-ui-latency-investigation.md) | The founding investigation: how a tool call flows end to end, why it appears late, why there is a gap between calls, what was ruled out, and the two tracks of work proposed — performance fixes and a trailing thinking indicator. Carries the critical addendum that the reporting user's provider did not stream at all. |
 | [Latency measurement register](latency-measurement-register.md) | The before/after register the investigation required of itself: every fix had to carry a number or count as not landed. Several entries honestly record `NOT MEASURED` because no live endpoint was available. |

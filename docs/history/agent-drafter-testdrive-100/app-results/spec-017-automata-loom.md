@@ -75,7 +75,7 @@ and opaque black regions obscured the rail/inspector and reduced scientific read
 The machine-readable form of this audit, including the per-app issue list, is in
 [data/platform-integrations.json](../data/platform-integrations.json).
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

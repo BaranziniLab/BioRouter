@@ -20,7 +20,7 @@ the tests that exercise them, see
 
 | Document | What it covers |
 |----------|----------------|
-| [Llama Server model catalog QA checklist](model-catalog-qa-checklist.md) | A repeatable checklist, plus the automated harness that executes most of it, for verifying every catalog model's availability, capability, tool-calling, speed, and robustness. **Superseded in part** — it was written against an earlier pinned llama.cpp build and an earlier `MODEL_CATALOG`, so the test procedure still holds but the model list and expected launch flags must be re-derived from the provider and sidecar source before running it. |
+| [Llama Server model catalog QA checklist](model-catalog-qa-checklist.md) | A repeatable checklist, plus the automated harness that executes most of it, for verifying every catalog model's availability, capability, tool-calling, speed, and robustness. Current, with two rotted sections flagged in its header: it was written against an earlier pinned llama.cpp build and an earlier `MODEL_CATALOG`, so the test procedure still holds but the model list and expected launch flags must be re-derived from the provider and sidecar source before running it. |
 
 ## Related documentation
 
@@ -29,7 +29,9 @@ the tests that exercise them, see
   checklist sets.
 - [Choosing a model provider](../../getting-started/choosing-a-model-provider.md) — where
   Llama Server sits among the local, institutional, and commercial providers.
-- [z.ai (GLM) provider](../zai-glm.md) — a sibling provider verification reference
-  covering the same surfaces for a hosted provider.
+- [Model provider integration references](../README.md) — the parent index, covering the
+  hosted providers that sit alongside this folder.
+- [z.ai (GLM) provider](../zai-glm.md) — a sibling provider integration reference whose
+  verification section covers the same surfaces for a hosted provider.
 - [Debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md)
   — how to drive the dev app for the checklist's manual GUI section.

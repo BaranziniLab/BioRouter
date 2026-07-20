@@ -1,7 +1,7 @@
 # Computer Controller extension
 
 > **What this is.** User guide to the built-in Computer Controller extension: how to enable it, which tools it provides, and a worked example combining web research with macOS system automation.
-> **Status:** Current — `crates/biorouter-mcp/src/computercontroller/` ships in the product and the tools described below are real. The worked example is macOS-specific.
+> **Status:** Current. `crates/biorouter-mcp/src/computercontroller/` ships in the product and the tools described below are real. The worked example is macOS-specific.
 > **Audience:** end users.
 
 The Computer Controller extension automates everyday computer tasks and web interactions — searching the web, controlling system settings, processing data files, and driving applications — without you having to write code. It is the highest-blast-radius built-in extension, because it acts on your actual desktop rather than on a sandboxed workspace.

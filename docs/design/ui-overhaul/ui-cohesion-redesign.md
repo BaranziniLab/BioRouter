@@ -4,7 +4,7 @@
 > the forensics that explain why the shipped app never matched the design sketch, and the
 > specifications for the markdown layer, the preview panel, the terminal, tabbed chat
 > groups, and every floating surface.
-> **Status:** Current — the design specification for the UI cohesion overhaul; execution is tracked in [execution-status.md](execution-status.md).
+> **Status:** Current — a design specification only; nothing was committed
 > to the app at the time of writing. Execution is tracked in
 > [`execution-status.md`](execution-status.md).
 > **Audience:** developers working on the BioRouter desktop UI, and agents implementing

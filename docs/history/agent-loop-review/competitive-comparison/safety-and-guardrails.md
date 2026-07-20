@@ -111,7 +111,8 @@ wide and scrolls horizontally.
    local regex+checksum detector (Luhn for cards, structural SSN validity, keyword-anchored
    MRN/DOB) — no comparator ships an equivalent, and it is the right call for a biomedical
    tool that must not ship clinical text to a model. (Caveat under "behind": it is
-   BRSDK-app-only, not on the main loop.)
+   BRSDK-app-only — the BioRouter App SDK that Agent Drafter apps are built
+   against — not on the main loop.)
 
 4. **Most-restrictive-wins, escalation-only inspector merge.** The inspector chain
    (`security → permission → repetition → hooks`) with a monotonic "raise the bar, never
@@ -220,7 +221,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
    `max_budget_per_run` ($ cap → `MaxBudgetReached`)** are the two references.
 
 8. **Guardrails are scoped to BRSDK apps, not the main loop; PostToolUse cannot block.** PII
-   masking, `Block`, and `run_state` HITL only run on the Agent Drafter app socket; the
+   masking, `Block`, and `run_state` human-in-the-loop pauses only run on the Agent Drafter app socket; the
    CLI/GUI loop has no PII stage and never scans tool *output* — the classic injection vector
    (guardrails review, gap #6). And PostToolUse is observe-only although the decision is
    already computed (hooks review, gap #2), so "reject a write that fails lint" is

@@ -23,7 +23,7 @@ respect.
 
 ## Related documentation
 
-- [Chat groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) — the historical record of the three competing chat-groups designs, the `R1`–`R7` risk register whose risk 7 this folder's spike resolves, and the reduced plan authorised on 2026-07-16.
+- [Chat groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) — the historical record of the three competing chat-groups designs, the per-candidate risk registers that include `minimal-shell`'s `R7` — the one risk this folder's spike resolves — and the reduced plan authorised on 2026-07-16.
 - [UI overhaul execution status](../ui-overhaul/execution-status.md) — the source-of-truth status record for the chat-groups and UI-cohesion branch, including the open-items list that still marks `KnowledgeProvider` nesting as blocked.
 - [Knowledge plan 6: chat integration and closeout](../../history/knowledge-base-buildout/plan-6-chat-integration-and-closeout.md) — how the per-chat knowledge-base chip and `KnowledgeContext` came to exist, i.e. the code the nesting spike dissects.
 - [Diverge behaviour checklist](../../desktop-ui/diverge-behavior-checklist.md) — neighbouring desktop-UI behaviour documentation for the same chat surface.

@@ -913,7 +913,7 @@ This plan was written to be executed by an agent, task by task, in test-driven o
   });
   ```
 
-  > **Note:** The E2E test directly calls `window.electron.validateBrxtBundle` via `page.evaluate`, matching the pattern in the rest of `brxt.spec.ts`. If the test harness doesn't expose `window.electron` in evaluate context, use the `electronApp.evaluate` approach to invoke the IPC handler directly (see `brxt.spec.ts` existing patterns for the exact invocation style).
+  > **Note.** The E2E test directly calls `window.electron.validateBrxtBundle` via `page.evaluate`, matching the pattern in the rest of `brxt.spec.ts`. If the test harness doesn't expose `window.electron` in evaluate context, use the `electronApp.evaluate` approach to invoke the IPC handler directly (see `brxt.spec.ts` existing patterns for the exact invocation style).
 
 - [ ] **Step 3: Run the E2E test**
 

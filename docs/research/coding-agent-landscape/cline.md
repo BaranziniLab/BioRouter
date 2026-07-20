@@ -61,7 +61,8 @@ convention.
 The loop is a `Task`/`SessionRuntime` object driven by a `Controller`
 ([DeepWiki architecture](https://deepwiki.com/cline/cline)): assemble system prompt → stream
 the LLM via an `ApiHandler`/`ApiStream` async generator → parse streamed text and tool-use
-blocks → a `ToolExecutor` dispatches to handlers (file ops, terminal, browser, MCP) → the
+blocks → a `ToolExecutor` dispatches to handlers (file ops, terminal, browser, and servers
+speaking MCP, the Model Context Protocol) → the
 loop suspends on `Task.ask()` for human approval → tool results are appended to history for
 the next turn.
 

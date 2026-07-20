@@ -86,7 +86,7 @@ Present in the built source; their position and size were never verified in a br
 The machine-readable form of this audit is in
 [data/platform-integrations.json](../data/platform-integrations.json).
 
-## Screenshots
+## Screenshot evidence
 
 None. No browser session ran, so no screenshot was captured. The `shots/` directory referenced by
 browser-verified records in this folder lived inside the ephemeral `.br-testdrive/runtime` sandbox

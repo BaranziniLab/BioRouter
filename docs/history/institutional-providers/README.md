@@ -1,6 +1,7 @@
 # Institutional providers — Versa archive index
 
-This folder holds the paper trail for the two UCSF-specific "institutional" LLM providers,
+This folder holds the paper trail for the two UCSF-specific "institutional" large language
+model (LLM) providers,
 **Versa API Azure** and **Versa API Bedrock**, and for the change that split the desktop
 Provider Configuration grid into labeled sections. Both were specified and built on
 **2026-05-07**, and both **shipped**: `crates/biorouter/src/providers/versa_azure.rs` and

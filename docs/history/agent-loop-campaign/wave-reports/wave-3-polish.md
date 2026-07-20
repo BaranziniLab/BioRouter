@@ -38,7 +38,7 @@ BR-62b closes the follow-up that
 
 Working tree clean (`git status --porcelain` empty). No orphaned work.
 
-## Decisions
+## Decisions taken during verification
 
 - **`65fd7227` is not a `BR-NN` commit and is intentionally left as-is.** It is not one of the
   numbered proposals; it is the prerequisite that greens the frontend gate — roughly 40
@@ -142,7 +142,7 @@ Restating the three conclusions established above:
   follow-up BR-62b closed here.
 - [Master improvement proposals](../../agent-loop-review/improvement-proposals.md) — the
   definition of BR-40 and BR-62.
-- [Campaign outcome report](../outcome-report.md) — the end-of-campaign totals across all three
-  gates, of which this is the last.
+- [Campaign outcome report](../outcome-report.md) — the end-of-campaign totals across all four
+  gates, of which this cluster's is the last.
 - [Cross-platform parity verification report](../cross-platform/parity-verification-report.md)
   — the other Wave 3 gate, covering the cross-platform proposals and GAP-2.

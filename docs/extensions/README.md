@@ -13,20 +13,9 @@ Come here when you want to add a capability BioRouter does not have yet, when yo
 
 ## Built-in extension reference
 
-The [`built-in/`](built-in/) subdirectory holds one user-facing reference page per built-in extension. It has no index of its own, so its pages are listed here.
+The [`built-in/`](built-in/README.md) subdirectory holds one user-facing reference page per built-in extension: Developer, Computer Controller, Memory, Auto Visualiser, Chat Recall, Code Execution, Extension Manager, Skills, Todo and Tutorial. It carries its own index describing each page, so read that index rather than a second copy of it kept here.
 
-| Document | What it covers |
-|---|---|
-| [Developer extension](built-in/developer.md) | A walkthrough of the Developer extension (its `shell`, `text_editor`, `analyze`, `screen_capture` and `image_processor` tools) plus a reference on constraining it with permission modes, tool permissions and `.biorouterignore`. Carries the most substantive security guidance of any extension page. |
-| [Computer Controller extension](built-in/computer-controller.md) | Enabling the Computer Controller, which tools it provides, and a worked example combining web research with macOS system automation. The highest-blast-radius built-in, because it acts on your real desktop. |
-| [Memory extension](built-in/memory.md) | The trigger words that store, recall and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards. Predates the Knowledge feature; the page explains how the two relate. |
-| [Auto Visualiser extension](built-in/auto-visualiser.md) | How to enable the Auto Visualiser, which figures it produces, and a worked cohort-data example. **Superseded in part:** the chart catalogue documents only 8 of the 34 tools the code now registers, so `crates/biorouter-mcp/src/autovisualiser/` is the current truth. |
-| [Chat Recall extension](built-in/chat-recall.md) | Searching your saved session history by keyword or session ID so BioRouter can pull earlier context into the current conversation. Unlike most built-ins, it ships disabled by default. |
-| [Code Execution extension](built-in/code-execution.md) | Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution. Enabled by default, so the setup walkthrough is normally unnecessary. |
-| [Extension Manager extension](built-in/extension-manager.md) | How BioRouter discovers, enables and disables other extensions mid-session so the active tool count — and the context it consumes — stays small. Enabled by default. |
-| [Skills extension](built-in/skills.md) | Where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent. Enabled by default. |
-| [Todo extension](built-in/todo.md) | How BioRouter breaks multi-step work into a tracked checklist and reports progress as it goes. Enabled by default. |
-| [Tutorial extension](built-in/tutorial.md) | The interactive, step-by-step walkthroughs of BioRouter features that the agent can load on request. The tutorial list has been regenerated from `crates/biorouter-mcp/src/tutorial/tutorials/`, which remains authoritative. |
+Two of those pages are worth knowing about before you go. [Developer](built-in/developer.md) carries the most substantive security guidance of any extension page, and [Computer Controller](built-in/computer-controller.md) documents the highest-blast-radius built-in, because it acts on your real desktop.
 
 ## Related documentation
 

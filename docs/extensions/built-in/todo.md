@@ -1,7 +1,7 @@
 # Todo extension
 
 > **What this is.** User guide to the built-in Todo extension, which makes BioRouter break multi-step work into a tracked checklist and report progress as it goes.
-> **Status:** Current — but note the correction below: the extension is enabled by default, so no manual setup is normally needed.
+> **Status:** Current. The extension is enabled by default, so no manual setup is normally needed.
 > **Audience:** end users.
 
 The Todo extension keeps BioRouter organized on long tasks. BioRouter reaches for it automatically when a task has two or more steps, touches multiple files or components, or has uncertain scope. At the start it creates a checklist, updates the checklist as it works, and verifies at the end that every item is done — so you can see where it is rather than waiting for a single opaque answer.

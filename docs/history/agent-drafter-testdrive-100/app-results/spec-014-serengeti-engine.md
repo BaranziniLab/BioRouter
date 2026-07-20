@@ -59,7 +59,7 @@ motes, and a field-note intervention card. Unlike
 [Spec 012 — Contagion Studio](spec-012-contagion-studio.md) and
 [Spec 013 — Orbital Sandbox](spec-013-orbital-sandbox.md), live rendering remained legible.
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

@@ -4,11 +4,11 @@
 > `BioRouter` wordmark with a split navy/coral rule, and a `BR` monogram derived from it for the
 > square app icon. It fixes geometry, colour tokens and lockups, and records the licence blocker
 > that ruled out the originally chosen typeface.
-> **Status:** Current for geometry, colour and lockups, which were approved in the specimen on
-> 2026-07-17. The typeface was still open when this was written; it was resolved afterwards —
-> [UI overhaul execution status](../ui-overhaul/execution-status.md) records that Inter (SIL Open
-> Font License) was chosen and shipped on 2026-07-18. Treat that document as authoritative on the
-> typeface and on the values re-tuned in Inter; everything else here still stands.
+> **Status:** Current. Geometry, colour and lockups were approved in the specimen on 2026-07-17
+> and still stand. The typeface section is superseded: the face was still open when this was
+> written, and [UI overhaul execution status](../ui-overhaul/execution-status.md) records that
+> Inter (SIL Open Font License) was chosen and shipped on 2026-07-18. Treat that document as
+> authoritative on the typeface and on the values re-tuned in Inter.
 > **Audience:** designers and developers regenerating or reviewing BioRouter brand assets.
 
 The BioRouter identity was previously a router glyph. This spec retires it in favour of a

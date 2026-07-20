@@ -47,6 +47,13 @@ these locations.
 > [jcode comparison analysis](../../performance-2026-06/jcode-comparison-analysis.md), which
 > measured it as markedly leaner than comparable agents on RAM and boot time. Nothing here is copied
 > code — the citations name techniques and architectural patterns to borrow.
+>
+> **What MOIM is.** Several proposals below concern MOIM. It is BioRouter's per-action
+> ambient-context block — a fresh `<info-msg>` user message carrying the current time, working
+> directory and each platform extension's contribution, re-injected before every provider call. The
+> acronym is never expanded in the codebase; the companion review treats it as "message of the
+> moment" and describes it in full under
+> [context injection and the system prompt](../subsystem-reviews/context-injection-and-system-prompt.md).
 
 ## Contents
 

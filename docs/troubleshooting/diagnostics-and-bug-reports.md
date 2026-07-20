@@ -31,7 +31,7 @@ Generate one when you are:
 4. Click `Download` to generate and save the diagnostics bundle.
 5. The ZIP file will be saved as `diagnostics_{session_id}.zip`.
 
-> **Tip.** The diagnostics button is only available when you have an active session, as it needs a session ID to generate the bundle.
+> **Note.** The diagnostics button is only available when you have an active session, as it needs a session ID to generate the bundle.
 
 ### Generating a bundle from the CLI
 

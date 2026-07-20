@@ -108,7 +108,8 @@ The hook/event surface is broad: `tool.execute.before`/`tool.execute.after`; ses
 `lsp.client.diagnostics`, `shell.env`; and TUI hooks (`tui.prompt.append`,
 `tui.command.execute`, `tui.toast.show`). Plugins can **block** (throw to reject an operation
 — e.g. deny `.env` reads), **inject/mutate** tool args, env vars, or session context, and
-**register custom tools** with schema + execute. OpenCode also supports **MCP servers** and
+**register custom tools** with schema + execute. OpenCode also supports **MCP (Model Context
+Protocol) servers** and
 **ACP** (Agent Communication Protocol) for external tool/agent integration.
 
 ## Guardrails and permissions
@@ -192,9 +193,9 @@ agent) is the read-only "analyze first, don't edit" state.
 
 ## Self-verification
 
-OpenCode's primary verification loop is **LSP-diagnostics-as-feedback**: 25+ built-in LSP
-servers auto-detect by file extension and start on demand (given deps like a Go compiler or
-.NET SDK); after edits the agent receives **language-server diagnostics** (type errors, lint
+OpenCode's primary verification loop is **LSP-diagnostics-as-feedback**: 25+ built-in
+Language Server Protocol (LSP) servers auto-detect by file extension and start on demand
+(given deps like a Go compiler or .NET SDK); after edits the agent receives **language-server diagnostics** (type errors, lint
 issues) as structured feedback it can act on ([LSP docs](https://opencode.ai/docs/lsp/)). The
 experimental `lsp` tool also exposes definitions/references/hover/call-hierarchy for
 "surroundings awareness."

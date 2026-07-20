@@ -10,17 +10,10 @@
 > a tool, and agents choosing a tool at runtime.
 
 BioRouter exposes several tools that can each list a directory, read a file, or run a command.
-Without explicit routing guidance the model picks the wrong one — writing a JavaScript program to
-copy a file, or calling a tool-discovery search to answer a web question. This page states the
-preference order once, and names the three places in the source where the same guidance is
-mirrored so they can be kept in sync.
-
-This document is the canonical reference for **tool selection** in BioRouter: which
-tool the agent should reach for, in what order of preference, and where the overlaps
-are. It exists because the platform exposes several tools that can each list a
-directory, read a file, or run a command, and without explicit routing guidance the
-model picks the wrong one — e.g. writing a JavaScript script to `ls` a directory or
-copy a file, or calling a tool-discovery search to answer a web question.
+Without explicit routing guidance the model picks the wrong one — writing a JavaScript script to
+`ls` a directory or copy a file, or calling a tool-discovery search to answer a web question. This
+page states the preference order once, and names the three places in the source where the same
+guidance is mirrored so they can be kept in sync.
 
 The user's directive: *"when the situations are somewhat more straightforward and
 easy, we should almost always rely on the most basic fundamental tools inside of
@@ -62,7 +55,7 @@ edit files at all.
 | Tier | Tools | Reach for it when… |
 |------|-------|--------------------|
 | **1 — primitives** | `developer/shell`, `developer/text_editor` | Listing, reading, writing, editing, copying, moving, deleting, or finding files; running one-off commands; anything straightforward. **Default.** |
-| **1 — always-on platform** | `platform__ingest_conversation`, `platform__manage_schedule`, `platform__read_session_blob`, `subagent` | Saving a conversation to a KB; scheduling a workflow; re-reading a large externalized tool output; delegating a bounded sub-task. |
+| **1 — always-on platform** | `platform__ingest_conversation`, `platform__manage_schedule`, `platform__read_session_blob`, `subagent` | Saving a conversation to a knowledge base (KB); scheduling a workflow; re-reading a large externalized tool output; delegating a bounded sub-task. |
 | **2 — computation / chaining** | `code_execution` (`execute_code`, `search_modules`, `read_module`) | Several **dependent** tool calls whose outputs feed each other in one round-trip, or real loops/aggregation/conditionals over their results. |
 | **2 — specialized domains** | `autovisualiser/*`, `knowledge`/`bokf_*`, `computercontroller/*`, `playwright/*`, `agent_drafter` (`files_server`, `compute_server`, `appcontrol`), data-query extensions | The task is squarely in that extension's domain (a figure, a knowledge base, GUI/browser automation, an app sandbox). |
 
@@ -83,7 +76,7 @@ edit files at all.
   script, when this tool does it directly.
 
 ### `code_execution/execute_code`
-- **Use for:** two or more **dependent** MCP tool calls in one round-trip; running
+- **Use for:** two or more **dependent** MCP (Model Context Protocol) tool calls in one round-trip; running
   computation, loops, conditionals, or aggregation over tool outputs.
 - **Don't:** list a directory, read/write a single file, or copy/move/delete — call
   `developer/shell` or `developer/text_editor` directly. Don't wrap a single tool call

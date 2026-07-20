@@ -15,7 +15,7 @@ The two are a pair: the design holds the mapping and the rules, the plan holds t
 
 ## Related documentation
 
-- [Historical records](../README.md) — the parent archive index, which places this folder among the other 22 topic folders and explains how to read a document's `Status:` line.
+- [Historical records](../README.md) — the parent archive index, which places this folder among the other 24 topic folders and explains how to read a document's `Status:` line.
 - [Documentation style guide](../../contributing/documentation-style.md) — the current conventions for every file under `docs/`, which supersede any formatting guidance implied here.
 - [Open documentation issues](../../contributing/open-documentation-issues.md) — the live list of documentation gaps, as opposed to this folder's closed migration work.
 - [Branch merge 2026-07](../branch-merge-2026-07/README.md) — the other repository-housekeeping record in this archive, covering the July 2026 branch and pull-request merge campaign.

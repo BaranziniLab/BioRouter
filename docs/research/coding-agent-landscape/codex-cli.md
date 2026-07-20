@@ -13,7 +13,8 @@
 index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
 Codex CLI is architecturally a close cousin of BioRouter's Goose lineage: a turn loop over
-the Responses API with a small native tool set plus MCP. That makes it the most directly
+the Responses API with a small native tool set plus MCP (the Model Context Protocol). That
+makes it the most directly
 transferable design in this folder, and the one whose crate layout maps onto BioRouter's own.
 
 > **Note.** Researched July 2026 — month granularity only, for a repository that ships

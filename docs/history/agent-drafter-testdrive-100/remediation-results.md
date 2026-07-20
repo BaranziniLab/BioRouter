@@ -13,7 +13,7 @@
 **Plan:** [remediation-plan.md](remediation-plan.md) ·
 **Audit:** [audit-findings-register.md](audit-findings-register.md)
 
-### Vocabulary used throughout
+## Vocabulary used throughout
 
 | Term | Meaning |
 |---|---|

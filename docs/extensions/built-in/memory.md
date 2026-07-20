@@ -1,7 +1,7 @@
 # Memory extension
 
 > **What this is.** User guide to the built-in Memory extension: enabling it, the trigger words that store, recall and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards.
-> **Status:** Current — `crates/biorouter-mcp/src/memory` ships in the product and the local/global model described here still matches. This page predates the Knowledge feature; see [Knowledge and memory](#knowledge-and-memory) for how the two relate.
+> **Status:** Current. `crates/biorouter-mcp/src/memory` ships in the product and the local/global model described here still matches. This page predates the Knowledge feature; see [Knowledge and memory](#knowledge-and-memory) for how the two relate.
 > **Audience:** end users.
 
 The Memory extension lets you teach BioRouter personalized information — commands, code snippets, preferences, configurations, lab conventions — that it can recall and apply later. Knowledge can be project-specific (**local**) or user-wide (**global**), so BioRouter remembers what matters to you across sessions.

@@ -49,6 +49,13 @@ these locations.
 | `compare/safety.md` | [Safety and guardrails, compared](../competitive-comparison/safety-and-guardrails.md) |
 | `compare/context.md` | [Context and prompts, compared](../competitive-comparison/context-and-prompts.md) |
 
+> **Terms used below.** **SOTA** is state-of-the-art, the shorthand this lens uses for the
+> comparator agents surveyed in the competitive-comparison chapters. **HITL** is human-in-the-loop
+> tool approval: the agent pauses before a tool call and waits for a person to allow or deny it.
+> **PII/PHI** are personally identifiable information and protected health information, the two
+> classes the on-device masker in `guardrails/pii.rs` targets. **BRSDK** is the BioRouter App SDK —
+> the client library plus the server-side runner that a generated Agent Drafter app talks to.
+
 ## Contents
 
 - [Loop and stuck detection](#loop-and-stuck-detection) — P-1 … P-9

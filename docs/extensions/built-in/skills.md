@@ -1,7 +1,7 @@
 # Skills extension
 
 > **What this is.** User guide to the built-in Skills extension: where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent.
-> **Status:** Current — discovery from `.agents/skills/` and `~/.config/agents/skills/` is the shipped behaviour, and the extension is enabled by default.
+> **Status:** Current. Discovery from `.agents/skills/` and `~/.config/agents/skills/` is the shipped behaviour, and the extension is enabled by default.
 > **Audience:** end users.
 
 The Skills extension loads *skills* — reusable sets of instructions that teach BioRouter how to perform a specific task or follow a particular workflow. BioRouter discovers skills at startup and applies them when they are relevant to your request, without you having to name them.

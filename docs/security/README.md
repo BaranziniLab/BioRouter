@@ -39,6 +39,21 @@ documents below cover those layers in that order.
 - **Being asked for your macOS password repeatedly?** See
   [secret storage](secret-storage.md).
 
+## Boundary with neighbouring folders
+
+This folder holds the security **decisions** — what autonomy to grant, what an administrator
+may enforce, where credentials are held, and which providers may see regulated data. The
+mechanics of the files and variables those decisions are written into live elsewhere:
+
+- **`configuration/`** holds the reference for `config.yaml`, `permission.yaml`, and
+  `secrets.yaml` — their per-platform locations and every environment variable. Read this
+  folder to decide what to set; read `configuration/` to find out where to set it.
+- **`getting-started/`** holds the full provider inventory. The data-privacy page classifies
+  providers by data handling; it does not enumerate them.
+- **`agent-loop/`** holds the hooks schema and the managed policy tier's implementation design.
+  Hooks are documented there as an agent-loop mechanism; this folder covers only the managed
+  tier's authority over them.
+
 ## Related documentation
 
 - [Hooks reference](../agent-loop/hooks/hooks-reference.md) — lifecycle hooks are the other

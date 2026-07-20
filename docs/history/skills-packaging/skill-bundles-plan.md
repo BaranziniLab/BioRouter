@@ -609,7 +609,7 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
 }
 ```
 
-> **Note:** `Package` and `Trash2` must be imported. Check `ui/desktop/src/components/icons/app-icons.tsx` for available icons. If `Package` is not exported, use `Layers` or `FolderDot` instead. Import `Trash2` from app-icons (it is already used in `SkillItem.tsx`). Import `Button` from `../ui/button`.
+> **Note.** `Package` and `Trash2` must be imported. Check `ui/desktop/src/components/icons/app-icons.tsx` for available icons. If `Package` is not exported, use `Layers` or `FolderDot` instead. Import `Trash2` from app-icons (it is already used in `SkillItem.tsx`). Import `Button` from `../ui/button`.
 >
 > Add these imports at the top of `SkillsView.tsx`:
 > ```tsx

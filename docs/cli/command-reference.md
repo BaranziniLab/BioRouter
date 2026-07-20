@@ -212,7 +212,7 @@ biorouter session remove -r "project-.*"
 biorouter session remove -r ".*migration.*"
 ```
 
-> **Caution.** Session removal is permanent and cannot be undone. biorouter will show which sessions will be removed and ask for confirmation before deleting.
+> **Warning.** Session removal is permanent and cannot be undone. biorouter will show which sessions will be removed and ask for confirmation before deleting.
 
 ### session export [options]
 
@@ -423,7 +423,7 @@ biorouter workflow help
 
 ### schedule
 
-Automate workflows by running them on a [schedule](../workflows/creating-and-sharing-workflows.md#schedule-workflow).
+Automate workflows by running them on a [schedule](../workflows/creating-and-sharing-workflows.md#schedule-a-workflow).
 
 **Commands:**
 

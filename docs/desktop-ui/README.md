@@ -23,9 +23,9 @@ arrived looking for one of those, leave now.
 | [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) | How to drive the Electron dev GUI from an ordinary terminal with the `agent-browser` CLI over the Chrome DevTools Protocol, and why this repo exposes that protocol on port 9333 rather than the Playwright default of 9222. Current. |
 | [Diverge behavior checklist](diverge-behavior-checklist.md) | A catalog of 68 user actions for Diverge — the feature that branches a conversation into a new session — each paired with the behavior BioRouter must exhibit, serving as both a manual QA script and the spec the automated tests encode. Current; last revised 2026-07-18, when the dashboard-canvas items were deleted alongside dashboard mode itself. |
 
-The two documents are meant to be used together: the checklist marks each item **[T]**
-(covered by an automated test) or **[UI]** (requires driving the real app), and the
-agent-browser guide is how you drive the app for every `[UI]` item.
+The checklist and the agent-browser guide are meant to be used together: the checklist
+marks each item **[T]** (covered by an automated test) or **[UI]** (requires driving the
+real app), and the agent-browser guide is how you drive the app for every `[UI]` item.
 
 ## Related documentation
 

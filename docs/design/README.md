@@ -24,22 +24,22 @@ topic subfolders below, alongside two top-level rendered pages.
 
 ## Subfolders
 
-- **[`branding/`](branding/)** — the BioRouter identity. Holds the
+- **[`branding/`](branding/README.md)** — the BioRouter identity. Holds the
   [logo and wordmark specification](branding/logo-and-wordmark-spec.md), which fixes the
   geometry, colour tokens and lockups of the two-colour `BioRouter` wordmark and the `BR`
   monogram, plus the two interactive studios and the exported icon assets.
-- **[`chat-groups/`](chat-groups/)** — design spikes for the chat-groups work. Holds
+- **[`chat-groups/`](chat-groups/README.md)** — design spikes for the chat-groups work. Holds
   [the nested `KnowledgeProvider` blocker](chat-groups/knowledge-provider-nesting-blocker.md),
   a spike report proving that two nested providers clobber each other's active knowledge
   base; its prerequisite fix is still **not** made, so provider nesting remains blocked.
-- **[`theming/`](theming/)** — the theme families. Holds the
+- **[`theming/`](theming/README.md)** — the theme families. Holds the
   [theme system architecture](theming/theme-system-architecture.md), which fixes the one
   authored file per family and everything generated from it, plus the two token references it
   governs — [Alma Mater](theming/alma-mater-theme-tokens.md) for the UCSF-brand family and
   [Roche Limit](theming/roche-limit-theme.md) for the JupyterLab-inspired one — each giving the
   authoritative token-by-token light/dark mapping and WCAG contrast ratios. The theme studios
   and the theme-system explorer sit beside them.
-- **[`ui-overhaul/`](ui-overhaul/)** — the app-wide half of the 2026-07 desktop redesign:
+- **[`ui-overhaul/`](ui-overhaul/README.md)** — the app-wide half of the 2026-07 desktop redesign:
   its specification and its status record.
   - [Execution status](ui-overhaul/execution-status.md) — the stated source of truth for
     the UI cohesion and chat-groups branch: the 20-step list, commits, gates, the brand

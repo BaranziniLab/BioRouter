@@ -1,7 +1,7 @@
 # Tutorial extension
 
 > **What this is.** User guide to the built-in Tutorial extension, which loads interactive, step-by-step walkthroughs of BioRouter features.
-> **Status:** Current, with a correction — the extension is live in `crates/biorouter-mcp/src/tutorial/`, but this page's tutorial list had gone stale (it named 2 of the 7 tutorials that ship). The list below has been regenerated from `crates/biorouter-mcp/src/tutorial/tutorials/`, which remains the authoritative source.
+> **Status:** Current. The extension is live in `crates/biorouter-mcp/src/tutorial/`, and the seven tutorials listed below are drawn from `crates/biorouter-mcp/src/tutorial/tutorials/`, which remains the authoritative source.
 > **Audience:** end users, especially new ones.
 
 The Tutorial extension gives you hands-on guidance for learning BioRouter. Rather than reading a page, you ask BioRouter to walk you through something and it loads a structured tutorial, guides you a step at a time, and answers questions as you go. It is aimed at getting new users comfortable with BioRouter's features through practice.

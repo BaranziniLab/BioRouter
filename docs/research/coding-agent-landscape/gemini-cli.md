@@ -138,7 +138,8 @@ What they can do is the interesting part:
 
 Config is `{ matcher, sequential, hooks: [{ type:"command", command, timeout }] }`. The
 broader extensibility layer is **extensions**: a `gemini-extension.json` bundle can ship
-MCP servers (stdio/SSE/HTTP), custom slash commands, prompts, themes, **hooks**,
+MCP (Model Context Protocol) servers over stdio, Server-Sent Events (SSE) or HTTP,
+custom slash commands, prompts, themes, **hooks**,
 **sub-agents**, and agent skills as one GitHub-installable unit
 (`gemini extensions install <url>`).
 [extensions/index.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/index.md)
@@ -218,7 +219,8 @@ as hard bounds.
   (main agent picks by description) or forced via `@agent_name`.
   [subagents.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md)
 - No built-in cron scheduler in core; unattended runs use **headless mode** (`gemini -p`)
-  driven by external schedulers, plus ACP/remote-agent modes.
+  driven by external schedulers, plus ACP (Agent Communication Protocol) and remote-agent
+  modes.
 
 ## State tracking and checkpoints
 

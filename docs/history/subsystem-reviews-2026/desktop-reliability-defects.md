@@ -17,7 +17,7 @@ contract the fix locks in, and records what was run to confirm it.
 
 **Date:** July 2026.
 
-## Scope
+## What this review covers
 
 This review covers the conversation, provider setup, model compatibility, tool-call,
 and notification defects reported against the July 2026 desktop build. It records
@@ -252,7 +252,7 @@ its final push.
 
 ## Related documentation
 
-- [Terminal UI stability review — July 2026](terminal-ui-stability.md) — the companion audit that checked whether this same batch of shared-core changes destabilized the CLI.
+- [Terminal UI stability audit — July 2026](terminal-ui-stability.md) — the companion audit that checked whether this same batch of shared-core changes destabilized the CLI.
 - [Diverge behavior checklist](../../desktop-ui/diverge-behavior-checklist.md) — the living checklist for the divergence contract this batch centralized.
 - [Agent error model](../legacy-architecture/agent-error-model.md) — the error taxonomy behind "a failed turn is not a failed session".
 - [Diagnostics and bug reports](../../troubleshooting/diagnostics-and-bug-reports.md) — the user-facing side of the diagnostics bundle repaired here.

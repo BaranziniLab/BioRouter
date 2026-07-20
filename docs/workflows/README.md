@@ -4,6 +4,14 @@ This folder documents Biorouter **workflows** — reusable, shareable configurat
 
 Common use cases: automated analysis pipelines, code review workflows, data processing routines, multi-step research tasks, scheduled jobs.
 
+## Boundary with neighbouring folders
+
+This folder covers the workflow **file format** and the scheduler that runs it. Three neighbours own the adjacent material:
+
+- [`cli/`](../cli/command-reference.md#workflow) owns the `biorouter run`, `biorouter workflow`, and `biorouter schedule` commands themselves — their full flag lists live there, not here.
+- [`configuration/`](../configuration/environment-variables.md#workflow-configuration) owns `BIOROUTER_WORKFLOW_PATH`, `BIOROUTER_WORKFLOW_GITHUB_REPO`, and the retry timeout variables.
+- [`agent-loop/`](../agent-loop/subagents.md) owns subagents, the other mechanism for delegating work to a nested agent. [Subworkflows](subworkflows.md) is the workflow-file equivalent; read both when choosing between them.
+
 ## Documents in this folder
 
 | Document | What it covers |

@@ -1,7 +1,7 @@
 # BioRouter CLI QA checklist
 
 > **What this is.** The end-to-end verification script for the `biorouter` CLI and its terminal UI: a per-surface checklist of things to exercise, the log of bugs found and fixed during the pass that produced it, and the list of GUI-parity gaps that pass identified.
-> **Status:** Current — it describes the shipped CLI surface (full-screen TUI by default on a TTY, `BIOROUTER_CLI_CLASSIC` for the classic REPL, and the `knowledge` / `extension` / `skill` / `workflow` / `schedule` subcommands). The checklist itself records no date, version, or commit for the pass, so re-confirm the **[verified]** marks against whatever build you are testing.
+> **Status:** Current — it describes the shipped CLI surface (a full-screen terminal user interface, or TUI, by default on a TTY, `BIOROUTER_CLI_CLASSIC` for the classic read-eval-print loop (REPL), and the `knowledge` / `extension` / `skill` / `workflow` / `schedule` subcommands). The checklist itself records no date, version, or commit for the pass, so re-confirm the **[verified]** marks against whatever build you are testing.
 > **Audience:** maintainers running CLI QA
 
 This file holds three related things about one QA pass, in order: the checklist proper, grouped by CLI surface; the defects that pass found and fixed; and the features the GUI has that the CLI does not. Read the checklist to run a pass; read the other two sections to know what has already been dealt with and what is known-missing by design. For what each command and flag is supposed to do, see the [CLI command reference](command-reference.md) — this page verifies that surface, it does not define it.

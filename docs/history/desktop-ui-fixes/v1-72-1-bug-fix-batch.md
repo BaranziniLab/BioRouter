@@ -37,7 +37,7 @@ Items 2 through 4 should all use the `BrxtInstallModal` drop-zone UI pattern, wi
 **Files:**
 - Modify: `crates/biorouter/src/agents/skills_extension.rs`
 
-### Context
+### Why init-time filtering is not enough
 
 `SkillsClient::new()` filters out disabled skills at init time. But mid-session, if the user disables a skill, the running `SkillsClient` still has it. The LLM can still call `loadSkill` to retrieve it.
 
@@ -213,7 +213,7 @@ git commit -m "fix(skills): enforce disabled skills at runtime in backend loadSk
 **Files:**
 - Modify: `ui/desktop/src/components/sessions/ImportSessionModal.tsx`
 
-### Context
+### The Import Session modal before this change
 
 The modal has a drop zone, a divider, a path input field, and a Load button. The user wants only the drop zone (click to browse). Remove the `"or"` divider, path input, and the browse/Load buttons below it.
 
@@ -375,7 +375,7 @@ git commit -m "fix(ui): simplify Import Session modal — drop zone only, no pat
 **Files:**
 - Modify: `ui/desktop/src/components/workflows/ImportWorkflowForm.tsx`
 
-### Context
+### The change relative to Task 2
 
 Same treatment as the Import Session modal in Task 2: remove the `"or"` divider and path input section. Keep only the drop zone.
 
@@ -532,7 +532,7 @@ git commit -m "fix(ui): simplify Import Workflow modal — drop zone only, no pa
 **Files:**
 - Modify: `ui/desktop/src/components/skills/AddSkillModal.tsx`
 
-### Context
+### The Add Skill modal before this change
 
 The modal has separate folder picker and ZIP file picker buttons. The user wants clicking the drop area to be the only way to trigger the file picker — no separate "Browse folder" / "Browse ZIP" buttons. Keep the drag-and-drop plus click-to-open-picker pattern, matching `BrxtInstallModal`.
 

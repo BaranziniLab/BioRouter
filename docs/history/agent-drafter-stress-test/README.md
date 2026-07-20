@@ -1,24 +1,26 @@
 # Agent Drafter stress test — 100 sophisticated agentic apps
 
 > **What this is.** The method statement and folder index for a completed campaign that drove a real model to build 100 diverse, non-trivial agentic apps with the Agent Drafter, refining each app in-session and hardening the drafter between batches.
-> **Status:** Historical record — the campaign ran to completion. All 100 apps were built and the eight drafter fixes it produced (H1–H8) shipped on 2026-07-11 in commit `679deed5`, "Cherry-pick Agent Drafter H1-H8 fixes from the 100-app stress test". The run described here is over; read this for method and rationale, not as a runbook to execute.
+> **Status:** Historical record — the campaign ran to completion. All 100 apps were built, and of the eight hardening items it produced (H1–H8) the seven shipped ones landed on 2026-07-11 in commit `679deed5`, "Cherry-pick Agent Drafter H1-H8 fixes from the 100-app stress test"; H4 was assessed and deliberately left unshipped. The run described here is over; read this for method and rationale, not as a runbook to execute.
 > **Audience:** maintainers of the Agent Drafter, and anyone tracing why an `H<n>` fix exists.
 > **Identifier key:** `H<n>` (H1…H8) numbers a drafter/SDK/theme fix made during the campaign; the definitions live in [hardening-fixes.md](hardening-fixes.md). App slugs such as `caravan-route-broker` are the `id` field of the prompt spec in [`data/prompts.json`](data/prompts.json).
 
 The Agent Drafter builds BioRouter apps: a TypeScript front-end wired to a real per-app agent. This campaign existed to push it past one-shot generation into the "new class" of app where the BioRouter backend acts as the intermediary between the LLM and the user across a loop. The pages in this folder are the record of that push — the method (this file), the defects it exposed and fixed, and the per-app outcomes.
+
+> **Boundary with neighbouring folders.** Everything here is a frozen record of one finished run. For how the Agent Drafter behaves *now*, read [`agent-drafter/`](../../agent-drafter/README.md); for the `br.*` and `ui_*` surface as currently shipped, read [`apps-sdk/`](../../apps-sdk/README.md). Where this folder and a living page disagree, the living page wins.
 
 ## Files in this folder
 
 | File | What it holds |
 |---|---|
 | `README.md` (this file) | The campaign charter: goal, the two nested iteration loops, engine and sandbox setup, harness scripts, and per-app pass criteria. |
-| [hardening-fixes.md](hardening-fixes.md) | The defect record — the eight `H1`–`H8` fixes to the drafter, SDK and theme, each with symptom, root cause, fix and verification. |
+| [hardening-fixes.md](hardening-fixes.md) | The defect record — the eight numbered `H1`–`H8` hardening items against the drafter, SDK and theme, each with symptom, root cause, fix and verification. Seven shipped; H4 is recorded as a deferred candidate. |
 | [per-app-results.md](per-app-results.md) | The outcome log — per-app build and pass verdicts, refine-round counts, what each app rendered, per-batch rollups, and the closing marathon summary. |
 | [`data/prompts.json`](data/prompts.json) | The 100 app specs that drove the run. A JSON array of 100 objects, each with `id`, `title`, `domain`, `interaction`, a `patterns` array, and a prose `requirement`. |
 
 > **Relationship between the three documents.** This file states the method, `hardening-fixes.md` records what broke in the drafter and how it was fixed, and `per-app-results.md` records what happened app by app. They cover the same run from three angles and cross-reference each other; none supersedes another.
 
-## Goal
+## Campaign goal
 
 Make the Agent Drafter meaningfully more powerful by driving a real model (GPT-5.5 via `versa_azure`) to build **100 diverse, non-trivial agentic apps** — the "new class" where BioRouter's backend is the intermediary between the LLM and the user across a loop, not a one-shot lookup. Each app had to embody at least two of:
 
@@ -42,7 +44,7 @@ Make the Agent Drafter meaningfully more powerful by driving a real model (GPT-5
 - Binaries: the **worktree** `target/debug/{biorouter,biorouterd}` (carrying every hardening fix). Rebuilt after each `H<n>`.
 - Serving daemon: `biorouterd agent` on port 3900, with sandboxed `HOME` and `XDG_CONFIG_HOME`.
 
-## Harness
+## Harness scripts
 
 - `scripts/ad-stress/build_batch.py build <prompts.json> <start> <count>` — builds a batch, auto-retrying a failed build once in-session.
 - `scripts/ad-stress/build_batch.py fix <id> "<issues>"` — the per-app refine round, in the same chat.

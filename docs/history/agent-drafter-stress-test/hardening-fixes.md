@@ -96,7 +96,7 @@ The engine's repeated-tool guard also **declined** a surplus `ui_describe`, surf
 
 ## H4 — no way to render styled or raw HTML
 
-> **Status: deferred candidate — NOT shipped.** H4 is numbered in sequence with the eight items but was assessed and consciously left undone. Do not read it as a delivered fix.
+> **Warning.** Deferred candidate — NOT shipped. H4 is numbered in sequence with the eight items but was assessed and consciously left undone. Do not read it as a delivered fix.
 
 Agents fell back to a text node, which escaped the HTML.
 

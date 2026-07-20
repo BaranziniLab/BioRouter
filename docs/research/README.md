@@ -24,27 +24,30 @@ A report naming a `BR-NN` number is the cited external source behind that propos
 
 ## Coding agent landscape
 
-All nine reports live in [`coding-agent-landscape/`](coding-agent-landscape/), which has no
-index of its own — this table is it. Each report covers the same ten dimensions: system prompt
-and context injection, tool loop mechanics, compaction and memory, hooks and extensibility,
-guardrails and permissions, loop and stuck detection, long-running tasks and background
-processes, state tracking and checkpoints, self-verification, and ideas worth stealing.
+The [`coding-agent-landscape/`](coding-agent-landscape/README.md) subdirectory holds all nine
+reports — [Aider](coding-agent-landscape/aider.md),
+[Claude Code](coding-agent-landscape/claude-code.md), [Cline](coding-agent-landscape/cline.md),
+[OpenAI Codex CLI](coding-agent-landscape/codex-cli.md),
+[Gemini CLI](coding-agent-landscape/gemini-cli.md), [Goose](coding-agent-landscape/goose.md),
+[OpenCode](coding-agent-landscape/opencode.md),
+[OpenHands](coding-agent-landscape/openhands.md) and [Pi](coding-agent-landscape/pi.md). It
+carries its own index describing each report and the `BR-NN` proposals each one became the
+cited source for, so read that index rather than a second copy of it kept here.
 
-| Document | What it covers |
-|---|---|
-| [Aider](coding-agent-landscape/aider.md) | Aider's repo map, git integration, lint/test-after-edit and architect/editor split — a deliberately human-in-the-loop agent whose minimalism is the design lesson; the cited source for BR-1 and BR-47. |
-| [Claude Code](coding-agent-landscape/claude-code.md) | Anthropic's terminal-native agent, treated as the reference design this corpus benchmarks against; the source for hook-model parity, BR-6 and BR-9. Pinned to the v2.1.x line of a closed-source product, so it dates faster than the open-source reports. |
-| [Cline](coding-agent-landscape/cline.md) | Cline's shadow-git checkpoints, three-axis restore, mistake tracker and rules system; the source for the checkpoint design that BR-43 implemented. Researched 2026-07-12 against a project that had just refactored into a monorepo, so expect drift. |
-| [Codex CLI](coding-agent-landscape/codex-cli.md) | OpenAI Codex CLI's per-model system-prompt files, `execpolicy` Starlark command policy, OS sandboxing and ranked memories layer; a Rust workspace whose crate layout maps onto BioRouter's own. Source for BR-2, BR-3, BR-19 and BR-21. |
-| [Gemini CLI](coding-agent-landscape/gemini-cli.md) | Google's agent: layered `LoopDetectionService`, declarative TOML policy engine, shadow-git checkpointing with `/rewind`, and 30%-verbatim-tail compaction. An independent architecture with no shared lineage, and the deepest report here. Source for BR-10, BR-29/BR-30 and BR-43. |
-| [Goose](coding-agent-landscape/goose.md) | Upstream Goose (Block, now the Agentic AI Foundation) — the project BioRouter forked from — emphasising what upstream added in 2025–2026 that a mid-2025 fork lacks. The repository's only record of upstream divergence; a July 2026 snapshot, so each "fork gap" needs re-verification before being acted on. |
-| [OpenCode](coding-agent-landscape/opencode.md) | SST's OpenCode: the client/server split, private git-object-DB snapshots with `/undo` and `/redo`, and prune-before-summarize compaction; the cited source for the checkpoint approach adopted in BR-43. Researched 2026-07-12. |
-| [OpenHands](coding-agent-landscape/openhands.md) | OpenHands' five-heuristic `StuckDetector`, the structured summarizing condenser that preserves task IDs, and risk-graded confirmation via a per-action `security_risk` field; the source for BR-30's oscillation detection and BR-18's risk-graded permissions. |
-| [Pi](coding-agent-landscape/pi.md) | Pi's deliberately subtractive loop — a ~1000-token system prompt, no MCP, no subagents, session-tree branching, and typed extension hooks that rewrite the prompt and message array; the source for BR-9's per-directory Project Trust and BR-11's split-turn compaction fallback. |
+Each report covers the same ten dimensions: system prompt and context injection, tool loop
+mechanics, compaction and memory, hooks and extensibility, guardrails and permissions, loop and
+stuck detection, long-running tasks and background processes, state tracking and checkpoints,
+self-verification, and ideas worth stealing. All nine are marked **Current**: they describe
+external projects, so BioRouter's own changes do not invalidate them. Several are explicitly
+dated snapshots of fast-moving repositories, noted per report in that index.
 
-All nine are marked **Current**: they describe external projects, so BioRouter's own changes do
-not invalidate them. Several are explicitly dated snapshots of fast-moving repositories, noted
-per report above.
+Three are worth knowing about before you go.
+[Claude Code](coding-agent-landscape/claude-code.md) is treated as the reference design the
+whole corpus benchmarks against, and is the only report on a closed-source product, so it dates
+fastest. [Gemini CLI](coding-agent-landscape/gemini-cli.md) covers an independent architecture
+with no shared lineage and is one of the corpus's deepest reports.
+[Goose](coding-agent-landscape/goose.md) is the odd one out: it reviews the project BioRouter
+was forked from, which makes it the repository's only record of upstream divergence.
 
 ## Related documentation
 

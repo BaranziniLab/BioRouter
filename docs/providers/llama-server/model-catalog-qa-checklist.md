@@ -3,13 +3,16 @@
 > **What this is.** A repeatable checklist — plus the automated harness that executes
 > most of it — for verifying every model in the bundled **Llama Server** (`llamacpp`)
 > provider catalog: availability, capability, tool-calling, speed, and robustness.
-> **Status:** Superseded in part. The checklist was written against an earlier pinned
-> llama.cpp build and an earlier `MODEL_CATALOG`; since then the catalog contents, the
-> `--ctx-size` default, and the flag used to control thinking have all changed in
+> **Status:** Current. The test *procedure* below still holds, but two parts of it have
+> rotted: the model list in the warning below (and in the commands that use those ids) and
+> the expected launch flags in "Robustness signals to watch" were written against an
+> earlier pinned llama.cpp build and an earlier `MODEL_CATALOG`. Since then the catalog
+> contents, the `--ctx-size` default,
+> and the flag used to control thinking have all changed in
 > [`crates/biorouter/src/providers/llamacpp.rs`](../../../crates/biorouter/src/providers/llamacpp.rs)
 > and [`crates/biorouter/src/providers/llamacpp_sidecar.rs`](../../../crates/biorouter/src/providers/llamacpp_sidecar.rs),
-> which are the current truth. The test *procedure* below still holds; re-derive the
-> model list and the expected launch flags from those two files before running it.
+> which are the current truth. Re-derive the model list and the expected launch flags from
+> those two files before running the checklist.
 > **Audience:** developers working on the `llamacpp` provider and its managed sidecar.
 
 The Llama Server provider gives zero-setup local inference: the desktop app bundles a
@@ -61,7 +64,7 @@ model at a time. Downloads land in the Biorouter llama.cpp cache (`LLAMA_CACHE` 
 
 | # | Dimension | What it checks | Pass criteria |
 |---|-----------|----------------|---------------|
-| 1 | **Availability** | sidecar `ensure()` + `wait_ready()` (incl. first‑run HF download) | reaches `SidecarState::Ready`; load time recorded |
+| 1 | **Availability** | sidecar `ensure()` + `wait_ready()` (incl. first‑run Hugging Face (HF) download) | reaches `SidecarState::Ready`; load time recorded |
 | 2 | **Correctness** | `complete()` on "Reply with exactly: pong" | response contains `pong` |
 | 3 | **Thinking‑off** | response `content` is non‑empty | non‑empty (Qwen3.5 with thinking on returns empty `content` and burns the budget on `reasoning_content` — regression guard) |
 | 4 | **Tool calling** | `complete()` with a `get_weather` tool | emits a `ToolRequest` (not a prose answer) |
@@ -81,7 +84,7 @@ model at a time. Downloads land in the Biorouter llama.cpp cache (`LLAMA_CACHE` 
   (`--chat-template-kwargs {"enable_thinking":false}`) silently not applying. (The
   sidecar source marks that kwarg form deprecated; `build_args` now emits
   `--reasoning on|off` instead.)
-- **Memory headroom**: the 26B‑A4B MoE (~16.9 GB GGUF) needs 32 GB+; the 12B needs
+- **Memory headroom**: the 26B‑A4B mixture-of-experts (MoE) model (~16.9 GB GGUF) needs 32 GB+; the 12B needs
   16 GB+. On smaller machines, availability will fail on load, not crash.
 
 ## Manual GUI checklist (Playwright or by hand)
@@ -126,5 +129,5 @@ Do not regress these:
   Llama Server sits among the local, institutional, and commercial providers.
 - [Debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md)
   — how to drive the dev app for the manual GUI section above.
-- [z.ai (GLM) provider checklist](../zai-glm.md) — a sibling provider verification
-  checklist covering the same surfaces for a hosted provider.
+- [z.ai (GLM) provider](../zai-glm.md) — a sibling provider integration reference whose
+  verification section covers the same surfaces for a hosted provider.

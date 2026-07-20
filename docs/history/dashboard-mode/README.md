@@ -32,7 +32,7 @@ still load-bearing.
 | [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) | The 13-task plan for camera offsets, spiral spawn placement and the vertical picker popup. |
 | [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md) | Collapsing chat windows into compact 240×72 cards, individually or all at once, with a live busy indicator and a muted accent palette. |
 | [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md) | The 13-task plan for the fold actions, the `FoldedCard` component and the `onBusyChange` prop on `BaseChat`. |
-| [Dashboard mode removal specification](dashboard-mode-removal-spec.md) | The specification the removal was carried out from, kept for provenance. This index carries the same removal record in conformed prose; the two disagree about which releases shipped dashboard mode and fold mode, and neither has been corrected. |
+| [Dashboard mode removal specification](dashboard-mode-removal-spec.md) | The specification the removal was carried out from, kept for provenance. This index carries the same removal record in conformed prose. |
 | [Boot splash design](2026-07-18-boot-splash-design.md) | The centred `BR` monogram that assembles itself over a theme-correct ground while the backend starts. Written and built alongside the removal, on the same branch; it replaced a loader that never covered the slow case and was broken in dark mode. Not a dashboard-mode document — it is filed here because it shipped with this work. |
 
 The four specs and four plans remain true of their own moment. **Do not rewrite
@@ -44,10 +44,16 @@ header saying what superseded it.
 A free-floating **canvas** at the `/dashboard` route on which the user could
 spawn many chat "boxes" at once: draggable, resizable, foldable cards, each one
 a full chat session with its own agent, laid out on an infinite pannable
-surface. It shipped in v1.76.0 (with fold mode following in v1.85.3) and grew a
+surface. It shipped in v1.75.0 (with fold mode following in v1.76.0) and grew a
 supporting cast: a layout/packing engine, pixel snapping, a colour palette per
 box, keyboard shortcuts, localStorage persistence of box geometry, and a
 window-maximizing IPC pair so entering the canvas gave it the whole screen.
+
+> **Note.** Those two version numbers come from
+> [release notes v1.76.0](../../releases/notes/v1.76.0.md), whose headline is fold
+> mode, and from the `landing/about.html` changelog, which records v1.75.0 as
+> "Dashboard Mode". v1.75.0 has no release-notes file of its own, so
+> `landing/about.html` is the only record for it.
 
 ## Why it was removed
 
@@ -126,6 +132,4 @@ LLM vendor's own web console.
 - [UI overhaul — execution status](../../design/ui-overhaul/execution-status.md) — the status record for the UI cohesion and chat-groups branch that carried the removal.
 - [Diverge behavior checklist](../../desktop-ui/diverge-behavior-checklist.md) — the post-removal spec for the one feature that had to branch on canvas-vs-chat.
 - [v1 — Lab Meeting Mode design spec](v1-lab-meeting-mode-design.md) — where the lineage starts, if you want the original shape of the idea.
-
-The release that shipped dashboard mode as a headline feature was v1.76.0; its
-notes live under `docs/release-notes/` in the repository that carries them.
+- [Release notes v1.76.0](../../releases/notes/v1.76.0.md) — the release that shipped fold mode as its headline, and the evidence for the ship dates above.

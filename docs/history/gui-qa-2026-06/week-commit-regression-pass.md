@@ -6,7 +6,7 @@
 > **Status:** Historical record — one QA pass run on 2026-06-24/25 against dev build
 > 1.86.1. It found and fixed one regression (`B5`, session auto-naming), verified roughly
 > 40 rows live, and left the rest not run. This is not a checklist to re-run: the current
-> release is 1.87.2, and at least one row (`G3`) covers a feature that has since been
+> release is 1.88.3, and at least one row (`G3`) covers a feature that has since been
 > removed.
 > **Audience:** maintainers of the BioRouter desktop UI.
 > **Identifiers:** each row is keyed by its section letter plus a number — `A1`, `N23`.

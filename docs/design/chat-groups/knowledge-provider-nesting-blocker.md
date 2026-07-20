@@ -217,7 +217,7 @@ decoupled from `activeKbId`.
 
 ## Related documentation
 
-- [Chat groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) — the design packet this spike serves, and the home of the `R1`–`R7` risk register that names R7.
+- [Chat groups design judgement and plan](../../history/chat-groups/design-judgement-and-plan.md) — the design packet this spike serves, and the home of `minimal-shell`'s risk register, where `R7` is defined.
 - [UI overhaul execution status](../ui-overhaul/execution-status.md) — the stage-by-stage execution register whose open-items list still marks `KnowledgeProvider` nesting as blocked on the fix specified here.
 - [Knowledge plan 6: chat integration and closeout](../../history/knowledge-base-buildout/plan-6-chat-integration-and-closeout.md) — how the per-chat KB chip and `KnowledgeContext` came to exist, i.e. the code this spike dissects.
 - [Knowledge plan 4: knowledge view and ingest](../../history/knowledge-base-buildout/plan-4-knowledge-view-and-ingest.md) — background on the app-level `/knowledge` consumers listed in the consumer table.

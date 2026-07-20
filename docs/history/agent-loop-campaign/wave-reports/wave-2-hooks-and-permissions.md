@@ -127,7 +127,7 @@ regressions.
 4. `clippy-baselines/too_many_lines.txt` needed **no edit** — no cluster function grew past the
    limit.
 
-## Evidence
+## Verification evidence
 
 ### Style and lint
 

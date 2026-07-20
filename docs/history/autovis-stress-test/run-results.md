@@ -135,7 +135,7 @@ single call.
 - Process problems: **duplicate `render_dashboard` calls** on 2/10 (#1, #9) — cost/UX
   inefficiency, no correctness impact. No trial-and-error on failures, no back-and-forth, no
   inconsistencies in output shape, no vulnerabilities surfaced.
-- **Hardening applied** (see hardening-log.md): terminal "don't re-render on success" nudge in the
+- **Hardening applied** (see [hardening-log.md](hardening-log.md)): terminal "don't re-render on success" nudge in the
   tool's assistant message; backend rebuilt. Batch 2 checks whether duplicate calls drop.
 
 ## Batch 2 (11–20)
@@ -253,7 +253,7 @@ visible).
   (1) biorouterd is SIGTERM-killed by Electron's window lifecycle and not respawned
   (`main.ts:1211`), silently breaking the app after ~2.6 min; (2) two silent-failure UX gaps —
   a dead/`Failed to fetch` backend leaves the composer accepting input and clearing on send with
-  no "disconnected" banner. See the 🔴/⚠ notes above and hardening-log.md.
+  no "disconnected" banner. See the 🔴/⚠ notes above and [hardening-log.md](hardening-log.md).
 - **Hardening applied for Batch 2:** switched the harness to a persistent external backend
   (removes the death cycle) — the enabling fix for finishing the run. No Auto Visualiser code
   change was warranted (it passed 10/10 cleanly). The platform findings are logged for a
@@ -313,7 +313,7 @@ Figure 2." into the panel titles (the report already numbers figures) — cosmet
   #30) — a low-rate but recurring inefficiency the Batch-1 message-nudge reduced but didn't
   eliminate. **Hardening decision:** implement a **server-side idempotency guard** in
   `render_dashboard` so a byte-identical repeat call within a short window returns the existing
-  artifact instead of re-rendering a duplicate. (See hardening-log.md.)
+  artifact instead of re-rendering a duplicate. (See [hardening-log.md](hardening-log.md).)
 
 ## Batch 4 (31–40)
 
@@ -377,7 +377,7 @@ redundant compute/tokens of the extra render. Severity downgraded to minor.
   suggest it sometimes is. The correct, safe product follow-up is a **UI-side collapse** of
   same-turn duplicate dashboard cards to the last one (frontend, no backend change), plus keeping
   the Batch-1 message nudge. Logged, not applied mid-run (protects the 100-viz completion). See
-  hardening-log.md.
+  [hardening-log.md](hardening-log.md).
 
 ## Batch 5 (41–50)
 
@@ -420,7 +420,7 @@ gauge `chartjs`), summary (plateau session), captions, 0 errors, single call.
 - **Process: clean — zero double `render_dashboard` calls, zero tool failures.** The Batch-4
   double-call did not recur; running total stays 5/50 (10%). No new issues.
 - **Hardening:** none required. The one open item (occasional double-call, token-only, no UX
-  impact) remains logged with a UI-side fix recommendation (hardening-log.md); not triggered here.
+  impact) remains logged with a UI-side fix recommendation ([hardening-log.md](hardening-log.md)); not triggered here.
 - **Halfway checkpoint: 50/50 correctly generated, 0 failures.**
 
 ## Batch 6 (51–60)
@@ -662,7 +662,7 @@ The run's only intentional **three-figure** report — all 3 panels drew cleanly
   (batch 10). Batches 5–9 were clean.
 - **Hardening:** the double-call remains the only recurring process issue and is **token-only** (the
   model calls `render_dashboard` a second time with identical args; the UI shows a single artifact).
-  Recommended product follow-up (logged in `hardening-log.md`, NOT applied mid-run to avoid risking the
+  Recommended product follow-up (logged in [hardening-log.md](hardening-log.md), NOT applied mid-run to avoid risking the
   live backend): collapse duplicate consecutive identical `ui://dashboard/*` resources in
   `collectArtifactsFromMessages` (UI-side) rather than a server-side idempotency guard, which would
   wrongly suppress a legitimate refinement re-render.

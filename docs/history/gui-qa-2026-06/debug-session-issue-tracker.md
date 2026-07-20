@@ -6,7 +6,7 @@
 > **Status:** Historical record — the session ran on 2026-06-24/25 against app version
 > 1.86.1 and closed on 2026-06-25. Groups A and B were completed, group C was completed
 > except for C3, and group D was still in progress when the session ended. Nothing here
-> is an open work queue; the current release is 1.87.2.
+> is an open work queue; the current release is 1.88.3.
 > **Audience:** maintainers of the BioRouter desktop UI.
 > **Identifiers:** items are keyed by a group letter plus a number — `A` edit requests,
 > `B` bugs, `C` feature tests, `D` the deep SDK checklist. The companion

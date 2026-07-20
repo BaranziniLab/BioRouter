@@ -8,7 +8,7 @@ Come here when you want to know what a specific built-in extension can do, or wh
 
 | Document | What it covers |
 |----------|----------------|
-| [Auto Visualiser](auto-visualiser.md) | How to enable the Auto Visualiser and which figures it produces, with a worked cohort-data example. **Superseded in part:** the extension is live, but the chart catalogue documents only 8 of the 34 tools the code registers — the source under `crates/biorouter-mcp/src/autovisualiser/` is the current truth. |
+| [Auto Visualiser](auto-visualiser.md) | How to enable the Auto Visualiser and which figures it produces, with a worked cohort-data example. The page carries a warning that its chart catalogue covers only 8 of the 34 tools the code registers — the source under `crates/biorouter-mcp/src/autovisualiser/` is the current truth for the full list. |
 | [Chat Recall](chat-recall.md) | Searching your past session history by keyword or session ID so BioRouter can pull earlier context into the current conversation. Unlike most built-ins, this one ships disabled by default. |
 | [Code Execution](code-execution.md) | Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution. |
 | [Computer Controller](computer-controller.md) | Enabling the Computer Controller, its tools, and a worked example combining web research with macOS system automation — the highest-blast-radius built-in, because it acts on your real desktop. |
@@ -17,7 +17,7 @@ Come here when you want to know what a specific built-in extension can do, or wh
 | [Memory](memory.md) | The trigger words that store, recall, and forget memories, where memories live on disk, and a worked example teaching BioRouter a lab's analysis standards. Predates the Knowledge feature; the page explains how the two relate. |
 | [Skills](skills.md) | Where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent. |
 | [Todo](todo.md) | How BioRouter breaks multi-step work into a tracked checklist and reports progress as it goes. |
-| [Tutorial](tutorial.md) | Loading interactive, step-by-step walkthroughs of BioRouter features. The tutorial list has been regenerated from `crates/biorouter-mcp/src/tutorial/tutorials/`, which remains authoritative. |
+| [Tutorial](tutorial.md) | Loading interactive, step-by-step walkthroughs of BioRouter features, and what each of the seven shipped tutorials covers. `crates/biorouter-mcp/src/tutorial/tutorials/` remains the authoritative list. |
 
 ## Related documentation
 

@@ -39,7 +39,7 @@ the dated log. This file is the outcome record.
 | New crate | `biorouter-sandbox` (OS-level tool sandboxing) |
 
 The design docs are split by whether they still describe live guidance. Seven remain in
-[`docs/agent-loop/designs/`](../../agent-loop/designs/), including the cross-platform
+[`docs/agent-loop/designs/`](../../agent-loop/designs/README.md), including the cross-platform
 BR-69 sandboxing design. The rest — the cross-platform records and the superseded
 Seatbelt design — were archived alongside this report in
 [`cross-platform/`](cross-platform/README.md) when the documentation tree was
@@ -158,4 +158,4 @@ open docs/agent-loop-fixes/changes.html  # the rendered dashboard
 - [Mid-flight review index](mid-flight-review-index.md) — the Gate-1 snapshot, with the five decisions in their original question form.
 - [Platform parity audit](cross-platform/platform-parity-audit.md) — the findings behind the cross-platform section, including GAP-1/2/3.
 - [Improvement proposals register](../agent-loop-review/improvement-proposals.md) — defines every BR-NN cited above.
-- [Wave reports](wave-reports/) — the per-cluster verification evidence behind the gate test counts.
+- [Wave reports](wave-reports/README.md) — the per-cluster verification evidence behind the gate test counts.

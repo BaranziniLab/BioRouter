@@ -4,8 +4,11 @@
 > raised during the 2026-07-19/20 QA campaign, with its status, owner commit, and
 > where the evidence lives. It exists so that no instruction is lost across a long
 > multi-agent session.
-> **Status:** Current — updated as items land.
-> **Audience:** maintainers tracking what was asked, what shipped, and what is open.
+> **Status:** Historical record — the register as it stood when it was last updated during the
+> 2026-07-20 session. It was not revised again before the campaign closed, so some items it
+> still shows as `In progress` or `Open` were completed later; the
+> [master checklist](master-checklist.md) carries the closing state.
+> **Audience:** maintainers auditing what was asked, what shipped, and what was left open.
 
 Items are worked **sequentially by priority**, not silently dropped. An item leaves
 `Open` only when it has a fix commit *and* a verification record.

@@ -78,7 +78,7 @@ The four gaps the stricter audit counts are recorded individually in
 3. Unavailable KB grants: `system-dynamics-archetypes`.
 4. Requested model routes are not configured.
 
-## Screenshots
+## Screenshot evidence
 
 Captured during the run but not preserved in this repository — the `shots/` directory lived inside
 the ephemeral `.br-testdrive/runtime` sandbox, which was not checked in. These paths record what was

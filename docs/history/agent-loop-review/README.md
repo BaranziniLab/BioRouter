@@ -341,7 +341,7 @@ JSON rewrite, so 43+ providers shared one prompt regardless of capability
 
 ## How BioRouter compared
 
-### Context
+### Context and prompts
 
 Per [context and prompts](competitive-comparison/context-and-prompts.md). *Ahead:*
 per-turn prompt rebuild with live hint re-read, MOIM durable-state re-injection,
@@ -351,7 +351,7 @@ alongside Pi — **Aider** does ranked tree-sitter repo-maps best), no per-model
 variants (**Codex**), no total context budget (**OpenHands**/**Codex**), and project
 files trusted as system-level instruction (**Claude Code** treats them lower-trust).
 
-### Memory
+### Compaction and memory
 
 Per [compaction and memory](competitive-comparison/compaction-and-memory.md). *Ahead:*
 non-destructive compaction via visibility flags (the full user transcript survives),
@@ -361,7 +361,7 @@ targeted tool-output offloading (**Claude Code**), an OpenAI-only tokenizer for 
 providers (worst-in-class token counting; **Codex** best), and three disjoint,
 never-auto-promoted memory stores (**Codex** self-maintained memories best).
 
-### Safety
+### Safety and guardrails
 
 Per [safety and guardrails](competitive-comparison/safety-and-guardrails.md). *Ahead:* a
 genuine superset of Claude Code's hook events (13 wired), a fail-closed escalation-only
@@ -373,7 +373,7 @@ off-by-default command scanner (**Codex** `execpolicy`), exact-duplicate-only lo
 detection (**Gemini CLI** three-layer best), no mistake-streak handling (**Cline** best),
 no budget cap, and no checkpoint/undo.
 
-### Execution
+### Execution and verification
 
 Per [execution and verification](competitive-comparison/execution-and-verification.md).
 *Ahead:* genuinely well-built background shell jobs (matching **Claude Code**/**Codex**),
@@ -437,6 +437,6 @@ register is authoritative if they ever disagree.
 
 - [Improvement proposals register](improvement-proposals.md) — the full `BR-1`…`BR-67` program this report summarizes, with problem, affected code, impact, effort and risk per proposal.
 - [Agent-loop fix campaign](../agent-loop-campaign/README.md) — the plan of record for implementing these 67 proposals, including the wave-to-proposal mapping.
-- [Agent-loop campaign outcome report](../agent-loop-campaign/outcome-report.md) — what actually landed, so you can tell which gaps below are now closed.
+- [Agent-loop campaign outcome report](../agent-loop-campaign/outcome-report.md) — what actually landed, so you can tell which gaps above are now closed.
 - [Platform parity audit](../agent-loop-campaign/cross-platform/platform-parity-audit.md) — the cross-platform audit that added `BR-68`…`BR-70` after this review.
 - [Context engineering guide](../../agent-loop/context-engineering.md) — current documentation of how context reaches the model, superseding this report's snapshot.

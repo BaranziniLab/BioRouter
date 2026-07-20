@@ -102,7 +102,7 @@ Three things ride these frames beyond the v1 agent stream:
 > **Note.** The v1 "WebSocket protocol" section in the historical record below
 > predates protocol v2 (no `ready.protocol`/`surface`, no state/call/signal/kb
 > frames). Use the
-> [reference frame tables](../apps-sdk/sdk-reference.md#5-protocol-appendix)
+> [reference frame tables](../apps-sdk/sdk-reference.md#protocol-appendix)
 > instead.
 
 ## Capability matrix
@@ -178,7 +178,7 @@ six above.)
 directly-runnable launchers for all three OSes (`run.command` / `run.sh` /
 `run.bat`+`run.ps1`, shared `biorouter-launch.sh`, `serve.mjs` loopback proxy) and
 a prebuilt `dist/app.js` — no build step. See the
-[export guide](../apps-sdk/sdk-reference.md#7-export-guide).
+[export guide](../apps-sdk/sdk-reference.md#export-guide).
 
 ## Multi-agent orchestration
 
@@ -197,7 +197,7 @@ time on the app socket; parallel-across-profiles turns are a stretch goal.
 > landing, and named a `feat/apps-sdk-v2` branch that no longer exists in this
 > repository. Treat the code — `consult` in `control.rs`, `AgentFacade` in
 > `sdk.ts` — as authoritative, alongside
-> [Apps SDK reference §3.10](../apps-sdk/sdk-reference.md#310-bragent--worker-profiles-multi-agent-pillar-8).
+> [`br.agent` — worker profiles in the Apps SDK reference](../apps-sdk/sdk-reference.md#bragent--worker-profiles).
 
 ## The `biorouter apps` CLI
 
@@ -281,7 +281,7 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
 ### WebSocket protocol, v1 (browser ⇄ backend)
 
 > **Superseded by protocol v2** (see "Protocol v2 overview" above and
-> the [reference frame tables](../apps-sdk/sdk-reference.md#5-protocol-appendix)).
+> the [reference frame tables](../apps-sdk/sdk-reference.md#protocol-appendix)).
 > The frames below are the v1 subset; v2 adds the `ready.protocol`/`surface` fields
 > and the `state_write` / `call` / `signal` / `kb` / `app_result` / `model_status`
 > frames.
@@ -304,7 +304,7 @@ Server → client: `{"type":"ready","capabilities":[…]}`, `{"type":"message","
 > **Extended in v2.** This v1 table lists the original 11 tools; v2 adds
 > `ui_patch_state`, `ui_patch`, `ui_html`, `ui_figure`, `app_call`, `emit_result`,
 > and `ui_subscribe` (18 total). Full table + widget catalog in the
-> [reference](../apps-sdk/sdk-reference.md#4-agent-driven-ui-the-ui_-tools).
+> [reference](../apps-sdk/sdk-reference.md#agent-driven-ui-tools).
 
 An app's agent **drives the app**, it doesn't just answer inside it. A per-session
 in-process MCP server (`agent_drafter/control.rs`, injected by `configure_agent`

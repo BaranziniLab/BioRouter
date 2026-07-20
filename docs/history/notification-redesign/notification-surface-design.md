@@ -80,8 +80,8 @@ sites onto the new primitive. The primitive ships and is adopted by `AlertBox` p
 high-traffic sites now; the long tail is mechanical and can land incrementally without
 re-litigating the design. No issue link or owner was recorded for this tail.
 
-**Out of scope:** native OS notifications (`main.ts`) — they render through the OS, not our
-CSS.
+**Out of scope:** native OS notifications (`main.ts`) — they render through the OS, not the
+app's CSS.
 
 ## The design — Direction B
 
@@ -119,8 +119,8 @@ Statuses: `success`, `error` (danger), `warning`, `info`, `loading` (neutral chi
 ### Toast wiring
 
 React-toastify draws its **own** status icon in a fixed slot and centres it — that is the
-floating icon. We **disable it** (`icon: false`) and render the chip *inside* our content
-component instead, so the icon lives in the same flex context as the text and top-aligns
+floating icon. This design **disables it** (`icon: false`) and renders the chip *inside* the
+content component instead, so the icon lives in the same flex context as the text and top-aligns
 naturally. The `<ToastContainer>` `toastClassName` becomes a thin token-based shell (surface
 + radius + elevation + the 40px gutter); all per-caller `pr-*` is removed. Behaviour
 preserved: `autoClose` 5s (errors sticky), top-right, `pauseOnHover`, `closeOnClick` (except
@@ -200,5 +200,5 @@ opacity as real tokens (today only `--background-{status}` exists and callers us
   Tailwind.
 - [Debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md) —
   how to drive the real dev GUI for the visual sweep this spec's verification step requires.
-- [Desktop reliability and regression review — July 2026](../subsystem-reviews-2026/desktop-reliability-defects.md)
+- [Desktop reliability defects — July 2026](../subsystem-reviews-2026/desktop-reliability-defects.md)
   — the wider July 2026 desktop defect review, which also covers notification defects.

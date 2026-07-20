@@ -14,7 +14,7 @@ Come here when you are tracing why the Computer Controller behaves the way it do
 |---|---|
 | [Test plan and root causes](test-plan-and-root-causes.md) | The matrixed test plan: the five reported user problems with the root cause found for each, and roughly 60 numbered cases across screenshots, UI control, apps, settings, files, web, multi-app workflows, permissions, multi-monitor behaviour and cross-OS invariance. Per-case pass/fail is not recorded here — this is the plan of record for a finished pass. |
 | [Executed test results](executed-test-results.md) | The executed outcomes of the pass: the code changes made, the automated tests added, the live Xiaomi MiMo run results, and the finding that MiMo vision is endpoint-specific — `mimo-v2-omni` sees screenshots, while `mimo-v2.5-pro` returned `404: No endpoints found that support image input` on the endpoint under test. |
-| [Multi-app orchestration run](multi-app-orchestration-run.md) | A 20-task multi-app stress scenario — Slack messaging, web literature gathering, GWAS resource-site tours and Word report writing — with the live findings from running it and the prompt and tool fixes that came out of them. |
+| [Multi-app orchestration run](multi-app-orchestration-run.md) | A 20-task multi-app stress scenario — Slack messaging, web literature gathering, genome-wide association study (GWAS) resource-site tours and Word report writing — with the live findings from running it and the prompt and tool fixes that came out of them. |
 
 The plan and the executed results are a two-document pair: read the plan for the case matrix and the `K1`–`K5` root causes, and the results for what was actually run against it. The orchestration run is a separate, broader stress of the same code on realistic multi-step workflows.
 
@@ -22,5 +22,5 @@ The plan and the executed results are a two-document pair: read the plan for the
 
 - [Computer Controller extension reference](../../extensions/built-in/computer-controller.md) — the current, user-facing documentation for the tools hardened here; the place to go if you wanted present behaviour rather than history.
 - [Slack posting investigation](../../extensions/slack-posting-investigation.md) — the still-open follow-up on the one recommendation this pass left unimplemented, replacing Slack UI automation with an API or webhook path.
-- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup and model list for the provider used in every live run here, including which MiMo models accept image input.
+- [Xiaomi MiMo provider](../../providers/xiaomi-mimo.md) — provider setup, host selection and the model list for the provider used in every live run here.
 - [Historical records index](../README.md) — the archive this folder belongs to, and the other completed passes alongside it.

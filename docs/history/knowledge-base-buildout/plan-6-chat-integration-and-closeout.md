@@ -25,6 +25,8 @@ Plans 1 through 5 built the Knowledge backend and its own top-level UI route. Th
 > It is not a standing policy: Playwright end-to-end tests remain part of the
 > desktop test strategy, and [Plan 5](plan-5-graph-view-and-change-log.md) uses one.
 
+## Scope and approach
+
 **Goal:** Close out the Knowledge feature by tying the chat side to the Knowledge view (active-KB picker chip in `ChatInput`, persistent active-KB across chat sessions, a `/knowledge` slash-command palette entry), wrap up the polish items that Plan 5 explicitly deferred (retracted-source `!` badge in the graph), and ship `CLAUDE.md` + release-notes guidance. After Plan 6 the feature ships.
 
 **Architecture:**

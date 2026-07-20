@@ -4,11 +4,17 @@
 > 240×72 cards — individually or all at once — with a live busy indicator and a
 > new muted accent palette.
 > **Status:** Historical record, then superseded by removal. Fold mode was built
-> and **shipped in v1.85.3**, and was deleted on 2026-07-18 along with the whole
+> and **shipped in v1.76.0**, and was deleted on 2026-07-18 along with the whole
 > dashboard: `FoldedCard`, `DashboardToolbar`, `WindowTitleBar` and `palette.ts`
 > all went with the `ui/desktop/src/components/Dashboard/` tree. See the
 > [removal record](README.md). The original header below said only "Approved for
 > implementation planning" and recorded neither the ship nor the removal.
+> **Ship version corrected 2026-07-20.** This file previously said v1.85.3. The
+> [v1.76.0 release notes](../../releases/notes/v1.76.0.md) headline "dashboard
+> fold mode" and name five features specified below — the title-bar Fold button,
+> the pulsing busy indicator, the Fold all / Unfold all toggle, persisted fold
+> state, and the muted accent palette — while v1.85.3's notes mention fold mode
+> nowhere.
 > **Audience:** maintainers reading the dashboard-mode archive.
 > **Prerequisite.** This spec assumes the infinite canvas built by
 > [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md), which is
@@ -239,7 +245,7 @@ ChatWindow renders FoldedCard vs full chat
 > **Warning.** This spec deliberately proposed **no automated tests** — the
 > stated reason was that this is a UI feature and the existing dashboard had no
 > test harness for layout interactions. That gap was never closed and no owner
-> was named for closing it; the feature shipped in v1.85.3 covered only by the
+> was named for closing it; the feature shipped in v1.76.0 covered only by the
 > manual walkthrough below.
 
 Manual smoke:
@@ -276,7 +282,7 @@ No backend (Rust) changes. No OpenAPI changes.
 
 ## Related documentation
 
-- [Dashboard mode — removal record and archive index](README.md) — the record of fold mode shipping in v1.85.3 and coming out on 2026-07-18.
+- [Dashboard mode — removal record and archive index](README.md) — the record of fold mode shipping in v1.76.0 and coming out on 2026-07-18.
 - [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md) — defines the canvas, `organize()`, `canvasLayout.ts` and the accent palette this spec builds on.
 - [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md) — the 13-task plan that executed this spec, including the `onBusyChange` prop on `BaseChat`.
 - [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md) — where `MIN_WINDOW_W`-style sizing and the per-window window model were established.

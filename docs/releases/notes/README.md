@@ -1,13 +1,16 @@
 # Release notes
 
-This folder holds one user-facing release note per shipped BioRouter version, from
-v1.75.2 (May 2026) to v1.88.3 (July 2026). Each file follows the same shape: a
-one-paragraph summary of what the release is for, a **Downloads** table naming the
-exact artifact filename for macOS Apple Silicon, macOS Intel, Windows, and Linux, then
-**What's New** / **What's Fixed** sections and an **Upgrading** note. Every note is a
-frozen record of a release as it shipped — the older entries describe the product as it
-was at that version, not as it behaves today. Read the newest entry for current
-behaviour.
+This folder holds user-facing release notes, running from v1.75.2 (May 2026) to
+v1.88.3 (July 2026). Not every point release in that range has a note here — v1.85.1
+shipped without one. Every note opens the same way: a one-paragraph summary of what
+the release is for, then a **Downloads** table naming the exact artifact filename for
+macOS Apple Silicon, macOS Intel, Windows, and Linux. The body varies by era — most
+notes use **What's new** / **What's fixed** sections, v1.87.0, v1.88.0, and v1.88.1
+group changes under **Highlights**, and v1.88.2 and v1.88.3 use release-specific topic
+headings. Most close with an upgrade note, and the v1.88.x entries add a **Release
+verification** section. Every note is a frozen record of a release as it shipped — the
+older entries describe the product as it was at that version, not as it behaves today.
+Read the newest entry for current behaviour.
 
 Come here when you want to know **what changed in a particular version** — which
 release introduced a feature, whether a bug you remember was fixed and when, or which
@@ -15,11 +18,11 @@ artifact filename to expect from a given download. This folder is not the place 
 learn how to *use* a feature or how to *cut* a release. For installing or upgrading,
 see [Installation and setup](../../getting-started/installation.md). For the release
 engineering itself — the pre-flight QA and the cross-compilation recipes — stay one
-level up in [`docs/releases/`](../auto-update-test-checklist.md). For the engineering
+level up in [`docs/releases/`](../README.md). For the engineering
 paper trail behind a feature (design specs, implementation plans, review records),
 `docs/history/` groups those by project rather than by version.
 
-## Release notes
+## Notes by version
 
 | Document | What it covers |
 | -------- | -------------- |

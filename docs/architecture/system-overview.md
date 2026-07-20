@@ -132,7 +132,7 @@ Biorouter supports running multiple agents in parallel:
 - **Lead/Worker orchestration** — A lead model delegates sub-tasks to worker models, enabling multi-model pipelines.
 - **Subworkflows** — Workflows can call other workflows as sub-tasks, running them sequentially or in parallel.
 
-## Security
+## Security posture
 
 - Extensions are scanned for known malware before activation.
 - Biorouter enforces permission modes that control whether tool calls require user approval.
@@ -141,7 +141,7 @@ Biorouter supports running multiple agents in parallel:
 
 ## Project and support
 
-| | |
+| Item | Detail |
 |---|---|
 | Developed by | Wanjun Gu (wanjun.gu@ucsf.edu), [Baranzini Lab](https://baranzinilab.ucsf.edu/), UCSF |
 | Supported by | UCSF IT and Information Commons |

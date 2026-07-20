@@ -43,6 +43,6 @@ the result.
 - [Test drive README](../README.md) — the index and reading order for the whole campaign these probes
   belong to.
 - [Audit findings register](../audit-findings-register.md) — the de-duplicated defect register these
-  rubrics fed; the runtime defects the probes reproduced are findings 6, 8, 12, and 13.
+  rubrics fed; the runtime defects the probes reproduced are findings 6, 8, 12, 13, and 15.
 - [App test-drive runbook](../../../agent-drafter/testing/app-test-drive-runbook.md) — the rubric
   whose PASS / PARTIAL / FAIL and ALIGNED / PARTIAL / OFF vocabulary every probe verdict uses.

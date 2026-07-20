@@ -3,7 +3,7 @@
 > **What this is.** The design for BioRouter's first kernel-enforced containment of the
 > developer shell tool: a macOS Seatbelt profile with injected writable roots and outbound
 > network denied, kept deliberately separate from the approval policy.
-> **Status:** Superseded — historical record. Slice 1 shipped as
+> **Status:** Superseded — Slice 1 shipped as
 > `crates/biorouter-sandbox/src/seatbelt.rs` during the 2026-07 agent-loop fix campaign, but
 > the forward-looking Slice 3 (Linux and Windows backends) was replaced wholesale by BR-69,
 > which generalized this single-backend model into a `ShellSandbox` trait now living at
@@ -23,7 +23,7 @@ dependency.
 > **Identifier key.** `BR-NN` identifiers are proposals from the 67-item master list in
 > [the agent-loop improvement proposals](../../agent-loop-review/improvement-proposals.md).
 > `P-NN` identifiers are the numbered entries in the three lens reviews under
-> [proposal lenses](../../agent-loop-review/proposal-lenses); a lens is one of
+> [proposal lenses](../../agent-loop-review/proposal-lenses/README.md); a lens is one of
 > **P** (performance), **R** (robustness), or **U** (ux). This document is BR-64, raised
 > under the robustness lens as P-32.
 
@@ -38,7 +38,7 @@ dependency.
 > **Warning — this design ships on one of three platforms.** The cross-platform audit
 > recorded this as **GAP-4**: the shell sandbox exists on macOS only, so Linux and Windows
 > users get no kernel containment from BR-64 at all. See the
-> [platform parity audit](../cross-platform/platform-parity-audit.md). BR-69 is the response.
+> [platform parity audit](platform-parity-audit.md). BR-69 is the response.
 
 > **Note.** Every `file:line` citation below was taken against the pre-campaign tree, before
 > the 2026-07-13 integration merge. The file paths remain accurate; the line numbers have
@@ -330,7 +330,7 @@ recommendation is what shipped in Slice 1.
 ## Related documentation
 
 - [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the successor design that supersedes this one's cross-platform phasing.
-- [Platform parity audit](../cross-platform/platform-parity-audit.md) — GAP-4, which records that this design ships on one of three platforms.
+- [Platform parity audit](platform-parity-audit.md) — GAP-4, which records that this design ships on one of three platforms.
 - [Wave 1 security report](../wave-reports/wave-1-security.md) — the implementation record for Slice 1.
 - [Command policy engine (BR-21)](../../../agent-loop/designs/command-policy-engine.md) — the auditable allow/ask/deny catalog this containment layer complements.
 - [Safety and guardrails comparison](../../agent-loop-review/competitive-comparison/safety-and-guardrails.md) — the table showing BioRouter had zero OS isolation before this work.

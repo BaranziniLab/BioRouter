@@ -34,7 +34,8 @@ env -u ELECTRON_RUN_AS_NODE -u ELECTRON_NO_ATTACH_CONSOLE \
 `npx electron-forge start` (it will exit immediately — that is failure 2 — but
 it leaves the bundles behind), or run `just run-dev` at a real terminal.
 
-Then drive and inspect it over CDP rather than by screenshotting the desktop:
+Then drive and inspect it over the Chrome DevTools Protocol (CDP) rather than by
+screenshotting the desktop:
 
 ```text
 agent_browser_connect  target: 9333

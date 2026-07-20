@@ -24,7 +24,7 @@ Primary implementation: `crates/biorouter/src/agents/agent.rs`, `crates/bioroute
 
 ## Entry paths and session types
 
-Interactive requests use the server's turn guard and SSE transport. Scheduled runs and subagents create typed sessions and call the same agent runtime without the interactive reply route.
+Interactive requests use the server's turn guard and SSE (Server-Sent Events) transport. Scheduled runs and subagents create typed sessions and call the same agent runtime without the interactive reply route.
 
 > **Rendered in the HTML.** A diagram showing interactive clients passing through the reply route, turn guard, and user session before `AGENT.REPLY` (with a conflicting interactive turn peeling off to `409 CONFLICT`), while the scheduler and parent-agent lanes create scheduled or subagent typed sessions and join the same agent runtime. Caption: only interactive turns use the reply-route ownership guard.
 
@@ -46,7 +46,7 @@ Primary implementation: `crates/biorouter/src/session/`, `crates/biorouter-serve
 
 System instructions, agent-visible messages, and tool schemas are prepared on separate paths. They join only when Biorouter builds the next provider request.
 
-> **Rendered in the HTML.** A three-lane assembly diagram: system sources (base, model overlay, mode, local date, extensions, frontend, workflow, project hints, `AGENTS.md`) sanitized and ordered into the system prompt; agent context inputs (selected resources, fresh MOIM, harness messages, conversation history) placed on an agent-visible clone and normalized; tool definitions sorted separately — the three converging inside a `TURN REQUEST` boundary bound for the provider. Caption: system, messages, and tools join only at the provider boundary.
+> **Rendered in the HTML.** A three-lane assembly diagram: system sources (base, model overlay, mode, local date, extensions, frontend, workflow, project hints, `AGENTS.md`) sanitized and ordered into the system prompt; agent context inputs (selected resources, a fresh model-oriented information message (MOIM), harness messages, conversation history) placed on an agent-visible clone and normalized; tool definitions sorted separately — the three converging inside a `TURN REQUEST` boundary bound for the provider. Caption: system, messages, and tools join only at the provider boundary.
 
 **Selected skills.** Explicit skill references are loaded before the call. Full bodies are capped and injected once per session; later turns receive a short pointer. Failed loads are not cached.
 
@@ -113,7 +113,7 @@ Primary implementation: `crates/biorouter/src/tool_inspection.rs`, `crates/bioro
 
 ## Vault substitution occurs at leaf MCP dispatch
 
-The model sees symbolic placeholders. Plaintext is attached only after inspection and only for an allow-listed Agent Drafter app's leaf MCP arguments.
+The model sees symbolic placeholders. Plaintext is attached only after inspection and only for an allow-listed Agent Drafter app's leaf MCP (Model Context Protocol) arguments.
 
 > **Rendered in the HTML.** A provisioning-and-substitution diagram: an application manifest allow-list, a per-application AES key in the operating-system keyring, and encrypted workspace files combine into in-memory `VaultRefs`; during a turn the model emits a symbolic placeholder that inspectors also see, and only `apply_vault` at leaf MCP dispatch substitutes plaintext. Caption: provisioning creates VaultRefs; only leaf MCP dispatch consumes them.
 
@@ -305,13 +305,13 @@ Workflow and session configuration may narrow or extend these defaults.
 
 ## Related documentation
 
-- [`agentic-system-explorer.html`](agentic-system-explorer.html) — the rendered explorer this file accompanies; open it for the seventeen architecture diagrams.
-- [`theming/theme-system-explorer.html`](../design/theming/theme-system-explorer.html) — the companion theme-system explorer, including the Parchment theme this page is rendered in.
-- [`design-system-gallery.html`](../design/design-system-gallery.html) — the rendered design-system component and token gallery.
-- [`../agent-loop/context-engineering.md`](../agent-loop/context-engineering.md) — how context is selected and budgeted, in depth.
-- [`../agent-loop/hooks/hooks-reference.md`](../agent-loop/hooks/hooks-reference.md) — the full hook event contracts summarized above.
-- [`../agent-loop/subagents.md`](../agent-loop/subagents.md) — child-session limits, lineage, and delegation.
-- [`../security/permission-modes.md`](../security/permission-modes.md) — the `Chat` / `Auto` / `Approve` / `SmartApprove` modes in detail.
-- [`../security/managed-policy.md`](../security/managed-policy.md) — administrator policy files, trust checks, and precedence.
-- [`../architecture/system-overview.md`](../architecture/system-overview.md) — how the agent runtime sits inside the wider system.
-- [`../README.md`](../README.md) — the documentation index.
+- [Agentic system explorer (rendered page)](agentic-system-explorer.html) — the rendered explorer this file accompanies; open it for the seventeen architecture diagrams.
+- [Theme system explorer (rendered page)](../design/theming/theme-system-explorer.html) — the companion theme-system explorer, including the Parchment theme this page is rendered in.
+- [Design system gallery (rendered page)](../design/design-system-gallery.html) — the rendered design-system component and token gallery.
+- [Context engineering](../agent-loop/context-engineering.md) — how context is selected and budgeted, in depth.
+- [Hooks reference](../agent-loop/hooks/hooks-reference.md) — the full hook event contracts summarized above.
+- [Subagents](../agent-loop/subagents.md) — child-session limits, lineage, and delegation.
+- [Permission modes](../security/permission-modes.md) — the `Chat` / `Auto` / `Approve` / `SmartApprove` modes in detail.
+- [Managed policy](../security/managed-policy.md) — administrator policy files, trust checks, and precedence.
+- [System overview](system-overview.md) — how the agent runtime sits inside the wider system.
+- [Documentation index](../README.md) — the entry point for the rest of the tree.

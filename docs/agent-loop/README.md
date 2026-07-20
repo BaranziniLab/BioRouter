@@ -26,7 +26,7 @@ table repeats it, so check that before treating a design as a description of shi
 
 | Document | What it covers |
 |---|---|
-| [Context engineering](context-engineering.md) | An index of the features that give the agent durable background knowledge, preferences and workflows — memory, skills, workflows, config, hooks and delegation — pointing at each one's own guide. Superseded in body: the 2026-05-07 plain-markdown migration stripped its card components, and only the opening definition and this pointer table survive. |
+| [Context engineering](context-engineering.md) | An index of the features that give the agent durable background knowledge, preferences and workflows — memory, skills, extensions, workflows, config files, environment variables, hooks and delegation — as a routing table pointing at each one's own guide. Current; its original docs-site body was stripped by the 2026-05-07 plain-markdown migration and the routing table replaces it. |
 | [Subagents](subagents.md) | A guide to subagents — the temporary biorouter instances the main agent spawns to run a task in isolation — covering natural-language invocation, workflow-file configuration, extension and return-mode control, and what subagents are forbidden to do. Current. |
 | [Tool routing](tool-routing.md) | Which tool the agent should reach for and in what order of preference: the two-tier model, a per-tool "when to use and when not to", the overlap matrix, the three places in source where the same guidance is mirrored, and the always-on `tool_result` log line that makes every dispatched call inspectable. Current, with the tier reading awaiting confirmation and a deprecation proposal awaiting approval. |
 

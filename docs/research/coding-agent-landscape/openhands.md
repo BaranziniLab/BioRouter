@@ -129,7 +129,8 @@ What they can do:
 - **UserPromptSubmit can block a user message** (the step marks the conversation FINISHED).
 - **The Stop hook can veto stopping** — if it denies, the run loop injects a feedback message and flips status back to `RUNNING` to keep the agent going ([`local_conversation.py`](https://github.com/OpenHands/software-agent-sdk/blob/main/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py)).
 
-Beyond hooks, extensibility includes MCP tools, custom tools/presets, plugins/skills, and
+Beyond hooks, extensibility includes MCP (Model Context Protocol) tools, custom
+tools/presets, plugins/skills, and
 pluggable condensers, security analyzers, and critics via discriminated-union base classes.
 
 ## Guardrails and permissions

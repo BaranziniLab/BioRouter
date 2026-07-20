@@ -1,5 +1,14 @@
 # Subagent delegation: edge cases, stress, and chat traceability
 
+> **What this is.** Round I2 of the campaign's stress sweep: the `subagent` tool driven through
+> one delegation, many delegations, a failing child, a child that tries to spawn a child, a
+> cancel mid-flight and a twelve-wide fan-out — with the four `SUB-NN` findings it raised and
+> the gates that now hold them.
+> **Status:** Historical record (completed 2026-07-20). The two fixes it describes are current;
+> `SUB-03` and `SUB-04` were documented rather than changed.
+> **Audience:** developers working on subagent delegation, the agent loop's abort path, and the
+> desktop tool card.
+
 Round I2 of the integration campaign, 2026-07-20, on `integrate/docs-cleanup`. The subject is the
 `subagent` tool — the agent's one mechanism for handing a whole task to a child agent with its own
 context — swept the way the previous round swept parallel tool batches: one delegation, many
@@ -87,7 +96,7 @@ deleting the one dispatch line fails five assertions.
 A child whose turn aborts — provider auth failure, rate limit, tool loop, worker timeout — came back
 to the parent as a **success**:
 
-```
+```text
 is_error = false
 status   = "completed"
 summary  = "Ran into this error: Execution error: … Please retry if you think this is a
@@ -204,3 +213,10 @@ cargo test -p biorouter --test subagent_delegation --test subagent_cancellation
 cargo test -p biorouter --lib agents::subagent
 cd ui/desktop && npx vitest run src/components/ToolCallWithResponse.test.tsx
 ```
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this round belongs to.
+- [Parallel tool-batch stress results](parallel-tool-batch-stress-results.md) — the preceding round, swept the same way; `PAR-04`'s no-orphan invariant is re-checked here for delegation.
+- [Campaign final report](campaign-final-report.md) — the closing summary, where round I2's defects are recorded against the branch's merge decision.
+- [Master checklist](master-checklist.md) — item `I2`, the instruction this round answers.
