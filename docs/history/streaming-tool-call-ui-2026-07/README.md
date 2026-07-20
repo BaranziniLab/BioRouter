@@ -41,6 +41,7 @@ to the end, including the five that were deliberately left unfixed.
 | [QA round 2 results](qa-round-2-results.md) | Directive verification, the BioOKF parallel-build orchestration, and the security blocker `R2-01`. Also holds the send-path hardening work and the three iterations of the repeat-until-clean build loop. |
 | [QA round 3 results](qa-round-3-results.md) | The closing round: compaction finally triggered and nothing degraded, concurrent cross-tab send proved correct, `R2-01` re-verified live through the `execute_code` wrapper, and the full regression sweep. |
 | [Tool-errors audit](tool-errors-audit.md) | Every tool error surfaced during rounds 1 and 2, swept from the daemon logs and classified `INTENDED` against `DEFECT`. Six of the eleven turned out to be one defect: a mode-blind path jail. |
+| [Terminal stress test results](terminal-stress-test-results.md) | The in-app terminal swept end to end — panes, per-tab scoping, working-directory correctness, PTY reaping, and load. Confirms the cwd contract holds exactly, and answers the user's "only 8 terminals" report: the cap was too low *and* leaked a slot on every renderer reload. Findings are `TERM-NN`. |
 
 ## Related documentation
 

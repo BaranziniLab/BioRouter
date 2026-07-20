@@ -48,6 +48,30 @@ Items are worked **sequentially by priority**, not silently dropped. An item lea
 | 27 | Docs root still holds loose files; migrate or delete, preserving all information | 07-20 | Done | already complete on this branch — see audit below |
 | 28 | Recurring `code_execution` failure: "Module error: TypeError: Module could not be found" | 07-20 | In progress | root-cause + prompt/error engineering |
 | 29 | GitHub issue #19 — repeated message after Cmd+T/Cmd+T, Cmd+W/Cmd+W | 07-20 | Open | keyboard path now gated by `9cc3d3a9` (revert-proven); **not closed** — see below |
+| 30 | Terminal cap of 8 is too low **and** fires spuriously | 07-20 | Done | `TERM-02`/`TERM-03` in [terminal stress test results](terminal-stress-test-results.md); new `ui/desktop/src/terminalSessionRegistry.ts` + 12 revert-proven tests |
+
+## Item 30: the terminal cap, and why it fired early
+
+The user reported an "only 8 terminals" error that appeared with nowhere near eight
+terminals open. Both halves of that report were real, and they had different causes.
+
+**Too low.** `MAX_TERMINAL_SESSIONS_PER_OWNER = 8` was a fork-bomb rail, not a product
+limit, but 8 is inside ordinary use — a few chat tabs with a couple of panes each reaches
+it. It is now 64, configurable via `BIOROUTER_MAX_TERMINAL_SESSIONS`, and the refusal
+message names both the limit and the variable.
+
+**Fires spuriously.** The count really did leak, but not on close — closing panes reaps
+cleanly (verified: 7 shells → 0). It leaked on **renderer reload**. `webContents`
+`destroyed` does not fire when a reload replaces the document, so React never ran its
+cleanups, `terminal:dispose` never arrived, and every shell that window had open stayed
+registered forever holding a slot no UI could reach. Cmd+R, View > Reload, and the
+`reload-app` IPC are all user-reachable, so a user who reloads twice with three terminals
+open has silently spent six of their eight slots. `releaseOwner` now runs on
+document-replacing navigation, on renderer crash, and on destroy.
+
+Ruled out: `DEFAULT_MAX_CONCURRENT_TOOLS = 8` in `tool_dispatch_limits.rs` is unrelated —
+the terminal is a pure Electron IPC path that never touches the Rust agent. The matching
+8 was a coincidence.
 
 ## Audit: the 27 loose `docs/` root files (item 27)
 
