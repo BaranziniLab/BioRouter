@@ -34,6 +34,12 @@ import AdmZip from 'adm-zip';
 import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
 import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
+import {
+  TerminalSessionRegistry,
+  maxTerminalSessionsPerOwner,
+  terminalSessionLimitMessage,
+  type RegisteredTerminalSession,
+} from './terminalSessionRegistry';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
@@ -3253,27 +3259,56 @@ type TerminalCreateOptions = {
   rows?: number;
 };
 
-type TerminalSession = {
+type TerminalSession = RegisteredTerminalSession & {
   backend: TerminalBackend;
   cwd: string;
-  /**
-   * `webContents.id` of the renderer that created this session. A session id is
-   * an unguessable UUID, but ids leak (devtools, logs, crash dumps) and a
-   * session drives a real shell -- so authorize on the caller, not on knowledge
-   * of the id.
-   */
-  ownerId: number;
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
-  dispose: () => void;
-  removeOwnerDestroyedListener: () => void;
 };
 
 type NodePtyModule = typeof import('node-pty');
 
-const terminalSessions = new Map<string, TerminalSession>();
-const MAX_TERMINAL_SESSIONS_PER_OWNER = 8;
+const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
+  log.warn('[terminal] failed to dispose session:', error)
+);
 let nodePtyModule: NodePtyModule | null | undefined;
+
+/**
+ * Free every shell a renderer owns once its document goes away.
+ *
+ * `destroyed` alone was not enough. A reload — Cmd+R (wired in
+ * createChat), View > Reload, the `reload-app` IPC — swaps the document while
+ * the webContents lives on, so React never runs its effect cleanups and the
+ * renderer's `terminal:dispose` calls never arrive. Those shells then held slots
+ * that no UI could reach, and the session cap fired with nothing visibly open.
+ *
+ * `isSameDocument` is the load-bearing filter: the app is a hash router, so
+ * ordinary in-app navigation (`#/pair` -> `#/settings`) fires this event too and
+ * must NOT kill the user's terminals.
+ */
+function registerTerminalOwnerTeardown(contents: Electron.WebContents) {
+  if (terminalOwnerTeardownRegistered.has(contents.id)) return;
+  terminalOwnerTeardownRegistered.add(contents.id);
+
+  const release = (reason: string) => {
+    const released = terminalSessions.releaseOwner(contents.id);
+    if (released > 0) {
+      log.info(`[terminal] released ${released} session(s) for webContents ${contents.id}:`, reason);
+    }
+  };
+
+  contents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    release('document replaced');
+  });
+  contents.on('render-process-gone', () => release('render process gone'));
+  contents.once('destroyed', () => {
+    release('webContents destroyed');
+    terminalOwnerTeardownRegistered.delete(contents.id);
+  });
+}
+
+const terminalOwnerTeardownRegistered = new Set<number>();
 
 function terminalSize(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
@@ -3317,16 +3352,7 @@ async function loadNodePty(): Promise<NodePtyModule | null> {
 }
 
 function disposeTerminalSession(sessionId: string) {
-  const session = terminalSessions.get(sessionId);
-  if (!session) return false;
-  terminalSessions.delete(sessionId);
-  session.removeOwnerDestroyedListener();
-  try {
-    session.dispose();
-  } catch (error) {
-    log.warn('[terminal] failed to dispose session:', error);
-  }
-  return true;
+  return terminalSessions.release(sessionId);
 }
 
 function registerCliInstallHandlers() {
@@ -3394,12 +3420,16 @@ function registerCliInstallHandlers() {
     const owner = event.sender;
     let didExit = false;
 
+    // Reload / navigate / crash all free this window's shells. Registered per
+    // webContents, idempotently, so it survives the renderer being replaced.
+    registerTerminalOwnerTeardown(owner);
+
     const registerSession = (
       session: Omit<TerminalSession, 'removeOwnerDestroyedListener'>
     ): void => {
       const handleOwnerDestroyed = () => disposeTerminalSession(sessionId);
       owner.once('destroyed', handleOwnerDestroyed);
-      terminalSessions.set(sessionId, {
+      terminalSessions.add(sessionId, {
         ...session,
         removeOwnerDestroyedListener: () => {
           owner.removeListener('destroyed', handleOwnerDestroyed);
@@ -3415,8 +3445,7 @@ function registerCliInstallHandlers() {
     const sendExit = (exitCode: number | null, signal?: string | number | null) => {
       if (didExit) return;
       didExit = true;
-      const session = terminalSessions.get(sessionId);
-      terminalSessions.delete(sessionId);
+      const session = terminalSessions.forget(sessionId);
       session?.removeOwnerDestroyedListener();
       if (!owner.isDestroyed()) {
         owner.send('terminal:exit', {
@@ -3429,14 +3458,9 @@ function registerCliInstallHandlers() {
 
     try {
       const pty = await loadNodePty();
-      const ownerSessionCount = Array.from(terminalSessions.values()).filter(
-        (session) => session.ownerId === owner.id
-      ).length;
-      if (ownerSessionCount >= MAX_TERMINAL_SESSIONS_PER_OWNER) {
-        return {
-          success: false,
-          error: `A window can run at most ${MAX_TERMINAL_SESSIONS_PER_OWNER} terminal sessions.`,
-        };
+      const sessionLimit = maxTerminalSessionsPerOwner();
+      if (terminalSessions.countForOwner(owner.id) >= sessionLimit) {
+        return { success: false, error: terminalSessionLimitMessage(sessionLimit) };
       }
       if (pty) {
         const ptyProcess = pty.spawn(shellPath, ptyArgs, {
@@ -3518,11 +3542,8 @@ function registerCliInstallHandlers() {
   // A session may only be driven by the renderer that created it. Without this,
   // any window holding a session id could write into (or kill) another window's
   // shell.
-  const ownedTerminalSession = (event: Electron.IpcMainInvokeEvent, sessionId: string) => {
-    const session = terminalSessions.get(sessionId);
-    if (!session || session.ownerId !== event.sender.id) return null;
-    return session;
-  };
+  const ownedTerminalSession = (event: Electron.IpcMainInvokeEvent, sessionId: string) =>
+    terminalSessions.getOwned(sessionId, event.sender.id) ?? null;
 
   ipcMain.handle('terminal:write', async (event, sessionId: string, data: string) => {
     const session = ownedTerminalSession(event, sessionId);
