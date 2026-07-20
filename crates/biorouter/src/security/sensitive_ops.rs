@@ -288,6 +288,7 @@ fn path_values(args: &Map<String, Value>) -> Vec<String> {
 /// normalizes `ri` → `Remove-Item`), and `cmd.exe` verbs. Read-only tools
 /// (`cat`, `less`, `grep`, `ls`) are deliberately absent, so reading a sensitive
 /// path is never escalated.
+#[rustfmt::skip]
 const SHELL_MUTATING_BINARIES: &[&str] = &[
     // POSIX
     "cp", "mv", "rm", "rmdir", "unlink", "mkdir", "touch", "tee", "install", "ln", "dd",
@@ -303,6 +304,7 @@ const SHELL_MUTATING_BINARIES: &[&str] = &[
 /// mutating editor call (`text_editor({command:"write"…})`), gating the
 /// path-literal scan so a `view`-only script that merely *reads* a sensitive
 /// path is not escalated.
+#[rustfmt::skip]
 const EDITOR_WRITE_INDICATORS: &[&str] =
     &["write", "create", "str_replace", "insert", "append", "delete"];
 
