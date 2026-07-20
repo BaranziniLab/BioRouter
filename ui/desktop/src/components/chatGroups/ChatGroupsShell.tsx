@@ -263,19 +263,17 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
 
   if (!groups || !layout) return null;
 
-  // The terminal you SEE belongs to the tab you are focused on: the active
-  // group's active tab. Computed to match ChatGroupPane's tabKey exactly, so the
-  // dock keyed by that id is the one this tab's BaseChat drives.
-  const activeGroup = groups.state.groups[groups.state.activeGroupId];
-  const activeTerminalKey = activeGroup
-    ? (activeGroup.activeTabId ?? `${groups.state.activeGroupId}-empty`)
-    : null;
-
   const renderGroup = ({ groupId }: RenderGroupArgs) => {
     const group = groups.state.groups[groupId];
     if (!group) return <div key={groupId} />;
     const activeTab = group.tabs.find((t) => t.tabId === group.activeTabId);
     const isActiveGroup = groupId === groups.state.activeGroupId;
+    // Every terminal key this group can own: one per tab, plus the empty-tab
+    // key. The pane renders only its OWN terminals (a terminal belongs to one
+    // pane), and shows the one whose tab is active in THIS pane — so a 4-way
+    // split can have four terminals open at once, each scoped to its pane and
+    // each the width of its pane, never a bar spanning the whole window.
+    const groupTabKeys = [...group.tabs.map((t) => t.tabId), `${groupId}-empty`];
 
     const strip = (
       <ChatTabStrip
@@ -312,6 +310,8 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupCount={groupCount}
         dropZone={drag.dropTarget?.groupId === groupId ? drag.dropTarget.zone : null}
         onFocusGroup={handleFocusGroup}
+        terminalDock={terminalDock}
+        groupTabKeys={groupTabKeys}
         // The tab is the chat's identity: keying on tabId (not sessionId) keeps
         // a tab's mount stable across a session bind. The SAME id keys the tab's
         // terminal, so it too survives the bind and switching tabs switches it.
@@ -349,24 +349,13 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
       <div className="flex h-full min-h-0 w-full flex-col">
         {/* treeRef: rung 4 measures the room the GROUPS have, which the sidebar
             can change without the window moving. */}
+        {/* Terminals render INSIDE their pane now (see ChatGroupPane), not here
+            at the shell as a full-width bar below every group. A terminal belongs
+            to one pane, is the width of that pane, and a split can show several
+            at once — each scoped to its own session's working directory. */}
         <div ref={treeRef} className="flex min-h-0 flex-1">
           {tree}
         </div>
-        {/* One dock PER chat tab that has a terminal open, mounted below the
-            groups. Every one stays mounted so its shell keeps running, but only
-            the ACTIVE tab's is visible (open) — switching tabs switches which
-            terminal you see. `onClose` HIDES a terminal (its panes live on);
-            `onEmptied`, fired when its last pane closes, DESTROYS it. Each reads
-            its own frozen cwd (its tab's session folder, captured on open). */}
-        {terminalDock?.terminals.map((terminal) => (
-          <InAppTerminalDock
-            key={terminal.key}
-            open={terminal.showing && terminal.key === activeTerminalKey}
-            workingDir={terminal.workingDir}
-            onClose={() => terminalDock.setOpen(terminal.key, false)}
-            onEmptied={() => terminalDock.remove(terminal.key)}
-          />
-        ))}
       </div>
       {/* The ghost renders at the SHELL, not in the source strip: it is fixed to
           the viewport and must not be clipped by the strip's overflow-x:auto. */}
@@ -444,6 +433,9 @@ interface ChatGroupPaneProps {
   groupCount: number;
   dropZone: import('./dropZones').DropZone | null;
   onFocusGroup: (groupId: ChatGroupId) => void;
+  terminalDock: ReturnType<typeof useTerminalDock>;
+  /** Every terminal key this group can own (one per tab + the empty-tab key). */
+  groupTabKeys: string[];
   tabKey: string;
   sessionId: string;
   initialMessage?: string;
@@ -464,6 +456,8 @@ function ChatGroupPane({
   groupCount,
   dropZone,
   onFocusGroup,
+  terminalDock,
+  groupTabKeys,
   tabKey,
   sessionId,
   initialMessage,
@@ -492,7 +486,11 @@ function ChatGroupPane({
       // against the wrong rectangle and the tint would land off the group.
       data-chat-group-id={groupId}
       data-active-group={isActiveGroup ? 'true' : 'false'}
-      className="relative flex min-h-0 min-w-0 flex-1"
+      // flex COLUMN: the chat fills the pane and this pane's terminal (if any)
+      // stacks below it, inside the pane — so the terminal is the pane's width,
+      // not the window's. The box is still exactly the group's rectangle, which
+      // is what the drag hit-test measures against.
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
       // CAPTURE phase, both: clicking anywhere in a group focuses it, including
       // on controls that stopPropagation on the bubble (the composer's buttons,
       // the strip's close ×). Focus must not depend on WHERE in the pane you
@@ -501,27 +499,48 @@ function ChatGroupPane({
       onPointerDownCapture={() => onFocusGroup(groupId)}
       onFocusCapture={() => onFocusGroup(groupId)}
     >
-      <BaseChat
-        key={tabKey}
-        // Scopes this tab's terminal. Same id as the React key, so the terminal
-        // is tied to the tab, not the (rebindable) session.
-        terminalKey={tabKey}
-        setChat={onChatChange}
-        sessionId={sessionId}
-        initialMessage={initialMessage}
-        initialAttachments={initialAttachments}
-        onInitialMessageConsumed={onInitialMessageConsumed}
-        suppressEmptyState={false}
-        renderSessionTitle={renderSessionTitle}
-        onSessionUpdate={onSessionLoaded}
-        // The preview panel follows the ACTIVE group. State is kept, only the
-        // render is gated — see BaseChat's artifactPanelEnabled doc.
-        artifactPanelEnabled={isActiveGroup}
-        // A session-scoped chat must never resize the OS window once it is not
-        // the only one: a background group opening an artifact would resize the
-        // window out from under the group you are actually looking at.
-        allowWindowResize={groupCount === 1}
-      />
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <BaseChat
+          key={tabKey}
+          // Scopes this tab's terminal. Same id as the React key, so the terminal
+          // is tied to the tab, not the (rebindable) session.
+          terminalKey={tabKey}
+          setChat={onChatChange}
+          sessionId={sessionId}
+          initialMessage={initialMessage}
+          initialAttachments={initialAttachments}
+          onInitialMessageConsumed={onInitialMessageConsumed}
+          suppressEmptyState={false}
+          renderSessionTitle={renderSessionTitle}
+          onSessionUpdate={onSessionLoaded}
+          // The preview panel follows the ACTIVE group. State is kept, only the
+          // render is gated — see BaseChat's artifactPanelEnabled doc.
+          artifactPanelEnabled={isActiveGroup}
+          // A session-scoped chat must never resize the OS window once it is not
+          // the only one: a background group opening an artifact would resize the
+          // window out from under the group you are actually looking at.
+          allowWindowResize={groupCount === 1}
+        />
+      </div>
+      {/* This pane's OWN terminals, stacked below its chat inside the pane's
+          flex column — so a terminal is the width of its pane and belongs to
+          exactly one pane, never a full-window bar. Every terminal in the group
+          stays mounted so its shell keeps running; only the one whose tab is
+          active in THIS pane is visible (open). `onClose` HIDES a terminal (its
+          panes live on); `onEmptied`, fired when its last pane closes, DESTROYS
+          it. Each reads its own frozen cwd — its tab's session folder, captured
+          on open. */}
+      {terminalDock?.terminals
+        .filter((terminal) => groupTabKeys.includes(terminal.key))
+        .map((terminal) => (
+          <InAppTerminalDock
+            key={terminal.key}
+            open={terminal.showing && terminal.key === tabKey}
+            workingDir={terminal.workingDir}
+            onClose={() => terminalDock.setOpen(terminal.key, false)}
+            onEmptied={() => terminalDock.remove(terminal.key)}
+          />
+        ))}
       {dropZone && <ChatDropOverlay zone={dropZone} />}
     </div>
   );
