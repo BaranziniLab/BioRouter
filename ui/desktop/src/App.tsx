@@ -621,7 +621,7 @@ export function AppInner() {
         pauseOnHover
       />
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
-      <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
+      <div className="relative w-screen h-screen overflow-hidden bg-background-canvas flex flex-col">
         <div className="titlebar-drag-region" />
         <ChatStreamProvider>
           <KnowledgeProvider sessionId={chat.sessionId || null}>

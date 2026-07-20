@@ -69,6 +69,10 @@ function assert(label, fg, bg, min, scope) {
 // Grounds that body text can legitimately land on.
 const TEXT_GROUNDS = [
   '--background-app',
+  // The main-panel ground. Distinct from `--background-app` (the window ground
+  // behind everything): this is what the conversation and every top-level view
+  // actually paint, so body text lands on it constantly.
+  '--background-canvas',
   '--background-default',
   '--background-muted',
   '--sidebar',

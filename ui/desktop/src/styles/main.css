@@ -109,7 +109,15 @@
   --accent-bar: var(--color-coral-500); /* sidebar rail, tab underline, status dots */
 
   /* Semantic */
+  /* `--background-app` is the WINDOW ground (body, behind everything);
+     `--background-canvas` is the MAIN PANEL ground — the page the conversation
+     and every top-level view are drawn on, and the surface the sidebar steps
+     away from. Parchment's canvas carries the family's warm tint while
+     `default`/`card` stay pure white and lift off it. Mirrored in
+     themes/parchment.theme.mjs; the base family's :root/.dark blocks are
+     hand-authored (the generator only emits the non-base families). */
   --background-app: var(--color-white);
+  --background-canvas: var(--color-neutral-50);
   --background-default: var(--color-white);
   --background-card: var(--color-white);
   --background-muted: var(--color-neutral-50);
@@ -240,6 +248,9 @@
   /* Surfaces. `default`/`card` now sit one step ABOVE the canvas so a card
      reads as a surface rather than dissolving into the page. */
   --background-app: var(--color-neutral-950);
+  /* Parchment dark inverts the lift: the canvas is the LIGHTER warm brown and
+     cards recess into it. This is what the family has always rendered. */
+  --background-canvas: var(--color-neutral-800);
   --background-default: var(--color-neutral-900);
   --background-card: var(--color-neutral-900);
   --background-muted: var(--color-neutral-800);
@@ -368,6 +379,7 @@
   --text-on-accent: #ffffff;
   --accent-bar: #16a0ac;
   --background-app: #ffffff;
+  --background-canvas: #ffffff;
   --background-default: #ffffff;
   --background-card: #ffffff;
   --background-muted: #f2f3f4;
@@ -433,6 +445,7 @@
   --text-on-accent: #052049;
   --accent-bar: #60d0da;
   --background-app: #04142e;
+  --background-canvas: #0d2a50;
   --background-default: #08213f;
   --background-card: #08213f;
   --background-muted: #0d2a50;
@@ -530,6 +543,7 @@
   --text-on-accent: #1f1e1c;
   --accent-bar: #d95b08;
   --background-app: #ffffff;
+  --background-canvas: #ffffff;
   --background-default: #ffffff;
   --background-card: #ffffff;
   --background-muted: #f4f4f2;
@@ -595,6 +609,7 @@
   --text-on-accent: #131312;
   --accent-bar: #ee6c1a;
   --background-app: #131312;
+  --background-canvas: #131312;
   --background-default: #1b1b19;
   --background-card: #1b1b19;
   --background-muted: #232320;
@@ -656,6 +671,7 @@
 @theme inline {
   --ease-g2: cubic-bezier(0.55, 0, 1, 0.45);
 
+  --color-background-canvas: var(--background-canvas);
   --color-background-default: var(--background-default);
   --color-background-muted: var(--background-muted);
   --color-background-code: var(--background-code);

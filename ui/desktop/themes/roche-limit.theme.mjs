@@ -29,6 +29,9 @@ export default {
       'text-on-accent': '#1f1e1c',
       'accent-bar': '#d95b08',
       'background-app': '#ffffff',
+      // "White as the main colour" (roche-limit-theme.md §1): the page is pure
+      // white and `background-muted` #f4f4f2 is the intermediate panel.
+      'background-canvas': '#ffffff',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
       'background-muted': '#f4f4f2',
@@ -165,6 +168,9 @@ export default {
       'text-on-accent': '#131312',
       'accent-bar': '#ee6c1a',
       'background-app': '#131312',
+      // Dark flips polarity: canvas #131312, card #1B1B19 (roche-limit-theme.md
+      // §5.x). Warm-neutral, not pure black, so bright orange does not halate.
+      'background-canvas': '#131312',
       'background-default': '#1b1b19',
       'background-card': '#1b1b19',
       'background-muted': '#232320',

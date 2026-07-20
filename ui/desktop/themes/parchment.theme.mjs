@@ -30,6 +30,9 @@ export default {
       'text-on-accent': '#ffffff',
       'accent-bar': '#cf6d47',
       'background-app': '#ffffff',
+      // The canvas keeps Parchment's warm tint; `default`/`card` are pure
+      // white so a card lifts off the page.
+      'background-canvas': '#faf8f3',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
       'background-muted': '#faf8f3',
@@ -136,6 +139,9 @@ export default {
       'text-on-accent': '#16120c',
       'accent-bar': '#e8895f',
       'background-app': '#0d0a06',
+      // Parchment dark inverts the lift: the canvas is the LIGHTER warm brown
+      // and cards recess into it. This is what the family has always shipped.
+      'background-canvas': '#282217',
       'background-default': '#16120c',
       'background-card': '#16120c',
       'background-muted': '#282217',

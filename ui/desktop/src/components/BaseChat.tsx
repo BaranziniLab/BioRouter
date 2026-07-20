@@ -1901,7 +1901,7 @@ function BaseChatContent({
     return (
       <div className="h-full flex flex-col min-h-0">
         <MainPanelLayout
-          backgroundColor={'bg-background-muted'}
+          backgroundColor={'bg-background-canvas'}
           removeTopPadding={true}
           {...customMainLayoutProps}
         >
@@ -1941,7 +1941,7 @@ function BaseChatContent({
     // lets it shrink when the artifact panel takes its share of the row.
     <div className="relative z-[60] h-full flex flex-col min-h-0 w-full min-w-0 flex-1">
       <MainPanelLayout
-        backgroundColor={'bg-background-muted'}
+        backgroundColor={'bg-background-canvas'}
         removeTopPadding={true}
         {...customMainLayoutProps}
       >
@@ -1954,7 +1954,7 @@ function BaseChatContent({
             <div
               className={
                 coherent
-                  ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
+                  ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-canvas'
                   : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
               }
             >
@@ -1963,7 +1963,7 @@ function BaseChatContent({
                 // beside this one; a translucent, blurred fill made the two
                 // bottom hairlines read at different weights so they never
                 // visually aligned (D-18).
-                className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4"
+                className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-canvas pr-4"
                 style={
                   {
                     WebkitAppRegion: 'drag',
@@ -2027,7 +2027,7 @@ function BaseChatContent({
                 >
                   <div className="biorouter-chat-column mx-auto w-full max-w-[760px]">
                     {workflow?.title && (
-                      <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
+                      <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2">
                         <WorkflowHeader title={workflow.title} />
                       </div>
                     )}
@@ -2088,7 +2088,7 @@ function BaseChatContent({
               <div
                 className={
                   coherent
-                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
+                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-canvas'
                     : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
                 }
               >

@@ -132,14 +132,26 @@ extrapolation along a UCSF hue column.
 
 | Token | Alma Mater Light | src | Alma Mater Dark | src |
 |---|---|---|---|---|
-| `--background-app` (canvas) | `#FFFFFF` | White | `#04142E` | derived navy |
+| `--background-canvas` (main panel) | `#FFFFFF` | White | `#0D2A50` | derived |
+| `--background-app` (window ground) | `#FFFFFF` | White | `#04142E` | derived navy |
 | `--background-default` / `--card` | `#FFFFFF` | White | `#08213F` | derived navy |
-| `--background-muted` (page ground) | `#F2F3F4` | I6 | `#0D2A50` | derived |
+| `--background-muted` (panel/terminal ground) | `#F2F3F4` | I6 | `#0D2A50` | derived |
 | `--background-code` (code ground) | `#F2F3F4` | I6 | `#08213F` | derived navy |
 | `--background-medium` (hover fill) | `#E1E3E5` | J5 | `#143563` | derived |
 | `--background-strong` (pressed) | `#D1D3D3` | K3 | `#1E477F` | derived |
 | `--background-inverse` | `#052049` | Navy | `#F2F3F4` | I6 |
 | `--background-focus` (surface shift) | `#D3D6D9` | derived (one step past hover, neutralised) | `#163C74` | derived |
+
+> **`--background-canvas` is not `--background-app`.** `--background-app` is the
+> *window* ground — what `body` paints, behind everything. `--background-canvas` is
+> what the main panel actually paints: the conversation, the hub and every
+> top-level view. Light mode is the two-tone canvas of the mockups — a **white**
+> panel against the `#EEF0F0` sidebar. (Before this token existed the panel painted
+> `--background-muted` and the whole canvas read grey, which is the bug this
+> separation fixes.) Dark deliberately **inverts the ladder**: the canvas `#0D2A50`
+> sits *above* the cards `#08213F`, so the navy page lifts and cards recess into
+> it. That is the shipped, preferred appearance — it is not a drift from
+> `--background-app` waiting to be "corrected".
 
 > **`--background-code` is not always `--background-muted`.** In light they coincide
 > (`#F2F3F4`); in dark, code sits on the *card* navy `#08213F` while the page ground is a
@@ -314,7 +326,7 @@ ground "bright" (lighter than its base) and "AA" are in direct conflict. **Alma 
 
 ### 5k · Raw palette remap
 
-Beyond the 61 semantic tokens, the light block re-declares **27 raw palette primitives**
+Beyond the 62 semantic tokens, the light block re-declares **27 raw palette primitives**
 (`--color-coral-*`, `--color-neutral-*`, `--color-red/blue/green/yellow-*`). These are
 **mode-independent by design** — declared once in the light block and inherited by dark — and
 they exist only to catch components that reach *past* the semantic layer and use a
@@ -457,7 +469,7 @@ across nine files; it is **one file plus one command**.
 
 | | |
 |---|---|
-| **Source of truth** | [`ui/desktop/themes/alma-mater.theme.mjs`](../../../ui/desktop/themes/alma-mater.theme.mjs) — 61 semantic tokens × 2 modes, 27 raw remaps, 10 syntax stops × 2, 19 terminal stops × 2, 3 splash values, plus `id` / `label` / `swatch` / `terminalGround`. |
+| **Source of truth** | [`ui/desktop/themes/alma-mater.theme.mjs`](../../../ui/desktop/themes/alma-mater.theme.mjs) — 62 semantic tokens × 2 modes, 27 raw remaps, 10 syntax stops × 2, 19 terminal stops × 2, 3 splash values, plus `id` / `label` / `swatch` / `terminalGround`. |
 | **Command** | `npm run themes` regenerates; `npm run themes -- --check` fails CI if anything is stale. It runs inside `npm run lint:check`. |
 | **Contract** | `ui/desktop/scripts/lib/theme-contract.mjs` — the written-down answer to "what does a theme have to define?". A missing token means the generator **refuses to emit**. |
 
@@ -465,7 +477,7 @@ across nine files; it is **one file plus one command**.
 
 | Target | Region | Content |
 |---|---|---|
-| `src/styles/main.css` | marker-delimited | `:root[data-theme='alma-mater']` — **88 declarations** (61 semantic + 27 raw); `.dark[data-theme='alma-mater']` — **61**. Dark must follow light: the two tie at specificity `(0,2,0)` and dark wins on source order alone. |
+| `src/styles/main.css` | marker-delimited | `:root[data-theme='alma-mater']` — **89 declarations** (62 semantic + 27 raw); `.dark[data-theme='alma-mater']` — **62**. Dark must follow light: the two tie at specificity `(0,2,0)` and dark wins on source order alone. |
 | `src/styles/themes.generated.ts` | whole file | Syntax palette, terminal palette, `codeGround`, `terminalGround`, brand-mark colours, and the family manifest (`THEME_FAMILY_IDS`, label, swatch). |
 | `index.html` | marker-delimited | The pre-hydration `FAMILIES` allow-list and the two boot-splash blocks. |
 

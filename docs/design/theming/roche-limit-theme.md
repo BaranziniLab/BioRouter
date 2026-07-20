@@ -53,8 +53,10 @@ grey ramp. Those are inside the limit.
 
 ### Constraints honoured (your four asks)
 
-1. **White / slightly off-white as the main colour.** `--background-app: #FFFFFF` — the page is pure
-   white, matching both your brief and Jupyter's own `--jp-layout-color0`.
+1. **White / slightly off-white as the main colour.** `--background-canvas: #FFFFFF` (and
+   `--background-app` to match) — the page is pure white, matching both your brief and Jupyter's own
+   `--jp-layout-color0`. `--background-canvas` is the token the main panel actually paints;
+   `--background-app` is the window ground behind everything.
 2. **Grey for the intermediate panels.** `--background-muted: #F4F4F2`, code ground `#F5F5F3` — a
    ΔL\* of ~4.6 below the page. Recessed, clearly separated, calm.
 3. **Bright orange for icons and accents.** `#EE6C1A` on fills; a deeper `#D95B08` on the rails,
@@ -272,7 +274,8 @@ the canvas), per Jupyter's own `#111 → #212121`.
 
 | Token | Value | Rationale |
 |---|---|---|
-| `--background-app` | `#131312` | Warm-neutral canvas. Not pure black — halation around bright orange, and no room below. |
+| `--background-canvas` | `#131312` | What the main panel paints — the conversation, the hub, every top-level view. |
+| `--background-app` | `#131312` | Warm-neutral window ground. Not pure black — halation around bright orange, and no room below. |
 | `--background-default` / `--background-card` | `#1B1B19` | A card is a surface, not a hole. |
 | `--background-muted` | `#232320` | |
 | `--background-code` | `#1B1B19` | Matches `default`, as both shipping families do. All syntax stops measured here. |
@@ -578,7 +581,7 @@ need not.**
 
 | # | File | Change |
 |---|---|---|
-| 1 | `src/styles/main.css` | `:root[data-theme='roche-limit']` + `.dark[data-theme='roche-limit']` after the Alma blocks. 87 declarations light (60 semantic + 27 raw remaps), 60 dark — verified token-for-token against the Alma blocks. *(Today: **88 light** = 61 semantic + 27 raw, **61 dark**, after `--scrim`; and the block is generated, not hand-written.)* |
+| 1 | `src/styles/main.css` | `:root[data-theme='roche-limit']` + `.dark[data-theme='roche-limit']` after the Alma blocks. 87 declarations light (60 semantic + 27 raw remaps), 60 dark — verified token-for-token against the Alma blocks. *(Today: **89 light** = 62 semantic + 27 raw, **62 dark**, after `--background-canvas`; and the block is generated, not hand-written.)* |
 | 2 | `src/contexts/ThemeContext.tsx` | Replaced both hardcoded `=== 'alma-mater'` checks with a `THEME_FAMILIES` registry + `isThemeFamily()` guard, so the next family is one edit. |
 | 3 | `index.html` | Pre-hydration script derives from a duplicated `FAMILIES` list (commented as a deliberate duplicate); **plus** the two boot-splash blocks. |
 | 4 | `src/components/BioRouterSidebar/ThemeFamilySelector.tsx` | Third entry; `grid-cols-2` → `grid-cols-3`. |
