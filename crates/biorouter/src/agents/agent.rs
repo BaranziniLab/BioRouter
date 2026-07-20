@@ -3729,7 +3729,33 @@ impl Agent {
                                     // (request_id, tool_response, error) captured for PostToolUse hooks
                                     let mut post_tool_results: Vec<(String, Option<Value>, Option<String>)> = Vec::new();
 
-                                    while let Some((request_id, item)) = combined.next().await {
+                                    // The cancel token must be raced against the batch
+                                    // stream, not merely checked after it yields. Every
+                                    // tool in the batch can be slow, and `combined.next()`
+                                    // parks until one of them returns — so a check placed
+                                    // only after the await cannot observe a cancel until
+                                    // some tool finishes, making a cancelled turn wait out
+                                    // its slowest call (a 6s child kept a cancelled turn
+                                    // alive for the full 6s). Selecting on the token drops
+                                    // `combined` — and with it every in-flight tool future
+                                    // — at the instant the cancel lands, which is what
+                                    // tears a delegated child down rather than orphaning
+                                    // it. `StreamExt::next` is cancel-safe, so losing the
+                                    // race never drops an item that had already resolved.
+                                    loop {
+                                        let next_item = tokio::select! {
+                                            biased;
+                                            _ = async {
+                                                match cancel_token.as_ref() {
+                                                    Some(token) => token.cancelled().await,
+                                                    None => std::future::pending::<()>().await,
+                                                }
+                                            } => None,
+                                            item = combined.next() => item,
+                                        };
+                                        let Some((request_id, item)) = next_item else {
+                                            break;
+                                        };
                                         if is_token_cancelled(&cancel_token) {
                                             break;
                                         }
