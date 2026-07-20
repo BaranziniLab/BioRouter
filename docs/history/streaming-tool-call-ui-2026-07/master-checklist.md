@@ -31,7 +31,7 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 - [x] **B6** Preview could not open files the task wrote (`/tmp`) — `dc66324b`, `f8f1505f`
 - [x] **B7** Markdown preview: images, hyperlinks, full GFM — `3db5d420`
 - [x] **B8** "outside the working directory" tool error — `90bc2acf`
-- [x] **B9** Recurring `code_execution` "Module could not be found" — `101c7166`
+- [x] **B9** Recurring `code_execution` "Module could not be found" — `101c7166`, `3d7a0a46`, `06a4025f`. **The reported error was a symptom**: a false contract ("all calls return strings" vs. results being JSON-parsed) threw `not a callable function`; only after that did the model abandon `developer` and guess `fs`. Contract corrected, both errors made self-correcting; live-verified prevention *and* recovery.
 
 ## C · Deferred performance items (approved)
 
