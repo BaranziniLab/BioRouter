@@ -320,6 +320,31 @@ visualizations. It opens automatically on the newest artifact.
   agent-browser/Playwright runs fail in ways that look like app bugs. Combine with
   the sandboxing and CDP port from `just agent-browser-ui`.
 
+- **Launching the GUI from an agent shell — read
+  [`docs/dev-gui-launch-runbook.md`](docs/dev-gui-launch-runbook.md) first.**
+  `just run-dev` works at a human terminal and *cannot* survive a shell without a
+  TTY. Four distinct failures there produce symptoms that read as application
+  bugs, and three of them look identical from the outside:
+  - `ELECTRON_RUN_AS_NODE=1` (commonly exported in agent shells) makes Electron
+    exit instantly with no window and no error — always `env -u ELECTRON_RUN_AS_NODE`.
+  - `electron-forge start` reads stdin for its `rs` command, so `< /dev/null`
+    hands it EOF and it takes the app down with it. Wrapping it in `script` to
+    fake a pty does not help; run the Electron binary directly against
+    `.vite/build/main.js` instead.
+  - a bare `npx vite` does **not** load `vite.renderer.config.mts`, so Tailwind
+    never runs and the app renders as unstyled serif HTML that is fully
+    functional — it looks like a broken app, it is a broken launcher. Always
+    pass `--config vite.renderer.config.mts`.
+  - verify with a **CDP screenshot** (`--remote-debugging-port`, then
+    agent-browser), never `screencapture` of the whole screen: the app window
+    sits behind the editor, raising it is unreliable, and a full-screen grab
+    captures the user's mail and browser history.
+
+  Ruled out with evidence, so don't re-diagnose: Electron *can* open a window
+  from an agent shell (a minimal app fires `ready` and stays alive), and the
+  staged `ui/desktop/src/bin/` binaries are usually fine — check with `file`
+  before suspecting them.
+
 ### Theme families (Parchment / Alma Mater / Roche Limit)
 
 Two orthogonal axes: light/dark mode (a `.dark` class on `<html>`) and **theme
