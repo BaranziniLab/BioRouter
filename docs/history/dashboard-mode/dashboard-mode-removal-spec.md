@@ -1,20 +1,34 @@
-# Dashboard mode — removal record (2026-07-18)
+# Dashboard mode — the removal specification
 
-Status: **done**. Dashboard mode has been removed from the desktop app. This is
-the record of what it was, why it went, exactly what came out, and what was
-deliberately kept.
+> **What this is.** The specification written to remove dashboard mode from the desktop app:
+> what the feature was, why it went, exactly what came out, and what was deliberately kept.
+> **Status:** Historical record (completed 2026-07-18). The removal was carried out as
+> specified. The [folder index](README.md) carries the same removal record in conformed prose;
+> this is the specification it was written from, kept for provenance.
+> **Audience:** maintainers working on the BioRouter desktop UI, particularly anyone about to
+> clean up something that shares dashboard mode's name.
+
+Dashboard mode has been removed from the desktop app. The forward-looking part of this
+document — what was deliberately kept, and what shares the name but must not be cleaned up —
+is still load-bearing.
+
+> **Warning.** This document and the [folder index](README.md) disagree about which releases
+> shipped dashboard mode and fold mode. Neither has been corrected here, because doing so would
+> mean picking a version number without evidence. Treat both as unverified until someone checks
+> the changelog.
 
 Companion historical documents — **do not rewrite them**, they remain true of
 their own moment:
 
-- [`../plans/2026-05-10-dashboard-mode.md`](../plans/2026-05-10-dashboard-mode.md)
-  and [`2026-05-10-dashboard-mode-design.md`](2026-05-10-dashboard-mode-design.md)
-- [`../plans/2026-05-10-canvas-dashboard.md`](../plans/2026-05-10-canvas-dashboard.md)
-  and [`2026-05-10-canvas-dashboard-design.md`](2026-05-10-canvas-dashboard-design.md)
-- [`../plans/2026-05-29-dashboard-fold-mode.md`](../plans/2026-05-29-dashboard-fold-mode.md)
-  and [`2026-05-29-dashboard-fold-mode-design.md`](2026-05-29-dashboard-fold-mode-design.md)
-- `docs/design/chat-groups-plan.md`, `docs/design/EXECUTION.md` — the successor design
-- `docs/release-notes/v1.76.0.md` — the release that shipped dashboard **fold mode** as its
+- [v2 — Dashboard Mode implementation plan](v2-dashboard-mode-plan.md)
+  and [v2 — Dashboard Mode design spec](v2-dashboard-mode-design.md)
+- [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md)
+  and [v3 — Canvas dashboard design spec](v3-infinite-canvas-design.md)
+- [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md)
+  and [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md)
+- [Chat groups: design judgement and reduced plan](../chat-groups/design-judgement-and-plan.md)
+  and the [UI overhaul execution status](../../design/ui-overhaul/execution-status.md) — the successor design
+- [Release notes v1.76.0](../../releases/notes/v1.76.0.md) — the release that shipped dashboard **fold mode** as its
   headline. Dashboard mode itself shipped in v1.75.0, which has no release-notes file;
   the `landing/about.html` changelog is the record for it.
 
@@ -67,7 +81,7 @@ changed.
 - **`useDiverge` was simplified, not deleted.** Diverge is very much alive; only
   its canvas branch came out. The hook now unconditionally calls
   `window.electron.createDivergedChatWindow(...)`, which is what the chat path
-  always did. See [`../../diverge-behavior-checklist.md`](../../diverge-behavior-checklist.md)
+  always did. See the [diverge behaviour checklist](../../desktop-ui/diverge-behavior-checklist.md)
   for the post-removal behaviour spec.
 - **`ResetPanel` still clears the three legacy localStorage keys.** Nothing
   writes them any more, but installs that ran an older build still carry the
@@ -83,10 +97,16 @@ mode. Do not "clean them up":
 
 - The **Auto Visualiser `render_dashboard` tool** — the composite multi-figure
   report artifact (`crates/biorouter-mcp/src/autovisualiser/tools_dashboard.rs`,
-  `docs/autovis-stress-test/*`).
+  [`docs/history/autovis-stress-test/`](../autovis-stress-test/README.md)).
 - The **Agent Drafter `dashboard` app archetype** — a KPI-grid starter for
-  generated BioRouter apps (`docs/agent-drafter-apps.md`,
-  `docs/apps-sdk-reference.md`).
+  generated BioRouter apps ([`docs/agent-drafter/apps-platform-design.md`](../../agent-drafter/apps-platform-design.md),
+  [`docs/apps-sdk/sdk-reference.md`](../../apps-sdk/sdk-reference.md)).
 
 Likewise "provider dashboard" / "billing dashboard" in provider docs means the
 LLM vendor's own web console.
+
+## Related documentation
+
+- [Dashboard mode](README.md) — the folder index, which carries the same removal record in conformed prose alongside the four generations of design.
+- [Chat groups: design judgement and reduced plan](../chat-groups/design-judgement-and-plan.md) — the successor design that made the canvas redundant.
+- [Diverge behaviour checklist](../../desktop-ui/diverge-behavior-checklist.md) — the post-removal specification for the one feature that had branched on canvas-versus-chat.

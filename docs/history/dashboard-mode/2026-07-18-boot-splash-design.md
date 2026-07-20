@@ -1,6 +1,18 @@
 # Boot splash — a centred BR mark that assembles itself
 
-**Status:** approved 2026-07-18 · **Branch:** `feat/boot-splash-mark-cascade`
+> **What this is.** The design for the desktop app's boot splash: a centred `BR` monogram that
+> assembles itself out of blur over a theme-correct ground, replacing a static mark and the
+> word "Loading…" in the corner.
+> **Status:** Historical record (completed 2026-07-18). Approved and built on branch
+> `feat/boot-splash-mark-cascade`; the splash markup and its per-family CSS are generated into
+> `index.html` by `npm run themes`.
+> **Audience:** developers working on the desktop app's boot path, and on theme generation.
+
+The splash is pre-React markup in `index.html`, because that is the only placement that can
+cover backend startup — the renderer awaits the daemon's host and port before React runs at all.
+It appears only when the wait is real: nothing paints for the first 400 ms, so a fast boot shows
+no splash rather than flashing one.
+
 **Design tool:** [`docs/design/boot-splash-studio.html`](../../design/boot-splash-studio.html)
 (self-contained; open it in a browser to replay the animation, switch theme
 families, and drag every timing value)
@@ -162,7 +174,7 @@ ground. Mutation-checked: adding a phantom fourth family fails two tests.
 
 ## 5. Lifecycle
 
-```
+```text
 t=0             page parsed; splash markup present but [hidden]
 t=400ms         threshold crossed → splash unhidden, cascade runs
 t=1030ms        settled; sweep bar looping
@@ -231,3 +243,9 @@ Mutation-checked: changing `STAGGER_MS` from 70 to 5 fails exactly one test.
 - **Always show the splash with a minimum hold.** Adds a floor to every launch,
   including fast ones. The threshold gives the same brand moment only when
   there is genuinely a wait to fill.
+
+## Related documentation
+
+- [Dashboard mode](README.md) — the folder index this design is filed under.
+- [Theme system architecture](../../design/theming/theme-system-architecture.md) — the generator that emits the splash's per-family CSS into `index.html`, and why the splash grounds are derived rather than authored.
+- [Design](../../design/README.md) — the folder holding the boot-splash studio this design was drawn in.

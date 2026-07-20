@@ -23,11 +23,11 @@ this worktree; `file:line` references point at real current lines.
 | Severity | Meaning | Open |
 |---|---|---|
 | [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 8 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 12 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 14 |
 | [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 8 |
 | [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 8 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
-| **Total** | | **44** |
+| **Total** | | **46** |
 
 ## Correctness risk
 
@@ -271,6 +271,32 @@ defaults. [Managed policy](../security/managed-policy.md) documents four: Defaul
 Project < Managed. It is not determinable from the docs whether the managed tier overrides plain
 `config.yaml` settings or only the permissions and hooks surfaces it scopes itself to.
 **Decision needed:** read `crates/biorouter/src/config/base.rs` and write one authoritative list.
+
+### The dashboard-mode removal record and its specification disagree on release numbers
+
+[The dashboard-mode index](../history/dashboard-mode/README.md) says dashboard mode shipped in
+v1.76.0 with fold mode following in v1.85.3. [The removal
+specification](../history/dashboard-mode/dashboard-mode-removal-spec.md) says v1.75.0 and
+v1.76.0. The two documents carry the same removal record, so one of them transcribed the
+versions wrongly, and there is no release-notes file for either candidate first release —
+`docs/releases/notes/` starts at v1.75.2. **Decision needed:** check the `landing/about.html`
+changelog, which the removal specification names as the record for the first release, and
+correct whichever document is wrong.
+
+### Two divergent snapshots of the Alma Mater light and Roche Limit theme studios existed
+
+Both studio pages were untracked working files when they were first committed, and they were
+committed twice from two working trees: the documentation reorganization filed one snapshot of
+each under [`design/theming/`](../design/theming/README.md) as
+`alma-mater-light-theme-studio.html` and `roche-limit-theme-studio.html` (commit `b2b13ee8`,
+13:19), and the theme feature commit `44995208` (18:03 the same day) committed another as
+`design/alma-mater-light-redesign.html` and `design/roche-limit-theme.html`. Identical `<title>`
+and section set, divergent bodies: the `theming/` Roche page adds a film-grain layer and an
+orbital diagram and drops the "Cell · resting versus active" specimen, and the two Alma Mater
+pages argue the same conclusions under different headings. The root duplicates were removed on
+2026-07-19 to leave one page per studio at the conformant path; the other snapshot is recoverable
+from `44995208`. **Decision needed:** someone with the design context should confirm the
+surviving pages are the intended ones, and port the dropped specimen if it is still wanted.
 
 ## Dead references
 

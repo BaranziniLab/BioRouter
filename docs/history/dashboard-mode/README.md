@@ -32,6 +32,8 @@ still load-bearing.
 | [v3 — Canvas dashboard implementation plan](v3-infinite-canvas-plan.md) | The 13-task plan for camera offsets, spiral spawn placement and the vertical picker popup. |
 | [v4 — Dashboard fold mode design spec](v4-window-fold-mode-design.md) | Collapsing chat windows into compact 240×72 cards, individually or all at once, with a live busy indicator and a muted accent palette. |
 | [v4 — Dashboard fold mode implementation plan](v4-window-fold-mode-plan.md) | The 13-task plan for the fold actions, the `FoldedCard` component and the `onBusyChange` prop on `BaseChat`. |
+| [Dashboard mode removal specification](dashboard-mode-removal-spec.md) | The specification the removal was carried out from, kept for provenance. This index carries the same removal record in conformed prose; the two disagree about which releases shipped dashboard mode and fold mode, and neither has been corrected. |
+| [Boot splash design](2026-07-18-boot-splash-design.md) | The centred `BR` monogram that assembles itself over a theme-correct ground while the backend starts. Written and built alongside the removal, on the same branch; it replaced a loader that never covered the slow case and was broken in dark mode. Not a dashboard-mode document — it is filed here because it shipped with this work. |
 
 The four specs and four plans remain true of their own moment. **Do not rewrite
 them** to match current reality; they are dated records, and each one carries a
