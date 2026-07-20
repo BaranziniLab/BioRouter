@@ -27,8 +27,11 @@ struct SubagentPromptContext {
     available_tools: String,
 }
 
+/// Why a child's turn ended early: `(wire code, human-readable message)`.
+type TurnAbort = (String, String);
+
 type AgentMessagesFuture =
-    Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>)>> + Send>>;
+    Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>, Option<TurnAbort>)>> + Send>>;
 
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
@@ -65,7 +68,7 @@ pub async fn run_complete_subagent_task(
         )
     };
 
-    let (messages, final_output) = match get_agent_messages(
+    let (messages, final_output, aborted) = match get_agent_messages(
         config,
         workflow,
         task_config,
@@ -78,7 +81,14 @@ pub async fn run_complete_subagent_task(
         Err(e) => return SubagentResult::from_error(format!("Failed to execute task: {e}")),
     };
 
-    let mut result = SubagentResult::from_conversation(&messages, final_output, return_last_only);
+    // An aborted turn is a failure even though the loop left a perfectly
+    // well-formed assistant message behind explaining it. Deciding this here,
+    // rather than letting `from_conversation` read that message as a summary, is
+    // what keeps a subagent that never ran from reporting `completed`.
+    let mut result = match aborted {
+        Some((code, message)) => SubagentResult::from_aborted_turn(&messages, &code, message),
+        None => SubagentResult::from_conversation(&messages, final_output, return_last_only),
+    };
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
     result
 }
@@ -223,6 +233,7 @@ fn get_agent_messages(
             reasoning_effort: None,
         };
 
+        let mut aborted: Option<TurnAbort> = None;
         let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
             agent
                 .reply(user_message, session_config, cancellation_token)
@@ -243,13 +254,16 @@ fn get_agent_messages(
                 Ok(AgentEvent::TurnAborted { code, message }) => {
                     // The subagent's turn failed. Its assistant Message (the
                     // human-readable "Ran into this error: …") is already in the
-                    // conversation, so the parent still sees *what* happened; stop
-                    // consuming rather than pretending the subagent finished.
+                    // conversation, so the parent still sees *what* happened —
+                    // but as prose indistinguishable from a real summary. Carry
+                    // the abort out so the envelope can say `error`.
                     tracing::error!(abort = code.wire_code(), "Subagent turn aborted: {message}");
+                    aborted = Some((code.wire_code().to_string(), message));
                     break;
                 }
                 Err(e) => {
                     tracing::error!("Error receiving message from subagent: {}", e);
+                    aborted = Some(("stream_error".to_string(), e.to_string()));
                     break;
                 }
             }
@@ -286,6 +300,6 @@ fn get_agent_messages(
             None
         };
 
-        Ok((conversation, final_output))
+        Ok((conversation, final_output, aborted))
     })
 }
