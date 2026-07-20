@@ -87,7 +87,7 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 ## H · Current wave
 
 - [x] **H1** Remove the recents count badge — `211668be`
-- [~] **H2** Alma Mater and Roche Limit: white canvas, grey sidebar; **Alma dark unchanged**, Parchment unchanged
+- [x] **H2** Alma Mater and Roche Limit: white canvas, grey sidebar; **Alma dark unchanged**, Parchment unchanged — `4d308c49` (new `--background-canvas` token; all six combos sampled live)
 - [~] **H3** Terminal: open every type, split every way, per-session terminals
 - [~] **H4** Terminal working directory always matches its session's working directory
 - [~] **H5** Terminal stress: busy terminals while launching more, open/close churn, many at once under narrow splits
@@ -97,6 +97,10 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 - [x] **H9** Stop-and-Send needs a smooth confirming animation — `aaf24a22`
 - [~] **H10** Sending while scrolled up must smoothly return to the bottom
 - [~] **H11** GitHub issue #19 — verify, harden, close if fixed
+
+## J · Surfaced by the fixes — need your decision
+
+- [?] **J1** Real contrast failures the old gate was hiding, now measured against the true canvas: Parchment light `text-accent` **4.35:1** (below AA 4.5); Parchment light `border-subtle` 1.23:1; Parchment dark `border-subtle` **1.00:1** (invisible); Alma dark `border-subtle` 1.24:1. All **pre-existing**, none introduced. Fixing them means changing Parchment and Alma dark, which you pinned as must-not-change — so this is your call.
 
 ## I · Remaining, in work order
 
