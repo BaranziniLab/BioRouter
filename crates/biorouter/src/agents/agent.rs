@@ -3779,6 +3779,57 @@ impl Agent {
                                         }
                                     }
 
+                                    // PAR-04: cancellation breaks the loop above the
+                                    // instant the token trips, abandoning every tool that
+                                    // had not yet returned. Their response slots are still
+                                    // the empty placeholders allocated up front, and the
+                                    // post-batch persistence loop below writes a `tool_use`
+                                    // for each request unconditionally — so without this
+                                    // backfill a cancelled batch persists `tool_use` blocks
+                                    // with no matching `tool_result`, which every provider
+                                    // rejects when the session is replayed.
+                                    //
+                                    // Fill every still-empty slot with an explicit
+                                    // "cancelled" result, exactly as chat mode does for the
+                                    // calls it skips. A slot that already holds a response
+                                    // (the tools that finished before the cancel) is left
+                                    // untouched, so no completed result is overwritten.
+                                    // Covers frontend tools too: the persistence loop below
+                                    // writes a `tool_use` for those as well, and a cancel can
+                                    // land while one is still awaiting its client reply.
+                                    if is_token_cancelled(&cancel_token) {
+                                        for request in frontend_requests.iter().chain(remaining_requests.iter()) {
+                                            let Some(response_msg) =
+                                                request_to_response_map.get(&request.id)
+                                            else {
+                                                continue;
+                                            };
+                                            let mut response = response_msg.lock().await;
+                                            let already_answered = response.content.iter().any(|c| {
+                                                matches!(
+                                                    c,
+                                                    MessageContent::ToolResponse(r)
+                                                        if r.id == request.id
+                                                )
+                                            });
+                                            if already_answered {
+                                                continue;
+                                            }
+                                            *response = response.clone().with_tool_response_with_metadata(
+                                                request.id.clone(),
+                                                Ok(CallToolResult {
+                                                    content: vec![Content::text(
+                                                        super::tool_execution::CANCELLED_MID_RUN_RESPONSE,
+                                                    )],
+                                                    structured_content: None,
+                                                    is_error: Some(true),
+                                                    meta: None,
+                                                }),
+                                                request.metadata.as_ref(),
+                                            );
+                                        }
+                                    }
+
                                     // BR-47: auto post-edit diagnostics. A successful
                                     // `text_editor` write is re-parsed with the developer
                                     // analyzer's tree-sitter grammars; any ERROR / MISSING
