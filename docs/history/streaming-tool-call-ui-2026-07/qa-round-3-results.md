@@ -1,4 +1,17 @@
-# QA Round 3 — closing the honest gaps + regression sweep
+# QA round 3 — closing the open gaps and the final regression sweep
+
+> **What this is.** The closing QA round: the five gaps rounds 1 and 2 left open, each driven to
+> a verdict, followed by a full regression sweep over the whole campaign's fixes.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** developers working on context compaction, permission gating and the desktop send
+> path, and reviewers checking the campaign's closing gate.
+
+The headline result is that compaction finally triggered — it never fired in rounds 1 or 2,
+because at the default threshold gpt-5.5's window needs roughly 840,000 tokens to reach it — and
+nothing degraded when it did. Concurrent cross-tab send proved correct, so `R2-02` was a harness
+artifact rather than a bug, and `R2-01` was re-verified live through the `execute_code` wrapper.
+One new finding, `R3-01`, was raised and fixed; `R3-02` through `R3-05` were documented and
+deferred. Findings carry `R3-NN` identifiers, defined where raised.
 
 Date: 2026-07-19
 Branch: `feat/streaming-tool-call-ui`
@@ -184,7 +197,7 @@ artifact of the kill/restart QA method, not the fix.
 
 ---
 
-# FINAL REGRESSION (round 3) — RESULTS
+## Final regression results
 
 Date: 2026-07-19 (evening re-drive)
 Branch: `feat/streaming-tool-call-ui`; HEAD at start `7b26f977` (R3-01 fix).
@@ -213,7 +226,7 @@ Driver: fresh tmux `gui-r3` → `gui-driver.mjs`; own daemon pid `15810` (port `
 
 ## Full suites (verbatim)
 
-```
+```text
 biorouter --lib
   test result: ok. 1476 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.51s
 
@@ -257,3 +270,9 @@ Note: no known-flake (`App.test.tsx`, `ConfirmationModal`, `ResetPanel`, `Instru
 - `~/.ssh/config` pristine (md5 `1e10727…`, 25 lines) — restored/untouched; the `~/.ssh` write was **denied**, not applied.
 - `/tmp/qa-r3fin/*` test files removed; ssh backup removed.
 - Protected sessions untouched: `gui-i2`/`gui3`/`vite` tmux and daemons `2513`/`69894`/`79004`. The gui-r3 daemon `15810` was intentionally killed by the send-blip test (did not respawn). My `gui-r3` tmux is killed at the end of this round.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this round belongs to.
+- [QA round 2 results](qa-round-2-results.md) — the preceding round, whose open gaps this one closed.
+- [Campaign final report](campaign-final-report.md) — the closing summary, including the items left deferred after this round.

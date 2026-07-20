@@ -28,6 +28,7 @@ table repeats it, so check that before treating a design as a description of shi
 |---|---|
 | [Context engineering](context-engineering.md) | An index of the features that give the agent durable background knowledge, preferences and workflows — memory, skills, workflows, config, hooks and delegation — pointing at each one's own guide. Superseded in body: the 2026-05-07 plain-markdown migration stripped its card components, and only the opening definition and this pointer table survive. |
 | [Subagents](subagents.md) | A guide to subagents — the temporary biorouter instances the main agent spawns to run a task in isolation — covering natural-language invocation, workflow-file configuration, extension and return-mode control, and what subagents are forbidden to do. Current. |
+| [Tool routing](tool-routing.md) | Which tool the agent should reach for and in what order of preference: the two-tier model, a per-tool "when to use and when not to", the overlap matrix, the three places in source where the same guidance is mirrored, and the always-on `tool_result` log line that makes every dispatched call inspectable. Current, with the tier reading awaiting confirmation and a deprecation proposal awaiting approval. |
 
 ## Subfolders
 
@@ -69,3 +70,8 @@ table repeats it, so check that before treating a design as a description of shi
 - [Biorouter agentic system explorer](../architecture/agentic-system-explorer.md) — the
   code-aligned account of how one request becomes context, tool work, durable state and a
   verified answer, if you want the loop end-to-end before reading a single subsystem.
+- [Streaming tool-call UI campaign](../history/streaming-tool-call-ui-2026-07/README.md) — the
+  July 2026 campaign that rewrote the loop's streaming decoders and tool dispatch, and wrote
+  the tool-routing guidance above.
+- [Extensions](../extensions/README.md) — the extensions that supply the tools this folder's
+  routing guidance chooses between.

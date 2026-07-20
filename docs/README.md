@@ -33,7 +33,7 @@ Two kinds of document live here, and the difference matters more than any other 
 |---|---|
 | [getting-started](getting-started/README.md) | The end-user on-ramp: installing the app and CLI, connecting a provider, running a first biomedical task, managing sessions, and day-to-day usage habits. |
 | [architecture](architecture/README.md) | The orientation-level map of the three layers and the crate and process boundaries, plus the agentic system explorer's account of how one request becomes context, tool work and a verified answer. |
-| [agent-loop](agent-loop/README.md) | The reasoning loop itself — durable context, subagents, lifecycle hooks — plus the designs behind its guardrails: command policy, sandboxing, checkpoints, session branching. |
+| [agent-loop](agent-loop/README.md) | The reasoning loop itself — durable context, subagents, lifecycle hooks, tool routing — plus the designs behind its guardrails: command policy, sandboxing, checkpoints, session branching. |
 | [agent-drafter](agent-drafter/README.md) | The app-authoring MCP extension that builds BioRouter apps, and the frozen 100-spec corpus and runbook used to stress-test it. |
 | [apps-sdk](apps-sdk/README.md) | The contract behind BioRouter apps in three layers: the shipped reference, the v2 design of record, and the phase roadmap. |
 | [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension. |
@@ -52,7 +52,7 @@ Two kinds of document live here, and the difference matters more than any other 
 
 ## Historical records
 
-[`history/`](history/README.md) is the archive: 24 topic folders covering May–July 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
+[`history/`](history/README.md) is the archive: 25 topic folders covering May–July 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
 
 The largest campaigns in there:
 
@@ -64,6 +64,7 @@ The largest campaigns in there:
 | [agent-drafter-stress-test](history/agent-drafter-stress-test/README.md) | A campaign driving a real model to build 100 agentic apps with Agent Drafter; the eight resulting drafter fixes shipped. |
 | [agent-drafter-testdrive-100](history/agent-drafter-testdrive-100/README.md) | A separate test drive against a 100-app spec corpus — per-app rubrics, three cross-cutting audits, and a six-wave remediation plan. |
 | [performance-2026-06](history/performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 plus an independent comparison against the jcode harness; nine fixes merged. |
+| [streaming-tool-call-ui-2026-07](history/streaming-tool-call-ui-2026-07/README.md) | The July 2026 streaming tool-call campaign: why a tool card appeared late and already finished, the streaming implemented across fourteen providers that never streamed, and three QA rounds over the result. |
 | [dashboard-mode](history/dashboard-mode/README.md) | Four generations of design for a free-floating multi-chat canvas, and the record of its removal on 2026-07-18. **The feature no longer exists.** |
 | [legacy-architecture](history/legacy-architecture/README.md) | Two superseded internals designs: a hand-written `Extension` trait framework that was **never shipped**, and the agent error model, whose two-tier policy still holds but whose every type name is gone. |
 

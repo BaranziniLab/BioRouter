@@ -1,6 +1,18 @@
-# Tool-errors audit — 2026-07-19 QA rounds
+# Tool-errors audit — every tool failure in QA rounds 1 and 2
 
-Scope: every tool error surfaced during today's QA rounds (rounds 1–2, incl. the
+> **What this is.** A sweep of every tool error the QA rounds surfaced in the daemon logs, each
+> classified as an intended rejection or a genuine defect.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** developers working on tool dispatch, the developer extension's path jail, and
+> permission gating.
+
+The audit was commissioned because a user hit `Path '…' is outside the working directory` during
+a BioOKF build and it was not clear whether the gate was doing its job. Eleven distinct errors
+appear below; six of them turn out to be the same single defect, and the rest are the system
+correctly refusing something. The audit also exposed a logging gap — no single log target carried
+tool name, outcome and error text together — which was closed as part of the same work.
+
+Scope: every tool error surfaced during the 2026-07-19 QA rounds (rounds 1–2, incl. the
 BioOKF `/tmp/biookf-rebuild` parallel build), swept from the daemon logs at
 `~/.local/state/biorouter/logs/server/2026-07-19/*.log`. Each is classified
 **INTENDED** (model misuse correctly rejected, an approval decline, or a genuine
@@ -50,12 +62,12 @@ per-call `working_directory` and runs anywhere with no such jail — so the mode
 write `/tmp/…` via `shell` but not via `text_editor`, an arbitrary asymmetry the model
 cannot predict.
 
-## Routing note
+## Why this is not a routing defect
 
 The tool the model chose for the SCHEMA.md write was `text_editor` (write), invoked
 from inside a `code_execution__execute_code` script (hence the "Module error" wrapper).
 Choosing `text_editor` for a single-file write is the **correct** primitive per
-`docs/tool-routing.md`; the `execute_code` wrapper is *forced*, not a routing miss —
+[tool routing](../../agent-loop/tool-routing.md); the `execute_code` wrapper is *forced*, not a routing miss —
 with `code_execution` enabled (default) `prepare_tools_and_prompt` strips the bare
 `developer/*` tools from the callable set (round-2 observation R2-06), so the model has
 no way to call `text_editor` directly. **Not a routing defect.**
@@ -69,5 +81,12 @@ together. The failures had to be reconstructed from three disjoint sources: raw
 buried inside `code_execution` result payloads in `LLM_REQUEST` dumps. A single
 always-on `info`-level line keyed `target: "tool_result"` was added at the universal
 dispatch choke point (`Agent::dispatch_tool_call`, `crates/biorouter/src/agents/agent.rs`)
-— see `docs/tool-routing.md` § "Tool-result logging". Filter with
+— see [tool routing](../../agent-loop/tool-routing.md), section "Tool-result logging". Filter with
 `RUST_LOG=tool_result=info`.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this audit belongs to.
+- [Tool routing](../../agent-loop/tool-routing.md) — the living guidance on which tool the agent should reach for, and the home of the tool-result logging reference.
+- [QA round 2 results](qa-round-2-results.md) — the round whose BioOKF build produced most of the errors classified here.
+- [Campaign final report](campaign-final-report.md) — where the defect found here is recorded against its fix.

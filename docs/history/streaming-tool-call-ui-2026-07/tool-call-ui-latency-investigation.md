@@ -1,4 +1,20 @@
-# Tool-Call UI Latency — Investigation Report
+# Tool-call UI latency — investigation report
+
+> **What this is.** The founding investigation of the July 2026 streaming campaign: why a tool
+> card appeared late and already finished, why there was a dead gap between consecutive tool
+> calls, and the two tracks of work proposed to fix both.
+> **Status:** Historical record (completed 2026-07-18). The fixes it proposed were implemented
+> and verified; see the [implementation status](streaming-implementation-status.md) for what
+> actually landed.
+> **Audience:** developers working on the agent loop's streaming decoders, tool dispatch, and the
+> desktop transcript.
+
+Two symptoms were reported and are investigated separately below as **A** and **B**. Read §0
+first: it was added after the investigation completed and it supersedes §3 as the primary
+explanation of symptom A, because the reporting user's provider turned out not to stream at all.
+Hypotheses carry `H<n>` identifiers, introduced where they are first stated and resolved in §5;
+proposed fixes carry the section numbers `§6.1a`–`§6.2d`, which the implementation status and the
+[measurement register](latency-measurement-register.md) both cite.
 
 **Date:** 2026-07-18
 **Repo:** `/Users/wanjun/Desktop/biorouter` (branch `chore/remove-dashboard-mode`, HEAD `b9a37d72`)
@@ -16,7 +32,7 @@
 
 The report flagged as blocking that `base.rs:648` defaults `supports_streaming()` to `false` and that `lead_worker.rs` never overrides it. That is correct, but it under-scoped the problem: **the user's own configured provider is affected directly, with no lead model involved.**
 
-```
+```text
 ~/.config/biorouter/config.yaml:178  BIOROUTER_PROVIDER: versa_azure
 ~/.config/biorouter/config.yaml:179  BIOROUTER_MODEL: gpt-5.5-2026-04-24
 ```
@@ -277,7 +293,7 @@ Second defect in the same loop: it inspects only `delta.tool_calls` and `reasoni
 
 **Empirically reproduced** by rendering the real component with `toolResponse=undefined`:
 
-```
+```text
 isStreamingMessage={false} -> "Ran Running sleep 60 · Finished"                   (green/success)
 isStreamingMessage={true}  -> "Working on Running sleep 60 · Working through …"   (amber/loading)
 ```
@@ -332,7 +348,7 @@ Full sorted bookkeeping list (ms), n=44: `2.7, 2.8, 3.0, 3.0, 3.3, 3.6, 3.7, 3.7
 
 Raw adjacent markers confirm the tightness directly:
 
-```
+```text
 2026-07-06T09:33:55.540355Z Tool call completed
 2026-07-06T09:33:55.541531Z WAITING_LLM_START      (1.2ms)
 2026-07-06T09:34:00.169224Z Tool call completed
@@ -573,7 +589,7 @@ Nothing below ships without a before/after number. The existing instrumentation 
 **0.1 — Fix the two mislabeled marker pairs.**
 - `reply_parts.rs:220-230`: rename to `WAITING_LLM_STREAM_OPEN` / `_OPENED`, and add `WAITING_LLM_STREAM_EXHAUSTED` where the returned stream ends (post-loop inside the `try_stream!` block). Three real spans: connect+TTFB, generation, total.
 - `agent.rs:2055`/`:2133`: move/duplicate the pair **inside** the boxed future at `agent.rs:2163`, around `inner.await`, after the `tool_dispatch_limits::acquire(...)` guard:
-  ```
+  ```text
   TOOL_EXEC_START name=<tool> id=<request_id>
   TOOL_EXEC_END   name=<tool> id=<request_id> dur_ms=<…>
   ```
@@ -591,7 +607,7 @@ Nothing below ships without a before/after number. The existing instrumentation 
 
 **0.4 — Frontend.** Behind `localStorage.setItem('br_perf','1')`, `performance.mark()` per SSE event keyed by message id in `chatStreamStore.tsx`, `performance.measure()` to first paint of the card via a `useLayoutEffect` in `ToolCallWithResponse`.
 
-**0.5 — Baseline gate.** Run all three fixtures 5× on `main`, commit to `docs/perf/2026-07-18-baseline.md`. **No fix is landed until its fixture is re-run and the delta recorded.**
+**0.5 — Baseline gate.** Run all three fixtures 5× on `main`, commit to [the latency measurement register](latency-measurement-register.md). **No fix is landed until its fixture is re-run and the delta recorded.**
 
 ### 6.1 Stage 1 — make tool calls APPEAR SOONER (zero wall-clock change)
 
@@ -746,7 +762,7 @@ Items 7 and 8 are a pair — 8 without 7 just moves the serialization one layer 
 3. **Session persistence integrity.** No new content variant enters SQLite. Old sessions remain readable; mixed-shape history must replay. Cancelled/truncated streams drop buffered tool contents, never half-flush.
 4. **MCP protocol semantics.** Per-dispatch progress-token routing (`mcp_client.rs:731-742`) must keep delivering each dispatch's notifications to exactly that dispatch once the outer mutex is gone. `BIOROUTER_TOOL_MAX_CONCURRENT=1` must remain a working full rollback.
 5. **Secret-redaction boundary.** The `SecretGuard` cache must not let a `.biorouterignore` edit go stale. Own commit, own review. Per `HOWTOAI.md`, security logic and MCP/concurrency changes require human review regardless of AI assistance — §6.2a–d all qualify.
-6. **Every fix carries a before/after number** in `docs/perf/2026-07-18-baseline.md`. A fix without a measurement is not landed.
+6. **Every fix carries a before/after number** in [the latency measurement register](latency-measurement-register.md). A fix without a measurement is not landed.
 
 ---
 
@@ -1332,7 +1348,7 @@ The card's clock uses the **same** `useElapsedMs` + `formatElapsed`, appended to
 
 Resulting transcript narrative, continuous and never blank:
 
-```
+```text
 ● Preparing Reading agent.rs                   (grey dot, args streaming, ~1.2s)
 ● Working on Reading agent.rs · 0.4s           (amber pulse, executing)
 ● Ran Reading agent.rs · 3 results ready       (green, done)
@@ -1528,3 +1544,10 @@ This directly explains the sampled log's anomaly: **both** `WAITING_LLM_STREAM_S
 ---
 
 *Report compiled 2026-07-18. All file:line references verified at `b9a37d72`. Claims marked MEASURED are backed by the log corpus or a runtime test; everything else is static reading and is labeled where uncertain.*
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this investigation opened.
+- [Latency measurement register](latency-measurement-register.md) — the before/after numbers §6.5 required of every fix proposed here.
+- [Streaming implementation status](streaming-implementation-status.md) — which of these proposals landed, which were verified, and which were only asserted.
+- [Campaign final report](campaign-final-report.md) — how the whole effort closed, including the QA rounds over these fixes.

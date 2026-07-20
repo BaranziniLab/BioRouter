@@ -1,8 +1,17 @@
-# Tool-call UI latency — implementation status (2026-07-18)
+# Streaming implementation status — what landed against the latency investigation
 
-Integration verification of the work implemented against
-[`docs/investigations/2026-07-18-tool-call-ui-latency.md`](../investigations/2026-07-18-tool-call-ui-latency.md).
-Measurement register: [`2026-07-18-baseline.md`](2026-07-18-baseline.md).
+> **What this is.** The integration verification of the streaming latency track: what landed,
+> what is verified by test, what is asserted but unmeasured, and the two bugs that only live GUI
+> testing caught.
+> **Status:** Historical record (completed 2026-07-18).
+> **Audience:** developers working on provider streaming, tool dispatch and the desktop
+> transcript, and reviewers deciding whether a claim in this track is backed.
+
+The work was implemented against the
+[tool-call UI latency investigation](tool-call-ui-latency-investigation.md); the before/after
+numbers it owes live in the [latency measurement register](latency-measurement-register.md).
+Section numbers such as `§6.2a` refer to the investigation's proposal sections, and `H6` and its
+siblings are that report's hypothesis identifiers.
 
 This document records what landed, what is **verified**, and what is **asserted
 but unmeasured**. Where the two differ, the difference is stated rather than
@@ -80,7 +89,7 @@ Every other protected path is clean in our commits:
 **Concurrent session's uncommitted work: intact.** Verified before and after my
 commit — 9 modified + 4 untracked files, unchanged throughout:
 
-```
+```text
  M docs/design/alma-mater-theme.md
  M ui/desktop/scripts/check-contrast.mjs
  M ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx
@@ -171,7 +180,7 @@ All run at `bebfb664` on the pre-rebase base (see §0 caveat).
 
 `./scripts/clippy-lint.sh` failed with exit 101:
 
-```
+```text
 error: unused import: `tokio::sync::Mutex`
    --> crates/biorouter-cli/src/scenario_tests/scenario_runner.rs:145:9
     |
@@ -337,7 +346,7 @@ would make every Bedrock Claude model stream. Not pursued for now.
 
 ### 9.3 The original symptom, measured
 
-```
+```text
 +0.00s  WAITING_LLM_STREAM_OPEN
 +5.39s  WAITING_LLM_STREAM_OPENED    <- the whole perceived gap is here
 +5.41s  TOOL_EXEC_START              <- tool fires 20 ms after the response lands
@@ -452,3 +461,10 @@ reducer (e.g. clearing on `openTab` DEDUPE) would remove the dependence on the
 component→reducer round-trip — but done naively it can DROP a legitimate first
 message when a urlSync echo dedupes before BaseChat consumes. Needs its own
 careful change if ever attempted.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this status record belongs to.
+- [Tool-call UI latency investigation](tool-call-ui-latency-investigation.md) — the report this work was implemented against.
+- [Latency measurement register](latency-measurement-register.md) — the before/after register this document's unmeasured items are owed to.
+- [QA round 1 results](qa-round-1-results.md) — the first QA sweep over the tracks recorded here.

@@ -1,7 +1,7 @@
 //! Opt-in phase timing for the agent turn loop.
 //!
 //! Stage 0 of the tool-call latency investigation
-//! (`docs/investigations/2026-07-18-tool-call-ui-latency.md` §6.0): before any
+//! (`docs/history/streaming-tool-call-ui-2026-07/tool-call-ui-latency-investigation.md` §6.0): before any
 //! fix can be justified, the individual phases of a turn have to be separately
 //! measurable. `Phase::start(name)` returns a guard that emits
 //!

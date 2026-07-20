@@ -1,10 +1,20 @@
-# Session trace — 2026-07-18/19 latency → streaming → QA campaign
+# Session trace — latency, streaming and the QA campaign
 
-Full traceability of user instructions, tests, findings, and fixes. Detail docs:
-`docs/investigations/2026-07-18-tool-call-ui-latency.md`,
-`docs/perf/2026-07-18-implementation-status.md` (§9–11),
-`docs/qa/2026-07-19-qa-round1.md`, `-round2.md`, `-tool-errors-audit.md`,
-`docs/tool-routing.md`. Branch: `feat/streaming-tool-call-ui` (pushed continuously).
+> **What this is.** The traceability spine of the 2026-07-18/19 campaign: every user
+> instruction in the order it was given, mapped to the tests run and the commit that answered
+> it.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** anyone auditing what was asked for against what was actually built.
+
+The campaign ran on branch `feat/streaming-tool-call-ui`, pushed continuously. This document
+carries no analysis of its own — it exists so that any fix can be walked back to the instruction
+that prompted it, and so that the gap between "tests asked for" and "tests run" is on the record
+rather than implicit.
+
+Detail documents: the [latency investigation](tool-call-ui-latency-investigation.md), the
+[implementation status](streaming-implementation-status.md) (§9–11),
+[round 1](qa-round-1-results.md) and [round 2](qa-round-2-results.md), the
+[tool-errors audit](tool-errors-audit.md), and [tool routing](../../agent-loop/tool-routing.md).
 
 ## User instructions, in order given
 1. Investigate why tool calls appear in the UI nearly-finished and why there is a
@@ -77,3 +87,9 @@ All fixes carry revert-proven gates unless explicitly recorded otherwise
 verification backed every claim that unit tests could not reach. Known
 environment hazards recorded: shared-worktree collisions (other sessions),
 cargo target-dir contention, DOM-lies-across-tabs, driver focus races.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this trace belongs to.
+- [Campaign final report](campaign-final-report.md) — the same work ordered by round, with the closing gate status.
+- [Tool-call UI latency investigation](tool-call-ui-latency-investigation.md) — the founding investigation instruction 1 asked for.

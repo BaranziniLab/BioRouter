@@ -1,4 +1,17 @@
-# QA Round 1 — feat/streaming-tool-call-ui
+# QA round 1 — first sweep over the merged streaming tracks
+
+> **What this is.** The first of three QA rounds over the merged streaming tool-call work: a
+> driven sweep of the desktop GUI covering the named "Recent Chats" bug, the sidebar, chat
+> tasks, tabs, visualizations and creative probes.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** developers working on the desktop transcript and tool-card rendering, and anyone
+> tracing an `R1-NN` finding.
+
+Findings raised in this round carry `R1-NN` identifiers, defined where each is first stated. Two
+were confirmed: a sidebar highlight desync, and — the significant one — failed tool calls
+rendering as green successes because `rmcp` serializes `isError` in camelCase while the UI read
+snake_case. Twelve areas passed clean. The observations at the end are deliberately not promoted
+to findings; they seeded [round 2](qa-round-2-results.md).
 
 Date: 2026-07-19
 Driver: Electron GUI via Playwright gui-driver (tmux), vite renderer on :5173, staged debug backend (Jul 19 03:30).
@@ -180,3 +193,10 @@ Reverted ONLY the three source files (`useChatGroupsUrlSync.ts`, `ToolCallWithRe
 ### NEW observations (seed next round — none rise to a confirmed product bug)
 - **Possible unintended active-tab switch**: while driving the paid-turn spot-checks, a `sleep 30` send I intended for session 53 landed in session 49 (the active tab had become 49 without an explicit navigate on my part). I could not deterministically reproduce it and it overlapped heavy eval/click driver traffic + the documented "DOM lies across tab switches" caveat, so this is UNCONFIRMED and more likely driver/interaction noise than a product defect — but tab-focus stability under rapid programmatic interaction is worth a deliberate probe next round.
 - **Driver-only (not product)**: the `/pair` chat composer occasionally dropped typed input even with `document.activeElement === chat-input` immediately after a turn settled; a second click+type landed. This is a gui-driver focus race, not an app bug (real keyboard focus works).
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this round belongs to.
+- [QA round 2 results](qa-round-2-results.md) — the next round, which took the observations above as its seed.
+- [Streaming implementation status](streaming-implementation-status.md) — the merged tracks this round was sweeping.
+- [Campaign final report](campaign-final-report.md) — the closing summary of all three rounds.

@@ -1,10 +1,21 @@
-# Tool-call UI latency — before/after measurements
+# Tool-call UI latency — before and after measurement register
 
-Companion to [`docs/investigations/2026-07-18-tool-call-ui-latency.md`](../investigations/2026-07-18-tool-call-ui-latency.md).
+> **What this is.** The before/after number for every latency fix the July 2026 streaming
+> campaign proposed — including, honestly, the ones that were never measured.
+> **Status:** Historical record (completed 2026-07-18).
+> **Audience:** developers working on provider streaming and tool dispatch, and anyone checking
+> whether a claimed latency improvement was ever demonstrated.
+
+The [latency investigation](tool-call-ui-latency-investigation.md) imposed a rule on itself: a
+fix without a measurement does not count as landed. This file is where those measurements were
+to go. Several entries record `NOT MEASURED` because taking the number needs a live provider
+endpoint that was not available in the implementing environment — that is the register doing its
+job, not a gap in it. Section numbers (`§6.1b`, `§6.2b`, `§6.2c`) refer to the investigation's
+proposal sections.
 
 Invariant 6 of §6.5 of that report:
 
-> Every fix carries a before/after number in `docs/perf/2026-07-18-baseline.md`.
+> Every fix carries a before/after number in this register.
 > A fix without a measurement is not landed.
 
 This file is the register. **An entry with no numbers means the corresponding
@@ -226,3 +237,9 @@ normalization and any provider replay still see paired, request-ordered blocks.
 `cargo test -p biorouter --lib agents::` (415 pass), `cargo test --test
 mcp_integration_test` (4 pass, no cassette re-record), and `ui/desktop npm run
 test:run` (1381 pass) all green.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this register belongs to.
+- [Tool-call UI latency investigation](tool-call-ui-latency-investigation.md) — the report whose §6.5 invariant 6 required this register to exist.
+- [Streaming implementation status](streaming-implementation-status.md) — what landed against those proposals, and the live smoke-test numbers taken later.

@@ -413,7 +413,7 @@ describe('ChatStreamRegistry', () => {
 
   // ---- SEND-HARDENING: a system-level blip on the send/load path must degrade
   // to an inline turn error, never the transcript-nuking "Failed to Load
-  // Session" card. See docs/qa/2026-07-19-qa-round2.md (SEND-HARDENING).
+  // Session" card. See docs/history/streaming-tool-call-ui-2026-07/qa-round-2-results.md (SEND-HARDENING).
 
   it('degrades a send into an unreachable backend to an inline error, never the fatal card (gate a)', async () => {
     // The user reproduction: biorouterd is briefly down (a QA restart), the

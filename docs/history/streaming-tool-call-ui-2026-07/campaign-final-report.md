@@ -1,12 +1,24 @@
-# Final report — streaming latency track + QA campaign (2026-07-18/19)
+# Final report — streaming latency track and QA campaign
 
-Branch `feat/streaming-tool-call-ui`, in sync with origin. Companion docs:
-`docs/qa/2026-07-19-session-trace.md` (every instruction→fix→sha),
-`docs/qa/2026-07-19-qa-round{1,2,3}.md`, `-tool-errors-audit.md`,
-`docs/tool-routing.md`, `docs/investigations/2026-07-18-tool-call-ui-latency.md`,
-`docs/perf/2026-07-18-implementation-status.md`.
+> **What this is.** The closing report of the 2026-07-18/19 streaming tool-call campaign: what
+> was found and fixed in each round, what was deliberately left unfixed, and what still needs a
+> decision.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** maintainers deciding what to merge, and anyone tracing a fix back to its round.
 
-## Final gate status (Round-3 regression, all green)
+The campaign ran on branch `feat/streaming-tool-call-ui` in two phases: a streaming latency track
+that merged to `main`, then a three-round QA campaign over the result. Findings are numbered by
+the round that raised them (`R1-01`, `R2-01`, `R3-05`); each round report defines its own. This
+report collects the ones that survived to the end.
+
+Companion documents: the [session trace](session-trace.md) (every instruction, fix and commit
+SHA), [rounds 1](qa-round-1-results.md), [2](qa-round-2-results.md) and
+[3](qa-round-3-results.md), the [tool-errors audit](tool-errors-audit.md),
+[tool routing](../../agent-loop/tool-routing.md), the
+[latency investigation](tool-call-ui-latency-investigation.md), and the
+[implementation status](streaming-implementation-status.md).
+
+## Final gate status (round-3 regression, all green)
 - `cargo test -p biorouter --lib` — 1476 passed, 0 failed
 - `cargo test -p biorouter-mcp --lib` — 809 passed, 2 ignored, 0 failed
 - `cargo test --test mcp_integration_test` — 4 passed
@@ -40,7 +52,7 @@ Branch `feat/streaming-tool-call-ui`, in sync with origin. Companion docs:
 ### Directives (between R1 and R2)
 - Preview `/tmp` + symlink containment `dc66324b`; preview auto-open pure fn `84296bb9`;
   **Fully-Automatic policy: broad file access + approval only for sensitive ops,
-  preview parity** `1079f909`; tool-routing tiers in prompts + `docs/tool-routing.md` `b925d72a`;
+  preview parity** `1079f909`; tool-routing tiers in prompts + [tool routing](../../agent-loop/tool-routing.md) `b925d72a`;
   markdown preview images/links/GFM `3db5d420`.
 
 ### Round 2
@@ -75,7 +87,7 @@ Branch `feat/streaming-tool-call-ui`, in sync with origin. Companion docs:
   bubble (renderer-only; backend already deduped). Synchronous in-flight latch.
 - Pre-existing `fmt` violation from R2-01 work fixed `1a4b5058`.
 
-## Deferred / documented — NOT fixed (need your call)
+## Deferred and documented — not fixed, awaiting a decision
 - **R3-02** "Provider not set" card has no Retry after an *out-of-band* daemon
   restart (harness artifact; in-app own-daemon path already recovers). Follow-up feature.
 - **R3-03** double summary block only under pathological compaction threshold; not
@@ -86,13 +98,17 @@ Branch `feat/streaming-tool-call-ui`, in sync with origin. Companion docs:
 - **R2-06** routing guidance says "call developer/shell directly" but code_execution
   mode strips developer tools from the set — guidance is aspirational there.
 
-## Deprecation proposal — AWAITING YOUR APPROVAL (nothing removed)
-Per `docs/tool-routing.md`:
+## Deprecation proposal — awaiting approval, nothing removed
+
+Per [tool routing](../../agent-loop/tool-routing.md):
 1. `computercontroller/automation_script` shell-mode — near-total overlap with `developer/shell`.
 2. Three URL-fetch surfaces (`web_scrape` / shell curl / execute_code fetch) — designate `web_scrape` canonical.
 3. `files_server`/`compute_server` — rename/redescribe so they aren't picked for the user's own workspace.
 
-## Security review checklist (HOWTOAI.md: MCP/concurrency/security need human review)
+## Security review checklist
+
+Per `HOWTOAI.md`, MCP, concurrency and security logic all need human review.
+
 - **R2-01 residual**: a *dynamically-constructed* sensitive path inside a script
   (`` `${dir}/config` ``) is not statically resolvable by the shell/execute_code
   scanner. Deeper fix = gate the code-execution extension's INNER dispatch boundary
@@ -104,19 +120,28 @@ Per `docs/tool-routing.md`:
   routing under concurrency; `BIOROUTER_TOOL_MAX_CONCURRENT=1` is the rollback.
 - Backend path classification is lexical (no realpath); preview is realpath-canonical — asymmetry documented.
 
-## What was NOT driven (honest)
+## What was not driven
+
 Backend-kill-of-shared-daemon (destructive to concurrent runs), 3 simultaneous
 paid streaming turns, sub-800px widths (Electron clamp), full 262-file BioOKF
 transcription (scoped to scaffold+core), model-switch via composer chip (switching
 is via Settings), 2k-word single-line paste (driver readline limit).
 
-## Process honesty
+## Process honesty — what went wrong in the running of the campaign
 Three vacuous tests were written and **caught by revert-proof discipline** before
 shipping (ProgressiveMessageList depth test, two reducer tests) — recorded, not hidden.
 Shared-worktree collisions, cargo target contention, and DOM-lies-across-tabs were
 recurring environment hazards, worked around and documented. Transient Anthropic
 529/500 errors killed Round 3's first attempt; re-launched cleanly (no partial state).
 
-## State
+## Branch state at close
+
 `feat/streaming-tool-call-ui` fully committed + pushed. `main` has the streaming
 track (78471bdc) but NOT the QA-campaign fixes — those await your merge decision.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index, and the shape of the whole effort.
+- [Session trace](session-trace.md) — the same work ordered by user instruction rather than by round.
+- [Tool-errors audit](tool-errors-audit.md) — the log sweep behind the `INTENDED` against `DEFECT` classification cited above.
+- [Tool routing](../../agent-loop/tool-routing.md) — the living document the deprecation proposal above belongs to.

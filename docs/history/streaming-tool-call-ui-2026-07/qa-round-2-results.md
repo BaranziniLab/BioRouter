@@ -1,4 +1,20 @@
-# QA Round 2 — directive verification + BioOKF parallel-build orchestration
+# QA round 2 — directive verification and the BioOKF parallel build
+
+> **What this is.** The second QA round: verification of the five directives issued between
+> rounds 1 and 2, a parallel BioOKF knowledge-base build driven across three tabs, and the
+> security blocker that build exposed.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** developers working on permission gating, the preview panel, and the desktop send
+> path.
+
+This is the longest round report of the campaign, and it holds its most serious finding: `R2-01`,
+in which Fully-Automatic mode wrote to `~/.ssh/config` with no approval because the sensitive-op
+gate inspected only file-editor path arguments while file operations hide inside `execute_code`
+and shell bodies. It also carries the send-path hardening work and three iterations of a
+repeat-until-clean build loop, the second of which caught the `R2-01` fix over-correcting.
+
+Findings carry `R2-NN` identifiers; defects found inside the build loop carry
+`BIOOKF-I<n>-DEFECT-<n>`. Each is defined where it is raised.
 
 Date: 2026-07-19
 Branch: `feat/streaming-tool-call-ui`
@@ -17,7 +33,7 @@ Ground truth for tool routing / message landing: `~/.local/share/biorouter/sessi
 
 **Central architectural fact (verified in source):** with the `code_execution` extension enabled (it is, by default), `prepare_tools_and_prompt` in `crates/biorouter/src/agents/reply_parts.rs` (lines ~127-140) **`retain`s only `code_execution__*` tools** (plus `subagent`/`subagent_status`). `developer/shell` and `developer/text_editor` are **stripped from the model's callable tool set entirely.** The only path to shell/text_editor is `import { shell|text_editor } from "developer"` *inside* an `execute_code` call. Confirmed empirically: across every recent session the model only ever calls `code_execution__{execute_code,search_modules,read_module}` — never a bare `developer__*` tool.
 
-Consequence: the directive/`docs/tool-routing.md` instruction to "call `developer/shell` directly … don't wrap a single tool call in a script" is **literally unsatisfiable in the default config** — the primitive tools are not in the tool list. What the model *can* do (and does) is call the right primitive *inside* `execute_code`. That is what I scored.
+Consequence: the directive and [tool routing](../../agent-loop/tool-routing.md) instruction to "call `developer/shell` directly … don't wrap a single tool call in a script" is **literally unsatisfiable in the default config** — the primitive tools are not in the tool list. What the model *can* do (and does) is call the right primitive *inside* `execute_code`. That is what I scored.
 
 **toolRoutingResults (prompt → tool actually used, from DB):**
 
@@ -123,7 +139,7 @@ Working root `/tmp/biookf-rebuild`. Reference: 262 files (excl `.git`). Three GU
 | **R2-02** | QA harness / multi-session driving | major (harness) | `gui-driver.mjs` readline **wedges on very-long single-line commands** (the trailing Enter is swallowed), hanging the REPL; and **firing a 2nd tab's turn while another streams fails** because the Send control is disabled globally during a stream. Blocks robust 3-tab concurrent-send orchestration. Workaround: file-backed short prompts; interleave via view-switch not concurrent-send. Suspect: `ui/desktop/scripts/debug/gui-driver.mjs`; possibly shared composer/send state across tabs. |
 | **R2-03** | code_execution sandbox (Boa) | minor | The sandbox JS engine rejects **`String.raw` tagged-template literals** (`SyntaxError … got 'raw'`), so a model that reaches for `String.raw` for file bodies fails its first write and must retry. Not fatal (model self-recovered) but wastes a turn. Suspect: Boa engine version / `code_execution_extension.rs`. |
 | **R2-05** | dev harness / stale main bundle | minor (harness) | The dev harness serves a **live renderer** but launches Electron against a **pre-built `.vite/build/main.js`** that can lag the tree by hours. All `main.ts` fixes (preview policy dc66324b, the main half of 1079f909) are invisible until main.js is rebuilt — the pre-fix "Access denied" reproduced until I rebuilt via `electron-forge start`. A QA trap; not a product regression. |
-| **R2-06** | tool-routing directive vs runtime | minor | `docs/tool-routing.md` / the routing guidance tell the model to "call `developer/shell`/`text_editor` **directly** … don't wrap a single op in a script," but with `code_execution` enabled (default) `prepare_tools_and_prompt` strips those tools from the callable set, so the guidance is literally unsatisfiable. Behaviour is still correct (right primitive inside `execute_code`), but the directive text and the runtime disagree. |
+| **R2-06** | tool-routing directive vs runtime | minor | [Tool routing](../../agent-loop/tool-routing.md) and the routing guidance tell the model to "call `developer/shell`/`text_editor` **directly** … don't wrap a single op in a script," but with `code_execution` enabled (default) `prepare_tools_and_prompt` strips those tools from the callable set, so the guidance is literally unsatisfiable. Behaviour is still correct (right primitive inside `execute_code`), but the directive text and the runtime disagree. |
 | **R2-07** | preview / copy | polish | The `~/.ssh` preview denial message says "outside allowed directories," but in Auto mode it is denied for being **sensitive**, not for being outside the roots (Auto admits any non-sensitive path). Slightly misleading reason string. Suspect: `ui/desktop/src/main.ts` `read-artifact-file` handler. |
 | **R2-08** | compaction (not verified) | info | Auto-compaction was **not triggered** in any driven session, so the "what degrades after compaction" question is unanswered this round. No product defect observed — simply not reached within the turn budget. |
 
@@ -162,7 +178,7 @@ Driver: own fresh Electron via `gui-driver.mjs` on the shared vite `:5173` (tmux
 
 So the read gate never denied the file. The problem is **the path never reached that gate**: with the `code_execution` extension enabled (the default), the model never calls `text_editor`/`shell`/`write_file` directly — it calls `code_execution__execute_code` with a `code` string that imports and invokes those primitives inside the script (same wrapper that hollowed out the R2-01 security gate). `fileArtifactPathsFromToolCall` only recognised `shell`/`bash`/`text_editor`/`*_file` **as the top-level tool name**, so for an `execute_code` call it saw only `{code, tool_graph}`, matched nothing, and returned `[]`. Every file the agent wrote was invisible to the panel. Confirmed live before the fix (real `artifactUtils.ts` imported into the running renderer):
 
-```
+```text
 fileArtifactPathsFromToolCall(
   "code_execution__execute_code",
   { code: 'text_editor({ path: "/tmp/biookf-rebuild/SCHEMA.md", command: "create", … })', tool_graph:{} },
@@ -226,7 +242,7 @@ gone. The pure mount-time `useChatStream` load effect hits the identical branch.
 So the same one-line defect fired whether the trigger was a send or a remount.
 Probe (real code, 2 microtask ticks):
 
-```
+```text
 cold loadSession, resumeAgent rejects TypeError('Failed to fetch')
   BEFORE fix → sessionLoadError = 'Failed to fetch'   (FATAL CARD)
   AFTER  fix → turnError = {code:'session_load_unreachable', scope:'transport', retryable:true}, sessionLoadError undefined
@@ -330,7 +346,7 @@ To run the live check solo (no concurrent QA holding the profile):
 
 ---
 
-# Round-2 HOTFIX VERIFICATION (re-drive)
+## Hotfix verification — the re-drive
 
 Date: 2026-07-19 ~14:35 PT
 Backend under test: staged `biorouterd`/`biorouter` rebuilt from the isolated
@@ -386,7 +402,7 @@ Console-error hook (`window.__qaErrs`) tallied **0** across the whole spot-check
 
 ## Suites (all green)
 
-```
+```text
 cargo test -p biorouter --lib        1475 passed; 0 failed; 0 ignored (238.46s)
 cargo test -p biorouter-mcp --lib     809 passed; 0 failed; 2 ignored (30.04s)
 npm run test:run                     1405 passed; 161 files; 0 failed (255.25s)
@@ -538,7 +554,7 @@ honest partial.
   sensitive-ops gate false-positive (`<type>/` → "writes to /"). Per the rule
   *CLEAN=true only if ZERO defect-class errors occurred*, this run is **NOT CLEAN**.
 
-```
+```text
 clean = false
 coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%" }
 ```
@@ -677,7 +693,7 @@ compaction" remains an honest partial; no product defect observed.
 Per the rule *CLEAN=true only if ZERO defect-class errors occurred*, this run is
 **CLEAN**.
 
-```
+```text
 clean = true
 coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%" }
 defects = []   # zero defect-class errors; DEFECT-1 false-positive fully resolved
@@ -809,7 +825,7 @@ button is the reliable submit. Both are QA-harness limitations, not product defe
 
 Per the rule *CLEAN=true only if ZERO defect-class errors occurred*, iteration 3 is **CLEAN**.
 
-```
+```text
 clean = true
 coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%", bonus: "research/README.md" }
 defects = []   # zero defect-class errors; both path-jail (90bc2acf) and sensitive-ops (7bca4b5e) fixes verified clean
@@ -818,3 +834,11 @@ defects = []   # zero defect-class errors; both path-jail (90bc2acf) and sensiti
 Cleanup: `/tmp/biookf-rebuild` left in place as the iteration-3 artifact; the `gui-i3` tmux +
 its Electron/`biorouterd` left running for follow-up; the concurrent `gui3`/`vite`/`gui-i2`
 sessions were never touched.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this round belongs to.
+- [QA round 1 results](qa-round-1-results.md) — the preceding round, whose observations seeded this one.
+- [QA round 3 results](qa-round-3-results.md) — the closing round, which re-verified `R2-01` live and closed the gaps left open here.
+- [Tool-errors audit](tool-errors-audit.md) — the log sweep that classified this round's tool failures.
+- [Tool routing](../../agent-loop/tool-routing.md) — the routing guidance verified in part A.

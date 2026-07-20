@@ -1,4 +1,19 @@
-# Tool Routing — which tool for which job
+# Tool routing — which tool for which job
+
+> **What this is.** The canonical reference for tool selection: which tool the agent should
+> reach for, in what order of preference, where the overlaps are, and where every dispatched
+> tool call's outcome can be inspected.
+> **Status:** Current, with two items open — the tier model in the next section is an
+> interpretation awaiting confirmation, and the deprecation proposal near the end has been
+> approved by nobody and removed nothing.
+> **Audience:** developers working on the agent loop, extension authors deciding how to describe
+> a tool, and agents choosing a tool at runtime.
+
+BioRouter exposes several tools that can each list a directory, read a file, or run a command.
+Without explicit routing guidance the model picks the wrong one — writing a JavaScript program to
+copy a file, or calling a tool-discovery search to answer a web question. This page states the
+preference order once, and names the three places in the source where the same guidance is
+mirrored so they can be kept in sync.
 
 This document is the canonical reference for **tool selection** in BioRouter: which
 tool the agent should reach for, in what order of preference, and where the overlaps
@@ -12,7 +27,7 @@ easy, we should almost always rely on the most basic fundamental tools inside of
 BioRouter — the tools without any extensions. Only when there are more complicated
 tasks should we think about using the extensions."*
 
-## Interpretation: a tier model (please confirm)
+## Interpretation: a tier model, pending confirmation
 
 There is an important ground-truth wrinkle behind the directive. **BioRouter has no
 truly extension-free `shell`, `edit`, or `find` tool.** The tools the user thinks of
@@ -126,7 +141,7 @@ The rule the matrix encodes: **the leftmost bold cell wins for a simple task**;
 
 ---
 
-## DEPRECATION PROPOSAL — awaiting user approval (nothing removed yet)
+## Deprecation proposal — awaiting approval, nothing removed yet
 
 The following are **candidates** to reduce tool overlap. **None has been removed,
 disabled, or changed** by this work — this is a proposal only. Do not act on it
@@ -191,3 +206,11 @@ to get a clean, one-line-per-call ledger of what the agent did and what failed. 
 complements the pre-existing `TOOL_EXEC_START`/`TOOL_EXEC_END` **`debug`** markers
 (timing only, no ok/error) and the raw `rmcp::service` `WARN response error …` lines
 (per-server, no tool-name/ok context).
+
+## Related documentation
+
+- [The agent loop](README.md) — the loop that dispatches every tool call routed by this page.
+- [Extensions and skills](../extensions/extensions-and-skills-guide.md) — how the extensions providing these tools are installed, enabled and described.
+- [Built-in extensions](../extensions/built-in/README.md) — the reference page for each shipped extension named in the tier table.
+- [Streaming tool-call UI campaign](../history/streaming-tool-call-ui-2026-07/README.md) — the July 2026 campaign that wrote this guidance and the tool-result logging described above.
+- [Tool-errors audit](../history/streaming-tool-call-ui-2026-07/tool-errors-audit.md) — the log sweep that motivated the always-on `tool_result` line.
