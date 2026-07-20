@@ -107,12 +107,21 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
       userSetName?: boolean;
     };
 
+    // A fresh window (a diverge branch opens one) has no react-router
+    // location.state, so its canonical title rides the URL instead. Prefer
+    // in-app nav state when present, fall back to the URL param — a diverged tab
+    // is then born with its real branch name rather than the "New Session"
+    // placeholder, matching what Recents shows. The name is backend-resolved and
+    // locked, so it is user-set.
+    const urlTitle = searchParams.get('resumeSessionTitle') || undefined;
+    const title = state.title ?? urlTitle;
+
     onOpenRef.current({
       sessionId: param,
       initialMessage: state.initialMessage,
       initialAttachments: state.initialAttachments,
-      title: state.title,
-      userSetName: state.userSetName,
+      title,
+      userSetName: state.userSetName ?? (urlTitle ? true : undefined),
     });
     // location.state is read, not depended on: a nav is identified by its key.
     // eslint-disable-next-line react-hooks/exhaustive-deps

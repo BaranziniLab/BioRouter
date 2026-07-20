@@ -1,4 +1,5 @@
 import { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { MessageSquare } from '../icons/app-icons';
 import { DropZone } from './dropZones';
 import { DragGhost } from './useTabDragReorder';
@@ -52,7 +53,18 @@ export function ChatDropOverlay({ zone }: { zone: DropZone }) {
  * the DOM would re-flow every divider in the strip mid-drag.
  */
 export function ChatTabGhost({ ghost }: { ghost: DragGhost }) {
-  return (
+  // PORTALED TO document.body, and that is load-bearing, not tidiness. The ghost
+  // is `position: fixed`, so its left/top are meant to be viewport coordinates —
+  // which is exactly what useTabDragReorder computes (clientX/Y minus the grab
+  // offset). But the shell renders inside `.route-container`, which sets
+  // `contain: layout paint`; per CSS containment that element becomes the
+  // containing block for fixed descendants, so the ghost's left/top would
+  // resolve against `<main>` — offset from the viewport by the sidebar width
+  // (~240px) — and the tab would float ~240px to the right of the cursor.
+  // Portaling to <body> escapes any contained/transformed ancestor so the fixed
+  // coordinates are true viewport coordinates and the tab rides under the cursor.
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <div
       className="br-tab br-tab-ghost"
       data-testid="chat-tab-ghost"
@@ -61,6 +73,7 @@ export function ChatTabGhost({ ghost }: { ghost: DragGhost }) {
     >
       <MessageSquare className="h-4 w-4 flex-none" />
       <span className="br-tab__label">{ghost.title}</span>
-    </div>
+    </div>,
+    document.body
   );
 }

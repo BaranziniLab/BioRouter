@@ -8,6 +8,10 @@ vi.mock('../api', () => ({
 }));
 const mockToastError = vi.fn();
 vi.mock('../toasts', () => ({ toastError: (...args: unknown[]) => mockToastError(...args) }));
+const mockNotifySessionListChanged = vi.fn();
+vi.mock('../utils/sessionListCache', () => ({
+  notifySessionListChanged: () => mockNotifySessionListChanged(),
+}));
 
 const mockCreateChatWindow = vi.fn();
 const mockCreateDivergedChatWindow = vi.fn();
@@ -19,7 +23,10 @@ beforeEach(() => {
     createChatWindow: mockCreateChatWindow,
     createDivergedChatWindow: mockCreateDivergedChatWindow,
   };
-  mockDivergeSession.mockResolvedValue({ data: { sessionId: 'branch_1', workingDir: '/wd' } });
+  // The backend resolves and returns the canonical, locked branch name.
+  mockDivergeSession.mockResolvedValue({
+    data: { sessionId: 'branch_1', workingDir: '/wd', name: 'Orig (branch 1)' },
+  });
 });
 
 describe('useDiverge', () => {
@@ -32,7 +39,12 @@ describe('useDiverge', () => {
     });
 
     expect(returned).toBe('branch_1');
-    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith('/wd', 'branch_1');
+    // The canonical branch name is threaded into the new window so its tab is
+    // born correct instead of flashing "New Session".
+    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith('/wd', 'branch_1', 'Orig (branch 1)');
+    // The branch enters every window's Recents / See-all / Home immediately —
+    // it fires no session-created event, so this is the only announcement.
+    expect(mockNotifySessionListChanged).toHaveBeenCalledTimes(1);
     // A diverge must never open a plain new chat window — that would start an
     // empty session instead of resuming the branch.
     expect(mockCreateChatWindow).not.toHaveBeenCalled();

@@ -166,7 +166,7 @@ describe('ProgressiveMessageList render stability', () => {
   // reproduce the nested-update cascade, which needs the real scheduler. It is
   // kept as a smoke test that streaming re-renders stay clean, not as proof.
   // The load-bearing evidence is the live GUI check recorded in
-  // docs/perf/2026-07-18-implementation-status.md §10.
+  // docs/history/streaming-tool-call-ui-2026-07/streaming-implementation-status.md §10.
   it('renders cleanly while messages stream in (smoke, not a depth-loop gate)', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 

@@ -2275,7 +2275,7 @@ impl Agent {
                     // surface (a hard `Err(ErrorData)` OR an `Ok` result flagged
                     // `is_error`), or interface (GUI/CLI). Kept cheap: the error
                     // string is only materialised on the failure path. See
-                    // docs/tool-routing.md ("Tool-result logging").
+                    // docs/agent-loop/tool-routing.md ("Tool-result logging").
                     match &inner_result {
                         Err(e) => tracing::info!(
                             target: "tool_result",

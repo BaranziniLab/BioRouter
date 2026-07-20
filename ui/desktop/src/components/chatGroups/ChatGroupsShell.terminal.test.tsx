@@ -112,3 +112,79 @@ describe('ChatGroupsShell — per-tab terminal scoping', () => {
     expect(retain).toHaveBeenCalledWith(['t1', 't2']);
   });
 });
+
+/**
+ * The fix that this file exists to guard: a terminal is scoped to ITS pane, not
+ * to the whole window. In a split, each pane shows its own active tab's terminal
+ * — two can be open at once — and no terminal renders in a pane it does not
+ * belong to. The old shell-level dock could show only the globally-active tab's
+ * terminal, as a full-width bar below every pane; a split could never show two.
+ */
+describe('ChatGroupsShell — terminals are scoped per split pane', () => {
+  it('shows each pane its OWN terminal, and two panes can show terminals at once', async () => {
+    vi.resetModules();
+    const dockRenders: Array<{ open: boolean; cwd?: string }> = [];
+    vi.doMock('../BaseChat', () => ({ default: () => <div data-testid="basechat" /> }));
+    vi.doMock('../InAppTerminalDock', () => ({
+      default: (props: { open: boolean; workingDir?: string }) => {
+        dockRenders.push({ open: props.open, cwd: props.workingDir });
+        return <div data-testid="dock" data-open={String(props.open)} data-cwd={props.workingDir} />;
+      },
+    }));
+    // Two groups side by side: gA (tab tA active) | gB (tab tB active). Each tab
+    // has a terminal open; the globally active group is gA.
+    vi.doMock('../../contexts/ChatGroupsContext', () => ({
+      useChatGroups: () => ({
+        dispatch: vi.fn(),
+        runningSessionIds: [],
+        state: {
+          activeGroupId: 'gA',
+          layout: {
+            kind: 'branch',
+            dir: 'row',
+            sizes: [0.5, 0.5],
+            children: [
+              { kind: 'leaf', groupId: 'gA' },
+              { kind: 'leaf', groupId: 'gB' },
+            ],
+          },
+          groups: {
+            gA: { id: 'gA', activeTabId: 'tA', tabs: [{ tabId: 'tA', sessionId: 's-a', title: 'A', userSetName: false }] },
+            gB: { id: 'gB', activeTabId: 'tB', tabs: [{ tabId: 'tB', sessionId: 's-b', title: 'B', userSetName: false }] },
+          },
+        },
+      }),
+    }));
+    vi.doMock('../../contexts/TerminalDockContext', () => ({
+      useTerminalDock: () => ({
+        isOpenFor: () => true,
+        setOpen: vi.fn(),
+        remove: vi.fn(),
+        retain: vi.fn(),
+        terminals: [
+          { key: 'tA', workingDir: '/work/a', showing: true },
+          { key: 'tB', workingDir: '/work/b', showing: true },
+        ],
+      }),
+    }));
+    vi.doMock('../ui/sidebar', () => ({ useSidebar: () => ({ state: 'expanded', isMobile: false }) }));
+
+    const { default: Shell } = await import('./ChatGroupsShell');
+    render(<Shell onChatChange={() => {}} />);
+
+    const dockA = dockRenders.find((d) => d.cwd === '/work/a');
+    const dockB = dockRenders.find((d) => d.cwd === '/work/b');
+    // Each pane rendered exactly its own terminal (no cross-pane leakage) ...
+    expect(dockRenders.filter((d) => d.cwd === '/work/a')).toHaveLength(1);
+    expect(dockRenders.filter((d) => d.cwd === '/work/b')).toHaveLength(1);
+    // ... and BOTH are open at once — the split can show two terminals, each
+    // scoped to its pane's own session working directory.
+    expect(dockA?.open).toBe(true);
+    expect(dockB?.open).toBe(true);
+    vi.doUnmock('../BaseChat');
+    vi.doUnmock('../InAppTerminalDock');
+    vi.doUnmock('../../contexts/ChatGroupsContext');
+    vi.doUnmock('../../contexts/TerminalDockContext');
+    vi.doUnmock('../ui/sidebar');
+  });
+});

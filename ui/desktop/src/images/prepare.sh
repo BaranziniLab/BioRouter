@@ -15,7 +15,7 @@
 #   Resizing a PNG->PNG (sips or magick/convert) is faithful - it only flattens
 #   when RASTERIZING SVG text. The .svg files are kept as the editable,
 #   browser-faithful source-of-truth; regenerate the masters through the
-#   studio (docs/design/logo-icon-studio.html) if the design changes, not here.
+#   studio (docs/design/branding/logo-icon-studio.html) if the design changes, not here.
 # ============================================================================
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -27,7 +27,7 @@ GLYPH_MASTER="br-glyph-mono.png" # menu-bar template master (solid black BR, tra
 
 if [ ! -f "$MASTER" ] || [ ! -f "$GLYPH_MASTER" ]; then
     echo "Error: missing PNG master(s): $MASTER / $GLYPH_MASTER"
-    echo "These are browser-rendered from docs/design/logo-icon-studio.html; do not delete them."
+    echo "These are browser-rendered from docs/design/branding/logo-icon-studio.html; do not delete them."
     exit 1
 fi
 

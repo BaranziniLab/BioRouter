@@ -983,6 +983,10 @@ interface ChatWindowOptions {
   initialBounds?: Rectangle;
   show?: boolean;
   manageWindowState?: boolean;
+  /** Canonical title for the resumed session, carried in the URL so the tab is
+   *  born with the real name (e.g. a diverge branch name) instead of the
+   *  "New Session" placeholder it would otherwise show until the session loads. */
+  resumeSessionTitle?: string;
 }
 
 const createChat = async (
@@ -1313,6 +1317,11 @@ const createChat = async (
   let searchParams = new URLSearchParams();
   if (resumeSessionId) {
     searchParams.set('resumeSessionId', resumeSessionId);
+    // A fresh window has no react-router location.state, so the tab title must
+    // ride the URL. useChatGroupsUrlSync reads it as the opening tab's title.
+    if (windowOptions?.resumeSessionTitle) {
+      searchParams.set('resumeSessionTitle', windowOptions.resumeSessionTitle);
+    }
     if (appPath === '/') {
       appPath = '/pair';
     }
@@ -1445,7 +1454,8 @@ function branchWindowBounds(anchor?: BrowserWindow | null): Rectangle | undefine
 async function openDivergedChatWindow(
   sessionId: string,
   dir?: string,
-  sourceWindow?: BrowserWindow | null
+  sourceWindow?: BrowserWindow | null,
+  title?: string
 ): Promise<void> {
   const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
   const bounds = branchWindowBounds(sourceWindow ?? anchor);
@@ -1460,7 +1470,10 @@ async function openDivergedChatWindow(
     undefined,
     undefined,
     undefined,
-    bounds ? { initialBounds: bounds, show: false, manageWindowState: false } : undefined
+    {
+      ...(bounds ? { initialBounds: bounds, show: false, manageWindowState: false } : {}),
+      ...(title ? { resumeSessionTitle: title } : {}),
+    }
   );
   if (win) {
     win.show();
@@ -4093,26 +4106,45 @@ function buildApplicationMenu() {
     }
   }
 
-  // Add Always on Top to Window menu
+  // Add Always on Top to Window menu.
   const windowMenu = menu.items.find((item) => item.label === 'Window');
   if (windowMenu?.submenu) {
-    windowMenu.submenu.append(
-      new MenuItem({
-        label: 'Always on Top',
-        type: 'checkbox',
-        accelerator: isMac ? 'Cmd+Shift+T' : 'Ctrl+Shift+T',
-        click(menuItem) {
-          const win = BrowserWindow.getFocusedWindow();
-          if (!win) return;
-          const alwaysOnTop = menuItem.checked;
-          if (isMac) {
-            win.setAlwaysOnTop(alwaysOnTop, 'floating');
-          } else {
-            win.setAlwaysOnTop(alwaysOnTop);
-          }
-        },
-      })
-    );
+    const alwaysOnTopItem = new MenuItem({
+      label: 'Always on Top',
+      type: 'checkbox',
+      // NO accelerator. This used to be Cmd+Shift+T — which is the universal
+      // browser "reopen the last closed tab" chord, one keystroke away from this
+      // app's own Cmd+T ("New Chat"). Users hit it by reflex and silently pinned
+      // whatever window was focused (at launch, the first one) above every other
+      // window — their own apps AND their other BioRouter windows — with no way
+      // to tell why clicking elsewhere no longer brought a window forward. The
+      // feature stays reachable from this menu; it no longer has a footgun chord.
+      click(menuItem) {
+        const win = BrowserWindow.getFocusedWindow();
+        if (!win) {
+          // Nothing focused: keep the checkmark honest rather than leaving it
+          // reflecting a window that is no longer there.
+          menuItem.checked = false;
+          return;
+        }
+        // Decide from THIS window's real level, not from the shared menu item's
+        // `checked`. The item is one global object across every window, so a
+        // stale `checked` (set while a DIFFERENT window was focused) would
+        // otherwise pin/un-pin the wrong window — the exact reason a pinned
+        // window could not be released from any other window.
+        const next = !win.isAlwaysOnTop();
+        if (isMac) win.setAlwaysOnTop(next, 'floating');
+        else win.setAlwaysOnTop(next);
+        menuItem.checked = next;
+      },
+    });
+    windowMenu.submenu.append(alwaysOnTopItem);
+
+    // Keep the checkmark tracking whichever window is now focused, so the toggle
+    // always acts on — and always reflects — the window the user is looking at.
+    app.on('browser-window-focus', (_event, win) => {
+      alwaysOnTopItem.checked = win.isAlwaysOnTop();
+    });
   }
 
   Menu.setApplicationMenu(menu);
@@ -4339,18 +4371,21 @@ async function appMain() {
     }
   );
 
-  ipcMain.on('create-diverged-chat-window', async (event, dir, resumeSessionId) => {
-    if (!resumeSessionId) {
-      log.error('[Main] create-diverged-chat-window missing session id');
-      return;
+  ipcMain.on(
+    'create-diverged-chat-window',
+    async (event, dir, resumeSessionId, resumeSessionTitle) => {
+      if (!resumeSessionId) {
+        log.error('[Main] create-diverged-chat-window missing session id');
+        return;
+      }
+      if (!dir?.trim()) {
+        const recentDirs = loadRecentDirs();
+        dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
+      }
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      await openDivergedChatWindow(resumeSessionId, dir, senderWindow, resumeSessionTitle);
     }
-    if (!dir?.trim()) {
-      const recentDirs = loadRecentDirs();
-      dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
-    }
-    const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    await openDivergedChatWindow(resumeSessionId, dir, senderWindow);
-  });
+  );
 
   ipcMain.on('close-window', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);

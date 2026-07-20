@@ -219,7 +219,7 @@ impl Agent {
         // so they can be handled by the existing error handling logic in the agent
         // Marker semantics (deliberately explicit — the previous names were
         // actively misleading, see the Stage 0 note in
-        // `docs/investigations/2026-07-18-tool-call-ui-latency.md` §4.4).
+        // `docs/history/streaming-tool-call-ui-2026-07/tool-call-ui-latency-investigation.md` §4.4).
         //
         // `provider.stream()` returns as soon as the response *headers* arrive;
         // token generation happens later, while the returned stream is polled.

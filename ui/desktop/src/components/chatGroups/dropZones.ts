@@ -86,5 +86,39 @@ export function dropTargetAtPoint(x: number, y: number): DropTarget | null {
   const host = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-chat-group-id]');
   const groupId = host?.dataset.chatGroupId;
   if (!host || !groupId) return null;
-  return { groupId, zone: zoneFromRect(host.getBoundingClientRect(), x, y) };
+  return { groupId, zone: zoneFromRect(groupBodyRect(host), x, y) };
+}
+
+/**
+ * The group's rectangle with its tab strip subtracted from the top.
+ *
+ * The `top` edge band is measured as a fraction of this rect, so if the strip
+ * counted the band would start at the group's top — and a `top` (vertical) split
+ * would only be reachable in the thin slice between the strip's bottom and the
+ * band's bottom. In a short or stacked pane that slice can nearly vanish, which
+ * is why vertical splits felt unreachable while `bottom` (over the composer) was
+ * always fine. Measuring from below the strip gives the body a full, symmetric
+ * top band. A drop ON the strip never reaches here — the move handler routes a
+ * strip hit to reorder/center before hit-testing zones.
+ */
+function groupBodyRect(host: HTMLElement): {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} {
+  const rect = host.getBoundingClientRect();
+  const strip = host.querySelector<HTMLElement>('[data-tab-strip-group]');
+  const stripHeight = strip ? strip.getBoundingClientRect().height : 0;
+  // Never subtract so much that nothing is left (a degenerate tiny pane); fall
+  // back to the full rect if the strip somehow reports taller than the group.
+  if (stripHeight <= 0 || stripHeight >= rect.height) {
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  }
+  return {
+    left: rect.left,
+    top: rect.top + stripHeight,
+    width: rect.width,
+    height: rect.height - stripHeight,
+  };
 }

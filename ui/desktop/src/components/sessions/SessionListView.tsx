@@ -38,7 +38,6 @@ import {
   exportSession,
   importSession,
   Session,
-  updateSessionName,
   ExtensionConfig,
   ExtensionData,
 } from '../../api';
@@ -50,8 +49,10 @@ import { EmptyState } from '../ui/empty-state';
 import {
   getCachedSessionList,
   refreshSessionList,
+  subscribeSessionList,
   updateCachedSessionList,
 } from '../../utils/sessionListCache';
+import { renameSession } from '../../utils/sessionNameSync';
 
 function getSessionExtensionNames(extensionData: ExtensionData): string[] {
   try {
@@ -99,11 +100,13 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
 
       setIsUpdating(true);
       try {
-        await updateSessionName({
-          path: { session_id: session.id },
-          body: { name: trimmedDescription },
-          throwOnError: true,
-        });
+        // Through the shared hub, not a raw PUT: renameSession persists AND
+        // broadcasts on the name channel, so a rename made here in the history
+        // panel reaches the chat tab, the title pill and the sidebar Recents
+        // too. A raw updateSessionName updated only this view's local cache, so
+        // the same session showed its new name here and its old name everywhere
+        // else until those surfaces remounted.
+        await renameSession(session.id, trimmedDescription, 'user');
         await onSave(session.id, trimmedDescription);
         onClose();
         toastSuccess({
@@ -399,6 +402,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     useEffect(() => {
       loadSessions();
     }, [loadSessions]);
+
+    // Stay live while open. The shared cache is mutated (and emits here) by a
+    // rename on the name channel and by any create / diverge / delete on the
+    // list channel, in this window or a sibling — so See-all reflects a branch
+    // or a rename without a remount. The search effect re-derives
+    // `filteredSessions` from `sessions`, so refreshing the source keeps any
+    // active filter consistent.
+    useEffect(() => {
+      return subscribeSessionList(() => {
+        const cached = getCachedSessionList();
+        if (cached) startTransition(() => setSessions(cached));
+      });
+    }, []);
 
     // Timing logic to prevent flicker between skeleton and content on initial load
     useEffect(() => {

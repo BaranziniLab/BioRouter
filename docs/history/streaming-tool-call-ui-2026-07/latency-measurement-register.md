@@ -1,0 +1,245 @@
+# Tool-call UI latency — before and after measurement register
+
+> **What this is.** The before/after number for every latency fix the July 2026 streaming
+> campaign proposed — including, honestly, the ones that were never measured.
+> **Status:** Historical record (completed 2026-07-18).
+> **Audience:** developers working on provider streaming and tool dispatch, and anyone checking
+> whether a claimed latency improvement was ever demonstrated.
+
+The [latency investigation](tool-call-ui-latency-investigation.md) imposed a rule on itself: a
+fix without a measurement does not count as landed. This file is where those measurements were
+to go. Several entries record `NOT MEASURED` because taking the number needs a live provider
+endpoint that was not available in the implementing environment — that is the register doing its
+job, not a gap in it. Section numbers (`§6.1b`, `§6.2b`, `§6.2c`) refer to the investigation's
+proposal sections.
+
+Invariant 6 of §6.5 of that report:
+
+> Every fix carries a before/after number in this register.
+> A fix without a measurement is not landed.
+
+This file is the register. **An entry with no numbers means the corresponding
+change is not landed by the report's own rule**, however green its test suite —
+that is the whole point of keeping the register honest rather than empty.
+
+## How to take a measurement
+
+Phase timing is opt-in and off by default:
+
+```bash
+BIOROUTER_PHASE_TIMING=1 RUST_LOG=phase=debug,biorouter=debug biorouter session ...
+```
+
+The relevant markers, emitted from
+`crates/biorouter/src/agents/reply_parts.rs`. Every one carries a `streaming`
+field; **do not pair markers across paths** — a single session's log contains
+both, and `OPENED -> EXHAUSTED` is only generation time when `streaming=true`.
+
+| Marker | Path | Meaning |
+|---|---|---|
+| `WAITING_LLM_STREAM_OPEN` / `_OPENED` | `streaming=true` | connect + TTFB (`open_ms`) |
+| `WAITING_LLM_STREAM_EXHAUSTED` | both | stream drained (`total_ms`) |
+| `WAITING_LLM_FULL_GENERATION_START` / `_END` | `streaming=false` | the whole blocking generation (`total_ms`) |
+
+The number that matters for perceived latency is **time to the first token the
+user sees**, not time to end of generation. On the non-streaming path those are
+the same number, which is exactly the defect under investigation.
+
+## Register
+
+### versa_azure — implement `stream()` (commit 032c938c)
+
+**Status: NOT MEASURED. This item is not landed.**
+
+| | before (`complete`) | after (`stream`) |
+|---|---|---|
+| time to first visible token | — (== end of generation) | **not measured** |
+| time to end of generation | 7.9 s (median, from the report's log analysis — *not* independently re-derived) | **not measured** |
+
+The "before" figure is inherited from §4 of the investigation and carries that
+document's own caveat: it was not re-derived. There is no "after" figure because
+taking one requires a live turn against the UCSF Versa endpoint, which needs
+`VERSA_AZURE_API_KEY` and UCSF network access — neither of which is available in
+the environment this change was implemented in.
+
+What is verified: the payload `stream()` builds sets `stream` and
+`stream_options.include_usage`, it posts to the Azure deployment path, and
+`supports_streaming()` is true (`cargo test -p biorouter --lib providers::versa_azure`).
+That is a shape check, not a latency result.
+
+**Named risk this gap leaves open.** If the UCSF Versa proxy buffers SSE and
+releases the response in one piece, the user's perceived latency is *unchanged*
+while the code path, the commit message, and the test suite all assert an
+improvement. Nothing in the current test suite can distinguish that outcome from
+success. Until the smoke test below is run and its numbers land here, treat this
+change as unvalidated against its own justification.
+
+**Required smoke test** (run by someone with UCSF credentials):
+
+1. Configure `versa_azure` / `gpt-5.5-2026-04-24` as in the report's §0.
+2. Run one turn that provokes a tool call, with the env above.
+3. Record `WAITING_LLM_STREAM_OPENED.open_ms` (time to first byte) and
+   `WAITING_LLM_STREAM_EXHAUSTED.total_ms` (end of generation) — both with
+   `streaming=true`.
+4. If `open_ms` is within noise of `total_ms`, the proxy is buffering and the
+   change delivers nothing; say so here rather than closing the item.
+
+### azure — implement `stream()` (commit 032c938c)
+
+**Status: NOT MEASURED.** Same change, same shape tests
+(`cargo test -p biorouter --lib providers::azure`), no live endpoint available.
+Not on the reporting user's configured path, so lower priority than the above.
+
+### §6.1b — pending tool-call events (Anthropic + OpenAI)
+
+**Change:** a tool call is now announced on a non-`Message` channel
+(`AgentEvent::ToolCallPending` → `MessageEvent::ToolCallPending`) at
+`content_block_start` (Anthropic) / the first tool-call chunk (OpenAI) — i.e.
+the instant the tool NAME is known — with throttled partial-arg previews
+thereafter (≤ every 200 ms / 200 chars). The authoritative `ToolRequest` still
+lands only at `content_block_stop`, unchanged.
+
+**Perceived-latency mechanism (what improves):** for a tool-first turn the UI
+used to show nothing until the *entire* argument JSON finished generating — the
+whole `content_block_start → content_block_stop` span (seconds for a large
+`text_editor` write; the OpenAI decoder was worse still, draining the whole
+stream before yielding anything). The tool card now appears at
+`content_block_start`, so first-tool-card latency drops from "end of argument
+generation" to "start of the tool block" — the argument-generation span,
+elided.
+
+**Status: NOT MEASURED against a live endpoint** (none configured in this
+worktree). The win is structural rather than a shaved constant, so the
+before/after is best stated as the marker span it removes: first-tool-card now
+fires at the `content_block_start` event instead of `content_block_stop`. A live
+`BIOROUTER_PHASE_TIMING=1` capture on a real Anthropic key should record the
+`content_block_start`→`content_block_stop` gap for a large-argument tool call as
+the latency removed; left for a run with provider access.
+
+**Safety (the actual deliverable):** verified, not measured — a pending
+notification is structurally incapable of dispatch. Gate:
+`cargo test -p biorouter --test streaming_pending_tool_calls`
+(`pending_only_stream_dispatches_nothing` asserts no tool executes off a
+pending-only stream) plus the decoder unit tests
+`providers::formats::{anthropic,openai}::tests::*pending*`.
+
+### §6.2b — batch tool_use blocks in the native Anthropic/Google decoders
+
+**Change:** the native Anthropic (`content_block_stop`) and Google
+(`functionCall` part) decoders used to emit **one assistant `Message` per tool
+block**. The agent loop pulled each as its own stream item and ran a full
+`categorize → select_all → dispatch` cycle over a **single** future, so a reply
+requesting N tools executed them **serially** — tool 2 could not start until
+tool 1's result was integrated. The decoders now buffer completed tool blocks
+and flush them as **one** `Message` carrying N `ToolRequest`s (Anthropic: at the
+terminal `message_delta`, and again after the loop for a stream that ends
+without one; Google: before the terminal usage yield). `categorize_tools` then
+hands `select_all` N futures at once → **parallel** dispatch. This matches what
+the OpenAI decoder already did. Gated by `BIOROUTER_TOOL_CALL_BATCHING`
+(default on; `0`/`false`/`no`/`off` restores the serial one-message-per-tool
+shape — the full rollback, mirroring `BIOROUTER_TOOL_WRITE_ORDERING`).
+
+**Real wall-clock mechanism (what improves):** for a turn that calls N tools,
+end-to-end tool time drops from **Σ(durations)** (serial) to **≈max(duration)**
+(parallel, up to the `BIOROUTER_TOOL_MAX_CONCURRENT`=8 cap and per-path write
+locks). Example shape: three independent 400 ms reads went 3×400 ms ≈ 1200 ms →
+≈400 ms. The exact saving is workload-dependent (only genuinely independent
+tools overlap; write-side path locks still serialise same-file writers).
+
+**Depends on §6.1b:** without pending events, batching is a *perceived*-latency
+regression (all N cards appear together after generation instead of card 1 at
+its block's start). With §6.1b already landed, each card still streams in at its
+`content_block_start` AND execution is batched.
+
+**Status: NOT MEASURED against a live endpoint** (none configured in this
+worktree). Stated as the decoder-shape change that produces the parallelism:
+a two-tool response decodes `[1, 1]` (two messages → serial) → `[2]` (one
+message, two requests → parallel). This is exactly what the gate asserts, and
+what flipping the kill switch reverses.
+
+**Gate (proven by revert):** three per-decoder unit tests assert the batched
+`[2]` shape —
+`providers::formats::anthropic::tests::test_streaming_batches_multiple_tool_uses_into_one_message`,
+`..::test_streaming_batches_tools_without_message_delta` (no-`message_delta`
+after-loop flush), and
+`providers::formats::google::tests::test_streaming_batches_multiple_function_calls_into_one_message`.
+Forcing `batch_tool_calls = false` (the reverted state) makes all three FAIL
+with `[1, 1]`/two messages; restoring makes them PASS. The kill-switch test
+`..::test_streaming_kill_switch_restores_serial_tool_messages` pins the
+`BIOROUTER_TOOL_CALL_BATCHING=0` rollback to `[1, 1]`. Ordering invariant §6.5.2
+verified: the batched message preserves block order (`toolu_a` before `toolu_b`),
+and the agent re-splits it into one assistant message per request in request
+order (`agent.rs` re-split loop), so persisted history is byte-identical to the
+serial path. `cargo test -p biorouter --lib providers::formats` (163 pass) and
+`cargo test -p biorouter --test mcp_integration_test` (4 pass, no cassette
+re-record — it dispatches via a mock provider, not the streaming decoders).
+
+### §6.2c — emit each tool response as it completes
+
+**Change:** the per-request tool-response yield lived in the post-batch
+persistence loop (`agent.rs`), which walks `frontend_requests`-then-
+`remaining_requests` in **request** order and only runs *after* the whole batch's
+`select_all` loop has drained. So in a parallel batch (§6.2a/§6.2b) a finished
+result was held off-screen until **every** sibling returned — a single slow tool
+stalled the display of every fast result that had already completed. The yield
+now fires inside the execution loop, immediately after `integrate_tool_result`
+populates that request's response mutex, so each result streams to the transcript
+the instant its `call_tool` resolves — in **completion** order. `select_all`
+polls in future order, so a `Result` surfaces only once its tool resolved; a
+partial can never be streamed. Emitted ids are tracked so the post-batch loop
+still pushes every response into `messages_to_add` in **request** order for
+persistence, without RE-yielding. Gated by `BIOROUTER_TOOL_RESPONSE_STREAMING`
+(default on; `0`/`false`/`no`/`off` restores the pre-§6.2c post-batch request-
+order yield — full rollback, mirroring `BIOROUTER_TOOL_WRITE_ORDERING` /
+`BIOROUTER_TOOL_CALL_BATCHING`).
+
+**Perceived-latency mechanism (what improves):** for a batch of N tools with
+mixed durations, the first result now appears at `min(duration)` instead of
+`max(duration)` — the whole batch's slowest tool no longer gates when the *fast*
+results become visible. Measured in the gate: a 2-tool batch (`sleep 0.4` +
+`sleep 0.02`), streamed transcript shows the 0.02 s result first (**~20 ms**)
+instead of waiting for the 0.4 s sibling to finish before showing anything
+(**~400 ms**) — a ~380 ms improvement to first-result-visible for that shape,
+scaling with the request-order gap between the slowest earlier tool and the
+fastest later one. No change to real end-to-end tool wall-clock (that is §6.2a/b).
+
+**Pairs with §6.1a:** mid-batch response yields widen the green-on-arrival
+exposure, so `turnActive` must be in — verified: `ToolCallWithResponse` derives
+`loadingStatus` from `toolResponse ? … : turnActive ? 'loading' : 'interrupted'`
+(turn state + response presence), never array position, so an out-of-order
+response flips only its own card by request id and siblings stay `loading`.
+
+**Status: NOT MEASURED against a live endpoint** (none configured in this
+worktree). The gate drives the *real* reply loop with a mock provider + the real
+`developer__shell` builtin, so the timing above is a genuine in-loop measurement
+of the streamed-transcript order, not a decoder-shape proxy.
+
+**Gate (proven by revert):**
+`tests/streaming_tool_response_ordering.rs::streamed_responses_follow_completion_order_persisted_keeps_request_order`
+emits ONE assistant message with two `developer__shell` calls — `call_slow`
+(`sleep 0.4 && echo slow`, request order #1) and `call_fast` (`sleep 0.02 && echo
+fast`, #2) — so completion order (`fast`, `slow`) genuinely differs from request
+order (`slow`, `fast`). Both runs finish in ~0.80 s (the shells run in parallel;
+a serial dispatch would finish `slow` first and fail regardless), so the ONLY
+variable is the yield location:
+
+- default (streaming on): streamed responses = `[call_fast, call_slow]` →
+  **PASS**.
+- `BIOROUTER_TOOL_RESPONSE_STREAMING=0` (the reverted post-batch path):
+  streamed responses = `[call_slow, call_fast]` (request order) →
+  **FAIL** (`left: ["call_slow", "call_fast"]`, `right: ["call_fast",
+  "call_slow"]`).
+
+Invariant §6.5-2 verified in both runs: the PERSISTED conversation keeps request
+order — `req call_slow`, `resp call_slow`, `req call_fast`, `resp call_fast` —
+each tool_use immediately followed by its matching tool_result, so BR-56
+normalization and any provider replay still see paired, request-ordered blocks.
+`cargo test -p biorouter --lib agents::` (415 pass), `cargo test --test
+mcp_integration_test` (4 pass, no cassette re-record), and `ui/desktop npm run
+test:run` (1381 pass) all green.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this register belongs to.
+- [Tool-call UI latency investigation](tool-call-ui-latency-investigation.md) — the report whose §6.5 invariant 6 required this register to exist.
+- [Streaming implementation status](streaming-implementation-status.md) — what landed against those proposals, and the live smoke-test numbers taken later.

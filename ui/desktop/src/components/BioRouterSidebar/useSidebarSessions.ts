@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
+import { subscribeSessionListChanges } from '../../utils/sessionListCache';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 
@@ -95,11 +96,19 @@ export default function useSidebarSessions(): SidebarSessionsState {
       setSessions(renamedSessions);
     });
 
+    // Membership changes — a session created, DIVERGED, deleted or imported, in
+    // THIS window or any sibling. Diverge creates a session purely over HTTP and
+    // dispatches no `session-created` window event (and those are per-renderer
+    // anyway), so before this the branch never entered the Recents list until an
+    // unrelated turn happened to finish. Now every list change re-reads.
+    const unsubscribeList = subscribeSessionListChanges(scheduleRefresh);
+
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
 
     return () => {
       unsubscribeNames();
+      unsubscribeList();
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);

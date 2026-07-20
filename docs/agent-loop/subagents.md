@@ -1,0 +1,319 @@
+# Subagents
+
+> **What this is.** A guide to subagents — the temporary biorouter instances the main agent spawns to run a task in isolation — covering how to invoke them in natural language, configure them with a workflow file, control their extensions and return mode, and what they are forbidden to do.
+> **Status:** Current.
+> **Audience:** end users
+
+Subagents are independent instances that execute tasks while keeping your main conversation clean and focused. They bring process isolation and context preservation by offloading work to separate instances. Think of them as temporary assistants that handle specific jobs without cluttering your chat with tool execution details.
+
+> **Note.** A *subagent* is not a *subworkflow*. A subagent is a temporary instance the main agent spawns during a chat session, configured either by your natural-language request or by naming a workflow file. A [subworkflow](../workflows/subworkflows.md) is a workflow file registered in another workflow's `sub_workflows` field, which the parent workflow exposes as a tool. Subagents are driven from a conversation; subworkflows are driven from a workflow definition.
+
+## How to use subagents
+
+> **Note.** biorouter can autonomously decide to use subagents when it determines they would be beneficial for your task - you don't always need to explicitly request them. This happens automatically in autonomous [permission mode](../security/permission-modes.md) (the default). Subagents are disabled in manual approval, smart approval, and chat-only modes.
+
+To use subagents, ask biorouter to delegate tasks using natural language. biorouter automatically decides when to spawn subagents and handles their lifecycle. You can:
+
+1. **Request specialized help**: "Use a code reviewer to analyze this function for security issues"
+2. **Reference specific workflows**: "Use the 'security-auditor' workflow to scan this endpoint"
+3. **Run parallel tasks**: "Create three HTML templates simultaneously"
+4. **Delegate complex work**: "Research quantum computing developments and summarize findings"
+5. **Control extension access**: "Create a subagent with only the developer extension to refactor the code"
+
+You can run multiple subagents sequentially or in parallel.
+
+| Type | Description | Example phrasing | Example request |
+|------|-------------|------------------|---------|
+| **Sequential** (Default) | Tasks execute one after another | "first...then", "after" | `"First analyze the code, then generate documentation"` |
+| **Parallel** | Tasks execute simultaneously | "parallel", "simultaneously", "at the same time", "concurrently" | `"Create three HTML templates in parallel"` |
+
+> **Note.** If a subagent fails or times out (5-minute default), you will receive no output from that subagent. For parallel execution, if any subagent fails, you get results only from the successful ones.
+
+## Internal subagents
+
+Internal subagents spawn biorouter instances to handle tasks using your current session's context and extensions. There are two ways to configure and execute internal subagents:
+
+1. **Direct prompts** - Quick, one-off tasks using natural language instructions
+2. **Workflows** - Reusable, structured configurations for specialized subagent behavior
+
+### Direct prompts
+
+Direct prompts are for one-off tasks, expressed in natural language. The main agent automatically configures the subagent based on your request.
+
+Prompt:
+
+```text
+"Use 2 subagents to create hello.html with 'Hello World' content and goodbye.html with 'Goodbye World' content in parallel"
+```
+
+Illustrative tool output — an example of the shape you get back, not a recorded transcript:
+
+```json
+{
+  "execution_summary": {
+    "total_tasks": 2,
+    "successful_tasks": 2,
+    "failed_tasks": 0,
+    "execution_time_seconds": 16.2
+  },
+  "task_results": [
+    {
+      "task_id": "create_hello_html",
+      "status": "success",
+      "result": "Successfully created hello.html with Hello World content"
+    },
+    {
+      "task_id": "create_goodbye_html", 
+      "status": "success",
+      "result": "Successfully created goodbye.html with Goodbye World content"
+    }
+  ]
+}
+```
+
+### Workflows
+
+Use [workflow](../workflows/README.md) files to define specific instructions, extensions, and behavior for subagents. Workflows provide reusable configurations that can be shared and referenced by name.
+
+Create a workflow file, `code-reviewer.yaml`:
+
+```yaml
+id: code-reviewer
+version: 1.0.0
+title: "Code Review Assistant"
+description: "Specialized subagent for code quality and security analysis"
+instructions: |
+  You are a code review assistant. Analyze code and provide feedback on:
+  - Code quality and readability
+  - Security vulnerabilities
+  - Performance issues
+  - Best practices adherence
+activities:
+  - Analyze code structure
+  - Check for security issues
+  - Review performance patterns
+extensions:
+  - type: builtin
+    name: developer
+    display_name: Developer
+    timeout: 300
+    bundled: true
+parameters:
+  - key: focus_area
+    input_type: string
+    requirement: optional
+    description: "Specific area to focus on (security, performance, readability, etc.)"
+    default: "general"
+prompt: |
+  Please review the following code focusing on {{focus_area}} aspects.
+  Provide specific, actionable feedback with examples.
+```
+
+Place your workflow file where biorouter can find it:
+
+- Set the [`BIOROUTER_WORKFLOW_PATH`](../workflows/workflow-schema-reference.md#workflow-location) environment variable to your workflow directory
+- Or place it in your current working directory
+
+Prompt:
+
+```text
+Use the "code-reviewer" workflow to analyze the authentication feature I implemented
+```
+
+Illustrative output — a constructed example showing the shape of a review, not a real finding in any BioRouter source file:
+
+```text
+I'll use your code-reviewer workflow to create a specialized subagent for this analysis.
+
+🤖 Subagent created using code-reviewer workflow
+💭 Analyzing authentication function for security issues...
+🔧 Scanning code structure and patterns...
+⚠️  Security vulnerabilities detected!
+
+## Code Review Results
+
+### Critical Issues Found:
+1. **SQL Injection Vulnerability**: Direct string interpolation in SQL query
+2. **Missing Password Hashing**: Plain text password comparison
+
+### Recommendations:
+- Use parameterized queries or ORM
+- Implement proper password hashing (bcrypt, scrypt)
+- Add input validation and sanitization
+```
+
+## External subagents
+
+External subagents let you bring in AI agents from other providers and platforms, enabling biorouter to coordinate and integrate your workflow with the broader ecosystem. The example below — running OpenAI's Codex CLI as an MCP (Model Context Protocol) server — is the only external subagent configuration documented here; adapting it to another agent means substituting that agent's own command and configuration file.
+
+[Biorouter configuration file](../configuration/config-file-reference.md) (`~/.config/biorouter/config.yaml`):
+
+```yaml
+subagent:
+  args:
+  - mcp-server
+  bundled: true
+  cmd: codex
+  description: OpenAI Codex CLI Subagent
+  enabled: true
+  env_keys:
+  - OPENAI_API_KEY
+  envs: {}
+  name: subagent
+  timeout: 300
+  type: stdio
+```
+
+External tool configuration (`~/.codex/config.toml`):
+
+```toml
+# Use fast model for quick responses
+# model = "codex-mini-latest"
+disable_response_storage = true
+
+# Never prompt for approval - auto-execute
+approval_policy = "never"
+
+[sandbox]
+mode = "workspace-write"
+```
+
+Prompt:
+
+```text
+"Use the codex subagent to analyze my codebase structure and identify the main components"
+```
+
+Illustrative output — a constructed example of what such an analysis looks like:
+
+```md
+Based on my analysis of your codebase, here are the main components:
+
+1. **Core Agent System** (`crates/biorouter/src/agents/`)
+   - Agent orchestration and session management
+   - Tool execution framework
+   - Extension system integration
+
+2. **CLI Interface** (`crates/biorouter-cli/`)
+   - Command-line interface and session handling
+   - Configuration management
+
+3. **Server Components** (`crates/biorouter-server/`)
+   - HTTP API endpoints
+   - WebSocket communication for real-time interaction
+
+4. **Desktop UI** (`ui/desktop/`)
+   - Electron-based desktop application
+   - TypeScript frontend with React components
+
+The architecture follows a modular design with clear separation between the core agent logic, interfaces, and UI components.
+```
+
+## Suggested use cases
+
+**Independent operations**
+
+- Creating multiple files with similar structure
+- Basic data processing tasks
+- File transformations and generations
+
+**Context preservation**
+
+- Complex analysis that generates lots of tool output
+- Specialized tasks better handled by dedicated agents
+- Keeping main conversation focused on high-level decisions
+
+**Process isolation**
+
+- Tasks that might fail without affecting main workflow
+- Operations requiring different configurations
+- Experimental or exploratory work
+
+## Lifecycle and cleanup
+
+Subagents are temporary instances that exist only for task execution. After the task is completed, no manual intervention is needed for cleanup.
+
+## Subagent configuration
+
+Subagents use the following pre-configured settings, but you can override any defaults using natural language in your prompts.
+
+### Default settings
+
+| Parameter | Default | How to customize |
+|-----------|---------|------------------|
+| **Max turns** | 25 | Use natural language or set `BIOROUTER_SUBAGENT_MAX_TURNS` |
+| **Timeout** | 5 minutes | Request longer timeout in your prompt |
+| **Extensions** | Inherited from parent | Specify which extensions to use in your prompt |
+| **Return mode** | All subagent information provided in main session | Specify how much detail you want in your prompt |
+
+### Customizing settings in prompts
+
+You can override any default by including the setting in your natural language request. For example:
+
+```text
+"Use subagents to analyze code, limit each to 5 turns"
+```
+
+```text
+"Use a research subagent with 30 turns and 20-minute timeout to investigate quantum computing trends"
+```
+
+**Environment variable:** Set [`BIOROUTER_SUBAGENT_MAX_TURNS`](../configuration/environment-variables.md#session-management) to change the default max turns for all subagents.
+
+### Extension control
+
+Control which tools and capabilities subagents can access. By default, subagents inherit all extensions from your main session, but you can restrict access for security, focus or performance. For example:
+
+```text
+"Create a subagent to write a summary, but don't give it file access"
+```
+
+```text
+"Use a subagent with only code editing tools to refactor main.py"
+```
+
+### Return mode control
+
+Choose how much information biorouter provides from its subagents in your main session.
+
+**Full details (default):** See all tool executions and reasoning steps.
+
+```text
+"Create a subagent to debug this issue - I want to see the full investigation process"
+```
+
+**Summary only:** Get just the final result to keep your conversation clean.
+
+```text
+"Use a subagent to research this topic and summarize the key findings"
+```
+
+## Security constraints
+
+Subagents operate with restricted tool access to ensure safe execution and prevent interference with the main session.
+
+### Allowed operations
+
+Subagents have access to these safe operations:
+
+- **Extension discovery**: Search for available extensions to understand what tools are available
+- **Resource access**: Read and list resources from enabled extensions for context
+- **Extension tools**: Use tools from extensions specified in workflows or inherited from the parent session
+
+### Restricted operations
+
+The following operations are blocked to ensure subagents remain focused on their assigned tasks without affecting the broader system state:
+
+- **Subagent spawning**: Cannot create additional subagents to prevent infinite recursion
+- **Extension management**: Cannot enable, disable, or modify extensions to avoid conflicts with the main session
+- **Schedule management**: Cannot create, modify, or delete scheduled tasks to prevent interference with parent workflows
+
+> **Note.** Subagents can browse extensions for suggestions but cannot enable them to avoid modifying the parent session.
+
+## Related documentation
+
+- [Subworkflows](../workflows/subworkflows.md) — the workflow-driven counterpart to subagents, registered via `sub_workflows` and exposed as tools.
+- [Workflows](../workflows/README.md) — how to author the workflow files a subagent can be configured from.
+- [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.
+- [Permission modes](../security/permission-modes.md) — which modes allow autonomous subagent dispatch and which disable it.
+- [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SUBAGENT_MAX_TURNS` and the other session-management settings.

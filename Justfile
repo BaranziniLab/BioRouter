@@ -215,7 +215,7 @@ run-ui-playwright:
 #   agent-browser click @e5
 #   agent-browser screenshot ui.png
 #   agent-browser console --json    # renderer console + errors
-# See docs/guides/agent-browser-debugging.md. Override the port with PORT=...
+# See docs/desktop-ui/agent-browser-debugging.md. Override the port with PORT=...
 agent-browser-ui PORT="9333":
     #!/usr/bin/env sh
     echo "Building debug binary..."
