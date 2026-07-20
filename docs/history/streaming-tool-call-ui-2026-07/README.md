@@ -42,6 +42,7 @@ to the end, including the five that were deliberately left unfixed.
 | [QA round 3 results](qa-round-3-results.md) | The closing round: compaction finally triggered and nothing degraded, concurrent cross-tab send proved correct, `R2-01` re-verified live through the `execute_code` wrapper, and the full regression sweep. |
 | [Tool-errors audit](tool-errors-audit.md) | Every tool error surfaced during rounds 1 and 2, swept from the daemon logs and classified `INTENDED` against `DEFECT`. Six of the eleven turned out to be one defect: a mode-blind path jail. |
 | [Terminal stress test results](terminal-stress-test-results.md) | The in-app terminal swept end to end — panes, per-tab scoping, working-directory correctness, PTY reaping, and load. Confirms the cwd contract holds exactly, and answers the user's "only 8 terminals" report: the cap was too low *and* leaked a slot on every renderer reload. Findings are `TERM-NN`. |
+| [Parallel tool-batch stress results](parallel-tool-batch-stress-results.md) | The parallel-dispatch path pushed to its edges: a wide batch, a tool failing mid-batch, cancelling mid-batch, same-file contention, the concurrency ceiling and both kill switches. Found two high-severity defects — `shell` discarded its exit status so every failure rendered green, and a mid-batch cancel persisted `tool_use` blocks with no `tool_result`. Findings are `PAR-NN`. |
 
 ## Related documentation
 
