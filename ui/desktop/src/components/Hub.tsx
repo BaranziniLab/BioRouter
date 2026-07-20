@@ -71,7 +71,7 @@ export default function Hub({
   };
 
   return (
-    <div className="biorouter-home flex h-full min-h-0 flex-col bg-background-muted">
+    <div className="biorouter-home flex h-full min-h-0 flex-col bg-background-canvas">
       <div className="biorouter-home-content min-h-0 flex-1 overflow-hidden">
         <SessionInsights />
       </div>

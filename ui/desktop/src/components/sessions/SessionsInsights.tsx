@@ -123,7 +123,7 @@ export function SessionInsights() {
   };
 
   return (
-    <div ref={rootRef} className="flex min-h-full flex-col bg-background-muted">
+    <div ref={rootRef} className="flex min-h-full flex-col bg-background-canvas">
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
       <ReadableContent size="chat" className="biorouter-home-hero px-4 pb-6 pt-16 sm:px-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
