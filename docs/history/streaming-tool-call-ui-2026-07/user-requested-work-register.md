@@ -37,9 +37,9 @@ Items are worked **sequentially by priority**, not silently dropped. An item lea
 | 16 | Remove the recents count badge (counts loaded sessions, not the week) | 07-20 | Done | `211668be` |
 | 17 | Alma Mater + Roche Limit: canvas must be WHITE, sidebar grey; **Alma dark unchanged**, Parchment unchanged | 07-20 | In progress | root cause: `--background-app` is a dead token (0 usages) |
 | 18 | Terminal: types, splits, per-session cwd consistency, stress (busy + churn + many-at-once), PTY reaping | 07-20 | In progress | — |
-| 19 | Boot animation: logo shifts between the static state and the slide-bar state; verify with vision | 07-20 | In progress | suspect: flex column `gap:26px` + 2px sweep offsets the mark ~14px |
-| 20 | Soft interrupt gives no immediate feedback (blank multi-second gap) | 07-20 | In progress | `chatStreamStore.tsx` BR-61 steer path |
-| 21 | "Stop and Send" needs a smooth acknowledgment animation | 07-20 | In progress | — |
+| 19 | Boot animation: logo shifts between the static state and the slide-bar state; verify with vision | 07-20 | Done | `30d615f3` — splash→`ProviderGuard` handoff; 14px drop + 4px shrink, now byte-identical rects |
+| 20 | Soft interrupt gives no immediate feedback (blank multi-second gap) | 07-20 | Done | `aaf24a22` — optimistic `pendingSteer` chip, retracted on echo/rejection/turn boundary |
+| 21 | "Stop and Send" needs a smooth acknowledgment animation | 07-20 | Done | `aaf24a22` |
 | 22 | Sending while scrolled up must smoothly return to the bottom | 07-20 | In progress | confirmed: `BaseChat.tsx` scrolls only `if (isFollowing)` |
 | 23 | Parallel tool/code execution: stress + edge cases | 07-20 | Open | queued next |
 | 24 | Subagents: edge cases, stress, traceability in chat | 07-20 | Open | queued next |
@@ -47,6 +47,7 @@ Items are worked **sequentially by priority**, not silently dropped. An item lea
 | 26 | Human security review: R2-01 dynamic-path residual, MCP mutex | 07-19 | Needs decision | listed in the campaign final report |
 | 27 | Docs root still holds loose files; migrate or delete, preserving all information | 07-20 | Done | already complete on this branch — see audit below |
 | 28 | Recurring `code_execution` failure: "Module error: TypeError: Module could not be found" | 07-20 | In progress | root-cause + prompt/error engineering |
+| 29 | GitHub issue #19 — repeated message after Cmd+T/Cmd+T, Cmd+W/Cmd+W | 07-20 | In progress | reported on v1.88.3, which **predates** the fix `f1f1d6b6`; verifying the keyboard path live before closing |
 
 ## Audit: the 27 loose `docs/` root files (item 27)
 
