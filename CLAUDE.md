@@ -321,7 +321,7 @@ visualizations. It opens automatically on the newest artifact.
   the sandboxing and CDP port from `just agent-browser-ui`.
 
 - **Launching the GUI from an agent shell — read
-  [`docs/dev-gui-launch-runbook.md`](docs/dev-gui-launch-runbook.md) first.**
+  [`docs/desktop-ui/launching-the-dev-gui.md`](docs/desktop-ui/launching-the-dev-gui.md) first.**
   `just run-dev` works at a human terminal and *cannot* survive a shell without a
   TTY. Four distinct failures there produce symptoms that read as application
   bugs, and three of them look identical from the outside:

@@ -1,11 +1,16 @@
-# Launching the dev GUI from an agent / non-interactive shell
+# Launching the dev GUI from a shell without a TTY
 
-`just run-dev` is the right command **at a human terminal**. It does not survive
-being launched from an agent shell, a CI step, or anything else without a TTY,
-and the ways it fails all look like application bugs. This runbook is the
-procedure that works, and — more usefully — the four wrong turns that each cost
-a debugging cycle, so the next session recognises them instead of rediscovering
-them.
+> **What this is.** The procedure for starting the Electron dev GUI from an agent
+> shell, a CI step, or any other context without a TTY — and the four failure modes
+> that make a working app look broken.
+> **Status:** Current.
+> **Audience:** agents driving the desktop app, and developers automating a GUI launch.
+
+`just run-dev` is the right command **at a human terminal**. It does not survive being
+launched without a TTY, and the ways it fails all look like application bugs rather
+than launcher bugs. This page is the procedure that works and, more usefully, the four
+wrong turns that each cost a debugging cycle, so the next session recognises them
+instead of rediscovering them.
 
 ## The procedure
 
@@ -31,7 +36,7 @@ it leaves the bundles behind), or run `just run-dev` at a real terminal.
 
 Then drive and inspect it over CDP rather than by screenshotting the desktop:
 
-```
+```text
 agent_browser_connect  target: 9333
 agent_browser_screenshot
 agent_browser_console
@@ -91,12 +96,18 @@ Both were suspected and ruled out with evidence, so don't re-litigate them:
   `file ui/desktop/src/bin/biorouterd` before assuming it — a healthy tree shows
   `Mach-O 64-bit executable arm64` and `--version` prints the workspace version.
 
-## Related
+## Three standing cautions
 
 - `BIOROUTER_NO_HMR=1` freezes the renderer. Without it any save under
   `ui/desktop/src/` full-reloads the page and destroys the chat session under
   test, which makes agent-driven runs fail in ways that look like app bugs.
 - Launching the dev GUI can overwrite `~/.config/biorouter`. Back it up, or
   sandbox with `XDG_CONFIG_HOME`, before a session that will touch settings.
-- Pick a CDP port that is not 9222 — that is usually the user's own Chrome, and
-  a debugger client will silently attach to it instead of the app.
+- Pick a CDP port that is not 9222 — that is usually the developer's own Chrome,
+  and a debugger client will silently attach to it instead of the app.
+
+## Related documentation
+
+- [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) — driving the app over CDP once it is running, and why this repo uses port 9333
+- [Diverge behavior checklist](diverge-behavior-checklist.md) — what to exercise once the app is in front of you
+- [System overview](../architecture/system-overview.md) — how the Electron main process, the daemon and the renderer fit together
