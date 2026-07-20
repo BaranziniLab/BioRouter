@@ -205,3 +205,68 @@ describe('deriveTrailingActivity', () => {
     expect(second?.since).toBe(laterMessageAt);
   });
 });
+
+/**
+ * BR-61 — the soft interrupt used to be invisible. `steer()` posts the text and
+ * the composer empties, but the agent only injects it at its next loop
+ * boundary, which can be a whole tool call away. Between those two moments the
+ * transcript said nothing at all, so a working steer was indistinguishable from
+ * a dropped one.
+ */
+describe('pending steer', () => {
+  const PENDING = { text: 'actually, use R', since: LAST_MESSAGE_AT + 500 };
+
+  it('announces the steer, carrying the user’s own words', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [text('Let me start by loading the CSV.')])],
+      pendingSteer: PENDING,
+    });
+
+    expect(activity?.phase).toBe('steering');
+    expect(activity?.steerText).toBe('actually, use R');
+    expect(activity?.since).toBe(PENDING.since);
+  });
+
+  it('outranks streaming prose, which otherwise renders no indicator at all', () => {
+    const streaming = {
+      ...live,
+      messages: [message('assistant', [text('Loading the CSV now…')])],
+    };
+    // Precondition: this is exactly the case that returns null today.
+    expect(deriveTrailingActivity(streaming)).toBeNull();
+    expect(deriveTrailingActivity({ ...streaming, pendingSteer: PENDING })?.phase).toBe('steering');
+  });
+
+  it('outranks a tool run, so the press is acknowledged mid-tool', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [toolRequest('t1')])],
+      pendingSteer: PENDING,
+    });
+
+    expect(activity?.phase).toBe('steering');
+  });
+
+  it('still never shows on a historical replay', () => {
+    expect(
+      deriveTrailingActivity({
+        ...live,
+        isTurnActive: false,
+        messages: [message('assistant', [toolRequest('t1')])],
+        pendingSteer: PENDING,
+      })
+    ).toBeNull();
+  });
+
+  it('falls back to the ordinary phases once the steer is retired', () => {
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [toolRequest('t1')]), toolResponseOnlyMessage],
+      pendingSteer: undefined,
+    });
+
+    expect(activity?.phase).toBe('thinking');
+    expect(activity?.steerText).toBeUndefined();
+  });
+});

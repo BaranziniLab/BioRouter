@@ -4,6 +4,7 @@ import { Message, Session, TokenState } from '../api';
 import { NotificationEvent, UserAttachment } from '../types/message';
 import { useChatStreamController, type PendingToolCallView } from './chatStreamStore';
 import type { ChatTurnErrorData } from '../types/turnError';
+import type { PendingSteer } from '../utils/trailingActivity';
 
 interface UseChatStreamProps {
   sessionId: string;
@@ -39,6 +40,8 @@ interface UseChatStreamReturn {
   turnStartedAt?: number;
   /** Client clock (ms) when the most recent live Message event was applied. */
   lastMessageAt?: number;
+  /** BR-61: a soft interrupt issued but not yet echoed back by the agent. */
+  pendingSteer?: PendingSteer;
   /**
    * Whether the session's model + extensions have finished loading. The
    * transcript is up well before this — anything reading AGENT state must gate
@@ -107,6 +110,7 @@ export function useChatStream({
     tokenState: snapshot.tokenState,
     turnStartedAt: snapshot.turnStartedAt,
     lastMessageAt: snapshot.lastMessageAt,
+    pendingSteer: snapshot.pendingSteer,
     agentReady: snapshot.agentReady,
     notifications: notificationsMap,
     pendingToolCalls: snapshot.pendingToolCalls,

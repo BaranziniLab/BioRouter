@@ -35,6 +35,7 @@ import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
+import type { PendingSteer } from '../utils/trailingActivity';
 
 /**
  * BR-62b — a client-generated idempotency key naming a single `/reply` turn. If
@@ -142,6 +143,34 @@ function pushMessage(currentMessages: Message[], incomingMsg: Message): Message[
   return [...currentMessages, incomingMsg];
 }
 
+/**
+ * BR-61 — has the agent consumed the soft interrupt we are optimistically
+ * showing? The agent echoes a steer back onto the live stream as an ordinary
+ * user message once it injects it, and that echo is the ONLY reliable signal
+ * that it landed.
+ *
+ * `afterCount` is the transcript length at the moment the steer was issued, so
+ * only messages that arrived AFTER the press can satisfy it. Matching on text
+ * alone would let a user who steers with the same words as an earlier prompt
+ * clear the indicator against their own history, the instant it appeared.
+ */
+export function steerWasEchoed(
+  pending: { text: string } | undefined,
+  messages: Message[],
+  afterCount: number
+): boolean {
+  if (!pending) return false;
+  const wanted = pending.text.trim();
+  if (!wanted) return false;
+  return messages
+    .slice(afterCount)
+    .some(
+      (m) =>
+        m.role === 'user' &&
+        m.content.some((c) => c.type === 'text' && c.text.trim() === wanted)
+    );
+}
+
 export interface ChatStreamSnapshot {
   session?: Session;
   messages: Message[];
@@ -164,6 +193,14 @@ export interface ChatStreamSnapshot {
    * makes it survive the message list's per-event re-render churn.
    */
   lastMessageAt?: number;
+  /**
+   * BR-61 — the soft interrupt this client has issued and the agent has not yet
+   * consumed. Set OPTIMISTICALLY, before the POST resolves, because the whole
+   * point is to fill the dead air between the user's press and the agent's next
+   * output; cleared on rejection, on echo, and on any turn boundary, so it can
+   * never outlive the thing it describes.
+   */
+  pendingSteer?: PendingSteer;
   /**
    * Whether this session's agent — model provider + extensions — has finished
    * loading on the backend. The transcript paints before this flips (see
@@ -345,11 +382,24 @@ class ChatStreamController {
   // would inherit a running clock.
   private updateMessages = (messages: Message[], receivedAt?: number): void => {
     this.messagesRef = messages;
-    this.updateSnapshot((prev) => ({
-      ...prev,
-      messages,
-      lastMessageAt: receivedAt ?? prev.lastMessageAt,
-    }));
+    this.updateSnapshot((prev) => {
+      // BR-61: the echo of our own steer is what retires the optimistic chip.
+      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerAfterCount);
+      return {
+        ...prev,
+        messages,
+        lastMessageAt: receivedAt ?? prev.lastMessageAt,
+        pendingSteer: steerLanded ? undefined : prev.pendingSteer,
+      };
+    });
+  };
+
+  /** Transcript length when the in-flight steer was issued. See steerWasEchoed. */
+  private steerAfterCount = 0;
+
+  private clearPendingSteer = (): void => {
+    if (!this.snapshot.pendingSteer) return;
+    this.updateSnapshot((prev) => ({ ...prev, pendingSteer: undefined }));
   };
 
   private updateTokenState = (tokenState: TokenState): void => {
@@ -693,6 +743,9 @@ class ChatStreamController {
       chatState: ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
+      // The turn it was aimed at is over; whether or not we saw the echo, there
+      // is nothing left to steer.
+      pendingSteer: undefined,
     }));
     for (const listener of this.finishListeners) listener();
   };
@@ -810,6 +863,7 @@ class ChatStreamController {
       turnError: undefined,
       turnStartedAt: Date.now(),
       lastMessageAt: undefined,
+      pendingSteer: undefined,
     }));
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
@@ -1036,6 +1090,16 @@ class ChatStreamController {
     if (!trimmed || !this.isRunning()) {
       return false;
     }
+    // Show it BEFORE the round-trip, not after. The POST itself can take a
+    // moment and the agent only consumes the steer at its next loop boundary —
+    // which may be a whole tool call away — so waiting for either would leave
+    // the user staring at a composer that just emptied itself for no visible
+    // reason. If the server refuses, the catch below retracts this.
+    this.steerAfterCount = this.messagesRef.length;
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      pendingSteer: { text: trimmed, since: Date.now() },
+    }));
     try {
       await interrupt({
         body: { session_id: this.sessionId, text: trimmed },
@@ -1045,7 +1109,10 @@ class ChatStreamController {
       return true;
     } catch (error) {
       // 409 = the turn ended between the click and the POST; the caller queues
-      // or sends it instead.
+      // or sends it instead. Retract the optimistic chip in the same breath —
+      // leaving "Steering…" up while the text is actually taking the ordinary
+      // send path would be the UI telling the user something untrue.
+      this.clearPendingSteer();
       console.warn('Soft interrupt rejected, falling back to a normal send:', error);
       return false;
     }
@@ -1059,6 +1126,7 @@ class ChatStreamController {
       chatState: ChatState.Idle,
       turnStartedAt: undefined,
       lastMessageAt: undefined,
+      pendingSteer: undefined,
     }));
     this.lastInteractionTime = Date.now();
 

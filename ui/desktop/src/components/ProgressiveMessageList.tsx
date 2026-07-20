@@ -24,7 +24,7 @@ import LoadingBioRouter from './LoadingBioRouter';
 import { ChatType } from '../types/chat';
 import { identifyConsecutiveToolCalls, isInChain } from '../utils/toolCallChaining';
 import TurnActivityIndicator from './TurnActivityIndicator';
-import { deriveTrailingActivity } from '../utils/trailingActivity';
+import { deriveTrailingActivity, type PendingSteer } from '../utils/trailingActivity';
 import { ChatState } from '../types/chatState';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 
@@ -56,6 +56,8 @@ interface ProgressiveMessageListProps {
   chatState?: ChatState;
   turnStartedAt?: number;
   lastMessageAt?: number;
+  /** BR-61: a soft interrupt awaiting the agent, shown as a trailing chip. */
+  pendingSteer?: PendingSteer;
 }
 
 export default function ProgressiveMessageList({
@@ -77,6 +79,7 @@ export default function ProgressiveMessageList({
   chatState,
   turnStartedAt,
   lastMessageAt,
+  pendingSteer,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -199,8 +202,9 @@ export default function ProgressiveMessageList({
         chatState,
         turnStartedAt,
         lastMessageAt,
+        pendingSteer,
       }),
-    [messages, isStreamingMessage, chatState, turnStartedAt, lastMessageAt]
+    [messages, isStreamingMessage, chatState, turnStartedAt, lastMessageAt, pendingSteer]
   );
 
   // Render messages up to the current rendered count

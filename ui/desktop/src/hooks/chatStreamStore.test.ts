@@ -761,6 +761,148 @@ describe('ChatStreamRegistry', () => {
     await submit;
   });
 
+  /**
+   * Issue 1 — the steer left the composer and nothing appeared until the agent's
+   * next output, seconds later. The store now carries an OPTIMISTIC record of
+   * the in-flight steer so the transcript can acknowledge the press immediately;
+   * these cover the two ways that optimism could turn into a lie.
+   */
+  it('publishes the steer optimistically, before the interrupt POST resolves', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    // A POST that never settles: nothing about the acknowledgement may wait on it.
+    let releaseInterrupt: (() => void) | null = null;
+    vi.mocked(interrupt).mockImplementation(
+      () => new Promise((resolve) => (releaseInterrupt = () => resolve({ data: undefined } as never)))
+    );
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    expect(controller.getSnapshot().pendingSteer).toBeUndefined();
+    const steering = controller.steer('actually, use R');
+    await flush();
+
+    expect(controller.getSnapshot().pendingSteer?.text).toBe('actually, use R');
+    expect(typeof controller.getSnapshot().pendingSteer?.since).toBe('number');
+
+    releaseInterrupt!();
+    await expect(steering).resolves.toBe(true);
+    // Still pending: accepted by the server is NOT the same as consumed by the
+    // agent, which only happens at its next loop boundary.
+    expect(controller.getSnapshot().pendingSteer?.text).toBe('actually, use R');
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
+  it('retracts the optimistic steer when the agent echoes it back', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(interrupt).mockResolvedValue({ data: undefined } as never);
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    await controller.steer('actually, use R');
+    await flush();
+    expect(controller.getSnapshot().pendingSteer).toBeDefined();
+
+    // The agent consumed it and replayed it as an ordinary user message — the
+    // only reliable signal that it landed.
+    controlled.push({
+      type: 'Message',
+      message: {
+        id: 'steer-echo',
+        role: 'user',
+        created: 3,
+        content: [{ type: 'text', text: 'actually, use R' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+
+    expect(controller.getSnapshot().pendingSteer).toBeUndefined();
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
+  it('retracts the optimistic steer when the server rejects it, so the UI never lies', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(interrupt).mockRejectedValue(new Error('conflict'));
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    // The caller falls back to an ordinary send; leaving "Steering…" on screen
+    // would describe a path the text is no longer taking.
+    await expect(controller.steer('actually, use R')).resolves.toBe(false);
+    expect(controller.getSnapshot().pendingSteer).toBeUndefined();
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
+  it('clears a never-echoed steer when the turn ends', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(interrupt).mockResolvedValue({ data: undefined } as never);
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+    await controller.steer('actually, use R');
+    await flush();
+    expect(controller.getSnapshot().pendingSteer).toBeDefined();
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+
+    // The turn it was aimed at is over — there is nothing left to steer.
+    expect(controller.getSnapshot().pendingSteer).toBeUndefined();
+  });
+
+  it('does not match a steer against the user’s own earlier prompt', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(interrupt).mockResolvedValue({ data: undefined } as never);
+
+    const controller = registry.getController('s1');
+    // Steering with the same words that are already in the transcript: a
+    // text-only match would retire the chip against history, the instant it
+    // appeared.
+    const submit = controller.handleSubmit('use R');
+    await flush();
+
+    await controller.steer('use R');
+    await flush();
+    expect(controller.getSnapshot().pendingSteer?.text).toBe('use R');
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
   it('sends a client-generated turn_id so an SSE re-POST dedupes (BR-62b)', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
