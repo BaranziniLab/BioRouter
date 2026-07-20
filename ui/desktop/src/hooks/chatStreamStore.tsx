@@ -250,6 +250,16 @@ class ChatStreamController {
   private lastInteractionTime = Date.now();
   private loadPromise: Promise<void> | null = null;
   /**
+   * R3-01 — synchronous re-entrancy latch for the submit prep window. The
+   * `abortController` guard in `canSubmitMessage` only trips once a turn has
+   * been launched, but `handleSubmit` awaits `loadSession` + `createUserMessage`
+   * *before* assigning `abortController`. A rapid double-click hits that gap:
+   * both calls pass the guard and both append the user turn (phantom duplicate
+   * bubble). This latch is set synchronously at the top of `handleSubmit`, so
+   * the second click bails before its first await.
+   */
+  private submitInFlight = false;
+  /**
    * The in-flight (or settled) model+extension load. Unlike `loadPromise` this
    * is never nulled on completion: it is the memo that makes `ensureAgentLoaded`
    * idempotent across the several call sites that can reach it (cold load,
@@ -874,47 +884,59 @@ class ChatStreamController {
   };
 
   handleSubmit = async (userMessage: string, attachments: UserAttachment[] = []): Promise<void> => {
-    await this.loadSession();
-
-    if (!this.canSubmitMessage()) {
+    // R3-01: bail synchronously on a re-entrant submit (double-click) so the
+    // second call never reaches the async prep that appends a duplicate user
+    // turn. Held across the whole submit; `canSubmitMessage`'s abortController
+    // guard takes over the moment the turn is actually launched.
+    if (this.submitInFlight) {
       return;
     }
+    this.submitInFlight = true;
+    try {
+      await this.loadSession();
 
-    const hasExistingMessages = this.messagesRef.length > 0;
-    const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
-    if (!hasNewMessage && !hasExistingMessages) {
-      return;
-    }
-
-    this.lastInteractionTime = Date.now();
-    if (userMessage.trim().length > 0) {
-      this.lastSubmittedTitle = userMessage.trim().slice(0, 80);
-    } else if (attachments.length > 0) {
-      this.lastSubmittedTitle = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`;
-    }
-
-    if (!hasExistingMessages && hasNewMessage) {
-      window.dispatchEvent(new CustomEvent('session-created'));
-    }
-
-    let newMessage: Message;
-    if (hasNewMessage) {
-      try {
-        newMessage = await createUserMessage(userMessage, attachments);
-      } catch (error) {
-        await this.finishCurrentStream(
-          clientTurnError(error, 'message_preparation_failed', 'inference')
-        );
+      if (!this.canSubmitMessage()) {
         return;
       }
-    } else {
-      newMessage = this.messagesRef[this.messagesRef.length - 1];
-    }
 
-    const currentMessages = hasNewMessage
-      ? [...this.messagesRef, newMessage]
-      : [...this.messagesRef];
-    await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+      const hasExistingMessages = this.messagesRef.length > 0;
+      const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
+      if (!hasNewMessage && !hasExistingMessages) {
+        return;
+      }
+
+      this.lastInteractionTime = Date.now();
+      if (userMessage.trim().length > 0) {
+        this.lastSubmittedTitle = userMessage.trim().slice(0, 80);
+      } else if (attachments.length > 0) {
+        this.lastSubmittedTitle = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`;
+      }
+
+      if (!hasExistingMessages && hasNewMessage) {
+        window.dispatchEvent(new CustomEvent('session-created'));
+      }
+
+      let newMessage: Message;
+      if (hasNewMessage) {
+        try {
+          newMessage = await createUserMessage(userMessage, attachments);
+        } catch (error) {
+          await this.finishCurrentStream(
+            clientTurnError(error, 'message_preparation_failed', 'inference')
+          );
+          return;
+        }
+      } else {
+        newMessage = this.messagesRef[this.messagesRef.length - 1];
+      }
+
+      const currentMessages = hasNewMessage
+        ? [...this.messagesRef, newMessage]
+        : [...this.messagesRef];
+      await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+    } finally {
+      this.submitInFlight = false;
+    }
   };
 
   /**

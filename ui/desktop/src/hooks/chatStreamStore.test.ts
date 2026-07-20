@@ -151,6 +151,34 @@ describe('ChatStreamRegistry', () => {
     expect(window.electron.openExternal).not.toHaveBeenCalled();
   });
 
+  it('a rapid double-submit appends the user turn exactly once (R3-01)', async () => {
+    // Unique session id: loadSession has a process-lifetime LRU cache keyed by
+    // session id, so reusing another test's id bleeds its cached turns in here.
+    const sid = 'r3-01-double-submit';
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sid) } } as never);
+    vi.mocked(reply).mockImplementation(
+      async () =>
+        ({
+          stream: (async function* () {
+            yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+          })(),
+        }) as never
+    );
+
+    const controller = registry.getController(sid);
+    // Two clicks before the first turn has registered its abortController — the
+    // async createUserMessage / loadSession prep is the window a double-click hits.
+    const p1 = controller.handleSubmit('ping');
+    const p2 = controller.handleSubmit('ping');
+    await Promise.all([p1, p2]);
+    await flush();
+
+    const userMessages = controller.getSnapshot().messages.filter((m) => m.role === 'user');
+    expect(userMessages).toHaveLength(1);
+    expect(reply).toHaveBeenCalledTimes(1);
+  });
+
   it('synchronizes a generated title and refreshes history after a tool-first turn', async () => {
     const registry = new ChatStreamRegistry();
     const initialSession = { ...session('20260716_27'), name: 'New Session' };
@@ -851,8 +879,8 @@ describe('ChatStreamRegistry — progressive loading', () => {
     const flags = vi
       .mocked(resumeAgent)
       .mock.calls.map(
-        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
-          .load_model_and_extensions
+        (c) =>
+          (c[0] as { body: { load_model_and_extensions: boolean } }).body.load_model_and_extensions
       );
     expect(flags[0]).toBe(false);
     expect(flags).toContain(true);
@@ -938,8 +966,8 @@ describe('ChatStreamRegistry — progressive loading', () => {
     const agentCalls = vi
       .mocked(resumeAgent)
       .mock.calls.filter(
-        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
-          .load_model_and_extensions
+        (c) =>
+          (c[0] as { body: { load_model_and_extensions: boolean } }).body.load_model_and_extensions
       );
     expect(agentCalls.length).toBeGreaterThan(0);
     release2();
@@ -963,8 +991,8 @@ describe('ChatStreamRegistry — progressive loading', () => {
     const agentCalls = vi
       .mocked(resumeAgent)
       .mock.calls.filter(
-        (c) => (c[0] as { body: { load_model_and_extensions: boolean } }).body
-          .load_model_and_extensions
+        (c) =>
+          (c[0] as { body: { load_model_and_extensions: boolean } }).body.load_model_and_extensions
       );
     expect(agentCalls).toHaveLength(1);
   });
