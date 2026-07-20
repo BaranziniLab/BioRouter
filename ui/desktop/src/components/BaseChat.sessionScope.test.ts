@@ -5,6 +5,7 @@ import {
   createSessionDivergedHandler,
   isEventForSession,
   SCROLL_TO_BOTTOM_DELAY_MS,
+  submitAndReturnToBottom,
 } from './BaseChat';
 
 /**
@@ -151,6 +152,67 @@ describe('broadcast window events are scoped to their own chat', () => {
 
       vi.advanceTimersByTime(1);
       expect(scrollA).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * Issue 3 — `handleRenderingComplete` force-scrolls only on the FIRST render
+   * and otherwise scrolls only `if (scrollRef.current?.isFollowing)`. Scrolling
+   * up clears isFollowing (ui/scroll-area.tsx sets userScrolledUpRef and
+   * setIsFollowing(false)), so a user reading history who then sent a message
+   * was left stranded mid-transcript, with no sight of where their prompt
+   * landed.
+   *
+   * These register the REAL listener the component's effect builds, so the fix
+   * is exercised through the same mechanism that ships.
+   */
+  describe('a user submit returns that chat to the bottom', () => {
+    it('scrolls the submitting chat even when it had been scrolled up', () => {
+      const submit = vi.fn();
+      // isFollowing is irrelevant here BY DESIGN: this path does not consult
+      // it. That is the fix — the previous behaviour gated on it and so did
+      // nothing for a user who had scrolled up.
+      submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'my next question');
+      vi.advanceTimersByTime(SCROLL_TO_BOTTOM_DELAY_MS);
+
+      expect(submit).toHaveBeenCalledWith('my next question', undefined);
+      expect(scrollA).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not drag a DIFFERENT chat to the bottom', () => {
+      submitAndReturnToBottom({ sessionId: SESSION_A, submit: vi.fn() }, 'hello');
+      vi.advanceTimersByTime(SCROLL_TO_BOTTOM_DELAY_MS);
+
+      expect(scrollA).toHaveBeenCalledTimes(1);
+      expect(scrollB).not.toHaveBeenCalled();
+    });
+
+    it('forwards attachments untouched', () => {
+      const submit = vi.fn();
+      const attachments = [{ path: '/tmp/plot.png', kind: 'image' as const }];
+      submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'look at this', attachments);
+
+      expect(submit).toHaveBeenCalledWith('look at this', attachments);
+    });
+
+    it('submits BEFORE asking to scroll, so the new message is on screen to scroll to', () => {
+      const order: string[] = [];
+      const submit = vi.fn(() => void order.push('submit'));
+      window.addEventListener('scroll-chat-to-bottom', () => order.push('scroll-request'));
+
+      submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'ordering');
+
+      expect(order).toEqual(['submit', 'scroll-request']);
+    });
+
+    it('scrolls smoothly — the instant jump is reserved for the first render', () => {
+      // The handler calls scrollToBottom() with no argument; ScrollArea defaults
+      // that to 'smooth' and only handleRenderingComplete's resume path passes
+      // 'auto'. Landing a submit instantly would be a jarring teleport.
+      submitAndReturnToBottom({ sessionId: SESSION_A, submit: vi.fn() }, 'smooth please');
+      vi.advanceTimersByTime(SCROLL_TO_BOTTOM_DELAY_MS);
+
+      expect(scrollA).toHaveBeenCalledWith();
     });
   });
 
