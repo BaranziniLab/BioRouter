@@ -266,6 +266,75 @@ describe('boot splash', () => {
     });
   });
 
+  /**
+   * jsdom has NO layout engine — `getBoundingClientRect()` is all zeroes here —
+   * so these cannot assert the mark's measured position. They pin the two CSS
+   * facts that PRODUCE the position instead, which is where the bug actually
+   * lived. Both were measured in a real Electron window before and after:
+   * the mark's ink centre sat at y=447.59 on the splash but y=461.49 on the
+   * loader it hands off to (923px-tall viewport) — a 14px drop, plus a 4px
+   * size change, i.e. the logo visibly jumped.
+   */
+  describe('mark placement (must not move when handing off to the app)', () => {
+    /** The splash stylesheet with CSS comments removed, so rule matching is
+     *  not thrown off by the (long) explanatory comments between rules. */
+    function splashStyle(): string {
+      const match = readIndexHtml().match(
+        /<style id="br-boot-splash-style">([\s\S]*?)<\/style>/
+      );
+      if (!match) throw new Error('boot splash style block not found in index.html');
+      return match[1].replace(/\/\*[\s\S]*?\*\//g, '');
+    }
+
+    /**
+     * The declaration body of one rule. Anchored on `}` or start-of-sheet so
+     * `#br-boot` matches only the BASE rule, never `html.dark #br-boot`.
+     */
+    function ruleBody(css: string, selector: string): string {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const match = css.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
+      if (!match) throw new Error(`rule not found: ${selector}`);
+      return match[1];
+    }
+
+    it('centres the container on the MARK — no gap can offset it', () => {
+      const body = ruleBody(splashStyle(), '#br-boot');
+      // A `gap` only has an effect if something else shares the flow, and any
+      // such sibling shifts the mark by half the extra height. This is the
+      // regression: `gap: 26px` + an in-flow sweep pushed the mark 14px up.
+      expect(body).toMatch(/justify-content:\s*center/);
+      expect(body).not.toMatch(/(^|[\s;])gap\s*:/);
+    });
+
+    it('keeps the sweep out of the flex flow, so it cannot displace the mark', () => {
+      const body = ruleBody(splashStyle(), '#br-boot .br-sweep');
+      expect(body).toMatch(/position:\s*absolute/);
+    });
+
+    it('renders the mark at the same size as the loader it hands off to', () => {
+      const splashSize = ruleBody(splashStyle(), '#br-boot .br-mark').match(
+        /height:\s*(\d+)px/
+      );
+      expect(splashSize, 'splash .br-mark must set an explicit px height').not.toBeNull();
+
+      // ProviderGuard's `isChecking` branch is the screen the splash uncovers.
+      // It used to use Tailwind's h-20 (80px) against the splash's 84px, so the
+      // logo resized mid-boot even once the vertical jump was fixed.
+      const guard = readFileSync(
+        resolveFromPackage(join('src', 'components', 'ProviderGuard.tsx')),
+        'utf-8'
+      );
+      const guardMark = guard.match(/<BioRouterMark className="h-\[(\d+)px\] w-\[(\d+)px\]"/);
+      expect(
+        guardMark,
+        'ProviderGuard must size its loader mark in explicit px so it can be compared to the splash'
+      ).not.toBeNull();
+
+      expect(guardMark![1]).toBe(splashSize![1]);
+      expect(guardMark![2]).toBe(splashSize![1]);
+    });
+  });
+
   describe('threshold gating', () => {
     it('stays hidden right up to the threshold', () => {
       mountSplash();
