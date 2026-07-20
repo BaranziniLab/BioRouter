@@ -3299,6 +3299,17 @@ function registerTerminalOwnerTeardown(contents: Electron.WebContents) {
 
   contents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
+    // `did-start-navigation` fires when the NavigationRequest is created, which
+    // is BEFORE navigation throttles run — and Electron implements
+    // `will-navigate` as a throttle. So a navigation that
+    // `blockOffOriginNavigation` is about to cancel still reaches this listener,
+    // and releasing here would kill every shell in the window for a document
+    // that never actually changes (with no did-fail-load compensation to undo
+    // it). Every navigation that CAN commit here is same-origin — Cmd+R, View >
+    // Reload, the `reload-app` IPC, loadURL of the renderer entry — so gating on
+    // the app origin keeps the reload teardown this exists for while making a
+    // cancelled navigation a no-op.
+    if (!isAppOrigin(details.url, rendererEntryUrl())) return;
     release('document replaced');
   });
   contents.on('render-process-gone', () => release('render process gone'));
@@ -3420,6 +3431,15 @@ function registerCliInstallHandlers() {
     const owner = event.sender;
     let didExit = false;
 
+    // Loaded BEFORE the teardown registration, not inside the try below, so the
+    // span from "this window's shells can be released" to "this session is in
+    // the registry" contains no await. Awaiting in that span would let a reload
+    // fire `releaseOwner` while this session is not yet registered, and the pty
+    // would then spawn and register under a dead document that can never send
+    // `terminal:dispose` for it. `loadNodePty` resolves to null rather than
+    // rejecting, so hoisting it out of the try changes no error handling.
+    const pty = await loadNodePty();
+
     // Reload / navigate / crash all free this window's shells. Registered per
     // webContents, idempotently, so it survives the renderer being replaced.
     registerTerminalOwnerTeardown(owner);
@@ -3457,7 +3477,6 @@ function registerCliInstallHandlers() {
     };
 
     try {
-      const pty = await loadNodePty();
       const sessionLimit = maxTerminalSessionsPerOwner();
       if (terminalSessions.countForOwner(owner.id) >= sessionLimit) {
         return { success: false, error: terminalSessionLimitMessage(sessionLimit) };

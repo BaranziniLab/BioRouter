@@ -858,6 +858,44 @@ describe('ChatStreamRegistry', () => {
     await submit;
   });
 
+  it('a rejected steer does not retract a LATER steer that is still pending', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    // Steer A's POST hangs, then rejects only after steer B has replaced the
+    // chip. A retraction that did not check ownership would wipe B — and
+    // nothing re-shows a chip for an in-flight steer, so B's indicator would be
+    // gone for good while B was still genuinely pending.
+    let rejectA: (reason: Error) => void = () => {};
+    vi.mocked(interrupt).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectA = reject;
+        }) as never
+    );
+    vi.mocked(interrupt).mockResolvedValue({ data: undefined } as never);
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    const steerA = controller.steer('actually, use R');
+    await flush();
+    await expect(controller.steer('no wait, use Python')).resolves.toBe(true);
+    expect(controller.getSnapshot().pendingSteer?.text).toBe('no wait, use Python');
+
+    rejectA(new Error('conflict'));
+    await expect(steerA).resolves.toBe(false);
+
+    expect(controller.getSnapshot().pendingSteer?.text).toBe('no wait, use Python');
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
   it('clears a never-echoed steer when the turn ends', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();

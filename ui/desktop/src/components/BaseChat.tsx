@@ -289,6 +289,14 @@ export function artifactPanelTargetContentWidth(opts: {
  * have to reimplement and could then drift from.
  */
 export function requestScrollToBottom(sessionId: string): void {
+  // A chat with no session id yet has no transcript to return to, and an empty
+  // id is FALSY — `isEventForSession` would read it as an un-addressed
+  // broadcast and every other mounted chat would obey it. Tabs and split panes
+  // mount N chats at once, so that is a background pane the user was reading
+  // being yanked to the bottom. Drop it at the sender: the lenient branch in
+  // `isEventForSession` is deliberate back-compat for dispatchers outside this
+  // repo and must keep working, so the guard belongs here, not there.
+  if (!sessionId) return;
   window.dispatchEvent(new CustomEvent('scroll-chat-to-bottom', { detail: { sessionId } }));
 }
 

@@ -1096,9 +1096,15 @@ class ChatStreamController {
     // the user staring at a composer that just emptied itself for no visible
     // reason. If the server refuses, the catch below retracts this.
     this.steerAfterCount = this.messagesRef.length;
+    // Held so the catch can prove the chip it retracts is still ITS OWN. A
+    // second steer issued while this POST is in flight replaces `pendingSteer`
+    // wholesale; retracting unconditionally would then wipe the newer steer's
+    // chip even though that steer is still genuinely pending — and it would
+    // never come back, because nothing re-shows a chip for an in-flight steer.
+    const issued = { text: trimmed, since: Date.now() };
     this.updateSnapshot((prev) => ({
       ...prev,
-      pendingSteer: { text: trimmed, since: Date.now() },
+      pendingSteer: issued,
     }));
     try {
       await interrupt({
@@ -1112,7 +1118,9 @@ class ChatStreamController {
       // or sends it instead. Retract the optimistic chip in the same breath —
       // leaving "Steering…" up while the text is actually taking the ordinary
       // send path would be the UI telling the user something untrue.
-      this.clearPendingSteer();
+      if (this.getSnapshot().pendingSteer === issued) {
+        this.clearPendingSteer();
+      }
       console.warn('Soft interrupt rejected, falling back to a normal send:', error);
       return false;
     }

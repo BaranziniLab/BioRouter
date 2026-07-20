@@ -187,6 +187,21 @@ describe('broadcast window events are scoped to their own chat', () => {
       expect(scrollB).not.toHaveBeenCalled();
     });
 
+    it('does not broadcast to every chat when the submitting chat has no session yet', () => {
+      // A chat still creating its session submits with sessionId ''. That is
+      // FALSY, so `isEventForSession` would read it as an un-addressed
+      // broadcast (a deliberate back-compat branch) and BOTH chats would obey
+      // it — yanking a background pane the user was reading. The sender drops
+      // it instead: a chat with no session has no transcript to scroll.
+      const submit = vi.fn();
+      submitAndReturnToBottom({ sessionId: '', submit }, 'sent while still creating');
+      vi.advanceTimersByTime(SCROLL_TO_BOTTOM_DELAY_MS);
+
+      expect(submit).toHaveBeenCalledWith('sent while still creating', undefined);
+      expect(scrollA).not.toHaveBeenCalled();
+      expect(scrollB).not.toHaveBeenCalled();
+    });
+
     it('forwards attachments untouched', () => {
       const submit = vi.fn();
       const attachments = [{ path: '/tmp/plot.png', kind: 'image' as const }];

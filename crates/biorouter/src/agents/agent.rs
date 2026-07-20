@@ -3736,12 +3736,14 @@ impl Agent {
                                     // only after the await cannot observe a cancel until
                                     // some tool finishes, making a cancelled turn wait out
                                     // its slowest call (a 6s child kept a cancelled turn
-                                    // alive for the full 6s). Selecting on the token drops
-                                    // `combined` — and with it every in-flight tool future
-                                    // — at the instant the cancel lands, which is what
-                                    // tears a delegated child down rather than orphaning
-                                    // it. `StreamExt::next` is cancel-safe, so losing the
-                                    // race never drops an item that had already resolved.
+                                    // alive for the full 6s). Selecting on the token lets
+                                    // the loop EXIT at the instant the cancel lands instead
+                                    // of blocking on the slowest call; the in-flight tool
+                                    // futures live in `combined`, a local that is not
+                                    // dropped until the end of this block, so they are torn
+                                    // down there rather than literally at the cancel.
+                                    // `StreamExt::next` is cancel-safe, so losing the race
+                                    // never drops an item that had already resolved.
                                     loop {
                                         let next_item = tokio::select! {
                                             biased;
