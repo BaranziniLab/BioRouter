@@ -45,6 +45,26 @@ Items are worked **sequentially by priority**, not silently dropped. An item lea
 | 24 | Subagents: edge cases, stress, traceability in chat | 07-20 | Open | queued next |
 | 25 | Deprecation proposal for overlapping tools | 07-19 | Needs decision | `docs/agent-loop/tool-routing.md` |
 | 26 | Human security review: R2-01 dynamic-path residual, MCP mutex | 07-19 | Needs decision | listed in the campaign final report |
+| 27 | Docs root still holds loose files; migrate or delete, preserving all information | 07-20 | Done | already complete on this branch — see audit below |
+| 28 | Recurring `code_execution` failure: "Module error: TypeError: Module could not be found" | 07-20 | In progress | root-cause + prompt/error engineering |
+
+## Audit: the 27 loose `docs/` root files (item 27)
+
+Verified with git rename detection from `e78d078c` to this branch. **Nothing was
+lost.** 22 files were renamed into topic folders with purpose-based names. The 5
+that git reports as deletions were HTML-to-Markdown conversions or content merges,
+which fall below the rename-similarity threshold:
+
+| Deleted from the root | Where the content actually lives |
+|---|---|
+| `xiaomi-mimo-integration-checklist.md` | [providers/xiaomi-mimo.md](../../providers/xiaomi-mimo.md) |
+| `zai-integration-checklist.md` | [providers/zai-glm.md](../../providers/zai-glm.md) |
+| `github-merge-execution-plan-2026-07-13.html` | [history/branch-merge-2026-07/merge-execution-plan.md](../branch-merge-2026-07/merge-execution-plan.md) |
+| `jcode-comparison-perf-analysis.md` | [history/performance-2026-06/jcode-comparison-analysis.md](../performance-2026-06/jcode-comparison-analysis.md) |
+| `slack-integration-options.md` | [extensions/slack-posting-investigation.md](../../extensions/slack-posting-investigation.md) |
+
+The root now holds exactly `README.md` and `organization.md`, as
+[organization.md](../../organization.md) §8 requires.
 
 ## Related documentation
 
