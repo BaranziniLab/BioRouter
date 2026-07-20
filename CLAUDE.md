@@ -357,7 +357,7 @@ Key invariants, each learned from a real bug:
 - **`check-contrast.mjs` discovers families** from the stylesheet; a new family
   is audited with zero edits to it (228 assertions at three families).
 
-Design docs: [`docs/design/theme-system-architecture.md`](docs/design/theme-system-architecture.md)
+Design docs: [`docs/design/theming/theme-system-architecture.md`](docs/design/theming/theme-system-architecture.md)
 (architecture + the decisions and their reasons), plus one per family —
 `design.md` (Parchment), `alma-mater-theme.md`, `roche-limit-theme.md`.
 

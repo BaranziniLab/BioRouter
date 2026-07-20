@@ -51,7 +51,7 @@ export const CODE_LINE_HEIGHT = '20px';
  *
  * Two stops deliberately do NOT copy Jupyter: their `comment` (#408080) ships
  * unchanged in dark at ~2.8:1, and their dark `func` (#1e88e5) at ~3.4:1 —
- * both fail AA. See docs/design/roche-limit-theme.md §4.10 / §5.8.
+ * both fail AA. See docs/design/theming/roche-limit-theme.md §4.10 / §5.8.
  */
 type SyntaxPalette = {
   plain: string;

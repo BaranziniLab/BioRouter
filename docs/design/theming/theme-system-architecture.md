@@ -1,7 +1,15 @@
 # Theme system — how it works today, and how to make adding themes cheap
 
-**Status:** ✅ **implemented** (2026-07-18) · **Context:** three families ship (Parchment, Alma Mater,
-Roche Limit); the team expects more, and themes stay baked into the app — not user-installable.
+> **What this is.** The architecture of BioRouter's theme system: where a theme actually lives,
+> what is generated from what, the token contract, and what a fourth family costs.
+> **Status:** Current. Implemented 2026-07-18; §5 is the shipped architecture, and §1–§4 are
+> kept as the diagnosis that motivated it. §7 names what is still open.
+> **Audience:** developers adding a theme family, or touching any of the generated regions in
+> `main.css`, `themes.generated.ts` and `index.html`.
+
+Three families ship — Parchment, Alma Mater and Roche Limit — the team expects more, and themes
+stay baked into the app rather than being user-installable. Sections are numbered and cited by
+number from the per-family token references, so the numbering is a stable reference scheme.
 
 > §1–§4 below are the diagnosis that motivated the work and are kept as the record of what was
 > measured. **§5 is the shipped architecture.** The staged plan it originally proposed was compressed:
@@ -135,7 +143,7 @@ new family to hand-copy splash hexes into `index.html`.
 **One definition per family; everything else generated. Compile-time only — themes are baked into
 the app and are not user-installable, by decision.**
 
-```
+```text
 ui/desktop/themes/<id>.theme.mjs      the ONE file you write
 npm run themes                        emits everything below
 npm run themes -- --check             CI gate: fails if generated output is stale
@@ -240,3 +248,10 @@ means recovering it from there, with fresh eyes on what it reads.
   but the comment's reasoning should be corrected.
 - `--sidebar-icon` on a navy sidebar, and the scoped `<div data-theme>` live preview for settings,
   remain unbuilt.
+
+## Related documentation
+
+- [Theming](README.md) — the folder index, and the per-family token references this architecture generates.
+- [Alma Mater theme tokens](alma-mater-theme-tokens.md) — the UCSF-brand family's token reference.
+- [Roche Limit theme tokens](roche-limit-theme.md) — the JupyterLab-inspired family's token reference.
+- [Biorouter Design System](../../../design.md) — the parent design system this architecture serves.

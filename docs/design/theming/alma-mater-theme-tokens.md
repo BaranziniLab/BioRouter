@@ -1,7 +1,19 @@
 # Alma Mater — a UCSF theme for BioRouter
 
-**Status:** ✅ **Approved (UCSF Teal accent), implemented, and reconciled against the shipped code** · **Date:** 2026-07-18 (theme-system re-architecture + doc reconciliation; light-theme revision same day; original 2026-07-10) · **Owner:** Baranzini Lab, UCSF
-**Companion mockups:** [`alma-mater-light-redesign.html`](alma-mater-light-redesign.html) (the 2026-07-18 revision — live contrast validation + exportable setup) · [`alma-mater-theme.html`](alma-mater-theme.html) — renders this palette on real BioRouter chrome, in **light + dark**, with a live accent picker that was used to compare the "elegant twist" options before the build. Both are kept as the decision record; the shipped values are in the theme file, not in them.
+> **What this is.** The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme
+> family: the UCSF palette it draws from, the accent decision, a complete token-by-token light
+> and dark mapping, and the verified WCAG contrast ratios behind every value.
+> **Status:** Current. Approved with the UCSF Teal accent, implemented, and reconciled against
+> the shipped code on 2026-07-18 (light-theme revision the same day; originally implemented
+> 2026-07-10). §9 records what was actually built.
+> **Audience:** developers adding a component that reads colour tokens, and anyone proposing a
+> new theme family.
+
+Sections are numbered and cited by number from the other theme documents, so the numbering is a
+stable reference scheme rather than decoration.
+
+**Owner:** Baranzini Lab, UCSF.
+**Companion mockups:** [`alma-mater-light-theme-studio.html`](alma-mater-light-theme-studio.html) (the 2026-07-18 revision — live contrast validation + exportable setup) · [`alma-mater-theme-studio.html`](alma-mater-theme-studio.html) — renders this palette on real BioRouter chrome, in **light + dark**, with a live accent picker that was used to compare the "elegant twist" options before the build. Both are kept as the decision record; the shipped values are in the theme file, not in them.
 
 > This document names the palette, maps every token, and proves the contrast.
 > It was written as the pre-build spec and has since been **reconciled against the
@@ -9,7 +21,7 @@
 > ratio recomputed from the hex. The theme-family toggle it proposed is built and
 > wired into Appearance settings; see **§9 · as built**.
 >
-> **Where the theme actually lives now:** one file — [`ui/desktop/themes/alma-mater.theme.mjs`](../../ui/desktop/themes/alma-mater.theme.mjs).
+> **Where the theme actually lives now:** one file — [`ui/desktop/themes/alma-mater.theme.mjs`](../../../ui/desktop/themes/alma-mater.theme.mjs).
 > The CSS token blocks, the syntax and terminal palettes, the picker entry and the
 > boot-splash CSS are all *generated* from it by `npm run themes`, into
 > marker-delimited regions of `main.css`, `themes.generated.ts` and `index.html`.
@@ -425,7 +437,7 @@ sites are generated rather than hand-edited. See §9 for what the code looks lik
 - **`codeTheme.ts`** — add an Alma Mater light/dark syntax set; select it by theme family.
 - **`ThemeContext.tsx`** — add a `themeFamily: 'parchment' | 'alma-mater'` axis (localStorage-persisted), write `data-theme` on `<html>` alongside the existing `.dark`/`.light` class, broadcast across windows like the mode already is.
 - **`index.html`** — mirror the family in the pre-hydration script so it doesn't flash on load.
-- **Appearance settings** — mount a small **theme-family selector** (Parchment | Alma Mater) beside the existing light/dark control in [`AppSettingsSection.tsx`](../../ui/desktop/src/components/settings/app/AppSettingsSection.tsx). The existing [`ThemeSelector`](../../ui/desktop/src/components/BioRouterSidebar/ThemeSelector.tsx) is generalised or paired with a new `ThemeFamilySelector`.
+- **Appearance settings** — mount a small **theme-family selector** (Parchment | Alma Mater) beside the existing light/dark control in [`AppSettingsSection.tsx`](../../../ui/desktop/src/components/settings/app/AppSettingsSection.tsx). The existing [`ThemeSelector`](../../../ui/desktop/src/components/BioRouterSidebar/ThemeSelector.tsx) is generalised or paired with a new `ThemeFamilySelector`.
 - **Contrast guard** — extend `scripts/check-contrast.mjs` to assert Alma Mater's pairs too, so a future edit can't regress it.
 
 Two things the plan got wrong, both found by running the real gate rather than reasoning about
@@ -445,7 +457,7 @@ across nine files; it is **one file plus one command**.
 
 | | |
 |---|---|
-| **Source of truth** | [`ui/desktop/themes/alma-mater.theme.mjs`](../../ui/desktop/themes/alma-mater.theme.mjs) — 61 semantic tokens × 2 modes, 27 raw remaps, 10 syntax stops × 2, 19 terminal stops × 2, 3 splash values, plus `id` / `label` / `swatch` / `terminalGround`. |
+| **Source of truth** | [`ui/desktop/themes/alma-mater.theme.mjs`](../../../ui/desktop/themes/alma-mater.theme.mjs) — 61 semantic tokens × 2 modes, 27 raw remaps, 10 syntax stops × 2, 19 terminal stops × 2, 3 splash values, plus `id` / `label` / `swatch` / `terminalGround`. |
 | **Command** | `npm run themes` regenerates; `npm run themes -- --check` fails CI if anything is stale. It runs inside `npm run lint:check`. |
 | **Contract** | `ui/desktop/scripts/lib/theme-contract.mjs` — the written-down answer to "what does a theme have to define?". A missing token means the generator **refuses to emit**. |
 
@@ -496,3 +508,10 @@ different surface.
 - `node scripts/generate-themes.mjs --check` — generated artifacts current across all 3 themes.
 - Every ratio in §5j and §6 recomputed from the shipped hexes with the WCAG relative-luminance
   formula, against the token each value is actually painted on.
+
+## Related documentation
+
+- [Theming](README.md) — the folder index, and the other theme families' token references.
+- [Theme system architecture](theme-system-architecture.md) — how a theme is defined once and generated into every consumer; the authority over any hex quoted here.
+- [Roche Limit theme tokens](roche-limit-theme.md) — the sibling token reference for the JupyterLab-inspired family.
+- [Biorouter Design System](../../../design.md) — the parent design system and the register of the numbered `D-NN` decisions cited above.

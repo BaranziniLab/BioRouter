@@ -3,8 +3,9 @@
 This folder holds BioRouter's theme families — the named colour environments the desktop app
 can be dressed in, selected independently of light/dark mode. It covers the colour tokens each
 family overrides, the palettes they draw from, the accent decisions behind them, and the
-verified WCAG contrast ratios for every value. Alma Mater, the UCSF-brand family, has shipped
-and is specified here in full; Roche Limit is a proposal that has not shipped.
+verified WCAG contrast ratios for every value. Three families ship — Parchment, Alma Mater and
+Roche Limit — and both non-default families are specified here in full, alongside the
+architecture that generates every one of them from a single file per family.
 
 Come here when you need the authoritative value for a colour token, when you are adding a
 component that reads colour tokens and need to know what it will look like in all four
@@ -18,7 +19,9 @@ brand assets see [`../branding/`](../branding/).
 
 | Document | What it covers |
 |---|---|
-| [Alma Mater theme tokens](alma-mater-theme-tokens.md) | The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme family: the UCSF palette it draws from, the accent decision, a complete token-by-token light/dark mapping, and the verified WCAG contrast ratios behind every value. The theme was approved with the Eggplant accent, implemented on 2026-07-10 and has shipped; these tables remain the authoritative source for the values. |
+| [Theme system architecture](theme-system-architecture.md) | How the theme system is put together: where a theme actually lives, the single authored file per family, what is generated from it and what is derived and must never be authored, the token contract, what guards it, and the measured cost of a fourth family. Read this before either token reference — it is the authority over any hex quoted in them. |
+| [Alma Mater theme tokens](alma-mater-theme-tokens.md) | The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme family: the UCSF palette it draws from, the accent decision, a complete token-by-token light/dark mapping, and the verified WCAG contrast ratios behind every value. Approved with the UCSF Teal accent, originally implemented 2026-07-10 and reconciled against the shipped code on 2026-07-18. |
+| [Roche Limit theme tokens](roche-limit-theme.md) | The colour-token reference for Roche Limit, the JupyterLab-inspired family — white page, recessed grey panels, one bright orange doing all the signalling. Approved and implemented on 2026-07-18; §9 records what was actually built. |
 
 ## Interactive studios
 
@@ -30,7 +33,7 @@ browser to be useful** — open them locally; they are not readable as source.
 | `theme-system-explorer.html` | "One interface. Four colour environments." — how the token layers and theme axes fit together across both shipped families, showing Parchment and Alma Mater in light and dark modes. |
 | `alma-mater-theme-studio.html` | The Alma Mater studio: renders the token set on real BioRouter chrome in light and dark, and carries the accent picker used to compare options while the accent was being chosen. |
 | `alma-mater-light-theme-studio.html` | A deeper exploration of Alma Mater's light variant (UCSF Teal). |
-| `roche-limit-theme-studio.html` | A proposal for **Roche Limit**, a third theme family drawn from JupyterLab — a white page, recessed grey panels, and one bright orange doing all the signalling. Family id `roche-limit`, light + dark, 59 × 2 tokens, 164/164 contrast pairs at AA. Marked *awaiting approval*; nothing shipped. |
+| `roche-limit-theme-studio.html` | The **Roche Limit** studio — a white page, recessed grey panels, and one bright orange doing all the signalling. Family id `roche-limit`, light + dark, 59 × 2 tokens, 164/164 contrast pairs at AA. The page still carries the *awaiting approval* framing it was written with; the family was approved and shipped on 2026-07-18, and [its token reference](roche-limit-theme.md) is the current authority. |
 
 ## Related documentation
 
@@ -42,3 +45,5 @@ browser to be useful** — open them locally; they are not readable as source.
   assets that sit alongside these palettes, including their own colour tokens.
 - [UI cohesion redesign](../ui-overhaul/ui-cohesion-redesign.md) — the structural counterpart:
   the markdown layer, preview panel, terminal and floating surfaces these tokens are applied to.
+- [Design](../README.md) — the parent folder index, and the boot-splash studio that paints the
+  brand mark before any of these tokens exist as runtime custom properties.

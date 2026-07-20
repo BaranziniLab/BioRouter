@@ -20,7 +20,7 @@ shipped or were overtaken by later work are filed under
 [`docs/history/`](../history/README.md), not here.
 
 There are no Markdown files directly in this folder. All specifications sit in the four
-topic subfolders below, alongside one top-level rendered page.
+topic subfolders below, alongside two top-level rendered pages.
 
 ## Subfolders
 
@@ -33,9 +33,12 @@ topic subfolders below, alongside one top-level rendered page.
   a spike report proving that two nested providers clobber each other's active knowledge
   base; its prerequisite fix is still **not** made, so provider nesting remains blocked.
 - **[`theming/`](theming/)** — the theme families. Holds the
-  [Alma Mater theme tokens](theming/alma-mater-theme-tokens.md), the authoritative
-  token-by-token light/dark mapping and WCAG contrast ratios for BioRouter's UCSF-brand
-  theme, alongside the theme studios and the theme-system explorer.
+  [theme system architecture](theming/theme-system-architecture.md), which fixes the one
+  authored file per family and everything generated from it, plus the two token references it
+  governs — [Alma Mater](theming/alma-mater-theme-tokens.md) for the UCSF-brand family and
+  [Roche Limit](theming/roche-limit-theme.md) for the JupyterLab-inspired one — each giving the
+  authoritative token-by-token light/dark mapping and WCAG contrast ratios. The theme studios
+  and the theme-system explorer sit beside them.
 - **[`ui-overhaul/`](ui-overhaul/)** — the app-wide half of the 2026-07 desktop redesign:
   its specification and its status record.
   - [Execution status](ui-overhaul/execution-status.md) — the stated source of truth for
@@ -59,6 +62,10 @@ source text. Each sits beside the Markdown companion that explains it.
 
 - `design-system-gallery.html` — the design system rendered as a gallery of every token,
   element and state; the companion artifact to the root [design system](../../design.md).
+- `boot-splash-studio.html` — the studio for the boot splash, the centred `BR` mark that
+  assembles itself before the app paints. Replays the animation, switches theme families, and
+  puts every timing value on a drag handle. Its written companion is the
+  [boot splash design](../history/dashboard-mode/2026-07-18-boot-splash-design.md).
 - `branding/logo-wordmark-studio.html` and `branding/logo-icon-studio.html` — interactive
   studios for the wordmark and for centring the `BR` icon, with dials for position, mark
   size and underline gap, and text export/import.

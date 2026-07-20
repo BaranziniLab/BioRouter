@@ -1,7 +1,18 @@
 # Roche Limit — a Jupyter-inspired theme for BioRouter
 
-**Status:** ✅ **Approved & implemented** · **Date:** 2026-07-18 · **Owner:** Baranzini Lab, UCSF
-**Companion mockup:** [`docs/design/roche-limit-theme.html`](roche-limit-theme.html) — renders this palette on real BioRouter chrome, in **light + dark**, with live toggles for the three previewable open questions (chrome warmth, grey temperature, cell rail).
+> **What this is.** The colour-token reference for Roche Limit, BioRouter's third theme family:
+> the palette it draws from, the accent ramp, a complete token-by-token light and dark mapping,
+> and the verified WCAG contrast ratios behind every value.
+> **Status:** Current. Approved and implemented on 2026-07-18; §9 records what was actually
+> built and wins wherever it disagrees with the design argument in §1–§8.
+> **Audience:** developers adding a component that reads colour tokens, and anyone proposing a
+> new theme family.
+
+Sections are numbered and cited by number from other documents and from source — `codeTheme.ts`
+points at §4.10 and §5.8 — so the numbering is a stable reference scheme, not decoration.
+
+**Owner:** Baranzini Lab, UCSF.
+**Companion mockup:** [`roche-limit-theme-studio.html`](roche-limit-theme-studio.html) — renders this palette on real BioRouter chrome, in **light + dark**, with live toggles for the three previewable open questions (chrome warmth, grey temperature, cell rail).
 
 > This document began as **step 1** — naming the palette, mapping every token, proving the contrast —
 > and was written before any code changed. **That step is done: the theme shipped on 2026-07-18.**
@@ -10,9 +21,9 @@
 > reference.
 >
 > **Where the values live now.** The theme was later folded into the generated theme system: the
-> single authored source is [`ui/desktop/themes/roche-limit.theme.mjs`](../../ui/desktop/themes/roche-limit.theme.mjs),
+> single authored source is [`ui/desktop/themes/roche-limit.theme.mjs`](../../../ui/desktop/themes/roche-limit.theme.mjs),
 > and every consumer is emitted from it by `npm run themes`. See **§9.1** and
-> [`docs/design/theme-system-architecture.md`](theme-system-architecture.md). Any hex in this
+> [`docs/design/theming/theme-system-architecture.md`](theme-system-architecture.md). Any hex in this
 > document is documentation *about* that file, never the source of it.
 
 ---
@@ -506,10 +517,10 @@ export type ThemeFamily = (typeof THEME_FAMILIES)[number];
 **This supersedes the file-by-file account below.** Roche Limit shipped by hand-editing ten sites;
 that experience — three families each redeclaring every token across nine files — is what motivated
 the re-architecture recorded in
-[`docs/design/theme-system-architecture.md`](theme-system-architecture.md). **A theme is now a single
+[`docs/design/theming/theme-system-architecture.md`](theme-system-architecture.md). **A theme is now a single
 authored file:**
 
-```
+```text
 ui/desktop/themes/roche-limit.theme.mjs     ← the only file anyone edits
 npm run themes                               ← regenerates every consumer
 npm run check:themes                         ← --check mode; part of npm run lint:check
@@ -632,3 +643,10 @@ payload.
 
 **Verification gate:** `cd ui/desktop && npm run lint:check` (typecheck + eslint + contrast) and
 `npm run test:run`.
+
+## Related documentation
+
+- [Theming](README.md) — the folder index, and the other theme families' token references.
+- [Theme system architecture](theme-system-architecture.md) — how a theme is defined once and generated into every consumer; the authority over any hex quoted here.
+- [Alma Mater theme tokens](alma-mater-theme-tokens.md) — the sibling token reference for the UCSF-brand family.
+- [Biorouter Design System](../../../design.md) — the parent design system and the register of the numbered `D-NN` decisions cited above.
