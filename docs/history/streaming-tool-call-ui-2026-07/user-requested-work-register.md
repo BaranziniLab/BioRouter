@@ -1,0 +1,53 @@
+# User-requested work register
+
+> **What this is.** The running backlog of every issue and test directive the user
+> raised during the 2026-07-19/20 QA campaign, with its status, owner commit, and
+> where the evidence lives. It exists so that no instruction is lost across a long
+> multi-agent session.
+> **Status:** Current — updated as items land.
+> **Audience:** maintainers tracking what was asked, what shipped, and what is open.
+
+Items are worked **sequentially by priority**, not silently dropped. An item leaves
+`Open` only when it has a fix commit *and* a verification record.
+
+## Status key
+
+`Done` — fixed, gate-proven, verified · `In progress` — agent working ·
+`Open` — accepted, not started · `Needs decision` — blocked on the user.
+
+## Register
+
+| # | Item | Raised | Status | Evidence / commit |
+|---|---|---|---|---|
+| 1 | Tool calls appear already-finished; dead gap between calls | earlier | Done | streaming for 14 providers; see the campaign final report |
+| 2 | Bedrock (all Anthropic models) must stream too | earlier | Done | `81294947` ConverseStream |
+| 3 | "Maximum update depth exceeded" crash | earlier | Done | `d789c6ab` (pre-existing) |
+| 4 | Per-token bubbles on Bedrock | earlier | Done | `d65f7103` shared message id |
+| 5 | Duplicate submission on tab close | earlier | Done | `f1f1d6b6` `consumePending` wiring |
+| 6 | Home-surface submit silently loses the message | earlier | Done | `6c261665` query-string transport |
+| 7 | Deferred perf items 6.1b/6.2b/6.2c/6.2d | earlier | Done | `77a7564d`, `8e20f6cc`, `ae740027`, `e06a3b43` |
+| 8 | Preview cannot open files the task wrote (`/tmp`) | earlier | Done | `dc66324b`, `f8f1505f` (`execute_code` wrapper) |
+| 9 | Fully-Automatic mode: broad access, approval only for sensitive ops | earlier | Done | `1079f909`, `1e8fea2e`, `7bca4b5e` |
+| 10 | Tool-routing taxonomy + prompt documentation | earlier | Done | `b925d72a`, `docs/agent-loop/tool-routing.md` |
+| 11 | BioOKF rebuild until zero unintended tool failures | earlier | Done | 3 iterations, `90bc2acf`; iteration 3 clean |
+| 12 | Markdown preview: images, hyperlinks, all GFM | earlier | Done | `3db5d420` |
+| 13 | Send failure must not become a fatal session card | earlier | Done | `87a5744d` inline retryable error |
+| 14 | Merge both stale branches into main; resolve conflicts | 07-19 | Done | merge `cb7238e3`, 7 conflicts |
+| 15 | Documentation structure spec + conform all campaign docs | 07-19 | Done | `b540df29`, `b1270508`, `1661ab89` |
+| 16 | Remove the recents count badge (counts loaded sessions, not the week) | 07-20 | Done | `211668be` |
+| 17 | Alma Mater + Roche Limit: canvas must be WHITE, sidebar grey; **Alma dark unchanged**, Parchment unchanged | 07-20 | In progress | root cause: `--background-app` is a dead token (0 usages) |
+| 18 | Terminal: types, splits, per-session cwd consistency, stress (busy + churn + many-at-once), PTY reaping | 07-20 | In progress | — |
+| 19 | Boot animation: logo shifts between the static state and the slide-bar state; verify with vision | 07-20 | In progress | suspect: flex column `gap:26px` + 2px sweep offsets the mark ~14px |
+| 20 | Soft interrupt gives no immediate feedback (blank multi-second gap) | 07-20 | In progress | `chatStreamStore.tsx` BR-61 steer path |
+| 21 | "Stop and Send" needs a smooth acknowledgment animation | 07-20 | In progress | — |
+| 22 | Sending while scrolled up must smoothly return to the bottom | 07-20 | In progress | confirmed: `BaseChat.tsx` scrolls only `if (isFollowing)` |
+| 23 | Parallel tool/code execution: stress + edge cases | 07-20 | Open | queued next |
+| 24 | Subagents: edge cases, stress, traceability in chat | 07-20 | Open | queued next |
+| 25 | Deprecation proposal for overlapping tools | 07-19 | Needs decision | `docs/agent-loop/tool-routing.md` |
+| 26 | Human security review: R2-01 dynamic-path residual, MCP mutex | 07-19 | Needs decision | listed in the campaign final report |
+
+## Related documentation
+
+- [Campaign final report](campaign-final-report.md) — per-round findings and fixes.
+- [Session trace](session-trace.md) — every instruction mapped to its commit.
+- [Tool errors audit](tool-errors-audit.md) — intended vs defect classification.
