@@ -195,7 +195,18 @@ describe('chatGroupsReducer — moveTabToGroup: split', () => {
   });
 
   it('caps the split at MAX_GROUPS', () => {
-    let state = run(createInitialChatGroupsState(), open('s1'), open('s2'), open('s3'), open('s4'), open('s5'));
+    // One more tab than the cap, so after splitting to MAX_GROUPS a crowded
+    // group still remains to attempt (and be refused) the over-cap split.
+    let state = run(
+      createInitialChatGroupsState(),
+      open('s1'),
+      open('s2'),
+      open('s3'),
+      open('s4'),
+      open('s5'),
+      open('s6'),
+      open('s7')
+    );
     // Split until the cap.
     for (let i = 0; i < MAX_GROUPS - 1; i++) {
       const target = state.activeGroupId;
