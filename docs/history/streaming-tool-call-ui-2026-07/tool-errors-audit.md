@@ -1,8 +1,10 @@
 # Tool-errors audit — every tool failure in QA rounds 1 and 2
 
 > **What this is.** A sweep of every tool error the QA rounds surfaced in the daemon logs, each
-> classified as an intended rejection or a genuine defect.
-> **Status:** Historical record (completed 2026-07-19).
+> classified as an intended rejection or a genuine defect, plus a follow-up sweep of the
+> `code_execution` sandbox's module errors.
+> **Status:** Historical record (rounds 1–2 completed 2026-07-19; follow-up sweep on the
+> sandbox module errors added 2026-07-20).
 > **Audience:** developers working on tool dispatch, the developer extension's path jail, and
 > permission gating.
 
@@ -83,6 +85,85 @@ always-on `info`-level line keyed `target: "tool_result"` was added at the unive
 dispatch choke point (`Agent::dispatch_tool_call`, `crates/biorouter/src/agents/agent.rs`)
 — see [tool routing](../../agent-loop/tool-routing.md), section "Tool-result logging". Filter with
 `RUST_LOG=tool_result=info`.
+
+## Follow-up sweep — `Module could not be found` (2026-07-20)
+
+A user reported `Module error: TypeError: Module could not be found.` as happening "very
+often". This sweep re-ran the audit method over everything available since: the session
+store (`~/.local/share/biorouter/sessions/sessions.db`), the daemon logs
+(`~/.local/state/biorouter/logs/server/**`, `llm_request.*.jsonl`) and the Electron main
+log. It found the reported error is **rare and secondary**, and that the error the user
+was actually drowning in is a different one that precedes it.
+
+### What the sandbox's module resolution actually does
+
+`code_execution__execute_code` runs the script in Boa with one synthetic module per
+**extension (server) name** — `developer`, `computercontroller`, `autovisualiser`, and
+whatever else is enabled — each exporting that extension's tools plus a namespace object
+under the server's own name. Resolution is a plain map lookup on the import specifier.
+There are no other modules: no Node or browser standard library, no filesystem behind the
+loader, no `require`, no `fetch`. Anything not in that map is a miss.
+
+### Frequency table (unique real failures, all sources de-duplicated)
+
+Log hits over-count badly — each `LLM_REQUEST` dump replays the whole conversation, so one
+failure reappears in every later turn. The counts below are unique tool results.
+
+| Error, as the model saw it | Unique | Offending specifier / cause | Classification |
+|---|---|---|---|
+| `TypeError: Module could not be found.` | 2 | `fs` (×1), `node:child_process` (×1) — both Node builtins | **DEFECT (error surface)** |
+| `TypeError: not a callable function` | 7 | a string method called on a tool result that came back as parsed JSON | **DEFECT (false contract + error surface)** |
+
+Across all 184 `execute_code` calls in the store, the import-specifier census is
+`developer` 166, `computercontroller` 9, `autovisualiser` 8, `agent_drafter` 8, `fs` 1,
+`./sdk` 2, `skills` 1, `jupytermcpserver` 1. Real extension names dominate; the model is
+not routinely inventing modules.
+
+### Root cause — the two errors are one incident
+
+Session `20260720_1` shows the causal chain. The model imported `{ shell, text_editor }`
+from `developer` — the correct module, the correct tools — and got `not a callable
+function`. It retried the same import as a namespace, then with bracket access; same
+error each time, because the error names neither the value nor the call site, so there was
+nothing to correct. Only after three identical dead ends did it abandon `developer`
+entirely and guess `import fs from "fs"` — which produced `Module could not be found`.
+
+So the user-reported error is a **downstream symptom**. The `not a callable function`
+error is the one to fix, and its cause is a false promise in the tool's own description:
+it stated "All calls are synchronous, return strings", while `parse_result_to_js`
+JSON-parses any result that parses. A tool answering with JSON therefore returns an
+*object*, and `shell({…}).trim()` throws. Reproduced directly against Boa: calling
+`.trim()` on a parsed result yields exactly `TypeError: not a callable function`.
+
+Neither error is model misuse in the usual sense — the guidance was wrong, and both error
+messages were dead ends. **Both are DEFECTs**, in the audit's "wrong or misleading error
+surface" sense, and the first is also a false contract.
+
+### What changed
+
+In `crates/biorouter/src/agents/code_execution_extension.rs`:
+
+- Replaced Boa's `MapModuleLoader` with a `ToolModuleLoader` that matches specifiers
+  verbatim (there are no path semantics here) and, on a miss, reports the module that
+  failed, the exact importable set, a case-insensitive "did you mean", and — for the
+  Node/browser builtins that are the guesses actually observed — the `developer` import
+  that replaces them.
+- `annotate_opaque_js_error` appends the likely cause and the recovery to
+  `not a callable function`, which Boa emits with no other context.
+- Corrected the `execute_code` description: a call returns a parsed object for a JSON
+  result and a string otherwise. Added a `MODULES:` block stating the importable set is
+  closed and naming the absent builtins.
+- The live module inventory (`get_moim`) now says those modules are the only importable
+  ones and restates the return-type rule.
+
+In `crates/biorouter/src/prompts/system.md`, one bullet in `# Tool Routing` carries the
+same "those and only those" rule; the three `prompt_manager` snapshots were regenerated
+and their diff is that bullet alone.
+
+Gates: six tests in `code_execution_extension.rs`, each proven by revert. Restoring
+`MapModuleLoader` reproduces the user's verbatim string —
+`Module error: TypeError: Module could not be found.` — and neutering the annotator
+reproduces `Module error: TypeError: not a callable function`.
 
 ## Related documentation
 

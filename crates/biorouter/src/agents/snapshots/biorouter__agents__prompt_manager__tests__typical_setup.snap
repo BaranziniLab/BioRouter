@@ -92,6 +92,9 @@ Prefer the simplest tool that does the job; reach for a specialized extension on
 - Common misroutes to avoid: a JavaScript/Python one-liner to `ls`/`cp`/`rm` (use `shell`); `cat`/`sed`/`echo >` to read
   or write a file (use `text_editor`); a tool-discovery/search tool to answer a general or web-research question (search
   the web or answer directly).
+- Inside a code-execution script you may import only the modules its instructions list — those and only those. There is
+  no Node.js or browser standard library there (no `fs`, `path`, `os`, `child_process`, `http`); import `shell` and
+  `text_editor` from `developer` for filesystem and command work.
 
 # Safety
 
