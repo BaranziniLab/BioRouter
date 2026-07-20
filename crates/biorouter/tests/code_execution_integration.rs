@@ -434,7 +434,13 @@ async fn case15_tool_error_propagates_as_js_exception() {
     let m = manager().await;
     // cat a nonexistent file: developer shell should fail; the JS native fn
     // throws, the module rejects, and execute_code returns a "Module error".
-    let out = exec(
+    //
+    // `exec_raw`, not `exec`: an error result IS the expected outcome here. Since
+    // PAR-02 the shell reports a non-zero exit as `is_error`, so the failure now
+    // propagates all the way out as `execute_code`'s own error flag — which is
+    // the point of the case. (`case16` covers the other side: an error the JS
+    // catches leaves `execute_code` successful.)
+    let (is_error, out) = exec_raw(
         &m,
         r#"
         import { shell } from "developer";
@@ -443,14 +449,23 @@ async fn case15_tool_error_propagates_as_js_exception() {
         "#,
     )
     .await;
-    // Either the shell returns an error string captured as result, or the
-    // module rejects. Both are acceptable; what we must NOT see is a silent
-    // success that pretends the file was read.
+    // What we must NOT see is a silent success that pretends the file was read.
+    assert!(
+        is_error,
+        "an uncaught tool failure must surface as execute_code's error flag, \
+         not as a successful result: {out}"
+    );
     assert!(
         out.contains("Module error")
             || out.to_lowercase().contains("no such file")
             || out.to_lowercase().contains("error"),
         "expected an error surfaced, got: {out}"
+    );
+    // The shell's exit status reaches the JS layer, so the failure is legible
+    // rather than an empty rejection.
+    assert!(
+        out.contains("exited with status 1") || out.to_lowercase().contains("no such file"),
+        "the propagated error must name what actually failed, got: {out}"
     );
 }
 

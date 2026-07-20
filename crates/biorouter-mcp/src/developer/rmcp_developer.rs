@@ -1321,7 +1321,7 @@ impl DeveloperServer {
             }
         }
 
-        let output_str = output_result?;
+        let (output_str, exit_code) = output_result?;
 
         // Validate output size
         self.validate_shell_output_size(command, &output_str)?;
@@ -1329,12 +1329,35 @@ impl DeveloperServer {
         // Process and format the output
         let (final_output, user_output) = self.process_shell_output(&output_str)?;
 
-        Ok(CallToolResult::success(vec![
-            Content::text(final_output).with_audience(vec![Role::Assistant]),
-            Content::text(user_output)
+        // PAR-02: honour the documented contract — say whether the command
+        // succeeded. A non-zero exit is appended as an explicit status line (so
+        // the model can see it even when the command wrote nothing at all) and
+        // flips `is_error`, which is what the chat UI reads to render a failed
+        // call as an error card instead of a green success (dfa6dc32).
+        //
+        // Only a genuinely non-zero exit is an error. Exit 0 stays clean, and a
+        // signal-terminated process (`code() == None`) is reported as a failure
+        // too, since it certainly did not succeed.
+        let failed = exit_code != Some(0);
+        let status_line = match exit_code {
+            Some(0) => None,
+            Some(code) => Some(format!("[shell: command exited with status {code}]")),
+            None => Some("[shell: command terminated by a signal]".to_string()),
+        };
+        let with_status = |body: String| match &status_line {
+            None => body,
+            Some(line) if body.trim().is_empty() => line.clone(),
+            Some(line) => format!("{body}\n{line}"),
+        };
+
+        let mut result = CallToolResult::success(vec![
+            Content::text(with_status(final_output)).with_audience(vec![Role::Assistant]),
+            Content::text(with_status(user_output))
                 .with_audience(vec![Role::User])
                 .with_priority(0.0),
-        ]))
+        ]);
+        result.is_error = Some(failed);
+        Ok(result)
     }
 
     #[tool(
@@ -1443,7 +1466,17 @@ impl DeveloperServer {
         Ok(())
     }
 
-    /// Execute a shell command and return the combined output.
+    /// Execute a shell command and return the combined output plus the exit
+    /// code the command finished with.
+    ///
+    /// PAR-02: the exit code is part of the return value because the tool's own
+    /// contract ("There will also be an indication of if the command succeeded
+    /// or failed") depends on it. It used to be discarded, which made a command
+    /// that failed silently (`exit 7`, a build that dies with no stderr)
+    /// indistinguishable from one that succeeded quietly — both surfaced as an
+    /// `Ok` result with empty text and a green card.
+    ///
+    /// `None` means the process was terminated by a signal and reported no code.
     ///
     /// Streams output in real-time to the client using logging notifications.
     async fn execute_shell_command(
@@ -1452,7 +1485,7 @@ impl DeveloperServer {
         working_dir: Option<PathBuf>,
         peer: &rmcp::service::Peer<RoleServer>,
         cancellation_token: CancellationToken,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<(String, Option<i32>), ErrorData> {
         let mut shell_config = ShellConfig::default();
         let shell_name = std::path::Path::new(&shell_config.executable)
             .file_name()
@@ -1506,12 +1539,16 @@ impl DeveloperServer {
 
         tokio::select! {
             output_result = output_task => {
-                // Wait for the process to complete
-                let _exit_status = child.wait().await.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                // Wait for the process to complete. PAR-02: the status is the
+                // only signal that a silent command failed — carry it out.
+                let exit_status = child.wait().await.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
                 // BR-69: prepend the sandbox tier line when the gate is on.
-                output_result.map(|out| match sandbox_status_line {
-                    Some(line) => format!("{line}\n{out}"),
-                    None => out,
+                output_result.map(|out| {
+                    let out = match sandbox_status_line {
+                        Some(line) => format!("{line}\n{out}"),
+                        None => out,
+                    };
+                    (out, exit_status.code())
                 })
             }
             _ = cancellation_token.cancelled() => {
