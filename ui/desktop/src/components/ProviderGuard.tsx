@@ -138,7 +138,12 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   if (isChecking) {
     return (
       <div className="h-screen w-full bg-background-muted flex items-center justify-center">
-        <BioRouterMark className="h-20 w-20" />
+        {/* 84px, not Tailwind's h-20 (80px), to match the pre-React boot
+            splash's `.br-mark` exactly. This loader is what the splash hands
+            off to, so a 4px difference read as the logo resizing mid-boot.
+            The splash centres the same mark on the same point — see the
+            `.br-sweep` note in index.html. */}
+        <BioRouterMark className="h-[84px] w-[84px]" />
       </div>
     );
   }
