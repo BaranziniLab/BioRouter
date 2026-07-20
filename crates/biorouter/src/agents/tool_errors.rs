@@ -222,10 +222,27 @@ pub struct ToolError {
     pub at: Option<ErrorLocation>,
 }
 
+/// Cap on the message stored in the error envelope.
+///
+/// The envelope is a *summary* that rides alongside the content, not a second
+/// copy of it: it is persisted into the session and shipped over SSE on every
+/// failing call. `error_text` joins every text block, and `developer__shell`
+/// emits two near-identical blocks capped at 400 000 chars each, so an
+/// unbounded envelope could persist ~800 KB of duplicated output per failed
+/// command. The kind and the location are both extracted from the FULL message
+/// before this cap applies, so nothing that is actually read gets lost.
+const MAX_TOOL_ERROR_MESSAGE_CHARS: usize = 4096;
+
 impl ToolError {
     fn new(kind: ToolErrorKind, message: impl Into<String>) -> Self {
         let message = message.into();
         let at = extract_location(&message);
+        let message = if message.chars().count() > MAX_TOOL_ERROR_MESSAGE_CHARS {
+            let kept: String = message.chars().take(MAX_TOOL_ERROR_MESSAGE_CHARS).collect();
+            format!("{kept}\n[truncated: the full output is in the tool result above]")
+        } else {
+            message
+        };
         Self {
             kind,
             retryable: kind.retryable(),
@@ -651,7 +668,22 @@ fn annotated_content(content: Vec<Content>, error: &ToolError) -> Vec<Content> {
                 if is_annotated(&text.text) {
                     out.push(item);
                 } else {
-                    out.push(Content::text(format!("{}\n{}", error.header(), text.text)));
+                    // Carry the original annotations onto the rebuilt block.
+                    // `Content::text` produces `annotations: None`, and an
+                    // audience-less block is treated as user-visible by every
+                    // consumer (ToolCallWithResponse.tsx checks
+                    // `!annotations?.audience || …includes('user')`; the CLI TUI
+                    // does the same). Dropping them therefore PROMOTES an
+                    // assistant-only block into the user's transcript — for
+                    // `developer__shell` that is the internal "private note:
+                    // output was N lines … remainder in /var/folders/…/T/.tmpX
+                    // do not show tmp file to user" block, leaking the note and
+                    // an absolute temp path; for output under the truncation
+                    // threshold the two blocks are identical, so the failure
+                    // simply rendered twice.
+                    let mut rebuilt = Content::text(format!("{}\n{}", error.header(), text.text));
+                    rebuilt.annotations = item.annotations.clone();
+                    out.push(rebuilt);
                 }
             }
             _ => out.push(item),
@@ -683,6 +715,54 @@ mod tests {
             is_error: Some(true),
             meta: None,
         })
+    }
+
+    /// The annotator must not PROMOTE an assistant-only block into the user's
+    /// transcript. Every consumer treats an audience-less block as user-visible,
+    /// so rebuilding the first text block without carrying its annotations
+    /// across silently publishes it. `developer__shell` marks its full,
+    /// untruncated output assistant-only — it carries an internal note and an
+    /// absolute temp path — and only became reachable here once shell started
+    /// setting `is_error`, which is what gates classification.
+    #[test]
+    fn annotating_preserves_an_assistant_only_audience() {
+        use rmcp::model::Role;
+
+        let result = Ok(CallToolResult {
+            content: vec![
+                Content::text("private note: output was 412 lines … /tmp/.tmpAb3kQ")
+                    .with_audience(vec![Role::Assistant]),
+                Content::text("the last 100 lines").with_audience(vec![Role::User]),
+            ],
+            structured_content: None,
+            is_error: Some(true),
+            meta: None,
+        });
+
+        let (out, error) = annotate_tool_result(result, ToolErrorTaxonomyConfig::default());
+        assert!(error.is_some(), "an is_error result must classify");
+        let content = out.unwrap().content;
+
+        assert_eq!(
+            content[0]
+                .annotations
+                .as_ref()
+                .and_then(|a| a.audience.clone()),
+            Some(vec![Role::Assistant]),
+            "the annotated block must stay assistant-only, or the private note reaches the user"
+        );
+        assert_eq!(
+            content[1]
+                .annotations
+                .as_ref()
+                .and_then(|a| a.audience.clone()),
+            Some(vec![Role::User]),
+            "untouched blocks keep their audience"
+        );
+        assert!(
+            content[0].as_text().unwrap().text.contains("private note"),
+            "the header is prefixed onto the original text, not replacing it"
+        );
     }
 
     #[test]

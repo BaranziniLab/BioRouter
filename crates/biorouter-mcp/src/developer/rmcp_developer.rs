@@ -1357,6 +1357,28 @@ impl DeveloperServer {
                 .with_priority(0.0),
         ]);
         result.is_error = Some(failed);
+        // Name the failure ourselves. `is_error` is what admits a result into
+        // the BR-51 taxonomy, and with no envelope of its own that taxonomy
+        // falls back to substring-matching the raw command output against
+        // curated patterns ("401", "403", "not found", "timeout", …). Ordinary
+        // build and test output contains those words for reasons that have
+        // nothing to do with why the command exited non-zero, so the model
+        // could be told a failed build was `permission_denied` and
+        // `retryable=false` — advice to stop rather than to fix. A non-zero
+        // exit is definitionally a plain tool failure: the command ran, nothing
+        // was missing and the environment refused nothing. Saying so takes the
+        // guesswork out, because a tool-supplied envelope wins over the text
+        // heuristics.
+        if failed {
+            result.structured_content = Some(serde_json::json!({
+                "error": {
+                    "kind": "tool_failure",
+                    "message": status_line
+                        .clone()
+                        .unwrap_or_else(|| "command failed".to_string()),
+                }
+            }));
+        }
         Ok(result)
     }
 
@@ -4043,6 +4065,103 @@ mod tests {
         // Check that it shows empty directory message
         assert!(output.contains("is a directory"));
         assert!(output.contains("(empty directory)"));
+    }
+
+    /// Setting `is_error` admits the result into the BR-51 taxonomy, which
+    /// otherwise guesses a kind by substring-matching the raw command output
+    /// against curated patterns. Ordinary output contains "401", "not found"
+    /// and "timeout" for reasons unrelated to the exit status, so the shell
+    /// names its own failure and takes the guesswork out — a tool-supplied
+    /// envelope wins over the heuristics.
+    #[test]
+    #[serial]
+    fn a_failing_shell_names_its_own_error_kind() {
+        run_shell_test(|| async {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            // Output deliberately seeded with words the text heuristics match.
+            let command = if cfg!(windows) {
+                "Write-Output '401 not found timeout'; exit 1"
+            } else {
+                "echo '401 not found timeout'; exit 1"
+            };
+
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: command.to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(1),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await
+                .expect("a non-zero exit is a result, not a transport error");
+
+            assert_eq!(result.is_error, Some(true), "a non-zero exit is an error");
+            let kind = result
+                .structured_content
+                .as_ref()
+                .and_then(|v| v.get("error"))
+                .and_then(|e| e.get("kind"))
+                .and_then(|k| k.as_str());
+            assert_eq!(
+                kind,
+                Some("tool_failure"),
+                "the command ran and nothing was missing or refused, so it is a plain \
+                 tool failure — not whatever its output happens to spell, got: {:?}",
+                result.structured_content
+            );
+        });
+    }
+
+    /// Exit 0 must stay clean: no error flag, and no envelope to classify.
+    #[test]
+    #[serial]
+    fn a_succeeding_shell_carries_no_error_envelope() {
+        run_shell_test(|| async {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let server = create_test_server().with_working_dir(temp_dir.path().to_path_buf());
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: "echo 'error: not found'".to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct: Default::default(),
+                        id: NumberOrString::Number(1),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer: peer.clone(),
+                    },
+                )
+                .await
+                .expect("a successful command returns a result");
+
+            assert_eq!(result.is_error, Some(false));
+            assert!(
+                result.structured_content.is_none(),
+                "a command that succeeded must not carry an error envelope just \
+                 because its output mentions an error, got: {:?}",
+                result.structured_content
+            );
+        });
     }
 
     #[test]

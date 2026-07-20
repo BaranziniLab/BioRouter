@@ -557,10 +557,21 @@ fn module_not_found_message(specifier: &str, available: &[String]) -> String {
     {
         message.push_str(
             " This sandbox has no Node.js or browser standard library, so there is no \
-             \"fs\", \"path\", \"os\", \"child_process\", \"http\", or \"fetch\". \
-             For filesystem and command work import from \"developer\" instead: \
-             import { shell, text_editor } from \"developer\";",
+             \"fs\", \"path\", \"os\", \"child_process\", \"http\", or \"fetch\".",
         );
+        // Only point at `developer` when it is actually importable here. The
+        // two extensions are independently toggleable — code_execution is
+        // force-injected as a platform extension while developer is an ordinary
+        // one the user can switch off — so recommending it unconditionally can
+        // send the model straight into a second "module not found" for the very
+        // module we told it to use, which is the retry loop this message exists
+        // to break.
+        if available.iter().any(|name| name == "developer") {
+            message.push_str(
+                " For filesystem and command work import from \"developer\" instead: \
+                 import { shell, text_editor } from \"developer\";",
+            );
+        }
     }
 
     if available.is_empty() {
@@ -2519,6 +2530,31 @@ mod tests {
         assert!(
             empty.contains("No modules are importable in this session."),
             "the no-modules case must say so rather than print an empty list, got: {empty}"
+        );
+    }
+
+    /// Redirecting a stdlib miss to "developer" is only useful advice when
+    /// "developer" is importable. code_execution is force-injected as a platform
+    /// extension while developer is an ordinary one the user can switch off, so
+    /// the two can genuinely come apart — and telling the model to import a
+    /// module that will also miss is the retry loop this message exists to break.
+    #[test]
+    fn the_developer_redirect_is_only_offered_when_developer_is_importable() {
+        let with_developer =
+            module_not_found_message("fs", &["developer".to_string(), "memory".to_string()]);
+        assert!(
+            with_developer.contains(r#"import { shell, text_editor } from "developer""#),
+            "the redirect must still be offered when developer is loaded, got: {with_developer}"
+        );
+
+        let without_developer = module_not_found_message("fs", &["memory".to_string()]);
+        assert!(
+            without_developer.contains("no Node.js or browser standard library"),
+            "the diagnosis of WHY it missed is still useful, got: {without_developer}"
+        );
+        assert!(
+            !without_developer.contains(r#"from "developer""#),
+            "must not send the model at a module it cannot import, got: {without_developer}"
         );
     }
 
