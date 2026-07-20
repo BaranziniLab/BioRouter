@@ -1,0 +1,84 @@
+# BioRouter documentation
+
+BioRouter is an AI-powered integrated research environment for biomedical discovery, built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions and customizable workflows behind one desktop app and one command-line tool, layered as interface → agent → extensions.
+
+This tree holds everything written about BioRouter: end-user guides, subsystem design and reference documentation for developers, and the archived record of work that has already finished.
+
+## How this tree is organized
+
+Two kinds of document live here, and the difference matters more than any other fact on this page.
+
+- **Living documentation is filed by subsystem at the top level.** One folder per area — `providers/`, `security/`, `agent-loop/`, and so on. These describe how BioRouter behaves now, and they are maintained.
+- **`history/` holds records of completed or abandoned work.** Executed plans, closed review campaigns, finished stress tests, and a few designs that were removed or never built. It is kept so decisions stay auditable and so you can find out *why* a subsystem is shaped the way it is. It is explicitly **not** current guidance, and reading it as such will mislead you.
+
+**Every document carries a status in its header** saying which it is. Trust that line over the filename, the folder, or your memory of the feature. A living document may still be marked `Superseded` in part, and the header names its successor when so.
+
+## Start here
+
+| If you want to… | Read |
+|---|---|
+| Install BioRouter and run a first task | [biorouter in 5 minutes](getting-started/quickstart.md) — or [Installation and setup](getting-started/installation.md) for the thorough path with institutional providers |
+| Pick an LLM provider and model | [Choosing a model provider](getting-started/choosing-a-model-provider.md) |
+| Look up a command or flag | [biorouter CLI command reference](cli/command-reference.md) |
+| Change a setting | [Configuration file reference](configuration/config-file-reference.md) for `config.yaml`, [Environment variables](configuration/environment-variables.md) for per-invocation overrides |
+| Decide how much autonomy the agent gets | [Permission modes](security/permission-modes.md) |
+| Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
+| Run BioRouter as a shared headless server | [Headless Linux deployment](deployment/headless-linux.md) |
+| Fix an error you are hitting right now | [Common problems and fixes](troubleshooting/common-problems-and-fixes.md) |
+| Understand the codebase before changing it | [System overview](architecture/system-overview.md) |
+
+## By topic
+
+| Area | What it covers |
+|---|---|
+| [getting-started](getting-started/README.md) | The end-user on-ramp: installing the app and CLI, connecting a provider, running a first biomedical task, managing sessions, and day-to-day usage habits. |
+| [architecture](architecture/README.md) | The orientation-level map of the three layers and the crate and process boundaries, plus the agentic system explorer's account of how one request becomes context, tool work and a verified answer. |
+| [agent-loop](agent-loop/README.md) | The reasoning loop itself — durable context, subagents, lifecycle hooks, tool routing — plus the designs behind its guardrails: command policy, sandboxing, checkpoints, session branching. |
+| [agent-drafter](agent-drafter/README.md) | The app-authoring MCP extension that builds BioRouter apps, and the frozen 100-spec corpus and runbook used to stress-test it. |
+| [apps-sdk](apps-sdk/README.md) | The contract behind BioRouter apps in three layers: the shipped reference, the v2 design of record, and the phase roadmap. |
+| [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension. |
+| [knowledge-base](knowledge-base/README.md) | The live working documents for the personal, LLM-maintained wiki: surveys of the ingestion pipeline and plans for extending it. |
+| [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. |
+| [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, and which providers are acceptable for patient and other sensitive data. |
+| [workflows](workflows/README.md) | Reusable workflow files that package instructions, extensions and model settings into one shareable session, plus the built-in cron scheduler. |
+| [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |
+| [configuration](configuration/README.md) | The complete reference for both configuration forms — persistent YAML files and the environment variables that override them. |
+| [desktop-ui](desktop-ui/README.md) | Exercising the Electron desktop app as a running program: launching and driving the dev GUI, and the behavior to check once it is in front of you. |
+| [deployment](deployment/README.md) | Running BioRouter as a shared server rather than a desktop app: building the Linux headless artifact, deploying it, and migrating secrets. |
+| [releases](releases/README.md) | Shipping to users: the auto-update QA checklist, a local cross-compilation recipe, and the published per-version release notes. |
+| [troubleshooting](troubleshooting/README.md) | Known problems and their fixes, the diagnostics bundle, and how to file a useful bug report. |
+| [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, the design-system gallery, and the desktop UI overhaul. |
+| [research](research/README.md) | External research — studies of other agentic coding tools, written to inform BioRouter's own design. |
+
+## Historical records
+
+[`history/`](history/README.md) is the archive: 25 topic folders covering May–July 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
+
+The largest campaigns in there:
+
+| Campaign | What it records |
+|---|---|
+| [agent-loop-review](history/agent-loop-review/README.md) | The agentic-loop review: a loop walkthrough, a comparison against nine open-source coding agents, 28 sub-reports, and the 67-item `BR-NN` proposal register the rest of the tree cites. |
+| [agent-loop-campaign](history/agent-loop-campaign/README.md) | The `BR-1`…`BR-70` fix campaign that implemented those findings — wave conventions, regression gates and a dated merge log, across 86 commits. |
+| [knowledge-base-buildout](history/knowledge-base-buildout/founding-design.md) | The founding design for the Knowledge feature and the six implementation plans that built it out in order. |
+| [agent-drafter-stress-test](history/agent-drafter-stress-test/README.md) | A campaign driving a real model to build 100 agentic apps with Agent Drafter; the eight resulting drafter fixes shipped. |
+| [agent-drafter-testdrive-100](history/agent-drafter-testdrive-100/README.md) | A separate test drive against a 100-app spec corpus — per-app rubrics, three cross-cutting audits, and a six-wave remediation plan. |
+| [performance-2026-06](history/performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 plus an independent comparison against the jcode harness; nine fixes merged. |
+| [streaming-tool-call-ui-2026-07](history/streaming-tool-call-ui-2026-07/README.md) | The July 2026 streaming tool-call campaign: why a tool card appeared late and already finished, the streaming implemented across fourteen providers that never streamed, and three QA rounds over the result. |
+| [dashboard-mode](history/dashboard-mode/README.md) | Four generations of design for a free-floating multi-chat canvas, and the record of its removal on 2026-07-18. **The feature no longer exists.** |
+| [legacy-architecture](history/legacy-architecture/README.md) | Two superseded internals designs: a hand-written `Extension` trait framework that was **never shipped**, and the agent error model, whose two-tier policy still holds but whose every type name is gone. |
+
+## Conventions
+
+- **Every file opens with a context header** — a blockquote giving *What this is*, *Status*, and *Audience* — before any other content. `README.md` index files are the exception: they open with a paragraph describing the folder's scope instead.
+- **Status is one of three values:** `Current`, `Historical record` (with the completion date), or `Superseded by <link>`. Anything dated, planned, or reporting completed work must carry one.
+- **Folders are topic-specific and each carries a `README.md`** listing its documents with a one-line description each.
+- **Filenames are kebab-case and name the document's purpose,** not the process that produced it — `defects-found-and-fixed.md`, not `findings.md`. `README.md` is the only `ALL_CAPS` name. Dated reports carry an ISO date suffix when the date is load-bearing.
+- **Where a document goes** is governed by [how this documentation is organized](organization.md) — the sorting rules, when a new folder is justified, and what to do when the rules do not fit. **Read it before adding a document or creating a folder.**
+- What a document looks like inside is governed by [documentation style](contributing/documentation-style.md); gaps and known problems in this tree are tracked in [open documentation issues](contributing/open-documentation-issues.md).
+
+## Adding a document
+
+> **Start at [how this documentation is organized](organization.md).** It answers where a document goes, when a new folder is warranted, and how to extend the system for a feature area that does not exist yet.
+
+Decide first whether you are writing living documentation or a record of finished work — that choice picks the folder and it is the one thing readers rely on. Put living documentation in the subsystem folder it belongs to; put anything describing completed or abandoned work under `history/`. Then write the context header before the body, so the status is never left implicit. Finally, add a row for it in the owning folder's `README.md`, and check that every link you wrote resolves. If your document is the obvious answer to one of the arrivals in **Start here** above, add it there too.

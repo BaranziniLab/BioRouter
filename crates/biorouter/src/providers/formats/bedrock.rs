@@ -848,7 +848,7 @@ struct ToolUseAccumulator {
 /// The blocking `Converse` API returns nothing until the model has finished the
 /// entire turn, so a tool-call card could not appear in the UI until generation
 /// was completely done (see
-/// `docs/investigations/2026-07-18-tool-call-ui-latency.md` §0). This decoder
+/// `docs/history/streaming-tool-call-ui-2026-07/tool-call-ui-latency-investigation.md` §0). This decoder
 /// turns the SDK's typed event stream into the repo's [`MessageStream`], so text
 /// reaches the UI as it is produced.
 ///

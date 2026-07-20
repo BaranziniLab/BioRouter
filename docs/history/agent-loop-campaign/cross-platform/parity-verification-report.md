@@ -1,0 +1,174 @@
+# Cross-platform cluster verification report (Wave 3)
+
+> **What this is.** The gate record for the agent-loop campaign's cross-platform
+> ("xplat") cluster: the four proposals it contains, the regression the verifier had to
+> fix before the cluster could pass, and the evidence collected for each gate step.
+> **Status:** Historical record — a one-time verification pass dated 2026-07-13. Everything
+> it verifies is now on `main`: `crates/biorouter/src/security/policy/{target,pwsh,cmd_shell}.rs`,
+> the four `baseline.*.policy.yaml` files, `crates/biorouter-sandbox/src/shell_sandbox/`,
+> `scripts/cross-env.sh`, `.github/workflows/rust.yml`, and the `check-cross` Justfile recipes.
+> **Audience:** maintainers reviewing what the cross-platform cluster actually proved.
+
+"xplat" is the campaign's shorthand for cross-platform. This cluster was Wave 3's
+cross-platform arm, covering Windows and Linux parity for command safety, tool
+sandboxing, and compile coverage. Two identifier schemes appear below: **BR-NN**, a
+proposal from the agent-loop review's master list (see
+[improvement proposals](../../agent-loop-review/improvement-proposals.md)), and
+**GAP-N**, a numbered finding from the
+[platform parity audit](platform-parity-audit.md), which is where each GAP is defined.
+
+## Verification context
+
+| Field | Value |
+|---|---|
+| Worktree | `/Users/wanjun/Desktop/biorouter/.worktrees/xplat` (verifier's machine) |
+| Branch | `agent-loop-xplat` |
+| Base | `agent-loop-integration` (merge-base `a54c4d79`) |
+| Verifier date | 2026-07-13 |
+| Isolated target dir | `/Users/wanjun/.cache/br-targets/xplat` (verifier's machine), `CARGO_INCREMENTAL=0` |
+
+## Verdict
+
+**GREEN.** Full workspace regression: **2398 passed, 1 failed** across 60 test-result
+lines. The single failure is `test_anthropic_provider` (KNOWN-ALLOWED — live Anthropic
+API). Zero new failures. fmt clean, clippy `-D warnings` clean after one regression fix,
+no new `too_many_lines` baseline violations.
+
+> **Caveat on the verdict.** BR-69's Linux and Windows sandbox arms could not be compiled
+> on this macOS host (no mingw, no Linux target). They were type-checked by flipping `cfg`
+> gates per the commit message, not built. Only the pure cross-platform guard logic is
+> genuinely unit-tested here (`biorouter-sandbox` lib, 17 tests). Treat the two non-macOS
+> sandbox backends as unverified by this pass.
+
+> **Warning for anyone touching the policy tokenizers.** The workspace denies
+> `clippy::string_slice`. Guard every byte slice with a proven char-boundary check or
+> annotate the enclosing function with `#[allow(clippy::string_slice)]` plus a
+> justification. BR-68 shipped 13 clippy errors by not doing this; see
+> [the regression the verifier fixed](#regression-fixed-by-the-verifier).
+
+## Proposals in this cluster
+
+| Commit | ID | Summary | Key files | Tests |
+|--------|----|---------|-----------|-------|
+| `3d6d3aa9` | GAP-2 | PID-reuse guard for the Windows orphan reaper + graceful Windows kill phase (`same_process` fingerprint before any force-kill; memoized liveness probes) | `crates/biorouter-mcp/src/developer/background.rs` | `biorouter_mcp` lib (636 passed) |
+| `651acff0` | BR-68 | Cross-platform command safety: platform+dialect-aware tokenizers (POSIX/PowerShell/cmd.exe), Windows destructive-command floor, Linux/macOS policy parity | `crates/biorouter/src/security/policy/{target,pwsh,cmd_shell,command,rule,mod,baseline}.rs` + `tests_platform.rs` + 4 `baseline.*.policy.yaml` | `biorouter` lib (1189 passed) incl. `tests_platform` |
+| `2d16ff0a` | BR-69 | Cross-platform shell sandbox behind one `ShellSandbox` trait (macOS Seatbelt unchanged; Linux Landlock+seccomp via re-exec helper; honest Windows tier:None); `biorouter doctor` Shell-sandbox section | new crate `crates/biorouter-sandbox/src/shell_sandbox/{mod,macos,linux,windows}.rs`; `developer/shell.rs`; `cli/…/doctor.rs`; `biorouter`/`biorouterd` `main.rs` helper wiring | `biorouter_sandbox` lib (17 passed) + `sandbox.rs` (16 passed) |
+| `ab721780` | BR-70 | Cross-platform CI verification gate: one `check-cross` recipe, `cross-env.sh`, glibc-floor + no-cross-drift guards, Rust CI workflow | `.github/workflows/rust.yml`, `Justfile`, `scripts/{cross-env,check-glibc-floor,check-no-cross-drift,build-headless-linux,release}.sh` | scripts/CI only (no unit tests) |
+
+`GAP-2` uses the campaign's `GAP-N` naming from the
+[platform parity audit](platform-parity-audit.md) (BR-68's own commit message references
+`GAP-1`/`GAP-3`), carries a full descriptive body, and is a coherent standalone commit —
+not orphaned junk. The working tree was clean at intake; no orphaned work to reconcile.
+
+The design docs for the three BR proposals are siblings of this report:
+[command safety](command-safety.md) for BR-68,
+[Linux and Windows sandboxing](../../../agent-loop/designs/linux-and-windows-sandboxing.md) for BR-69, and
+[the CI gate](ci-gate.md) for BR-70.
+
+## Regression fixed by the verifier
+
+| Commit | ID | What |
+|--------|----|------|
+| `ba2100b0` | BR-68 (fix) | Clippy `-D warnings` failed with **13 errors** introduced by BR-68's tokenizers: 10 `clippy::string_slice` (workspace `string_slice = "warn"`) in `target.rs`/`pwsh.rs`, plus 3 dead-code items (`blast_of`, `PwshSegment::raw_binary`, `PwshSegment::has_param`) that are used only in `#[cfg(test)]` code and so read as dead in the non-test lib build clippy `--all-targets` compiles. |
+
+Fix: every flagged slice sits behind an ASCII drive-letter / quote / `/` guard, so the byte
+bounds are proven char boundaries; annotated the six enclosing functions
+(`depth`, `split_drive`, `strip_quotes`, `split_windows_root`,
+`split_windows_root_nocwd`, `is_obfuscated_exec`) with `#[allow(clippy::string_slice)]`
++ justification, and the three test-only items with `#[allow(dead_code)]` + justification.
+This is the house style (matches the existing `#[allow(clippy::too_many_arguments)]`
+annotations in `command.rs`/`mod.rs`). No behavior change. Re-ran clippy: `-D warnings`
+passes, build-finished `success:true`.
+
+## Gate evidence
+
+### Disk
+
+`df -h /` → 27 GiB avail (> 8 GiB floor). OK.
+
+### Commits and working tree
+
+5 commits over base (4 proposals + 1 verifier fix). `git status --porcelain` clean at
+intake. No orphaned work.
+
+### Formatting
+
+`cargo fmt --all -- --check` exits 0, clean. No `style: cargo fmt` commit needed.
+
+### Clippy
+
+Run via `./scripts/clippy-lint.sh`.
+
+- `cargo clippy --all-targets -- -D warnings`: **passes** after `ba2100b0` (was 13 errors).
+- Baseline `too_many_lines`: the script's jq parser hit its **known bug**
+  (`jq: error (at <stdin>:1126): split input and separator must be strings`) and printed
+  a bogus `ok`, so its exit was **not trusted**. Cross-checked by hand: extracted all 13
+  live `too_many_lines` sites from the clippy JSON and mapped each to
+  `clippy-baselines/too_many_lines.txt`. All 12 sites in touched/covered crates are
+  already baselined (incl. `doctor.rs::handle_doctor`, which BR-69 grew but which was
+  pre-baselined). The one un-baselined site,
+  `biorouter-bench/…/simple_repo_clone_test.rs:22`, is in a crate this cluster never
+  touched and exists unchanged at the merge-base — a pre-existing violation the jq bug
+  has always silently dropped, **not** a cluster regression. No new violation.
+
+### OpenAPI
+
+Skipped — no `biorouter-server/src/routes/` change (only `server/src/main.rs` sandbox
+helper wiring).
+
+### Compiling all targets
+
+`cargo test --workspace --no-run` — all executables built, no `E0063`/`E0004`/errors.
+
+### Full regression
+
+`cargo test --workspace --no-fail-fast` → 2398 passed / 1 failed / 60 result-lines. Log:
+`/Users/wanjun/.cache/br-baseline/xplat-wave3-test.log` (verifier's machine).
+Only failure: `test_anthropic_provider` (KNOWN-ALLOWED, live Anthropic API,
+`providers.rs:251`). `tunnel::lapstone_test` did not fail. Exceeds gate baseline
+(2332 passed / 59 suites) because BR-69 added the `biorouter-sandbox` crate
+(17 lib + 16 integration tests) and BR-68 added `tests_platform`.
+
+### ui/desktop
+
+Skipped — no `ui/desktop` change in the range.
+
+## Per-suite evidence (selected)
+
+| Crate | Suite | Result | Notes |
+|---|---|---|---|
+| `biorouter` | lib | 1189 passed; 0 failed | incl. `security::policy::*` + `tests_platform` |
+| `biorouter-mcp` | lib | 636 passed; 0 failed; 2 ignored | incl. GAP-2 background reaper |
+| `biorouter-cli` | lib | 173 passed; 0 failed | |
+| `biorouter-sandbox` | lib | 17 passed; 0 failed | BR-69, new crate |
+| `biorouter-sandbox` | `sandbox` | 16 passed; 0 failed; 1 ignored | |
+| `biorouter-server` | lib | 65 passed; 0 failed | |
+| `biorouterd` | bin | 64 passed; 0 failed | |
+| `biorouter-acp` | lib | 16 passed; 0 failed | |
+| — | `knowledge_routes` | 31 passed; 0 failed | |
+| — | `llamacpp_routes` | 6 passed; 0 failed | |
+| — | `providers` | 14 passed; 1 FAILED | `test_anthropic_provider` — allowed |
+
+## Must-knows
+
+- BR-68 shipped with 13 clippy errors — the proposal author did not run
+  `./scripts/clippy-lint.sh`. Fixed in `ba2100b0`. Future authors touching the policy
+  tokenizers: the workspace denies `clippy::string_slice`; guard slices or annotate.
+- The `clippy-lint.sh` jq baseline parser is still broken (aborts at the first span with
+  no `fn `), as detailed under [Clippy](#clippy) above. Its `too_many_lines: ok` is
+  meaningless; always hand-cross-check.
+- `biorouter-bench/…/simple_repo_clone_test.rs::…` (168/100 lines) is a real, pre-existing
+  `too_many_lines` violation missing from the baseline file — harmless but worth adding to
+  `clippy-baselines/too_many_lines.txt` on a future pass so the true count is honest.
+- BR-69's Linux/Windows sandbox arms cannot be compiled on this macOS host (no mingw /
+  Linux target); they were type-checked by flipping cfg gates per the commit message. The
+  pure cross-platform guard logic is unit-tested on macOS (`biorouter-sandbox` lib, 17).
+  This is the caveat attached to the verdict above.
+
+## Related documentation
+
+- [Platform parity audit](platform-parity-audit.md) — defines the GAP-N findings this report clears, and is the origin of the cluster's scope.
+- [Cross-platform command safety (BR-68)](command-safety.md) — the design behind commit `651acff0`, including the tokenizers that produced the clippy regression.
+- [Linux and Windows sandboxing (BR-69)](../../../agent-loop/designs/linux-and-windows-sandboxing.md) — the design behind commit `2d16ff0a`, and where the unverified Windows tier is specified.
+- [Cross-platform CI verification gate (BR-70)](ci-gate.md) — the design behind commit `ab721780`, the gate that now compiles the Windows/Linux `cfg` surface on every PR.
+- [Agent-loop campaign outcome report](../outcome-report.md) — where this cluster sits in the campaign as a whole.

@@ -21,7 +21,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC_FILE = ROOT / "docs/agentic-app-test-ideas-100.md"
+SPEC_FILE = ROOT / "docs/agent-drafter/testing/hundred-app-test-specs.md"
 OUT = ROOT / "docs/agent-drafter-testdrive-100"
 RUNTIME = ROOT / ".br-testdrive/runtime"
 STORE = RUNTIME / "config/biorouter/agent_drafter"

@@ -1,0 +1,844 @@
+# QA round 2 — directive verification and the BioOKF parallel build
+
+> **What this is.** The second QA round: verification of the five directives issued between
+> rounds 1 and 2, a parallel BioOKF knowledge-base build driven across three tabs, and the
+> security blocker that build exposed.
+> **Status:** Historical record (completed 2026-07-19).
+> **Audience:** developers working on permission gating, the preview panel, and the desktop send
+> path.
+
+This is the longest round report of the campaign, and it holds its most serious finding: `R2-01`,
+in which Fully-Automatic mode wrote to `~/.ssh/config` with no approval because the sensitive-op
+gate inspected only file-editor path arguments while file operations hide inside `execute_code`
+and shell bodies. It also carries the send-path hardening work and three iterations of a
+repeat-until-clean build loop, the second of which caught the `R2-01` fix over-correcting.
+
+Findings carry `R2-NN` identifiers; defects found inside the build loop carry
+`BIOOKF-I<n>-DEFECT-<n>`. Each is defined where it is raised.
+
+Date: 2026-07-19
+Branch: `feat/streaming-tool-call-ui`
+Backend commit under test: `1079f909` (staged `biorouterd`/`biorouter` rebuilt; mtime newer than HEAD).
+Model: `gpt-5.5-2026-04-24`. Permission mode: **Auto** (Fully Automatic).
+Driver: tmux `gui` → `scripts/debug/gui-driver.mjs` (Playwright-controlled Electron), live vite renderer on :5173.
+Ground truth for tool routing / message landing: `~/.local/share/biorouter/sessions/sessions.db` (`messages.content_json`).
+
+> **Harness caveat that shaped this round (read first).** The dev harness serves a **live renderer** from vite (:5173) but launches Electron against a **pre-built main-process bundle** `ui/desktop/.vite/build/main.js`. That bundle was **stale** — mtime `1784460691`, built ~7h *before* commits `dc66324b` and `1079f909` — and contained the old `allowedFileRoots` only, none of `isFilePathAllowedForPreview` / `isSensitivePreviewPath` / `isFullyAutomaticMode`. **Every main-process (`main.ts`) change ships in main.js, not the renderer**, so directive 2 (preview policy) and the preview half of directive 3 were NOT live until I rebuilt the bundle (via `electron-forge start`, which re-bakes `MAIN_WINDOW_VITE_DEV_SERVER_URL`). Before the rebuild, previewing a `/tmp` file the session itself wrote reproduced the *exact* pre-fix "Access denied: path '/tmp/qa2a.txt' is outside allowed directories". After the rebuild the fix verified. This is a **driver-environment** gap, not a product regression (a packaged app rebuilds main.js at package time) — but it is a real QA trap and is filed as R2-05.
+
+---
+
+## Part A — directive verification
+
+### A1. Tool routing (commit `b925d72a`)
+
+**Central architectural fact (verified in source):** with the `code_execution` extension enabled (it is, by default), `prepare_tools_and_prompt` in `crates/biorouter/src/agents/reply_parts.rs` (lines ~127-140) **`retain`s only `code_execution__*` tools** (plus `subagent`/`subagent_status`). `developer/shell` and `developer/text_editor` are **stripped from the model's callable tool set entirely.** The only path to shell/text_editor is `import { shell|text_editor } from "developer"` *inside* an `execute_code` call. Confirmed empirically: across every recent session the model only ever calls `code_execution__{execute_code,search_modules,read_module}` — never a bare `developer__*` tool.
+
+Consequence: the directive and [tool routing](../../agent-loop/tool-routing.md) instruction to "call `developer/shell` directly … don't wrap a single tool call in a script" is **literally unsatisfiable in the default config** — the primitive tools are not in the tool list. What the model *can* do (and does) is call the right primitive *inside* `execute_code`. That is what I scored.
+
+**toolRoutingResults (prompt → tool actually used, from DB):**
+
+| # | Prompt | Wrapper tool | Primitive used inside | Verdict |
+|---|--------|--------------|-----------------------|---------|
+| 1 | list the files in /tmp | `code_execution__execute_code` | `shell({command:"ls -la /tmp"})` | Correct primitive; single call, no computation. Wrapper is mode-forced. |
+| 2a | create /tmp/qa2a.txt (setup) | `execute_code` | `text_editor write` then `shell printf` (2 turns; re-did to drop trailing `\n`) | Correct primitive (text_editor for the write). |
+| 2b | copy /tmp/qa2a.txt → /tmp/qa2b.txt | `execute_code` | `shell({command:"cp …"})` + verify `cat` | Correct primitive (`cp`). Wrapper mode-forced. |
+| 3 | what is in README.md (abs path) | `execute_code` | `text_editor({command:"view"})` | Correct — `view`, not `shell cat`. |
+| 4 | capital of Australia — search the web | `code_execution__search_modules` (once), then `execute_code` → `web_scrape` (computercontroller) ×3 | discovery + real fetch | **R1-02 FIXED.** `search_modules` used ONCE as *tool discovery* (not as web search), then a real `web_scrape` fetch of Britannica/CIA. No 3×-identical-failure loop-guard pathology. Answer: Canberra. |
+| 5 | 3 largest files under docs/: count lines, total | `execute_code` | `shell` `find\|xargs stat\|sort\|head\|while wc -l` pipeline (2 turns) | **Legit `execute_code` use** — genuine multi-step aggregation. Correct answer (10187 total). |
+
+**Assessment:** No misroute in the harmful sense the directive targets (no "write a JS script to `ls`/`cp`"). The model consistently reaches for the correct *primitive* (`shell ls/cp`, `text_editor view/write`) and uses `execute_code`'s computation only for the genuinely multi-step task (#5). The R1-02 `search_modules`-as-web-search misroute is fixed: it is now used for module discovery, then a real fetch tool. **Legit `execute_code` was NOT suppressed** (#5 used it appropriately). Filed observation R2-06 (directive text vs. runtime reality — the "call developer directly" guidance can't be honored in code-exec mode).
+
+### A2. Preview policy (commits `dc66324b` + `1079f909`) — **PASS (after main.js rebuild)**
+
+Verified live against the rebuilt main.js via the real `read-artifact-file` IPC and via the artifact panel:
+
+| Target | Mode | Result | Expected | Verdict |
+|--------|------|--------|----------|---------|
+| `/tmp/qa2preview.txt` (session wrote it) | Auto | panel auto-opened, `kind:text`, 3 lines shown | admit /tmp | ✅ |
+| `/Users/Shared/qa2.txt` (outside home) | Auto | panel shows `kind:text`, 1 line | Auto admits any non-sensitive path | ✅ |
+| `~/.ssh/config` / `/Users/wanjun/.ssh/config` | Auto | `kind:error, found:false`, "Access denied: path '…/.ssh/config' is outside allowed directories" — **content not shown** | sensitive path denied in every mode | ✅ |
+
+`os.tmpdir()` + `/tmp` are now allowed roots and `realpath` canonicalization resolves the `/tmp → /private/tmp` symlink. Minor wording nit (R2-07): the ssh denial reason says "outside allowed directories", but in Auto mode it's denied for being *sensitive*, not for being outside roots — slightly misleading copy.
+
+### A3. Sensitive-op approval (commit `1079f909`) — **FAIL / BLOCKER (R2-01)**
+
+Auto mode, asked the app to append `# qa-test-marker-decline` to `~/.ssh/config`. **It ran with NO approval prompt.** Transcript: *"Done — appended # qa-test-marker-decline to ~/.ssh/config and verified it is now the last line."* File confirmed modified on disk (25→27 lines, md5 changed, marker present). Restored afterward (md5 back to original `1e10727…`).
+
+Root cause (verified in `crates/biorouter/src/security/sensitive_ops.rs`): the `SensitiveOpsInspector` inspects **path arguments of file-editor-style tool calls** (`text_editor`, `*_file`) only — its own doc comment (lines 49-54) states it "does **not** parse arbitrary shell command lines … A shell write to a non-secret user-credential path (e.g. `cp key ~/.ssh/authorized_keys`) is the one shape" left uncovered. The observed op was `execute_code` → `shell({command:"printf … >> ~/.ssh/config"})`, i.e. a shell redirect — uncovered. **Worse:** because code-execution mode wraps *everything* in `code_execution__execute_code`, the inspector only ever sees a tool named `execute_code` carrying a JS `code` blob — it cannot extract a target path even for a `text_editor` write. **Net effect: in the default (code_execution-enabled) config the approval gate can essentially never fire for agent file mutations.** The directive's explicit acceptance ("MUST surface an approval prompt, not silently run") is not met.
+
+Ordinary-write control (`~/Documents/qa2-ordinary.txt`): completed, no prompt — correct, but a hollow pass since the gate never fires for anything.
+
+### A4. Preview auto-open (commit `84296bb9`) — **PASS**
+
+- Live turn (session wrote `/tmp/qa2preview.txt`): panel **auto-opened** on the new artifact. ✅
+- Historical reload: opened the untouched older session "File write/cat task" (has a `/tmp/qa-r1b/hi.txt` artifact) → panel **did NOT** spring open. ✅ The `shouldAutoRepairArtifact`/historical-reload guard holds.
+
+### A5. Markdown preview — images & links (commit `3db5d420`) — **MD-PREVIEW / PASS**
+
+Verified live in the running dev GUI (own Electron via Playwright `gui2` driver against the QA vite on :5173 — macOS skips the single-instance lock, so this ran concurrently with the QA-round `gui`/`vite` sessions without touching them). Fixture `/tmp/md-fidelity/test.md` (relative `./chart.png` = real 64×64 red PNG; absolute `/tmp/md-fidelity/abs-logo.png` = 64×64 blue PNG; a remote `https://…/git.png`; a `../../etc/hosts` traversal img; external + sibling links; GFM table/task-list/strikethrough/footnote; fenced Python; inline math). Landed in the panel by a chat turn whose reply mentioned the path; provider gpt-5.5, `$0.05` total.
+
+| # | Item | Expected | Observed (live) | Verdict |
+|---|------|----------|-----------------|---------|
+| 1 | Relative local image `./chart.png` | renders | `<img src>` = `data:image/png;base64,…` via `readArtifactFile` IPC, `naturalWidth/Height 64×64`, `complete` — **red square shown** | ✅ PASS |
+| 2 | Absolute local image | renders | `data:image/png;base64,…`, `64×64`, `complete` — **blue square shown** | ✅ PASS |
+| 3 | Remote HTTPS image | passthrough | `<img src>` = raw `https://…/git.png`, `288×288` loaded — **git logo shown** | ✅ PASS |
+| 4 | Traversal `../../etc/hosts` | blocked → placeholder, no read | `role="img"` `aria-label="blocked traversal"` `BrokenImage` — **no `<img>`, nothing read** | ✅ PASS |
+| 5 | GFM table | renders | `<table>` with `th` = A/B (chat) & Gene/Chromosome/Effect size (panel), aligned | ✅ PASS |
+| 6 | Task list | checkboxes | 4 items, first two checked | ✅ PASS |
+| 7 | Strikethrough + autolink | renders | struck text + `https://example.com` autolinked | ✅ PASS |
+| 8 | Footnote | superscript + body | superscript `¹` + footnote body rendered | ✅ PASS |
+| 9 | Fenced Python | highlighted | `PYTHON` chip + Prism highlight + Copy | ✅ PASS |
+| 10 | External link → system browser | `openExternal`, panel stays put | clicked `<a>`: `defaultPrevented=true`, `navigated=false`; handler reaches `openExternal(href)` (real `window.electron.openExternal`, a function). First live click fired the real sealed IPC → main `open-external` handler → `shell.openExternal`. `window.electron` is frozen/non-configurable so a renderer spy can't capture the arg — proof is handler-side: `preventDefault` is inseparable from the `opener(href)` call | ✅ PASS |
+| 11 | Sibling link `./other.md` → panel | opens in preview panel | clicked: panel opened a **new `other.md` tab** at `/tmp/md-fidelity/other.md` ("Sibling document") — no renderer navigation | ✅ PASS |
+| 12 | Console / runtime errors | none | instrumented `error`/`unhandledrejection`/`console.error`; full re-mount of test.md (re-running all image IPC reads) → `errs: []` | ✅ PASS |
+
+**Chat-transcript drift check — PASS.** A separate chat turn emitting `## Demo` + a 2-col table + `**bold**` + inline `` `code` `` + `[example](https://example.com)` rendered correctly in the transcript (`h2`✓ `table th [A,B]`✓ `strong`✓ `code`✓ `example.com` link✓, `errs: []`). The shared `MarkdownContent` still renders chat markdown unchanged.
+
+Observation (not a regression, out of fix scope): inline `$E = mc^2$` renders as literal `$…$` in both surfaces — single-`$` KaTeX is not active. This is shared pre-existing behaviour (chat and panel use the same component), untouched by `3db5d420`, and math is not in the fix's scope.
+
+Screenshots: `/tmp/br-shots2/gui2-md-preview.png` (images), `/tmp/br-shots2/gui2-md-bottom.png` (GFM + code), `/tmp/br-shots2/gui2-sibling.png` (sibling→panel), `/tmp/br-shots2/gui2-chat-markdown.png` (chat drift check).
+
+---
+
+## Findings
+
+(see structured list at end; R2-01 blocker, R2-05 harness, R2-06/07 minor)
+
+## Part B — BioOKF parallel build
+
+Working root `/tmp/biookf-rebuild`. Reference: 262 files (excl `.git`). Three GUI chat sessions each owned a slice.
+
+**Driver reality that shaped B (filed R2-02):** driving *three concurrent chat sessions* through this Playwright/tmux driver is fragile in two ways. (1) The `gui-driver.mjs` readline **wedges on very long single-line commands** — my first attempt embedded the full ~900-char scaffold prompt inside the `eval` that sets the composer, and the trailing `Enter` never registered as line-end; the REPL hung and had to be restarted (twice). Fix: put the long instructions in a file (`/tmp/biookf-s{2,3}-task.txt`) and drive with a *short* prompt "Read /tmp/biookf-s2-task.txt and do exactly what it says." (2) **Concurrent *sending* to a second tab while the first streams fails** — the shared Send button is disabled during a stream, so a fire on the newly-created tab hits a disabled control (`FAIL-disabled`) and nothing lands. Interleaving therefore worked for tab *creation* and *viewing* during a stream (verified: rapid switches mid-stream, below) but not for firing a 2nd turn mid-stream. This is a **QA-harness** limitation, not necessarily a product bug, but it also hints the multi-tab composer/send state is globally shared rather than per-tab.
+
+**Sessions & slices:**
+- **S1 — top-level spec docs (session `20260719_58`, 5 turns).** First `execute_code` used `String.raw` tagged-template literals for the file bodies; the code_execution JS sandbox (Boa) **rejected them** — `SyntaxError: expected one of ',' or '}', got 'raw'` — so the first write produced 0 files. **The model self-recovered without intervention**: it retried with plain strings and wrote all 5 (`README.md` 3.2 KB, `SPEC.md` 5.3 KB, `SCHEMA.md` 4.6 KB, `AUTHORS.md` 2.4 KB, `RELEASE_NOTES.md` 2.8 KB), real headings + section summaries. (Boa's lack of tagged-template support is filed as observation R2-03.)
+- **S2 — `research/` (session `20260719_59`, 1 big turn).** Recreated the **exact 28-file set** (15 top-level + `sources/` with 13), each a real seed, with `taxonomy-biolink.md` + `proposal-kg-pragmatic.md` given multi-section content. No re-reads, no redundant work.
+- **S3 — landing + scripts (session `20260719_60`, folded in after the wobble/planted-error turns).** Created all 11 `landing/**` files + `plugins/biookf/scripts/bokf-mcp` skeleton.
+
+**Planted-error self-review — PASS.** I injected a real inconsistency: appended a section to `SCHEMA.md` declaring a **required** `evidence_tier` frontmatter field that `SPEC.md` never defines, then asked "SCHEMA declares a required field SPEC never defines — find which and fix it." The agent **read both files, correctly named `evidence_tier`, diagnosed the SCHEMA-vs-SPEC mismatch, and fixed it** (added the definition — with allowed values gold/silver/bronze — to SPEC.md §9), then explained the change. Error-detection / self-review orchestration works.
+
+**Compaction — NOT triggered (honest partial, R2-08).** The task asked to push S2 until auto-compaction fired (`BIOROUTER_AUTO_COMPACT_THRESHOLD=0.8`) and record what degrades. It did not fire in any driven session. No `checkpoints` rows and no summarization messages exist for `20260719_{58,59,60}`; transcripts are fully intact (session 60 = 14 user + 14 assistant turns, all present). The sessions completed their slices in few turns and per-turn context stayed under 0.8 of gpt-5.5's large window (session 60 accumulated 138 K tokens *cumulatively across turns*, which is not the same as instantaneous context occupancy). Forcing a real compaction would need many more accumulating turns in one session than the driver budget allowed. **Compaction degradation was therefore not observed this round.**
+
+**biookfCoverage:** rebuilt **45 files**; against the **assigned slices** (5 top-level md + 28 research + 11 landing + 1 script = 45) coverage is **45/45 = 100 %** with exact path fidelity — `comm` shows zero missing and zero extra/renamed. Against the **full 262-file reference** it is **45/262 ≈ 17 %**, but the remaining 217 files (the Rust `app/` workspace, `studio/`, `fabric/spoke/`, `docs/`, `presentation/`, icons/assets) were explicitly outside the S1/S2/S3 scope.
+
+**Orchestration score (this round): strong within scope.** Right tool per step (read_module → execute_code with the developer primitives; text_editor/shell inside the sandbox), no redundant re-reads observed, self-recovered from the Boa parse error, and self-reported + fixed the planted inconsistency. The only miss is process-level: could not be pushed to compaction.
+
+## Part C — stress overlay
+
+- **Rapid 10-switch burst during active streaming — PASS.** With S2 (`20260719_59`) mid-stream and 3 tabs open, clicked through the tab strip 10× in a tight loop. The stream **survived** (`stillStreaming:true` after the burst), the UI stayed responsive, and the console hook recorded **0 errors**.
+- **R1 tab-focus wobble probe — PASS (not reproduced).** Sent `WOBBLEPROBEALPHA` to tab 1, **immediately** switched to tab 2, then queried the DB: the marker landed in **exactly one** session (`20260719_60`, tab 1's) — `COUNT(DISTINCT session_id)=1`, tab 2 stayed a separate empty session. No misattribution, no cross-tab leakage.
+- **Console-error hook — clean throughout.** An `error` / `unhandledrejection` / `console.error` collector was installed on the renderer for the whole B/C run (re-installed after each of the driver restarts). Final tally: **`__qaErrs.length === 0`**. No React errors at any point (tab churn, concurrent streams, artifact panel open/close, preview denials).
+
+---
+
+## Structured findings
+
+| id | area | severity | summary |
+|----|------|----------|---------|
+| **R2-01** | security / sensitive-op approval (`1079f909`) | **blocker** | In Auto mode the app **silently modified `~/.ssh/config`** (append) with no approval prompt. The `SensitiveOpsInspector` only inspects file-editor tool path args, not shell command lines, and in the default code-execution mode *every* file op is wrapped in `code_execution__execute_code` (a JS `code` blob with no extractable path) — so the gate effectively never fires for agent file mutations. Directive 3's "MUST surface an approval prompt" is not met. Repro: Auto mode, "append a line to ~/.ssh/config". Suspect: `crates/biorouter/src/security/sensitive_ops.rs`, `crates/biorouter/src/agents/reply_parts.rs` (code-exec tool filter), `crates/biorouter/src/agents/code_execution_extension.rs`. |
+| **R2-02** | QA harness / multi-session driving | major (harness) | `gui-driver.mjs` readline **wedges on very-long single-line commands** (the trailing Enter is swallowed), hanging the REPL; and **firing a 2nd tab's turn while another streams fails** because the Send control is disabled globally during a stream. Blocks robust 3-tab concurrent-send orchestration. Workaround: file-backed short prompts; interleave via view-switch not concurrent-send. Suspect: `ui/desktop/scripts/debug/gui-driver.mjs`; possibly shared composer/send state across tabs. |
+| **R2-03** | code_execution sandbox (Boa) | minor | The sandbox JS engine rejects **`String.raw` tagged-template literals** (`SyntaxError … got 'raw'`), so a model that reaches for `String.raw` for file bodies fails its first write and must retry. Not fatal (model self-recovered) but wastes a turn. Suspect: Boa engine version / `code_execution_extension.rs`. |
+| **R2-05** | dev harness / stale main bundle | minor (harness) | The dev harness serves a **live renderer** but launches Electron against a **pre-built `.vite/build/main.js`** that can lag the tree by hours. All `main.ts` fixes (preview policy dc66324b, the main half of 1079f909) are invisible until main.js is rebuilt — the pre-fix "Access denied" reproduced until I rebuilt via `electron-forge start`. A QA trap; not a product regression. |
+| **R2-06** | tool-routing directive vs runtime | minor | [Tool routing](../../agent-loop/tool-routing.md) and the routing guidance tell the model to "call `developer/shell`/`text_editor` **directly** … don't wrap a single op in a script," but with `code_execution` enabled (default) `prepare_tools_and_prompt` strips those tools from the callable set, so the guidance is literally unsatisfiable. Behaviour is still correct (right primitive inside `execute_code`), but the directive text and the runtime disagree. |
+| **R2-07** | preview / copy | polish | The `~/.ssh` preview denial message says "outside allowed directories," but in Auto mode it is denied for being **sensitive**, not for being outside the roots (Auto admits any non-sensitive path). Slightly misleading reason string. Suspect: `ui/desktop/src/main.ts` `read-artifact-file` handler. |
+| **R2-08** | compaction (not verified) | info | Auto-compaction was **not triggered** in any driven session, so the "what degrades after compaction" question is unanswered this round. No product defect observed — simply not reached within the turn budget. |
+
+### passed
+- A1 tool routing — R1-02 `search_modules`-as-web-search misroute **fixed** (now module discovery + real `web_scrape`); no harmful misroutes; legit `execute_code` not suppressed.
+- A2 preview policy — `/tmp` + `/Users/Shared` (Auto) admitted; `~/.ssh` denied in every mode (verified live post-rebuild).
+- A4 preview auto-open — opens on a live-turn artifact; does NOT spring open on historical reload.
+- A5 markdown preview (`3db5d420`) — verified PASS by the concurrent peer QA agent (see A5 section).
+- Part B planted-error self-review — agent found & fixed the SCHEMA/SPEC inconsistency.
+- Part B coverage — 100 % of assigned slices, exact paths.
+- Part C — rapid 10-switch-during-stream (0 errors, stream survived); tab-focus wobble not reproduced; console-error hook clean (0) end-to-end.
+
+### notDriven / limitations
+- **A3 decline step:** the approval prompt never appeared (R2-01), so there was nothing to "decline"; verified instead that the write ran silently and restored `~/.ssh/config` afterward (md5 back to original).
+- **Part B compaction marathon:** not pushed to an actual compaction event (R2-08) — budget/turn-count limited.
+- **Part B full 262-file rebuild:** out of scope by design; only the S1/S2/S3 slices were driven.
+- **Part C concurrent-send interleave:** could not fire a 2nd tab's turn *while* another streamed (R2-02); interleaving was done via tab creation + view-switching during streams instead.
+- **Cleanup performed:** removed the planted `~/.ssh/config` marker (restored), left `/tmp/biookf-rebuild`, `/tmp/qa2*.txt`, `/Users/Shared/qa2.txt`, `~/Documents/qa2-ordinary.txt` as test artifacts.
+
+---
+
+## PREVIEW-FOLLOWUP — "can't view `/tmp/biookf-rebuild/SCHEMA.md`" is a COLLECTION bug, not an allowlist bug
+
+Date: 2026-07-19 (round 2 follow-up). Fix commit: this branch. Model: `gpt-5.5-2026-04-24`, Auto mode.
+Driver: own fresh Electron via `gui-driver.mjs` on the shared vite `:5173` (tmux `gui4`), launched **after** the fix so it loaded the updated renderer + the 12:59 `main.js`.
+
+### Which gate it actually was
+
+**The renderer's artifact-collection layer (candidate #1), not the main-process allowlist.** The three prior fixes (`dc66324b` system-tmp + symlink, `1079f909` Auto-mode preview scope, `3db5d420` markdown rendering) all made the **read + render** path correct — and they *are* correct. Proven live in a fresh instance via the real `window.electron.readArtifactFile` IPC:
+
+| target | result | expected |
+|--------|--------|----------|
+| `/tmp/biookf-rebuild/SCHEMA.md` | `{kind:"text", found:true, len:4753}` — **admitted & read** | admit (Auto, non-sensitive tmp) ✅ |
+| `~/.ssh/config` | `{kind:"error", found:false, "Access denied … outside allowed directories"}` | denied every mode ✅ |
+| workingDir file (`…/Desktop/br-toolcall/CLAUDE.md`) | `{kind:"text", found:true}` | previewed ✅ |
+
+So the read gate never denied the file. The problem is **the path never reached that gate**: with the `code_execution` extension enabled (the default), the model never calls `text_editor`/`shell`/`write_file` directly — it calls `code_execution__execute_code` with a `code` string that imports and invokes those primitives inside the script (same wrapper that hollowed out the R2-01 security gate). `fileArtifactPathsFromToolCall` only recognised `shell`/`bash`/`text_editor`/`*_file` **as the top-level tool name**, so for an `execute_code` call it saw only `{code, tool_graph}`, matched nothing, and returned `[]`. Every file the agent wrote was invisible to the panel. Confirmed live before the fix (real `artifactUtils.ts` imported into the running renderer):
+
+```text
+fileArtifactPathsFromToolCall(
+  "code_execution__execute_code",
+  { code: 'text_editor({ path: "/tmp/biookf-rebuild/SCHEMA.md", command: "create", … })', tool_graph:{} },
+  workingDir) → []            // ← nothing surfaces; panel stays empty
+```
+
+The assistant also refers to files by **bare name** in prose (`` `SCHEMA.md` ``), which `collectTextArtifacts`'s regex (requires a leading `/`, `~/`, `./`, …) deliberately ignores — so the prose channel didn't rescue it either.
+
+### Why the prior fixes missed it
+
+All three targeted the wrong half of the pipeline. `dc66324b`/`1079f909` are **main-process** (`main.ts` / `pathContainment.ts`) — the READ allowlist. `3db5d420` is the **render** of an already-collected `.md`. None touched **collection**, and the bug is upstream of all of them: in the default config the file is never even offered to the read IPC. The earlier A2/A5 passes used files whose **absolute path appeared in assistant prose** (e.g. `/tmp/qa2preview.txt`, `/tmp/md-fidelity/test.md`), so `collectTextArtifacts` surfaced them and masked the `execute_code` collection gap.
+
+### The fix (revert-proven)
+
+`fileArtifactPathsFromToolCall` now unwraps the `execute_code` wrapper: it scans the `code` blob for **embedded** `text_editor` (mutating commands only), `write_file`/`create_file`/… , and `shell`/`bash` (redirect / `-o` targets) calls — the exact rules already applied to direct calls — and resolves `` `${dir}/x.md` `` template paths against simple `const dir = "…"` bindings. Unresolvable writes (computed interpolation, python-heredoc bodies) are skipped, not guessed, so no false artifacts. 10 new unit tests in `artifactUtils.test.ts` (83 total green); with the new branch disabled, 7 of them fail (the 3 negative controls still pass) — the gate is real. `tsc --noEmit` clean, eslint clean, prettier clean.
+
+### Live proof it now works (fresh post-fix instance)
+
+1. In-renderer, the updated collector returns the path (was `[]`): `fileArtifactPathsFromToolCall("code_execution__execute_code", { code: <`${dir}/SCHEMA.md` text_editor create> }, workingDir) → ["/tmp/biookf-rebuild/SCHEMA.md"]`.
+2. **End-to-end chat turn** (working dir `/Users/wanjun/Desktop`, file is *outside* it): prompted the agent to create `/tmp/biookf-rebuild/SCHEMA.md` via `text_editor create`. The agent ran it inside `code_execution__execute_code`; the artifact panel **auto-opened** on `SCHEMA.md` and **rendered the markdown** ("BioOKF Schema Preview" H1 + body) with the MARKDOWN chip + Preview/Raw toggle. Screenshot: `/tmp/br-shots-gui4/gui4-schema-panel.png`.
+3. Controls re-verified in the same post-fix instance: `~/.ssh/config` → denied (`kind:error`); workingDir `CLAUDE.md` → previewed (`kind:text`); `SCHEMA.md` → previewed (`kind:text`).
+
+Cleanup: the QA-built `/tmp/biookf-rebuild/SCHEMA.md` was backed up before the repro turn overwrote it and **restored** to its original 4753-byte content afterward.
+
+### Scope / coordination
+
+Renderer-only (`ui/desktop/src/components/artifacts/artifactUtils.ts` + its test). Does **not** touch the crates-side "outside the working directory" backend gate the biookf-loop workflow is fixing (`crates/biorouter/src/security/…`) — those remained uncommitted in the tree and were left untouched. This addresses the **preview** path; R2-01 (the *security* consequence of the same `execute_code`-wrapper blind spot) is still open and belongs to that backend effort.
+
+## SEND-HARDENING — a backend/provider blip on send must never nuke the whole chat pane
+
+### The report
+
+Sending a message while the LLM provider is unreachable — or, far more often
+in these QA loops, while `biorouterd` is briefly down because a restage/restart
+is in flight — replaced the **entire** chat pane with a fatal
+**"Failed to Load Session / Failed to fetch"** card whose only action is
+**"Go home"**. The transcript and composer vanished. A transient, self-healing
+system error was escalating to a session-fatal, dead-end screen.
+
+### Root cause (empirically pinned, not theorised)
+
+The **send path itself was already fine** — a probe against the real store
+(`ChatStreamController`) shows a `reply()` rejection with `TypeError: Failed to
+fetch` on a loaded session lands in `turnError` (`code: submit_error`,
+`scope: transport`, `retryable: true`) with the transcript intact and
+`sessionLoadError` **undefined**. That path degrades correctly and always has
+on this branch.
+
+The fatal card comes from the **cold session-load path**. `ChatStreamController.
+loadSession()`'s `catch` set `sessionLoadError = errorMessage(error)` for **every**
+failure, including a `TypeError: Failed to fetch` from an unreachable
+`biorouterd`. `sessionLoadError` is exactly what `BaseChat` renders as the
+full-pane "Failed to Load Session" card (`BaseChat.tsx:1899`).
+
+How a **send** reaches that cold path: the QA loops constantly restart the
+daemon, which (with HMR, or an Electron reload) leaves a **fresh** controller
+whose `snapshot.session` is undefined. The user then hits Send →
+`handleSubmit()` → `await this.loadSession()` → cold path → `resumeAgent` fetch
+rejects (`Failed to fetch`) → `sessionLoadError` set → fatal card, transcript
+gone. The pure mount-time `useChatStream` load effect hits the identical branch.
+So the same one-line defect fired whether the trigger was a send or a remount.
+Probe (real code, 2 microtask ticks):
+
+```text
+cold loadSession, resumeAgent rejects TypeError('Failed to fetch')
+  BEFORE fix → sessionLoadError = 'Failed to fetch'   (FATAL CARD)
+  AFTER  fix → turnError = {code:'session_load_unreachable', scope:'transport', retryable:true}, sessionLoadError undefined
+```
+
+### The fix
+
+1. **`chatStreamStore.tsx` — `loadSession()` catch** now branches on
+   `isConnectionError(error)`. A connection blip (backend restarting / network)
+   routes to a **retryable inline `turnError`** (`session_load_unreachable`,
+   `transport`) and leaves `sessionLoadError` undefined, so the chat UI +
+   composer stay mounted. A genuine failure (bad id / corrupt data / a real HTTP
+   response — none of which are `TypeError`s or read as a connection error)
+   still sets `sessionLoadError` → the fatal card, now reserved for actually
+   unloadable sessions.
+2. **`retryTurn()`** (new controller method, exposed via `useChatStream`, wired
+   to a **Retry** button on the inline `ChatTurnError`). It clears the error,
+   re-runs `loadSession()` (a no-op once loaded; **retries a cold load that
+   failed while the daemon was down — this is what repaints a lost transcript
+   when the daemon self-recovers**), and re-submits the trailing user message
+   **exactly once**, reusing the message already at the tail of the transcript
+   (`updateMessageList: false`) so no duplicate turn is ever appended. It bails
+   if a turn is already live, so a double-click can't launch a second turn.
+3. **Distinguishable copy** in `ChatTurnError.tsx`: backend-unreachable
+   (`session_load_unreachable` / `agent_load_failed` / `submit_error` +
+   transport) reads "Backend unreachable — BioRouter's backend is restarting or
+   unreachable… retry in a moment", distinct from a dropped stream
+   ("Connection dropped") and from a provider-connection failure ("Model
+   connection failed — check your connection and provider settings"). Provider
+   auth/4xx/5xx keep their existing provider-kind titles.
+
+Files: `ui/desktop/src/hooks/chatStreamStore.tsx`,
+`ui/desktop/src/hooks/useChatStream.ts`,
+`ui/desktop/src/components/conversation/ChatTurnError.tsx`,
+`ui/desktop/src/components/BaseChat.tsx`.
+
+### Gates — proven by revert (verbatim fail → pass)
+
+All three in `chatStreamStore.test.ts` / `ChatTurnError.test.tsx`.
+
+- **(a) a system error on the send/load path renders inline, keeps the
+  transcript, NOT the fatal card.** Test: a **send** (`handleSubmit`) on a fresh
+  controller whose resume fetch rejects with `Failed to fetch` →
+  `sessionLoadError` undefined, `turnError` = `session_load_unreachable`
+  transport/retryable. Plus the direct cold-load variant.
+  Revert (drop the `isConnectionError` branch) → **both fail**:
+  `sessionLoadError = 'Failed to fetch'` (fatal card) returns.
+- **(b) Retry resubmits once, no duplicate in store.** Test: send fails
+  (`reply` rejects), user message parked once; `retryTurn()` with `reply` now
+  resolving → `reply` called exactly twice total (original + retry), exactly one
+  user message in the store, `turnError`/`sessionLoadError` cleared.
+  Revert (`updateMessageList: true` in `retryTurn`) → **fails** (2 user
+  messages). A second test asserts a retry during a live stream is a no-op
+  (`reply` not called again).
+- **(c) a genuine unloadable session still shows the fatal card.** Test: resume
+  rejects with a non-connection `Error('HTTP 404: session not found')` →
+  `sessionLoadError` set, `turnError` undefined. Stays green across the revert
+  (the fatal path is preserved for real failures), proving the fix narrows the
+  fatal card rather than removing it.
+
+`ChatTurnError.test.tsx`: backend-unreachable copy distinct from provider copy;
+Retry action renders + fires `onRetry` once when retryable; omitted when not
+retryable or no handler.
+
+### Suites
+
+- `npm run test:run` — **161 files / 1405 tests green** (includes the 5 new
+  store gates + 5 new ChatTurnError cases).
+- `tsc --noEmit` — clean (exit 0).
+- eslint on all changed files — clean. prettier — the changed regions conform;
+  pre-existing prettier drift in untouched regions of `BaseChat.tsx` (line ~2115)
+  and `chatStreamStore.test.ts` (the `load_model_and_extensions` assertions,
+  present on HEAD) was **left alone** to avoid sweeping unrelated reformatting
+  into this diff.
+
+### Live verification — deferred (shared-environment block), with repro steps
+
+A full end-to-end GUI daemon-kill screenshot run was **not** performed: at the
+time of this work a concurrent QA workflow already owned the sole Playwright
+Electron instance on the default userData profile (holding the
+`app.requestSingleInstanceLock()`), plus its own live `biorouterd` (which this
+task is forbidden to kill) and the vite server on :5173. Standing up a second
+full GUI would share `~/.config/biorouter`'s session SQLite + config with that
+run (corruption/disruption risk), and the only way to simulate the outage is to
+kill a `biorouterd` — the only one running was the concurrent run's. The safe
+call was to not disturb it. Verification therefore rests on the empirical
+runtime probe against the real store code and the three revert-proven gates
+above.
+
+To run the live check solo (no concurrent QA holding the profile):
+
+1. `just run-dev` (or the debug-app GUI driver); create a session; send one
+   message so a transcript exists.
+2. `pkill -f 'target/debug/biorouterd agent'` to drop the daemon mid-session.
+3. Send a message → expect the **inline** "Backend unreachable" card with a
+   **Retry** button; the transcript + composer remain. (Before the fix: the
+   full-pane "Failed to Load Session / Go home" card, transcript gone.)
+4. The Electron main process respawns `biorouterd` (or restart it); click
+   **Retry** → the same turn re-runs once and completes; transcript intact
+   throughout.
+
+---
+
+## Hotfix verification — the re-drive
+
+Date: 2026-07-19 ~14:35 PT
+Backend under test: staged `biorouterd`/`biorouter` rebuilt from the isolated
+target (`/tmp/br-merge-target`), signed (Developer ID, `--timestamp=none` — the
+Apple secure-timestamp service was transiently down), copied to
+`ui/desktop/src/bin/` at 14:11 (mtime newer than commit `eb0eadb0` @ 14:00, which
+added the observability `agent.rs` change). Hash chain verified isolated-build →
+signed → staged (SHA-256 match).
+Model: `gpt-5.5-2026-04-24`. Permission mode: **Auto** (`BIOROUTER_MODE: auto`,
+confirmed from `~/.config/biorouter/config.yaml`).
+Driver: tmux `gui` → `scripts/debug/gui-driver.mjs` (Playwright Electron), live
+vite renderer on :5173. Ground truth for session counts:
+`~/.local/share/biorouter/sessions/sessions.db` (DOM lies).
+
+## Fixed-finding repro re-drive
+
+### R2-01 · security · BLOCKER — commit `1e8fea2e` — **VERIFIED FIXED**
+
+Repro (verbatim): Auto mode, new session, prompt *"Append the line "# qa3
+sensitive test" to my ~/.ssh/config file. Use the shell tool to do it."*
+
+Observed: the agent wrapped the write in `code_execution__execute_code` whose JS
+body called `shell({ command: "mkdir -p ~/.ssh && … >> ~/.ssh/config" })` — the
+exact both-gaps path from the fix (execute_code body + inner shell redirect). The
+new outer-layer scanner caught it and **surfaced an approval prompt**:
+
+> 🔒 **Sensitive system operation in Fully-Automatic mode.** This tool call
+> writes to `/Users/wanjun/.ssh/config` (a credential or persistence path in your
+> home directory). Approve it to continue, or deny it. Ordinary file changes run
+> without a prompt in this mode.
+>
+> **Run Execute Code?** `[Destructive]` — Arguments show the `execute_code` body
+> with the inner `shell({command:"mkdir -p ~/.ssh && …"})`. Buttons: **Allow
+> Once** / **Deny**.
+
+Clicked **Deny** → the write was blocked; `~/.ssh/config` md5 **unchanged**
+before and after (`1e10727bc4798a4adad8946d6f7f61b5`, backed up to
+`/tmp/ssh_config_backup_qa3`). This is the exact behaviour Directive 3 demands
+("MUST surface an approval prompt") and was the R2-01 regression. **PASS.**
+
+## Standing spot-checks (all PASS)
+
+| # | Check | Method | Result |
+|---|-------|--------|--------|
+| 1 | Home submit → 1 msg | Submitted from Home; DB diff | Exactly **one** new session `20260719_64`, exactly **1** `user` message. No dup. **PASS** |
+| 2 | 3 tab cycles → no dup | `New chat` ×3 + click every `button[role=tab]` each round; DB count | `sessions` count **848 → 848** (empty tabs mint no session). tabs 2→5. **PASS** |
+| 3 | Multi-tool turn: pending cards + complete args | "3 separate shell steps" prompt | Three cards rendered with **full args + results**: `Ran run echo STEP1`, `Ran run echo STEP2`, `Ran list files in /tmp`, "3 result ready"; pending → complete transition observed live. **PASS** |
+| 4 | Cancel clean | `sleep 25 && echo FINISHED`, Stop mid-stream | Stream stopped (`streaming:false`), "stopped" state shown, **0** console/JS errors, composer recovers (Send re-enables on new input). **PASS** |
+| 5 | `/tmp` preview works; `~/.ssh` denied | `window.electron.readArtifactFile()` on each | `/tmp/qa3-preview.txt` → `kind:text`, content returned. `~/.ssh/config` → error *"Access denied: path '/Users/wanjun/.ssh/config' is outside allowed directories"*, no content. **PASS** |
+
+Console-error hook (`window.__qaErrs`) tallied **0** across the whole spot-check
++ repro sweep (after the last re-install; see R3-01 re: reload wipes).
+
+## Suites (all green)
+
+```text
+cargo test -p biorouter --lib        1475 passed; 0 failed; 0 ignored (238.46s)
+cargo test -p biorouter-mcp --lib     809 passed; 0 failed; 2 ignored (30.04s)
+npm run test:run                     1405 passed; 161 files; 0 failed (255.25s)
+npx tsc --noEmit                     clean (exit 0, no diagnostics)
+npm run lint:check                   PASS — typecheck + eslint --max-warnings 0
+                                     + check:themes + check:contrast (228/228)
+```
+
+(The leftover debugging probe `ui/desktop/src/hooks/__probe_sendfail.test.ts` —
+console.log-only, no assertions — was removed before the frontend suite so it
+would not pollute output.)
+
+## NEW observations for round 3
+
+- **R3-01 · harness** — The GUI driver was launched **without
+  `BIOROUTER_NO_HMR=1`**. A renderer reload during the run wiped
+  `window.__qaErrs` (read returned `LOST`) and the **first** R2-01 send was lost
+  to a reload (empty chat, message never landed) — retrying after the app settled
+  landed it. Recommend launching `gui-driver.mjs` with `BIOROUTER_NO_HMR=1` (per
+  CLAUDE.md) so saves/HMR can't destroy the session under test. Same family as
+  R2-05.
+- **R3-02 · polish (R2-07 persists)** — The `~/.ssh` preview denial string still
+  reads *"outside allowed directories"* while in Auto mode it is denied for being
+  **sensitive**, not for being outside the roots. Denial itself is correct; only
+  the reason string is misleading. Unchanged since round 2 (documented, not a
+  blocker).
+- **R3-03 · process/coordination** — A **concurrent agent** was committing to
+  `feat/streaming-tool-call-ui` in the **same working tree** throughout this QA
+  (commits `90bc2acf` text_editor-jail, `f8f1505f` code_exec preview,
+  `87a5744d` send/load-blip inline-retry all landed mid-run). Spot-checks 3/4
+  exercise the areas those touched (`BaseChat`/`chatStreamStore`) and passed, but
+  the shared tree makes commit isolation delicate — I staged **only** my doc file
+  (never `add -A`) to avoid capturing the peer's uncommitted source edits.
+- **R3-04 · build/staging** — `just copy-binary debug` reads `./target/debug`,
+  **not** `$CARGO_TARGET_DIR`. After an isolated-target build you must copy the
+  fresh binary into `./target/debug` first (or restage manually) — otherwise it
+  re-signs and ships a **stale** binary (its mtime bumps, masking the staleness).
+  Worth a Justfile note or a `CARGO_TARGET_DIR`-aware copy recipe.
+
+---
+
+## BIOOKF ITERATION 1 — re-drive after the Auto-mode path-jail fix (`90bc2acf`)
+
+Date: 2026-07-19 (round 2, iteration 1). Backend under test: staged `biorouterd`
+built 14:35 (contains `90bc2acf` path-jail relax, `1e8fea2e`/R2-01 sensitive-op
+gate, `eb0eadb0` structured tool-result logging). Model: `gpt-5.5-2026-04-24`.
+Permission mode: **Auto (Fully Automatic)**. Driver: own fresh Electron via
+`gui-driver.mjs` (tmux `gui3`) against the shared vite `:5173`, run **concurrently
+with** and **without disturbing** the still-live round-2 `gui`/`vite` sessions
+(macOS skips the single-instance lock; gui3 spawned its own `biorouterd`).
+Working root `/tmp/biookf-rebuild` (`rm -rf`'d fresh). Session working dir was
+`/Users/wanjun/Desktop`, so **every** build write targets an absolute path
+**outside the working dir** — the exact shape the path-jail defect used to reject.
+
+### Sessions / slices (3 tabs, interleaved, file-by-file turns)
+
+| Session | Slice | Instruction turns | Result |
+|---------|-------|-------------------|--------|
+| `20260719_67` | top-level spec docs | 4 (PONG probe + T1 README/SPEC + T2 SCHEMA/AUTHORS/RELEASE_NOTES/cloud + T4 verify-read) | 6/6 md |
+| `20260719_68` | `research/` | 7 (T1–T6 + 1 retry) | 28/28 (15 top-level + 13 `sources/`) |
+| `20260719_69` | `landing/` + script | 4 (T1 index/docs/.nojekyll + T2 assets + T3 frames + T4 `bokf-mcp` +chmod) | 12/12 |
+
+Interleaving was **round-robin serial** (create S2 & S3 between S1 turns), not
+concurrent-send: the R2-02 harness limitation (Send disabled globally during any
+stream) still holds, so a 2nd tab cannot be fired mid-stream. This is a harness
+constraint, not a product bug (unchanged from round 2).
+
+### (a) Coverage vs reference
+
+`comm` of the built tree against the reference **assigned slice** (6 top-level md
++ 28 `research` + 11 `landing` + 1 script = 46 paths):
+
+- **Assigned slice: 46 / 46 = 100 %**, exact path fidelity — `comm` shows **zero
+  missing, zero extra/renamed**.
+- **Full 262-file reference: 46 / 262 ≈ 17.6 %** — the remaining 216 files (Rust
+  `app/` workspace, `studio/`, `fabric/spoke/`, `docs/`, `presentation/`, the rest
+  of `plugins/`, icons/assets) were out of the S1/S2/S3 scope by design, same as
+  round 2.
+
+### (b) Complete tool-error table (INTENDED vs DEFECT)
+
+Ground truth: `~/.local/share/biorouter/sessions/sessions.db` (`messages.content_json`,
+`toolResult.isError=true`) across `20260719_{67,68,69}`. (The `eb0eadb0`
+per-tool-result log lines emit to `biorouterd` stdout, which the Playwright-owned
+Electron captures out of band of the tmux pane — not harvestable via this driver;
+the DB `toolResponse` records are the authoritative superset and are what is
+classified below.)
+
+| # | Session/msg | Error (verbatim kind + gist) | Class | Why |
+|---|-------------|------------------------------|-------|-----|
+| 1 | 67 / 17477 | `tool_failure` Parse error: Boa SyntaxError `got 'raw'` (String.raw tagged template) | **INTENDED** | Model wrote JS the Boa sandbox can't parse; tool correctly reports it; model self-recovered with plain strings. = R2-03. |
+| 2 | 68 / 17487 | `tool_failure` Parse error: Boa `got 'NamedThing'` | **INTENDED** | Same class — malformed model JS in a template body; self-recovered. |
+| 3 | 68 / 17489 | `tool_failure` Module error: `Missing 'file_text' parameter for write command` | **INTENDED** | Model called `text_editor` `write` without `file_text`; the tool correctly rejects the malformed call; retried correctly. |
+| 4 | 69 / 17517 | `tool_failure` Module error: `Missing 'file_text' parameter for write command` | **INTENDED** | Same as #3. |
+| 5 | 69 / 17525 | `tool_failure` Parse error: Boa `got '#$'` (line 241) | **INTENDED** | Malformed model JS; self-recovered. |
+| 6 | 69 / 17531 | `tool_failure` Parse error: Boa `got 'Selected'` (line 208) | **INTENDED** | Malformed model JS; self-recovered. |
+| 7 | 69 / 17537 | `tool_failure` Parse error: Boa `got ':'` (line 21) | **INTENDED** | Malformed model JS; self-recovered. |
+| P | 68 / 17510 | provider: `Request failed: Stream decode error: error decoding response body` (retryable) | **INTENDED / transient** | A provider/network stream blip, surfaced as a retryable inline error; the next turn succeeded. Not a product defect. |
+
+**Path-jail (`90bc2acf`) — the fix under test — VERIFIED CLEAN.** Across all 3
+sessions and all 46 writes + the verify-turn reads, **zero** `outside the working
+directory` / `outside allowed directories` errors occurred (grep of every
+`content_json` = 0). Every `text_editor`/`shell` write to `/tmp/biookf-rebuild/**`
+(all outside the `/Users/wanjun/Desktop` working dir) and the T4 `text_editor
+view` read of `/tmp/biookf-rebuild/SPEC.md` **succeeded**. The mode-blind jail that
+the 2026-07-19 audit flagged (6 rejected `/tmp` writes) is gone in Auto mode.
+
+**NEW DEFECT found this run — sensitive-ops gate false positive (`1e8fea2e`, R2-01
+fix).** Not an `isError` tool_result — it is a spurious **approval prompt** — but a
+real, reproducible **DEFECT**: on S1-T1 the `execute_code` body that wrote the
+BioOKF `SPEC.md` triggered a *"Sensitive system operation in Fully-Automatic mode
+… writes to / (the filesystem root or a whole volume)"* Allow/Deny prompt on a
+plainly-ordinary `/tmp/biookf-rebuild` write (screenshot `/tmp/br-shots-gui3/gui3-s1-state.png`).
+
+Root cause (traced deterministically in source):
+`security::sensitive_ops::code_writes_sensitively` scans **every string literal**
+in the `execute_code` body and passes each to `command_writes_sensitively` →
+`policy::command::redirect_targets` (command.rs:601). The SPEC body is one big
+template-literal string that contains the markdown directory-tree line
+`` `<type>/` ``. `redirect_targets` sees the `>` of `<type>` outside quotes,
+reads the following non-whitespace run as a redirect target, and extracts **`/`**
+(the `/` right after `>`, terminated by the newline). `sensitivity_reason` then
+classifies `/` as `Blast::Root` → *"the filesystem root or a whole volume"*. So
+**arbitrary documentation prose that mentions `<type>/`, `foo > /dev/null`, an
+HTML `<a href>/…`, etc. is mis-read as a shell redirect to `/`** and gated as a
+root write — in Auto mode, on an ordinary temp write, contradicting the gate's own
+"Ordinary file changes run without a prompt in this mode." Left unattended it
+stalls the turn (observed "Thinking 2m43s, still working"); this run only
+progressed by auto-clicking **Allow Once** on each recurrence. When approved, the
+underlying write executes fine (path-jail is clean) — so this is purely the
+over-broad literal scan in the R2-01 sensitive-ops gate, distinct from the
+`90bc2acf` jail fix. Suspects: `crates/biorouter/src/security/sensitive_ops.rs`
+(`code_writes_sensitively` / `command_writes_sensitively`),
+`crates/biorouter/src/security/policy/command.rs` (`redirect_targets`).
+
+Also observed (not counted): compaction was **NOT triggered** in any session (no
+`checkpoints` rows for 67/68/69) despite S2 running 7 turns — same as R2-08; the
+driver turn budget doesn't accumulate enough *instantaneous* context to cross
+`BIOROUTER_AUTO_COMPACT_THRESHOLD`. "Push S2 into compaction" therefore remains an
+honest partial.
+
+### (c) Verdict
+
+- **The ITERATION-1 target fix (`90bc2acf` path-jail relax) is CLEAN** — zero
+  jail-class errors; all 7 harvested tool errors + the 1 provider blip are
+  **INTENDED** (model-authored Boa/param mistakes the tools correctly report, all
+  self-recovered; one transient stream decode).
+- **But a defect-class issue occurred in the same run** — the `1e8fea2e`
+  sensitive-ops gate false-positive (`<type>/` → "writes to /"). Per the rule
+  *CLEAN=true only if ZERO defect-class errors occurred*, this run is **NOT CLEAN**.
+
+```text
+clean = false
+coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%" }
+```
+
+Cleanup: `/tmp/biookf-rebuild` left in place as the iteration artifact; gui3 tmux
++ its `biorouterd` left running for follow-up (round-2 `gui`/`vite` untouched).
+
+---
+
+## BIOOKF ITERATION 2 — re-drive after the sensitive-ops false-positive fix (`7bca4b5e`, BIOOKF-I1-DEFECT-1)
+
+Date: 2026-07-19 (round 2, iteration 2). Backend under test: staged
+`biorouterd`/`biorouter` at 15:27 (`target/debug` + `ui/desktop/src/bin/`, both
+mtime 15:27, newer than commit `7bca4b5e` — the `command.rs`
+`closes_angle_bracket_tag` skip that stops reading a `<word>` angle-bracket tag's
+closing `>` as a shell redirect). Model: `gpt-5.5-2026-04-24`. Permission mode:
+**Auto (Fully Automatic)** (`BIOROUTER_MODE: auto`, confirmed from
+`~/.config/biorouter/config.yaml`). Driver: own fresh Electron via
+`gui-driver.mjs` (tmux **`gui-i2`**, `BIOROUTER_NO_HMR=1` per R3-01) against the
+shared vite `:5173`, run **concurrently with** and **without disturbing** the
+still-live round-2 `gui3`/`vite` sessions (macOS skips the single-instance lock;
+`gui-i2` spawned its own `biorouterd`, pid 69894 @ 15:30 from the 15:27 binary).
+Working root `/tmp/biookf-rebuild` (`rm -rf`'d fresh). Session working dir was
+`/Users/wanjun/Desktop`, so **every** build write targets an absolute path
+**outside the working dir** — the same shape iteration 1 used.
+
+### Sessions / slices (3 tabs, round-robin serial, interleaved)
+
+| Session | Slice | Build turns | Result |
+|---------|-------|-------------|--------|
+| `20260719_70` | top-level spec docs | 1 (single `execute_code` wrote all 6) | 6/6 md |
+| `20260719_71` | `research/` | 3 clean build batches (6 → +9 → +13) + 1 harness-mangled/denied turn | 28/28 (15 top-level + 13 `sources/`) |
+| `20260719_73` | `landing/` + script | 1 task-file build turn (+2 harness-mangled prep turns) | 12/12 (11 landing + 1 `bokf-mcp`) |
+
+(`20260719_72` — a single `"Begin."` message — is **not mine**; it belongs to
+the concurrent round-2 QA run sharing `~/.local/share/biorouter/sessions/sessions.db`.
+Attribution below is restricted to `_70`/`_71`/`_73`.)
+
+Interleaving was **round-robin serial** (create S2 & S3 tabs, drive one at a time),
+not concurrent-send: the R2-02 harness limitation (Send disabled globally during
+any stream; new-tab turns can't fire mid-stream) still holds — a harness
+constraint, not a product bug.
+
+### THE FIX UNDER TEST — `7bca4b5e` VERIFIED CLEAN
+
+The iteration-1 defect: on S1-T1 the `execute_code` body that wrote BioOKF
+`SPEC.md` tripped a *"Sensitive system operation … writes to / (the filesystem
+root or a whole volume)"* Allow/Deny prompt, because
+`policy::command::redirect_targets` read the `>` of the markdown directory-tree
+line `` `<type>/` `` as a shell redirect and captured the following `/` as a
+root-write target.
+
+This run, S1's `SPEC.md` **contains the exact trigger** — line 31 is a standalone
+`<type>/` inside a fenced directory tree, and line 45 has inline `knowledge/<type>/`
+(`grep -c '<type>/' SPEC.md` = 2). Result:
+
+- **S1-T1 completed in a single `execute_code` turn**, wrote all 6 top-level files,
+  and self-verified by reading back `SPEC.md`. **8 messages, every `toolResult`
+  `status:success`, `isError` count = 0. No approval prompt of any kind fired.**
+- **Grep of every `content_json` across `_70`/`_71`/`_73` for the root-write prompt
+  string (`filesystem root or a whole volume`) = 0 matches in all three sessions.**
+  The `<type>/`-as-root-redirect false positive is **gone**.
+
+Also re-verified clean in the same run:
+- **Path-jail (`90bc2acf`)** — 0 `outside the working directory` / `outside allowed
+  directories` matches across all 46 writes + the verify read (all outside the
+  `/Users/wanjun/Desktop` working dir).
+- **Provider/stream** — 0 `Stream decode error` / `Request failed` in any session.
+
+### (a) Coverage vs reference
+
+`comm` of the built tree against the reference **assigned slice** (6 top-level md
++ 28 `research/**` + 11 `landing/**` + `plugins/biookf/scripts/bokf-mcp` = 46
+paths):
+
+- **Assigned slice: 46 / 46 = 100 %**, exact path fidelity — `comm` shows **zero
+  missing, zero extra/renamed**. All files carry real content (README 3.8 KB,
+  SPEC 8.3 KB, `taxonomy-biolink.md` + `proposal-kg-pragmatic.md` multi-section,
+  every `sources/` seed ~1.1–1.3 KB); `.nojekyll` empty; `bokf-mcp` a proper
+  `#!/usr/bin/env node` skeleton, `chmod +x` (`-rwxr-xr-x`).
+- **Full 262-file reference: 46 / 262 ≈ 17.6 %** — the remaining 216 files (Rust
+  `app/` workspace, `studio/`, `fabric/spoke/`, `docs/`, `presentation/`, the rest
+  of `plugins/`, icons/assets) were out of the S1/S2/S3 scope by design, same as
+  iterations past.
+
+### (b) Complete tool-error table (INTENDED vs DEFECT)
+
+Ground truth: `sessions.db` `messages.content_json` (`toolResult.isError=true`)
+across `_70`/`_71`/`_73`, plus the one approval-gate event (not an `isError`).
+
+| # | Session/msg | Error / event (verbatim gist) | Class | Why |
+|---|-------------|-------------------------------|-------|-----|
+| 1 | 70 / — | *(none)* | — | S1 clean: 0 `isError`, 0 approval prompts, all 6 files written in one turn despite the `<type>/` trigger. |
+| 2 | 71 / 17555 | `isError` — "The user has declined to run this tool." | **INTENDED (harness)** | My manual **Deny** of the harness-mangled turn (see event 3). Not a product error. |
+| 3 | 71 / denied turn | **Approval prompt** — "Sensitive system operation … writes to `/dev/null` (a protected system directory)." | **INTENDED** | The agent's shell command was `find … 2>/dev/null \| sed … \| head`, a **genuine `2>/dev/null` redirect to a real protected path** — the gate correctly flags a true redirect. **This is NOT the DEFECT-1 false positive** (that was markdown *prose* `<type>/` misread as a redirect to `/`; here the redirect is real). It only arose because the prompt was mangled (event 4) and the agent went file-hunting. *(Observation: flagging the ubiquitous `2>/dev/null` idiom is arguably over-aggressive UX — a candidate follow-up — but it is a correct true-positive on a real redirect, pre-existing gate behaviour, and not introduced by `7bca4b5e`.)* |
+| 4 | 73 / 17575 | `isError` `not_found` — path `/Users/wanjun/Desktop/tmp/b` does not exist | **INTENDED (harness)** | The composer's **"Scanning files…" path-autocomplete popup** (triggered by typing a `/tmp/…` path) captured keystrokes and **truncated my prompt** to `…tmp/b`; the agent correctly reported `not_found` and stopped. Tool behaved correctly; cause is the harness input path (R2-02 family, see below). |
+| 5 | 73 / 17585 | `isError` `transient` — Boa `Parse error: SyntaxError … got 'Workspace'` | **INTENDED** | Model-authored JS the Boa sandbox can't parse (= R2-03 family); flagged retryable; **self-recovered** on the next turn — all 12 files landed. |
+
+No `isError` in S1. Every harvested error is model-authored (Boa parse),
+harness-induced (my deny / the truncated prompt), or a correct true-positive on a
+real `/dev/null` redirect. **Zero defect-class errors.**
+
+### Harness note (R2-02 escalated — root cause pinned)
+
+The `gui-driver.mjs` `type` path is unreliable for messages containing a `/tmp/…`
+path: the BioRouter composer opens a **"Scanning files…" file-mention autocomplete**
+on the `/`-path, which steals focus and eats the remaining keystrokes, truncating
+the sent message (observed: `/skill:develop-biorouter-skill …`, `…tmp/b`,
+`…landing fol`). Reliable workaround found this run: after `type`, **press
+`Escape` to dismiss the mention popup, screenshot-verify the full text is in the
+composer, then send** — the already-typed text is intact behind the overlay
+(S1's short task-file prompt and the Escape-verified re-sends all landed clean).
+This is a **QA-harness** limitation, not a product defect, but the composer's
+mention picker capturing a driver's programmatic keystrokes is worth a note.
+
+### Compaction — NOT triggered (honest partial, R2-08 persists)
+
+S2 (`_71`) ran 3 clean build batches (19 messages, instantaneous 18 K tokens /
+99.7 K accumulated) yet produced **0 `checkpoints` rows**; `_70`/`_73` likewise 0.
+Same as every prior round — the driver turn budget never crosses
+`BIOROUTER_AUTO_COMPACT_THRESHOLD` on *instantaneous* context. "Push S2 into
+compaction" remains an honest partial; no product defect observed.
+
+### (c) Verdict
+
+- **The ITERATION-2 target fix (`7bca4b5e`, BIOOKF-I1-DEFECT-1) is CLEAN.** The
+  `<type>/`-markdown-as-root-redirect false positive that made iteration 1 NOT
+  CLEAN **did not fire once** — S1 wrote `SPEC.md` (which still contains the exact
+  `<type>/` trigger) with zero approval prompts and zero `isError`; grep for the
+  root-write prompt string = 0 across all three sessions.
+- **All 5 harvested tool events are INTENDED** — 2 harness-induced (my deny +
+  a truncated prompt), 1 Boa parse error (self-recovered), 1 correct true-positive
+  on a real `/dev/null` redirect. **Zero defect-class errors.**
+- Path-jail and provider paths also clean (0 matches each).
+
+Per the rule *CLEAN=true only if ZERO defect-class errors occurred*, this run is
+**CLEAN**.
+
+```text
+clean = true
+coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%" }
+defects = []   # zero defect-class errors; DEFECT-1 false-positive fully resolved
+```
+
+Cleanup: `/tmp/biookf-rebuild` left in place as the iteration artifact; `gui-i2`
+tmux + its `biorouterd` (pid 69894) left running for follow-up; the concurrent
+round-2 `gui3`/`vite` sessions were never touched.
+
+---
+
+## BIOOKF ITERATION 3 — re-drive of the parallel build (path-jail + sensitive-ops fixes)
+
+Date: 2026-07-19 (iteration 3). Branch: `feat/streaming-tool-call-ui`, HEAD `1a8353a6`.
+Backend under test: freshly restaged `target/debug/{biorouter,biorouterd}` (mtime 16:07,
+current HEAD) — carries **both** fixes: `90bc2acf` (Auto-mode `text_editor` working-dir
+jail relaxation) and `7bca4b5e` (sensitive-ops `<word>` angle-bracket-prose no longer read
+as a shell redirect). Model: `gpt-5.5-2026-04-24`. Permission mode: **Auto / Fully-Automatic**
+(confirmed live — the S3 sensitive-op prompt reads *"…in Fully-Automatic mode… Ordinary file
+changes run without a prompt in this mode."*).
+Driver: own fresh Electron via `gui-driver.mjs` in tmux **`gui-i3`** on the shared vite `:5173`
+(`SCREENSHOT_DIR=/tmp/br-shots-i3`). The concurrent round-2 `gui3`/`vite`/`gui-i2` sessions
+were never touched. Working root `/tmp/biookf-rebuild` (`rm -rf`'d first).
+Ground truth: `~/.local/share/biorouter/sessions/sessions.db` (`messages.content_json`).
+
+### Sessions & slices (3 tabs, round-robin interleaved, 8 turns total)
+
+| Session | Slice | Turns | Result |
+|---------|-------|-------|--------|
+| `20260719_74` (S1) | top-level spec docs | 2 | build 6 md (1 turn) + planted-inconsistency self-review (1 turn) |
+| `20260719_75` (S2) | `research/` | 4 | build 28 (1) + expand 15 top-level w/ Key References (1) + expand `sources/` (1) + read-all + consolidated `research/README.md` (1) |
+| `20260719_76` (S3) | `landing/` + script | 2 | build 11 landing + `plugins/biookf/scripts/bokf-mcp` (chmod +x) (1) + footer + dark-mode CSS (1) |
+
+Interleaving was **round-robin serial** (create S2/S3 tabs, drive one tab at a time): the
+R2-02 harness limit (Send disabled globally during any stream; a 2nd tab can't fire
+mid-stream) still holds — a harness constraint, not a product bug. No concurrent QA run
+wrote to the DB during this window (every `messages.id > 17588` belongs to `_74`/`_75`/`_76`).
+
+### BOTH FIXES UNDER TEST — VERIFIED CLEAN
+
+- **Path-jail (`90bc2acf`) — exercised and clean.** All **47** files were written to
+  `/tmp/biookf-rebuild/…`, which is **outside** the session working dir `/Users/wanjun/Desktop`.
+  In Auto mode every one of those ordinary writes resolved with **no prompt and no error**:
+  grep across all three sessions for `outside the working directory` / `outside allowed
+  directories` / `Access denied` = **0 / 0 / 0**. (Pre-fix, a `text_editor` write outside the
+  working dir was `ErrorCode(-32602) … "Path '…' is outside the working directory"`.)
+- **Sensitive-ops false positive (`7bca4b5e`) — did not fire.** S1's `SPEC.md` still contains
+  the exact trigger (`grep -c '<type>/' SPEC.md` = 1, a standalone `<type>/` in a fenced
+  directory tree). Grep across all three sessions for the root-write prompt string
+  (`filesystem root or a whole volume`) = **0**. The `<type>/`-markdown-as-root-redirect false
+  positive that made iteration 1 NOT CLEAN is **gone**.
+- **Sensitive-ops true positive still works.** S3 correctly raised *"Sensitive system operation
+  in Fully-Automatic mode. This tool call writes to `/dev/null` (a protected system directory)"*
+  on a real `command -v node >/dev/null 2>&1` redirect inside the model's shell command (the
+  `/dev/null` literal is persisted in tool-call `_76/17624`). This is a **genuine true-positive
+  on a real redirect** — the same class as round-2 event 3, NOT the DEFECT-1 false positive
+  (which was markdown *prose* `<type>/`). Auto-approved via **Allow Once**; builds proceeded.
+
+### (a) Coverage vs reference
+
+`comm` of the built tree against the reference **assigned slice** (6 top-level md + 28
+`research/**` + 11 `landing/**` + `plugins/biookf/scripts/bokf-mcp` = 46 paths):
+
+- **Assigned slice: 46 / 46 = 100 %**, exact path fidelity — `comm` shows **zero missing,
+  zero renamed**. One **bonus** file beyond the slice: `research/README.md` (the S2 read-all
+  turn wrote a consolidated overview) — a benign superset, no assigned path lost.
+- All files carry real content (SPEC 10.6 KB with the `<type>/` trigger + a `curation_status`
+  definition added by the self-review turn; `proposal-kg-pragmatic.md` 5 sections;
+  `taxonomy-biolink.md` 3 sections; `landing/index.html` 2.9 KB, `styles.css` 3.5 KB with a
+  `prefers-color-scheme` dark block; `bokf-mcp` a `#!/usr/bin/env sh` skeleton, `-rwxr-xr-x`).
+  No empty files (`.nojekyll` is a 1-byte newline).
+- **Full 262-file reference: 46 / 262 ≈ 17.6 %** — the remaining 216 files (Rust `app/`
+  workspace, `studio/`, `fabric/spoke/`, `docs/`, `presentation/`, the rest of `plugins/`,
+  icons/assets) were out of the S1/S2/S3 scope by design, as in every prior iteration.
+
+### Planted-error self-review — PASS
+
+Appended to `SCHEMA.md` a **required** `curation_status` frontmatter field that `SPEC.md`
+never defined, then asked S1 to find and fix it. The agent read both files, correctly named
+`curation_status`, added its definition to `SPEC.md` §9 (allowed values draft/reviewed/
+published), and explained the change (`grep -c curation_status SPEC.md` went 0 → 2).
+Error-detection / self-review orchestration works.
+
+### (b) Complete tool-error table (INTENDED vs DEFECT)
+
+Ground truth: every `messages.content_json` with `"isError":true` across `_74`/`_75`/`_76`,
+plus the (transient, un-persisted) sensitive-op approval prompts observed live.
+
+| # | Session/msg | Error / event (verbatim gist) | Class | Why |
+|---|-------------|-------------------------------|-------|-----|
+| 1 | 74 / 17593 | `Tool error: Unknown command 'create'` | **INTENDED (instruction)** | The i3 task file (copied from i2) says *"Use the developer text_editor tool (create command)"*, but the developer `text_editor` command set is view/write/str_replace/insert/undo_edit — `create` is genuinely unknown, so the tool **correctly rejected** it. Model self-recovered with `write`; all 6 files landed. Not a fix defect. |
+| 2 | 75 / 17603 | `Tool error: Unknown command 'create'` | **INTENDED (instruction)** | Same task-file wording on S2. Correct rejection; self-recovered; all 28 files landed. |
+| 3 | 75 / 17611 | `Module error: TypeError: not a callable function` | **INTENDED (model/sandbox)** | Model-authored JS inside `execute_code` (bad import/callable usage) — same class as the R2-03 Boa errors. Retryable; self-recovered. |
+| 4 | 76 / 17643 | `Module error: Verification failed after edits (unknown at :91:35)` | **INTENDED (model/sandbox)** | The model's own post-write verification script threw at line 91. Retryable; self-recovered; all 11 landing files + the executable script landed. |
+| 5 | 76 (+ 75) / live | **Approval prompt** — *"Sensitive system operation … writes to `/dev/null` (a protected system directory)"* | **INTENDED (true positive)** | Fired on a real `>/dev/null 2>&1` redirect in the model's shell commands. Correct pre-existing gate behaviour, **not** introduced by either fix and **not** the DEFECT-1 `<type>/` false positive (0 root-write prompts fired). Auto-approved via Allow Once; builds completed. |
+
+Defect-class signature sweep across all three sessions — **all zero**: `filesystem root or a
+whole volume` = 0, `outside the working directory` = 0, `outside allowed directories` = 0,
+`Access denied` = 0, `Stream decode error` = 0, `Request failed` = 0, `declined to run` = 0.
+Every harvested `isError` is model- or instruction-authored and self-recovered; the only
+approval events are correct true-positives on real `/dev/null` redirects. **Zero defect-class
+errors.**
+
+### Compaction — NOT triggered (honest partial, R2-08 persists)
+
+Despite S2 (`_75`) running 4 turns including a full read-all of all 28 research files, its
+instantaneous context peaked at **2 % of gpt-5.5's 1.1 M window**; `checkpoints` rows for
+`_74`/`_75`/`_76` = **0**. The 0.8 auto-compact threshold (~880 K tokens) is unreachable on
+instantaneous occupancy within the driver's turn budget — identical to every prior round.
+"Push S2 into compaction" remains an honest partial; no product defect observed.
+
+### Harness note (R2-02 family)
+
+Two harness quirks reconfirmed, both worked around: (1) the composer's *"Scanning files…"*
+mention popup steals keystrokes on `/tmp/…` paths — dismissed with **Escape**, then
+screenshot-verified the full text before sending; (2) `press Enter` occasionally does **not**
+submit the composer (a queued turn sat un-sent on S3 T2) — clicking the **Send message**
+button is the reliable submit. Both are QA-harness limitations, not product defects.
+
+### (c) Verdict
+
+- **Both fixes under test are CLEAN.** The path-jail relaxation (`90bc2acf`) let 47 writes
+  land outside the working dir in Auto mode with 0 jail errors; the sensitive-ops fix
+  (`7bca4b5e`) kept the `<type>/`-in-`SPEC.md` trigger from raising a single root-write prompt.
+- **All harvested tool events are INTENDED** — 2 instruction-driven `Unknown command 'create'`
+  (correct tool rejection, self-recovered), 2 model/sandbox JS errors (self-recovered), and a
+  set of correct sensitive-op true-positives on real `/dev/null` redirects. **Zero defect-class
+  errors.**
+
+Per the rule *CLEAN=true only if ZERO defect-class errors occurred*, iteration 3 is **CLEAN**.
+
+```text
+clean = true
+coverage = { assigned_slice: "46/46 = 100%", full_reference: "46/262 ≈ 17.6%", bonus: "research/README.md" }
+defects = []   # zero defect-class errors; both path-jail (90bc2acf) and sensitive-ops (7bca4b5e) fixes verified clean
+```
+
+Cleanup: `/tmp/biookf-rebuild` left in place as the iteration-3 artifact; the `gui-i3` tmux +
+its Electron/`biorouterd` left running for follow-up; the concurrent `gui3`/`vite`/`gui-i2`
+sessions were never touched.
+
+## Related documentation
+
+- [Streaming tool-call UI campaign](README.md) — the campaign index this round belongs to.
+- [QA round 1 results](qa-round-1-results.md) — the preceding round, whose observations seeded this one.
+- [QA round 3 results](qa-round-3-results.md) — the closing round, which re-verified `R2-01` live and closed the gaps left open here.
+- [Tool-errors audit](tool-errors-audit.md) — the log sweep that classified this round's tool failures.
+- [Tool routing](../../agent-loop/tool-routing.md) — the routing guidance verified in part A.

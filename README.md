@@ -119,7 +119,7 @@ Biorouter routes your inputs to an LLM provider. For patient data, PHI, or other
 - **Do not** use personal commercial API keys with patient data.
 - **Always verify** with your institution's compliance office before processing sensitive data.
 
-See the [Data Privacy Guide](docs/guides/data-privacy.md) for full details.
+See the [Data Privacy Guide](docs/security/data-privacy-and-phi.md) for full details.
 
 ## Documentation
 
@@ -127,15 +127,15 @@ Full documentation lives at [biorouter.ucsf.edu/docs](http://biorouter.ucsf.edu/
 
 | Guide | Description |
 |---|---|
-| [Architecture](docs/architecture/overview.md) | How Biorouter is built — backend, frontend, agent loop |
-| [Providers & Models](docs/getting-started/providers.md) | All supported LLM providers and models |
-| [Extensions, Skills & MCP](docs/guides/extensions-skills.md) | Adding tools, agents, and reusable skills |
-| [Workflows](docs/guides/workflows/index.md) | Creating and sharing automated workflows |
-| [Schedulers](docs/guides/schedulers.md) | Running workflows on a schedule |
-| [Hooks](docs/guides/hooks.md) | Lifecycle hooks for logging, policy, and automation |
-| [Secret Storage](docs/guides/secret-storage.md) | How credentials are kept in your OS keychain |
+| [Architecture](docs/architecture/system-overview.md) | How Biorouter is built — backend, frontend, agent loop |
+| [Providers & Models](docs/getting-started/choosing-a-model-provider.md) | All supported LLM providers and models |
+| [Extensions, Skills & MCP](docs/extensions/extensions-and-skills-guide.md) | Adding tools, agents, and reusable skills |
+| [Workflows](docs/workflows/README.md) | Creating and sharing automated workflows |
+| [Schedulers](docs/workflows/scheduled-jobs.md) | Running workflows on a schedule |
+| [Hooks](docs/agent-loop/hooks/hooks-reference.md) | Lifecycle hooks for logging, policy, and automation |
+| [Secret Storage](docs/security/secret-storage.md) | How credentials are kept in your OS keychain |
 | [Installation & Setup](docs/getting-started/installation.md) | Step-by-step setup guide |
-| [Data Privacy](docs/guides/data-privacy.md) | Guidelines for handling patient and sensitive data |
+| [Data Privacy](docs/security/data-privacy-and-phi.md) | Guidelines for handling patient and sensitive data |
 
 ## Acknowledgments
 
