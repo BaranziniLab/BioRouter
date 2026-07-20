@@ -88,10 +88,10 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 
 - [x] **H1** Remove the recents count badge — `211668be`
 - [x] **H2** Alma Mater and Roche Limit: white canvas, grey sidebar; **Alma dark unchanged**, Parchment unchanged — `4d308c49` (new `--background-canvas` token; all six combos sampled live)
-- [~] **H3** Terminal: open every type, split every way, per-session terminals
-- [~] **H4** Terminal working directory always matches its session's working directory
-- [~] **H5** Terminal stress: busy terminals while launching more, open/close churn, many at once under narrow splits
-- [~] **H6** Terminal cap of 8 is too low **and fires when few are open** (suspected slot leak)
+- [x] **H3** Terminal: types and pane tabs, per-session terminals — `ed5d0a1e` (note: there is one PTY type and panes are *tabs*, not splits; splitting lives at the chat-group level)
+- [x] **H4** Terminal cwd always matches its session — **exact**: 3 simultaneous sessions in 3 dirs, no cross-talk, survives tab switching
+- [x] **H5** Terminal stress: busy + churn + many at once — 15 panes across 3 docks, 0 dead panes, 0 console errors
+- [x] **H6** Terminal cap — `ed5d0a1e`: slots leaked on renderer **reload** (not close); cap raised 8 → 64, env-overridable via `BIOROUTER_MAX_TERMINAL_SESSIONS`
 - [x] **H7** Boot animation: logo must not shift between the two states — `30d615f3`, vision-verified
 - [x] **H8** Soft interrupt must acknowledge immediately — `aaf24a22`
 - [x] **H9** Stop-and-Send needs a smooth confirming animation — `aaf24a22`
@@ -99,6 +99,9 @@ is working it now; `[ ]` means not started; `[?]` means it needs a user decision
 - [~] **H11** GitHub issue #19 — regression test landed (`9cc3d3a9`), **issue deliberately NOT closed**: live re-check still owed on an idle machine, and no release contains the fix yet
 
 ## J · Surfaced by the fixes — need your decision
+
+- [?] **J2** **TERM-04 (major, found not fixed):** switching chat tabs moves focus from the composer *into the shell* — a chat message typed next runs as a shell command. Deliberately documented rather than fixed: it changes focus semantics and deserves its own review. **Recommend fixing.**
+- [?] **J3** TERM-01 (minor): StrictMode double-invocation opens two panes per click in dev.
 
 - [?] **J1** Real contrast failures the old gate was hiding, now measured against the true canvas: Parchment light `text-accent` **4.35:1** (below AA 4.5); Parchment light `border-subtle` 1.23:1; Parchment dark `border-subtle` **1.00:1** (invisible); Alma dark `border-subtle` 1.24:1. All **pre-existing**, none introduced. Fixing them means changing Parchment and Alma dark, which you pinned as must-not-change — so this is your call.
 
