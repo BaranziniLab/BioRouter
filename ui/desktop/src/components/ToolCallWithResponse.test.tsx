@@ -440,3 +440,97 @@ describe('ToolCallWithResponse status derivation', () => {
     expect(screen.queryByLabelText('Tool status: success')).not.toBeInTheDocument();
   });
 });
+
+// SUB-01: a turn that fans out to several subagents renders one collapsed card
+// per delegation. Before this, every card read "Subagent with instructions" —
+// the generic "<Tool> with <argument keys>" fallback — so the cards were
+// byte-identical and nothing in the transcript said which result came from
+// which child.
+describe('summarizeToolCall — subagent delegation', () => {
+  const delegation = (args: Record<string, unknown>) =>
+    summarizeToolCall({ name: 'subagent', arguments: args });
+
+  it('gives parallel delegations distinct labels', () => {
+    const labels = [
+      'Count the .rs files under crates/ and report the number.',
+      'Read Cargo.toml and report the workspace version.',
+      'List every crate in the workspace.',
+    ].map((instructions) => delegation({ instructions }));
+
+    expect(new Set(labels).size).toBe(3);
+    expect(labels[0]).toContain('Count the .rs files');
+    expect(labels[1]).toContain('Cargo.toml');
+    expect(labels[2]).toContain('List every crate');
+  });
+
+  it('never falls back to the argument-key label', () => {
+    expect(delegation({ instructions: 'Do the thing thoroughly.' })).not.toContain(
+      'with instructions'
+    );
+    expect(
+      delegation({
+        instructions: 'Do the thing thoroughly.',
+        extensions: ['developer'],
+        settings: { model: 'm' },
+        summary: true,
+      })
+    ).not.toContain('with instructions');
+  });
+
+  it('names the subworkflow when one was used', () => {
+    expect(delegation({ subworkflow: 'lint', parameters: { path: 'src' } })).toBe(
+      'Delegating lint'
+    );
+    expect(delegation({ subworkflow: 'lint', instructions: 'Only check the new files.' })).toBe(
+      'Delegating lint: Only check the new files.'
+    );
+  });
+
+  it('elides a long instruction instead of dropping it', () => {
+    const label = delegation({
+      instructions:
+        'Read every provider module under crates/biorouter/src/providers and report which of them implement streaming completions',
+    });
+    expect(label.startsWith('Delegating: Read every provider module')).toBe(true);
+    expect(label.endsWith('…')).toBe(true);
+    expect(label.length).toBeLessThan(90);
+  });
+
+  it('still says something when a delegation carries no readable task', () => {
+    expect(delegation({})).toBe('Delegating to a subagent');
+  });
+});
+
+describe('ToolCallWithResponse renders delegations distinguishably', () => {
+  const delegationRequest = (id: string, instructions: string): ToolRequestMessageContent => ({
+    type: 'toolRequest',
+    id,
+    toolCall: {
+      status: 'success',
+      value: { name: 'subagent', arguments: { instructions } },
+    },
+  });
+
+  it('labels two collapsed subagent cards by their own tasks', () => {
+    render(
+      <>
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={delegationRequest('d1', 'Count the .rs files under crates/.')}
+          toolResponse={undefined}
+          turnActive={true}
+        />
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={delegationRequest('d2', 'Read Cargo.toml and report the version.')}
+          toolResponse={undefined}
+          turnActive={true}
+        />
+      </>
+    );
+
+    expect(screen.getByText(/Count the \.rs files/)).toBeInTheDocument();
+    expect(screen.getByText(/Read Cargo\.toml/)).toBeInTheDocument();
+    expect(screen.queryByText(/Subagent with instructions/)).not.toBeInTheDocument();
+  });
+});

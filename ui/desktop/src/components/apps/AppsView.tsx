@@ -130,7 +130,7 @@ export default function AppsView() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto bg-background-muted px-8 pb-8">
+        <div className="flex-1 overflow-y-auto bg-background-canvas px-8 pb-8">
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <p className="text-text-muted">Loading apps...</p>

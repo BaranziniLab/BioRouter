@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "id": "TP53"
+    },
+    {
+      "id": "MDM2"
+    },
+    {
+      "id": "ATM"
+    },
+    {
+      "id": "CHEK2"
+    },
+    {
+      "id": "CDKN2A"
+    }
+  ],
+  "edges": [
+    {
+      "source": "ATM",
+      "target": "TP53"
+    },
+    {
+      "source": "ATM",
+      "target": "CHEK2"
+    },
+    {
+      "source": "CHEK2",
+      "target": "TP53"
+    },
+    {
+      "source": "MDM2",
+      "target": "TP53"
+    },
+    {
+      "source": "CDKN2A",
+      "target": "MDM2"
+    }
+  ]
+}

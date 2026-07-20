@@ -2,12 +2,18 @@ import { Message } from '../api';
 import { ChatState } from '../types/chatState';
 import { getToolRequests, getToolResponses } from '../types/message';
 
-export type TrailingPhase = 'thinking' | 'running' | 'compacting';
+export type TrailingPhase = 'thinking' | 'running' | 'compacting' | 'steering';
 
 export interface TrailingActivity {
   phase: TrailingPhase;
   /** Label shown next to the pulse. Never contains the elapsed time. */
   label: string;
+  /**
+   * The user's own words, echoed back while a soft interrupt is in flight.
+   * Only set for phase 'steering' — every other phase narrates the AGENT, and
+   * putting user text in them would misattribute it.
+   */
+  steerText?: string;
   /**
    * Client-clock ms the indicator counts from. `undefined` means "we have no
    * trustworthy origin" (a reload mid-turn) — render the pulse with NO timer
@@ -24,6 +30,19 @@ export interface DeriveTrailingActivityArgs {
   /** Store-owned client timestamps. */
   turnStartedAt?: number;
   lastMessageAt?: number;
+  /**
+   * BR-61 — a soft interrupt the store has accepted but the agent has not yet
+   * consumed. Set optimistically the instant the POST is issued and cleared
+   * when the agent echoes the text back (or the steer is rejected), so the
+   * window between the user's click and the agent's next output is never blank.
+   */
+  pendingSteer?: PendingSteer;
+}
+
+export interface PendingSteer {
+  text: string;
+  /** Client clock (ms) the steer was issued at — the indicator's timer origin. */
+  since: number;
 }
 
 const isToolResponseOnly = (m: Message) =>
@@ -55,11 +74,27 @@ export function deriveTrailingActivity({
   chatState,
   turnStartedAt,
   lastMessageAt,
+  pendingSteer,
 }: DeriveTrailingActivityArgs): TrailingActivity | null {
   // (a) Historical / read-only / finished turn. The single most important gate:
   //     SessionHistoryView never passes isStreamingMessage, so this is false
   //     there and a replayed session can never show a live indicator.
   if (!isTurnActive) return null;
+
+  // (a2) BR-61 — a soft interrupt is in flight. This OUTRANKS every branch
+  //      below, including the ones that deliberately return null (streaming
+  //      prose, a tool-confirmation card): those all narrate what the AGENT is
+  //      doing, and none of them would tell the user that the message that just
+  //      left their composer was heard. Without this the press is followed by
+  //      seconds of nothing, which reads as a dropped input.
+  if (pendingSteer) {
+    return {
+      phase: 'steering',
+      label: 'Steering the current turn',
+      steerText: pendingSteer.text,
+      since: pendingSteer.since,
+    };
+  }
 
   // (b) The pill above the composer already narrates these, and a card is on
   //     screen demanding input. Do not double-narrate.

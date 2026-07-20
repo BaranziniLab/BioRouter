@@ -77,6 +77,43 @@ impl SubagentResult {
         }
     }
 
+    /// The child's turn was **aborted** — a provider failure, a tool loop, a
+    /// worker timeout. The run did not finish, so the envelope says `error` no
+    /// matter how much prose the child left behind.
+    ///
+    /// This exists because the aborting message the loop writes into the child's
+    /// conversation ("Ran into this error: …") is, structurally, an ordinary
+    /// assistant text message. Handing that conversation to
+    /// [`Self::from_conversation`] yields `completed` with `is_error: false`, so
+    /// a subagent that never ran renders in chat exactly like one that
+    /// succeeded — and the parent model is told the delegation completed.
+    ///
+    /// Work the child *did* manage before failing is preserved: its artifacts,
+    /// and its last substantive message when that message is not simply the
+    /// abort notice repeated.
+    pub fn from_aborted_turn(
+        conversation: &Conversation,
+        code: &str,
+        message: impl Into<String>,
+    ) -> Self {
+        let message = message.into();
+        let artifacts = collect_artifacts(conversation);
+        let salvaged = last_nonempty_text(conversation).filter(|text| !text.contains(&message));
+        let summary = match salvaged {
+            Some(text) => format!(
+                "Subagent failed ({code}): {message}\n\nWhat it produced before failing:\n\n{text}"
+            ),
+            None => format!("Subagent failed ({code}): {message}"),
+        };
+        Self {
+            status: SubagentStatus::Error,
+            summary,
+            error: Some(message),
+            artifacts,
+            tokens: None,
+        }
+    }
+
     /// Build an envelope from a completed subagent conversation.
     ///
     /// * `final_output` — the response-schema value when the workflow defined

@@ -434,7 +434,13 @@ async fn case15_tool_error_propagates_as_js_exception() {
     let m = manager().await;
     // cat a nonexistent file: developer shell should fail; the JS native fn
     // throws, the module rejects, and execute_code returns a "Module error".
-    let out = exec(
+    //
+    // `exec_raw`, not `exec`: an error result IS the expected outcome here. Since
+    // PAR-02 the shell reports a non-zero exit as `is_error`, so the failure now
+    // propagates all the way out as `execute_code`'s own error flag — which is
+    // the point of the case. (`case16` covers the other side: an error the JS
+    // catches leaves `execute_code` successful.)
+    let (is_error, out) = exec_raw(
         &m,
         r#"
         import { shell } from "developer";
@@ -443,14 +449,23 @@ async fn case15_tool_error_propagates_as_js_exception() {
         "#,
     )
     .await;
-    // Either the shell returns an error string captured as result, or the
-    // module rejects. Both are acceptable; what we must NOT see is a silent
-    // success that pretends the file was read.
+    // What we must NOT see is a silent success that pretends the file was read.
+    assert!(
+        is_error,
+        "an uncaught tool failure must surface as execute_code's error flag, \
+         not as a successful result: {out}"
+    );
     assert!(
         out.contains("Module error")
             || out.to_lowercase().contains("no such file")
             || out.to_lowercase().contains("error"),
         "expected an error surfaced, got: {out}"
+    );
+    // The shell's exit status reaches the JS layer, so the failure is legible
+    // rather than an empty rejection.
+    assert!(
+        out.contains("exited with status 1") || out.to_lowercase().contains("no such file"),
+        "the propagated error must name what actually failed, got: {out}"
     );
 }
 
@@ -771,5 +786,76 @@ async fn case21_chained_data_real_dataflow() {
     assert!(
         dst_content.contains("HELLO WORLD"),
         "dst should contain uppercased content, got: {dst_content}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox module/call errors must be self-correcting on the real dispatch path.
+//
+// The unit tests exercise `run_js_module` directly; these drive the same
+// failures through `dispatch_tool_call`, so they assert the text the agent
+// actually receives as a tool result.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn case24_unknown_module_error_names_the_real_importable_modules() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        r#"
+        import fs from "fs";
+        record_result(fs.readFileSync("/etc/hosts", "utf8"));
+        "#,
+    )
+    .await;
+
+    assert!(is_error, "importing a non-existent module must be an error");
+    assert!(
+        out.contains(r#"Module "fs" could not be found"#),
+        "must name the failing module, got: {out}"
+    );
+    // The live inventory, not a hardcoded list: this manager has developer.
+    assert!(
+        out.contains("Importable modules are exactly:") && out.contains("developer"),
+        "must list the modules this session really has, got: {out}"
+    );
+    assert!(
+        out.contains(r#"import { shell, text_editor } from "developer""#),
+        "a Node builtin guess must be redirected to developer, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn case25_calling_a_non_function_explains_itself() {
+    let m = manager().await;
+    // Boa answers any call on a non-function with a bare "not a callable
+    // function" — no value, no call site. That is the message that sent the
+    // model round in circles before falling back to a Node builtin, so the
+    // dispatch path must carry the explanation with it.
+    let (is_error, out) = exec_raw(
+        &m,
+        r#"
+        import { shell } from "developer";
+        const result = shell({ command: "echo hi" });
+        record_result(result.no_such_method());
+        "#,
+    )
+    .await;
+
+    assert!(
+        is_error,
+        "calling a non-function must be an error, got: {out}"
+    );
+    assert!(
+        out.contains("not a callable function"),
+        "the engine's own message must survive, got: {out}"
+    );
+    assert!(
+        out.contains("parsed object when the tool's result is JSON"),
+        "the opaque engine error must carry its explanation, got: {out}"
+    );
+    assert!(
+        out.contains("JSON.stringify"),
+        "must name the recovery, got: {out}"
     );
 }

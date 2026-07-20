@@ -53,6 +53,17 @@ pub const EXPIRED_RESPONSE: &str = "The permission prompt for this tool call exp
     user answered it, so the tool was NOT run. The user is likely away. Do not silently retry the \
     same call — summarize what you were about to do and stop.";
 
+/// PAR-04: the result recorded for a tool that was still running when the user
+/// cancelled the turn, so its slot in the batch is never left empty.
+///
+/// Cancellation breaks the batch execution loop immediately, abandoning any tool
+/// that has not yet returned. Without this backfill the post-batch loop persists
+/// those requests as `tool_use` blocks with no `tool_result`, and a transcript
+/// carrying an unmatched `tool_use` is one every provider rejects on replay.
+pub const CANCELLED_MID_RUN_RESPONSE: &str = "The user cancelled this turn while the tool call \
+    was still running, so it was interrupted and produced no result. It may have partially \
+    completed. Do not assume it succeeded, and do not silently retry it.";
+
 pub const CANCELLED_RESPONSE: &str = "The user cancelled this turn before deciding on this tool \
     call, so the tool was NOT run.";
 

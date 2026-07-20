@@ -1,0 +1,9 @@
+gene,log2FoldChange,negLog10P
+TP53,2.4,6.1
+MYC,-2.1,5.2
+EGFR,1.8,4.0
+GAPDH,0.05,0.2
+ACTB,-0.1,0.3
+BRCA1,1.2,3.1
+PTEN,-1.6,4.8
+KRAS,2.9,7.2

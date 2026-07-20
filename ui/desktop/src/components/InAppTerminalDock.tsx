@@ -33,7 +33,16 @@ type ProposedDimensions = {
   rows: number;
 };
 
-export const MAX_TERMINAL_PANES = 8;
+/**
+ * How many pane tabs ONE dock may hold.
+ *
+ * A comfort rail for the tab strip (which scrolls), not a resource limit — the
+ * real rail is per WINDOW and lives in terminalSessionRegistry.ts. This was 8,
+ * which collided with the old per-window cap of 8: three chat tabs with three
+ * panes each asked for nine shells, the ninth was refused by the main process,
+ * and the user got a dead pane instead of a disabled "+".
+ */
+export const MAX_TERMINAL_PANES = 32;
 
 function getTerminalSize(fitAddon: FitAddon): ProposedDimensions {
   const proposed = (

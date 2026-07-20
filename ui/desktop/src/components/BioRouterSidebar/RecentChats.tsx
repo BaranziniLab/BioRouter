@@ -263,14 +263,6 @@ export default function RecentChats({
   onViewAll,
 }: RecentChatsProps) {
   const groups = useMemo(() => groupRecentChatsByDate(sessions), [sessions]);
-  // The badge counts chats touched in the last 7 days, not the number of rows
-  // loaded into the buffer (which is a paging artefact with no meaning to the
-  // user). Derived from the loaded sessions: they arrive newest-first, so every
-  // past-week chat is present unless a single week holds more than the page size.
-  const pastWeekCount = useMemo(() => {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return sessions.reduce((n, session) => (sessionActivityTime(session) >= cutoff ? n + 1 : n), 0);
-  }, [sessions]);
   const [isExpanded, setIsExpanded] = useState(readStoredRecentsExpanded);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -324,28 +316,6 @@ export default function RecentChats({
             }`}
           />
           <span>Recents</span>
-          {sessions.length > 0 && (
-            // The past-7-day count, shown whether or not the list is expanded —
-            // it is a live metric now ("you've had N chats this week"), not just
-            // a stand-in for the hidden rows. --font-sans at 11px (§3.2), the
-            // same as its own label: a badge does not earn mono (you do not read
-            // a count character by character, and it is alone in a pill with no
-            // column of digits to keep aligned). normal-case/tracking-normal
-            // undo the uppercase + tracking the section header sets.
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  data-testid="recents-week-count"
-                  className="rounded-full bg-sidebar-active px-1.5 py-px text-[11px] font-semibold normal-case tracking-normal text-text-subtle"
-                >
-                  {pastWeekCount}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {pastWeekCount === 1 ? '1 chat' : `${pastWeekCount} chats`} in the past 7 days
-              </TooltipContent>
-            </Tooltip>
-          )}
         </button>
         <button
           type="button"

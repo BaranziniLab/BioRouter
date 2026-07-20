@@ -3729,7 +3729,35 @@ impl Agent {
                                     // (request_id, tool_response, error) captured for PostToolUse hooks
                                     let mut post_tool_results: Vec<(String, Option<Value>, Option<String>)> = Vec::new();
 
-                                    while let Some((request_id, item)) = combined.next().await {
+                                    // The cancel token must be raced against the batch
+                                    // stream, not merely checked after it yields. Every
+                                    // tool in the batch can be slow, and `combined.next()`
+                                    // parks until one of them returns — so a check placed
+                                    // only after the await cannot observe a cancel until
+                                    // some tool finishes, making a cancelled turn wait out
+                                    // its slowest call (a 6s child kept a cancelled turn
+                                    // alive for the full 6s). Selecting on the token lets
+                                    // the loop EXIT at the instant the cancel lands instead
+                                    // of blocking on the slowest call; the in-flight tool
+                                    // futures live in `combined`, a local that is not
+                                    // dropped until the end of this block, so they are torn
+                                    // down there rather than literally at the cancel.
+                                    // `StreamExt::next` is cancel-safe, so losing the race
+                                    // never drops an item that had already resolved.
+                                    loop {
+                                        let next_item = tokio::select! {
+                                            biased;
+                                            _ = async {
+                                                match cancel_token.as_ref() {
+                                                    Some(token) => token.cancelled().await,
+                                                    None => std::future::pending::<()>().await,
+                                                }
+                                            } => None,
+                                            item = combined.next() => item,
+                                        };
+                                        let Some((request_id, item)) = next_item else {
+                                            break;
+                                        };
                                         if is_token_cancelled(&cancel_token) {
                                             break;
                                         }
@@ -3776,6 +3804,57 @@ impl Agent {
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
                                             }
+                                        }
+                                    }
+
+                                    // PAR-04: cancellation breaks the loop above the
+                                    // instant the token trips, abandoning every tool that
+                                    // had not yet returned. Their response slots are still
+                                    // the empty placeholders allocated up front, and the
+                                    // post-batch persistence loop below writes a `tool_use`
+                                    // for each request unconditionally — so without this
+                                    // backfill a cancelled batch persists `tool_use` blocks
+                                    // with no matching `tool_result`, which every provider
+                                    // rejects when the session is replayed.
+                                    //
+                                    // Fill every still-empty slot with an explicit
+                                    // "cancelled" result, exactly as chat mode does for the
+                                    // calls it skips. A slot that already holds a response
+                                    // (the tools that finished before the cancel) is left
+                                    // untouched, so no completed result is overwritten.
+                                    // Covers frontend tools too: the persistence loop below
+                                    // writes a `tool_use` for those as well, and a cancel can
+                                    // land while one is still awaiting its client reply.
+                                    if is_token_cancelled(&cancel_token) {
+                                        for request in frontend_requests.iter().chain(remaining_requests.iter()) {
+                                            let Some(response_msg) =
+                                                request_to_response_map.get(&request.id)
+                                            else {
+                                                continue;
+                                            };
+                                            let mut response = response_msg.lock().await;
+                                            let already_answered = response.content.iter().any(|c| {
+                                                matches!(
+                                                    c,
+                                                    MessageContent::ToolResponse(r)
+                                                        if r.id == request.id
+                                                )
+                                            });
+                                            if already_answered {
+                                                continue;
+                                            }
+                                            *response = response.clone().with_tool_response_with_metadata(
+                                                request.id.clone(),
+                                                Ok(CallToolResult {
+                                                    content: vec![Content::text(
+                                                        super::tool_execution::CANCELLED_MID_RUN_RESPONSE,
+                                                    )],
+                                                    structured_content: None,
+                                                    is_error: Some(true),
+                                                    meta: None,
+                                                }),
+                                                request.metadata.as_ref(),
+                                            );
                                         }
                                     }
 

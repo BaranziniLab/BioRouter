@@ -24,7 +24,17 @@ export const SEMANTIC_TOKENS = [
   'text-on-accent',
   'accent-bar',
   // surfaces
+  //
+  // `background-app` is the WINDOW ground (what `body` paints, behind
+  // everything). `background-canvas` is the MAIN PANEL ground — the page the
+  // conversation, the hub and every top-level view are drawn on, and the
+  // surface the sidebar deliberately steps away from. They are separate
+  // because the families disagree about whether the page is pure white:
+  // Parchment's canvas carries the warm tint while its window ground is white,
+  // and Parchment dark inverts the ladder entirely (canvas lighter than cards).
+  // Collapsing the two would force one family's ladder onto the others.
   'background-app',
+  'background-canvas',
   'background-default',
   'background-card',
   'background-muted',

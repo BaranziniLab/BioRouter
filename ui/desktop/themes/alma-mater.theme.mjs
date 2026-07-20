@@ -29,6 +29,9 @@ export default {
       'text-on-accent': '#ffffff',
       'accent-bar': '#16a0ac',
       'background-app': '#ffffff',
+      // White page, grey sidebar — the two-tone canvas of the design mockups
+      // (tokens doc §5a). The canvas is NOT the grey `background-muted`.
+      'background-canvas': '#ffffff',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
       'background-muted': '#f2f3f4',
@@ -165,6 +168,10 @@ export default {
       'text-on-accent': '#052049',
       'accent-bar': '#60d0da',
       'background-app': '#04142e',
+      // Alma Mater dark runs a LIGHTER canvas than its cards: the navy page
+      // lifts and cards recess into it. This is the shipped, user-preferred
+      // appearance and is pinned — do not "correct" it down to `background-app`.
+      'background-canvas': '#0d2a50',
       'background-default': '#08213f',
       'background-card': '#08213f',
       'background-muted': '#0d2a50',

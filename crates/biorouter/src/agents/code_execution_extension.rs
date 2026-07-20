@@ -6,9 +6,11 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::context::HostHooks;
-use boa_engine::module::{MapModuleLoader, Module, SyntheticModuleInitializer};
+use boa_engine::module::{Module, ModuleLoader, Referrer, SyntheticModuleInitializer};
 use boa_engine::realm::Realm;
-use boa_engine::{js_string, Context, JsNativeError, JsString, JsValue, NativeFunction, Source};
+use boa_engine::{
+    js_string, Context, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
+};
 use indoc::indoc;
 use regex::Regex;
 use rmcp::model::{
@@ -441,6 +443,164 @@ fn create_server_module(
     )
 }
 
+/// Boa's message for calling a non-callable value. It names neither the value
+/// nor the call site, so on its own it is a dead end for the model.
+const BOA_NOT_CALLABLE: &str = "not a callable function";
+
+/// Attach a recovery hint to JS engine errors whose own text is too opaque to act on.
+///
+/// The dominant cause of `not a callable function` in real sessions is a string
+/// method invoked on a tool result that came back as parsed JSON — tool results
+/// are JSON-parsed when they parse, so `shell({…}).trim()` fails the moment the
+/// tool answers with an object instead of plain text. Boa reports only that
+/// *something* was not callable, which sent the model round in circles (observed:
+/// three import forms retried, then a fallback to `"fs"`). The hint names the
+/// likely cause and the check that resolves it.
+fn annotate_opaque_js_error(message: &str) -> String {
+    if message.contains(BOA_NOT_CALLABLE) {
+        format!(
+            "{message} — you called something that is not a function. A tool call \
+             returns a parsed object when the tool's result is JSON, and a string \
+             otherwise, so string methods such as .trim()/.split() fail on a JSON \
+             result. Inspect the shape first (record_result(value)) or convert it \
+             with JSON.stringify(value)."
+        )
+    } else {
+        message.to_string()
+    }
+}
+
+/// Module loader for the sandbox.
+///
+/// Specifiers are extension (server) names, matched **verbatim** — there is no
+/// filesystem behind this loader and no path semantics, so `boa`'s own
+/// [`MapModuleLoader`](boa_engine::module::MapModuleLoader) (which resolves keys
+/// as `PathBuf`s) is deliberately not used.
+///
+/// Its reason to exist is the miss path. `MapModuleLoader` answers an unknown
+/// specifier with a bare `TypeError: Module could not be found.` — it names
+/// neither the module that failed nor the ones that would have worked, so a model
+/// that guessed `"fs"` has nothing to correct against and guesses again. This
+/// loader answers with the failing name, the exact importable set, and the
+/// correct primitive for the guess it most likely made.
+#[derive(Debug, Default)]
+struct ToolModuleLoader {
+    modules: std::cell::RefCell<BTreeMap<String, Module>>,
+}
+
+/// Key the user's own script is registered under. Excluded from the "available
+/// modules" list in errors — it is an implementation detail, not something to import.
+const MAIN_MODULE_KEY: &str = "__main__";
+
+/// Standard-library specifiers a model reaches for out of Node/browser habit,
+/// none of which exist here. Named explicitly in the error so the correction is
+/// unambiguous rather than a guess at what "available modules" implies.
+const NON_EXISTENT_STDLIB_MODULES: &[&str] = &[
+    "fs",
+    "fs/promises",
+    "node:fs",
+    "path",
+    "node:path",
+    "os",
+    "node:os",
+    "child_process",
+    "node:child_process",
+    "http",
+    "https",
+    "util",
+    "crypto",
+    "process",
+];
+
+impl ToolModuleLoader {
+    fn insert(&self, specifier: impl Into<String>, module: Module) {
+        self.modules.borrow_mut().insert(specifier.into(), module);
+    }
+
+    /// Importable module names, sorted, excluding the user's own script.
+    fn available(&self) -> Vec<String> {
+        self.modules
+            .borrow()
+            .keys()
+            .filter(|name| name.as_str() != MAIN_MODULE_KEY)
+            .cloned()
+            .collect()
+    }
+
+    fn not_found_error(&self, specifier: &str) -> JsError {
+        JsError::from_native(
+            JsNativeError::typ()
+                .with_message(module_not_found_message(specifier, &self.available())),
+        )
+    }
+}
+
+/// Build the actionable "module not found" message.
+///
+/// Kept free-standing so the exact wording is unit-testable without standing up a
+/// JS context.
+fn module_not_found_message(specifier: &str, available: &[String]) -> String {
+    let mut message = format!("Module \"{specifier}\" could not be found.");
+
+    // A case-only miss ("Developer") is a different mistake from an invented name
+    // and deserves a different correction, so check for it first.
+    if let Some(matched) = available
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(specifier))
+    {
+        message.push_str(&format!(
+            " Did you mean \"{matched}\"? Module names are case-sensitive."
+        ));
+    } else if NON_EXISTENT_STDLIB_MODULES
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(specifier))
+    {
+        message.push_str(
+            " This sandbox has no Node.js or browser standard library, so there is no \
+             \"fs\", \"path\", \"os\", \"child_process\", \"http\", or \"fetch\".",
+        );
+        // Only point at `developer` when it is actually importable here. The
+        // two extensions are independently toggleable — code_execution is
+        // force-injected as a platform extension while developer is an ordinary
+        // one the user can switch off — so recommending it unconditionally can
+        // send the model straight into a second "module not found" for the very
+        // module we told it to use, which is the retry loop this message exists
+        // to break.
+        if available.iter().any(|name| name == "developer") {
+            message.push_str(
+                " For filesystem and command work import from \"developer\" instead: \
+                 import { shell, text_editor } from \"developer\";",
+            );
+        }
+    }
+
+    if available.is_empty() {
+        message.push_str(" No modules are importable in this session.");
+    } else {
+        message.push_str(&format!(
+            " Importable modules are exactly: {} — nothing else can be imported. \
+             Call search_modules to find which one holds the tool you need, or \
+             read_module(\"<module>\") to list its tools.",
+            available.join(", ")
+        ));
+    }
+
+    message
+}
+
+impl ModuleLoader for ToolModuleLoader {
+    async fn load_imported_module(
+        self: Rc<Self>,
+        _referrer: Referrer,
+        specifier: JsString,
+        _context: &std::cell::RefCell<&mut Context>,
+    ) -> JsResult<Module> {
+        let name = specifier.to_std_string_escaped();
+        let found = self.modules.borrow().get(&name).cloned();
+        found.ok_or_else(|| self.not_found_error(&name))
+    }
+}
+
 fn parse_result_to_js(result: &str, ctx: &mut Context) -> JsValue {
     serde_json::from_str::<serde_json::Value>(result)
         .ok()
@@ -568,7 +728,7 @@ fn run_js_module(
 }
 
 fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String> {
-    let loader = Rc::new(MapModuleLoader::new());
+    let loader = Rc::new(ToolModuleLoader::default());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
         .host_hooks(Rc::new(SandboxHooks))
@@ -614,7 +774,7 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
 
     let user_module = Module::parse(Source::from_bytes(code), None, &mut ctx)
         .map_err(|e| format!("Parse error: {e}"))?;
-    loader.insert("__main__", user_module.clone());
+    loader.insert(MAIN_MODULE_KEY, user_module.clone());
 
     let promise = user_module.load_link_evaluate(&mut ctx);
     ctx.run_jobs()
@@ -633,7 +793,10 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
                 Ok(result)
             }
         }
-        PromiseState::Rejected(err) => Err(format!("Module error: {}", err.display())),
+        PromiseState::Rejected(err) => Err(format!(
+            "Module error: {}",
+            annotate_opaque_js_error(&err.display().to_string())
+        )),
         PromiseState::Pending => Err("Module evaluation did not complete".to_string()),
     }
 }
@@ -1378,7 +1541,17 @@ impl McpClientTrait for CodeExecutionClient {
                         - Import: import { tool1, tool2 } from "serverName";
                         - Call: toolName({ param1: value, param2: value })
                         - Result: record_result(value) - call this to return a value from the script
-                        - All calls are synchronous, return strings
+                        - All calls are synchronous.
+                        - A call returns a PARSED OBJECT when the tool's result is JSON, and a string
+                          otherwise. Do not assume a string: `.trim()`/`.split()` on a JSON result throw
+                          "not a callable function". Check with typeof, or use JSON.stringify(value).
+
+                        MODULES:
+                        - Only the modules listed in "Modules:" above are importable — these and only these.
+                        - There is NO Node.js or browser standard library here: no "fs", "path", "os",
+                          "child_process", "http", "https", "crypto", "process", and no fetch/require.
+                          For files and commands import from "developer": import { shell, text_editor } from "developer";
+                        - Module names are case-sensitive and are the extension names, not package names.
 
                         MULTILINE SCRIPT ARGUMENTS:
                         - Use String.raw`...` when passing shell, Ruby, PowerShell, or other source text.
@@ -1526,6 +1699,11 @@ impl McpClientTrait for CodeExecutionClient {
         Some(format!(
             indoc::indoc! {r#"
                 Modules: {}
+
+                Those are the only importable modules — there is no Node.js or browser standard library
+                (no "fs", "path", "os", "child_process", "http"); use `import {{ shell, text_editor }} from "developer"`
+                for files and commands. Names are case-sensitive.
+                A tool call returns a parsed object when its result is JSON, a string otherwise.
 
                 For an unfamiliar task, call search_modules once. Its results contain complete imports and signatures.
                 Use read_module only when you know the module but the needed tool was not in the search results.
@@ -2216,6 +2394,205 @@ mod tests {
     #[test_case("shell({}).content", &[("shell", "plain text")], "undefined"; "plain_text_no_property")]
     fn test_tool_result(code: &str, tools: &[(&str, &str)], expected: &str) {
         assert_eq!(eval_with_tools(code, tools), expected);
+    }
+
+    fn one_tool(server: &str, tool: &str) -> Vec<ToolInfo> {
+        vec![ToolInfo {
+            server_name: server.to_string(),
+            tool_name: tool.to_string(),
+            full_name: format!("{server}__{tool}"),
+            description: "A tool".to_string(),
+            params: vec![],
+            return_type: "string".to_string(),
+        }]
+    }
+
+    /// An unknown module specifier must name the module that failed AND the ones
+    /// that would have worked. `MapModuleLoader`'s bare "Module could not be
+    /// found." gave the model nothing to correct against, so it guessed again —
+    /// the observed `fs` → `node:child_process` escalation.
+    #[test]
+    fn unknown_module_import_names_the_module_and_lists_the_available_ones() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let error = run_js_module(r#"import fs from "fs"; record_result(1);"#, &tools, tx)
+            .expect_err("importing a non-existent module must fail");
+
+        assert!(
+            error.contains(r#"Module "fs" could not be found"#),
+            "error must name the failing module, got: {error}"
+        );
+        assert!(
+            error.contains("Importable modules are exactly: developer"),
+            "error must list the importable modules, got: {error}"
+        );
+        assert!(
+            error.contains("search_modules"),
+            "error must point at the recovery path, got: {error}"
+        );
+    }
+
+    /// Node/browser builtins are the guesses that actually occur in the wild, so
+    /// they get a named correction rather than a bare inventory.
+    #[test]
+    fn node_builtin_import_is_corrected_towards_the_developer_module() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let error = run_js_module(
+            r#"import { spawnSync } from "node:child_process"; record_result(1);"#,
+            &tools,
+            tx,
+        )
+        .expect_err("node builtins are not importable");
+
+        assert!(
+            error.contains("no Node.js or browser standard library"),
+            "error must say the stdlib is absent, got: {error}"
+        );
+        assert!(
+            error.contains(r#"import { shell, text_editor } from "developer""#),
+            "error must show the correct primitive, got: {error}"
+        );
+    }
+
+    /// A case-only miss is a different mistake from an invented name.
+    #[test]
+    fn case_mismatched_module_import_suggests_the_real_name() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let error = run_js_module(r#"import { shell } from "Developer";"#, &tools, tx)
+            .expect_err("module names are case-sensitive");
+
+        assert!(
+            error.contains(r#"Did you mean "developer"?"#),
+            "error must suggest the correctly-cased name, got: {error}"
+        );
+    }
+
+    /// `not a callable function` is Boa's message for calling any non-function,
+    /// and it names neither the value nor the call site. In real sessions it came
+    /// from string methods invoked on a JSON tool result; without the hint the
+    /// model has nothing to act on.
+    #[test]
+    fn calling_a_string_method_on_a_json_tool_result_explains_itself() {
+        let tools = one_tool("developer", "shell");
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToolCallRequest>();
+
+        // Answer the sandbox's tool call with JSON, which is parsed into an object.
+        std::thread::spawn(move || {
+            while let Some((_name, _args, responder)) = rx.blocking_recv() {
+                let _ = responder.send(Ok(r#"{"output":"a\nb"}"#.to_string()));
+            }
+        });
+
+        let error = run_js_module(
+            r#"import { shell } from "developer"; record_result(shell({}).trim());"#,
+            &tools,
+            tx,
+        )
+        .expect_err("string methods do not exist on a parsed JSON result");
+
+        assert!(
+            error.contains(BOA_NOT_CALLABLE),
+            "the engine's own message must survive, got: {error}"
+        );
+        assert!(
+            error.contains("parsed object when the tool's result is JSON"),
+            "error must explain why the value was not callable, got: {error}"
+        );
+        assert!(
+            error.contains("JSON.stringify"),
+            "error must name the recovery, got: {error}"
+        );
+    }
+
+    /// Errors the engine already describes well must pass through untouched.
+    #[test]
+    fn unrelated_js_errors_are_not_annotated() {
+        let message = "TypeError: cannot read properties of undefined";
+        assert_eq!(annotate_opaque_js_error(message), message);
+    }
+
+    /// The message is assembled without a JS context so its exact wording is
+    /// pinned independently of the engine.
+    #[test]
+    fn module_not_found_message_lists_every_available_module() {
+        let available = vec!["computercontroller".to_string(), "developer".to_string()];
+        let message = module_not_found_message("path", &available);
+
+        assert!(message.starts_with(r#"Module "path" could not be found."#));
+        assert!(message.contains("Importable modules are exactly: computercontroller, developer"));
+
+        let empty = module_not_found_message("developer", &[]);
+        assert!(
+            empty.contains("No modules are importable in this session."),
+            "the no-modules case must say so rather than print an empty list, got: {empty}"
+        );
+    }
+
+    /// Redirecting a stdlib miss to "developer" is only useful advice when
+    /// "developer" is importable. code_execution is force-injected as a platform
+    /// extension while developer is an ordinary one the user can switch off, so
+    /// the two can genuinely come apart — and telling the model to import a
+    /// module that will also miss is the retry loop this message exists to break.
+    #[test]
+    fn the_developer_redirect_is_only_offered_when_developer_is_importable() {
+        let with_developer =
+            module_not_found_message("fs", &["developer".to_string(), "memory".to_string()]);
+        assert!(
+            with_developer.contains(r#"import { shell, text_editor } from "developer""#),
+            "the redirect must still be offered when developer is loaded, got: {with_developer}"
+        );
+
+        let without_developer = module_not_found_message("fs", &["memory".to_string()]);
+        assert!(
+            without_developer.contains("no Node.js or browser standard library"),
+            "the diagnosis of WHY it missed is still useful, got: {without_developer}"
+        );
+        assert!(
+            !without_developer.contains(r#"from "developer""#),
+            "must not send the model at a module it cannot import, got: {without_developer}"
+        );
+    }
+
+    /// A registered module must still resolve — the improved miss path must not
+    /// have broken the hit path.
+    #[test]
+    fn a_registered_module_still_resolves() {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import { shell } from "developer"; record_result(typeof shell);"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(result.as_deref(), Ok("\"function\""), "got {result:?}");
+    }
+
+    /// Every documented import form must yield a *callable* value. The older
+    /// namespace test only asserted `run_js_module` returned `Ok`, which
+    /// `typeof` satisfies even when the binding is not a function — so a
+    /// "not a callable function" regression could pass it.
+    #[test_case(r#"import { shell } from "developer"; record_result(typeof shell);"#; "named")]
+    #[test_case(r#"import * as developer from "developer"; record_result(typeof developer.shell);"#; "namespace")]
+    #[test_case(r#"import { developer } from "developer"; record_result(typeof developer.shell);"#; "server_named")]
+    #[test_case(r#"import * as developer from "developer"; record_result(typeof developer["shell"]);"#; "bracket")]
+    fn every_import_form_yields_a_callable_tool(code: &str) {
+        let tools = one_tool("developer", "shell");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(code, &tools, tx);
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function\""),
+            "import form did not produce a callable tool: {result:?}"
+        );
     }
 
     #[test]

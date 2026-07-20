@@ -890,7 +890,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <div className="space-y-8">
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
-              <div className="sticky top-0 z-10 bg-background-muted pt-2 pb-2">
+              <div className="sticky top-0 z-10 bg-background-canvas pt-2 pb-2">
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
                   {group.label}
                 </h2>

@@ -169,9 +169,29 @@ These are exactly the values that used to be typed in two-to-four places and dri
 and Roche Limit paint `--background-muted`. Assuming they agreed would silently re-ground two
 terminals under ANSI palettes tuned for a different surface.
 
+### `--background-canvas` is not `--background-app`
+
+Two page-ish tokens, deliberately:
+
+| Token | Paints | Who reads it |
+|---|---|---|
+| `--background-app` | the **window** ground, behind everything | `body` |
+| `--background-canvas` | the **main panel** — conversation, hub, every top-level view | `MainPanelLayout`, `Hub`, `BaseChat`, `App` root |
+
+They cannot be collapsed because the families disagree about the ladder.
+Parchment's canvas carries the warm tint (`#faf8f3`) while its window ground is
+pure white; Parchment dark and Alma Mater dark **invert** it, putting the canvas
+*above* the cards. Alma Mater and Roche Limit light both want a pure-white canvas
+against a grey sidebar. One token would force one family's ladder onto the others.
+
+The bug this fixed: the main panel painted `--background-muted`, so the whole
+canvas read grey and the sidebar/canvas two-tone collapsed. `--background-canvas`
+is in `TEXT_GROUNDS` in `check-contrast.mjs`, so body text is now measured against
+the surface it actually lands on (252 assertions, up from 228).
+
 ### The contract
 
-`scripts/lib/theme-contract.mjs` is the written-down answer to "what must a theme define": 60
+`scripts/lib/theme-contract.mjs` is the written-down answer to "what must a theme define": 62
 semantic tokens × 2 modes, 27 raw-palette remaps, 10 syntax stops, 19 terminal stops, 3 splash
 values. A definition missing any of them **cannot be emitted** — the generator validates first, then
 contrast-checks the result, and refuses to write on failure.
