@@ -983,6 +983,10 @@ interface ChatWindowOptions {
   initialBounds?: Rectangle;
   show?: boolean;
   manageWindowState?: boolean;
+  /** Canonical title for the resumed session, carried in the URL so the tab is
+   *  born with the real name (e.g. a diverge branch name) instead of the
+   *  "New Session" placeholder it would otherwise show until the session loads. */
+  resumeSessionTitle?: string;
 }
 
 const createChat = async (
@@ -1313,6 +1317,11 @@ const createChat = async (
   let searchParams = new URLSearchParams();
   if (resumeSessionId) {
     searchParams.set('resumeSessionId', resumeSessionId);
+    // A fresh window has no react-router location.state, so the tab title must
+    // ride the URL. useChatGroupsUrlSync reads it as the opening tab's title.
+    if (windowOptions?.resumeSessionTitle) {
+      searchParams.set('resumeSessionTitle', windowOptions.resumeSessionTitle);
+    }
     if (appPath === '/') {
       appPath = '/pair';
     }
@@ -1445,7 +1454,8 @@ function branchWindowBounds(anchor?: BrowserWindow | null): Rectangle | undefine
 async function openDivergedChatWindow(
   sessionId: string,
   dir?: string,
-  sourceWindow?: BrowserWindow | null
+  sourceWindow?: BrowserWindow | null,
+  title?: string
 ): Promise<void> {
   const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
   const bounds = branchWindowBounds(sourceWindow ?? anchor);
@@ -1460,7 +1470,10 @@ async function openDivergedChatWindow(
     undefined,
     undefined,
     undefined,
-    bounds ? { initialBounds: bounds, show: false, manageWindowState: false } : undefined
+    {
+      ...(bounds ? { initialBounds: bounds, show: false, manageWindowState: false } : {}),
+      ...(title ? { resumeSessionTitle: title } : {}),
+    }
   );
   if (win) {
     win.show();
@@ -4358,18 +4371,21 @@ async function appMain() {
     }
   );
 
-  ipcMain.on('create-diverged-chat-window', async (event, dir, resumeSessionId) => {
-    if (!resumeSessionId) {
-      log.error('[Main] create-diverged-chat-window missing session id');
-      return;
+  ipcMain.on(
+    'create-diverged-chat-window',
+    async (event, dir, resumeSessionId, resumeSessionTitle) => {
+      if (!resumeSessionId) {
+        log.error('[Main] create-diverged-chat-window missing session id');
+        return;
+      }
+      if (!dir?.trim()) {
+        const recentDirs = loadRecentDirs();
+        dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
+      }
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      await openDivergedChatWindow(resumeSessionId, dir, senderWindow, resumeSessionTitle);
     }
-    if (!dir?.trim()) {
-      const recentDirs = loadRecentDirs();
-      dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
-    }
-    const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    await openDivergedChatWindow(resumeSessionId, dir, senderWindow);
-  });
+  );
 
   ipcMain.on('close-window', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);

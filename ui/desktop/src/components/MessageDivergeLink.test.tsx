@@ -11,6 +11,7 @@ const mockToastError = vi.fn();
 vi.mock('../toasts', () => ({
   toastError: (...args: unknown[]) => mockToastError(...args),
 }));
+vi.mock('../utils/sessionListCache', () => ({ notifySessionListChanged: vi.fn() }));
 
 // Stub the Electron bridge used to open a new window.
 const mockCreateChatWindow = vi.fn();
@@ -27,7 +28,7 @@ beforeEach(() => {
 describe('MessageDivergeLink', () => {
   it('opens a new desktop window for the branch', async () => {
     mockDivergeSession.mockResolvedValue({
-      data: { sessionId: '20260622_9', workingDir: '/home/u/proj' },
+      data: { sessionId: '20260622_9', workingDir: '/home/u/proj', name: 'Thread (branch 1)' },
     });
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
@@ -40,8 +41,13 @@ describe('MessageDivergeLink', () => {
         throwOnError: true,
       });
     });
-    // New window opened with the diverged session id, in pair view.
-    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith('/home/u/proj', '20260622_9');
+    // New window opened with the diverged session id and its canonical branch
+    // name, in pair view.
+    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith(
+      '/home/u/proj',
+      '20260622_9',
+      'Thread (branch 1)'
+    );
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
   });
 

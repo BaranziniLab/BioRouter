@@ -9,7 +9,11 @@ import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
-import { getCachedSessionList, refreshSessionList } from '../../utils/sessionListCache';
+import {
+  getCachedSessionList,
+  refreshSessionList,
+  subscribeSessionList,
+} from '../../utils/sessionListCache';
 import {
   cacheHomeRecentSessions,
   getCachedHomeActivity,
@@ -98,6 +102,16 @@ export function SessionInsights() {
     loadActivity();
     loadRecentSessions();
   }, [initialActivity]);
+
+  // Keep the Home recents live: a rename (name channel) or a create / diverge /
+  // delete (list channel) mutates the shared cache and emits here, so the Home
+  // list matches the sidebar Recents and the tabs without a remount.
+  useEffect(() => {
+    return subscribeSessionList(() => {
+      const cached = getCachedSessionList();
+      if (cached) setRecentSessions(cached.slice(0, RECENT_LIMIT));
+    });
+  }, []);
 
   const handleSessionClick = async (session: Session) => {
     try {

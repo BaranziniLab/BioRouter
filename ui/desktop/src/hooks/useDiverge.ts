@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { divergeSession } from '../api';
 import { toastError } from '../toasts';
+import { notifySessionListChanged } from '../utils/sessionListCache';
 
 export interface UseDivergeResult {
   /**
@@ -50,13 +51,25 @@ export function useDiverge(): UseDivergeResult {
 
         const newSessionId = response.data?.sessionId;
         const workingDir = response.data?.workingDir;
+        // The backend resolves and LOCKS the canonical branch name (e.g.
+        // "Foo (branch 1)") and hands it back here. Thread it into the new
+        // window so the branch's tab is born with the real name instead of the
+        // "New Session" placeholder — which is what made the tab name and the
+        // Recents name disagree for a diverged session.
+        const branchName = response.data?.name;
         if (!newSessionId) {
           throw new Error('Diverge did not return a new session id');
         }
 
+        // The branch is a brand-new session created purely over HTTP; it fires
+        // no `session-created` window event, and those are per-renderer anyway.
+        // Announce the membership change so every window's Recents / See-all /
+        // Home picks up the branch without waiting for an unrelated turn.
+        notifySessionListChanged();
+
         // Open a NEW focused Electron window for the branch. The current
         // window is never navigated or changed.
-        window.electron.createDivergedChatWindow(workingDir, newSessionId);
+        window.electron.createDivergedChatWindow(workingDir, newSessionId, branchName);
         return newSessionId;
       } catch (err) {
         console.error('Failed to diverge session:', err);
