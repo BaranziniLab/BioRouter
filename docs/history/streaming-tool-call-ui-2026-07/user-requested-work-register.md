@@ -47,7 +47,7 @@ Items are worked **sequentially by priority**, not silently dropped. An item lea
 | 26 | Human security review: R2-01 dynamic-path residual, MCP mutex | 07-19 | Needs decision | listed in the campaign final report |
 | 27 | Docs root still holds loose files; migrate or delete, preserving all information | 07-20 | Done | already complete on this branch — see audit below |
 | 28 | Recurring `code_execution` failure: "Module error: TypeError: Module could not be found" | 07-20 | In progress | root-cause + prompt/error engineering |
-| 29 | GitHub issue #19 — repeated message after Cmd+T/Cmd+T, Cmd+W/Cmd+W | 07-20 | In progress | reported on v1.88.3, which **predates** the fix `f1f1d6b6`; verifying the keyboard path live before closing |
+| 29 | GitHub issue #19 — repeated message after Cmd+T/Cmd+T, Cmd+W/Cmd+W | 07-20 | Open | keyboard path now gated by `9cc3d3a9` (revert-proven); **not closed** — see below |
 
 ## Audit: the 27 loose `docs/` root files (item 27)
 
@@ -66,6 +66,40 @@ which fall below the rename-similarity threshold:
 
 The root now holds exactly `README.md` and `organization.md`, as
 [organization.md](../../organization.md) §8 requires.
+
+## Issue #19: why it is gated but still open (item 29)
+
+The reporter's repro — send a message, **Cmd+T Cmd+T**, **Cmd+W Cmd+W**, message
+sent again — is the duplicate-submission defect fixed by `f1f1d6b6`, reached
+through the keyboard rather than the tab strip's buttons.
+
+**The keyboard is genuinely a different road.** Cmd+T and Cmd+W are Electron
+*menu accelerators* (`main.ts`, "New Chat" / "Close Tab"), so the keystrokes are
+consumed by the menu and never reach the DOM. They arrive as IPC, are answered at
+the app root (`App.tsx`), and hand off through `newTabRegistry` /
+`closeActiveTabRegistry` to the handlers `ChatGroupsProvider` registers. Both
+roads converge on the same reducer — which was assumed rather than proven, and is
+now pinned by `keyboardResubmitGuard.test.tsx` (`9cc3d3a9`).
+
+That gate drives the real registries through the real provider, shell and
+reducer. Reverting the `consumePending` dispatch fails 5 of its 6 cases, and its
+three-cycle case then logs **4 submissions for 1 message** — matching the 4 user
+messages measured live when the bug was first found.
+
+**Two reasons it is not closed:**
+
+1. **No released build contains the fix.** `v1.88.3` (the reported version) was
+   tagged 2026-07-18 04:38; `f1f1d6b6` landed 2026-07-18 22:06, ~17 h later.
+   `git tag --contains f1f1d6b6` is **empty** — v1.88.3 is still the newest tag,
+   so the reporter cannot resolve this by upgrading today. It ships in the next
+   release. Telling them otherwise would be wrong.
+2. **The live GUI re-verification did not run.** Every Electron launch stalled
+   immediately after the `biorouter://` registration log line, opening no window,
+   under a machine load average of 190-290 from concurrent agents. The stall
+   reproduced outside Playwright with a bare `electron .`, so it is environmental
+   contention, not an app defect — but it means the end-to-end check (send a
+   marked message, drive the menu items, count rows in `sessions.db`) is still
+   outstanding. Re-run it on an idle machine before closing.
 
 ## Related documentation
 
