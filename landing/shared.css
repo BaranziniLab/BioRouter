@@ -605,6 +605,16 @@ footer p + p { margin-top: 5px; }
   cursor: pointer; font-family: inherit; transition: background var(--transition); white-space: nowrap;
 }
 .news-form button:hover { background: var(--accent-hover); }
+.footer-slack-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: var(--radius);
+  background: var(--accent); color: var(--text-on-accent);
+  font-size: 13px; font-weight: 600; text-decoration: none;
+  transition: background var(--transition), transform var(--transition);
+}
+.footer-slack-btn:hover { background: var(--accent-hover); }
+.footer-slack-btn:active { transform: translateY(1px); }
+.footer-slack-btn svg { width: 16px; height: 16px; }
 .footer-note { font-size: 11.5px; color: var(--text-3); margin-top: 10px; line-height: 1.5; }
 .footer-note a { color: var(--accent); text-decoration: none; }
 .footer-bottom {
