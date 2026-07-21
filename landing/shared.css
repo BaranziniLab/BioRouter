@@ -495,3 +495,144 @@ footer p + p { margin-top: 5px; }
   max-width: 720px;
 }
 .release-video .eyebrow { margin-bottom: 12px; }
+
+/* ──────────────────────────────────────────────────────────────
+   Dark theme — Parchment dark (design.md §3.1). Selected by a
+   `dark` class on <html>, set by theme.js before paint.
+   ────────────────────────────────────────────────────────────── */
+:root.dark {
+  --bg:          #14100a;   /* page ground */
+  --bg-2:        #1e1811;   /* card / panel */
+  --bg-3:        #2a2318;   /* hover */
+  --bg-4:        #3a3122;   /* strong fill */
+  --sidebar:     #1a150e;
+  --border:      rgba(240,230,210,0.11);
+  --border-2:    rgba(240,230,210,0.20);
+
+  --text:        #f4f0e6;
+  --text-2:      #c3baa6;
+  --text-3:      #9c937b;
+  --text-on-accent: #201a12;
+
+  --accent:      #e8895f;   /* coral-400, the dark-mode accent (7.7:1 on canvas) */
+  --accent-hover:#f0a07f;
+  --accent-bar:  #e8895f;
+  --accent-soft: rgba(232,137,95,0.15);
+  --accent-soft2:rgba(232,137,95,0.24);
+
+  --ucsf:        #8fb2df;   /* navy is invisible on dark, use a light steel blue */
+
+  --shadow-float:0 8px 24px rgba(0,0,0,.5), 0 0 1px rgba(0,0,0,.6);
+  --shadow-lg:   0 24px 60px -20px rgba(0,0,0,.66), 0 10px 28px -22px rgba(0,0,0,.5);
+}
+:root.dark body { -webkit-font-smoothing: antialiased; }
+/* nav chrome carries a hardcoded translucent light; give dark its own */
+:root.dark #navbar { background: rgba(18,14,9,0.82); }
+:root.dark .mobile-menu { background: var(--bg); }
+/* keep SVG figures on a light plate so diagrams read the same in both themes */
+:root.dark .doc-figure { background: #f2ede2; border-color: rgba(0,0,0,0.12); }
+:root.dark .doc-figure figcaption { color: #6e6760; }
+/* the product deck's warm workspace ground, dark variant */
+:root.dark .deck--live .deck-sticky {
+  background:
+    radial-gradient(85% 60% at 27% 30%, rgba(232,137,95,0.06), transparent 62%),
+    radial-gradient(80% 70% at 100% 100%, rgba(120,150,210,0.05), transparent 55%),
+    #17130c;
+}
+/* app-window mockups: fix the few hardcoded light values under dark */
+:root.dark .bw { border-color: rgba(240,230,210,0.12); }
+:root.dark .bw-bubble,
+:root.dark .bw-digest,
+:root.dark .bw-btn.dark,
+:root.dark .bw-stop,
+:root.dark .bw-actions .a.play { background: #3a3122; color: #f4f0e6; }
+:root.dark .bw-gcanvas svg text { fill: #e8e1d2; }
+:root.dark .bw-legend {
+  background: rgba(26,21,14,0.86); color: var(--text); border-color: var(--border);
+}
+:root.dark .bw-tab.active { box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+
+/* ──────────────────────────────────────────────────────────────
+   Site footer (multi-column) + theme toggle
+   ────────────────────────────────────────────────────────────── */
+.site-footer {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 0; margin-top: 40px; text-align: left; color: var(--text-2);
+}
+.footer-inner {
+  max-width: 1080px; margin: 0 auto; padding: 52px 24px 36px;
+  display: grid; grid-template-columns: 1.5fr 2fr 1.5fr; gap: 44px;
+}
+.footer-brand { max-width: 320px; }
+.footer-logo {
+  display: inline-flex; align-items: center; gap: 9px; text-decoration: none;
+  color: var(--text); font-weight: 700; font-size: 15px; margin-bottom: 12px;
+}
+.footer-logo img { width: 24px; height: 24px; }
+.footer-brand p { font-size: 13px; line-height: 1.65; color: var(--text-2); margin-bottom: 16px; }
+.footer-social { display: flex; gap: 9px; }
+.footer-social a {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--radius);
+  background: var(--bg-3); color: var(--text-2); transition: var(--transition);
+}
+.footer-social a:hover { background: var(--bg-4); color: var(--text); }
+.footer-social svg { width: 17px; height: 17px; }
+.footer-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.footer-col h4 {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 12px;
+}
+.footer-col a {
+  display: block; font-size: 13.5px; color: var(--text-2); text-decoration: none;
+  padding: 4px 0; transition: color var(--transition);
+}
+.footer-col a:hover { color: var(--accent); }
+.footer-news h4 { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.footer-news > p { font-size: 12.5px; color: var(--text-2); margin-bottom: 12px; line-height: 1.55; }
+.news-form { display: flex; gap: 8px; }
+.news-form input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border-2); background: var(--bg-2); color: var(--text);
+  font-size: 13px; font-family: inherit;
+}
+.news-form input::placeholder { color: var(--text-3); }
+.news-form input:focus { outline: none; border-color: var(--accent); }
+.news-form button {
+  padding: 9px 16px; border-radius: var(--radius); background: var(--accent);
+  color: var(--text-on-accent); border: none; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: inherit; transition: background var(--transition); white-space: nowrap;
+}
+.news-form button:hover { background: var(--accent-hover); }
+.footer-note { font-size: 11.5px; color: var(--text-3); margin-top: 10px; line-height: 1.5; }
+.footer-note a { color: var(--accent); text-decoration: none; }
+.footer-bottom {
+  border-top: 1px solid var(--border); max-width: 1080px; margin: 0 auto;
+  padding: 18px 24px 26px; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; font-size: 12.5px; color: var(--text-3);
+}
+.footer-bottom-links { display: flex; align-items: center; gap: 16px; }
+.footer-bottom a { color: var(--text-3); text-decoration: none; }
+.footer-bottom a:hover { color: var(--accent); }
+
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius);
+  background: var(--bg-3); color: var(--text-2); border: none; cursor: pointer;
+  transition: var(--transition); flex-shrink: 0;
+}
+.theme-toggle:hover { background: var(--bg-4); color: var(--text); }
+.theme-toggle svg { width: 17px; height: 17px; }
+.theme-toggle .t-sun { display: none; }
+:root.dark .theme-toggle .t-moon { display: none; }
+:root.dark .theme-toggle .t-sun { display: inline; }
+
+@media (max-width: 860px) {
+  .footer-inner { grid-template-columns: 1fr; gap: 34px; }
+}
+@media (max-width: 560px) {
+  .footer-cols { grid-template-columns: 1fr 1fr; }
+  .footer-bottom { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .footer-brand { max-width: none; }
+}
