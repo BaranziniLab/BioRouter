@@ -19,8 +19,8 @@
     .news-list {
       display: flex; flex-direction: column;
       background: var(--bg-2);
-      border-radius: var(--radius-xl);
-      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       overflow: hidden;
       margin-bottom: 56px;
     }
@@ -111,14 +111,14 @@
     .slack-cta {
       display: flex; align-items: center; gap: 22px;
       background: var(--bg-2);
-      border-radius: var(--radius-xl);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 22px 26px 22px 24px;
-      box-shadow: var(--shadow);
       text-decoration: none; color: inherit;
       margin: 0 0 40px;
-      transition: background var(--transition), transform var(--transition), box-shadow var(--transition);
+      transition: background var(--transition), transform var(--transition), border-color var(--transition);
     }
-    .slack-cta:hover { background: var(--bg-3); transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+    .slack-cta:hover { background: var(--bg-3); transform: translateY(-1px); border-color: var(--border-2); }
     .slack-icon-wrap {
       flex-shrink: 0; width: 44px; height: 44px;
       border-radius: var(--radius);

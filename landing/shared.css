@@ -8,46 +8,57 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Surfaces — match the Biorouter Electron app */
-  --bg:          #faf8f3;   /* neutral-50, the sidebar/app surface */
-  --bg-2:        #ffffff;   /* card / panel */
-  --bg-3:        #f4f0e6;   /* neutral-100, medium hover */
-  --bg-4:        #ece5cf;   /* neutral-200, strong */
-  --border:      rgba(40,30,15,0.07);
-  --border-2:    rgba(40,30,15,0.12);
+  /* ── Surfaces — Parchment, the app's base theme (design.md §3.1) ── */
+  --bg:          #faf8f3;   /* page ground   (--background-muted) */
+  --bg-2:        #ffffff;   /* card / panel  (--background-default) */
+  --bg-3:        #f4f0e6;   /* neutral-100   hover / secondary fill */
+  --bg-4:        #e8e1d2;   /* neutral-200   strong fill / hairline */
+  --sidebar:     #f3ede1;   /* two-tone sidebar surface */
+  --border:      rgba(40,30,15,0.09);   /* hairline  (--border-subtle) */
+  --border-2:    rgba(40,30,15,0.16);   /* emphasis  (--border-strong) */
 
-  /* Text */
-  --text:        #2a2520;
-  --text-2:      #7a736c;
-  --text-3:      #b6ae93;
+  /* ── Text — AA on every warm ground (design.md §3.1) ── */
+  --text:        #2a2520;   /* --text-default */
+  --text-2:      #635c54;   /* --text-muted   (5.65:1) */
+  --text-3:      #6e6760;   /* --text-subtle  (4.78:1) */
   --text-on-accent: #ffffff;
 
-  /* Coral accent (block-teal from the app) */
-  --accent:      #cf6d47;
-  --accent-hover:#ba6240;
-  --accent-soft: rgba(207,109,71,0.10);
-  --accent-soft2:rgba(207,109,71,0.18);
+  /* ── Accent — one terracotta coral, two roles (design.md §3.1 · D-01) ──
+     coral-600 is the only value that clears AA for fills & text; the
+     brighter coral-500 is reserved for NON-TEXT bars, rails and dots. */
+  --accent:      #b85a32;   /* coral-600 — buttons, links, eyebrows (4.62:1) */
+  --accent-hover:#a44f2b;
+  --accent-bar:  #cf6d47;   /* coral-500 — bars / underlines / status dots only */
+  --accent-soft: rgba(184,90,50,0.10);
+  --accent-soft2:rgba(184,90,50,0.18);
 
-  /* UCSF navy */
+  /* UCSF navy (institutional tag) */
   --ucsf:        #052049;
   --ucsf-hover:  #083570;
 
-  /* Shape */
-  --radius:      6px;       /* buttons, inputs (matches app rounded-md) */
-  --radius-lg:   12px;
-  --radius-xl:   16px;      /* cards, dialogs (matches app rounded-xl) */
+  /* ── Shape — four radii + full (design.md §3.4 · D-04) ── */
+  --radius-sm:   6px;       /* chips, tags, inline code */
+  --radius:      8px;       /* buttons, inputs, list rows */
+  --radius-lg:   12px;      /* cards, code blocks */
+  --radius-xl:   16px;      /* modals, large panels, the composer */
 
-  /* Shadow — soft, app-style */
-  --shadow:      0 1px 3px rgba(0,0,0,0.06), 0 0 1px rgba(0,0,0,0.12);
-  --shadow-lg:   0 8px 24px rgba(32,25,15,0.10), 0 0 1px rgba(0,0,0,0.15);
+  /* ── Elevation — hairline for content; a float only for what truly
+     floats (design.md §3.5 · P1) ── */
+  --shadow:      none;                       /* content surfaces are flat */
+  --shadow-float:0 8px 24px rgba(32,25,15,.10), 0 0 1px rgba(0,0,0,.14);  /* nav / popover level */
+  --shadow-lg:   0 24px 60px -20px rgba(32,25,15,.22), 0 10px 28px -22px rgba(32,25,15,.16);  /* the floating app window */
 
-  /* Motion */
-  --transition:  0.15s cubic-bezier(0.4,0,0.2,1);
+  /* ── Motion — three durations, one ease (design.md §3.6) ── */
+  --ease-out:    cubic-bezier(.2,0,0,1);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 260ms;
+  --transition:  150ms cubic-bezier(.2,0,0,1);
 }
 
 html { scroll-behavior: smooth; }
 body {
-  font-family: Arial, 'Helvetica Neue', Helvetica, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
@@ -242,7 +253,8 @@ body {
 /* ─── Surface card (flat, soft shadow, no border) ────────────── */
 .surface {
   background: var(--bg-2);
-  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 24px 26px;
   box-shadow: var(--shadow);
 }
@@ -252,6 +264,7 @@ body {
   background: var(--bg-2);
   border-radius: var(--radius-lg); padding: 16px 20px;
   box-shadow: var(--shadow);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
 }
 .info-box h4 { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
@@ -271,13 +284,13 @@ body {
 pre, .code-block {
   background: var(--bg-3);
   border-radius: var(--radius-lg); padding: 14px 18px;
-  font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 13px; color: #3a3020;
   overflow-x: auto; margin: 14px 0;
   line-height: 1.65;
 }
 code {
-  font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 12.5px;
   background: var(--bg-3); padding: 2px 6px;
   border-radius: 4px; color: #b85c35;
@@ -288,6 +301,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 .doc-table {
   width: 100%; border-collapse: collapse; margin: 14px 0;
   background: var(--bg-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
   box-shadow: var(--shadow);
@@ -349,7 +363,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 .provider-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 28px; }
 .provider-chip {
   display: inline-flex; align-items: center; gap: 7px;
-  padding: 8px 14px; border-radius: var(--radius);
+  padding: 8px 14px; border-radius: var(--radius-sm);
   background: var(--bg-3); color: var(--text-2);
   font-size: 13px; font-weight: 600;
   transition: var(--transition);
@@ -366,7 +380,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
    buttons share a unified accent-soft look. */
 .brxt-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 12px; border-radius: var(--radius);
+  padding: 6px 12px; border-radius: var(--radius-sm);
   background: var(--accent-soft); color: var(--accent);
   text-decoration: none; font-size: 11.5px; font-weight: 700;
   white-space: nowrap;
@@ -380,7 +394,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 
 /* ─── Tags ───────────────────────────────────────────────────── */
 .tag {
-  padding: 3px 9px; border-radius: var(--radius);
+  padding: 3px 9px; border-radius: var(--radius-sm);
   font-size: 10.5px; font-weight: 600;
   background: var(--bg-3); color: var(--text-2);
   letter-spacing: 0.2px;
@@ -425,7 +439,7 @@ footer p + p { margin-top: 5px; }
   width: 100%;
   border-radius: var(--radius-xl);
   overflow: hidden;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-float);
   background: var(--bg-2);
   border: 1px solid var(--border);
   display: block;

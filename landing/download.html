@@ -25,9 +25,9 @@
     .detected-platform { padding: 32px 24px 16px; max-width: 720px; margin: 0 auto; text-align: center; }
     .detected-card {
       background: var(--bg-2);
+      border: 1px solid var(--border);
       border-radius: var(--radius-xl);
       padding: 36px 32px;
-      box-shadow: var(--shadow-lg);
     }
     .detected-card .eyebrow { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; margin-bottom: 12px; }
     .detected-card h2 { font-size: 24px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.4px; }
@@ -53,9 +53,9 @@
     .platform-table {
       width: 100%; border-collapse: collapse;
       background: var(--bg-2);
-      border-radius: var(--radius-xl);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       overflow: hidden;
-      box-shadow: var(--shadow);
     }
     .platform-table th {
       text-align: left; padding: 13px 18px;
@@ -70,7 +70,7 @@
     .platform-os { font-weight: 600; }
     .platform-os small { display: block; font-size: 12px; color: var(--text-3); font-weight: 400; margin-top: 2px; }
     .install-code {
-      font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
       font-size: 12px; color: var(--text-2);
       background: var(--bg-3); padding: 3px 8px; border-radius: 4px;
     }
@@ -90,15 +90,14 @@
       max-width: 920px; margin: 40px auto 64px; padding: 0 24px;
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 4px;
-      background: transparent;
+      gap: 12px;
     }
     .setup-tile {
       background: var(--bg-2);
-      border-radius: var(--radius-xl);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 22px 24px;
-      box-shadow: var(--shadow);
-      transition: background var(--transition);
+      transition: background var(--transition), border-color var(--transition);
     }
     .setup-tile:hover { background: var(--bg-3); }
     .setup-tile .icon-tile { margin-bottom: 12px; }
@@ -117,8 +116,8 @@
       .platform-table thead { display: none; }
       .platform-table tr {
         background: var(--bg-2);
-        border-radius: var(--radius-xl);
-        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
         margin-bottom: 10px;
         overflow: hidden;
       }
@@ -184,7 +183,7 @@
 <main class="page">
 
   <div class="download-hero">
-    <div class="version-badge" id="version-badge">v1.88.1 · July 2026</div>
+    <div class="version-badge" id="version-badge">v1.88.3 · July 2026</div>
     <h1>Download Biorouter</h1>
     <p>Native installers for every major platform. Each one now bundles the <code>biorouter</code> command-line interface. Open source, free to use.</p>
   </div>
@@ -219,51 +218,51 @@
       <tbody>
         <tr data-row="mac-arm">
           <td><div class="platform-os">macOS <small>Apple Silicon (M1/M2/M3/M4)</small></div></td>
-          <td><code class="file-name">BioRouter-1.88.1-arm64.dmg</code></td>
+          <td><code class="file-name">BioRouter-1.88.3-arm64.dmg</code></td>
           <td><span class="install-code">Drag to /Applications</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-arm64.dmg">↓ .dmg</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/BioRouter-1.88.3-arm64.dmg">↓ .dmg</a></td>
         </tr>
         <tr data-row="mac-intel">
           <td><div class="platform-os">macOS <small>Intel (x86_64)</small></div></td>
-          <td><code class="file-name">BioRouter-1.88.1-x64.dmg</code></td>
+          <td><code class="file-name">BioRouter-1.88.3-x64.dmg</code></td>
           <td><span class="install-code">Drag to /Applications</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-x64.dmg">↓ .dmg</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/BioRouter-1.88.3-x64.dmg">↓ .dmg</a></td>
         </tr>
         <tr data-row="windows">
           <td><div class="platform-os">Windows <small>x64</small></div></td>
-          <td><code class="file-name">BioRouter-win32-x64-1.88.1.zip</code></td>
+          <td><code class="file-name">BioRouter-win32-x64-1.88.3.zip</code></td>
           <td><span class="install-code">Unzip, run Biorouter.exe</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-win32-x64-1.88.1.zip">↓ .zip</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/BioRouter-win32-x64-1.88.3.zip">↓ .zip</a></td>
         </tr>
         <tr data-row="linux-deb">
           <td><div class="platform-os">Linux <small>Ubuntu / Pop!_OS (x64)</small></div></td>
-          <td><code class="file-name">biorouter_1.88.1_amd64.deb</code></td>
+          <td><code class="file-name">biorouter_1.88.3_amd64.deb</code></td>
           <td><span class="install-code">sudo dpkg -i *.deb</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter_1.88.1_amd64.deb">↓ .deb</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter_1.88.3_amd64.deb">↓ .deb</a></td>
         </tr>
         <tr data-row="linux-rpm">
           <td><div class="platform-os">Linux <small>Fedora / RHEL (x64)</small></div></td>
-          <td><code class="file-name">BioRouter-1.88.1-1.x86_64.rpm</code></td>
+          <td><code class="file-name">BioRouter-1.88.3-1.x86_64.rpm</code></td>
           <td><span class="install-code">sudo rpm -i *.rpm</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/BioRouter-1.88.1-1.x86_64.rpm">↓ .rpm</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/BioRouter-1.88.3-1.x86_64.rpm">↓ .rpm</a></td>
         </tr>
         <tr data-row="linux-cli-deb">
           <td><div class="platform-os">Linux (CLI only) <small>Ubuntu / Debian (x64)</small></div></td>
-          <td><code class="file-name">biorouter-cli_1.88.1_amd64.deb</code></td>
+          <td><code class="file-name">biorouter-cli_1.88.3_amd64.deb</code></td>
           <td><span class="install-code">sudo apt install ./*.deb</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli_1.88.1_amd64.deb">↓ .deb</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter-cli_1.88.3_amd64.deb">↓ .deb</a></td>
         </tr>
         <tr data-row="linux-cli-rpm">
           <td><div class="platform-os">Linux (CLI only) <small>Fedora / RHEL (x64)</small></div></td>
-          <td><code class="file-name">biorouter-cli-1.88.1-1.x86_64.rpm</code></td>
+          <td><code class="file-name">biorouter-cli-1.88.3-1.x86_64.rpm</code></td>
           <td><span class="install-code">sudo dnf install ./*.rpm</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-cli-1.88.1-1.x86_64.rpm">↓ .rpm</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter-cli-1.88.3-1.x86_64.rpm">↓ .rpm</a></td>
         </tr>
         <tr data-row="linux-headless">
           <td><div class="platform-os">Linux (headless web) <small>x64</small></div></td>
           <td><code class="file-name">biorouter-headless-linux-x64.tar.gz</code></td>
           <td><span class="install-code">Extract, follow the headless setup guide</span></td>
-          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.1/biorouter-headless-linux-x64.tar.gz">↓ .tar.gz</a></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.88.3/biorouter-headless-linux-x64.tar.gz">↓ .tar.gz</a></td>
         </tr>
       </tbody>
     </table>

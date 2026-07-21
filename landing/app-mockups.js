@@ -188,10 +188,8 @@
 
   SCREENS.chat = function () {
     var tools = [
-      'Cdw-search Diagnoses By Code', 'Cdw-search Diagnoses By Code',
-      'Cdw-search Medications By Code', 'Cdw-search Medications By Code',
-      'Cdw-search Medications By Code', 'Cdw-search Medications By Code',
-      'Cdw-search Medications By Code', 'Cdw-search Medications By Code',
+      'Cdw-search Diagnoses By Code', 'Cdw-search Medications By Code',
+      'Cdw-search Conditions By Code', 'Cdw-search Medications By Code',
     ];
     var rows = tools.map(function (t) {
       return '<div class="bw-tool bw-stagger"><span class="ic">' + svg(I.db) + '</span>' +
@@ -486,8 +484,6 @@
       prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.5-2026-04-24.', true) +
       prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-6-v1.', true) +
       '<div class="bw-grp"><i class="comm"></i>Commercial models</div>' +
-      prow('A', 'Azure OpenAI', 'Models through Azure OpenAI Service (uses Azure credential chain by default).', false) +
-      prow('A', 'Amazon Bedrock', 'Run models through Amazon Bedrock.', true) +
       prow('A', 'Anthropic', 'Claude and other models from Anthropic.', true) +
       prow('O', 'OpenAI', 'OpenAI models with gpt-5.6 as the default, plus compatible endpoints.', true) +
       prow('G', 'Google Gemini', 'Gemini models from Google AI.', false) +
