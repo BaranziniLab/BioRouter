@@ -1,10 +1,12 @@
 # Agent-loop design documents
 
-This folder holds the per-proposal design documents produced by the agent-loop fix
-campaign. Each one takes a single `BR-NN` proposal — a numbered entry in the 67-item
+This folder holds per-proposal design documents. Most were produced by the agent-loop fix
+campaign: each takes a single `BR-NN` proposal — a numbered entry in the 67-item
 master list in [the agent-loop improvement proposals](../../history/agent-loop-review/improvement-proposals.md)
 — and specifies how it is built: the problem, the mechanism, the data structures, and
-the slices or phases the work is cut into. Most are *partially shipped*: an early slice
+the slices or phases the work is cut into. New post-campaign proposals continue the
+`BR-NN` sequence from where the campaign left off (currently BR-71+) and say so in their
+status header. Most are *partially shipped*: an early slice
 is live code on `main` while the remainder is still the plan of record. Every document's
 context header states exactly which parts exist and which do not, so read that header
 before treating any section as a description of today's code.
@@ -32,6 +34,7 @@ the hook system's user-facing reference lives in [`../hooks/`](../hooks/hooks-re
 | [Session branching with stable message ids (BR-45)](session-branching.md) | Replacing positional, re-derived message ids with durable per-message UUIDs, and building a real session fork/branch tree on top of them. Phase 1 landed; the branching and tree UX is not built. |
 | [Shadow-git checkpoints and `/rewind` (BR-43)](shadow-git-checkpoints.md) | Capturing the workspace into a private git object database at turn boundaries so a user can rewind files, conversation, or both. Slice 1 landed behind the `BIOROUTER_CHECKPOINTS` flag; the GUI rewind affordance, redo and GC remain the plan. |
 | [Shared MCP server pool (BR-54)](shared-mcp-server-pool.md) | Eliminating the two axes of MCP process multiplication — one process tree per `Agent`, one daemon per app window — by pooling servers behind a fingerprint-keyed registry. Both slices shipped, so this now doubles as the architecture reference for the live pooling code. |
+| [Agent workspace control and glass-box subagents (BR-71)](agent-workspace-control.md) | A `workspace` platform extension giving the agent MCP tools over the GUI and daemon — open/focus/close chat tabs and windows, read any conversation's transcript and tool calls, inject prompts, change a session's extensions/KBs — plus a daemon→GUI command bridge and a session event broadcast that together turn opaque subagents into live, human-interactive tabs. Post-campaign proposal; nothing implemented. |
 
 ## Related documentation
 
