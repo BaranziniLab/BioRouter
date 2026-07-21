@@ -53,6 +53,10 @@
     .doc-figure figcaption {
       margin-top: 12px; font-size: 12.5px; color: var(--text-3); text-align: center; line-height: 1.5;
     }
+    /* keep flag/option code chips whole (no mid-token breaks) and let code
+       blocks wrap at spaces instead of hiding their ends behind a scroll */
+    .docs-content .doc-table code { white-space: nowrap; }
+    .docs-content pre { white-space: pre-wrap; }
 
     .doc-next {
       display: flex; align-items: center; gap: 10px; margin-top: 44px; padding-top: 24px;
@@ -252,7 +256,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
         <span class="doc-eyebrow">Using Biorouter</span>
 <h1>Using the desktop app</h1>
 
-<p class="doc-intro">The Biorouter desktop app (v1.88.3) is where most people do their day-to-day work: you type a research question, watch the agent plan and call tools, and read the files, figures, and apps it produces, all in one window. This guide walks through every surface of the app: the sidebar and titlebar, the chat composer and its toolbar, the browser-style tabs and side-by-side split panes, the in-app terminal, and the Home, History, and Settings pages. It assumes you have the app installed and a model provider connected. If you do not, start with <a href="quickstart.html">Biorouter in 5 minutes</a>.</p>
+<p class="doc-intro">The Biorouter desktop app (v1.88.3) is where most people do their day-to-day work: you type a research question, watch the agent plan and call tools, and read the files, figures, and apps it produces, all in one window. This guide walks through every surface of the app: the sidebar and titlebar, the chat composer and its toolbar, the browser-style tabs and side-by-side split panes, the in-app terminal, and the Home, History, and Settings pages. It assumes you have the app installed and a model provider connected. If you do not, start with <a href="#getstarted" onclick="showDoc('getstarted');return false;">Biorouter in 5 minutes</a>.</p>
 
 <h2>The window at a glance</h2>
 
@@ -651,9 +655,9 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 <h2>Where to go next</h2>
 
 <ul>
-  <li><a href="quickstart.html">Biorouter in 5 minutes</a> walks through your first task end to end.</li>
-  <li><a href="usage-tips.html">Usage tips</a> collects short habits for prompting, cost control, and session hygiene.</li>
-  <li><a href="choosing-a-model-provider.html">Choosing a model provider</a> covers each provider's credentials and default model.</li>
+  <li><a href="#getstarted" onclick="showDoc('getstarted');return false;">Biorouter in 5 minutes</a> walks through your first task end to end.</li>
+  <li><a href="#app" onclick="showDoc('app');return false;">Usage tips</a> collects short habits for prompting, cost control, and session hygiene.</li>
+  <li><a href="#providers" onclick="showDoc('providers');return false;">Choosing a model provider</a> covers each provider's credentials and default model.</li>
   <li>The command-line reference documents the <code>biorouter</code> CLI, which shares your account and sessions with the app.</li>
 </ul>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#cli" onclick="showDoc('cli');return false;">Command line &rarr;</a></div>
@@ -1319,7 +1323,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>Extension Manager</strong></td><td>On</td><td>Lets the agent discover, enable, and disable other extensions mid-session, keeping the active tool count small. It runs a malware check before it enables an extension that launches a package runner.</td><td><code>search_available_extensions</code>, <code>manage_extensions</code>, <code>list_resources</code>, <code>read_resource</code></td></tr>
     <tr><td><strong>Skills</strong></td><td>On</td><td>Discovers skills on disk at startup and loads the relevant ones into the agent's context (see <a href="#doc-skills">Skills</a> below).</td><td>Loads <code>SKILL.md</code> instruction sets from the skill directories</td></tr>
     <tr><td><strong>Todo</strong></td><td>On</td><td>Breaks multi-step work into a tracked checklist and reports progress as the agent goes, so you can see where it is rather than waiting for one opaque answer.</td><td><code>todo_write</code>, <code>todo_add</code>, <code>todo_update</code>, <code>plan_write</code></td></tr>
-    <tr><td><strong>Knowledge</strong></td><td>On</td><td>Ingest, query, and lint your personal, LLM-maintained <a href="#" onclick="showDoc('knowledge')">knowledge bases</a> from inside any chat. Bases are markdown pages backed by git history.</td><td><code>ingest</code>, <code>query</code>, <code>lint</code>, plus page, search, and graph reads</td></tr>
+    <tr><td><strong>Knowledge</strong></td><td>On</td><td>Ingest, query, and lint your personal, LLM-maintained <a href="#knowledge" onclick="showDoc('knowledge');return false;">knowledge bases</a> from inside any chat. Bases are markdown pages backed by git history.</td><td><code>ingest</code>, <code>query</code>, <code>lint</code>, plus page, search, and graph reads</td></tr>
     <tr><td><strong>Memory</strong></td><td>Off</td><td>Teaches the agent durable facts and preferences (commands, lab conventions, configurations) that ride along in every prompt, in a project-local or user-global scope.</td><td><code>remember_memory</code>, <code>retrieve_memories</code>, <code>remove_memory_category</code>, <code>remove_specific_memory</code></td></tr>
     <tr><td><strong>Auto Visualiser</strong></td><td>Off</td><td>Turns structured data into self-contained interactive HTML figures rendered inline in chat. It registers 34 tools (charts, scientific plots, diagrams, maps, and a composite report) and picks the right one automatically.</td><td><code>render_dashboard</code> and 33 other <code>render_*</code> / <code>show_chart</code> tools</td></tr>
     <tr><td><strong>Computer Controller</strong></td><td>Off</td><td>Automates your real desktop: launches apps, clicks and types, changes system settings, scrapes the web, and reads or writes Office documents. The highest-blast-radius built-in, because it acts on your actual machine.</td><td><code>computer_control</code>, <code>automation_script</code>, <code>web_scrape</code>, <code>xlsx_tool</code>, <code>docx_tool</code>, <code>pdf_tool</code>, <code>cache</code></td></tr>
@@ -2023,7 +2027,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
   <text x="288" y="107" text-anchor="middle" font-size="12.5" font-weight="700" fill="#8a3f1d">OS credential store</text>
   <text x="288" y="124" text-anchor="middle" font-size="10.5" fill="#7a4a30">Keychain / Cred Manager</text>
   <line x1="372" y1="110" x2="412" y2="110" stroke="#052049" stroke-width="2" marker-end="url(#ahV2)"/>
-  <text x="392" y="98" text-anchor="middle" font-size="10" font-weight="600" fill="#052049">read once</text>
+  <text x="394" y="127" text-anchor="middle" font-size="9" font-weight="600" fill="#052049">read once</text>
 
   <rect x="416" y="80" width="150" height="60" rx="10" fill="#fff" stroke="#e0d7c3"/>
   <text x="491" y="107" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">In memory</text>
@@ -2080,10 +2084,10 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
   <line x1="336" y1="140" x2="470" y2="166" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
   <line x1="336" y1="149" x2="470" y2="230" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
 
-  <rect x="474" y="20" width="220" height="44" rx="9" fill="#f0f7f1" stroke="#bcd9c2"/><text x="490" y="47" font-size="12.5" font-weight="600" fill="#1f7a3d">Auto run</text><text x="600" y="47" font-size="11" fill="#4a7a55">autonomous</text>
-  <rect x="474" y="84" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="111" font-size="12.5" font-weight="600" fill="#2a2520">Ask first</text><text x="600" y="111" font-size="11" fill="#6e6760">manual</text>
-  <rect x="474" y="144" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="171" font-size="12.5" font-weight="600" fill="#2a2520">Smart approve</text><text x="600" y="171" font-size="11" fill="#6e6760">risk based</text>
-  <rect x="474" y="208" width="220" height="44" rx="9" fill="#fbf1f0" stroke="#e6bcae"/><text x="490" y="235" font-size="12.5" font-weight="600" fill="#9b3b2a">Blocked</text><text x="600" y="235" font-size="11" fill="#9b3b2a">chat only</text>
+  <rect x="474" y="20" width="220" height="44" rx="9" fill="#f0f7f1" stroke="#bcd9c2"/><text x="490" y="47" font-size="12.5" font-weight="600" fill="#1f7a3d">Autonomous</text><text x="608" y="47" font-size="11" fill="#4a7a55">runs freely</text>
+  <rect x="474" y="84" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="111" font-size="12.5" font-weight="600" fill="#2a2520">Manual approval</text><text x="626" y="111" font-size="11" fill="#6e6760">you confirm</text>
+  <rect x="474" y="144" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="171" font-size="12.5" font-weight="600" fill="#2a2520">Smart approval</text><text x="624" y="171" font-size="11" fill="#6e6760">risk based</text>
+  <rect x="474" y="208" width="220" height="44" rx="9" fill="#fbf1f0" stroke="#e6bcae"/><text x="490" y="235" font-size="12.5" font-weight="600" fill="#9b3b2a">Chat only</text><text x="608" y="235" font-size="11" fill="#9b3b2a">no tools</text>
 </svg>
 <figcaption>Every tool call passes through the permission mode, which either runs it, asks you first, judges it by risk, or blocks it.</figcaption>
 </figure>

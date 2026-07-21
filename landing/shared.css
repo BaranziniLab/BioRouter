@@ -120,7 +120,7 @@ body {
 .hamburger span { width: 20px; height: 2px; background: var(--text-2); border-radius: 2px; transition: var(--transition); }
 .mobile-menu {
   display: none; position: fixed; top: 58px; left: 0; right: 0; z-index: 99;
-  background: rgba(250,248,243,0.97);
+  background: var(--bg);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border);
   padding: 10px 16px;
