@@ -8,46 +8,57 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Surfaces — match the Biorouter Electron app */
-  --bg:          #faf8f3;   /* neutral-50, the sidebar/app surface */
-  --bg-2:        #ffffff;   /* card / panel */
-  --bg-3:        #f4f0e6;   /* neutral-100, medium hover */
-  --bg-4:        #ece5cf;   /* neutral-200, strong */
-  --border:      rgba(40,30,15,0.07);
-  --border-2:    rgba(40,30,15,0.12);
+  /* ── Surfaces — Parchment, the app's base theme (design.md §3.1) ── */
+  --bg:          #faf8f3;   /* page ground   (--background-muted) */
+  --bg-2:        #ffffff;   /* card / panel  (--background-default) */
+  --bg-3:        #f4f0e6;   /* neutral-100   hover / secondary fill */
+  --bg-4:        #e8e1d2;   /* neutral-200   strong fill / hairline */
+  --sidebar:     #f3ede1;   /* two-tone sidebar surface */
+  --border:      rgba(40,30,15,0.09);   /* hairline  (--border-subtle) */
+  --border-2:    rgba(40,30,15,0.16);   /* emphasis  (--border-strong) */
 
-  /* Text */
-  --text:        #2a2520;
-  --text-2:      #7a736c;
-  --text-3:      #b6ae93;
+  /* ── Text — AA on every warm ground (design.md §3.1) ── */
+  --text:        #2a2520;   /* --text-default */
+  --text-2:      #635c54;   /* --text-muted   (5.65:1) */
+  --text-3:      #6e6760;   /* --text-subtle  (4.78:1) */
   --text-on-accent: #ffffff;
 
-  /* Coral accent (block-teal from the app) */
-  --accent:      #cf6d47;
-  --accent-hover:#ba6240;
-  --accent-soft: rgba(207,109,71,0.10);
-  --accent-soft2:rgba(207,109,71,0.18);
+  /* ── Accent — one terracotta coral, two roles (design.md §3.1 · D-01) ──
+     coral-600 is the only value that clears AA for fills & text; the
+     brighter coral-500 is reserved for NON-TEXT bars, rails and dots. */
+  --accent:      #b85a32;   /* coral-600 — buttons, links, eyebrows (4.62:1) */
+  --accent-hover:#a44f2b;
+  --accent-bar:  #cf6d47;   /* coral-500 — bars / underlines / status dots only */
+  --accent-soft: rgba(184,90,50,0.10);
+  --accent-soft2:rgba(184,90,50,0.18);
 
-  /* UCSF navy */
+  /* UCSF navy (institutional tag) */
   --ucsf:        #052049;
   --ucsf-hover:  #083570;
 
-  /* Shape */
-  --radius:      6px;       /* buttons, inputs (matches app rounded-md) */
-  --radius-lg:   12px;
-  --radius-xl:   16px;      /* cards, dialogs (matches app rounded-xl) */
+  /* ── Shape — four radii + full (design.md §3.4 · D-04) ── */
+  --radius-sm:   6px;       /* chips, tags, inline code */
+  --radius:      8px;       /* buttons, inputs, list rows */
+  --radius-lg:   12px;      /* cards, code blocks */
+  --radius-xl:   16px;      /* modals, large panels, the composer */
 
-  /* Shadow — soft, app-style */
-  --shadow:      0 1px 3px rgba(0,0,0,0.06), 0 0 1px rgba(0,0,0,0.12);
-  --shadow-lg:   0 8px 24px rgba(32,25,15,0.10), 0 0 1px rgba(0,0,0,0.15);
+  /* ── Elevation — hairline for content; a float only for what truly
+     floats (design.md §3.5 · P1) ── */
+  --shadow:      none;                       /* content surfaces are flat */
+  --shadow-float:0 8px 24px rgba(32,25,15,.10), 0 0 1px rgba(0,0,0,.14);  /* nav / popover level */
+  --shadow-lg:   0 24px 60px -20px rgba(32,25,15,.22), 0 10px 28px -22px rgba(32,25,15,.16);  /* the floating app window */
 
-  /* Motion */
-  --transition:  0.15s cubic-bezier(0.4,0,0.2,1);
+  /* ── Motion — three durations, one ease (design.md §3.6) ── */
+  --ease-out:    cubic-bezier(.2,0,0,1);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 260ms;
+  --transition:  150ms cubic-bezier(.2,0,0,1);
 }
 
 html { scroll-behavior: smooth; }
 body {
-  font-family: Arial, 'Helvetica Neue', Helvetica, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
@@ -109,7 +120,7 @@ body {
 .hamburger span { width: 20px; height: 2px; background: var(--text-2); border-radius: 2px; transition: var(--transition); }
 .mobile-menu {
   display: none; position: fixed; top: 58px; left: 0; right: 0; z-index: 99;
-  background: rgba(250,248,243,0.97);
+  background: var(--bg);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border);
   padding: 10px 16px;
@@ -242,7 +253,8 @@ body {
 /* ─── Surface card (flat, soft shadow, no border) ────────────── */
 .surface {
   background: var(--bg-2);
-  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 24px 26px;
   box-shadow: var(--shadow);
 }
@@ -252,6 +264,7 @@ body {
   background: var(--bg-2);
   border-radius: var(--radius-lg); padding: 16px 20px;
   box-shadow: var(--shadow);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
 }
 .info-box h4 { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
@@ -271,13 +284,13 @@ body {
 pre, .code-block {
   background: var(--bg-3);
   border-radius: var(--radius-lg); padding: 14px 18px;
-  font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 13px; color: #3a3020;
   overflow-x: auto; margin: 14px 0;
   line-height: 1.65;
 }
 code {
-  font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 12.5px;
   background: var(--bg-3); padding: 2px 6px;
   border-radius: 4px; color: #b85c35;
@@ -288,6 +301,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 .doc-table {
   width: 100%; border-collapse: collapse; margin: 14px 0;
   background: var(--bg-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
   box-shadow: var(--shadow);
@@ -349,7 +363,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 .provider-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 28px; }
 .provider-chip {
   display: inline-flex; align-items: center; gap: 7px;
-  padding: 8px 14px; border-radius: var(--radius);
+  padding: 8px 14px; border-radius: var(--radius-sm);
   background: var(--bg-3); color: var(--text-2);
   font-size: 13px; font-weight: 600;
   transition: var(--transition);
@@ -366,7 +380,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
    buttons share a unified accent-soft look. */
 .brxt-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 12px; border-radius: var(--radius);
+  padding: 6px 12px; border-radius: var(--radius-sm);
   background: var(--accent-soft); color: var(--accent);
   text-decoration: none; font-size: 11.5px; font-weight: 700;
   white-space: nowrap;
@@ -380,7 +394,7 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 
 /* ─── Tags ───────────────────────────────────────────────────── */
 .tag {
-  padding: 3px 9px; border-radius: var(--radius);
+  padding: 3px 9px; border-radius: var(--radius-sm);
   font-size: 10.5px; font-weight: 600;
   background: var(--bg-3); color: var(--text-2);
   letter-spacing: 0.2px;
@@ -425,7 +439,7 @@ footer p + p { margin-top: 5px; }
   width: 100%;
   border-radius: var(--radius-xl);
   overflow: hidden;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-float);
   background: var(--bg-2);
   border: 1px solid var(--border);
   display: block;
@@ -481,3 +495,154 @@ footer p + p { margin-top: 5px; }
   max-width: 720px;
 }
 .release-video .eyebrow { margin-bottom: 12px; }
+
+/* ──────────────────────────────────────────────────────────────
+   Dark theme — Parchment dark (design.md §3.1). Selected by a
+   `dark` class on <html>, set by theme.js before paint.
+   ────────────────────────────────────────────────────────────── */
+:root.dark {
+  --bg:          #14100a;   /* page ground */
+  --bg-2:        #1e1811;   /* card / panel */
+  --bg-3:        #2a2318;   /* hover */
+  --bg-4:        #3a3122;   /* strong fill */
+  --sidebar:     #1a150e;
+  --border:      rgba(240,230,210,0.11);
+  --border-2:    rgba(240,230,210,0.20);
+
+  --text:        #f4f0e6;
+  --text-2:      #c3baa6;
+  --text-3:      #9c937b;
+  --text-on-accent: #201a12;
+
+  --accent:      #e8895f;   /* coral-400, the dark-mode accent (7.7:1 on canvas) */
+  --accent-hover:#f0a07f;
+  --accent-bar:  #e8895f;
+  --accent-soft: rgba(232,137,95,0.15);
+  --accent-soft2:rgba(232,137,95,0.24);
+
+  --ucsf:        #8fb2df;   /* navy is invisible on dark, use a light steel blue */
+
+  --shadow-float:0 8px 24px rgba(0,0,0,.5), 0 0 1px rgba(0,0,0,.6);
+  --shadow-lg:   0 24px 60px -20px rgba(0,0,0,.66), 0 10px 28px -22px rgba(0,0,0,.5);
+}
+:root.dark body { -webkit-font-smoothing: antialiased; }
+/* nav chrome carries a hardcoded translucent light; give dark its own */
+:root.dark #navbar { background: rgba(18,14,9,0.82); }
+:root.dark .mobile-menu { background: var(--bg); }
+/* keep SVG figures on a light plate so diagrams read the same in both themes */
+:root.dark .doc-figure { background: #f2ede2; border-color: rgba(0,0,0,0.12); }
+:root.dark .doc-figure figcaption { color: #6e6760; }
+/* the product deck's warm workspace ground, dark variant */
+:root.dark .deck--live .deck-sticky {
+  background:
+    radial-gradient(85% 60% at 27% 30%, rgba(232,137,95,0.06), transparent 62%),
+    radial-gradient(80% 70% at 100% 100%, rgba(120,150,210,0.05), transparent 55%),
+    #17130c;
+}
+/* app-window mockups: fix the few hardcoded light values under dark */
+:root.dark .bw { border-color: rgba(240,230,210,0.12); }
+:root.dark .bw-bubble,
+:root.dark .bw-digest,
+:root.dark .bw-btn.dark,
+:root.dark .bw-stop,
+:root.dark .bw-actions .a.play { background: #3a3122; color: #f4f0e6; }
+:root.dark .bw-gcanvas svg text { fill: #e8e1d2; }
+:root.dark .bw-legend {
+  background: rgba(26,21,14,0.86); color: var(--text); border-color: var(--border);
+}
+:root.dark .bw-tab.active { box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+
+/* ──────────────────────────────────────────────────────────────
+   Site footer (multi-column) + theme toggle
+   ────────────────────────────────────────────────────────────── */
+.site-footer {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 0; margin-top: 40px; text-align: left; color: var(--text-2);
+}
+.footer-inner {
+  max-width: 1080px; margin: 0 auto; padding: 52px 24px 36px;
+  display: grid; grid-template-columns: 1.5fr 2fr 1.5fr; gap: 44px;
+}
+.footer-brand { max-width: 320px; }
+.footer-logo {
+  display: inline-flex; align-items: center; gap: 9px; text-decoration: none;
+  color: var(--text); font-weight: 700; font-size: 15px; margin-bottom: 12px;
+}
+.footer-logo img { width: 24px; height: 24px; }
+.footer-brand p { font-size: 13px; line-height: 1.65; color: var(--text-2); margin-bottom: 16px; }
+.footer-social { display: flex; gap: 9px; }
+.footer-social a {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--radius);
+  background: var(--bg-3); color: var(--text-2); transition: var(--transition);
+}
+.footer-social a:hover { background: var(--bg-4); color: var(--text); }
+.footer-social svg { width: 17px; height: 17px; }
+.footer-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.footer-col h4 {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 12px;
+}
+.footer-col a {
+  display: block; font-size: 13.5px; color: var(--text-2); text-decoration: none;
+  padding: 4px 0; transition: color var(--transition);
+}
+.footer-col a:hover { color: var(--accent); }
+.footer-news h4 { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.footer-news > p { font-size: 12.5px; color: var(--text-2); margin-bottom: 12px; line-height: 1.55; }
+.news-form { display: flex; gap: 8px; }
+.news-form input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border-2); background: var(--bg-2); color: var(--text);
+  font-size: 13px; font-family: inherit;
+}
+.news-form input::placeholder { color: var(--text-3); }
+.news-form input:focus { outline: none; border-color: var(--accent); }
+.news-form button {
+  padding: 9px 16px; border-radius: var(--radius); background: var(--accent);
+  color: var(--text-on-accent); border: none; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: inherit; transition: background var(--transition); white-space: nowrap;
+}
+.news-form button:hover { background: var(--accent-hover); }
+.footer-slack-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: var(--radius);
+  background: var(--accent); color: var(--text-on-accent);
+  font-size: 13px; font-weight: 600; text-decoration: none;
+  transition: background var(--transition), transform var(--transition);
+}
+.footer-slack-btn:hover { background: var(--accent-hover); }
+.footer-slack-btn:active { transform: translateY(1px); }
+.footer-slack-btn svg { width: 16px; height: 16px; }
+.footer-note { font-size: 11.5px; color: var(--text-3); margin-top: 10px; line-height: 1.5; }
+.footer-note a { color: var(--accent); text-decoration: none; }
+.footer-bottom {
+  border-top: 1px solid var(--border); max-width: 1080px; margin: 0 auto;
+  padding: 18px 24px 26px; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; font-size: 12.5px; color: var(--text-3);
+}
+.footer-bottom-links { display: flex; align-items: center; gap: 16px; }
+.footer-bottom a { color: var(--text-3); text-decoration: none; }
+.footer-bottom a:hover { color: var(--accent); }
+
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius);
+  background: var(--bg-3); color: var(--text-2); border: none; cursor: pointer;
+  transition: var(--transition); flex-shrink: 0;
+}
+.theme-toggle:hover { background: var(--bg-4); color: var(--text); }
+.theme-toggle svg { width: 17px; height: 17px; }
+.theme-toggle .t-sun { display: none; }
+:root.dark .theme-toggle .t-moon { display: none; }
+:root.dark .theme-toggle .t-sun { display: inline; }
+
+@media (max-width: 860px) {
+  .footer-inner { grid-template-columns: 1fr; gap: 34px; }
+}
+@media (max-width: 560px) {
+  .footer-cols { grid-template-columns: 1fr 1fr; }
+  .footer-bottom { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .footer-brand { max-width: none; }
+}
