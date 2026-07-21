@@ -203,6 +203,30 @@ fn is_temp_path(norm: &str) -> bool {
     false
 }
 
+/// True for the benign character devices that live under `/dev` (a system dir)
+/// but are ubiquitous, harmless write targets: `/dev/null` is the universal
+/// bit-bucket, and `/dev/std{out,err,in}`, `/dev/tty`, `/dev/fd/N`, and the
+/// zero/random generators are standard redirect destinations. Writing to any of
+/// them mutates nothing on disk. Without this exemption a routine
+/// `… 2>/dev/null` (or a `/dev/null` literal inside code authored by an
+/// `execute_code` write) trips the Auto-mode sensitive-write escalation and
+/// parks the agent on a permission prompt it should never see.
+fn is_benign_device(norm: &str) -> bool {
+    let p = norm.to_ascii_lowercase();
+    matches!(
+        p.as_str(),
+        "/dev/null"
+            | "/dev/zero"
+            | "/dev/full"
+            | "/dev/stdin"
+            | "/dev/stdout"
+            | "/dev/stderr"
+            | "/dev/tty"
+            | "/dev/random"
+            | "/dev/urandom"
+    ) || p.starts_with("/dev/fd/")
+}
+
 /// The human-facing reason a target is sensitive, or `None` if it is ordinary.
 fn sensitivity_reason(tp: &TargetPath, env: &EnvFacts) -> Option<&'static str> {
     match classify(tp, env) {
@@ -211,10 +235,11 @@ fn sensitivity_reason(tp: &TargetPath, env: &EnvFacts) -> Option<&'static str> {
         }
         Blast::HomeBare => return Some("your home directory itself"),
         Blast::SystemDir => {
-            if !is_temp_path(&tp.norm) {
+            if !is_temp_path(&tp.norm) && !is_benign_device(&tp.norm) {
                 return Some("a protected system directory");
             }
-            // A temp path under a system dir (e.g. /var/folders) is ordinary.
+            // A temp path under a system dir (e.g. /var/folders) or a benign
+            // pseudo-device (/dev/null, /dev/stderr, …) is ordinary.
         }
         Blast::Ordinary => {}
     }
@@ -780,6 +805,79 @@ mod tests {
                 "{cmd} must not be flagged"
             );
         }
+    }
+
+    /// Redirects to `/dev/null` (and the other benign character devices) are the
+    /// universal bit-bucket — never a sensitive write. Regression: a routine
+    /// `… 2>/dev/null` used to trip the `/dev` system-dir escalation and park the
+    /// agent on an approval prompt even in Auto mode.
+    #[test]
+    fn shell_redirect_to_dev_null_is_not_flagged() {
+        let env = nix_env();
+        for cmd in [
+            "find landing -type f 2>/dev/null | sort",
+            "git status --short 2>/dev/null",
+            "grep -r foo . >/dev/null 2>&1",
+            "make >/dev/null",
+            "cat huge.log > /dev/null",
+        ] {
+            assert!(
+                command_writes_sensitively(cmd, &env).is_none(),
+                "{cmd} redirects to /dev/null and must NOT be flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_null_and_std_streams_are_not_sensitive_editor_targets() {
+        for path in [
+            "/dev/null",
+            "/dev/stdout",
+            "/dev/stderr",
+            "/dev/tty",
+            "/dev/fd/2",
+        ] {
+            let finding = sensitive_file_operation(
+                "developer__text_editor",
+                &args(json!({ "command": "write", "path": path })),
+                Path::new("/home/me/proj"),
+            );
+            assert!(
+                finding.is_none(),
+                "a write target of {path} (a benign device) must NOT be flagged"
+            );
+        }
+    }
+
+    /// A real `/etc` write must still be caught — the exemption is scoped to the
+    /// benign devices only, not all of `/dev` or the rest of the system tree.
+    #[test]
+    fn dev_null_exemption_does_not_leak_to_other_system_paths() {
+        let env = nix_env();
+        assert!(
+            command_writes_sensitively("echo x > /dev/sda", &env).is_some(),
+            "a write to a real block device must still be flagged"
+        );
+        assert!(
+            command_writes_sensitively("echo x > /etc/passwd", &env).is_some(),
+            "a write to /etc must still be flagged"
+        );
+    }
+
+    /// The observed drive stall: an `execute_code` body whose only sensitive-looking
+    /// token is a `2>/dev/null` redirect (either live or embedded in authored code)
+    /// must run without an approval prompt.
+    #[test]
+    fn execute_code_with_dev_null_redirect_is_not_flagged() {
+        let env = nix_env();
+        let code = r#"import { shell, text_editor } from "developer";
+const repo = "/home/me/proj";
+const status = shell({ command: `cd ${repo} && git status --short && find landing -type f -print 2>/dev/null | sort` });
+record_result({ status });"#;
+        assert!(
+            code_writes_sensitively(code, &env).is_none(),
+            "an execute_code body whose only /dev reference is 2>/dev/null must NOT be flagged"
+        );
     }
 
     // --- execute_code bodies (R2-01) --------------------------------------
