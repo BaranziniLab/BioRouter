@@ -221,6 +221,17 @@
       <h2>Latest updates</h2>
     </div>
     <div class="news-list">
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.5" target="_blank" class="news-row">
+        <div class="news-date">
+          <div class="day">21</div>
+          <div class="mon">Jul</div>
+        </div>
+        <div class="news-body">
+          <h3>Biorouter v1.88.5: Fully-Automatic mode, a hardened permission engine, and desktop polish</h3>
+          <p>Biorouter v1.88.5 introduces <strong>Fully-Automatic mode</strong>, which gives the agent broad autonomy over ordinary file work while still stopping to ask before a small, well-defined set of sensitive system operations (writes under system directories, SSH keys, keychains, launchd and login items, and browser credential stores), so long unattended runs keep moving without a prompt on every edit. The permission engine behind it was hardened: a routine <code>2&gt;/dev/null</code> redirect and other benign character devices are no longer misread as protected-directory writes that stall autonomous agents, sensitive writes hidden inside shell command lines and code bodies are detected, and the text editor's project jail is relaxed in Auto mode without loosening the catastrophic-path denylist. The desktop gains grabbable split dividers, a split cap raised from four to six panes, per-pane terminals that open in the session's own folder, a composer toolbar that collapses behind a plus button when the row is too narrow, chat names that stay in sync across recents, history, tabs, and diverged branches, and drag-to-reorder tabs that track the pointer. Artifact preview now surfaces files created inside code execution, renders images and links in markdown, and no longer opens the wrong same-named folder. Chat reliability improves too: a rapid double-submit no longer appends a duplicate bubble, a transient backend blip degrades to an inline retryable error instead of a fatal session card, and soft interrupt and hard stop are acknowledged immediately. Theme families are now generated from one definition file each, adding a UCSF-teal Alma Mater and a JupyterLab-inspired Roche Limit family, with structured per-tool-result logging for observability. Existing settings, sessions, providers, extensions, skills, workflows, applications, knowledge bases, and usage history remain compatible.</p>
+          <div class="news-link">View the release notes →</div>
+        </div>
+      </a>
       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1" target="_blank" class="news-row">
         <div class="news-date">
           <div class="day">15</div>
