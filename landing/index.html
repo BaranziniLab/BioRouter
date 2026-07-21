@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UCSF Biorouter</title>
-  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="icon" href="icon-transparent.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="shared.css" />
   <link rel="stylesheet" href="app-mockups.css" />
   <style>
@@ -191,12 +191,17 @@
       position: sticky; top: 58px;
       height: calc(100vh - 58px); min-height: 600px;
       display: flex; flex-direction: column; overflow: hidden;
+      /* a soft warm workspace ground, so the crisp app windows read as an app on a desk */
+      background:
+        radial-gradient(85% 60% at 27% 30%, rgba(207,109,71,0.05), transparent 62%),
+        radial-gradient(80% 70% at 100% 100%, rgba(5,32,73,0.045), transparent 55%),
+        #f5efe2;
     }
     .deck--live .deck-head { flex-shrink: 0; padding-top: 22px; padding-bottom: 2px; }
     .deck--live .deck-head h2 { font-size: clamp(21px, 2.5vw, 29px); }
     .deck--live .deck-head p { font-size: 13px; margin-top: 6px; }
     .deck--live .deck-stage {
-      flex: 1; min-height: 0; perspective: 2000px; overflow: hidden;
+      flex: 1; min-height: 0; overflow: hidden;
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 42px, #000 calc(100% - 30px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, #000 42px, #000 calc(100% - 30px), transparent 100%);
     }
@@ -204,8 +209,7 @@
     .deck--live .deck-card {
       position: absolute; inset: 0; padding: 0;
       grid-template-columns: 1.4fr 1fr; grid-template-rows: 1fr; gap: 36px; align-items: center;
-      border-bottom: none; transform-style: preserve-3d;
-      will-change: transform, opacity; backface-visibility: hidden;
+      border-bottom: none; will-change: transform, opacity;
     }
     .deck--live .deck-media { grid-column: 1; grid-row: 1; min-width: 0; display: flex; align-items: center; justify-content: center; }
     .deck--live .deck-media .frame { width: auto; }
@@ -254,7 +258,7 @@
 
 <nav id="navbar">
   <a class="nav-brand" href="./">
-    <img src="icon.svg" class="nav-logo" alt="Biorouter" />
+    <img src="icon-transparent.svg" class="nav-logo" alt="Biorouter" />
     <span class="nav-title">UCSF Biorouter</span>
   </a>
   <ul class="nav-tabs">
@@ -306,19 +310,6 @@
     </div>
   </div>
 
-  <div class="hero-video reveal up">
-    <a class="video-card" href="#product-tour" aria-label="Watch the Biorouter product tour">
-      <video
-        autoplay muted loop playsinline preload="metadata"
-        poster="assets/videos/posters/biorouter-hero.jpg"
-        aria-label="Biorouter in motion — a 30-second overview of chat, secure model routing, knowledge, parallel agents and workflows"
-      >
-        <source src="assets/videos/biorouter-hero.webm" type="video/webm" />
-        <source src="assets/videos/biorouter-hero.mp4" type="video/mp4" />
-      </video>
-    </a>
-    <div class="cap"><span>Biorouter in motion — 30s overview. <a href="#product-tour">Watch the full product tour ↓</a></span></div>
-  </div>
 
   <div class="slack-section">
     <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank" class="slack-cta">
@@ -707,12 +698,11 @@
         const d = i - p;                          // signed distance from active
         const ad = Math.abs(d);
         const cd = clamp(d, -1.3, 2.8);
-        const y = cd * stageH * 0.62;             // next rises from below, prev exits above
-        const s = 1 - Math.min(ad, 2) * 0.06;
+        const y = cd * stageH * 0.6;              // next rises from below, prev exits above
         const o = ad <= 0.5 ? (1 - ad * 0.55) : Math.max(0, 0.725 - (ad - 0.5) * 1.45);
-        const rot = -clamp(d, -1, 1) * 4;         // gentle 3D tilt, capped
         const c = cards[i];
-        c.style.transform = 'translate3d(0,' + y.toFixed(1) + 'px,0) rotateX(' + rot.toFixed(2) + 'deg) scale(' + s.toFixed(3) + ')';
+        // translate + opacity only: no scale or rotate, so the app windows stay razor sharp
+        c.style.transform = 'translate3d(0,' + y.toFixed(1) + 'px,0)';
         c.style.opacity = o.toFixed(3);
         c.style.zIndex = String(300 - Math.round(ad * 20));
         c.style.pointerEvents = ad < 0.5 ? 'auto' : 'none';
