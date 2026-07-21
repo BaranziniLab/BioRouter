@@ -650,6 +650,11 @@ mod tests {
 
     // --- the public entry point -------------------------------------------
 
+    // Unix-only: uses the host-platform classifier with the Unix system path
+    // `/etc`, which is a system dir only on Unix. On Windows `/etc` is an ordinary
+    // path, so this asserts Unix behaviour and runs on Unix. (Windows system-dir
+    // handling is covered by the policy layer's platform-forced tests.)
+    #[cfg(unix)]
     #[test]
     fn editor_write_to_system_dir_is_flagged() {
         let finding = sensitive_file_operation(
@@ -703,6 +708,8 @@ mod tests {
     }
 
     /// Gate (b): in Auto mode a sensitive-path write is routed to approval.
+    /// Unix-only: `/etc` is a host system dir only on Unix.
+    #[cfg(unix)]
     #[tokio::test]
     async fn auto_mode_routes_sensitive_write_to_approval() {
         let inspector = SensitiveOpsInspector;
@@ -962,7 +969,9 @@ record_result("ok");"#;
 
     /// End-to-end at the inspector: a `developer/shell` sensitive write in Auto
     /// mode is routed to approval (uses `/etc`, a host system dir, so the fixture
-    /// is deterministic regardless of `$HOME`).
+    /// is deterministic regardless of `$HOME`). Unix-only: `/etc` is a system dir
+    /// only on Unix.
+    #[cfg(unix)]
     #[tokio::test]
     async fn auto_mode_routes_shell_sensitive_write_to_approval() {
         let inspector = SensitiveOpsInspector;
@@ -994,7 +1003,9 @@ record_result("ok");"#;
     }
 
     /// End-to-end: an `execute_code` script that hides a sensitive shell write in
-    /// its body is routed to approval in Auto mode (the R2-01 gate).
+    /// its body is routed to approval in Auto mode (the R2-01 gate). Unix-only:
+    /// `/etc` is a host system dir only on Unix.
+    #[cfg(unix)]
     #[tokio::test]
     async fn auto_mode_routes_execute_code_sensitive_write_to_approval() {
         let inspector = SensitiveOpsInspector;
