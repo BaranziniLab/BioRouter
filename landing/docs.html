@@ -1968,33 +1968,30 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <p>For work that is best isolated, the main agent can spawn a subagent: a temporary BioRouter instance that runs a task on its own and reports back, keeping its tool activity out of your main conversation. You ask for one in plain language ("use a code reviewer to check this function", "research this and summarize the findings"), and the agent decides when delegation helps. Subagents can run one after another or in parallel, inherit the extensions of the session that launched them (or a restricted set you name), and return either a full trace or just the result.</p>
 
 <figure class="doc-figure">
-<svg viewBox="0 0 640 290" role="img" aria-label="Lead agent delegating to worker subagents">
+<svg viewBox="0 0 640 300" role="img" aria-label="Lead agent delegating to worker subagents">
   <defs>
-    <marker id="dnO" markerWidth="9" markerHeight="9" refX="4.5" refY="8" orient="auto"><path d="M0,0 L9,0 L4.5,8 Z" fill="#b85a32"/></marker>
-    <marker id="upO" markerWidth="9" markerHeight="9" refX="4.5" refY="1" orient="auto"><path d="M0,9 L9,9 L4.5,1 Z" fill="#052049"/></marker>
+    <marker id="oDown" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#b85a32"/></marker>
+    <marker id="oUp" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto-start-reverse"><path d="M0,0 L9,4.5 L0,9 Z" fill="#052049"/></marker>
   </defs>
-  <rect x="238" y="20" width="164" height="58" rx="12" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="320" y="45" text-anchor="middle" font-size="14" font-weight="700" fill="#8a3f1d">Lead agent</text>
-  <text x="320" y="63" text-anchor="middle" font-size="11" fill="#7a4a30">plans and delegates</text>
+  <!-- one connector per worker: coral arrowhead into the worker (delegate),
+       navy arrowhead back into the lead (report). Nothing crosses. -->
+  <line x1="300" y1="84" x2="140" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
+  <line x1="320" y1="84" x2="320" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
+  <line x1="340" y1="84" x2="500" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
 
-  <!-- three workers -->
+  <rect x="238" y="24" width="164" height="58" rx="12" fill="#f7ece5" stroke="#e6c3ac"/>
+  <text x="320" y="49" text-anchor="middle" font-size="14" font-weight="700" fill="#8a3f1d">Lead agent</text>
+  <text x="320" y="67" text-anchor="middle" font-size="11" fill="#7a4a30">plans and delegates</text>
+
   <rect x="60" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="135" y="232" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 1</text>
+  <text x="135" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 1</text>
   <rect x="245" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="320" y="232" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 2</text>
+  <text x="320" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 2</text>
   <rect x="430" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="505" y="232" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 3</text>
+  <text x="505" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 3</text>
 
-  <!-- delegate down (left side of each pair) -->
-  <line x1="300" y1="82" x2="150" y2="196" stroke="#b85a32" stroke-width="1.8" marker-end="url(#dnO)"/>
-  <line x1="318" y1="82" x2="312" y2="196" stroke="#b85a32" stroke-width="1.8" marker-end="url(#dnO)"/>
-  <line x1="340" y1="82" x2="490" y2="196" stroke="#b85a32" stroke-width="1.8" marker-end="url(#dnO)"/>
-  <!-- report up (right side) -->
-  <line x1="160" y1="196" x2="305" y2="82" stroke="#052049" stroke-width="1.8" marker-end="url(#upO)"/>
-  <line x1="328" y1="196" x2="330" y2="82" stroke="#052049" stroke-width="1.8" marker-end="url(#upO)"/>
-  <line x1="500" y1="196" x2="345" y2="82" stroke="#052049" stroke-width="1.8" marker-end="url(#upO)"/>
-  <text x="196" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b85a32">delegate</text>
-  <text x="450" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#052049">report back</text>
+  <text x="178" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b85a32">delegate</text>
+  <text x="470" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#052049">report back</text>
 </svg>
 <figcaption>A lead agent breaks a task into parts, hands each to a worker subagent, and collects what they return.</figcaption>
 </figure>
@@ -2235,13 +2232,15 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
   <text x="370" y="242" text-anchor="middle" font-size="15" font-weight="700" fill="#2a2520">Extensions</text>
   <text x="370" y="262" text-anchor="middle" font-size="12" fill="#635c54">Pluggable MCP servers that provide tools</text>
 
-  <!-- down arrow: request -->
-  <line x1="96" y1="30" x2="96" y2="270" stroke="#b85a32" stroke-width="2" marker-end="url(#dn3)"/>
-  <text x="80" y="150" text-anchor="middle" font-size="11.5" font-weight="600" fill="#b85a32" transform="rotate(-90 80 150)">request</text>
-
-  <!-- up arrow: result -->
-  <line x1="644" y1="270" x2="644" y2="30" stroke="#052049" stroke-width="2" marker-end="url(#up3)"/>
-  <text x="660" y="150" text-anchor="middle" font-size="11.5" font-weight="600" fill="#052049" transform="rotate(90 660 150)">tool result</text>
+  <!-- flow shown between adjacent layers: request down (coral), result up (navy) -->
+  <line x1="322" y1="90" x2="322" y2="113" stroke="#b85a32" stroke-width="2.2" marker-end="url(#dn3)"/>
+  <line x1="418" y1="113" x2="418" y2="90" stroke="#052049" stroke-width="2.2" marker-end="url(#up3)"/>
+  <line x1="322" y1="187" x2="322" y2="210" stroke="#b85a32" stroke-width="2.2" marker-end="url(#dn3)"/>
+  <line x1="418" y1="210" x2="418" y2="187" stroke="#052049" stroke-width="2.2" marker-end="url(#up3)"/>
+  <text x="312" y="106" text-anchor="end" font-size="10.5" font-weight="600" fill="#b85a32">request</text>
+  <text x="428" y="106" text-anchor="start" font-size="10.5" font-weight="600" fill="#052049">result</text>
+  <text x="312" y="203" text-anchor="end" font-size="10.5" font-weight="600" fill="#b85a32">request</text>
+  <text x="428" y="203" text-anchor="start" font-size="10.5" font-weight="600" fill="#052049">result</text>
 </svg>
 <figcaption>Three layers: the interface talks to the agent, which calls extensions and returns results back up.</figcaption>
 </figure>
