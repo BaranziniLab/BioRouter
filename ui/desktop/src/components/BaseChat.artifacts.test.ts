@@ -244,6 +244,60 @@ describe('collectArtifactsFromMessages', () => {
     expect(collectArtifactsFromMessages(messages)).toEqual([]);
   });
 
+  it('drops a relative prose path when there is no working dir to anchor it', () => {
+    // Defect B: keeping the raw `./results/plot.png` let the main process resolve
+    // it against the ELECTRON process cwd — previewing whatever folder of that
+    // name sat at the app's launch dir. Unanchorable relative paths are dropped.
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'See ./results/plot.png in the output folder.' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages)).toEqual([]);
+  });
+
+  it('anchors a relative prose path once a working dir is available', () => {
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'See ./results/plot.png in the output folder.' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', title: 'plot.png', path: '/work/results/plot.png' },
+    ]);
+  });
+
+  it('disambiguates same-basename artifacts so the wrong folder is not opened by mistake', () => {
+    // Defect C: two different folders/files sharing a basename ("data", "report.pdf")
+    // both showed as just the basename — indistinguishable in the tab strip, and a
+    // wrong-path preview hides behind the expected name. Widen the colliding labels
+    // to the shortest trailing suffix that separates them; the path stays the identity.
+    const messages = [
+      visibleMessage([
+        { type: 'text', text: 'Compare /proj/alpha/report.pdf and /proj/bravo/report.pdf here.' },
+      ]),
+    ];
+    expect(collectArtifactsFromMessages(messages)).toEqual([
+      { kind: 'file', title: 'alpha/report.pdf', path: '/proj/alpha/report.pdf' },
+      { kind: 'file', title: 'bravo/report.pdf', path: '/proj/bravo/report.pdf' },
+    ]);
+  });
+
+  it('widens a disambiguated label further when the parent segment also collides', () => {
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'Compare /x/data/out.csv and /y/data/out.csv here.' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages).map((a) => a.title)).toEqual([
+      'x/data/out.csv',
+      'y/data/out.csv',
+    ]);
+  });
+
+  it('leaves a unique basename untouched', () => {
+    const messages = [
+      visibleMessage([{ type: 'text', text: 'Open /proj/alpha/report.pdf now please.' }]),
+    ];
+    expect(collectArtifactsFromMessages(messages)).toEqual([
+      { kind: 'file', title: 'report.pdf', path: '/proj/alpha/report.pdf' },
+    ]);
+  });
+
   it('previews an R script and the image its shell run produced', () => {
     const messages: Message[] = [
       writeRequest('t1', 'developer__text_editor', { command: 'write', path: 'analysis.R' }),

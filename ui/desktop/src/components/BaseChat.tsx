@@ -430,7 +430,14 @@ function collectTextArtifacts(text: string, workingDir?: string): ArtifactSource
     const href = match[0];
     if (!looksLikePreviewableFile(href)) continue;
     const rawPath = pathFromArtifactHref(href);
-    const path = resolveArtifactPath(rawPath, workingDir) ?? rawPath;
+    // DROP a relative path we cannot anchor, exactly as the tool-call collector
+    // does — never fall back to the raw relative string. A `./output` kept as-is
+    // reaches the main process, which resolves it against the ELECTRON process's
+    // own cwd, not the session's — so the panel would preview whatever folder of
+    // that name happens to sit at the app's launch directory. An absolute / `~`
+    // path resolves to itself and is kept.
+    const path = resolveArtifactPath(rawPath, workingDir);
+    if (!path) continue;
     artifacts.push({
       kind: 'file',
       title: basenameFromPath(path),
@@ -466,6 +473,63 @@ function isSuccessfulToolResult(toolResult: Record<string, unknown>): boolean {
 // (slug derived from the report title). Used to collapse a report the agent
 // re-renders within one turn down to its final version.
 const DASHBOARD_URI_PREFIX = 'ui://dashboard/';
+
+/**
+ * Distinguish file artifacts whose basenames collide.
+ *
+ * A folder artifact's tab label and its preview header are its basename only, so
+ * two genuinely different folders — `/proj/a/data` and `/proj/b/data`, or the
+ * `data/` created under two runs — both read as just "data". The artifact
+ * IDENTITY is the full path, so they are correctly two tabs; but a reader
+ * glancing at "data" cannot tell which is which and opens the wrong one, and any
+ * mis-resolved path hides behind the expected basename. When a basename is
+ * shared, widen each colliding label to the shortest trailing path suffix that
+ * makes them unique (`a/data` vs `b/data`); the full path stays in the identity
+ * and the hover tooltip.
+ */
+function disambiguateFileArtifactTitles(artifacts: ArtifactSource[]): ArtifactSource[] {
+  const collisions = new Map<string, number>();
+  for (const artifact of artifacts) {
+    if (artifact.kind === 'file') {
+      collisions.set(artifact.title, (collisions.get(artifact.title) ?? 0) + 1);
+    }
+  }
+  if (![...collisions.values()].some((count) => count > 1)) return artifacts;
+
+  const segmentsOf = (path: string) =>
+    path
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .filter(Boolean);
+  const suffix = (segments: string[], depth: number) => segments.slice(-depth).join('/');
+
+  // Per colliding basename, find the smallest suffix depth that separates the group.
+  const groups = new Map<string, number[]>();
+  artifacts.forEach((artifact, index) => {
+    if (artifact.kind === 'file' && (collisions.get(artifact.title) ?? 0) > 1) {
+      const arr = groups.get(artifact.title) ?? [];
+      arr.push(index);
+      groups.set(artifact.title, arr);
+    }
+  });
+
+  const result = artifacts.slice();
+  for (const indices of groups.values()) {
+    const segs = indices.map((i) => segmentsOf((result[i] as { path: string }).path));
+    const maxDepth = Math.max(...segs.map((s) => s.length));
+    let depth = 2;
+    while (depth < maxDepth) {
+      const labels = segs.map((s) => suffix(s, depth));
+      if (new Set(labels).size === labels.length) break;
+      depth += 1;
+    }
+    indices.forEach((i, k) => {
+      const label = suffix(segs[k], depth);
+      if (label) result[i] = { ...result[i], title: label } as ArtifactSource;
+    });
+  }
+  return result;
+}
 
 export function collectArtifactsFromMessages(
   messages: Message[],
@@ -554,7 +618,7 @@ export function collectArtifactsFromMessages(
     }
   }
 
-  return artifacts;
+  return disambiguateFileArtifactTitles(artifacts);
 }
 
 /**
