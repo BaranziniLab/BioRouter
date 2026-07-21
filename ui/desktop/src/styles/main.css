@@ -1384,7 +1384,14 @@
    because a 1px pointer target is a dexterity test. */
 .br-group-splitter {
   position: relative;
-  z-index: 10;
+  /* ABOVE the pane content, or the grab never lands. A pane's chat content sits
+     in a `z-[60]` layer (BaseChat.tsx) and the route surface is `z-[60]` too, so
+     a splitter at the old z-index:10 was painted UNDER the content: every
+     pointerdown on the 1px line hit the conversation instead, and the divider
+     could not be dragged at all. --z-sticky (100) clears the z-60 content while
+     staying under dropdowns (200) / overlays (300) / modals (400), so menus and
+     popovers still open above the divider. */
+  z-index: var(--z-sticky);
   flex: 0 0 1px;
   background: var(--border-subtle);
   cursor: row-resize;
@@ -1397,14 +1404,14 @@
 
 /* Widen the hit area ACROSS the line, never along it: a `col` branch's splitter
    is a horizontal rule, so it grows vertically; a `row` branch's is vertical, so
-   it grows horizontally. Overhang 4px each side => a 9px target for a 1px line.
-   Sits above the panes via the parent's z-index, so the grab works right up to
-   the boundary. */
+   it grows horizontally. Overhang 6px each side => a 13px target for a 1px line,
+   generous enough to grab without aiming. Sits above the panes via the parent's
+   z-index (--z-sticky), so the grab works right up to the boundary. */
 .br-group-splitter::after {
   content: '';
   position: absolute;
-  top: -4px;
-  bottom: -4px;
+  top: -6px;
+  bottom: -6px;
   left: 0;
   right: 0;
 }
@@ -1412,8 +1419,8 @@
 .br-group-splitter--row::after {
   top: 0;
   bottom: 0;
-  left: -4px;
-  right: -4px;
+  left: -6px;
+  right: -6px;
 }
 
 .br-group-splitter:hover {
