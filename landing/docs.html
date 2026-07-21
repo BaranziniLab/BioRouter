@@ -58,6 +58,10 @@
        blocks wrap at spaces instead of hiding their ends behind a scroll */
     .docs-content .doc-table code { white-space: nowrap; }
     .docs-content pre { white-space: pre-wrap; }
+    /* wide reference tables scroll inside their own box instead of pushing the
+       page sideways or colliding columns on narrow screens */
+    .doc-table-scroll { overflow-x: auto; max-width: 100%; }
+    .doc-table-scroll .doc-table { margin: 0; }
 
     .doc-next {
       display: flex; align-items: center; gap: 10px; margin-top: 44px; padding-top: 24px;
@@ -74,7 +78,6 @@
       .docs-nav-label { display: none; }
       .docs-nav-item { padding: 7px 12px; font-size: 13px; flex-shrink: 0; width: auto; background: var(--bg-3); }
       .docs-nav-item .icon { display: none; }
-      .doc-table { table-layout: fixed; width: 100%; max-width: 100%; }
       .doc-table th, .doc-table td { min-width: 0; overflow-wrap: anywhere; }
       code { overflow-wrap: anywhere; }
       pre { max-width: 100%; overflow-x: auto; }
@@ -241,7 +244,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <h2>Where your data lives</h2>
 <p>Biorouter keeps everything under your user config directory as plain files you can inspect, back up, and version. The desktop app and the CLI share this directory.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Path</th><th>Holds</th></tr></thead>
   <tbody>
     <tr><td><code>~/.config/biorouter/config.yaml</code></td><td>Providers, models, extensions, and settings</td></tr>
@@ -249,7 +252,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><td><code>~/.config/biorouter/workflows/</code> and <code>skills/</code></td><td>Installed workflows and skills</td></tr>
     <tr><td><code>~/.config/biorouter/logs/</code></td><td>Log files (check these first when something fails)</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="info-box" style="margin-top:16px;">
   <h4>Secrets never touch <code>config.yaml</code></h4>
   <p>API keys and credentials are written to your operating system's credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service), not to any config file. See <strong>Vaulting and security</strong> below for how that works.</p>
@@ -338,7 +341,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <h3>Navigation order</h3>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead>
     <tr><th>Item</th><th>What it opens</th></tr>
   </thead>
@@ -355,7 +358,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><td><strong>Apps</strong></td><td>Interactive apps the agent has built, plus their export controls.</td></tr>
     <tr><td><strong>Settings</strong></td><td>Providers and models, permission modes, themes, and the CLI install. Pinned to the footer.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <p>Each row is 32px tall with a line-drawn icon and a label. The active row is tinted and carries a 2px coral bar on its leading edge, the one place the accent colour appears in the sidebar.</p>
 
@@ -403,7 +406,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 <figcaption>The composer toolbar, left to right: working directory, attach, extensions, skills, knowledge, cost, model, and mode, with Send on the right.</figcaption>
 </figure>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead>
     <tr><th>#</th><th>Control</th><th>What it does</th></tr>
   </thead>
@@ -417,7 +420,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><td>7</td><td><strong>Model</strong> (brain + model name)</td><td>The model driving this chat. Click to switch model or provider mid-conversation.</td></tr>
     <tr><td>8</td><td><strong>Mode</strong> (label)</td><td>The permission mode: how much the agent may do on its own (autonomous, approve each action, or chat only). Click to change it.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <div class="info-box">
   <h4>The toolbar folds when the chat is narrow</h4>
@@ -594,7 +597,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <p>Biorouter ships three theme families, each available in light and dark:</p>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead>
     <tr><th>Family</th><th>Character</th></tr>
   </thead>
@@ -603,7 +606,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><td><strong>Alma Mater</strong></td><td>UCSF brand: navy ground with a teal accent.</td></tr>
     <tr><td><strong>Roche Limit</strong></td><td>JupyterLab-inspired white, grey, and orange.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <div class="step-row">
   <div class="step-num">1</div>
@@ -637,7 +640,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <p>Shortcuts use <code>Cmd</code> on macOS and <code>Ctrl</code> on Windows and Linux, except where noted.</p>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead>
     <tr><th>Action</th><th>Shortcut</th></tr>
   </thead>
@@ -655,7 +658,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><td>Quick Launcher (start a session from anywhere)</td><td><code>Cmd+Option+Shift+G</code> (macOS), <code>Ctrl+Alt+Shift+G</code> (Windows/Linux)</td></tr>
     <tr><td>Quit</td><td><code>Cmd+Q</code></td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h2>Where to go next</h2>
 
@@ -681,13 +684,13 @@ biorouter --help               # print the top-level help and the full subcomman
 biorouter --version            # print the installed version (1.88.3)
 biorouter &lt;subcommand&gt; --help  # per-subcommand help, flags, and defaults</code></pre>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Purpose</th></tr></thead>
   <tbody>
     <tr><td><code>-h</code>, <code>--help</code></td><td>Show help for the CLI or any subcommand. Every subcommand accepts <code>--help</code>.</td></tr>
     <tr><td><code>-V</code>, <code>--version</code></td><td>Print the version and exit. The CLI (<code>biorouter</code>), the daemon (<code>biorouterd</code>), and the core library are compiled from one workspace version, so they never disagree.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <div class="info-box">
   <h4>Command aliases</h4>
@@ -713,7 +716,7 @@ biorouter &lt;subcommand&gt; --help  # per-subcommand help, flags, and defaults<
 <h3>session</h3>
 <p>Start or resume an interactive chat session. This is the CLI's main interface: a persistent conversation with the agent, tool calls, and slash commands. Alias: <code>s</code>.</p>
 <pre><code>biorouter session [--resume] [--history] [-n NAME | --session-id ID | --path PATH] [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-n, --name &lt;NAME&gt;</code></td><td>string</td><td>none</td><td>Name for the session. With <code>--resume</code>, resumes the session with this name if it exists; otherwise a new named session is created (with a warning) rather than erroring.</td></tr>
@@ -728,7 +731,7 @@ biorouter &lt;subcommand&gt; --help  # per-subcommand help, flags, and defaults<
     <tr><td><code>--with-streamable-http-extension &lt;URL&gt;</code></td><td>string (repeatable)</td><td>none</td><td>Add a remote extension over Streamable HTTP.</td></tr>
     <tr><td><code>--with-builtin &lt;NAME&gt;</code></td><td>comma list</td><td>none</td><td>Enable one or more built-in extensions by name, for example <code>developer,computercontroller</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code># Start a named session
 biorouter session -n gwas-analysis
 
@@ -748,7 +751,7 @@ biorouter session --with-builtin developer \
 <h4>session list</h4>
 <p>List saved sessions.</p>
 <pre><code>biorouter session list [-f text|json] [--ascending] [-w PATH] [-l N]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-f, --format &lt;FMT&gt;</code></td><td><code>text</code> or <code>json</code></td><td><code>text</code></td><td>Output format.</td></tr>
@@ -756,31 +759,31 @@ biorouter session --with-builtin developer \
     <tr><td><code>-w, --working_dir &lt;PATH&gt;</code></td><td>path</td><td>none</td><td>Filter by working directory. Short alias <code>-p</code>.</td></tr>
     <tr><td><code>-l, --limit &lt;N&gt;</code></td><td>integer</td><td>none</td><td>Limit the number of results.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h4>session remove</h4>
 <p>Remove one or more saved sessions. Runs interactively if no identifier or regex is given.</p>
 <pre><code>biorouter session remove [--session-id ID | -n NAME | -r REGEX]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--session-id &lt;ID&gt;</code></td><td>string</td><td>Remove a specific session by ID.</td></tr>
     <tr><td><code>-n, --name &lt;NAME&gt;</code></td><td>string</td><td>Remove a specific session by name.</td></tr>
     <tr><td><code>-r, --regex &lt;PATTERN&gt;</code></td><td>regex</td><td>Remove every session matching the pattern.</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="alert alert-warning">Removal is permanent. BioRouter lists the sessions to be removed and asks for confirmation before deleting.</div>
 
 <h4>session export</h4>
 <p>Export a session for backup, sharing, or documentation.</p>
 <pre><code>biorouter session export [IDENTIFIER] [-o FILE] [--format markdown|json|yaml]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-o, --output &lt;FILE&gt;</code></td><td>path</td><td>stdout</td><td>Write the export to a file instead of stdout.</td></tr>
     <tr><td><code>--format &lt;FMT&gt;</code></td><td><code>markdown</code>, <code>json</code>, <code>yaml</code></td><td><code>markdown</code></td><td><code>markdown</code> is a readable transcript; <code>json</code> and <code>yaml</code> are complete backups that preserve history, metadata, and settings.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code># Full JSON backup of a named session
 biorouter session export -n gwas-analysis --format json -o backup.json
 
@@ -790,41 +793,41 @@ biorouter session export --session-id 20251108_4</code></pre>
 <h4>session diagnostics</h4>
 <p>Generate a troubleshooting bundle (a ZIP) for a session.</p>
 <pre><code>biorouter session diagnostics [IDENTIFIER] [-o FILE]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-o, --output &lt;FILE&gt;</code></td><td>path</td><td><code>diagnostics_&lt;session_id&gt;.zip</code></td><td>Where to write the bundle.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>The bundle includes system information (version, OS, architecture, timestamp), the session's full message history, your configuration files, and recent logs.</p>
 <div class="alert alert-warning">Diagnostics bundles contain your session messages and system information. Review the contents before sharing publicly if the session includes API keys, personal data, or proprietary code.</div>
 
 <h4>session rename</h4>
 <p>Rename a saved session.</p>
 <pre><code>biorouter session rename [IDENTIFIER] --new-name "NAME"</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--new-name &lt;NAME&gt;</code></td><td>string (required)</td><td>The new session name.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h4>session diverge</h4>
 <p>Branch a stored conversation into a brand-new session, keeping the full history. The original is left untouched. The new session ID is printed to stdout; resume it with <code>biorouter session --resume --session-id &lt;ID&gt;</code>.</p>
 <pre><code>biorouter session diverge [IDENTIFIER] [--branch-name "NAME"]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--branch-name &lt;NAME&gt;</code></td><td>string</td><td>Optional name for the branched session.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <div class="alert alert-info">Sessions are stored in a SQLite database (<code>sessions.db</code>) under BioRouter's data directory, not as individual files. Older <code>.jsonl</code> sessions are imported automatically; the legacy files stay on disk but are no longer managed.</div>
 
 <h3>run</h3>
 <p>Execute a task non-interactively from an instruction file, a text string, stdin, or a workflow. This is the command for scripting and automation. By default it processes the input and exits; add <code>-s/--interactive</code> to continue in a chat afterward.</p>
 <pre><code>biorouter run (-i FILE | -t "TEXT" | --workflow NAME_OR_PATH) [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-i, --instructions &lt;FILE&gt;</code></td><td>path</td><td>none</td><td>Read the prompt from an instruction file. Use <code>-</code> for stdin. Mutually exclusive with <code>-t</code> and <code>--workflow</code>.</td></tr>
@@ -849,7 +852,7 @@ biorouter session export --session-id 20251108_4</code></pre>
     <tr><td><code>--model &lt;MODEL&gt;</code></td><td>string</td><td>config</td><td>Override the model for this run (overrides <code>BIOROUTER_MODEL</code>).</td></tr>
     <tr><td><code>--with-extension</code>, <code>--with-streamable-http-extension</code>, <code>--with-builtin</code></td><td>see <code>session</code></td><td>none</td><td>Same extension flags as <code>session</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code># One-shot prompt, machine-readable JSON, no stored session
 biorouter run --no-session -t "summarize this VCF header" --output-format json
 
@@ -867,7 +870,7 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
 
 <h3>Slash commands</h3>
 <p>Type these at the prompt. Press <code>/</code> then <code>Tab</code> to cycle through them; Tab also completes <code>/skill:</code> and <code>/ext:</code> references.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Command</th><th>Effect</th></tr></thead>
   <tbody>
     <tr><td><code>/help</code>, <code>/?</code></td><td>Show the in-session help with every slash command.</td></tr>
@@ -889,10 +892,10 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
     <tr><td><code>/r</code></td><td>Toggle full, untruncated tool output.</td></tr>
     <tr><td><code>/exit</code>, <code>/quit</code></td><td>Exit the session.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>Keyboard shortcuts</h3>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Key</th><th>Action</th></tr></thead>
   <tbody>
     <tr><td><code>Ctrl+C</code></td><td>Interrupt the current request. The conversation resets to before the interrupted turn.</td></tr>
@@ -901,7 +904,7 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
     <tr><td><code>Ctrl+R</code></td><td>Reverse-search command history. Type a term, press <code>Ctrl+R</code> to cycle backward and <code>Ctrl+S</code> to cycle forward, then <code>Enter</code> to run or <code>Esc</code> to cancel.</td></tr>
     <tr><td><code>Tab</code></td><td>Complete slash commands, file paths, and <code>/skill:</code> / <code>/ext:</code> references.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>Themes</h3>
 <p>The <code>/t</code> command controls syntax highlighting for markdown in CLI responses (headers, code blocks, emphasis). It affects fonts and colors only, not the terminal chrome. There are three themes: <code>light</code> and <code>dark</code> use subtle colors, and <code>ansi</code> is the most visually distinct. The default is <code>dark</code>. The choice is saved to the configuration file as <code>BIOROUTER_CLI_THEME</code> and persists between sessions; the <code>BIOROUTER_CLI_THEME</code> environment variable overrides the saved value for one session. The CLI theme is independent of the desktop app theme.</p>
@@ -911,7 +914,7 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
 <h3>workflow</h3>
 <p>Validate workflow files, install them into your library, generate shareable links, list what is available, and open workflows in BioRouter Desktop.</p>
 <pre><code>biorouter workflow &lt;install|validate|deeplink|open|list&gt; [ARGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>install</code></td><td><code>workflow install &lt;PATH&gt;</code></td><td>Install a workflow <code>.json</code> or <code>.yaml</code> file into the workflow library.</td></tr>
@@ -920,7 +923,7 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
     <tr><td><code>open</code></td><td><code>workflow open &lt;NAME&gt; [-p KEY=VALUE]...</code></td><td>Open the workflow in BioRouter Desktop. <code>-p/--param</code> pre-fills a parameter (repeatable).</td></tr>
     <tr><td><code>list</code></td><td><code>workflow list [--format text|json] [-v]</code></td><td>List workflows from local directories and configured GitHub repos. <code>--format</code> defaults to <code>text</code>; <code>-v/--verbose</code> adds titles and full paths.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code>biorouter workflow validate daily-report.yaml
 biorouter workflow deeplink daily-report.yaml -p region=us-west-2
 biorouter workflow list --verbose</code></pre>
@@ -928,7 +931,7 @@ biorouter workflow list --verbose</code></pre>
 <h3>schedule</h3>
 <p>Run workflows automatically on a cron schedule. Adding a job copies the current workflow into a <code>scheduled_workflows</code> directory in BioRouter's data dir, so later edits to the source file do not change the scheduled copy. Alias: <code>sched</code>.</p>
 <pre><code>biorouter schedule &lt;add|list|remove|sessions|run-now|cron-help&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>add</code></td><td><code>schedule add --schedule-id ID --cron "EXPR" --workflow-source PATH</code></td><td>Create a scheduled job. <code>--workflow-source</code> is a path to a YAML file (or a base64-encoded workflow). <code>--id</code> aliases <code>--schedule-id</code>.</td></tr>
@@ -938,7 +941,7 @@ biorouter workflow list --verbose</code></pre>
     <tr><td><code>run-now</code></td><td><code>schedule run-now --schedule-id ID</code></td><td>Run a scheduled workflow immediately.</td></tr>
     <tr><td><code>cron-help</code></td><td><code>schedule cron-help</code></td><td>Print a cron expression guide with common examples.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>Cron expressions may be 5-field (<code>minute hour day month weekday</code>), 6-field (with a leading seconds field), or shorthands like <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code>, <code>@monthly</code>.</p>
 <pre><code># Run every day at 9:00 AM (6-field form with seconds)
 biorouter schedule add --schedule-id daily-report \
@@ -954,31 +957,31 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
 <h3>extension</h3>
 <p>Install and manage MCP extensions distributed as <code>.brxt</code> bundles. Alias: <code>ext</code>.</p>
 <pre><code>biorouter extension &lt;install|list|remove&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis and flags</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>install</code></td><td><code>extension install &lt;PATH&gt; [--env KEY=VALUE]... [--secret KEY=VALUE]... [--no-enable]</code></td><td>Install from a <code>.brxt</code> bundle: extract, run <code>uv sync</code>, and register. <code>--env</code> sets a plain env var; <code>--secret</code> stores a value in the keyring; both repeatable. <code>--no-enable</code> installs without enabling.</td></tr>
     <tr><td><code>list</code></td><td><code>extension list [--format text|json]</code></td><td>List configured extensions.</td></tr>
     <tr><td><code>remove</code></td><td><code>extension remove &lt;NAME&gt; [--purge]</code></td><td>Remove a configured extension. <code>--purge</code> also deletes the installed files on disk.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>skill</h3>
 <p>Install and manage skills distributed as <code>.zip</code> archives.</p>
 <pre><code>biorouter skill &lt;install|list|remove&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>install</code></td><td><code>skill install &lt;PATH&gt; [--force]</code></td><td>Install a skill (or bundle) from a <code>.zip</code>. <code>--force</code> overwrites an existing install.</td></tr>
     <tr><td><code>list</code></td><td><code>skill list</code></td><td>List installed skills, including each slug.</td></tr>
     <tr><td><code>remove</code></td><td><code>skill remove &lt;SLUG&gt;</code></td><td>Remove an installed skill by its slug.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>knowledge</h3>
 <p>Manage personal, agent-maintained knowledge bases (markdown trees backed by git history). Alias: <code>kb</code>. Most subcommands default to the active knowledge base when <code>--kb</code> is omitted.</p>
 <pre><code>biorouter knowledge &lt;list|active|create|ingest|ingest-conversation|lint|hide|unhide|query&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis and key flags</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>list</code></td><td><code>knowledge list [--format text|json]</code></td><td>List knowledge bases; the active one is marked.</td></tr>
@@ -991,7 +994,7 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
     <tr><td><code>unhide</code></td><td><code>knowledge unhide &lt;ID&gt;</code></td><td>Make a hidden KB visible to the agent again.</td></tr>
     <tr><td><code>query</code></td><td><code>knowledge query "QUESTION" [--kb ID] [--save] [--provider P] [--model M]</code></td><td>Ask a question against a KB. <code>--save</code> persists the answer as a knowledge page.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code>biorouter knowledge create ms-genetics --name "MS genetics" --color "#cf6d47"
 biorouter knowledge active --set ms-genetics
 biorouter knowledge ingest --url https://example.org/paper --focus "risk loci"
@@ -1000,14 +1003,14 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
 <h3>apps</h3>
 <p>List, open, and serve BioRouter apps (the front-ends built by Agent Drafter). <code>open</code> and <code>serve</code> reuse a <code>biorouterd</code> already listening on the configured port (<code>BIOROUTER_PORT</code>, default 3000) or start one for you, then open <code>http://127.0.0.1:&lt;port&gt;/apps/&lt;id&gt;/</code>. Apps render in a real browser, not in the terminal.</p>
 <pre><code>biorouter apps &lt;list|open|serve&gt; [ARGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>list</code></td><td><code>apps list [--json]</code></td><td>List installed apps. <code>--json</code> emits machine-readable JSON instead of a table.</td></tr>
     <tr><td><code>open</code></td><td><code>apps open &lt;ID&gt;</code></td><td>Open an app in your default browser.</td></tr>
     <tr><td><code>serve</code></td><td><code>apps serve &lt;ID&gt;</code></td><td>Serve an app in the foreground until <code>Ctrl+C</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>mcp</h3>
 <p>Run one of the MCP servers bundled with BioRouter over stdio. MCP (Model Context Protocol) is the standard BioRouter extensions speak. This command is normally launched by a host, not typed by hand.</p>
@@ -1019,7 +1022,7 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
 <h3>models</h3>
 <p>Inspect and update provider and model configuration, and manage downloaded local models.</p>
 <pre><code>biorouter models &lt;current|providers|list|set|local&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>current</code></td><td><code>models current [--format text|json]</code></td><td>Show the configured provider and model.</td></tr>
@@ -1028,15 +1031,15 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
     <tr><td><code>set</code></td><td><code>models set --provider P --model M</code></td><td>Set the default provider and model.</td></tr>
     <tr><td><code>local</code></td><td><code>models local &lt;list|pull|rm&gt;</code></td><td>Manage on-disk local models (Llama Server). See below.</td></tr>
   </tbody>
-</table>
-<table class="doc-table">
+</table></div>
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th><code>models local</code> subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>list</code> (alias <code>ls</code>)</td><td><code>models local list [--format text|json]</code></td><td>List the local model catalog and what is already downloaded.</td></tr>
     <tr><td><code>pull</code></td><td><code>models local pull &lt;MODEL&gt;</code></td><td>Download (pre-cache) a model without starting a chat. Accepts a catalog name (for example <code>qwen3.5-4b</code>) or a raw <code>owner/repo:QUANT</code> Hugging Face spec.</td></tr>
     <tr><td><code>rm</code> (alias <code>delete</code>)</td><td><code>models local rm &lt;MODEL&gt;</code></td><td>Delete a downloaded model to reclaim disk space.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code>biorouter models current
 biorouter models list ollama --format json
 biorouter models set --provider openai --model gpt-5.5
@@ -1051,23 +1054,23 @@ biorouter models local pull qwen3.5-4b</code></pre>
 <h3>info</h3>
 <p>Print BioRouter's version and key paths: the config directory, <code>config.yaml</code>, the sessions SQLite database, and the logs directory. Each path is annotated when missing (and whether it can be created).</p>
 <pre><code>biorouter info [-v]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-v, --verbose</code></td><td>Also print the resolved configuration (the <code>config.yaml</code> values) as YAML.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>doctor</h3>
 <p>Check system prerequisites and the CLI install. It reports installed dependencies (git, uv, node, and others) with versions, whether <code>biorouter</code> is on your PATH, the local-model (Llama Server) sidecar status and model cache location, the shell-sandbox enforcement tier, and (unless skipped) whether a newer release is available.</p>
 <pre><code>biorouter doctor [--format text|json] [--no-update]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--format &lt;FMT&gt;</code></td><td><code>text</code> or <code>json</code></td><td><code>text</code></td><td>Human-readable report or machine-readable JSON.</td></tr>
     <tr><td><code>--no-update</code></td><td>flag</td><td>off</td><td>Skip the networked self-update check (faster, offline-friendly).</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>setup-path</h3>
 <p>Install the <code>biorouter</code> command onto your PATH by symlinking the running executable into a standard bin directory, so you can call it from any terminal. If the target directory is not on your PATH, it prints the exact <code>export PATH=...</code> line to add. Alias: <code>install-cli</code>.</p>
@@ -1076,7 +1079,7 @@ biorouter models local pull qwen3.5-4b</code></pre>
 <h3>usage</h3>
 <p>Report token and cost usage per day or per model, with a month-to-date summary against your configured monthly budget.</p>
 <pre><code>biorouter usage [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--by-model] [--json]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--from &lt;YYYY-MM-DD&gt;</code></td><td>date</td><td>30 days ago</td><td>Start of the range (local time).</td></tr>
@@ -1084,7 +1087,7 @@ biorouter models local pull qwen3.5-4b</code></pre>
     <tr><td><code>--by-model</code></td><td>flag</td><td>off (by day)</td><td>Group usage by model instead of by day.</td></tr>
     <tr><td><code>--json</code></td><td>flag</td><td>off</td><td>Emit machine-readable JSON instead of a table.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code>biorouter usage --from 2026-07-01 --to 2026-07-20 --by-model
 biorouter usage --json</code></pre>
 
@@ -1103,14 +1106,14 @@ biorouter usage --json</code></pre>
 
 <h3>term</h3>
 <pre><code>biorouter term &lt;init|run|info&gt; [ARGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>init</code></td><td><code>term init &lt;bash|zsh|fish|powershell&gt; [-n NAME] [--default]</code></td><td>Print the shell initialization script. It exports <code>BIOROUTER_SESSION_ID</code>, defines the <code>@biorouter</code> and <code>@g</code> aliases, and installs a preexec hook that logs your commands into the session. <code>-n/--name</code> names the terminal session; <code>--default</code> makes BioRouter the handler for unknown commands (zsh and bash only).</td></tr>
     <tr><td><code>run</code></td><td><code>term run &lt;prompt words...&gt;</code></td><td>Send a prompt to this terminal's session, with the recent shell history included as context. Words do not need quoting.</td></tr>
     <tr><td><code>info</code></td><td><code>term info</code></td><td>Print compact session info (a context-usage meter and the model name) for shell-prompt integration, for example <code>&#9679;&#9675;&#9675;&#9675;&#9675; sonnet</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="step-row"><div class="step-num">1</div><div class="step-body"><h3>Add the init line to your shell profile</h3><p>For zsh: <code>echo 'eval "$(biorouter term init zsh)"' &gt;&gt; ~/.zshrc</code>. Add <code>--default</code> if you want anything that is not a valid command sent to BioRouter.</p></div></div>
 <div class="step-row"><div class="step-num">2</div><div class="step-body"><h3>Reload the shell</h3><p><code>source ~/.zshrc</code> (or open a new terminal). Each terminal now keeps its own session that resumes automatically.</p></div></div>
 <div class="step-row"><div class="step-num">3</div><div class="step-body"><h3>Ask from the prompt</h3><p>Use the aliases created by the init script.</p></div></div>
@@ -1127,7 +1130,7 @@ biorouter usage --json</code></pre>
 <h3>web</h3>
 <p>Start BioRouter Web: a lightweight, browser-based chat interface launched from the CLI that mirrors the desktop chat experience. It is useful when you want a GUI without installing the desktop app, or need access from another device.</p>
 <pre><code>biorouter web [-p PORT] [--host HOST] [--open] [--auth-token TOKEN] [--no-auth]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>-p, --port &lt;PORT&gt;</code></td><td>integer</td><td><code>3000</code></td><td>Port to run the web server on.</td></tr>
@@ -1136,7 +1139,7 @@ biorouter usage --json</code></pre>
     <tr><td><code>--auth-token &lt;TOKEN&gt;</code></td><td>string</td><td>none</td><td>Require this token (as a password or bearer token) to access the interface.</td></tr>
     <tr><td><code>--no-auth</code></td><td>flag</td><td>off</td><td>Allow running without auth even when bound to a network address. Unsafe; use only on trusted networks.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code># Local web UI, open the browser
 biorouter web --open
 
@@ -1149,31 +1152,31 @@ biorouter web --host 192.168.1.7 --port 8080 --auth-token "$TOKEN"</code></pre>
 <p><code>biorouterd</code> is the REST plus WebSocket agent server. The desktop GUI spawns it on an ephemeral local port and talks to it over HTTP and WebSocket using a type-safe client generated from the OpenAPI spec. You rarely start it yourself, but you can run it headlessly to back a self-hosted GUI, an exported app, or automation.</p>
 <pre><code># Run the agent server (foreground, graceful shutdown on SIGINT/SIGTERM)
 biorouterd agent</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>BIOROUTER_PORT</code></td><td><code>3000</code></td><td>Port the daemon binds. This is the flat form (the <code>Settings</code> struct is flat); it is not <code>BIOROUTER_SERVER__PORT</code>.</td></tr>
     <tr><td><code>BIOROUTER_HOST</code></td><td><code>127.0.0.1</code></td><td>Address the daemon binds.</td></tr>
     <tr><td><code>BIOROUTER_SERVER__SECRET_KEY</code></td><td>random per run</td><td>Auth key required on requests. If unset, the daemon generates a random key for the process and logs a warning. The nested key uses the <code>__</code> separator. In debug-server mode this is <code>test</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>On start the daemon publishes its base URL as <code>BIOROUTER_APP_BASE_URL</code> so in-process tools can emit absolute <code>http://host:port/apps/&lt;id&gt;/</code> links. CORS is restricted to local origins. The daemon also exposes the same bundled MCP servers via <code>biorouterd mcp &lt;server&gt;</code>.</p>
 
 <h3>acp</h3>
 <p>Run BioRouter as an Agent Client Protocol (ACP) agent server so ACP-compatible clients (for example Zed) can drive it. It speaks over stdio by default, or over a WebSocket with <code>--ws</code>. Clients normally launch and manage this process; you rarely run it by hand.</p>
 <pre><code>biorouter acp [--with-builtin NAMES] [--ws [ADDR]]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--with-builtin &lt;NAMES&gt;</code></td><td>comma list</td><td>none</td><td>Enable built-in extensions by name.</td></tr>
     <tr><td><code>--ws [ADDR]</code></td><td>optional string</td><td><code>127.0.0.1:11577</code> when the flag is given without a value</td><td>Serve ACP over a WebSocket at <code>ADDR</code> instead of stdio. Used for agent-enabled artifacts.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>bench</h3>
 <p>Evaluate a system configuration across a range of practical tasks. Intended for benchmarking and model evaluation.</p>
 <pre><code>biorouter bench &lt;init-config|run|selectors|eval-model|exec-eval|generate-leaderboard&gt; [FLAGS]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Subcommand</th><th>Synopsis</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>init-config</code></td><td><code>bench init-config -n &lt;FILE&gt;</code></td><td>Write a starter config file.</td></tr>
@@ -1183,17 +1186,17 @@ biorouterd agent</code></pre>
     <tr><td><code>exec-eval</code></td><td><code>bench exec-eval -c &lt;CONFIG&gt;</code></td><td>Run a single eval.</td></tr>
     <tr><td><code>generate-leaderboard</code></td><td><code>bench generate-leaderboard -b &lt;DIR&gt;</code></td><td>Generate a leaderboard CSV from a benchmark results directory.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>completion</h3>
 <p>Generate a shell completion script.</p>
 <pre><code>biorouter completion &lt;bash|zsh|fish|powershell|elvish&gt; [--bin-name biorouter]</code></pre>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>--bin-name &lt;NAME&gt;</code></td><td><code>biorouter</code></td><td>Custom binary name to embed in the completion script.</td></tr>
   </tbody>
-</table>
+</table></div>
 <pre><code># zsh: source the completion for the current shell
 source &lt;(biorouter completion zsh)</code></pre>
 
@@ -1219,7 +1222,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 
 <h2>Environment variables the CLI honors</h2>
 <p>Environment variables override the config file for a single invocation. This is the CLI-relevant subset; the full reference lives on the environment variables page.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Variable</th><th>Purpose</th><th>Default</th></tr></thead>
   <tbody>
     <tr><td><code>BIOROUTER_PROVIDER</code></td><td>LLM provider to use.</td><td>must be configured</td></tr>
@@ -1239,7 +1242,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><code>BIOROUTER_TERMINAL</code></td><td>Set to <code>1</code> automatically while BioRouter runs a shell command, so your shell profile can adjust behavior.</td><td>unset</td></tr>
     <tr><td><code>ALPHA_FEATURES</code></td><td>Enable experimental alpha features.</td><td>off</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>For the daemon-specific variables (<code>BIOROUTER_PORT</code>, <code>BIOROUTER_HOST</code>, <code>BIOROUTER_SERVER__SECRET_KEY</code>), see the daemon section above.</p>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#providers" onclick="showDoc('providers');return false;">Providers &amp; models &rarr;</a></div>
       </div>
@@ -1269,7 +1272,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 
 <h2>Commercial cloud</h2>
 <p>Direct API access to hosted providers. Paste an API key (or complete the provider's sign-in flow) and BioRouter reads that provider's live model catalog. The shipping commercial providers are:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Provider</th><th>Notes</th></tr></thead>
   <tbody>
     <tr><td><strong>Anthropic</strong></td><td>Direct access to Claude models.</td></tr>
@@ -1291,7 +1294,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>AWS SageMaker TGI</strong></td><td>Models you deploy on SageMaker endpoints using Text Generation Inference.</td></tr>
     <tr><td><strong>Custom (OpenAI-compatible)</strong></td><td>Any OpenAI-compatible endpoint, added through the "Add Custom Provider" card (display name, base URL, key variable, models, streaming).</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h2>Adding a provider</h2>
 <p>Providers are managed in <strong>Settings &rarr; Models</strong>. Each card shows its status (configured or not), a Configure button to enter an API key or credentials, and a Launch button to switch to that provider and choose a model. Paste your key, pick a model from the live catalog, and you are ready. Keys are written to your operating system's credential store, not to any config file. From the terminal, run <code>biorouter configure</code> and select "Configure Providers".</p>
@@ -1321,7 +1324,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 
 <h2>Built-in extensions</h2>
 <p>These ship inside BioRouter, so nothing needs to be installed. The default-on set is the working toolkit most sessions use; the opt-in set is there when a task calls for it.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th><th>Key tools</th></tr></thead>
   <tbody>
     <tr><td><strong>Developer</strong></td><td>On</td><td>The core agent toolkit: file operations, shell commands, code search and text editing. Its <code>shell</code> and <code>text_editor</code> tools run with your user privileges, so it carries the most security guidance of any extension.</td><td><code>shell</code>, <code>text_editor</code>, <code>analyze</code>, <code>screen_capture</code>, <code>image_processor</code></td></tr>
@@ -1337,7 +1340,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>Code Execution</strong></td><td>On</td><td>Backs Code Mode: instead of calling tools one at a time, the model writes one short JavaScript program that batches many tool calls into a single execution, using the context window more efficiently.</td><td><code>execute_code</code>, <code>search_modules</code>, <code>read_module</code></td></tr>
     <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds <a href="#doc-apps">BioRouter apps</a>: TypeScript front-ends wired to a live per-app agent, and exports them as standalone, directly runnable projects (see below).</td><td><code>create_app</code>, <code>configure_app</code>, <code>build_app</code>, <code>export_app</code>, plus the <code>ui_*</code> tools</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="alert alert-warning">
   <strong>Two built-ins act with your user privileges.</strong> Developer (<code>shell</code>, <code>text_editor</code>) and Computer Controller (<code>computer_control</code>) can run any command and change your machine. In the default Autonomous mode BioRouter does this without asking. Switch to Smart Approval or Manual Approval, set per-tool permissions, and use a <code>.biorouterignore</code> file to constrain them for sensitive work.
 </div>
@@ -1390,7 +1393,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 <h2>Extension agents in the marketplace</h2>
 <p>BAAM features a set of extension agents that connect BioRouter to specialized data and services. Each installs as a <code>.brxt</code> bundle. Several are UCSF connectors that need institutional credentials.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Agent</th><th>What it connects</th><th>Credentials</th></tr></thead>
   <tbody>
     <tr><td><strong>SPOKEAgent</strong></td><td>Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways).</td><td><code>SPOKEAGENT_PASSCODE</code> from the UCSF wiki credentials page.</td></tr>
@@ -1400,7 +1403,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
     <tr><td><strong>CodeGraphAgent</strong></td><td>A pre-indexed code knowledge graph across 23 languages ("who calls X?", "what breaks if I change Z?").</td><td>None.</td></tr>
     <tr><td><strong>BiorOffice</strong></td><td>Create, read, and edit Word, Excel, and PowerPoint files from chat.</td><td>None. No Microsoft Office install needed.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h2 id="doc-skills">Skills</h2>
 <p>A <strong>skill</strong> is a reusable instruction set: a folder containing a <code>SKILL.md</code> file with YAML frontmatter (<code>name</code>, <code>description</code>) followed by freeform instructions that teach the agent to do one thing the same way every time. Unlike extensions, which add tools, skills add procedural knowledge: checklists, deployment procedures, analysis conventions, and API guides. A skill folder may also carry helper scripts and templates the agent reads while it runs.</p>
@@ -1419,7 +1422,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 <h3>The Apps SDK v2</h3>
 <p>Every app imports a small client runtime and talks to its agent over one WebSocket. The SDK provides:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Piece</th><th>What it provides</th></tr></thead>
   <tbody>
     <tr><td><code>br.*</code> client runtime</td><td>Prompt, stream, cancel, subscribe to lifecycle events, and read context usage. <code>br.model</code> lists providers and live-switches the session model; <code>br.kb</code> reads and ingests into granted knowledge bases; <code>br.state</code> exposes the shared document; <code>br.agent(name)</code> reaches a worker profile.</td></tr>
@@ -1429,7 +1432,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
     <tr><td>Theme packs</td><td>An app inherits BioRouter's look, and the agent can restyle it within allowed bounds using theme packs, accents, and custom tokens.</td></tr>
     <tr><td>Multi-agent worker profiles</td><td>An app can declare named worker profiles, each a full alternate agent config (its own model, prompt, extensions, and KB) validated to be a capability subset of the app. The main agent consults them for self-contained sub-questions.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>Building and exporting an app</h3>
 <p>Agent Drafter exposes tools for the whole lifecycle. <code>create_app</code> scaffolds a project (a working starter archetype plus a manifest); <code>configure_app</code> and <code>update_app</code> set the persona, model, capabilities, and edit the source; <code>build_app</code> bundles <code>src/main.ts</code> with esbuild, refreshes the vendored SDK, and runs its lint checks; and <code>export_app</code> writes a standalone folder.</p>
@@ -1447,7 +1450,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 <h2>What a knowledge base is</h2>
 <p>Each knowledge base is one directory and one git repository, stored under <code>~/.config/biorouter/knowledge/&lt;kb-id&gt;/</code>. Inside it, the raw sources you added and the pages the agent wrote are kept separate, so you can always re-derive a page from its original:</p>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Path</th><th>What it holds</th></tr></thead>
   <tbody>
     <tr><td><code>raw/&lt;source-id&gt;/</code></td><td>Each ingested source, untouched: the original file, the markdown Biorouter converted it to (<code>source.md</code>), and a <code>meta.yaml</code> with its title, URL, checksum, and credibility grade.</td></tr>
@@ -1457,7 +1460,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
     <tr><td><code>schema.md</code></td><td>Per-base instructions that tell the agent how to maintain <em>this</em> base. You can edit it.</td></tr>
     <tr><td><code>.git/</code></td><td>The hidden git repository. Every ingest, link, and edit is a commit. Git is statically built into Biorouter, so no system <code>git</code> is required.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <div class="alert alert-info">
   <strong>Local by design.</strong> Bases never leave your disk. The only network calls Biorouter makes for a base are credibility lookups (Crossref and OpenAlex) and the model you choose to run the digest. You can keep as many bases as you like; the design targets a handful of bases, each up to a few hundred pages, not a search index over thousands of documents.
@@ -1516,7 +1519,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 <h3>The graph and credibility colors</h3>
 <p>The Knowledge route renders the base as a force-directed graph: each page is a node, each <code>[[…]]</code> reference is an edge. Hub pages are drawn larger and labeled. Node color encodes the page kind, and source nodes are colored by how credible their source is, so a glance separates well-supported material from anecdote:</p>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Node</th><th>Meaning</th><th>Color</th></tr></thead>
   <tbody>
     <tr><td>Hub</td><td>A cross-cutting page at the root of the base, high in the graph's connectivity.</td><td>Gold</td></tr>
@@ -1525,11 +1528,11 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
     <tr><td>Note</td><td>An ad-hoc observation or a saved query answer.</td><td>Grey</td></tr>
     <tr><td>Flag</td><td>A page the agent marked as a contradiction to resolve.</td><td>Red</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <p>Source nodes take their color from a credibility ladder. Biorouter grades each source deterministically before it ever calls a model: it pulls any DOI, arXiv id, ISBN, or PMID from the source, looks it up in Crossref and then OpenAlex, and falls back to host patterns (preprint servers, <code>.gov</code>, <code>.edu</code>, and the like). Only if all of that is inconclusive does a small bounded classifier weigh in.</p>
 
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Tier</th><th>How it is detected</th><th>Color</th></tr></thead>
   <tbody>
     <tr><td>Peer reviewed</td><td>DOI resolves to a journal article from a known publisher.</td><td>Deep blue</td></tr>
@@ -1539,7 +1542,7 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
     <tr><td>Web source</td><td>Any other web page.</td><td>Warm orange</td></tr>
     <tr><td>Personal source</td><td>A local file, pasted text, or a source with no detectable provenance.</td><td>Mauve</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <p>Retraction is a separate flag: when Crossref or OpenAlex report a source as retracted, its node carries a red badge regardless of tier. You can override any grade by hand. The graph's legend shows Entity, Concept, Hub, Peer reviewed, Web source, and Personal source so the coloring is readable in place.</p>
 
@@ -1626,7 +1629,7 @@ prompt: "Summarize the key findings, methods, and conclusions of the attached pa
 </figure>
 
 <h2>The schema fields</h2>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Field</th><th>Required</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>title</code>, <code>description</code></td><td>Yes</td><td>A short name and a description of what the workflow does.</td></tr>
@@ -1641,12 +1644,12 @@ prompt: "Summarize the key findings, methods, and conclusions of the attached pa
     <tr><td><code>sub_workflows</code></td><td>No</td><td>Other workflow files this one can call as tools.</td></tr>
     <tr><td><code>version</code></td><td>No</td><td>The workflow format version, defaults to <code>"1.0.0"</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>*At least one of <code>instructions</code> or <code>prompt</code> must be present.</p>
 
 <h3>Typed parameters</h3>
 <p>Parameters make a workflow reusable. Each declares a <code>key</code>, an <code>input_type</code>, and a <code>requirement</code>; its value is substituted into <code>instructions</code>, <code>prompt</code>, and <code>activities</code> with <code>{{ key }}</code>. The six input types are:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Type</th><th>Value</th></tr></thead>
   <tbody>
     <tr><td><code>string</code></td><td>Used as-is (the default type).</td></tr>
@@ -1656,7 +1659,7 @@ prompt: "Summarize the key findings, methods, and conclusions of the attached pa
     <tr><td><code>file</code></td><td>A file path; Biorouter reads the file and substitutes its <em>contents</em>, not the path.</td></tr>
     <tr><td><code>select</code></td><td>A dropdown; requires an <code>options</code> list.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>A <code>requirement</code> of <code>required</code> must be supplied at launch, <code>optional</code> can be omitted when a <code>default</code> is set, and <code>user_prompt</code> prompts interactively if no value is passed. Rules enforced at load time: optional parameters must have a default, required parameters and file parameters may not have one, select parameters must list <code>options</code>, and every <code>{{ name }}</code> in the templates must match a defined parameter (with no unused definitions).</p>
 
 <pre><code>parameters:
@@ -1717,7 +1720,7 @@ biorouter workflow open workflow.yaml                  # open it in the desktop 
 
 <h3>Where workflows are discovered</h3>
 <p>Biorouter looks for workflow files in several places, in order:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Source</th><th>Location</th></tr></thead>
   <tbody>
     <tr><td>Current directory</td><td>The folder you run from (<code>*.yaml</code> and <code>*.json</code>).</td></tr>
@@ -1726,7 +1729,7 @@ biorouter workflow open workflow.yaml                  # open it in the desktop 
     <tr><td>Project-local</td><td><code>./.biorouter/workflows/</code>, scoped to that project.</td></tr>
     <tr><td>GitHub repository</td><td>A repo set in <code>BIOROUTER_WORKFLOW_GITHUB_REPO</code> (needs the <code>gh</code> CLI installed and authenticated); run by name, for example <code>biorouter run --workflow code-review</code>.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>List everything Biorouter can find with <code>biorouter workflow list</code> (add <code>--verbose</code> or <code>--format json</code>). The Desktop Workflow Library shows only workflows you explicitly saved or imported, not files discovered on disk.</p>
 
 <h3>Sharing by file or link</h3>
@@ -1928,7 +1931,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 
 <h3>Loop and stall detection</h3>
 <p>Several controllers watch for a turn going in circles and feed their evidence into one escalation path, which can nudge the model, grant a short wrap-up grace, or stop the turn outright:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Controller</th><th>Signal</th><th>Response</th></tr></thead>
   <tbody>
     <tr><td>Exact tool repetition</td><td>The same call three times (hard limit five)</td><td>Warn, then stop</td></tr>
@@ -1938,7 +1941,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
     <tr><td>Hard caps</td><td>100 turns and 200 tool calls</td><td>Terminate with a clear limit result</td></tr>
     <tr><td>Reply budget</td><td>Configured time, tokens, or cost</td><td>Warn, request wrap-up, then stop</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h3>Cancel and interrupt mid-turn</h3>
 <p>You do not have to wait for a turn to finish. A hard cancel stops the active turn, is safe to send more than once, and unblocks anything waiting on an approval prompt. A soft interrupt is gentler: your new message enters a queue and is folded in at the next safe point, and if it arrives while the final answer is streaming it keeps the loop alive for one more iteration so the model can take your correction into account.</p>
@@ -2046,14 +2049,14 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <figcaption>A key you enter goes to the operating system credential store, is read once per process into memory, and is never written to config.yaml.</figcaption>
 </figure>
 <p>Biorouter reads the credential store <strong>once per process</strong> and caches secrets in memory for the rest of the run, so a single authorization covers a whole session. This matters most on macOS, the only platform that prompts.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Platform</th><th>Credential store</th><th>Prompts</th></tr></thead>
   <tbody>
     <tr><td>macOS</td><td>Keychain</td><td>Up to once per binary, ever. The OS asks you to authorize that specific executable to read the item.</td></tr>
     <tr><td>Windows</td><td>Credential Manager</td><td>None. Protected per-user by the Windows Data Protection API. A large secret set is chunked across multiple credential entries to stay under the 2560-byte per-credential limit.</td></tr>
     <tr><td>Linux</td><td>Secret Service (GNOME Keyring / KWallet)</td><td>None on a desktop session, which opens the store with your login.</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="alert alert-info">
   <strong>On macOS, click "Always Allow."</strong> "Allow" authorizes a single access; "Always Allow" adds the binary to the item's access control list so it is never asked again. The desktop backend (<code>biorouterd</code>) and the CLI (<code>biorouter</code>) are separate executables, so macOS tracks one grant per binary. In the worst case (using both, with secrets created by the other) you enter your password twice, ever.
 </div>
@@ -2093,7 +2096,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 </svg>
 <figcaption>Every tool call passes through the permission mode, which either runs it, asks you first, judges it by risk, or blocks it.</figcaption>
 </figure>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Mode</th><th><code>/mode</code> value</th><th>What it gates for <code>shell</code>, <code>text_editor</code>, and <code>computer_control</code></th></tr></thead>
   <tbody>
     <tr><td>Completely Autonomous</td><td><code>auto</code></td><td>Runs shell commands, text-editor writes, and computer control with no approval. This is the default.</td></tr>
@@ -2101,46 +2104,46 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
     <tr><td>Smart Approval</td><td><code>smart_approve</code></td><td>Uses a risk-based approach: auto-approves low-risk actions and flags higher-risk shell, text-editor, or computer-control calls for your approval.</td></tr>
     <tr><td>Chat Only</td><td><code>chat</code></td><td>No tools at all. No shell, no text-editor writes, no computer control. Conversation and reasoning only.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>Set a persistent default with <code>biorouter configure</code> (select <em>biorouter settings</em>, then <em>biorouter mode</em>) or in <strong>Settings, Chat, Mode</strong> in the app.</p>
 
 <h2>Managed policy: the administrator tier</h2>
 <p>Permission modes and the user config are owned by the user, so a lab or institutional deployment has no way to enforce a rule the user cannot turn off. The <strong>managed policy tier</strong> adds a trusted, admin-owned layer that wins over user and project config. It can force specific tools to be denied, to require approval, or to be pre-approved, and it can pin mandatory lifecycle hooks. A managed <strong>deny</strong> holds even in Completely Autonomous mode; a blocked call surfaces as <em>"Blocked by your organization's managed policy."</em></p>
 <p>The policy is read from an admin-owned, per-OS location, and Biorouter verifies the file's ownership before trusting it (on Unix it must be owned by <code>root</code> or the current user and not be group- or world-writable). There is no environment-variable override, by design.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>OS</th><th>Managed policy path</th></tr></thead>
   <tbody>
     <tr><td>macOS</td><td><code>/Library/Application Support/Biorouter/managed-policy.yaml</code></td></tr>
     <tr><td>Linux</td><td><code>/etc/biorouter/managed-policy.yaml</code></td></tr>
     <tr><td>Windows</td><td><code>%ProgramData%\Biorouter\managed-policy.yaml</code></td></tr>
   </tbody>
-</table>
+</table></div>
 <p>Deploy it through your device-management tooling (Jamf on macOS, a package postinstall or Ansible on Linux, Group Policy or an installer on Windows). A file that fails the ownership check is ignored with a warning and the agent runs normally, so a bad push cannot brick a fleet.</p>
 
 <h2>Data privacy and patient data</h2>
 <p>Biorouter routes your inputs and conversation context to the provider you selected, so the privacy properties of a session depend entirely on <strong>which provider you chose</strong>, not on Biorouter itself. Provider tiers differ fundamentally in where data goes:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Provider tier</th><th>Where data goes</th><th>Suitable for</th></tr></thead>
   <tbody>
     <tr><td><strong>Local</strong> (Llama Server, Ollama)</td><td>Your device only. Nothing is transmitted to any external service.</td><td>Highest-sensitivity data and air-gapped requirements.</td></tr>
     <tr><td><strong>Institutional</strong> (UCSF Versa Azure, UCSF Amazon Bedrock)</td><td>Inside UCSF's own cloud tenant, governed by institutional agreements.</td><td>Institution-approved use cases. Verify the terms first.</td></tr>
     <tr><td><strong>Commercial cloud</strong> (Anthropic, OpenAI, Google, OpenRouter, others)</td><td>The provider's own cloud infrastructure, under their privacy terms.</td><td>Public or non-sensitive data only.</td></tr>
   </tbody>
-</table>
+</table></div>
 <div class="alert alert-warning">
   <strong>Patient data, PHI, and other regulated data.</strong> For clinical records, genomic data linked to individuals, or anything subject to HIPAA or institutional governance, use <strong>only institution-managed services or fully local models</strong>. Do not use personal commercial API accounts. De-identify before inputting data unless you have explicit authorization and a compliant pathway, provide only the data the task needs, and do not share sessions that contain sensitive information. UCSF data-use agreements change, so confirm with UCSF IT Security or your compliance office before a session touches regulated data. The Biorouter team cannot speak to the status of institutional agreements.
 </div>
 
 <h2>Shell sandboxing</h2>
 <p>Beyond the permission mode, Biorouter can wrap shell commands in an OS-level sandbox that confines writes to the working directory and the temp directory and denies outbound network by default. It is <strong>opt-in</strong> through the <code>BIOROUTER_SHELL_SANDBOX</code> variable and off unless you set it.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Platform</th><th>Mechanism</th><th>What it enforces</th></tr></thead>
   <tbody>
     <tr><td>macOS</td><td>Seatbelt</td><td>Kernel-enforced write confinement and network deny.</td></tr>
     <tr><td>Linux</td><td>Landlock plus seccomp, with a bubblewrap fallback</td><td>Kernel write confinement and network deny where the kernel supports it.</td></tr>
     <tr><td>Windows</td><td>Job Object plus restricted token (containment tier)</td><td>Process and resource caps plus a real kill-the-tree primitive. It does not confine writes or block network, and Biorouter reports it honestly as such.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>Set <code>BIOROUTER_SHELL_SANDBOX=auto</code> to use the best available tier and run anyway if none exists, or <code>strict</code> to refuse the command when a full sandbox is not available. Run <code>biorouter doctor</code> to see which tier your host actually got. Independently of the sandbox, an always-on denylist blocks catastrophic commands (for example <code>rm -rf /</code> and its Windows equivalents) in every mode.</p>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#config" onclick="showDoc('config');return false;">Configuration &rarr;</a></div>
       </div>
@@ -2170,7 +2173,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 
 <h2>Useful environment variables</h2>
 <p>Every environment variable overrides the config file for one invocation. These are the ones you are most likely to reach for; see the environment-variables reference for the full list.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
   <tbody>
     <tr><td><code>ALPHA_FEATURES</code> (also <code>ALPHA</code>)</td><td>Enable experimental alpha features. Off by default.</td></tr>
@@ -2186,11 +2189,11 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
     <tr><td><code>BIOROUTER_SHELL_SANDBOX</code></td><td>Opt into OS shell sandboxing: <code>off</code> (default), <code>auto</code>, or <code>strict</code>.</td></tr>
     <tr><td><code>BIOROUTER_PATH_ROOT</code></td><td>Relocate all config, data, and state under one directory. Useful for isolated or CI environments.</td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h2>File and directory locations</h2>
 <p>Paths below are the macOS and Linux locations. On Windows, the config directory is <code>%APPDATA%\biorouter\config\</code>.</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Path</th><th>Contents</th></tr></thead>
   <tbody>
     <tr><td><code>~/.config/biorouter/config.yaml</code></td><td>Providers, models, extensions, and general settings.</td></tr>
@@ -2202,7 +2205,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
     <tr><td><code>~/.config/biorouter/logs/</code></td><td>Log files.</td></tr>
     <tr><td><code>~/Library/Application Support/Biorouter/</code></td><td>Electron app state (desktop only, macOS).</td></tr>
   </tbody>
-</table>
+</table></div>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#architecture" onclick="showDoc('architecture');return false;">Architecture &rarr;</a></div>
       </div>
       <div class="doc-page" id="doc-architecture">
@@ -2254,7 +2257,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 
 <h2>The Rust workspace</h2>
 <p>The backend is a Rust workspace made of several crates. Four of them carry the architecture above:</p>
-<table class="doc-table">
+<div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Piece</th><th>Binary</th><th>Role</th></tr></thead>
   <tbody>
     <tr><td><code>biorouter</code></td><td>library</td><td>The core agent library: the reasoning loop, the LLM provider integrations, session and conversation state, and workflow and schedule execution. This is the Agent layer.</td></tr>
@@ -2262,7 +2265,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
     <tr><td><code>biorouter-cli</code></td><td><code>biorouter</code></td><td>The command-line interface, one half of the Interface layer.</td></tr>
     <tr><td><code>biorouter-mcp</code></td><td>library</td><td>The built-in MCP servers, part of the Extensions layer.</td></tr>
   </tbody>
-</table>
+</table></div>
 <p>The built-in extensions shipped in <code>biorouter-mcp</code> include <code>developer</code> (shell and file editing), <code>computercontroller</code>, <code>memory</code>, <code>autovisualiser</code> (figures), <code>knowledge</code>, <code>agent_drafter</code> (building apps), and the data and compute servers. Because these live behind the same MCP interface as third-party extensions, the agent treats a built-in tool and an installed one the same way.</p>
 
 <h2>How the interface reaches the agent</h2>

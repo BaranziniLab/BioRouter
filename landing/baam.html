@@ -341,7 +341,7 @@
     .contribution-head { text-align: center; margin: 30px 0 18px; }
     .contribution-head h2 { font-size: 18px; font-weight: 700; margin-bottom: 5px; }
     .contribution-head p { color: var(--text-2); font-size: 13.5px; line-height: 1.6; max-width: 640px; margin: 0 auto; }
-    .contribution-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .contribution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
     .contribution-card {
       background: var(--bg-2);
       border: 1px solid var(--border);
@@ -355,12 +355,12 @@
     .contribution-card p { color: var(--text-2); font-size: 12.5px; line-height: 1.6; flex: 1; }
     .contribution-card a { align-self: flex-start; }
     .repo-pill {
-      display: inline-flex; width: fit-content; max-width: 100%;
+      display: inline-flex; max-width: 100%;
       padding: 3px 8px; border-radius: 100px;
       background: var(--bg-3); color: var(--text-2);
-      font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-family: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, monospace;
       font-size: 10.5px; line-height: 1.4;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      white-space: normal; overflow-wrap: anywhere;
     }
 
     /* ─── Responsive ─────────────────────────────────────────────── */
