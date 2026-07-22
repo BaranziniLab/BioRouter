@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jupyter-ai-biorouter"
+version = "0.1.0"
+description = "Jupyter AI persona for the Biorouter ACP (Agent Client Protocol) agent"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "jupyter-ai-acp-client>=0.1.5,<0.2.0",
+  "jupyter-ai-persona-manager>=0.0.11,<0.1.0",
+]
+
+[project.entry-points."jupyter_ai.personas"]
+biorouter-acp = "jupyter_ai_biorouter.persona:BioRouterAcpPersona"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jupyter_ai_biorouter"]
