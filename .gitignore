@@ -85,3 +85,6 @@ biorouter-testing-apps/
 # Test-drive runtime: drafted apps, daemon logs (which contain the spawn env,
 # including provider API keys), and an embedded KB git repo. Never committed.
 .br-testdrive/
+
+# Machine-local git-worktree layout snapshot (see scripts/worktrees.sh); keep per-clone, do not commit
+scripts/worktrees.manifest
