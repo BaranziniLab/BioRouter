@@ -24,6 +24,7 @@ import Hub from './components/Hub';
 import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
+import { useEmptyPairRedirect } from './components/chatGroups/useEmptyPairRedirect';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
@@ -121,6 +122,13 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   const initialAttachments = isNewChat ? undefined : routeState.initialAttachments;
 
   const dispatch = groups?.dispatch;
+
+  // No tabs → Home (issue #38). When the whole layout is empty and no cargo is
+  // en route to becoming a tab (deep link, Hub submit, sidebar new-chat,
+  // workflow, mid-flight session creation, pending Cmd+T), /pair is a dead-end
+  // "New Session" pane — redirect to the Hub instead. All gates live in the
+  // hook; isCreatingSession is the only piece that is component state here.
+  useEmptyPairRedirect(isCreatingSession);
 
   // The sidebar's new-chat button: open ONE empty tab per navigation. The tab
   // carries sessionId '' until BaseChat's pre-session submit creates a real
