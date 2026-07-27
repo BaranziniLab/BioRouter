@@ -29,10 +29,12 @@ import {
   Eye,
   File,
   FileText,
+  FileX,
   Folder,
   Github,
   Globe,
   Image,
+  Lock,
   Maximize2,
   Search,
   X,
@@ -53,7 +55,6 @@ import type {
   ArtifactGitEntry,
   ArtifactGitStatus,
   ArtifactSource,
-  PreparedArtifactHtml,
 } from './artifactTypes';
 import {
   basenameFromPath,
@@ -467,9 +468,9 @@ export default function ArtifactViewer({
 
       if (activeArtifact.kind === 'html') {
         try {
-          const prepared = (await window.electron.prepareArtifactHtml({
+          const prepared = await window.electron.prepareArtifactHtml({
             html: activeArtifact.html,
-          })) as PreparedArtifactHtml;
+          });
           if (!cancelled) setPreview({ kind: 'html', html: prepared.html });
         } catch {
           if (!cancelled) setPreview({ kind: 'html', html: activeArtifact.html });
@@ -488,9 +489,11 @@ export default function ArtifactViewer({
       }
 
       try {
-        const response = (await window.electron.readArtifactFile(
+        // No cast: the preload IPC contract and the shared ArtifactFilePreview
+        // union are kept in lockstep, so the result assigns structurally.
+        const response: ArtifactFilePreview = await window.electron.readArtifactFile(
           activeArtifact.path
-        )) as ArtifactFilePreview;
+        );
         if (cancelled) return;
         if (response.kind === 'html') {
           // An HTML file the agent wrote gets a Preview/Raw toggle, like markdown:
@@ -500,9 +503,9 @@ export default function ArtifactViewer({
           // still renders figure-only with no raw source — only real files land here.
           let preparedHtml = response.text;
           try {
-            const prepared = (await window.electron.prepareArtifactHtml({
+            const prepared = await window.electron.prepareArtifactHtml({
               html: response.text,
-            })) as PreparedArtifactHtml;
+            });
             preparedHtml = prepared.html;
           } catch {
             // Preparation failed; fall back to the raw HTML for the Preview.
@@ -824,6 +827,35 @@ export default function ArtifactViewer({
   );
 }
 
+/**
+ * Friendly empty-state for a file that could not be read (#36). The main
+ * process already maps errno codes to human-readable messages (see
+ * utils/artifactFileErrors.ts); this renders them as a proper centered state
+ * — icon, short title, message, muted path — instead of a bare gray line of
+ * error text.
+ */
+function ArtifactErrorState({
+  message,
+  path,
+  code,
+}: {
+  message: string;
+  path?: string;
+  code?: string;
+}) {
+  const Icon = code === 'EACCES' || code === 'EPERM' ? Lock : FileX;
+  return (
+    <div data-testid="artifact-error-state" className="flex h-full items-center justify-center p-6">
+      <div className="w-full max-w-sm text-center">
+        <Icon className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
+        <div className="text-sm font-medium text-text-default">File not available</div>
+        <p className="mt-1 text-sm leading-relaxed text-text-muted">{message}</p>
+        {path && <div className="mt-2 break-all text-xs text-text-muted/70">{path}</div>}
+      </div>
+    </div>
+  );
+}
+
 function ArtifactPreviewBody({
   preview,
   artifact,
@@ -846,7 +878,7 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'error') {
-    return <div className="p-4 text-sm text-text-muted">{preview.message}</div>;
+    return <ArtifactErrorState message={preview.message} />;
   }
 
   if (preview.kind === 'html') {
@@ -905,7 +937,7 @@ function ArtifactPreviewBody({
   const file = preview.preview;
 
   if (file.kind === 'error') {
-    return <div className="p-4 text-sm text-text-muted">{file.error}</div>;
+    return <ArtifactErrorState message={file.error} path={file.path} code={file.code} />;
   }
 
   if (file.kind === 'image') {
@@ -1100,12 +1132,12 @@ function DirectoryTreePreview({
     setSelectedEntry(entry);
     setSelectedPreview(null);
     try {
-      let response = (await window.electron.readArtifactFile(entry.path)) as ArtifactFilePreview;
+      let response: ArtifactFilePreview = await window.electron.readArtifactFile(entry.path);
       if (response.kind === 'html') {
         try {
-          const prepared = (await window.electron.prepareArtifactHtml({
+          const prepared = await window.electron.prepareArtifactHtml({
             html: response.text,
-          })) as PreparedArtifactHtml;
+          });
           response = { ...response, preparedHtml: prepared.html };
         } catch {
           response = { ...response, preparedHtml: response.text };

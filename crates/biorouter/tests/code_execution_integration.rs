@@ -997,6 +997,150 @@ async fn case24_unknown_module_error_names_the_real_importable_modules() {
     );
 }
 
+/// Run `execute_code` and return the full `CallToolResult` (content + meta).
+async fn exec_result(m: &Arc<ExtensionManager>, code: &str) -> rmcp::model::CallToolResult {
+    let call = CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "code_execution__execute_code".into(),
+        arguments: Some(object!({ "code": code })),
+    };
+    m.dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .await
+        .expect("dispatch")
+        .result
+        .await
+        .expect("tool result")
+}
+
+// ---------------------------------------------------------------------------
+// Issue #28 — multi-tool transparency: a failing sub-call must name its tool,
+// and the result meta must carry the executed-calls telemetry for the UI.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn case26_failing_sub_call_error_names_the_tool() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        r#"
+        import { shell } from "developer";
+        const r = shell({ command: "cat /nonexistent/path/xyz123" });
+        record_result(r);
+        "#,
+    )
+    .await;
+
+    assert!(is_error, "an uncaught tool failure must error, got: {out}");
+    assert!(
+        out.contains("Tool error from developer__shell"),
+        "the step-level error must name the failing sub-call's tool, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn case27_result_meta_records_executed_sub_calls() {
+    let m = manager().await;
+    let result = exec_result(
+        &m,
+        r#"
+        import { shell } from "developer";
+        const greeting = shell({ command: "echo hello" });
+        let failure = "none";
+        try {
+            shell({ command: "cat /nonexistent/path/xyz123" });
+        } catch (e) {
+            failure = "caught";
+        }
+        record_result({ greeting: String(greeting).trim(), failure });
+        "#,
+    )
+    .await;
+
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "the script recovered, so the step succeeds: {:?}",
+        result.content
+    );
+
+    let meta = result.meta.expect("executed-call telemetry meta");
+    let calls = meta
+        .0
+        .get("biorouter/tool-calls")
+        .and_then(|value| value.as_array())
+        .expect("biorouter/tool-calls array");
+    assert_eq!(calls.len(), 2, "both sub-calls recorded: {calls:?}");
+
+    let ok_call = &calls[0];
+    assert_eq!(ok_call["tool"], "developer__shell");
+    assert_eq!(ok_call["status"], "ok");
+    assert!(
+        ok_call["args"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("echo hello"),
+        "exact args recorded: {ok_call:?}"
+    );
+    assert!(
+        ok_call["result_bytes"].as_u64().unwrap_or(0) > 0,
+        "success records the result size: {ok_call:?}"
+    );
+
+    let failed_call = &calls[1];
+    assert_eq!(failed_call["tool"], "developer__shell");
+    assert_eq!(failed_call["status"], "error");
+    assert!(
+        failed_call["args"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/nonexistent/path/xyz123"),
+        "exact args recorded: {failed_call:?}"
+    );
+    // The recorded error is the USER-audience text of the failed result —
+    // shell tags a user copy of its output — never the script-facing
+    // (assistant-audience) error string, and not the sanitized placeholder
+    // reserved for tools that produce no user-visible text.
+    let recorded_error = failed_call["error"].as_str().unwrap_or_default();
+    assert!(
+        recorded_error.contains("No such file"),
+        "the user-audience error text is recorded: {failed_call:?}"
+    );
+    assert!(
+        !recorded_error.contains("details hidden"),
+        "a user-visible error is recorded verbatim, not sanitized: {failed_call:?}"
+    );
+}
+
+#[tokio::test]
+async fn case28_error_result_still_carries_call_telemetry() {
+    let m = manager().await;
+    let result = exec_result(
+        &m,
+        r#"
+        import { shell } from "developer";
+        shell({ command: "cat /nonexistent/path/xyz123" });
+        record_result("unreachable");
+        "#,
+    )
+    .await;
+
+    assert!(
+        result.is_error.unwrap_or(false),
+        "the uncaught failure must error the step"
+    );
+    let meta = result
+        .meta
+        .expect("telemetry must survive on the error result — it matters most there");
+    let calls = meta
+        .0
+        .get("biorouter/tool-calls")
+        .and_then(|value| value.as_array())
+        .expect("biorouter/tool-calls array");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["status"], "error");
+    assert_eq!(calls[0]["tool"], "developer__shell");
+}
+
 #[tokio::test]
 async fn case25_calling_a_non_function_explains_itself() {
     let m = manager().await;

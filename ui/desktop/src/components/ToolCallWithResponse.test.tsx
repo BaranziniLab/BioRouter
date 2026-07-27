@@ -52,6 +52,76 @@ describe('summarizeToolCall', () => {
     ).toBe('Cohort Lookup with cohort_id, table');
   });
 
+  // #27 — module/skill tools carry their targets under argument names the
+  // generic chains don't know (module_path / terms / name), so their labels
+  // degraded to the opaque "Read Module" / "Search Modules".
+  it('names the exact module, terms, and skill in code_execution/skills labels', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__read_module',
+        arguments: { module_path: 'developer/shell' },
+      })
+    ).toBe('Reading module developer/shell');
+
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__search_modules',
+        arguments: { terms: ['fetch', 'http'] },
+      })
+    ).toBe('Searching modules for fetch, http');
+
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__search_modules',
+        arguments: { terms: 'web search' },
+      })
+    ).toBe('Searching modules for web search');
+
+    expect(
+      summarizeToolCall({
+        name: 'skills__loadSkill',
+        arguments: { name: 'single-cell' },
+      })
+    ).toBe('Loading skill single-cell');
+  });
+
+  // Codex review of #27: the special cases must match the FULL prefixed names
+  // (code_execution__… / skills__loadSkill). An unrelated extension's
+  // same-named tool keeps its generic label instead of being mislabeled with
+  // (or losing) a target it does not have.
+  it('leaves same-named tools from other extensions to the generic labels', () => {
+    expect(
+      summarizeToolCall({
+        name: 'otherext__read_module',
+        arguments: { module_path: 'developer/shell' },
+      })
+    ).toBe('Read Module');
+
+    expect(
+      summarizeToolCall({
+        name: 'otherext__search_modules',
+        arguments: { terms: ['fetch', 'http'] },
+      })
+    ).toBe('Search Modules');
+
+    expect(
+      summarizeToolCall({
+        name: 'otherext__loadSkill',
+        arguments: { name: 'single-cell' },
+      })
+    ).not.toContain('Loading skill');
+  });
+
+  it('still says something for module/skill calls with missing targets', () => {
+    expect(summarizeToolCall({ name: 'code_execution__read_module', arguments: {} })).toBe(
+      'Reading a module'
+    );
+    expect(summarizeToolCall({ name: 'code_execution__search_modules', arguments: {} })).toBe(
+      'Searching modules'
+    );
+    expect(summarizeToolCall({ name: 'skills__loadSkill', arguments: {} })).toBe('Loading a skill');
+  });
+
   it('summarizes multi-step tool graphs as coordinated work', () => {
     expect(
       summarizeToolCall({
@@ -375,6 +445,241 @@ describe('summarizeToolCall', () => {
       title: 'index.html',
       path: '/Users/wgu/Desktop/weather-website/dist/index.html',
     });
+  });
+});
+
+// #28 — a coordinated execute_code step must be reviewable: the executed
+// sub-calls (from the `biorouter/tool-calls` result meta) render with per-call
+// status, exact args, and the real error pinned to the failing tool.
+describe('ToolCallWithResponse executed-call transparency', () => {
+  const coordinatedRequest: ToolRequestMessageContent = {
+    type: 'toolRequest',
+    id: 'tool-exec-1',
+    toolCall: {
+      status: 'success',
+      value: {
+        name: 'code_execution__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'developer/text_editor', description: 'Read the manifest', depends_on: [] },
+            { tool: 'developer/shell', description: 'List the files', depends_on: [0] },
+          ],
+          code: 'import { shell } from "developer";\nrecord_result(shell({ command: "ls" }));',
+        },
+      },
+    },
+  };
+
+  const coordinatedResponse = {
+    type: 'toolResponse' as const,
+    id: 'tool-exec-1',
+    toolResult: {
+      status: 'success',
+      value: {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: 'Error: Module error: Tool error from developer__shell: lss: command not found',
+          },
+        ],
+        _meta: {
+          'biorouter/tool-calls': [
+            {
+              tool: 'developer__text_editor',
+              args: '{"command":"view","path":"/tmp/manifest.json"}',
+              status: 'ok',
+              result_bytes: 120,
+            },
+            {
+              tool: 'developer__shell',
+              args: '{"command":"lss /tmp"}',
+              status: 'error',
+              error: 'Tool error from developer__shell: lss: command not found',
+            },
+          ],
+        },
+      },
+    },
+  } as never;
+
+  it('names each executed call and pins the real error to the failing tool', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={coordinatedResponse}
+      />
+    );
+
+    // Expand the step row, then the executed-calls section.
+    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View executed calls (2)').closest('button') as HTMLElement);
+
+    expect(screen.getByText(/1\. developer__text_editor/)).toBeInTheDocument();
+    expect(screen.getByText(/2\. developer__shell/)).toBeInTheDocument();
+    expect(screen.getByText('2. developer__shell').parentElement?.textContent).toContain(
+      '· failed'
+    );
+
+    // Expanding the failing call reveals its exact args and its real error.
+    fireEvent.click(screen.getByText(/2\. developer__shell/).closest('button') as HTMLElement);
+    expect(screen.getByText('lss /tmp')).toBeInTheDocument();
+    expect(screen.getByText('developer__shell failed')).toBeInTheDocument();
+    expect(
+      screen.getByText('Tool error from developer__shell: lss: command not found')
+    ).toBeInTheDocument();
+
+    // The declared plan stays visible alongside — never force-matched.
+    expect(screen.getByText(/1\. developer\/text_editor: Read the manifest/)).toBeInTheDocument();
+  });
+
+  it('renders the generated code through the shared syntax highlighter', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={coordinatedResponse}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    const codeToggle = screen.getByText('View generated code').closest('button') as HTMLElement;
+    fireEvent.click(codeToggle);
+
+    // The highlighter splits the source into token spans, so assert on the
+    // container text and on a token that survives tokenization intact.
+    expect(document.body.textContent).toContain('record_result');
+    expect(document.querySelector('code .token')).not.toBeNull();
+  });
+
+  // Codex review of #28: executed-call args are untrusted wire data. They must
+  // render as plain text — a crafted argument must never become a live link or
+  // a remote-image fetch via the markdown pipeline.
+  it('renders executed-call args as plain text, never as markdown', () => {
+    const marker = 'x'.repeat(80); // long enough for any length-gated markdown path
+    const crafted = `[click me](https://evil.example/exfil) ![tracker](https://evil.example/pixel.png) ${marker}`;
+    const craftedResponse = {
+      type: 'toolResponse' as const,
+      id: 'tool-exec-1',
+      toolResult: {
+        status: 'success',
+        value: {
+          isError: false,
+          content: [{ type: 'text', text: 'Result: done' }],
+          _meta: {
+            'biorouter/tool-calls': [
+              {
+                tool: 'developer__shell',
+                args: JSON.stringify({ command: crafted }),
+                status: 'ok',
+                result_bytes: 4,
+              },
+            ],
+          },
+        },
+      },
+    } as never;
+
+    const { container } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={craftedResponse}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/1\. developer__shell/).closest('button') as HTMLElement);
+
+    // The literal markdown source is visible as text…
+    expect(screen.getByText(new RegExp('\\[click me\\]\\(https://evil'))).toBeInTheDocument();
+    // …and was NOT interpreted: no link, no image request.
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('shows how many calls were executed but not recorded', () => {
+    const responseWithDrop = {
+      type: 'toolResponse' as const,
+      id: 'tool-exec-1',
+      toolResult: {
+        status: 'success',
+        value: {
+          isError: false,
+          content: [{ type: 'text', text: 'Result: done' }],
+          _meta: {
+            'biorouter/tool-calls': [
+              { tool: 'developer__shell', args: '{"command":"echo hi"}', status: 'ok' },
+            ],
+            'biorouter/tool-calls-dropped': 3,
+          },
+        },
+      },
+    } as never;
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={responseWithDrop}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
+
+    expect(screen.getByText(/and 3 more calls not recorded/)).toBeInTheDocument();
+  });
+
+  // Codex review of #28: content marked assistant-only was deliberately kept
+  // out of the user's view by the tool. The error path must NOT bypass the
+  // audience filter — the generic sentence is correct when no user-visible
+  // error text exists.
+  it('keeps assistant-audience-only error text hidden and shows the generic sentence', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-assistant-error',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'example__lookup',
+          arguments: { id: 'record-2' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-assistant-error',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: true,
+              content: [
+                {
+                  type: 'text',
+                  text: 'Error: the cache directory is missing',
+                  annotations: { audience: ['assistant'] },
+                },
+              ],
+            },
+          } as never,
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+
+    expect(screen.queryByText('Error: the cache directory is missing')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('The tool reported that it could not complete the request.')
+    ).toBeInTheDocument();
   });
 });
 

@@ -143,7 +143,14 @@ type ArtifactFilePreview =
       kind: 'error';
       title: string;
       path: string;
+      /** Friendly, human-readable message — never the raw Node errno string. */
       error: string;
+      /**
+       * Errno-style code ('ENOENT', 'EACCES', …) when one was recognised.
+       * Mirrors `ArtifactFilePreview` in components/artifacts/artifactTypes.ts
+       * — keep the two unions in lockstep so the renderer needs no casts.
+       */
+      code?: string;
       found: false;
     };
 

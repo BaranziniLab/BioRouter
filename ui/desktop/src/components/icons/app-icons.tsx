@@ -51,6 +51,7 @@ import {
   FileSpreadsheet as _FileSpreadsheet,
   FileStack as _FileStack,
   FileText as _FileText,
+  FileX as _FileX,
   FlaskConical as _FlaskConical,
   Folder as _Folder,
   FolderDot as _FolderDot,
@@ -198,6 +199,7 @@ export const FilePlus = light(_FilePlus);
 export const FileSpreadsheet = light(_FileSpreadsheet);
 export const FileStack = light(_FileStack);
 export const FileText = light(_FileText);
+export const FileX = light(_FileX);
 export const FlaskConical = light(_FlaskConical);
 export const Folder = light(_Folder);
 export const FolderDot = light(_FolderDot);

@@ -42,6 +42,7 @@ import {
 } from './terminalSessionRegistry';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import { expandTilde } from './utils/pathUtils';
+import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -2642,12 +2643,18 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       found: true,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not read artifact file';
+    const fallback = error instanceof Error ? error.message : 'Could not read artifact file.';
+    // A moved/deleted file is an expected state here (the sibling read-file
+    // handler already treats ENOENT as non-exceptional): return a friendly
+    // message plus the structured code, never the raw Node errno string (#36).
+    const fileError = error as { code?: string } | null;
+    const friendly = friendlyArtifactFileError(fileError?.code, fallback);
     return {
       kind: 'error',
       title,
       path: resolvedPath,
-      error: message,
+      error: friendly.message,
+      code: friendly.code,
       found: false,
     };
   }

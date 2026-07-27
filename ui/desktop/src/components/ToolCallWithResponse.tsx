@@ -1,6 +1,14 @@
 import { ToolIconWithStatus, ToolCallStatus } from './ToolCallStatusIndicator';
 import { getToolCallIcon } from '../utils/toolIconMapping';
 import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
+import {
+  CODE_FONT_FAMILY,
+  CODE_FONT_SIZE,
+  CODE_LINE_HEIGHT,
+  codeThemesByFamily,
+} from '../styles/codeTheme';
 import { Button } from './ui/button';
 import { ToolCallArguments, ToolCallArgumentValue } from './ToolCallArguments';
 import MarkdownContent from './MarkdownContent';
@@ -39,10 +47,29 @@ type UiMeta = {
   };
 };
 
+/**
+ * One executed sub-call of a coordinated `execute_code` step (#28), recorded
+ * by the backend in the result meta under `biorouter/tool-calls`.
+ */
+type ExecutedToolCall = {
+  tool: string;
+  /** The exact JSON arguments string (backend-truncated at ~2 KB). */
+  args?: string;
+  status: 'ok' | 'error';
+  /** The real error text for a failed call. */
+  error?: string;
+  resultBytes?: number;
+};
+
+type ResultMeta = UiMeta & {
+  'biorouter/tool-calls'?: unknown;
+  'biorouter/tool-calls-dropped'?: unknown;
+};
+
 type ToolResultWithMeta = {
   status?: string;
   value?: CallToolResponse & {
-    _meta?: UiMeta;
+    _meta?: ResultMeta;
   };
 };
 
@@ -111,6 +138,27 @@ function normalizeToolGraph(value: unknown): ToolGraphNode[] {
   });
 }
 
+/**
+ * Executed sub-call telemetry from the result meta (#28). The meta is untyped
+ * wire data, so anything malformed is dropped rather than crashing the card.
+ */
+function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate): ExecutedToolCall[] => {
+    const record = recordOf(candidate);
+    if (!record || typeof record.tool !== 'string' || !record.tool.trim()) return [];
+    return [
+      {
+        tool: record.tool,
+        args: typeof record.args === 'string' && record.args.trim() ? record.args : undefined,
+        status: record.status === 'error' ? 'error' : 'ok',
+        error: typeof record.error === 'string' && record.error.trim() ? record.error : undefined,
+        resultBytes: typeof record.result_bytes === 'number' ? record.result_bytes : undefined,
+      },
+    ];
+  });
+}
+
 function normalizedToolResultValue(toolResult: unknown): Record<string, unknown> | null {
   const result = recordOf(toolResult);
   if (!result) return null;
@@ -161,7 +209,13 @@ function getToolResultError(toolResult: unknown): string | null {
     )
     .join('\n')
     .trim();
-  return text || 'The tool reported that it could not complete the request.';
+  if (text) return text;
+  // No user-audience error text exists. Content marked assistant-only was
+  // deliberately kept out of the user's view by the tool, so the audience
+  // filter holds even on the error path: falling back to assistant-only text
+  // here would leak content the user was never meant to see. Backends that
+  // want a specific message must supply user-visible error text.
+  return 'The tool reported that it could not complete the request.';
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
@@ -533,6 +587,14 @@ const summarizeSearchQuery = (value: unknown): string | null => {
   if (!value) return null;
   if (typeof value === 'string') return compactValue(value);
   if (Array.isArray(value)) {
+    // A plain list of terms (e.g. search_modules' `terms: ["fetch", "http"]`)
+    // reads best joined, not JSON-stringified.
+    if (
+      value.length > 0 &&
+      value.every((item) => typeof item === 'string' || typeof item === 'number')
+    ) {
+      return compactValue(value.join(', '));
+    }
     const first = value[0] as Record<string, unknown> | undefined;
     return first ? compactValue(first.q ?? first.query ?? first.search_query ?? value) : null;
   }
@@ -568,6 +630,26 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+
+  // code_execution's module tools and the skills loader carry their targets
+  // under argument names (`module_path`, `terms`, `name`) the generic chains
+  // don't know, so their labels degraded to the opaque "Read Module" /
+  // "Search Modules" verbs the transcript audit flagged (#27). Name the exact
+  // target in the collapsed row. Matched on the FULL prefixed name (the
+  // built-in extensions register as `code_execution` / `skills`), so an
+  // unrelated extension's same-named tool keeps its own generic label.
+  if (toolCall.name === 'code_execution__read_module') {
+    const modulePath = compactValue(args.module_path ?? '');
+    return modulePath ? `Reading module ${modulePath}` : 'Reading a module';
+  }
+  if (toolCall.name === 'code_execution__search_modules') {
+    const terms = summarizeSearchQuery(args.terms);
+    return terms ? `Searching modules for ${terms}` : 'Searching modules';
+  }
+  if (toolCall.name === 'skills__loadSkill') {
+    const skillName = compactValue(args.name ?? '');
+    return skillName ? `Loading skill ${skillName}` : 'Loading a skill';
+  }
 
   if (toolName === 'text_editor' || toolName.includes('editor')) {
     if (args.command === 'view' && targetName) return `Reading ${targetName}`;
@@ -709,6 +791,17 @@ function ToolCallView({
 
   const toolError = getToolResultError(toolResponse?.toolResult);
 
+  // Executed sub-call telemetry (#28): what a coordinated execute_code step
+  // actually ran, with exact inputs and per-call status. Shown alongside the
+  // declared tool_graph plan — never force-matched to it, since loops and
+  // conditionals mean plan and execution can legitimately differ.
+  const resultMeta = (toolResponse?.toolResult as ToolResultWithMeta | undefined)?.value?._meta;
+  const executedCalls = normalizeExecutedCalls(resultMeta?.['biorouter/tool-calls']);
+  const droppedExecutedCalls =
+    typeof resultMeta?.['biorouter/tool-calls-dropped'] === 'number'
+      ? resultMeta['biorouter/tool-calls-dropped']
+      : 0;
+
   // Status is derived from FACTS — is there a result, and is the turn still
   // running — never from "am I the last message". The old derivation keyed off
   // `!isStreamingMessage`, which flips false for a still-executing tool call the
@@ -842,6 +935,12 @@ function ToolCallView({
         return null;
       })()}
 
+      {executedCalls.length > 0 && (
+        <div className="border-t border-border-subtle">
+          <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
+        </div>
+      )}
+
       {toolError && (
         <div className="border-t border-border-subtle px-3 py-3">
           <NotificationContent status="error" title="Tool call failed" message={toolError} />
@@ -916,6 +1015,11 @@ interface ToolGraphViewProps {
 }
 
 function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
+  // The one shared palette (styles/codeTheme.ts) — the same source chat code
+  // blocks and the artifact panel read, so the generated-code view can never
+  // drift from them. Both hooks are non-throwing outside a provider.
+  const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
+
   const renderGraph = () => {
     if (toolGraph.length === 0) return null;
 
@@ -943,13 +1047,150 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
             }
             isStartExpanded={false}
           >
-            <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto px-4 py-2">
-              {code}
-            </pre>
+            {/* bg-background-code: the ground the syntax palette is verified
+                against (see MarkdownContent's CodeBlock). No line numbers, so
+                long lines may wrap (never combine wrapping with line numbers
+                in react-syntax-highlighter). */}
+            <div className="w-full overflow-x-auto bg-background-code">
+              <SyntaxHighlighter
+                style={codeStyle}
+                language="javascript"
+                PreTag="div"
+                customStyle={{
+                  margin: 0,
+                  padding: '12px',
+                  background: 'transparent',
+                  width: '100%',
+                  maxWidth: '100%',
+                }}
+                codeTagProps={{
+                  style: {
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                    fontFamily: CODE_FONT_FAMILY,
+                    fontSize: CODE_FONT_SIZE,
+                    lineHeight: CODE_LINE_HEIGHT,
+                  },
+                }}
+                showLineNumbers={false}
+                wrapLines={false}
+              >
+                {code}
+              </SyntaxHighlighter>
+            </div>
           </ToolCallExpandable>
         </div>
       )}
     </div>
+  );
+}
+
+/** Parse a recorded args JSON string; null if truncated/malformed. */
+function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValue> | null {
+  if (!args) return null;
+  try {
+    const parsed: unknown = JSON.parse(args);
+    const record = recordOf(parsed);
+    return record ? (record as Record<string, ToolCallArgumentValue>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The EXECUTED sub-calls of a coordinated step (#28): which tools actually
+ * ran, with which exact inputs, and which one failed — so a failed step is
+ * attributable to a specific call instead of reading as "the step failed".
+ */
+function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
+  return (
+    <ToolCallExpandable
+      label={
+        <span className="pl-2 font-sans text-sm text-text-muted">
+          View executed calls ({calls.length})
+        </span>
+      }
+      isStartExpanded={false}
+    >
+      <div className="pl-4 pr-4 pb-2">
+        {calls.map((call, index) => (
+          <ExecutedCallRow key={index} call={call} index={index} />
+        ))}
+        {dropped > 0 && (
+          <div className="py-1 font-sans text-xs text-text-muted">
+            …and {dropped} more call{dropped === 1 ? '' : 's'} not recorded.
+          </div>
+        )}
+      </div>
+    </ToolCallExpandable>
+  );
+}
+
+/**
+ * Executed-call telemetry is untrusted wire data replayed from the result
+ * meta, so keys and values render as PLAIN TEXT only — never through
+ * `ToolCallArguments`, whose expanded strings go through `MarkdownContent`
+ * and would turn crafted arguments into live links or remote-image fetches.
+ */
+function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgumentValue> }) {
+  return (
+    <div className="my-2">
+      {Object.entries(args).map(([key, value]) => (
+        <div key={key} className="mb-2 flex flex-row font-sans text-sm">
+          <span className="min-w-[140px] shrink-0 text-text-muted">{key}</span>
+          <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
+            {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: number }) {
+  const parsedArgs = parsedCallArguments(call.args);
+  return (
+    <ToolCallExpandable
+      label={
+        <span className="flex min-w-0 items-center gap-2 text-left leading-6">
+          <ToolIconWithStatus
+            ToolIcon={getToolCallIcon(call.tool)}
+            status={call.status === 'error' ? 'error' : 'success'}
+            className="mt-px"
+          />
+          <span className="min-w-0 flex-1 truncate text-text-muted">
+            <span className="text-text-default">
+              {index + 1}. {call.tool}
+            </span>
+            {call.status === 'error' && ' · failed'}
+          </span>
+        </span>
+      }
+      isStartExpanded={false}
+    >
+      <div className="pl-6 pr-2 pb-2">
+        {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
+          <ExecutedCallArguments args={parsedArgs} />
+        ) : call.args ? (
+          // Truncated/malformed JSON still shows the exact recorded text.
+          <pre className="whitespace-pre-wrap break-all font-mono text-xs text-text-muted">
+            {call.args}
+          </pre>
+        ) : (
+          <div className="font-sans text-xs text-text-muted">No arguments recorded.</div>
+        )}
+        {call.error && (
+          <div className="mt-2">
+            <NotificationContent
+              status="error"
+              title={`${call.tool} failed`}
+              message={call.error}
+            />
+          </div>
+        )}
+      </div>
+    </ToolCallExpandable>
   );
 }
 
