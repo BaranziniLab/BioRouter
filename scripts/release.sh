@@ -362,7 +362,7 @@ release_assets() {
 
 cmd_draft() {
   local v="$1"
-  local notes="$ROOT/docs/release-notes/v$v.md"
+  local notes="$ROOT/docs/releases/notes/v$v.md"
   [ -f "$notes" ] || die "release notes missing: $notes"
   cmd_mac-manifest "$v"
   local assets=()
