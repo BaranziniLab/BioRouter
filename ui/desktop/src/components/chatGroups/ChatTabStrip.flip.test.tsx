@@ -46,21 +46,30 @@ const originalOffsetLeft = Object.getOwnPropertyDescriptor(
 ) as PropertyDescriptor;
 const originalMatchMedia = window.matchMedia;
 
-let frames: Parameters<typeof window.requestAnimationFrame>[0][] = [];
+// A cancellable rAF stub: the FLIP cleanup calls cancelAnimationFrame, and a
+// cancelled frame must never run — exactly the browser contract.
+let frames = new Map<number, Parameters<typeof window.requestAnimationFrame>[0]>();
+let nextFrameId = 1;
 
 function flushFrames() {
   act(() => {
-    const pending = frames;
-    frames = [];
+    const pending = [...frames.values()];
+    frames.clear();
     for (const cb of pending) cb(performance.now());
   });
 }
 
 beforeEach(() => {
-  frames = [];
+  frames = new Map();
+  nextFrameId = 1;
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
-    frames.push(cb);
-    return frames.length;
+    const id = nextFrameId;
+    nextFrameId += 1;
+    frames.set(id, cb);
+    return id;
+  });
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id: number) => {
+    frames.delete(id);
   });
   // A synthetic layout: each tab occupies a 100px slot in its DOM order.
   Object.defineProperty(HTMLElement.prototype, 'offsetLeft', {
@@ -151,7 +160,7 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
 
     expect(tabNode(container, 'a').style.transform).toBe('');
     expect(tabNode(container, 'b').style.transform).toBe('');
-    expect(frames).toHaveLength(0);
+    expect(frames.size).toBe(0);
   });
 
   it('an unchanged re-render leaves every tab untouched', () => {
@@ -166,5 +175,83 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
     const { container } = renderStrip([tab('a'), tab('b')], { activeTabId: 'b' });
     expect(tabNode(container, 'b').dataset.active).toBe('true');
     expect(tabNode(container, 'a').dataset.active).toBeUndefined();
+  });
+
+  // Codex review B6 finding 6 — interrupted animations must not leak: pending
+  // release frames are cancelled and inline overrides restored by the effect
+  // cleanup, and transitioncancel is handled like transitionend.
+  describe('cleanup of interrupted animations', () => {
+    it('unmount mid-animation cancels pending frames and restores inline styles', () => {
+      const { container, rerender, props, unmount } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a')]} />);
+
+      const a = tabNode(container, 'a');
+      expect(a.style.transform).toBe(`translateX(${-TAB_SLOT_PX}px)`); // inverted
+      expect(frames.size).toBeGreaterThan(0); // release frames scheduled
+
+      unmount();
+
+      // Every scheduled release frame was cancelled — nothing left to fire on
+      // a torn-down strip…
+      expect(frames.size).toBe(0);
+      // …and the detached nodes carry no inline residue.
+      expect(a.style.transform).toBe('');
+      expect(a.style.transition).toBe('');
+    });
+
+    it('transitioncancel (an interrupted slide) restores the stylesheet transition', () => {
+      const { container, rerender, props } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a')]} />);
+      flushFrames();
+
+      const a = tabNode(container, 'a');
+      expect(a.style.transition).toBe('transform var(--motion-base) var(--ease-spring)');
+
+      fireEvent(a, new Event('transitioncancel', { bubbles: true }));
+      expect(a.style.transition).toBe('');
+      expect(a.style.transform).toBe('');
+    });
+
+    it('a bubbling transitionend from a CHILD does not cut the slide short', () => {
+      const { container, rerender, props } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a')]} />);
+      flushFrames();
+
+      const a = tabNode(container, 'a');
+      const child = a.querySelector('button') as HTMLElement; // e.g. the close control's opacity fade
+      fireEvent.transitionEnd(child);
+      expect(a.style.transition).toBe('transform var(--motion-base) var(--ease-spring)'); // still sliding
+
+      fireEvent.transitionEnd(a);
+      expect(a.style.transition).toBe(''); // its own end still cleans up
+    });
+
+    it('a second reorder mid-animation restores the first pass before inverting again', () => {
+      const { container, rerender, props } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a')]} />);
+      expect(frames.size).toBe(2); // two release frames from pass 1
+
+      // Interrupt before the release frame ever ran.
+      rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} />);
+
+      // Pass 1's frames were cancelled and replaced by pass 2's…
+      expect(frames.size).toBe(2);
+      // …and the tabs carry pass 2's fresh inversion, transitions off.
+      const a = tabNode(container, 'a');
+      const b = tabNode(container, 'b');
+      expect(a.style.transform).toBe(`translateX(${TAB_SLOT_PX}px)`);
+      expect(b.style.transform).toBe(`translateX(${-TAB_SLOT_PX}px)`);
+      expect(a.style.transition).toBe('none');
+
+      // The interrupted pass leaves nothing behind: releasing and ending pass
+      // 2 clears every inline override.
+      flushFrames();
+      fireEvent.transitionEnd(a);
+      fireEvent.transitionEnd(b);
+      expect(a.style.transition).toBe('');
+      expect(a.style.transform).toBe('');
+      expect(b.style.transition).toBe('');
+      expect(b.style.transform).toBe('');
+    });
   });
 });

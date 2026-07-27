@@ -98,6 +98,13 @@ export function ChatTabStrip({
 
     if (prefersReducedMotion()) return;
 
+    // Everything this pass schedules is retained so the cleanup can undo it:
+    // an interrupted animation (unmount, or another reorder mid-slide) must
+    // not leave a stale rAF callback scheduled or an inline transition
+    // override shadowing the stylesheet's hover colours forever.
+    const rafIds: number[] = [];
+    const restores: Array<() => void> = [];
+
     for (const el of els) {
       const tabId = el.dataset.tabId;
       if (!tabId) continue;
@@ -114,20 +121,43 @@ export function ChatTabStrip({
       // contracts stay untouched.
       el.style.transition = 'none';
       el.style.transform = `translateX(${delta}px)`;
-      window.requestAnimationFrame(() => {
-        if (!el.isConnected) return;
-        el.style.transition = 'transform var(--motion-base) var(--ease-spring)';
-        el.style.transform = '';
-        el.addEventListener(
-          'transitionend',
-          () => {
-            // Give the stylesheet back its own transition (hover colours).
-            el.style.removeProperty('transition');
-          },
-          { once: true }
-        );
-      });
+
+      // Named + idempotent: reached from transitionend, transitioncancel AND
+      // the effect cleanup, whichever comes first.
+      const restore = () => {
+        // Give the stylesheet back its own transition (hover colours).
+        el.style.removeProperty('transition');
+        el.style.removeProperty('transform');
+        el.removeEventListener('transitionend', onDone);
+        el.removeEventListener('transitioncancel', onDone);
+      };
+      const onDone = (event: Event) => {
+        // Only OUR transform transition on THIS element: transitionend
+        // bubbles, so a child's opacity fade (the close control) must not cut
+        // the slide short. propertyName is best-effort — jsdom's synthetic
+        // events omit it.
+        if (event.target !== el) return;
+        const propertyName = (event as TransitionEvent).propertyName;
+        if (propertyName && propertyName !== 'transform') return;
+        restore();
+      };
+      restores.push(restore);
+
+      rafIds.push(
+        window.requestAnimationFrame(() => {
+          if (!el.isConnected) return;
+          el.style.transition = 'transform var(--motion-base) var(--ease-spring)';
+          el.style.transform = '';
+          el.addEventListener('transitionend', onDone);
+          el.addEventListener('transitioncancel', onDone);
+        })
+      );
     }
+
+    return () => {
+      for (const id of rafIds) window.cancelAnimationFrame(id);
+      for (const restore of restores) restore();
+    };
     // Keyed on the rendered order string — the DOM is the dependency here.
   }, [orderKey]);
 
