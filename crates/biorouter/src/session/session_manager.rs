@@ -2996,11 +2996,15 @@ impl SessionStorage {
         }
     }
 
-    /// Whether the row already stored under `msg_uid` is byte-identical to
-    /// what inserting `message` would store (role + content_json + metadata) —
-    /// i.e. the insert is an exact replay, not an id collision between two
-    /// distinct messages. Compares the *externalized* content serialization,
-    /// the same form `insert_message` persists.
+    /// Whether the row already stored under `msg_uid` is identical to what
+    /// inserting `message` would store (role + created_timestamp + content +
+    /// metadata) — i.e. the insert is an exact replay, not an id collision
+    /// between two distinct messages.
+    ///
+    /// `created_timestamp` is part of the comparison (#41): two genuinely
+    /// distinct messages that happen to share uid, role, content and metadata
+    /// but were created at different times must NOT be collapsed into one —
+    /// treating the second as a replay would silently drop it.
     async fn existing_row_matches(
         &self,
         session_id: &str,
@@ -3008,25 +3012,74 @@ impl SessionStorage {
         msg_uid: &str,
     ) -> Result<bool> {
         let pool = self.pool().await?;
-        let row = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT role, content_json, metadata_json FROM messages \
+        let row = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
+            "SELECT role, content_json, created_timestamp, metadata_json FROM messages \
              WHERE session_id = ? AND msg_uid = ?",
         )
         .bind(session_id)
         .bind(msg_uid)
         .fetch_optional(pool)
         .await?;
-        let Some((row_role, row_content, row_metadata)) = row else {
+        let Some((row_role, row_content, row_created, row_metadata)) = row else {
             return Ok(false);
         };
 
-        let content_json = match message_blobs::externalize(&message.content) {
-            Some((content, _blobs)) => serde_json::to_string(&content)?,
-            None => serde_json::to_string(&message.content)?,
+        if row_role != role_to_string(&message.role) || row_created != message.created {
+            return Ok(false);
+        }
+
+        // `metadata_json` is nullable for rows migrated from older schemas
+        // (#41): a NULL there is the stored form of "no metadata was
+        // recorded", which can only be an exact replay of a message whose
+        // in-memory metadata is still the default. Decoding it as a bare
+        // `String` made the replay probe *error* on such rows, aborting the
+        // very turn the idempotent-replay path exists to save.
+        let metadata_matches = match row_metadata {
+            Some(row_metadata) => row_metadata == serde_json::to_string(&message.metadata)?,
+            None => message.metadata == crate::conversation::message::MessageMetadata::default(),
         };
-        Ok(row_role == role_to_string(&message.role)
-            && row_content == content_json
-            && row_metadata == serde_json::to_string(&message.metadata)?)
+        if !metadata_matches {
+            return Ok(false);
+        }
+
+        self.stored_content_matches(session_id, &row_content, message)
+            .await
+    }
+
+    /// Whether `row_content` (the stored `content_json`) and the candidate
+    /// message's content are the same payload.
+    ///
+    /// The comparison must be *stable* across externalization (#41):
+    /// [`message_blobs::externalize`] mints a fresh blob uid per call, so
+    /// serializing a freshly-externalized candidate could never equal the
+    /// stored row for an oversized message — every large-message replay
+    /// compared unequal and was re-inserted under a re-minted uid. Instead,
+    /// compare the pre-externalization forms: hydrate the stored stubs back
+    /// to their payloads (and any stubs the candidate itself carries, e.g. a
+    /// re-persisted already-externalized conversation) and compare those.
+    async fn stored_content_matches(
+        &self,
+        session_id: &str,
+        row_content: &str,
+        message: &Message,
+    ) -> Result<bool> {
+        if !message_blobs::content_json_has_stub(row_content) {
+            return Ok(row_content == serde_json::to_string(&message.content)?);
+        }
+
+        let mut stored: Vec<MessageContent> = serde_json::from_str(row_content)?;
+        let mut candidate = message.content.clone();
+        let mut uids = message_blobs::referenced_uids(&stored);
+        uids.extend(message_blobs::referenced_uids(&candidate));
+        let mut blobs = std::collections::HashMap::new();
+        for uid in uids {
+            if let Some(content) = self.get_message_blob(session_id, &uid).await? {
+                blobs.insert(uid, content);
+            }
+        }
+        message_blobs::hydrate(&mut stored, &blobs);
+        message_blobs::hydrate(&mut candidate, &blobs);
+        Ok(serde_json::to_string(&stored)? == serde_json::to_string(&candidate)?)
     }
 
     /// One attempt at the transactional message insert (row + blob spill +
@@ -4327,6 +4380,44 @@ mod blob_tests {
         .await
         .unwrap()
         .id
+    }
+
+    /// #41: replaying an OVERSIZED message must be as idempotent as any other
+    /// replay. The probe used to re-externalize the candidate — minting a
+    /// fresh blob uid on every comparison — so a large-message replay never
+    /// compared equal to its stored row and was re-inserted (duplicated)
+    /// under a re-minted uid. The comparison now hydrates the stored stubs
+    /// and compares pre-externalization payloads, which is stable.
+    #[tokio::test]
+    async fn an_oversized_replay_is_idempotent_not_a_reminted_duplicate() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let message = tool_response_message("call_1", huge("r")).with_id("big-uid");
+        let first = sm.add_message(&id, &message).await.unwrap();
+        assert_eq!(first, "big-uid");
+
+        let replay = sm
+            .add_message(&id, &message)
+            .await
+            .expect("an oversized replay must be idempotent success");
+        assert_eq!(
+            replay, "big-uid",
+            "the replay returns the SAME uid — no re-mint for identical content"
+        );
+
+        let loaded = sm.get_session(&id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            1,
+            "an oversized replay must not create a duplicate row"
+        );
+        assert_eq!(
+            blob_count(&sm, &id).await,
+            1,
+            "an oversized replay must not spill a duplicate blob"
+        );
     }
 
     /// The core of BR-7: the oversized payload leaves `content_json` for the side
@@ -7842,6 +7933,97 @@ mod tests {
             loaded.conversation.unwrap().messages()[0].id.as_deref(),
             Some(minted.as_str()),
             "the persisted uid and the returned uid must agree"
+        );
+    }
+
+    /// #41: the replay probe must include `created_timestamp`. Two genuinely
+    /// distinct messages that happen to share uid, role, content AND metadata
+    /// but were created at different times are NOT replays — collapsing them
+    /// would silently drop the second one.
+    #[tokio::test]
+    async fn same_content_different_created_timestamp_is_not_a_replay() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/created_ts"),
+                "CreatedTs".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let first = sm
+            .add_message(&session.id, &amsg(now, "same words").with_id("ts-uid"))
+            .await
+            .unwrap();
+        assert_eq!(first, "ts-uid");
+
+        // Identical role/content/metadata, later creation time: a distinct
+        // message, so it must be re-minted and kept — not treated as a replay.
+        let second = sm
+            .add_message(&session.id, &amsg(now + 5, "same words").with_id("ts-uid"))
+            .await
+            .expect("a distinct message must be re-minted, not abort");
+        assert_ne!(
+            second, "ts-uid",
+            "a different created_timestamp is a different message, not a replay"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            2,
+            "both distinct messages must be persisted"
+        );
+    }
+
+    /// #41: `metadata_json` is nullable for rows migrated from older schemas.
+    /// The replay probe must decode it as an `Option` and treat NULL as "no
+    /// metadata recorded" (matching a default-metadata message) — decoding a
+    /// bare String made the probe ERROR on such rows, aborting the very turn
+    /// the idempotent-replay path exists to save.
+    #[tokio::test]
+    async fn replay_against_a_null_metadata_row_still_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/null_md"),
+                "NullMd".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let message = amsg(now, "migrated row").with_id("null-md-uid");
+        sm.add_message(&session.id, &message).await.unwrap();
+
+        // Simulate a row migrated from a pre-metadata schema.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE messages SET metadata_json = NULL WHERE session_id = ? AND msg_uid = ?")
+            .bind(&session.id)
+            .bind("null-md-uid")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let replay = sm
+            .add_message(&session.id, &message)
+            .await
+            .expect("a NULL-metadata row must not error the replay probe");
+        assert_eq!(
+            replay, "null-md-uid",
+            "the replay must match the migrated row, not re-mint"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            1,
+            "the replay must not duplicate the migrated row"
         );
     }
 
