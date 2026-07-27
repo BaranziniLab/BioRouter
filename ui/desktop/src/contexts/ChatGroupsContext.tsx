@@ -24,14 +24,23 @@ import {
   UrlOpenRequest,
 } from '../components/chatGroups/useChatGroupsUrlSync';
 import { registerCloseActiveTab } from '../components/chatGroups/closeActiveTabRegistry';
-import { registerNewTab, consumePendingNewTab } from '../components/chatGroups/newTabRegistry';
+import {
+  registerNewTab,
+  consumePendingNewTab,
+  acknowledgeNewTabCommit,
+} from '../components/chatGroups/newTabRegistry';
 import {
   isTabCycleEvent,
   tabCycleOffset,
   nextTabIndex,
   isWithinArtifactPanel,
 } from '../utils/tabCycle';
-import { ChatGroupsState, ChatGroup, ChatTab } from '../components/chatGroups/chatGroupsTypes';
+import {
+  ChatGroupsState,
+  ChatGroup,
+  ChatTab,
+  leafGroupIds,
+} from '../components/chatGroups/chatGroupsTypes';
 import { useRunningChats } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
 
@@ -158,6 +167,19 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     if (consumePendingNewTab()) openNewTab();
   }, [openNewTab]);
+
+  // A Cmd+T dispatched to THIS mounted provider stays observable in the
+  // registry (hasPendingNewTab) until the tab it asked for has actually
+  // COMMITTED — otherwise the empty-pair redirect's stale zero-tab effect
+  // (issue #38) could bounce the window Home in the gap between the dispatch
+  // and the commit, discarding the tab with the unmounting provider. Keyed on
+  // `state` so it runs on every commit; child effects (the redirect) run
+  // first, then this acknowledgement retires the request once tabs exist.
+  useEffect(() => {
+    acknowledgeNewTabCommit(
+      leafGroupIds(state.layout).reduce((count, id) => count + state.groups[id].tabs.length, 0)
+    );
+  }, [state]);
 
   // Ctrl+Tab / Ctrl+Shift+Tab — cycle the focused group's strip, left to right,
   // wrapping. Unlike Cmd+T and Cmd+W this really is a DOM keydown: a dump of

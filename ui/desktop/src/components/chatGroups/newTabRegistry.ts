@@ -21,7 +21,21 @@
 export type NewTabHandler = () => void;
 
 let handler: NewTabHandler | null = null;
+/** Cmd+T arrived with NO provider mounted; the next mounting provider consumes it. */
 let pendingNewTab = false;
+/**
+ * Cmd+T was dispatched to a LIVE provider but its tab has not committed yet.
+ *
+ * Dispatching is not arriving: `handler()` queues a reducer update, and until
+ * React commits it the layout still reads zero tabs. The empty-pair redirect
+ * (issue #38) can run in exactly that gap — its effect from a zero-tab commit
+ * calls hasPendingNewTab() at effect run time, after the dispatch — so the
+ * handled request must stay observable or the keystroke is bounced Home and
+ * the freshly dispatched tab dies with the unmounting provider. The provider
+ * acknowledges once it commits a nonzero tab count (acknowledgeNewTabCommit),
+ * which is the moment the request has become a real tab.
+ */
+let handledNewTab = false;
 
 export function registerNewTab(next: NewTabHandler): () => void {
   handler = next;
@@ -43,6 +57,10 @@ export function registerNewTab(next: NewTabHandler): () => void {
  */
 export function requestNewTab(): boolean {
   if (handler) {
+    // Mark BEFORE dispatching: the redirect gate must already see the request
+    // if a stale zero-tab effect runs between this dispatch and the commit
+    // that lands the tab (see handledNewTab above).
+    handledNewTab = true;
     handler();
     return true;
   }
@@ -56,10 +74,18 @@ export function requestNewTab(): boolean {
  * It must be consume-once rather than a readable flag: StrictMode mounts,
  * unmounts and remounts the provider, running this effect twice. A plain
  * boolean read would open two blank tabs for one Cmd+T.
+ *
+ * A still-unacknowledged handled request folds in as a safety net: a dispatch
+ * that raced the provider's unmount died with the discarded reducer state, so
+ * the next mounting provider honours it exactly as if no provider had been
+ * there — the user pressed Cmd+T and a tab must appear. In the ordinary flow
+ * this arm is dead: the provider that took the dispatch commits the tab and
+ * acknowledges long before another mount's consume could run.
  */
 export function consumePendingNewTab(): boolean {
-  const pending = pendingNewTab;
+  const pending = pendingNewTab || handledNewTab;
   pendingNewTab = false;
+  handledNewTab = false;
   return pending;
 }
 
@@ -71,14 +97,26 @@ export function consumePendingNewTab(): boolean {
  * Cmd+T-from-Settings arrives as zero tabs + a pending request; the redirect
  * must see the request and stand down WITHOUT consuming it, or the provider
  * would find nothing to cash in and the keystroke would silently downgrade to
- * a navigation (or worse, bounce straight back Home).
+ * a navigation (or worse, bounce straight back Home). A request dispatched to
+ * a live provider stays visible here too, until the provider commits the tab.
  */
 export function hasPendingNewTab(): boolean {
-  return pendingNewTab;
+  return pendingNewTab || handledNewTab;
+}
+
+/**
+ * The provider reports every committed tab count; a nonzero count means any
+ * dispatched Cmd+T has become a real tab and stops being observable. Called
+ * from an effect keyed on the provider's state, so it runs on every commit —
+ * AFTER the child redirect effect from the same commit has taken its peek.
+ */
+export function acknowledgeNewTabCommit(tabCount: number): void {
+  if (tabCount > 0) handledNewTab = false;
 }
 
 /** Tests only — the singleton must not leak across cases. */
 export function resetNewTabRegistry(): void {
   handler = null;
   pendingNewTab = false;
+  handledNewTab = false;
 }

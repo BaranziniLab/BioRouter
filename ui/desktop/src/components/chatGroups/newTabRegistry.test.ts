@@ -4,6 +4,7 @@ import {
   requestNewTab,
   consumePendingNewTab,
   hasPendingNewTab,
+  acknowledgeNewTabCommit,
   resetNewTabRegistry,
 } from './newTabRegistry';
 
@@ -16,7 +17,9 @@ describe('newTabRegistry — the Cmd+T hand-off', () => {
 
     expect(requestNewTab()).toBe(true);
     expect(handler).toHaveBeenCalledTimes(1);
-    // Nothing to cash in later — the tab already opened.
+    // The provider commits the dispatched tab and acknowledges; nothing is
+    // left to cash in later.
+    acknowledgeNewTabCommit(1);
     expect(consumePendingNewTab()).toBe(false);
   });
 
@@ -61,10 +64,33 @@ describe('newTabRegistry — the Cmd+T hand-off', () => {
       expect(hasPendingNewTab()).toBe(false);
     });
 
-    it('a claimed request (handler present) never shows as pending', () => {
+    it('a DISPATCHED request stays observable until the provider commits nonzero tabs', () => {
+      // Codex review B6 finding 2: Cmd+T on a mounted /pair dispatches through
+      // the handler, but the tab exists only after React commits the reducer
+      // update. The zero-tab redirect effect can run in that gap and must
+      // still see the request, or the keystroke is bounced Home.
       registerNewTab(vi.fn());
       requestNewTab();
+      expect(hasPendingNewTab()).toBe(true);
+
+      // A zero-tab commit (e.g. the stale close that preceded the Cmd+T) does
+      // NOT retire it…
+      acknowledgeNewTabCommit(0);
+      expect(hasPendingNewTab()).toBe(true);
+
+      // …the commit that actually lands the tab does.
+      acknowledgeNewTabCommit(1);
       expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('a dispatch that died with an unmounting provider is honoured by the next mount', () => {
+      // The dispatch was queued into a reducer that unmounted before
+      // committing: never acknowledged. The next provider's consume-once must
+      // treat it as a remembered request — the user pressed Cmd+T.
+      registerNewTab(vi.fn());
+      requestNewTab();
+      expect(consumePendingNewTab()).toBe(true);
+      expect(consumePendingNewTab()).toBe(false); // still consume-once
     });
 
     it('consume still clears exactly once after any number of peeks', () => {

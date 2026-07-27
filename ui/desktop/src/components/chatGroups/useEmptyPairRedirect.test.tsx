@@ -1,4 +1,5 @@
 import { render, act, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { requestNewTab, hasPendingNewTab, resetNewTabRegistry } from './newTabRegistry';
@@ -47,6 +48,30 @@ function Probe({ isCreatingSession = false }: { isCreatingSession?: boolean }) {
   return <div data-testid="pair-surface" />;
 }
 
+/**
+ * Fires a Cmd+T on the ZERO-TAB commit, from an effect that runs BEFORE the
+ * redirect effect (a preceding sibling's effects flush first). This is the
+ * deterministic model of Codex B6 finding 2's interleaving: in the app the
+ * commit and its passive-effect flush are separate scheduler tasks, so the
+ * Cmd+T IPC can land between them — here the injector IS that gap. The
+ * redirect effect then runs with a zero-tab closure and a freshly dispatched,
+ * not-yet-committed tab.
+ */
+let injectCmdTOnZeroTabs = false;
+function CmdTInjector() {
+  const ctx = useChatGroups();
+  const tabCount = ctx
+    ? leafGroupIds(ctx.state.layout).reduce((count, id) => count + ctx.state.groups[id].tabs.length, 0)
+    : 0;
+  useEffect(() => {
+    if (injectCmdTOnZeroTabs && tabCount === 0) {
+      injectCmdTOnZeroTabs = false;
+      expect(requestNewTab()).toBe(true); // a live provider dispatches directly
+    }
+  }, [tabCount]);
+  return null;
+}
+
 function mountAt(
   entry: string | { pathname: string; search?: string; state?: unknown },
   { isCreatingSession = false }: { isCreatingSession?: boolean } = {}
@@ -60,6 +85,7 @@ function mountAt(
           path="/pair"
           element={
             <ChatGroupsProvider>
+              <CmdTInjector />
               <Probe isCreatingSession={isCreatingSession} />
             </ChatGroupsProvider>
           }
@@ -78,6 +104,7 @@ describe('useEmptyPairRedirect — no tabs → Home (issue #38)', () => {
     currentPath = '';
     latestState = null;
     latestDispatch = null;
+    injectCmdTOnZeroTabs = false;
     resetNewTabRegistry();
     resetCloseActiveTabRegistry();
   });
@@ -113,6 +140,45 @@ describe('useEmptyPairRedirect — no tabs → Home (issue #38)', () => {
     expect(allTabs(latestState)[0].sessionId).toBe('session-X');
     expect(currentPath).toContain('/pair');
     expect(queryByTestId('home')).toBeNull();
+  });
+
+  it('REGRESSION (Codex B6.2): Cmd+T racing the last-tab close is not bounced Home', async () => {
+    // The interleaving: a zero-tab state COMMITS, the Cmd+T IPC lands and
+    // dispatches through the live provider's handler, and only THEN does the
+    // zero-tab commit's redirect effect run. It sees tabCount 0 — it must see
+    // the in-flight dispatch via hasPendingNewTab() and stand down, or the
+    // window goes Home and the freshly dispatched tab dies with the
+    // unmounting provider. CmdTInjector (mounted before the probe, so its
+    // effects flush first) plays the IPC's part deterministically.
+    //
+    // The open tab must be a BLANK one (clean URL): a ?resumeSessionId= tab
+    // would leave its param in the URL across the close and gate the stale
+    // effect for the wrong reason, masking the race.
+    act(() => {
+      expect(requestNewTab()).toBe(false); // remembered; the mount consumes it
+    });
+    mountAt('/pair');
+    await waitFor(() => expect(allTabs(latestState)).toHaveLength(1));
+    expect(currentPath).toBe('/pair'); // no URL cargo — only the peek can gate
+
+    act(() => {
+      injectCmdTOnZeroTabs = true; // the IPC will land in the effect gap
+      expect(closeActiveTab()).toBe(true);
+    });
+    expect(injectCmdTOnZeroTabs).toBe(false); // the injector really fired
+
+    // The keystroke won: one blank tab, still on /pair.
+    await waitFor(() => expect(allTabs(latestState)).toHaveLength(1));
+    expect(allTabs(latestState)[0].sessionId).toBe('');
+    expect(currentPath).toContain('/pair');
+
+    // The nonzero commit acknowledged the request, so it cannot suppress a
+    // LATER legitimate redirect: closing this tab still goes Home.
+    expect(hasPendingNewTab()).toBe(false);
+    act(() => {
+      latestDispatch?.({ type: 'closeTab', tabId: allTabs(latestState)[0].tabId });
+    });
+    await waitFor(() => expect(currentPath).toBe('/'));
   });
 
   it('Cmd+T from Settings survives: the redirect PEEKS the pending request, never consumes it', async () => {
