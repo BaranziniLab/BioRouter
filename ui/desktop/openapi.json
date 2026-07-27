@@ -6400,6 +6400,8 @@
           "min_gpu_memory_gib",
           "recommended_gpu_memory_gib",
           "context_limit",
+          "active_params_b",
+          "speed_hint",
           "is_default",
           "downloaded",
           "download_status",
@@ -6411,6 +6413,12 @@
           "suitability_message"
         ],
         "properties": {
+          "active_params_b": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Approximate parameters active per generated token, in billions (MoE\nmodels activate a subset per token; this drives tokens/sec).",
+            "minimum": 0
+          },
           "context_limit": {
             "type": "integer",
             "minimum": 0
@@ -6476,6 +6484,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "speed_hint": {
+            "type": "string",
+            "description": "Short human-readable expected-speed hint shown next to the download\nsize (e.g. \"Fast per token — 3B active (MoE), but heavy to load\")."
           },
           "suitability_message": {
             "type": "string"

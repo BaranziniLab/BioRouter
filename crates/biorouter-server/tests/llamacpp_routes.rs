@@ -43,7 +43,9 @@ async fn status_returns_catalog_with_default_first_class() {
         .collect();
     assert_eq!(defaults.len(), 1);
     let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
-    let allowed_defaults = ["gemma4", "qwen3.6"];
+    // The 35B MoE (qwen3.6) is never a tier default — it is an explicit
+    // opt-in "large" model (issue #35).
+    let allowed_defaults = ["gemma4", "gemma4-12b"];
     assert!(allowed_defaults.contains(&default_name));
     assert!(defaults[0]
         .get("context_limit")
@@ -90,6 +92,20 @@ async fn status_returns_catalog_with_default_first_class() {
             .and_then(|n| n.as_u64())
             .is_some()),
         "catalog entries should expose GPU-addressable memory recommendations"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("speed_hint")
+            .and_then(|hint| hint.as_str())
+            .is_some_and(|hint| !hint.trim().is_empty())),
+        "catalog entries should expose a human-readable expected-speed hint"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("active_params_b")
+            .and_then(|n| n.as_u64())
+            .is_some_and(|n| n > 0)),
+        "catalog entries should expose active parameters per token"
     );
     assert!(
         catalog.iter().all(|m| m

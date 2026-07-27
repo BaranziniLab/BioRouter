@@ -3,22 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
-import {
-  llamacppEnsure,
-  llamacppStatus,
-  llamacppWarmup,
-  type LlamaCppModel,
-  type LlamaCppSystemInfo,
-  type SidecarStatus,
-} from '../../api';
+import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
+import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
 import OnboardingSectionLabel from './OnboardingSectionLabel';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
 }
-
-const POLL_INTERVAL_MS = 1500;
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
   kind === 'apple_unified' ? 'unified memory' : 'VRAM';
@@ -52,6 +44,13 @@ const modelDownloadNote = (model: LlamaCppModel | undefined) => {
   }
 };
 
+const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
+  kind === 'warmup'
+    ? 'Llama Server warm-up failed'
+    : kind === 'install'
+      ? 'Local model install failed'
+      : 'Could not start Llama Server';
+
 const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.fallback_download_status) {
     case 'downloaded':
@@ -68,34 +67,56 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
 export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const navigate = useNavigate();
   const { upsert } = useConfig();
-  const [isChecking, setIsChecking] = useState(true);
-  const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
-  const [catalog, setCatalog] = useState<LlamaCppModel[]>([]);
-  const [system, setSystem] = useState<LlamaCppSystemInfo | null>(null);
+  const { status, operation, lastError } = useLlamaServer();
+  // Skip the "Checking…" state when the shared store already has a status
+  // (e.g. remounting while a download started elsewhere is still running).
+  const [isChecking, setIsChecking] = useState(
+    () => llamaServerStore.getSnapshot().status === null
+  );
   const [selectedModel, setSelectedModel] = useState<string>('');
-  const [isStarting, setIsStarting] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingModelStart, setPendingModelStart] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
   const connectingRef = useRef(false);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current !== null) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+  // Ownership guard: the start flow deliberately keeps driving the shared
+  // store after this card unmounts (progress lives in the store, issue #34),
+  // but a DEAD card must never write provider config, call its own state
+  // setters, or fire the onSuccess navigation.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
+
+  const sidecar = status?.sidecar ?? null;
+  const catalog = useMemo(() => status?.catalog ?? [], [status]);
+  const system = status?.system ?? null;
+  // Any in-flight operation (started here or in Settings → Models) renders
+  // the live progress box; the store keeps polling across unmounts.
+  const isStarting = operation !== null;
 
   const connect = useCallback(
     async (model: string) => {
+      // Never configure the provider or navigate from an unmounted card.
+      if (!mountedRef.current) return;
       if (connectingRef.current) return;
       connectingRef.current = true;
       setIsConnecting(true);
       try {
+        // Each write is awaited, so the card can unmount between any two of
+        // them; re-check ownership after EVERY await so a dead card stops
+        // writing provider config mid-sequence instead of finishing the
+        // group from beyond the grave.
         // Explicitly setting the (defaulted) port marks the provider configured.
         await upsert('LLAMACPP_PORT', '11543', false);
+        if (!mountedRef.current) return;
         await upsert('BIOROUTER_PROVIDER', 'llamacpp', false);
+        if (!mountedRef.current) return;
         await upsert('BIOROUTER_MODEL', model, false);
+        // Unmounted after the last write: the config is saved, but a dead
+        // card must not toast or drive the onboarding navigation.
+        if (!mountedRef.current) return;
         toastService.success({
           title: 'Local model ready!',
           msg: `Llama Server is running ${model} on your computer.`,
@@ -103,7 +124,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         onSuccess();
       } catch (error) {
         connectingRef.current = false;
-        setIsConnecting(false);
+        if (mountedRef.current) setIsConnecting(false);
         toastService.error({
           title: 'Connection Failed',
           msg: `Failed to configure Llama Server: ${error instanceof Error ? error.message : String(error)}`,
@@ -115,79 +136,99 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   );
 
   useEffect(() => {
+    let cancelled = false;
     const checkInitial = async () => {
       try {
-        const res = await llamacppStatus({ throwOnError: true });
-        setSidecar(res.data.sidecar);
-        setCatalog(res.data.catalog);
-        setSystem(res.data.system);
-        const defaultModel =
-          res.data.catalog.find((m) => m.is_default)?.name ?? res.data.catalog[0]?.name ?? '';
-        setSelectedModel((prev) => prev || res.data.sidecar.model || defaultModel);
+        await llamaServerStore.refresh();
       } catch (error) {
         console.error('Failed to check Llama Server status:', error);
       } finally {
-        setIsChecking(false);
+        if (!cancelled) setIsChecking(false);
       }
     };
-    checkInitial();
-    return stopPolling;
-  }, [stopPolling]);
+    void checkInitial();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!status) return;
+    const defaultModel =
+      status.catalog.find((m) => m.is_default)?.name ?? status.catalog[0]?.name ?? '';
+    setSelectedModel((prev) => prev || status.sidecar.model || defaultModel);
+  }, [status]);
+
+  // Surface a polled terminal failure (sidecar error / deadline timeout)
+  // IMMEDIATELY, instead of leaving the user staring at a silently cleared
+  // busy state until the separate in-flight warm-up HTTP call gets around to
+  // rejecting. claimErrorToast makes this exactly-once across surfaces and
+  // the driving flow's own catch handler.
+  useEffect(() => {
+    if (!lastError) return;
+    if (!llamaServerStore.claimErrorToast(lastError.opId)) return;
+    toastService.error({
+      title: terminalErrorTitle(lastError.kind),
+      msg: lastError.message,
+    });
+  }, [lastError]);
+
+  // Toast a driving-flow failure exactly once. If the store already failed
+  // this operation terminally (polled sidecar error / timeout), the effect
+  // above may have surfaced it — claim before toasting the retained error.
+  // A flow superseded by a newer operation stays silent: the new flow owns
+  // the UX, and its operation/interval must not be touched (scoped
+  // endOperation guarantees that).
+  const surfaceStartFailure = (opId: number, title: string, error: unknown) => {
+    const endedByUs = llamaServerStore.endOperation(opId);
+    if (!endedByUs) {
+      const terminal = llamaServerStore.getSnapshot().lastError;
+      if (terminal?.opId === opId && llamaServerStore.claimErrorToast(opId)) {
+        toastService.error({ title: terminalErrorTitle(terminal.kind), msg: terminal.message });
+      }
+      return;
+    }
+    toastService.error({
+      title,
+      msg: error instanceof Error ? error.message : String(error),
+      traceback: error instanceof Error ? error.stack || '' : '',
+    });
+  };
 
   const startModel = async (model: string) => {
-    if (isStarting || isConnecting) return;
-    setIsStarting(true);
+    if (llamaServerStore.getSnapshot().operation || isConnecting) return;
+    const opId = llamaServerStore.beginOperation('start', model);
     try {
       const res = await llamacppEnsure({ body: { model }, throwOnError: true });
-      setSidecar(res.data.sidecar);
-      setSystem(res.data.system);
+      llamaServerStore.applyStatus(res.data, opId);
     } catch (error) {
-      setIsStarting(false);
-      toastService.error({
-        title: 'Could not start Llama Server',
-        msg: error instanceof Error ? error.message : String(error),
-        traceback: error instanceof Error ? error.stack || '' : '',
-      });
+      surfaceStartFailure(opId, 'Could not start Llama Server', error);
       return;
     }
 
-    stopPolling();
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const res = await llamacppStatus({ throwOnError: true });
-        setSidecar(res.data.sidecar);
-        setSystem(res.data.system);
-        if (res.data.sidecar.state === 'error') {
-          stopPolling();
-          setIsStarting(false);
-          toastService.error({
-            title: 'Llama Server failed to start',
-            msg: res.data.sidecar.detail || 'Unknown error. See logs.',
-            traceback: '',
-          });
-        }
-      } catch {
-        // Transient polling errors are fine; keep polling.
-      }
-    }, POLL_INTERVAL_MS);
+    // The ensure call may settle after this flow lost the operation (deadline
+    // timeout, or a newer operation superseded it — possibly for a DIFFERENT
+    // model). applyStatus above already dropped the stale payload, but the
+    // flow itself must also stop: warming up the OLD model here would
+    // interfere with the singleton sidecar the newer operation now owns.
+    if (llamaServerStore.getSnapshot().operation?.id !== opId) return;
 
     try {
       const warmed = await llamacppWarmup({ body: { model }, throwOnError: true });
       if (!warmed.data.output.trim()) {
         throw new Error('Llama Server returned an empty warm-up response');
       }
-      stopPolling();
-      setSidecar(warmed.data.sidecar);
-      setIsStarting(false);
+      llamaServerStore.applySidecar(warmed.data.sidecar, opId);
+      // Scoped endOperation: false means this flow was superseded or already
+      // failed terminally in the store — a stale flow must not connect.
+      if (!llamaServerStore.endOperation(opId)) return;
+      // A dead card never writes provider config or navigates; the model is
+      // ready in the store, and a remounted card will offer "Use Llama
+      // Server" from the ready status.
+      if (!mountedRef.current) return;
       await connect(model);
     } catch (error) {
-      stopPolling();
-      setIsStarting(false);
-      toastService.error({
-        title: 'Llama Server warm-up failed',
-        msg: error instanceof Error ? error.message : String(error),
-        traceback: error instanceof Error ? error.stack || '' : '',
-      });
+      surfaceStartFailure(opId, 'Llama Server warm-up failed', error);
     }
   };
 
@@ -355,6 +396,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 <p className="break-words text-[11px] text-text-muted">
                   {selectedEntry.description}
                 </p>
+                <p
+                  className="break-words text-[11px] text-text-muted"
+                  data-testid="llamacpp-size-speed"
+                >
+                  {selectedEntry.download_size} download · {selectedEntry.speed_hint}
+                </p>
                 <p className="break-words text-[11px] text-text-muted">
                   {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
                 </p>
@@ -394,21 +441,24 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               </div>
             )}
 
-            {isStarting && (
-              <div className="rounded-md border border-border-subtle bg-background-default p-3">
+            {operation && (
+              <div
+                className="rounded-md border border-border-subtle bg-background-default p-3"
+                data-testid="llamacpp-progress"
+              >
                 <div className="flex items-center gap-2 text-xs text-text-default">
                   <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
                   <span>
-                    {sidecar?.state === 'ready' && sidecar.model === selectedModel
-                      ? `Running warm-up prompt for ${selectedModel}...`
+                    {sidecar?.state === 'ready' && sidecar.model === operation.model
+                      ? `Running warm-up prompt for ${operation.model}...`
                       : sidecar?.state === 'starting'
-                        ? `Preparing ${selectedModel}. Loading or downloading on first use…`
+                        ? `Preparing ${operation.model}. Loading or downloading on first use…`
                         : `Starting llama-server…`}
                   </span>
                 </div>
-                {sidecar?.detail && (
+                {(operation.message ?? sidecar?.detail) && (
                   <p className="text-[11px] text-text-muted mt-1 font-mono truncate">
-                    {sidecar.detail}
+                    {operation.message ?? sidecar?.detail}
                   </p>
                 )}
               </div>

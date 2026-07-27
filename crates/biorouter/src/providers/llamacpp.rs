@@ -65,11 +65,20 @@ pub struct CatalogEntry {
     /// Agent-ready context window Biorouter advertises for the model. The
     /// server's live `--ctx-size` is still read from `/props` after warm-up.
     pub context_limit: usize,
+    /// Approximate parameters active per generated token, in billions. MoE
+    /// models activate a small expert subset per token, so this — not the
+    /// total parameter count — is the main tokens/sec driver.
+    pub active_params_b: u64,
+    /// Short human-readable expected-speed hint, shown in pickers next to
+    /// the download size so users opt into heavy models knowingly.
+    pub speed_hint: &'static str,
 }
 
 /// Curated catalog: Ollama library Gemma 4 and Qwen3.6 models. Gemma 4 is the
-/// laptop-class default; Qwen3.6 remains opt-in unless the machine has ample
-/// GPU-addressable memory.
+/// laptop-class default and Gemma 4 12B the high-memory default; the Qwen3.6
+/// 35B MoE stays in the catalog as an explicit opt-in "large" choice on every
+/// tier (issue #35: it is a 24 GB download and heavy to load, so it makes a
+/// poor silent default even on big machines).
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gemma4",
@@ -83,6 +92,8 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,
         context_limit: 131_072,
+        active_params_b: 4,
+        speed_hint: "Fast — ~4B active parameters",
     },
     CatalogEntry {
         name: "gemma4-e2b",
@@ -96,6 +107,8 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,
         context_limit: 131_072,
+        active_params_b: 2,
+        speed_hint: "Fastest — ~2B active parameters",
     },
     CatalogEntry {
         name: "gemma4-12b",
@@ -109,6 +122,8 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 24,
         recommended_gpu_memory_gib: 32,
         context_limit: 262_144,
+        active_params_b: 12,
+        speed_hint: "Fast — dense 12B, quick to load",
     },
     CatalogEntry {
         name: "gemma4-26b",
@@ -122,6 +137,8 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 48,
         context_limit: 262_144,
+        active_params_b: 26,
+        speed_hint: "Moderate — dense 26B",
     },
     CatalogEntry {
         name: "gemma4-31b",
@@ -135,6 +152,8 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
+        active_params_b: 31,
+        speed_hint: "Moderate — dense 31B",
     },
     CatalogEntry {
         name: "qwen3.6",
@@ -144,10 +163,12 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         official_url: "https://ollama.com/library/qwen3.6",
         hf_spec: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M",
         download_size: "24 GB",
-        description: "Qwen3.6 mixture-of-experts model with 35B total and 3B active parameters; best for high-memory machines",
+        description: "Large, opt-in Qwen3.6 mixture-of-experts model with 35B total and 3B active parameters; fast per token once loaded, but a heavy download for high-memory machines",
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
+        active_params_b: 3,
+        speed_hint: "Fast per token — 3B active (MoE), but a 24 GB download and heavy to load",
     },
     CatalogEntry {
         name: "qwen3.6-27b",
@@ -161,12 +182,18 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         min_gpu_memory_gib: 32,
         recommended_gpu_memory_gib: 48,
         context_limit: 262_144,
+        active_params_b: 27,
+        speed_hint: "Moderate — dense 27B",
     },
 ];
 
 pub fn recommended_model_for_memory_gib(gib: u64) -> &'static str {
     if gib >= 64 {
-        "qwen3.6"
+        // High-memory tier: a fast dense mid-size model. The 35B MoE
+        // (`qwen3.6`) used to be the default here, but its 24 GB download
+        // and heavy load time made local inference feel slow out of the box
+        // (issue #35); it remains in the catalog as an explicit opt-in.
+        "gemma4-12b"
     } else {
         "gemma4"
     }
@@ -614,7 +641,10 @@ mod tests {
         assert_eq!(recommended_model_for_memory_gib(8), "gemma4");
         assert_eq!(recommended_model_for_memory_gib(16), "gemma4");
         assert_eq!(recommended_model_for_memory_gib(48), "gemma4");
-        assert_eq!(recommended_model_for_memory_gib(64), "qwen3.6");
+        // High-memory machines default to the fast dense mid-size model, not
+        // the 35B MoE (24 GB download, heavy load) — issue #35.
+        assert_eq!(recommended_model_for_memory_gib(64), "gemma4-12b");
+        assert_eq!(recommended_model_for_memory_gib(128), "gemma4-12b");
 
         let default = default_model_name();
         let entry = MODEL_CATALOG
@@ -622,6 +652,46 @@ mod tests {
             .find(|e| e.name == default)
             .expect("default model must be in the catalog");
         assert!(entry.context_limit >= llamacpp_sidecar::LLAMACPP_AGENT_CONTEXT_SIZE);
+    }
+
+    #[test]
+    fn qwen36_moe_is_never_the_default() {
+        // The 35B MoE stays an explicit opt-in "large" choice on every tier.
+        for gib in [8, 16, 32, 48, 64, 96, 128, 256] {
+            assert_ne!(
+                recommended_model_for_memory_gib(gib),
+                "qwen3.6",
+                "qwen3.6 must not be the tier default at {gib} GiB"
+            );
+        }
+        let qwen = MODEL_CATALOG
+            .iter()
+            .find(|e| e.name == "qwen3.6")
+            .expect("qwen3.6 stays in the catalog as an opt-in large model");
+        assert!(
+            qwen.description.starts_with("Large, opt-in"),
+            "qwen3.6 should be described as a large, opt-in model"
+        );
+    }
+
+    #[test]
+    fn catalog_entries_expose_speed_metadata() {
+        for entry in MODEL_CATALOG {
+            assert!(
+                !entry.speed_hint.trim().is_empty(),
+                "{} must have a speed hint",
+                entry.name
+            );
+            assert!(
+                entry.active_params_b > 0,
+                "{} must expose active parameters",
+                entry.name
+            );
+        }
+        // MoE entries advertise their active (not total) parameter count.
+        let qwen = MODEL_CATALOG.iter().find(|e| e.name == "qwen3.6").unwrap();
+        assert_eq!(qwen.active_params_b, 3);
+        assert!(qwen.speed_hint.contains("MoE"));
     }
 
     #[test]

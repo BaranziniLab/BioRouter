@@ -778,6 +778,11 @@ export type LlamaCppEnsureRequest = {
  * One curated local model, as shown in the GUI/TUI pickers.
  */
 export type LlamaCppModel = {
+    /**
+     * Approximate parameters active per generated token, in billions (MoE
+     * models activate a subset per token; this drives tokens/sec).
+     */
+    active_params_b: number;
     context_limit: number;
     description: string;
     display_name: string;
@@ -811,6 +816,11 @@ export type LlamaCppModel = {
     official_url: string;
     ollama_name?: string | null;
     recommended_gpu_memory_gib: number;
+    /**
+     * Short human-readable expected-speed hint shown next to the download
+     * size (e.g. "Fast per token — 3B active (MoE), but heavy to load").
+     */
+    speed_hint: string;
     suitability_message: string;
     suitability_status: LlamaCppSuitability;
     /**
