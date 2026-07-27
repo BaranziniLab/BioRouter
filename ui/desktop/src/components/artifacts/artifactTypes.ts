@@ -109,7 +109,10 @@ export type ArtifactFilePreview =
       kind: 'error';
       title: string;
       path: string;
+      /** Friendly, human-readable message — never the raw Node errno string. */
       error: string;
+      /** Errno-style code ('ENOENT', 'EACCES', …) when one was recognised. */
+      code?: string;
       found: false;
     };
 

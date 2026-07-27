@@ -210,6 +210,67 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     });
   });
 
+  // #36 — a moved/deleted file renders a friendly centered empty-state, never
+  // the raw Node errno string the main process used to forward verbatim.
+  it('shows a friendly empty-state when the artifact file was moved or deleted', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'error',
+      title: 'normal_numbers_ggplot_sorted.png',
+      path: '/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png',
+      error: "This file was moved, renamed, or deleted, so it can't be previewed anymore.",
+      code: 'ENOENT',
+      found: false,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'file',
+            title: 'normal_numbers_ggplot_sorted.png',
+            path: '/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-error-state')).toBeInTheDocument();
+    expect(screen.getByText('File not available')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This file was moved, renamed, or deleted, so it can't be previewed anymore."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ENOENT/)).not.toBeInTheDocument();
+  });
+
+  it('renders the IPC-level load failure through the same empty-state', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Could not open artifact.')
+    );
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.sql', path: '/tmp/analysis.sql' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-error-state')).toBeInTheDocument();
+    expect(screen.getByText('File not available')).toBeInTheDocument();
+    expect(screen.getByText('Could not open artifact.')).toBeInTheDocument();
+  });
+
   it('normalizes legacy flat folder entries instead of crashing the tree', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({

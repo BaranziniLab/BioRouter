@@ -29,10 +29,12 @@ import {
   Eye,
   File,
   FileText,
+  FileX,
   Folder,
   Github,
   Globe,
   Image,
+  Lock,
   Maximize2,
   Search,
   X,
@@ -824,6 +826,35 @@ export default function ArtifactViewer({
   );
 }
 
+/**
+ * Friendly empty-state for a file that could not be read (#36). The main
+ * process already maps errno codes to human-readable messages (see
+ * utils/artifactFileErrors.ts); this renders them as a proper centered state
+ * — icon, short title, message, muted path — instead of a bare gray line of
+ * error text.
+ */
+function ArtifactErrorState({
+  message,
+  path,
+  code,
+}: {
+  message: string;
+  path?: string;
+  code?: string;
+}) {
+  const Icon = code === 'EACCES' || code === 'EPERM' ? Lock : FileX;
+  return (
+    <div data-testid="artifact-error-state" className="flex h-full items-center justify-center p-6">
+      <div className="w-full max-w-sm text-center">
+        <Icon className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
+        <div className="text-sm font-medium text-text-default">File not available</div>
+        <p className="mt-1 text-sm leading-relaxed text-text-muted">{message}</p>
+        {path && <div className="mt-2 break-all text-xs text-text-muted/70">{path}</div>}
+      </div>
+    </div>
+  );
+}
+
 function ArtifactPreviewBody({
   preview,
   artifact,
@@ -846,7 +877,7 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'error') {
-    return <div className="p-4 text-sm text-text-muted">{preview.message}</div>;
+    return <ArtifactErrorState message={preview.message} />;
   }
 
   if (preview.kind === 'html') {
@@ -905,7 +936,7 @@ function ArtifactPreviewBody({
   const file = preview.preview;
 
   if (file.kind === 'error') {
-    return <div className="p-4 text-sm text-text-muted">{file.error}</div>;
+    return <ArtifactErrorState message={file.error} path={file.path} code={file.code} />;
   }
 
   if (file.kind === 'image') {
