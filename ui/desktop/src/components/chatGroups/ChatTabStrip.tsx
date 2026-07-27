@@ -1,4 +1,4 @@
-import { CSSProperties, useCallback, useEffect, useRef } from 'react';
+import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ChevronDown, MessageSquare, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
@@ -12,6 +12,13 @@ import {
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useChatTabDrag } from './ChatTabDragContext';
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 export interface ChatTabStripProps {
   tabs: ChatTab[];
@@ -62,6 +69,67 @@ export function ChatTabStrip({
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // #37 — FLIP: tabs SLIDE to their new slots with the spring easing instead
+  // of teleporting. Reorder is a pure array move in the reducer, so React
+  // re-renders the strip with the tabs already in their final DOM positions;
+  // this layout effect measures where each tab WAS (last snapshot), applies
+  // the inverted translate, and lets a transition play it back to identity.
+  // It keys on the rendered ORDER, so one pass covers drag-reorder, the shift
+  // after a close, and a cross-group move — with no animation library.
+  //
+  // offsetLeft, not getBoundingClientRect: it is layout-relative, so a scrolled
+  // strip or a moved window cannot poison the deltas between snapshots. In
+  // jsdom every offset is 0, so the pass is a structural no-op there — the
+  // spring itself is browser-verified (the repo's Prism/Tailwind lesson).
+  const tabOffsetsRef = useRef<Map<string, number>>(new Map());
+  const orderKey = tabs.map((t) => t.tabId).join('␟');
+
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const previous = tabOffsetsRef.current;
+    const next = new Map<string, number>();
+    const els = Array.from(strip.querySelectorAll<HTMLElement>('[data-tab-id]'));
+    for (const el of els) {
+      if (el.dataset.tabId) next.set(el.dataset.tabId, el.offsetLeft);
+    }
+    tabOffsetsRef.current = next;
+
+    if (prefersReducedMotion()) return;
+
+    for (const el of els) {
+      const tabId = el.dataset.tabId;
+      if (!tabId) continue;
+      const before = previous.get(tabId);
+      // A tab with no previous slot is newly opened — it appears in place
+      // rather than sliding in from nowhere.
+      if (before === undefined) continue;
+      const delta = before - (next.get(tabId) ?? before);
+      if (delta === 0) continue;
+
+      // Invert without transitioning, then release to identity on the next
+      // frame with the spring. Transform-only: never left/top, and never a
+      // reparent — the divider (::before) and drop hairline (::after)
+      // contracts stay untouched.
+      el.style.transition = 'none';
+      el.style.transform = `translateX(${delta}px)`;
+      window.requestAnimationFrame(() => {
+        if (!el.isConnected) return;
+        el.style.transition = 'transform var(--motion-base) var(--ease-spring)';
+        el.style.transform = '';
+        el.addEventListener(
+          'transitionend',
+          () => {
+            // Give the stylesheet back its own transition (hover colours).
+            el.style.removeProperty('transition');
+          },
+          { once: true }
+        );
+      });
+    }
+    // Keyed on the rendered order string — the DOM is the dependency here.
+  }, [orderKey]);
 
   // Keep the focused tab in view as the strip scrolls past its shrink floor.
   useEffect(() => {
