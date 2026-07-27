@@ -269,6 +269,16 @@ function isRunningState(chatState: ChatState): boolean {
   return chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation;
 }
 
+/**
+ * #22 — delay of the setTimeout fallback armed alongside every scheduled rAF
+ * flush (see `scheduleNotify`). ~Two frames at 60 Hz: long enough that a live
+ * rAF (~16 ms) always wins the race, so visible windows keep frame-aligned
+ * batching; short enough that a window whose rAF is paused (hidden Chromium
+ * windows) stalls notifications by at most this long. Exported for the
+ * hidden-window regression test.
+ */
+export const NOTIFY_FALLBACK_MS = 32;
+
 class ChatStreamController {
   private snapshot: ChatStreamSnapshot = {
     messages: [],
@@ -371,28 +381,29 @@ class ChatStreamController {
   // Snapshot writes stay SYNCHRONOUS (getSnapshot is always current); only the
   // "tell React about it" step is deferred to at most once per animation frame.
   private notifyScheduled = false;
-  private notifyHandle: number | null = null;
-  private notifyViaTimeout = false;
-
-  /** How long the fallback timer waits when rAF can't be used (~one frame). */
-  private static readonly NOTIFY_FALLBACK_MS = 16;
+  private notifyRafHandle: number | null = null;
+  private notifyTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   private scheduleNotify(): void {
     if (this.notifyScheduled) return;
     this.notifyScheduled = true;
-    // rAF is paused/heavily throttled in backgrounded Chromium windows — a
-    // hidden chat would freeze mid-stream without the timeout fallback. The
-    // same fallback covers environments with no rAF at all (jsdom, workers).
-    const hidden = typeof document !== 'undefined' && document.hidden;
-    if (!hidden && typeof requestAnimationFrame === 'function') {
-      this.notifyViaTimeout = false;
-      this.notifyHandle = requestAnimationFrame(() => this.flushNotify());
-    } else {
-      this.notifyViaTimeout = true;
-      this.notifyHandle = setTimeout(
-        () => this.flushNotify(),
-        ChatStreamController.NOTIFY_FALLBACK_MS
-      ) as unknown as number;
+    // rAF is paused in hidden Chromium windows — and visibility can change
+    // BETWEEN scheduling and the callback running, so sampling `document.hidden`
+    // here is not enough: a flush armed via rAF while visible would park
+    // indefinitely once the window hid, and with `notifyScheduled` latched no
+    // later event could re-arm anything — a WaitingForUserInput transition
+    // would sit invisible until the window was refocused. So the cancellable
+    // setTimeout fallback is armed on EVERY schedule, and rAF — when the
+    // environment has one at all (jsdom and workers don't) — races alongside
+    // it: whichever fires first flushes and cancels the other (`flushNotify`
+    // clears both handles; its `notifyScheduled` guard makes a straggler a
+    // no-op). A live rAF (~16 ms) beats the ~two-frame fallback, so visible
+    // windows keep frame-aligned batching; a paused one merely loses the race,
+    // capping the stall at NOTIFY_FALLBACK_MS. The timeout is armed first so
+    // a synchronously-firing rAF (test stubs) finds the handle to cancel.
+    this.notifyTimeoutHandle = setTimeout(() => this.flushNotify(), NOTIFY_FALLBACK_MS);
+    if (typeof requestAnimationFrame === 'function') {
+      this.notifyRafHandle = requestAnimationFrame(() => this.flushNotify());
     }
   }
 
@@ -400,17 +411,22 @@ class ChatStreamController {
    * Run a pending scheduled notification NOW. Called at turn boundaries
    * (submit start, stop, finish) so the transitions users act on — their
    * message appearing, Stop feedback, the turn ending — are never a frame
-   * late. No-op when nothing is scheduled.
+   * late. Also the shared terminus of the rAF/timeout race in
+   * `scheduleNotify`: the winner flushes and cancels the loser here. No-op
+   * when nothing is scheduled — which is also what makes a double fire
+   * (both race arms landing) deliver exactly one notification.
    */
   private flushNotify(): void {
     if (!this.notifyScheduled) return;
-    if (this.notifyHandle !== null) {
-      if (this.notifyViaTimeout) {
-        clearTimeout(this.notifyHandle);
-      } else if (typeof cancelAnimationFrame === 'function') {
-        cancelAnimationFrame(this.notifyHandle);
+    if (this.notifyTimeoutHandle !== null) {
+      clearTimeout(this.notifyTimeoutHandle);
+      this.notifyTimeoutHandle = null;
+    }
+    if (this.notifyRafHandle !== null) {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(this.notifyRafHandle);
       }
-      this.notifyHandle = null;
+      this.notifyRafHandle = null;
     }
     this.notifyScheduled = false;
     this.notify();

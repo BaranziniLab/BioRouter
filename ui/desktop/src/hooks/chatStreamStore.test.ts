@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
-import { ChatStreamRegistry } from './chatStreamStore';
+import { ChatStreamRegistry, NOTIFY_FALLBACK_MS } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
 
@@ -1537,5 +1537,115 @@ describe('notification batching (#22)', () => {
       sessionId: 'run-skip',
       chatState: ChatState.Idle,
     });
+  });
+
+  it('an event scheduled while visible still flushes when the rAF never fires (hidden window)', async () => {
+    // Chromium PAUSES rAF in hidden windows, and the dangerous ordering is:
+    // the flush is scheduled while the window is VISIBLE (so rAF is armed),
+    // then the window hides before the frame runs — the callback parks
+    // forever, and with `notifyScheduled` latched no later event can re-arm
+    // anything. Model the parked frame with an rAF that accepts callbacks and
+    // never runs them; the setTimeout fallback armed alongside it must
+    // deliver the notification within its budget.
+    const rafCancelled: number[] = [];
+    vi.stubGlobal('requestAnimationFrame', (_cb: (time: number) => void): number => 7);
+    vi.stubGlobal('cancelAnimationFrame', (id: number): void => {
+      rafCancelled.push(id);
+    });
+
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('hidden-1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('hidden-1');
+    const submitted = controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+    const listener = vi.fn();
+    const unsubscribe = controller.subscribe(listener);
+    rafCancelled.length = 0;
+
+    // The state transition users must not miss: a tool confirmation flips the
+    // store to WaitingForUserInput — exactly what stalled invisibly before.
+    controlled.push({
+      type: 'Message',
+      message: {
+        id: 'confirm-1',
+        role: 'assistant',
+        created: 2,
+        content: [{ type: 'toolConfirmationRequest', id: 'tc-1' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      token_state: tokenState,
+    } as unknown as MessageEvent);
+    await flush();
+
+    // The snapshot is current (writes are synchronous)…
+    expect(controller.getSnapshot().chatState).toBe(ChatState.WaitingForUserInput);
+    // …but no notification yet: the rAF is parked and no time has passed.
+    expect(listener).not.toHaveBeenCalled();
+
+    // The fallback fires within its budget and wakes the subscriber.
+    await vi.advanceTimersByTimeAsync(NOTIFY_FALLBACK_MS);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // The parked rAF was cancelled, so re-showing the window can't double-fire.
+    expect(rafCancelled).toContain(7);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+    unsubscribe();
+  });
+
+  it('never double-flushes when both the rAF and the fallback timer are armed', async () => {
+    const raf = stubRafQueue();
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('race-1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('race-1');
+    const submitted = controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    const listener = vi.fn();
+    const unsubscribe = controller.subscribe(listener);
+
+    // Round 1: the rAF wins the race…
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('a1', 'token-0 '),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+    raf.runFrame();
+    expect(listener).toHaveBeenCalledTimes(1);
+    // …and the fallback slot passing delivers nothing more: it was cancelled.
+    await vi.advanceTimersByTimeAsync(NOTIFY_FALLBACK_MS * 2);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    // Round 2: the fallback wins…
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('a1', 'token-1 '),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+    await vi.advanceTimersByTimeAsync(NOTIFY_FALLBACK_MS);
+    expect(listener).toHaveBeenCalledTimes(2);
+    // …and the parked frame finally running (stub cancelAnimationFrame is a
+    // no-op, as in a window whose paused rAF resumes) is a no-op flush, not a
+    // second notification.
+    raf.runFrame();
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+    unsubscribe();
   });
 });
