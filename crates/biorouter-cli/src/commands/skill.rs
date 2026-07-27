@@ -772,3 +772,339 @@ pub async fn handle_remove(slug: String) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    fn write_skill(root: &Path, rel: &str, name: &str, desc: &str) {
+        let dir = root.join(rel);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\nBody\n"),
+        )
+        .unwrap();
+    }
+
+    /// A skills tree with every shape the backend discovers: single skill,
+    /// bundle sub-skills, an ambiguous last-component slug, broken
+    /// frontmatter, and one dir nested too deep for the backend to see.
+    fn sample_tree() -> (TempDir, Vec<InstalledSkill>) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_skill(root, "my-skill", "My Skill", "A single skill");
+        write_skill(root, "superpowers/brainstorming", "brainstorming", "Ideas");
+        write_skill(root, "superpowers/debugging", "debugging", "Bugs");
+        write_skill(root, "pack-a/tool", "alpha-tool", "Ambiguous a");
+        write_skill(root, "pack-b/tool", "beta-tool", "Ambiguous b");
+        write_skill(
+            root,
+            "too/deep/skill",
+            "invisible",
+            "Backend never sees this",
+        );
+        let broken = root.join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
+        let skills = collect_installed_skills(root);
+        (tmp, skills)
+    }
+
+    // ── discovery ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn discovery_mirrors_backend_two_level_layout() {
+        let (_tmp, skills) = sample_tree();
+        let slugs: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec![
+                "broken",
+                "my-skill",
+                "pack-a/tool",
+                "pack-b/tool",
+                "superpowers/brainstorming",
+                "superpowers/debugging",
+            ],
+            "three-deep SKILL.md must be invisible, like in the backend"
+        );
+
+        let single = skills.iter().find(|s| s.slug == "my-skill").unwrap();
+        assert_eq!(single.name.as_deref(), Some("My Skill"));
+        assert_eq!(single.bundle, None);
+
+        let sub = skills
+            .iter()
+            .find(|s| s.slug == "superpowers/brainstorming")
+            .unwrap();
+        assert_eq!(sub.name.as_deref(), Some("brainstorming"));
+        assert_eq!(sub.bundle.as_deref(), Some("superpowers"));
+
+        let broken = skills.iter().find(|s| s.slug == "broken").unwrap();
+        assert_eq!(broken.name, None, "unparseable frontmatter → no name");
+    }
+
+    // ── identifier resolution ────────────────────────────────────────────────
+
+    #[test]
+    fn resolves_frontmatter_name_directly() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "My Skill").unwrap();
+        assert_eq!(
+            target,
+            ResolvedTarget::Skill {
+                name: "My Skill".into(),
+                slug: "my-skill".into(),
+                bundle: None,
+                via_slug: false,
+            }
+        );
+        assert_eq!(target_identifier(&target), "My Skill");
+        assert!(slug_mapping_note(&target).is_none());
+    }
+
+    #[test]
+    fn resolves_name_case_insensitively_but_writes_exact_name() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "MY SKILL").unwrap();
+        assert_eq!(target_identifier(&target), "My Skill");
+    }
+
+    #[test]
+    fn resolves_slug_to_frontmatter_name_with_mapping_note() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "my-skill").unwrap();
+        match &target {
+            ResolvedTarget::Skill { name, via_slug, .. } => {
+                assert_eq!(name, "My Skill");
+                assert!(via_slug);
+            }
+            other => panic!("expected skill, got {other:?}"),
+        }
+        let note = slug_mapping_note(&target).expect("slug → name mapping must be surfaced");
+        assert!(note.contains("my-skill") && note.contains("My Skill"));
+    }
+
+    #[test]
+    fn resolves_bundle_name_to_bundle_target() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "superpowers").unwrap();
+        assert_eq!(
+            target,
+            ResolvedTarget::Bundle {
+                name: "superpowers".into(),
+                skills: 2,
+            }
+        );
+        assert_eq!(target_identifier(&target), "superpowers");
+    }
+
+    #[test]
+    fn resolves_bundle_sub_skill_by_name() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "brainstorming").unwrap();
+        match target {
+            ResolvedTarget::Skill {
+                name,
+                bundle,
+                via_slug,
+                ..
+            } => {
+                assert_eq!(name, "brainstorming");
+                assert_eq!(bundle.as_deref(), Some("superpowers"));
+                assert!(!via_slug, "name match wins over slug match");
+            }
+            other => panic!("expected skill, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_slug_component_is_rejected_with_candidates() {
+        let (_tmp, skills) = sample_tree();
+        let err = resolve_identifier(&skills, "tool").unwrap_err().to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(
+            err.contains("pack-a/tool") && err.contains("pack-b/tool"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn full_slug_disambiguates() {
+        let (_tmp, skills) = sample_tree();
+        let target = resolve_identifier(&skills, "pack-a/tool").unwrap();
+        assert_eq!(target_identifier(&target), "alpha-tool");
+    }
+
+    #[test]
+    fn unknown_identifier_gets_suggestions() {
+        let (_tmp, skills) = sample_tree();
+        let err = resolve_identifier(&skills, "brainstorm")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Did you mean"), "{err}");
+        assert!(err.contains("brainstorming"), "{err}");
+
+        let err = resolve_identifier(&skills, "zzz-nothing")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("biorouter skill list"), "{err}");
+    }
+
+    #[test]
+    fn broken_frontmatter_is_not_toggleable() {
+        let (_tmp, skills) = sample_tree();
+        let err = resolve_identifier(&skills, "broken")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("frontmatter"), "{err}");
+    }
+
+    // ── skills-config.json mutation ──────────────────────────────────────────
+
+    #[test]
+    fn disable_and_enable_are_idempotent() {
+        let mut config = json!({});
+        assert!(set_disabled_state(&mut config, "My Skill", true).unwrap());
+        assert!(
+            !set_disabled_state(&mut config, "My Skill", true).unwrap(),
+            "second disable must be a no-op"
+        );
+        assert_eq!(config["disabled"], json!(["My Skill"]));
+
+        assert!(set_disabled_state(&mut config, "My Skill", false).unwrap());
+        assert!(
+            !set_disabled_state(&mut config, "My Skill", false).unwrap(),
+            "second enable must be a no-op"
+        );
+        assert_eq!(config["disabled"], json!([]));
+    }
+
+    #[test]
+    fn mutation_preserves_unknown_fields_and_other_entries() {
+        let mut config = json!({
+            "disabled": ["keep-me"],
+            "future": {"nested": true},
+            "note": "GUI forward-compat"
+        });
+        set_disabled_state(&mut config, "My Skill", true).unwrap();
+        assert_eq!(config["disabled"], json!(["keep-me", "My Skill"]));
+        assert_eq!(config["future"], json!({"nested": true}));
+        assert_eq!(config["note"], json!("GUI forward-compat"));
+
+        set_disabled_state(&mut config, "keep-me", false).unwrap();
+        assert_eq!(config["disabled"], json!(["My Skill"]));
+        assert_eq!(config["future"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn malformed_disabled_field_is_an_error_not_a_clobber() {
+        let mut config = json!({"disabled": "not-an-array"});
+        let err = set_disabled_state(&mut config, "x", true).unwrap_err();
+        assert!(err.to_string().contains("array"), "{err}");
+        assert_eq!(
+            config["disabled"], "not-an-array",
+            "the malformed value must be left untouched"
+        );
+    }
+
+    #[test]
+    fn load_write_round_trip_preserves_unknown_fields_on_disk() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("skills-config.json");
+        fs::write(
+            &path,
+            r#"{"disabled":["a"],"future":{"keep":1},"note":"hi"}"#,
+        )
+        .unwrap();
+
+        let mut config = load_skills_config(&path).unwrap();
+        set_disabled_state(&mut config, "b", true).unwrap();
+        write_skills_config(&path, &config).unwrap();
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread["disabled"], json!(["a", "b"]));
+        assert_eq!(reread["future"], json!({"keep": 1}));
+        assert_eq!(reread["note"], json!("hi"));
+    }
+
+    #[test]
+    fn load_handles_absent_empty_and_invalid_files() {
+        let tmp = TempDir::new().unwrap();
+
+        let absent = tmp.path().join("absent.json");
+        assert_eq!(load_skills_config(&absent).unwrap(), json!({}));
+
+        let empty = tmp.path().join("empty.json");
+        fs::write(&empty, "  \n").unwrap();
+        assert_eq!(load_skills_config(&empty).unwrap(), json!({}));
+
+        let invalid = tmp.path().join("invalid.json");
+        fs::write(&invalid, "{ not json").unwrap();
+        assert!(load_skills_config(&invalid).is_err(), "must not clobber");
+
+        let non_object = tmp.path().join("array.json");
+        fs::write(&non_object, "[1,2]").unwrap();
+        assert!(load_skills_config(&non_object).is_err());
+    }
+
+    #[test]
+    fn write_creates_parent_dirs_and_valid_json() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nested/dir/skills-config.json");
+        write_skills_config(&path, &json!({"disabled": ["x"]})).unwrap();
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread, json!({"disabled": ["x"]}));
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "temp file must be renamed away"
+        );
+    }
+
+    // ── list output ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_rows_reflect_backend_enabled_semantics() {
+        let (_tmp, skills) = sample_tree();
+
+        // Disable one skill by frontmatter name and one whole bundle.
+        let disabled: HashSet<String> = ["My Skill".to_string(), "superpowers".to_string()]
+            .into_iter()
+            .collect();
+        let rows = list_rows(&skills, &disabled);
+        let by_slug = |slug: &str| rows.iter().find(|(s, _, _)| s == slug).unwrap();
+
+        let (_, name, enabled) = by_slug("my-skill");
+        assert_eq!(name, "My Skill");
+        assert!(!enabled, "name-disabled skill must show as disabled");
+
+        assert!(
+            !by_slug("superpowers/brainstorming").2 && !by_slug("superpowers/debugging").2,
+            "bundle disable must cover every sub-skill"
+        );
+
+        assert!(by_slug("pack-a/tool").2, "untouched skill stays enabled");
+
+        let (_, broken_name, broken_enabled) = by_slug("broken");
+        assert_eq!(broken_name, "(invalid frontmatter)");
+        assert!(
+            !broken_enabled,
+            "a skill the backend cannot load must not be shown as enabled"
+        );
+    }
+
+    #[test]
+    fn disabled_set_reads_the_exact_gui_written_shape() {
+        // The GUI writes {"disabled": [...]} via JSON.stringify(..., 2).
+        let config: serde_json::Value =
+            serde_json::from_str("{\n  \"disabled\": [\n    \"a\",\n    \"b\"\n  ]\n}").unwrap();
+        let set = disabled_set(&config);
+        assert!(set.contains("a") && set.contains("b"));
+        assert_eq!(disabled_set(&json!({})), HashSet::new());
+    }
+}
