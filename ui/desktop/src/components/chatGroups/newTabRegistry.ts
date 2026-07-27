@@ -63,6 +63,20 @@ export function consumePendingNewTab(): boolean {
   return pending;
 }
 
+/**
+ * Non-consuming PEEK, for gates only — never a substitute for the consume.
+ *
+ * The empty-/pair redirect (issue #38) runs in a CHILD of ChatGroupsProvider,
+ * so its effect fires BEFORE the provider's consuming effect on mount. A
+ * Cmd+T-from-Settings arrives as zero tabs + a pending request; the redirect
+ * must see the request and stand down WITHOUT consuming it, or the provider
+ * would find nothing to cash in and the keystroke would silently downgrade to
+ * a navigation (or worse, bounce straight back Home).
+ */
+export function hasPendingNewTab(): boolean {
+  return pendingNewTab;
+}
+
 /** Tests only — the singleton must not leak across cases. */
 export function resetNewTabRegistry(): void {
   handler = null;

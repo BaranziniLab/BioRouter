@@ -3,6 +3,7 @@ import {
   registerNewTab,
   requestNewTab,
   consumePendingNewTab,
+  hasPendingNewTab,
   resetNewTabRegistry,
 } from './newTabRegistry';
 
@@ -45,6 +46,34 @@ describe('newTabRegistry — the Cmd+T hand-off', () => {
 
     expect(requestNewTab()).toBe(false);
     expect(consumePendingNewTab()).toBe(true);
+  });
+
+  describe('hasPendingNewTab — the non-consuming peek (issue #38)', () => {
+    it('peeking does NOT consume: the provider still cashes the request in', () => {
+      requestNewTab(); // no handler -> remembered
+      expect(hasPendingNewTab()).toBe(true);
+      expect(hasPendingNewTab()).toBe(true); // still there — peek is idempotent
+      expect(consumePendingNewTab()).toBe(true); // the consume still wins the race
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('reports false when nothing is pending', () => {
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('a claimed request (handler present) never shows as pending', () => {
+      registerNewTab(vi.fn());
+      requestNewTab();
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('consume still clears exactly once after any number of peeks', () => {
+      requestNewTab();
+      hasPendingNewTab();
+      hasPendingNewTab();
+      expect(consumePendingNewTab()).toBe(true);
+      expect(consumePendingNewTab()).toBe(false);
+    });
   });
 
   it('a StrictMode double-mount cannot leave the registry empty', () => {
