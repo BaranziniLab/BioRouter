@@ -90,6 +90,10 @@
   --motion-slow: 260ms; /* modal enter, route transition, drawer */
   --ease-out: cubic-bezier(0.2, 0, 0, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* Gentle overshoot for physical gestures — tab reorder/select settle and the
+     drag-ghost lift (#37). Reserved for TRANSFORMS: an overshooting colour or
+     opacity clamps and reads as a flicker, so colour keeps --ease-out. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode */
 
   --z-base: 0;
@@ -1087,6 +1091,18 @@
    NAVIGATION tabs (settings sections). These are document tabs: objects
    you switch between, as in Safari and VS Code. The pill is right here;
    D-07's underline stands for nav.
+
+   SANCTIONED DEPARTURE (#37): the active pill now ALSO carries a 2px
+   --accent-bar strip along its bottom edge — the same token as the
+   sidebar rail and D-07's nav underline, so the "you are here" colour is
+   one vocabulary across every surface. The pill remains the primary
+   signal (fill + weight + shadow are unchanged); the strip is drawn as an
+   INSET box-shadow because both pseudo-elements are taken (::before is
+   the sibling divider, ::after the drop-insertion hairline). It rides the
+   pill's box-shadow stack, so the unfocused-group dim rule — which zeroes
+   box-shadow — puts the strip out for free: two lit strips would be two
+   answers to "where am I typing?". Applies to the small (--sm, terminal
+   dock) strip too: one tab language, both sizes.
    ============================================================ */
 .br-tabstrip {
   display: flex;
@@ -1209,11 +1225,31 @@
   background: var(--background-default);
   color: var(--text-default);
   font-weight: 500;
-  box-shadow: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
+  /* The inset line is the #37 accent strip (see the header note); the drop
+     shadow is the original pill lift. Order matters only for reading: insets
+     paint over the background either way. */
+  box-shadow:
+    inset 0 -2px 0 0 var(--accent-bar),
+    0px 1px 2px 0px rgba(32, 25, 15, 0.07);
+  /* Selection settles with a small spring (#37): transform-only, so it can
+     never fight the pill's colour transition. Re-runs whenever data-active
+     lands on a tab; suppressed under prefers-reduced-motion below. */
+  animation: br-tab-select var(--motion-base) var(--ease-spring);
 }
 
 .dark .br-tab[data-active='true'] {
-  box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    inset 0 -2px 0 0 var(--accent-bar),
+    0px 1px 3px 0px rgba(0, 0, 0, 0.45);
+}
+
+@keyframes br-tab-select {
+  from {
+    transform: scale(0.97);
+  }
+  to {
+    transform: scale(1);
+  }
 }
 
 /* Active group. Only the FOCUSED group's active tab is the painted pill; an
@@ -1308,6 +1344,19 @@
   color: var(--text-default);
   box-shadow: var(--shadow-popover);
   opacity: 0.95;
+  /* Pick-up spring (#37): mount-only, transform-only (rotate/scale — NEVER
+     left/top, which are set per-pointermove in JS and must not lag the
+     cursor). The ghost springs from flat to its 2deg lift as it comes up. */
+  animation: br-tab-ghost-lift var(--motion-base) var(--ease-spring);
+}
+
+@keyframes br-tab-ghost-lift {
+  from {
+    transform: rotate(0deg) scale(0.97);
+  }
+  to {
+    transform: rotate(2deg) scale(1);
+  }
 }
 
 /* The insertion hairline — where the tab will land. */
@@ -1347,7 +1396,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-tab__dot {
+  .br-tab__dot,
+  .br-tab[data-active='true'],
+  .br-tab-ghost {
     animation: none;
   }
 }
