@@ -15,7 +15,8 @@ vi.mock('../../toasts', () => ({
   toastError: vi.fn(),
 }));
 
-import { DirSwitcher, workingDirLabel } from './DirSwitcher';
+import { DirSwitcher, workingDirLabel, deriveWorkingDirLocked } from './DirSwitcher';
+import { ChatState } from '../../types/chatState';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
 
@@ -69,6 +70,64 @@ describe('workingDirLabel', () => {
     expect(workingDirLabel('C:\\')).toBe('C:\\');
     expect(workingDirLabel('C:/')).toBe('C:/');
     expect(workingDirLabel('d:\\\\')).toBe('d:\\\\');
+  });
+});
+
+// #44 — the authoritative lock derivation the chip's `locked` prop is fed
+// from. The two store-shaped scenarios that motivated it: a resumed transcript
+// that has not hydrated yet (messages.length 0 for a non-empty session) must
+// be locked from first paint, and a failed optimistic first submit (transcript
+// retains the unsent message) must stay unlocked.
+describe('deriveWorkingDirLocked', () => {
+  const base = {
+    sessionId: 'session-1' as string | null | undefined,
+    persistedMessageCount: 0 as number | undefined,
+    hasAssistantMessage: false,
+    chatState: ChatState.Idle,
+  };
+
+  it('never locks before a session exists (#39 pre-session chooser)', () => {
+    expect(deriveWorkingDirLocked({ ...base, sessionId: null })).toBe(false);
+    expect(deriveWorkingDirLocked({ ...base, sessionId: undefined })).toBe(false);
+  });
+
+  it('locks a resumed session from first paint until history proves empty', () => {
+    // Metadata still loading: assume locked.
+    expect(deriveWorkingDirLocked({ ...base, persistedMessageCount: undefined })).toBe(true);
+    // Metadata arrived and reports messages, even though the transcript is
+    // still hydrating (the store loads it 0 -> N atomically).
+    expect(
+      deriveWorkingDirLocked({
+        ...base,
+        persistedMessageCount: 3,
+        chatState: ChatState.LoadingConversation,
+      })
+    ).toBe(true);
+    // History proved empty: unlock.
+    expect(deriveWorkingDirLocked({ ...base, persistedMessageCount: 0 })).toBe(false);
+  });
+
+  it('stays unlocked after a failed first submit whose optimistic message never reached the server', () => {
+    // The store keeps the unsent message in the transcript by design (so it
+    // goes out when the agent lands); the turn errored back to Idle and the
+    // server still reports zero messages -> the dir is still choosable.
+    expect(
+      deriveWorkingDirLocked({
+        ...base,
+        persistedMessageCount: 0,
+        hasAssistantMessage: false,
+        chatState: ChatState.Idle,
+      })
+    ).toBe(false);
+  });
+
+  it('locks while the first turn is in flight and once any assistant reply exists', () => {
+    // A turn actively streaming means the first message is reaching the
+    // server now, even though the last session fetch said zero.
+    expect(deriveWorkingDirLocked({ ...base, chatState: ChatState.Streaming })).toBe(true);
+    expect(deriveWorkingDirLocked({ ...base, chatState: ChatState.Thinking })).toBe(true);
+    // An assistant reply proves a message reached the server (stale count).
+    expect(deriveWorkingDirLocked({ ...base, hasAssistantMessage: true })).toBe(true);
   });
 });
 

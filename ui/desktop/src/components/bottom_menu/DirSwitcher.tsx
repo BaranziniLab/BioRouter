@@ -3,6 +3,7 @@ import { FolderDot } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
+import { ChatState } from '../../types/chatState';
 
 interface DirSwitcherProps {
   className: string;
@@ -31,6 +32,46 @@ export function workingDirLabel(dir: string): string {
   if (/^[A-Za-z]:[\\/]+$/.test(dir)) return dir;
   const segments = dir.split(/[/\\]+/).filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : dir;
+}
+
+/**
+ * #44 — whether the folder chip must render read-only, derived from
+ * authoritative state rather than the loaded transcript's length alone.
+ * `messages.length` misleads in exactly the two ways this function fixes:
+ * it is 0 while a resumed transcript is still hydrating (which would briefly
+ * unlock a non-empty session), and it is >0 after a FAILED first submit whose
+ * optimistic message is retained by design in the transcript so it can go out
+ * when the agent lands (which would lock a session the server still considers
+ * empty). The server's 409 remains the real guard; this is the UX mirror.
+ */
+export function deriveWorkingDirLocked(params: {
+  sessionId: string | null | undefined;
+  /**
+   * `message_count` from the last session fetch — the server's own word on
+   * whether the chat has messages. `undefined` while the session metadata is
+   * still loading.
+   */
+  persistedMessageCount: number | undefined;
+  /** Any assistant message in the transcript proves a message reached the server. */
+  hasAssistantMessage: boolean;
+  chatState: ChatState;
+}): boolean {
+  const { sessionId, persistedMessageCount, hasAssistantMessage, chatState } = params;
+  // Pre-session (#39): the chooser is always available.
+  if (!sessionId) return false;
+  // Until the session metadata arrives, assume locked: a resumed session must
+  // be locked from first paint until history proves empty.
+  if (persistedMessageCount === undefined) return true;
+  if (persistedMessageCount > 0) return true;
+  // The fetched count can be stale during a live conversation: an assistant
+  // reply, or a turn actively in flight, means the first message has reached
+  // (or is reaching) the server even though the last fetch said zero.
+  if (hasAssistantMessage) return true;
+  if (chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation) return true;
+  // Zero persisted messages, no reply, no turn in flight: any message still in
+  // the transcript is an optimistic one from a failed submit — the dir is
+  // still choosable.
+  return false;
 }
 
 export const DirSwitcher: React.FC<DirSwitcherProps> = ({

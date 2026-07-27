@@ -87,7 +87,11 @@ beforeEach(() => {
 
 function renderChatInput(
   onWorkingDirChange: (dir: string) => void,
-  { sessionId = null as string | null, messagesLength = 0 } = {}
+  {
+    sessionId = null as string | null,
+    messagesLength = 0,
+    workingDirLocked = undefined as boolean | undefined,
+  } = {}
 ) {
   return render(
     <ChatInput
@@ -103,6 +107,7 @@ function renderChatInput(
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={messagesLength}
+      workingDirLocked={workingDirLocked}
       disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={onWorkingDirChange}
@@ -151,5 +156,37 @@ describe('ChatInput working-directory lock once the chat has messages (#44)', ()
     const chip = screen.getByText(DEFAULT_DIR).closest('button');
     expect(chip).not.toBeNull();
     expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
+  });
+});
+
+// #44 — the authoritative lock prop. `messagesLength` alone is 0 while a
+// resumed transcript hydrates and >0 after a failed optimistic first submit,
+// so BaseChat derives `workingDirLocked` from session metadata
+// (deriveWorkingDirLocked) and, when provided, it must win over the
+// messagesLength fallback in BOTH directions.
+describe('ChatInput authoritative working-dir lock (#44)', () => {
+  it('locks from first paint while a resumed transcript is still hydrating', async () => {
+    // The store has not loaded the messages yet (messagesLength 0), but the
+    // session metadata says the chat is non-empty.
+    renderChatInput(vi.fn(), {
+      sessionId: 'session-1',
+      messagesLength: 0,
+      workingDirLocked: true,
+    });
+
+    expect(await screen.findByTestId('dir-switcher-locked')).toBeInTheDocument();
+  });
+
+  it('unlocks after a failed first submit whose optimistic message never reached the server', () => {
+    // The transcript retains the unsent message (messagesLength 1), but the
+    // server still reports an empty session.
+    renderChatInput(vi.fn(), {
+      sessionId: 'session-1',
+      messagesLength: 1,
+      workingDirLocked: false,
+    });
+
+    expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
+    expect(screen.getByText(DEFAULT_DIR).closest('button')).not.toBeNull();
   });
 });
