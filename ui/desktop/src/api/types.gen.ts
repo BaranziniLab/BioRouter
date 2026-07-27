@@ -2719,6 +2719,10 @@ export type UpdateWorkingDirErrors = {
      */
     404: unknown;
     /**
+     * Conflict - the working directory is fixed once a chat has messages
+     */
+    409: unknown;
+    /**
      * Internal server error
      */
     500: unknown;

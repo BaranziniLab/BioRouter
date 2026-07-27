@@ -681,6 +681,9 @@
           "404": {
             "description": "Session not found"
           },
+          "409": {
+            "description": "Conflict - the working directory is fixed once a chat has messages"
+          },
           "500": {
             "description": "Internal server error"
           }
