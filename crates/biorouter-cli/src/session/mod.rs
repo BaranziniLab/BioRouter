@@ -1037,14 +1037,36 @@ impl CliSession {
         });
         let _drop_handle = AbortOnDropHandle::new(handle);
 
-        let reply_stream = self
+        // #31/#41: an error CONSTRUCTING the reply (e.g. the initial session-
+        // store writes inside `Agent::reply`, before any stream exists) must
+        // not bypass the structured-output finalizer — propagating it here
+        // left json-mode stdout empty and stream-json without a terminating
+        // `complete`. Record the abort, surface the error on stderr (plus the
+        // stream-json `error`/`aborted` events), and fall through to the one
+        // finalizer, exactly like a mid-stream failure.
+        let reply_stream = match self
             .agent
             .reply(
                 user_message.clone(),
                 session_config.clone(),
                 Some(cancel_token.clone()),
             )
-            .await?;
+            .await
+        {
+            Ok(reply_stream) => reply_stream,
+            Err(e) => {
+                handle_agent_error(&e, is_stream_json_mode);
+                let code = provider_abort_code(&e);
+                if is_stream_json_mode {
+                    emit_stream_event(&StreamEvent::Aborted {
+                        code: code.wire_code().to_string(),
+                        error: e.to_string(),
+                    });
+                }
+                self.last_abort = Some(code);
+                return self.emit_final_output().await;
+            }
+        };
         // Merge per-token assistant text deltas into whole messages before
         // rendering. `stream-json` consumers want the raw event granularity,
         // so only coalesce for human-facing output.
@@ -1225,13 +1247,20 @@ impl CliSession {
                             // (this path used to leave last_abort unset and the
                             // document claimed "completed") and the process
                             // exits nonzero via headless()'s TurnFailed check.
-                            let kind = e
-                                .downcast_ref::<biorouter::providers::errors::ProviderError>()
-                                .map(|provider_error| provider_error.kind())
-                                .unwrap_or(
-                                    biorouter::providers::errors::ProviderErrorKind::Other,
-                                );
-                            self.last_abort = Some(TurnAbortCode::ProviderFailure { kind });
+                            let code = provider_abort_code(&e);
+                            // A raw stream error must be visible to stream-json
+                            // consumers as an abort, exactly like the
+                            // TurnAborted branch above — before this, only
+                            // `error` (advisory) then `complete` were emitted,
+                            // and a structured consumer could not detect the
+                            // failed turn.
+                            if is_stream_json_mode {
+                                emit_stream_event(&StreamEvent::Aborted {
+                                    code: code.wire_code().to_string(),
+                                    error: e.to_string(),
+                                });
+                            }
+                            self.last_abort = Some(code);
                             cancel_token_clone.cancel();
                             drop(stream);
                             if let Err(e) = self.handle_interrupted_messages(false).await {
@@ -1261,6 +1290,18 @@ impl CliSession {
             }
         }
 
+        self.emit_final_output().await
+    }
+
+    /// The ONE structured-output finalizer: every exit from
+    /// [`Self::process_agent_response`] — a drained stream, an abort, a raw
+    /// stream error, or a reply-construction failure that never produced a
+    /// stream — must route through here, so `--output-format json` always
+    /// prints exactly one document (status derived from [`Self::last_abort`])
+    /// and `stream-json` always terminates with `complete` (#31/#41).
+    async fn emit_final_output(&self) -> Result<()> {
+        let is_json_mode = self.output_format == "json";
+        let is_stream_json_mode = self.output_format == "stream-json";
         if is_json_mode {
             // A turn that aborted is NOT "completed". This used to be hardcoded,
             // so a harness parsing the JSON was told a 403'd run succeeded.
@@ -1916,6 +1957,17 @@ fn log_tool_metrics(message: &Message, messages: &Conversation) {
             );
         }
     }
+}
+
+/// The machine-checkable abort code for a raw agent/provider error — the
+/// classification shared by the reply-construction failure path and the
+/// mid-stream `Err` branch, so both report identically in structured output.
+fn provider_abort_code(e: &anyhow::Error) -> TurnAbortCode {
+    let kind = e
+        .downcast_ref::<biorouter::providers::errors::ProviderError>()
+        .map(|provider_error| provider_error.kind())
+        .unwrap_or(biorouter::providers::errors::ProviderErrorKind::Other);
+    TurnAbortCode::ProviderFailure { kind }
 }
 
 /// Handle and display an agent error
