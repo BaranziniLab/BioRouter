@@ -71,7 +71,11 @@ check(llamaModels.length > 0, 'Llama Server catalog should contain display names
 for (const model of llamaModels) {
   includes(docs, model, `docs should include Llama Server model ${model}`);
 }
-for (const recommended of ['Gemma 4 E4B', 'Qwen3.6 35B']) {
+// Memory-tiered defaults from recommended_model_for_memory_gib in
+// crates/biorouter/src/providers/llamacpp.rs: Gemma 4 E4B below 64 GiB,
+// Gemma 4 12B (fast dense) on high-memory systems (issue #35 replaced the
+// Qwen3.6 35B MoE default there).
+for (const recommended of ['Gemma 4 E4B', 'Gemma 4 12B']) {
   includes(mockups, recommended, `mockups should include memory-tiered Llama Server recommendation ${recommended}`);
 }
 
