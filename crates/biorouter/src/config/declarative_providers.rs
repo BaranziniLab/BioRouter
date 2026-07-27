@@ -313,3 +313,145 @@ pub fn register_declarative_provider(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A malformed JSON in `providers/declarative/` fails
+    /// `load_fixed_providers` wholesale, silently dropping every fixed
+    /// provider — this test is the guard that keeps the bundled set parsing.
+    #[test]
+    fn fixed_providers_parse_and_include_moonshot() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+
+        let moonshot = providers
+            .iter()
+            .find(|p| p.name == "moonshot")
+            .expect("moonshot.json is bundled");
+        assert!(matches!(moonshot.engine, ProviderEngine::OpenAI));
+        assert_eq!(moonshot.display_name, "Moonshot AI (Kimi)");
+        assert_eq!(moonshot.api_key_env, "MOONSHOT_API_KEY");
+        assert_eq!(moonshot.base_url, "https://api.moonshot.ai/v1");
+        assert_eq!(moonshot.supports_streaming, Some(true));
+
+        // Newest-first: the first entry becomes the UI's default model.
+        let names: Vec<&str> = moonshot.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5"]);
+
+        // Real token costs so pricing flows from provider metadata
+        // (pricing_from_provider_metadata) with no pricing.rs entry.
+        // Direct-platform rates: k2.7-code/k2.6 $0.95/$4.00, k2.5 $0.60/$3.00
+        // per MTok — distinct from OpenRouter's rates for the same models.
+        for model in &moonshot.models {
+            assert_eq!(model.context_limit, 262_144, "{}", model.name);
+            let input = model.input_token_cost.expect("input cost set");
+            let output = model.output_token_cost.expect("output cost set");
+            let (want_in, want_out) = if model.name == "kimi-k2.5" {
+                (0.60 / 1_000_000.0, 3.00 / 1_000_000.0)
+            } else {
+                (0.95 / 1_000_000.0, 4.00 / 1_000_000.0)
+            };
+            assert!((input - want_in).abs() < 1e-15, "{}", model.name);
+            assert!((output - want_out).abs() < 1e-15, "{}", model.name);
+
+            // Vision: per Moonshot's platform docs ("Use the Kimi Vision
+            // Model", platform.kimi.ai, verified 2026-07), kimi-k2.5,
+            // kimi-k2.6, and kimi-k2.7-code ALL accept image input in
+            // png/jpeg/webp/gif. Without this declaration the metadata
+            // reports None and the desktop rejects image attachments.
+            assert_eq!(
+                model.supports_vision,
+                Some(true),
+                "{}: must declare vision",
+                model.name
+            );
+            let mimes = model
+                .supported_input_mime_types
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: image MIME types declared", model.name));
+            for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+                assert!(mimes.contains(&mime.to_string()), "{}: {mime}", model.name);
+            }
+        }
+    }
+
+    /// The sync pricing table (`providers::pricing`, used by the CLI cost
+    /// line and `/config/pricing`) and this declarative metadata (preferred
+    /// by the async resolved path) must agree for every model EITHER side
+    /// ships — a drift silently forks cost reports between the two paths.
+    ///
+    /// Bidirectional and full-field: every JSON model must be priced
+    /// identically on the sync path (rates, currency, cache rates, context),
+    /// and every sync-table entry must still exist in the JSON — so removing
+    /// or repricing a model on one side only, or forking the currency,
+    /// fails here instead of shipping divergent prices.
+    #[test]
+    fn moonshot_sync_pricing_matches_declarative_metadata() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+        let moonshot = providers
+            .iter()
+            .find(|p| p.name == "moonshot")
+            .expect("moonshot.json is bundled");
+
+        assert!(!moonshot.models.is_empty());
+        // Direction 1: every JSON model is priced on the sync path with the
+        // exact same full pricing record.
+        for model in &moonshot.models {
+            let sync = crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
+                .unwrap_or_else(|| panic!("{} must be priced on the sync path too", model.name));
+            let meta_in = model.input_token_cost.expect("input cost set");
+            let meta_out = model.output_token_cost.expect("output cost set");
+            assert!(
+                (sync.input_token_cost - meta_in).abs() < 1e-15,
+                "{}: sync input {} != metadata {}",
+                model.name,
+                sync.input_token_cost,
+                meta_in
+            );
+            assert!(
+                (sync.output_token_cost - meta_out).abs() < 1e-15,
+                "{}: sync output {} != metadata {}",
+                model.name,
+                sync.output_token_cost,
+                meta_out
+            );
+            assert_eq!(
+                sync.currency,
+                model.currency.clone().unwrap_or_else(|| "$".to_string()),
+                "{}: the two paths must bill in the same currency",
+                model.name
+            );
+            // Neither source carries Moonshot cache rates today. If either
+            // side ever grows one, the other must learn it in the same
+            // change — a one-sided cache rate forks cached-turn costs.
+            assert_eq!(
+                sync.cache_read_cost, None,
+                "{}: sync cache-read rate has no metadata counterpart",
+                model.name
+            );
+            assert_eq!(
+                sync.cache_write_cost, None,
+                "{}: sync cache-write rate has no metadata counterpart",
+                model.name
+            );
+            assert_eq!(
+                sync.context_length,
+                u32::try_from(model.context_limit).ok(),
+                "{}",
+                model.name
+            );
+        }
+
+        // Direction 2: every sync-table entry still exists in moonshot.json.
+        // Removing a model from the JSON while the hardcoded table keeps
+        // pricing it would leave the sync path serving a phantom model.
+        for &(name, _, _, _) in crate::providers::pricing::MOONSHOT_SYNC_PRICING {
+            assert!(
+                moonshot.models.iter().any(|m| m.name == name),
+                "{name}: priced in pricing::MOONSHOT_SYNC_PRICING but missing from \
+                 moonshot.json — remove it from the sync table or restore it in the JSON"
+            );
+        }
+    }
+}

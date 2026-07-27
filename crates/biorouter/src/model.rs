@@ -112,6 +112,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-opus-4-7", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
+        ("claude-opus-5", 1_000_000),
         ("claude-sonnet-4-5", 200_000),
         ("claude-sonnet-4-5-20250929", 200_000),
         ("claude-sonnet-4-5@20250929", 200_000),
@@ -123,6 +124,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
         ("us.anthropic.claude-opus-4-8", 1_000_000),
+        ("us.anthropic.claude-opus-4-8-v1", 1_000_000),
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
         ("us.anthropic.claude-sonnet-4-6", 1_000_000),
         ("us.anthropic.claude-sonnet-5", 1_000_000),
@@ -186,6 +188,12 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("x-ai/grok-4.3", 1_000_000),
         ("x-ai/grok-build-0.1", 256_000),
         // ── Moonshot Kimi ──
+        // Bare ids are what the direct Moonshot platform serves (the
+        // `moonshot` declarative provider); the moonshotai/-prefixed forms
+        // are OpenRouter's ids for the same models.
+        ("kimi-k2.5", 262_144),
+        ("kimi-k2.6", 262_144),
+        ("kimi-k2.7-code", 262_144),
         ("moonshotai/kimi-k2.6", 262_144),
         ("moonshotai/kimi-k2.7-code", 262_144),
         // ── Xiaomi MiMo ──
@@ -274,10 +282,11 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("o3-mini", 200_000),
         ("o3", 200_000),
         ("o1", 200_000),
-        // anthropic — Fable 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older Claude 200k.
-        // Dotted variants cover OpenRouter/Copilot-style IDs.
+        // anthropic — Fable 5 / Opus 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older
+        // Claude 200k. Dotted variants cover OpenRouter/Copilot-style IDs.
         ("claude-fable-5", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
+        ("claude-opus-5", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
         ("claude-opus-4-7", 1_000_000),

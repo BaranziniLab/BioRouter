@@ -78,6 +78,7 @@ async fn same_family_models_with_different_windows_stay_distinct() {
         ("gpt-5.4-mini", 400_000),
         ("gpt-5.4-nano", 400_000),
         // Claude: 4.6+ and the 5 series are 1M; the 4.5 tier and Haiku are 200k.
+        ("claude-opus-5", 1_000_000),
         ("claude-opus-4-6", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
         ("claude-opus-4-5", 200_000),

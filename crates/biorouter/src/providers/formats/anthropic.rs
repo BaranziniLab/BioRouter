@@ -457,11 +457,14 @@ pub fn create_request(
         .and_then(Result::ok);
     let env_thinking = std::env::var("CLAUDE_THINKING_ENABLED").is_ok();
     let is_thinking_enabled = env_thinking || effort_budget.is_some();
+    let adaptive_only = uses_adaptive_thinking(&model_config.model_name);
 
     // Add temperature if specified. Anthropic rejects a temperature other than 1
-    // when extended thinking is on, so a thinking turn sends none at all.
+    // when extended thinking is on, so a thinking turn sends none at all — and
+    // the adaptive-only models reject the sampling parameters outright (400),
+    // thinking or not, so they never receive one.
     if let Some(temp) = model_config.temperature {
-        if !is_thinking_enabled {
+        if !is_thinking_enabled && !adaptive_only {
             payload
                 .as_object_mut()
                 .unwrap()
@@ -470,27 +473,63 @@ pub fn create_request(
     }
 
     if is_thinking_enabled {
-        // Minimum budget_tokens is 1024
-        let budget_tokens = std::env::var("CLAUDE_THINKING_BUDGET")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .or(effort_budget)
-            .unwrap_or(16000);
+        let thinking = if adaptive_only {
+            // budget_tokens is removed (the API 400s) on these models;
+            // `{"type": "adaptive"}` is the only on-mode. max_tokens is NOT
+            // bumped here: adaptive thinking has no budget to make room for
+            // (max_tokens already caps thinking + response together), and
+            // inflating a configured max_tokens by a stale budget can push
+            // the request past the model's output ceiling — Opus 5 caps
+            // output at 128K, so a 128k config + the 16k default deep budget
+            // would be a guaranteed 400.
+            json!({ "type": "adaptive" })
+        } else {
+            // Minimum budget_tokens is 1024
+            let budget_tokens: i32 = std::env::var("CLAUDE_THINKING_BUDGET")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .or(effort_budget)
+                .unwrap_or(16000);
 
-        payload
-            .as_object_mut()
-            .unwrap()
-            .insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
-
-        payload.as_object_mut().unwrap().insert(
-            "thinking".to_string(),
+            // The budgeted path needs the max_tokens bump: budget_tokens must
+            // fit under max_tokens, so make room for the thinking on top of
+            // the reply.
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
             json!({
                 "type": "enabled",
                 "budget_tokens": budget_tokens
-            }),
-        );
+            })
+        };
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("thinking".to_string(), thinking);
     }
     Ok(payload)
+}
+
+/// Models on which `thinking: {"type": "enabled", "budget_tokens": N}` is
+/// **removed** — the API rejects it with a 400 — and adaptive thinking
+/// (`{"type": "adaptive"}`) is the only way to turn thinking on. These models
+/// also reject the sampling parameters (`temperature`/`top_p`/`top_k`)
+/// outright, thinking or not.
+///
+/// Per Anthropic's model docs (July 2026): Claude Opus 5, Sonnet 5,
+/// Fable 5 / Mythos 5, and Opus 4.7/4.8 all removed `budget_tokens` and
+/// sampling; Opus 4.6 / Sonnet 4.6 merely deprecate `budget_tokens` (still
+/// functional) and still accept temperature, so they stay on the legacy path
+/// below along with everything older. Dotted variants cover
+/// OpenRouter/Copilot-style ids.
+fn uses_adaptive_thinking(model_name: &str) -> bool {
+    const ADAPTIVE_ONLY: &[&str] = &[
+        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+    ];
+    ADAPTIVE_ONLY
+        .iter()
+        .any(|pattern| model_name.contains(pattern))
 }
 
 /// Process streaming response from Anthropic's API
@@ -988,6 +1027,179 @@ mod tests {
         // temperature is still sent as before.
         assert!(payload.get("thinking").is_none());
         assert_eq!(payload["temperature"], json!(0.5));
+        Ok(())
+    }
+
+    // The modern Claude models (Opus 5 / Sonnet 5 / Fable 5 / Opus 4.7 / 4.8)
+    // removed `budget_tokens` — sending `thinking: {type: "enabled", ...}`
+    // returns a 400 — and reject the sampling parameters outright. A
+    // deep-effort turn on them must switch to `{"type": "adaptive"}` and
+    // never carry temperature; before this gate, every deep-effort turn on
+    // the default model (claude-opus-4-8) failed with a 400.
+    #[test]
+    fn test_deep_effort_on_modern_models_uses_adaptive_thinking() -> Result<()> {
+        for model in [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            // Platform-prefixed and dotted spellings must land on the same
+            // path — Versa/Bedrock and OpenRouter/Copilot ids reach this
+            // code too.
+            "us.anthropic.claude-opus-4-8-v1",
+            "anthropic/claude-opus-4.8",
+        ] {
+            let mut model_config =
+                ModelConfig::new_or_fail(model).with_reasoning_effort(Some(ReasoningEffort::Deep));
+            model_config.max_tokens = Some(8000);
+            model_config.temperature = Some(0.3);
+
+            let payload = create_request(
+                &model_config,
+                "system",
+                &[Message::user().with_text("hi")],
+                &[],
+            )?;
+
+            let thinking = payload.get("thinking").expect("thinking block");
+            assert_eq!(thinking["type"], "adaptive", "{model}");
+            assert!(
+                thinking.get("budget_tokens").is_none(),
+                "{model}: budget_tokens is removed on this model"
+            );
+            // max_tokens must stay exactly as configured: adaptive thinking
+            // has no budget to make room for, and inflating it can exceed
+            // the model's output ceiling (128K on Opus 5).
+            assert_eq!(payload["max_tokens"], json!(8000), "{model}");
+            assert!(
+                payload.get("temperature").is_none(),
+                "{model}: sampling params are rejected on this model"
+            );
+        }
+        Ok(())
+    }
+
+    // The 128k boundary case: Opus 5 caps output (thinking + response
+    // together) at 128K. A 128k max_tokens config plus the 16k default deep
+    // budget used to produce max_tokens = 144_000 — a guaranteed 400 from
+    // the API. The adaptive path must send the configured value untouched.
+    #[test]
+    fn test_adaptive_thinking_never_exceeds_configured_max_tokens() -> Result<()> {
+        let mut model_config = ModelConfig::new_or_fail("claude-opus-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        model_config.max_tokens = Some(128_000);
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert_eq!(payload["thinking"]["type"], "adaptive");
+        assert_eq!(
+            payload["max_tokens"],
+            json!(128_000),
+            "128k config + default deep budget must not become 144k"
+        );
+        Ok(())
+    }
+
+    // The adaptive-thinking gate itself, across every id spelling that can
+    // reach it: bare Anthropic ids, dotted OpenRouter/Copilot variants, and
+    // platform-prefixed Bedrock/proxy ids — plus boundary negatives that a
+    // sloppy substring match would swallow.
+    #[test]
+    fn test_adaptive_thinking_gate_covers_all_id_spellings() {
+        let adaptive_only = [
+            "claude-opus-5",
+            "anthropic/claude-opus-5",
+            "us.anthropic.claude-opus-5-v1:0",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-opus-4-7",
+            "claude-opus-4.7",
+            "claude-opus-4-8",
+            "claude-opus-4.8",
+            "us.anthropic.claude-opus-4-8-v1",
+            "anthropic/claude-opus-4.8",
+        ];
+        for model in adaptive_only {
+            assert!(
+                uses_adaptive_thinking(model),
+                "{model} must be adaptive-only"
+            );
+        }
+
+        let budgeted = [
+            // The 4.6 pair only deprecates budget_tokens — still budgeted.
+            "claude-opus-4-6",
+            "us.anthropic.claude-opus-4-6-v1",
+            "claude-sonnet-4-6",
+            // Older tiers and their dated/prefixed spellings.
+            "claude-opus-4-5",
+            "us.anthropic.claude-opus-4-5-20251101-v1:0",
+            "claude-opus-4-1-20250805",
+            "claude-haiku-4-5",
+            "claude-sonnet-4-20250514",
+            // Boundary negatives: contain "opus-4-6" / "sonnet-4" as
+            // substrings but are unknown tiers — they must stay on the
+            // conservative budgeted path, not match a 4-7/4-8 rule.
+            "claude-opus-4-68",
+            "claude-sonnet-4-62",
+        ];
+        for model in budgeted {
+            assert!(
+                !uses_adaptive_thinking(model),
+                "{model} must stay on the budgeted path"
+            );
+        }
+    }
+
+    #[test]
+    fn test_modern_models_never_send_temperature_even_without_thinking() -> Result<()> {
+        let mut model_config = ModelConfig::new_or_fail("claude-opus-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Quick));
+        model_config.temperature = Some(0.5);
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert!(payload.get("thinking").is_none());
+        assert!(
+            payload.get("temperature").is_none(),
+            "temperature is rejected on Opus 5 even with thinking off"
+        );
+        Ok(())
+    }
+
+    // Opus 4.6 / Sonnet 4.6 only deprecate budget_tokens (still functional)
+    // and still accept temperature — they stay on the legacy budgeted path,
+    // as do all older models (covered by the sonnet-4-5 tests above).
+    #[test]
+    fn test_sonnet_4_6_keeps_budgeted_thinking() -> Result<()> {
+        let model_config = ModelConfig::new_or_fail("claude-sonnet-4-6")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        let thinking = payload.get("thinking").expect("thinking block");
+        assert_eq!(thinking["type"], "enabled");
+        assert_eq!(
+            thinking["budget_tokens"],
+            json!(DEEP_THINKING_BUDGET_TOKENS)
+        );
         Ok(())
     }
 

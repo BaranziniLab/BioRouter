@@ -243,6 +243,25 @@
     }
   },
   {
+    "id": "anthropic/claude-opus-5",
+    "name": "Anthropic: Claude Opus 5",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "file",
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.000005,
+      "completion": 0.000025
+    }
+  },
+  {
     "id": "anthropic/claude-sonnet-4",
     "name": "Anthropic: Claude Sonnet 4",
     "context_length": 1000000,
@@ -1619,11 +1638,30 @@
     }
   },
   {
+    "id": "moonshotai/kimi-k2.5",
+    "name": "Moonshot AI: Kimi K2.5",
+    "context_length": 262144,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 6e-7,
+      "completion": 0.000003
+    }
+  },
+  {
     "id": "moonshotai/kimi-k2.6",
     "name": "Moonshot AI: Kimi K2.6",
     "context_length": 262144,
     "max_completion_tokens": 65536,
     "input_modalities": [
+      "image",
       "text"
     ],
     "output_modalities": [
@@ -1641,6 +1679,7 @@
     "context_length": 262144,
     "max_completion_tokens": 65536,
     "input_modalities": [
+      "image",
       "text"
     ],
     "output_modalities": [

@@ -147,24 +147,44 @@ pub async fn resolved_provider_model_pricing(
 ) -> Option<ProviderModelPricing> {
     let provider = provider.to_ascii_lowercase();
     let model = model.to_ascii_lowercase();
-    let explicit = explicit_provider_model_pricing(&provider, &model);
-    if explicit.is_some() || blocks_fallback_pricing(&provider) {
-        return explicit;
-    }
-
     let metadata = crate::providers::providers()
         .await
         .into_iter()
         .find(|(metadata, _)| metadata.name.eq_ignore_ascii_case(&provider))
         .map(|(metadata, _)| metadata);
-    if let Some(pricing) = metadata
-        .as_ref()
-        .and_then(|metadata| pricing_from_provider_metadata(metadata, &model))
+    resolve_pricing_with_metadata(&provider, &model, metadata.as_ref())
+}
+
+/// Resolution order for the async path: hardcoded-only providers
+/// ([`blocks_fallback_pricing`]) → provider metadata → the explicit override
+/// table → the canonical catalog. Provider metadata outranks the explicit
+/// sync table so a declarative provider's JSON (e.g.
+/// `providers/declarative/moonshot.json`) stays authoritative here; the sync
+/// table in this file serves sync-only callers (CLI cost line, BR-35 budget)
+/// and models the metadata doesn't price. The
+/// `moonshot_sync_pricing_matches_declarative_metadata` drift guard keeps
+/// the two sources aligned. `provider` and `model` are already lowercased.
+fn resolve_pricing_with_metadata(
+    provider: &str,
+    model: &str,
+    metadata: Option<&ProviderMetadata>,
+) -> Option<ProviderModelPricing> {
+    let explicit = explicit_provider_model_pricing(provider, model);
+    if blocks_fallback_pricing(provider) {
+        return explicit;
+    }
+
+    if let Some(pricing) =
+        metadata.and_then(|metadata| pricing_from_provider_metadata(metadata, model))
     {
         return Some(pricing);
     }
 
-    canonical_model_pricing(&provider, &model)
+    if explicit.is_some() {
+        return explicit;
+    }
+
+    canonical_model_pricing(provider, model)
 }
 
 pub fn pricing_from_provider_metadata(
@@ -192,6 +212,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         "zai" | "z.ai" | "z-ai" => zai_pricing(model),
         "xiaomi_mimo" | "xiaomi-mimo" | "xiaomi" => xiaomi_mimo_pricing(model),
         "custom_deepseek" | "deepseek" => deepseek_pricing(model),
+        "moonshot" | "moonshotai" => moonshot_pricing(model),
         "inception" => inception_pricing(model),
         "mistral" | "mistralai" => mistral_pricing(model),
         "xai" | "x-ai" => xai_pricing(model),
@@ -247,7 +268,14 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
     // Never infer a price for an unknown Claude tier. A guessed Sonnet price can
     // make a partial report look exact and silently misstate a user's budget.
-    if model.contains("opus") {
+    if model.contains("opus-5") {
+        // Claude Opus 5: $5/$25 per MTok, 1M context — the modern Opus tier
+        // (same price as Opus 4.8). Must be checked before the generic "opus"
+        // branch below, which still carries the legacy $15/$75 tier.
+        Some(ProviderModelPricing::usd_per_million_cached(
+            5.0, 25.0, 1_000_000,
+        ))
+    } else if model.contains("opus") {
         Some(ProviderModelPricing::usd_per_million_cached(
             15.0, 75.0, 200_000,
         ))
@@ -338,6 +366,35 @@ fn deepseek_pricing(model: &str) -> Option<ProviderModelPricing> {
         )),
         _ => None,
     }
+}
+
+/// Direct Moonshot AI (Kimi) platform rates as `(model, $/MTok input,
+/// $/MTok output, context)`, verified against the Moonshot/Kimi platform
+/// price sheet (2026-07). Deliberately distinct from OpenRouter's rates for
+/// the same models (`openrouter_pricing` above): without this table the sync
+/// path fell through to the OpenRouter-derived canonical prices,
+/// underpricing k2.6/k2.7-code and leaving k2.5 unpriced.
+///
+/// Kept as data (not match arms) so the drift guard —
+/// `config::declarative_providers::tests::moonshot_sync_pricing_matches_declarative_metadata`
+/// — can enumerate it and fail when this table and
+/// `providers/declarative/moonshot.json` diverge in EITHER direction (a
+/// model added, removed, or repriced on one side only). The async resolved
+/// path prefers the JSON metadata; this table serves sync-only callers and
+/// is the async fallback.
+pub(crate) const MOONSHOT_SYNC_PRICING: &[(&str, f64, f64, u32)] = &[
+    ("kimi-k2.7-code", 0.95, 4.00, 262_144),
+    ("kimi-k2.6", 0.95, 4.00, 262_144),
+    ("kimi-k2.5", 0.60, 3.00, 262_144),
+];
+
+fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
+    MOONSHOT_SYNC_PRICING
+        .iter()
+        .find(|(name, _, _, _)| *name == model)
+        .map(|&(_, input, output, context)| {
+            ProviderModelPricing::usd_per_million(input, output, context)
+        })
 }
 
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
@@ -449,6 +506,104 @@ mod tests {
     }
 
     #[test]
+    fn direct_moonshot_uses_direct_platform_prices_for_all_shipped_models() {
+        // The sync path (CLI cost line, /config/pricing, BR-35 budget) must
+        // serve the direct-platform rates for every model moonshot.json
+        // ships — not the cheaper OpenRouter-derived canonical rates
+        // ($0.66/$3.41 for k2.6), and k2.5 has no OpenRouter listing at all,
+        // so without the explicit branch it was entirely unpriced.
+        for (model, want_in, want_out) in [
+            ("kimi-k2.7-code", 0.95, 4.00),
+            ("kimi-k2.6", 0.95, 4.00),
+            ("kimi-k2.5", 0.60, 3.00),
+        ] {
+            let p = provider_model_pricing("moonshot", model).unwrap();
+            assert_eq!(p.input_token_cost, want_in / 1_000_000.0, "{model}");
+            assert_eq!(p.output_token_cost, want_out / 1_000_000.0, "{model}");
+            assert_eq!(p.context_length, Some(262_144), "{model}");
+        }
+        // OpenRouter keeps its own (hosted) rates for the same models — the
+        // two tables are intentionally different price sheets.
+        let hosted = provider_model_pricing("openrouter", "moonshotai/kimi-k2.6").unwrap();
+        assert_eq!(hosted.input_token_cost, 0.66 / 1_000_000.0);
+        assert_eq!(hosted.output_token_cost, 3.41 / 1_000_000.0);
+    }
+
+    #[test]
+    fn kimi_k2_5_canonical_record_prices_hosted_access() {
+        // k2.5 has no OpenRouter-specific override, so this exercises the
+        // canonical registry record end-to-end via the fallback path — the
+        // record any hosting provider's usage attribution resolves through.
+        let p = provider_model_pricing("openrouter", "moonshotai/kimi-k2.5").unwrap();
+        assert!((p.input_token_cost - 0.60 / 1_000_000.0).abs() < 1e-15);
+        assert!((p.output_token_cost - 3.00 / 1_000_000.0).abs() < 1e-15);
+        assert_eq!(p.context_length, Some(262_144));
+    }
+
+    #[test]
+    fn async_resolution_prefers_declarative_metadata_over_sync_override() {
+        // The async path treats provider metadata (declarative JSON, e.g.
+        // moonshot.json) as authoritative: when the metadata prices a model,
+        // that pricing wins even though the sync table also carries an
+        // explicit entry for the same (provider, model).
+        let metadata = ProviderMetadata::with_models(
+            "moonshot",
+            "Moonshot AI (Kimi)",
+            "test",
+            "kimi-k2.6",
+            vec![ModelInfo::with_cost(
+                "kimi-k2.6",
+                262_144,
+                0.000_001,
+                0.000_005,
+            )],
+            "",
+            vec![],
+        );
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.6", Some(&metadata)).unwrap();
+        assert_eq!(
+            p.input_token_cost, 0.000_001,
+            "metadata outranks sync table"
+        );
+        assert_eq!(p.output_token_cost, 0.000_005);
+
+        // Without metadata the explicit sync table is the fallback…
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.6", None).unwrap();
+        assert_eq!(p.input_token_cost, 0.95 / 1_000_000.0);
+        assert_eq!(p.output_token_cost, 4.00 / 1_000_000.0);
+        // …including for a model the metadata does not price.
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.5", Some(&metadata)).unwrap();
+        assert_eq!(p.input_token_cost, 0.60 / 1_000_000.0);
+    }
+
+    #[test]
+    fn blocked_provider_ignores_metadata_pricing_on_the_async_path() {
+        // Providers in blocks_fallback_pricing (Anthropic & co) stay
+        // hardcoded-only: metadata must not price an unknown tier, and the
+        // explicit table keeps serving the known ones.
+        let metadata = ProviderMetadata::with_models(
+            "anthropic",
+            "Anthropic",
+            "test",
+            "claude-fable-5",
+            vec![ModelInfo::with_cost(
+                "claude-fable-5",
+                200_000,
+                0.000_001,
+                0.000_005,
+            )],
+            "",
+            vec![],
+        );
+        assert!(
+            resolve_pricing_with_metadata("anthropic", "claude-fable-5", Some(&metadata)).is_none()
+        );
+        let p =
+            resolve_pricing_with_metadata("anthropic", "claude-opus-5", Some(&metadata)).unwrap();
+        assert_eq!(p.input_token_cost, 5.0 / 1_000_000.0);
+    }
+
+    #[test]
     fn declarative_provider_metadata_resolves_configured_prices() {
         let metadata = ProviderMetadata::with_models(
             "custom_acme",
@@ -520,6 +675,37 @@ mod tests {
         assert_eq!(opus.input_token_cost, 15.0 / 1_000_000.0);
         let haiku = provider_model_pricing("anthropic", "claude-haiku-4-5").unwrap();
         assert_eq!(haiku.input_token_cost, 0.80 / 1_000_000.0);
+    }
+
+    #[test]
+    fn claude_opus_5_priced_at_modern_tier_not_legacy_opus() {
+        // Opus 5: $5/M input, $25/M output, 1M context — NOT the legacy
+        // $15/$75 tier the generic "opus" branch carries. Cache read 0.1x,
+        // cache write 1.25x of the input rate.
+        for (provider, model) in [
+            ("anthropic", "claude-opus-5"),
+            ("bedrock", "us.anthropic.claude-opus-5-v1:0"),
+        ] {
+            let p = provider_model_pricing(provider, model).unwrap();
+            assert_eq!(p.input_token_cost, 5.0 / 1_000_000.0, "{provider}/{model}");
+            assert_eq!(
+                p.output_token_cost,
+                25.0 / 1_000_000.0,
+                "{provider}/{model}"
+            );
+            assert!((p.cache_read_cost.unwrap() - 0.50 / 1_000_000.0).abs() < 1e-15);
+            assert!((p.cache_write_cost.unwrap() - 6.25 / 1_000_000.0).abs() < 1e-15);
+            assert_eq!(p.context_length, Some(1_000_000));
+        }
+        // The legacy tier still applies to older opus models (opus-4-1 and
+        // earlier) — the opus-5 branch must not widen.
+        let legacy = provider_model_pricing("anthropic", "claude-opus-4-1").unwrap();
+        assert_eq!(legacy.input_token_cost, 15.0 / 1_000_000.0);
+        assert_eq!(legacy.output_token_cost, 75.0 / 1_000_000.0);
+        // And opus-4-5 (contains "opus-4-5", not "opus-5") stays on the
+        // generic branch — the substring must not false-positive.
+        let opus45 = provider_model_pricing("anthropic", "claude-opus-4-5").unwrap();
+        assert_eq!(opus45.input_token_cost, 15.0 / 1_000_000.0);
     }
 
     #[test]

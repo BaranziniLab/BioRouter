@@ -1,0 +1,61 @@
+{
+  "name": "moonshot",
+  "engine": "openai",
+  "display_name": "Moonshot AI (Kimi)",
+  "description": "Kimi models from Moonshot AI",
+  "api_key_env": "MOONSHOT_API_KEY",
+  "base_url": "https://api.moonshot.ai/v1",
+  "models": [
+    {
+      "name": "kimi-k2.7-code",
+      "context_limit": 262144,
+      "input_token_cost": 0.00000095,
+      "output_token_cost": 0.000004,
+      "currency": "$",
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
+      "name": "kimi-k2.6",
+      "context_limit": 262144,
+      "input_token_cost": 0.00000095,
+      "output_token_cost": 0.000004,
+      "currency": "$",
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
+      "name": "kimi-k2.5",
+      "context_limit": 262144,
+      "input_token_cost": 0.0000006,
+      "output_token_cost": 0.000003,
+      "currency": "$",
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    }
+  ],
+  "headers": null,
+  "timeout_seconds": null,
+  "supports_streaming": true
+}
