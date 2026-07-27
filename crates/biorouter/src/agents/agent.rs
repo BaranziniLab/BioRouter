@@ -447,6 +447,48 @@ where
     })
 }
 
+/// What woke the tool-batch loop (#40).
+#[derive(Debug)]
+pub(crate) enum BatchWake<T> {
+    /// The turn's cancel token tripped.
+    Cancelled,
+    /// An elicitation request was queued on the [`ActionRequiredManager`].
+    /// The tool call that raised it is itself parked *inside* the batch —
+    /// blocked in `create_elicitation` until the request is answered or
+    /// cancelled — so this MUST be able to preempt `combined.next()`: a
+    /// consumer that only drained the request queue after a tool item
+    /// yielded could never surface the request, and a headless auto-cancel
+    /// had to wait out the full 300 s elicitation timeout.
+    ElicitationReady,
+    /// The next tool-stream item (or `None`: the batch is drained).
+    Item(Option<T>),
+}
+
+/// Race the batch's next tool item against the turn's cancel token and the
+/// arrival of an elicitation request. Biased so a cancel always wins and an
+/// elicitation beats a tool item. Every branch is cancel-safe: `cancelled()`
+/// and `Notify::notified` re-arm losslessly, and `StreamExt::next` never
+/// drops a resolved item on a lost race.
+pub(crate) async fn next_batch_wake<T, S>(
+    cancel_token: &Option<CancellationToken>,
+    combined: &mut S,
+) -> BatchWake<T>
+where
+    S: Stream<Item = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = async {
+            match cancel_token.as_ref() {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => BatchWake::Cancelled,
+        _ = ActionRequiredManager::global().request_arrived() => BatchWake::ElicitationReady,
+        item = combined.next() => BatchWake::Item(item),
+    }
+}
+
 /// BR-12: RAII marker that a session has a background eager-compaction task in
 /// flight. Removed from the agent's `eager_compactions` set on drop (task ends,
 /// panics, or the runtime shuts down), so a later turn can spawn again.
@@ -3780,16 +3822,32 @@ impl Agent {
                                     // down there rather than literally at the cancel.
                                     // `StreamExt::next` is cancel-safe, so losing the race
                                     // never drops an item that had already resolved.
+                                    //
+                                    // The same argument covers elicitations (#40): the tool
+                                    // call that raises one is parked *inside* `combined`
+                                    // until the request is answered or cancelled, so the
+                                    // request must also be raced against the batch — the
+                                    // old post-item drain could never surface it, and a
+                                    // headless run's auto-cancel had to wait out the 300 s
+                                    // elicitation timeout.
                                     loop {
-                                        let next_item = tokio::select! {
-                                            biased;
-                                            _ = async {
-                                                match cancel_token.as_ref() {
-                                                    Some(token) => token.cancelled().await,
-                                                    None => std::future::pending::<()>().await,
+                                        let next_item = match next_batch_wake(
+                                            &cancel_token,
+                                            &mut combined,
+                                        )
+                                        .await
+                                        {
+                                            BatchWake::Cancelled => None,
+                                            BatchWake::ElicitationReady => {
+                                                for msg in self
+                                                    .drain_elicitation_messages(&session_config.id)
+                                                    .await
+                                                {
+                                                    yield AgentEvent::Message(msg);
                                                 }
-                                            } => None,
-                                            item = combined.next() => item,
+                                                continue;
+                                            }
+                                            BatchWake::Item(item) => item,
                                         };
                                         let Some((request_id, item)) = next_item else {
                                             break;
@@ -5193,6 +5251,72 @@ mod tests {
     use super::*;
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
+
+    /// #40: an elicitation request must preempt a tool batch whose only tool
+    /// is parked on that very elicitation. `combined` here is the shape of
+    /// such a batch — a stream that will never yield — so if the wake still
+    /// depended on `combined.next()`, the 5 s timeout below would fire long
+    /// before the production 300 s elicitation timeout resolved anything.
+    /// The tail of the test asserts the full headless path: the queued
+    /// request can be drained and cancelled, and the cancel unparks the
+    /// waiting tool call promptly, without any other stream item arriving.
+    #[tokio::test]
+    async fn elicitation_preempts_a_parked_tool_batch() {
+        use crate::action_required_manager::ActionRequiredManager;
+        use crate::conversation::message::ActionRequiredData;
+        use std::time::Duration;
+
+        let mut combined = futures::stream::pending::<(String, u8)>();
+
+        let waiter = tokio::spawn(async {
+            ActionRequiredManager::global()
+                .request_and_wait(
+                    "Need input".to_string(),
+                    serde_json::json!({}),
+                    Duration::from_secs(300),
+                )
+                .await
+        });
+
+        let wake = tokio::time::timeout(
+            Duration::from_secs(5),
+            next_batch_wake(&None, &mut combined),
+        )
+        .await
+        .expect("the elicitation must preempt the parked batch");
+        assert!(
+            matches!(wake, BatchWake::ElicitationReady),
+            "expected ElicitationReady, got {wake:?}"
+        );
+
+        // Drain the queued request exactly as drain_elicitation_messages
+        // would, then cancel it the way a headless CLI run does.
+        let id = {
+            let mut rx = ActionRequiredManager::global().request_rx.lock().await;
+            let msg = rx.try_recv().expect("the request message is queued");
+            msg.content
+                .iter()
+                .find_map(|content| match content {
+                    MessageContent::ActionRequired(action) => match &action.data {
+                        ActionRequiredData::Elicitation { id, .. } => Some(id.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("the request message carries the elicitation id")
+        };
+        ActionRequiredManager::global()
+            .submit_cancellation(id)
+            .await
+            .unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancel must resolve without waiting for another stream item")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, None, "headless cancel resolves as Ok(None)");
+    }
 
     fn confirmation(permission: Permission) -> PermissionConfirmation {
         PermissionConfirmation {

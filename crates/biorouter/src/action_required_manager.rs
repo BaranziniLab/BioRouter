@@ -22,6 +22,14 @@ pub struct ActionRequiredManager {
     pending: Arc<RwLock<HashMap<String, Arc<Mutex<PendingRequest>>>>>,
     request_tx: mpsc::UnboundedSender<Message>,
     pub request_rx: Mutex<mpsc::UnboundedReceiver<Message>>,
+    /// Signalled every time a request message is queued on `request_tx`, so a
+    /// consumer can *race* "an elicitation arrived" against other work without
+    /// holding the `request_rx` lock across an await (#40). The tool call that
+    /// raises an elicitation is itself parked inside its batch until the
+    /// request is answered or cancelled — a consumer that only drains the
+    /// queue after its tool stream yields would therefore never see the
+    /// request before the elicitation timeout.
+    request_notify: tokio::sync::Notify,
 }
 
 impl ActionRequiredManager {
@@ -31,6 +39,7 @@ impl ActionRequiredManager {
             pending: Arc::new(RwLock::new(HashMap::new())),
             request_tx,
             request_rx: Mutex::new(request_rx),
+            request_notify: tokio::sync::Notify::new(),
         }
     }
 
@@ -65,6 +74,11 @@ impl ActionRequiredManager {
 
         if let Err(e) = self.request_tx.send(action_required_message) {
             warn!("Failed to send action required message: {}", e);
+        } else {
+            // Wake a consumer parked on [`Self::request_arrived`] — `notify_one`
+            // stores a permit when nobody is waiting yet, so the wake-up cannot
+            // be lost to a race with the consumer re-entering its select loop.
+            self.request_notify.notify_one();
         }
 
         let result = match timeout(timeout_duration, rx).await {
@@ -82,6 +96,18 @@ impl ActionRequiredManager {
         self.pending.write().await.remove(&id);
 
         result
+    }
+
+    /// Resolves as soon as an elicitation request may be waiting on
+    /// [`Self::request_rx`] (one wake per queued request; a wake whose queue
+    /// was already drained by another consumer is a harmless no-op for the
+    /// caller). This is the seam that lets an agent loop whose entire tool
+    /// batch is *parked on the elicitation itself* surface the request — and
+    /// lets a headless run cancel it — instead of waiting out the elicitation
+    /// timeout (#40). Does not consume the queue: pair with a `try_recv`
+    /// drain of `request_rx`.
+    pub async fn request_arrived(&self) {
+        self.request_notify.notified().await;
     }
 
     pub async fn submit_response(&self, request_id: String, user_data: Value) -> Result<()> {
@@ -191,6 +217,44 @@ mod tests {
         manager.submit_cancellation(id).await.unwrap();
         let outcome = waiter.await.unwrap().unwrap();
         assert_eq!(outcome, None, "cancellation must be Ok(None), not an error");
+    }
+
+    /// #40: `request_arrived` must resolve — and the cancel must land — while
+    /// the requesting tool call is still parked in `request_and_wait`, i.e.
+    /// WITHOUT any other event feeding the consumer. The generous
+    /// `request_and_wait` timeout stands in for the production 300 s one: if
+    /// the wake-up depended on the waiter finishing first, the short
+    /// `timeout()`s here would fire long before it, failing the test.
+    #[tokio::test]
+    async fn request_arrived_wakes_and_cancel_resolves_while_the_tool_is_parked() {
+        let manager = std::sync::Arc::new(ActionRequiredManager::new());
+        let waiter = {
+            let manager = manager.clone();
+            tokio::spawn(async move {
+                manager
+                    .request_and_wait(
+                        "Need input".to_string(),
+                        serde_json::json!({}),
+                        Duration::from_secs(300),
+                    )
+                    .await
+            })
+        };
+        // The notify must fire from the request itself — nobody has consumed
+        // the queue and no other stream item will ever arrive.
+        timeout(Duration::from_secs(2), manager.request_arrived())
+            .await
+            .expect("request_arrived must wake without another stream item");
+        let id = timeout(Duration::from_secs(2), next_request_id(&manager))
+            .await
+            .expect("the queued request must be drainable after the wake");
+        manager.submit_cancellation(id).await.unwrap();
+        let outcome = timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancel must unpark the waiter promptly, not at its timeout")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, None, "cancellation resolves as Ok(None)");
     }
 
     #[tokio::test]
