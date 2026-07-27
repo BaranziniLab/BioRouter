@@ -1002,6 +1002,31 @@ mod tests {
         );
     }
 
+    /// Prose is behaviour here. Pin the sentences the model needs: that every
+    /// base in the session is already in play, that one of them is the primary
+    /// write target, and — the load-bearing one — that reading another base
+    /// means passing kb_id, not switching the primary.
+    #[test]
+    fn instructions_teach_the_session_set_and_the_primary() {
+        let instructions = include_str!("instructions.md");
+        assert!(
+            instructions.contains("primary") && instructions.contains("kb_get_active"),
+            "instructions must name the primary and how to read it"
+        );
+        assert!(
+            instructions.contains("Do not switch the primary"),
+            "instructions must forbid switching the primary just to read another base"
+        );
+        assert!(
+            instructions.contains("every knowledge base in this session"),
+            "instructions must state that a kb_id-less kb_search already covers the whole set"
+        );
+        assert!(
+            instructions.contains("kb_set_active"),
+            "instructions must name the recovery when there is no primary"
+        );
+    }
+
     #[test]
     fn list_bases_hides_session_hidden_kbs() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
