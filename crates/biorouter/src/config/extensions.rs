@@ -99,11 +99,22 @@ pub fn reset_to_bundled_extensions() -> anyhow::Result<usize> {
 }
 
 pub fn get_extension_by_name(name: &str) -> Option<ExtensionConfig> {
-    let extensions = get_extensions_map();
+    get_extension_entry_by_name(name).map(|entry| entry.config)
+}
+
+/// Like [`get_extension_by_name`], but returns the whole config entry so
+/// callers can see the operator's `enabled` flag, not just the config.
+pub fn get_extension_entry_by_name(name: &str) -> Option<ExtensionEntry> {
+    find_entry_by_name(&get_extensions_map(), name).cloned()
+}
+
+fn find_entry_by_name<'a>(
+    extensions: &'a IndexMap<String, ExtensionEntry>,
+    name: &str,
+) -> Option<&'a ExtensionEntry> {
     extensions
         .values()
         .find(|entry| entry.config.name() == name)
-        .map(|entry| entry.config.clone())
 }
 
 pub fn set_extension(entry: ExtensionEntry) {
@@ -184,6 +195,42 @@ pub fn resolve_extensions_for_new_session(
     }
 
     get_enabled_extensions()
+}
+
+#[cfg(test)]
+mod entry_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn find_entry_by_name_matches_config_name_and_keeps_enabled_flag() {
+        let mut extensions = IndexMap::new();
+        extensions.insert(
+            "developer".into(),
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::default(),
+            },
+        );
+        extensions.insert(
+            "custom-key".into(),
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("custom name", "cmd", "Custom", 30_u64),
+            },
+        );
+
+        // Matches on config.name(), not the map key.
+        let entry = find_entry_by_name(&extensions, "custom name").expect("found by name");
+        assert!(entry.enabled);
+        assert!(find_entry_by_name(&extensions, "custom-key").is_none());
+
+        // The operator's enabled:false flag survives the lookup — this is
+        // what the manage_extensions enable gate relies on (#42).
+        let entry = find_entry_by_name(&extensions, "developer").expect("found");
+        assert!(!entry.enabled);
+
+        assert!(find_entry_by_name(&extensions, "missing").is_none());
+    }
 }
 
 #[cfg(test)]
