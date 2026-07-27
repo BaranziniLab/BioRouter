@@ -24,7 +24,7 @@ function genId(): string {
 }
 
 export function IngestPanel() {
-  const { activeKbId, activeKb, refresh, triggerGraphRefresh } = useKnowledge();
+  const { primaryKbId, primaryKb, refresh, triggerGraphRefresh } = useKnowledge();
   const { items, add, remove, update, clear } = useStagedSources();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
@@ -37,19 +37,19 @@ export function IngestPanel() {
 
   const [model, setModel] = useState<ModelRef>(FALLBACK_MODEL);
   useEffect(() => {
-    setModel(activeKb?.default_model ?? FALLBACK_MODEL);
-  }, [activeKb?.default_model]);
+    setModel(primaryKb?.default_model ?? FALLBACK_MODEL);
+  }, [primaryKb?.default_model]);
 
   async function onDefaultModelChange(next: ModelRef) {
     const previous = model;
     setModel(next);
-    if (!activeKbId) {
+    if (!primaryKbId) {
       return;
     }
 
     setSavingDefaultModel(true);
     try {
-      const response = await knowledgeFetch(`/knowledge/bases/${activeKbId}/default-model`, {
+      const response = await knowledgeFetch(`/knowledge/bases/${primaryKbId}/default-model`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: next }),
@@ -169,7 +169,7 @@ export function IngestPanel() {
   }
 
   async function onDigest() {
-    if (!activeKbId || digestState !== 'idle') return;
+    if (!primaryKbId || digestState !== 'idle') return;
     stopRequestedRef.current = false;
     setDigestState('checking');
     const queue = [...items];
@@ -211,7 +211,7 @@ export function IngestPanel() {
             formData.append('model', model.model);
 
             const result = await stream.startMultipart(
-              `/knowledge/bases/${activeKbId}/ingest`,
+              `/knowledge/bases/${primaryKbId}/ingest`,
               formData
             );
 
@@ -243,7 +243,7 @@ export function IngestPanel() {
         if (item.kind === 'path') {
           update(item.id, { status: 'ingesting', error: undefined });
           try {
-            const result = await stream.start(`/knowledge/bases/${activeKbId}/ingest`, {
+            const result = await stream.start(`/knowledge/bases/${primaryKbId}/ingest`, {
               source: { path: item.path },
               model,
             });
@@ -283,7 +283,7 @@ export function IngestPanel() {
 
           // POST /knowledge/bases/:id/ingest — SSE streamed digestion.
           // The macro materialises the raw source and then runs the sub-agent.
-          const result = await stream.start(`/knowledge/bases/${activeKbId}/ingest`, {
+          const result = await stream.start(`/knowledge/bases/${primaryKbId}/ingest`, {
             source: sourceBody,
             model,
           });
@@ -330,7 +330,7 @@ export function IngestPanel() {
   // K-04: the one primary action stays full-opacity even with nothing staged,
   // guarded by a cursor + helper line, so it never trains the eye to ignore a
   // permanently half-lit button.
-  const nothingToDigest = !activeKbId || items.length === 0;
+  const nothingToDigest = !primaryKbId || items.length === 0;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -383,7 +383,7 @@ export function IngestPanel() {
         <IngestModelPicker
           value={model}
           onChange={(next) => void onDefaultModelChange(next)}
-          disabled={!activeKbId || savingDefaultModel}
+          disabled={!primaryKbId || savingDefaultModel}
           saving={savingDefaultModel}
         />
         <Button
@@ -401,9 +401,9 @@ export function IngestPanel() {
         </Button>
         {nothingToDigest && !busy && (
           <p className="text-center text-[11px] text-text-muted">
-            {activeKbId
+            {primaryKbId
               ? 'Stage a file to digest.'
-              : 'Focus or create a knowledge base above to enable digestion.'}
+              : 'Choose or create a primary knowledge base above to enable digestion.'}
           </p>
         )}
       </div>

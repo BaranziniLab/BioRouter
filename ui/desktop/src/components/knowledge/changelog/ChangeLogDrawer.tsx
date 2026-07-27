@@ -32,8 +32,8 @@ function relativeTime(iso: string): string {
 }
 
 export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: Props) {
-  const { activeKbId, triggerGraphRefresh } = useKnowledge();
-  const { history, loading, error, restore } = useHistory(activeKbId);
+  const { primaryKbId, triggerGraphRefresh } = useKnowledge();
+  const { history, loading, error, restore } = useHistory(primaryKbId);
   const [activeKinds, setActiveKinds] = useState<Set<ChangeKind>>(new Set(ALL_KINDS));
   const [restoring, setRestoring] = useState<string | null>(null);
   const [entryToRestore, setEntryToRestore] = useState<HistoryEntry | null>(null);

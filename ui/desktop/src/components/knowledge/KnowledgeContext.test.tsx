@@ -72,7 +72,8 @@ describe('KnowledgeContext', () => {
     await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
 
     await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
-    const body = mocks.setActive.mock.calls.at(-1)?.[0]?.body;
+    const calls = mocks.setActive.mock.calls;
+    const body = calls[calls.length - 1]?.[0]?.body;
     expect(body.primary_kb).toBe('beta');
     expect(body.hidden_kbs).toEqual([]);
     expect(body.session_id).toBe('chat-1');
@@ -106,7 +107,8 @@ describe('KnowledgeContext', () => {
     await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
 
     await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
-    const body = mocks.setActive.mock.calls.at(-1)?.[0]?.body;
+    const calls = mocks.setActive.mock.calls;
+    const body = calls[calls.length - 1]?.[0]?.body;
     expect(body.primary_kb).toBeUndefined();
     expect(body.clear_primary).toBe(false);
     expect(body.hidden_kbs).toEqual(['alpha', 'beta']);

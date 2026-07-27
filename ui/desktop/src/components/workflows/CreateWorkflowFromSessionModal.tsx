@@ -111,10 +111,10 @@ export default function CreateWorkflowFromSessionModal({
         const bases: Manifest[] = basesRes.data ?? [];
         const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
         const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
-        const defaultId =
-          activeRes.data?.active_kb && visible.includes(activeRes.data.active_kb)
-            ? activeRes.data.active_kb
-            : (visible[0] ?? null);
+        // The captured default is the session's primary; `active_kb` is the
+        // deprecated mirror, read so a fresh renderer survives an older daemon.
+        const primary = activeRes.data?.primary_kb ?? activeRes.data?.active_kb ?? null;
+        const defaultId = primary && visible.includes(primary) ? primary : (visible[0] ?? null);
 
         setKnowledgeBaseItems(
           bases.map((base) => ({

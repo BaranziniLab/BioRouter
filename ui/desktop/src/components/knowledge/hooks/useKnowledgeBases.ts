@@ -5,7 +5,7 @@ import type { Manifest } from '../../../api/types.gen';
 import { knowledgeFetch } from './knowledgeRequest';
 
 export function useKnowledgeBases() {
-  const { refresh, setActiveKbId, activeKbId } = useKnowledge();
+  const { refresh, setPrimaryKbId, primaryKbId } = useKnowledge();
 
   const create = useCallback(
     async (id: string, name: string, color?: string): Promise<Manifest | undefined> => {
@@ -46,10 +46,10 @@ export function useKnowledgeBases() {
   const remove = useCallback(
     async (id: string): Promise<void> => {
       await apiDelete({ throwOnError: true, path: { id } });
-      if (activeKbId === id) setActiveKbId(null);
+      if (primaryKbId === id) setPrimaryKbId(null);
       await refresh();
     },
-    [refresh, activeKbId, setActiveKbId]
+    [refresh, primaryKbId, setPrimaryKbId]
   );
 
   const exportArchive = useCallback(async (id: string, name: string): Promise<void> => {
@@ -89,10 +89,10 @@ export function useKnowledgeBases() {
       }
 
       await refresh();
-      setActiveKbId(data.id);
+      setPrimaryKbId(data.id);
       return data.id;
     },
-    [refresh, setActiveKbId]
+    [refresh, setPrimaryKbId]
   );
 
   return { create, rename, remove, exportArchive, importArchive };

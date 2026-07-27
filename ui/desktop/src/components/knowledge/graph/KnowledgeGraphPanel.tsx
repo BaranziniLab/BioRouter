@@ -21,8 +21,8 @@ interface Props {
 }
 
 export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPreview }: Props) {
-  const { activeKbId, activeKb, registerGraphRefresh } = useKnowledge();
-  const { graph, loading, error, refresh } = useKnowledgeGraph(activeKbId);
+  const { primaryKbId, primaryKb, registerGraphRefresh } = useKnowledge();
+  const { graph, loading, error, refresh } = useKnowledgeGraph(primaryKbId);
   const { exportArchive } = useKnowledgeBases();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -30,9 +30,9 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
   // Open the active KB's folder in the OS file explorer so the user can inspect
   // the raw markdown sources and on-disk knowledge graph directly.
   const openKbFolder = async () => {
-    if (!activeKbId) return;
+    if (!primaryKbId) return;
     try {
-      const res = await getLocation({ path: { id: activeKbId }, throwOnError: true });
+      const res = await getLocation({ path: { id: primaryKbId }, throwOnError: true });
       const path = res.data?.path;
       if (path) await window.electron.openDirectoryInExplorer(path);
     } catch (err) {
@@ -51,7 +51,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       <div className="mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-xs text-text-muted">
           <span className="truncate text-sm font-semibold text-text-default">
-            {activeKb?.name ?? 'No knowledge base in focus'}
+            {primaryKb?.name ?? 'No primary knowledge base'}
           </span>
           {graph && (
             <span className="shrink-0 text-[12px]">
@@ -69,7 +69,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             size="sm"
             shape="round"
             onClick={() => void refresh()}
-            disabled={!activeKbId || loading}
+            disabled={!primaryKbId || loading}
             title="Refresh graph"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -77,8 +77,8 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => activeKb && void exportArchive(activeKb.id, activeKb.name)}
-            disabled={!activeKb}
+            onClick={() => primaryKb && void exportArchive(primaryKb.id, primaryKb.name)}
+            disabled={!primaryKb}
             title="Export current knowledge base as .brkb"
           >
             <Download className="mr-1 h-4 w-4" />
@@ -88,7 +88,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             variant="ghost"
             size="sm"
             onClick={onOpenChangeLog}
-            disabled={!activeKbId}
+            disabled={!primaryKbId}
             title="Open change log"
           >
             <History className="h-4 w-4 mr-1" />
@@ -98,7 +98,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             variant="ghost"
             size="sm"
             onClick={() => void openKbFolder()}
-            disabled={!activeKbId}
+            disabled={!primaryKbId}
             title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
           >
             <FolderOpen className="h-4 w-4 mr-1" />
@@ -117,22 +117,22 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden border-t border-border-subtle bg-background-muted">
-        {!activeKbId && (
+        {!primaryKbId && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
-            Focus a knowledge base to see its graph.
+            Make a knowledge base primary to see its graph.
           </div>
         )}
-        {activeKbId && error && (
+        {primaryKbId && error && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-danger">
             {error}
           </div>
         )}
-        {activeKbId && !error && graph && graph.nodes.length === 0 && (
+        {primaryKbId && !error && graph && graph.nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
             No pages yet. Ingest a source to populate the graph.
           </div>
         )}
-        {activeKbId && !error && graph && graph.nodes.length > 0 && (
+        {primaryKbId && !error && graph && graph.nodes.length > 0 && (
           <ForceGraphCanvas
             graph={graph}
             selectedId={selected?.id ?? null}
@@ -142,15 +142,15 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             visibleSet={null}
           />
         )}
-        {selected && activeKbId && (
+        {selected && primaryKbId && (
           <NodePreview
-            kbId={activeKbId}
+            kbId={primaryKbId}
             node={selected}
             previewSha={previewSha}
             onClose={() => setSelected(null)}
           />
         )}
-        {activeKbId && graph && graph.nodes.length > 0 && (
+        {primaryKbId && graph && graph.nodes.length > 0 && (
           <div className="absolute bottom-4 left-4 rounded-xl border border-border-subtle bg-background-default px-3 py-2.5">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">

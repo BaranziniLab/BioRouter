@@ -537,12 +537,13 @@ const MentionPopover = forwardRef<
         }
 
         const hiddenKbIds = new Set(activeResponse.data?.hidden_kbs ?? []);
-        const activeKbId = activeResponse.data?.active_kb ?? null;
+        const primaryKbId =
+          activeResponse.data?.primary_kb ?? activeResponse.data?.active_kb ?? null;
         for (const base of basesResponse.data ?? []) {
           if (hiddenKbIds.has(base.id)) continue;
           commandItems.push({
             name: `kb:${base.name}`,
-            extra: `${activeKbId === base.id ? 'Focused knowledge base' : 'Visible knowledge base'} · ${base.id}`,
+            extra: `${primaryKbId === base.id ? 'Primary knowledge base' : 'Knowledge base in this chat'} · ${base.id}`,
             itemType: 'KnowledgeBase',
             relativePath: base.id,
           });
