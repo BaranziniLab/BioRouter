@@ -559,7 +559,11 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     expect(screen.getByText(/and 3 more calls not recorded/)).toBeInTheDocument();
   });
 
-  it('surfaces assistant-audience-only error text instead of the generic constant', () => {
+  // Codex review of #28: content marked assistant-only was deliberately kept
+  // out of the user's view by the tool. The error path must NOT bypass the
+  // audience filter — the generic sentence is correct when no user-visible
+  // error text exists.
+  it('keeps assistant-audience-only error text hidden and shows the generic sentence', () => {
     const toolRequest: ToolRequestMessageContent = {
       type: 'toolRequest',
       id: 'tool-assistant-error',
@@ -598,10 +602,10 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
 
-    expect(screen.getByText('Error: the cache directory is missing')).toBeInTheDocument();
+    expect(screen.queryByText('Error: the cache directory is missing')).not.toBeInTheDocument();
     expect(
-      screen.queryByText('The tool reported that it could not complete the request.')
-    ).not.toBeInTheDocument();
+      screen.getByText('The tool reported that it could not complete the request.')
+    ).toBeInTheDocument();
   });
 });
 

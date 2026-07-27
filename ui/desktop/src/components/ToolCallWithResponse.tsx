@@ -193,19 +193,6 @@ function displayError(error: unknown): string {
   return 'The tool call failed without an error message.';
 }
 
-/** Every text block of a result, regardless of audience annotations. */
-function allToolResultText(toolResult: unknown): string {
-  const value = normalizedToolResultValue(toolResult);
-  if (!Array.isArray(value?.content)) return '';
-  return value.content
-    .flatMap((item) => {
-      const record = recordOf(item);
-      return record && typeof record.text === 'string' ? [record.text] : [];
-    })
-    .join('\n')
-    .trim();
-}
-
 function getToolResultError(toolResult: unknown): string | null {
   const result = recordOf(toolResult);
   if (!result) return null;
@@ -223,11 +210,12 @@ function getToolResultError(toolResult: unknown): string | null {
     .join('\n')
     .trim();
   if (text) return text;
-  // The user-audience filter can hide error text aimed only at the assistant;
-  // for the ERROR path a real message beats audience purity — the generic
-  // constant collapsed genuinely different failures into one sentence (#28).
-  const assistantText = allToolResultText(result);
-  return assistantText || 'The tool reported that it could not complete the request.';
+  // No user-audience error text exists. Content marked assistant-only was
+  // deliberately kept out of the user's view by the tool, so the audience
+  // filter holds even on the error path: falling back to assistant-only text
+  // here would leak content the user was never meant to see. Backends that
+  // want a specific message must supply user-visible error text.
+  return 'The tool reported that it could not complete the request.';
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
