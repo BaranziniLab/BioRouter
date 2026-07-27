@@ -14,6 +14,11 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
   const { primaryKb, visibleBases } = useKnowledge();
   const [openInternal, setOpenInternal] = useState(false);
 
+  // How many bases this chat uses *besides* the one named in the trigger. With
+  // no primary the name slot names nothing, so every visible base is "other" —
+  // subtracting 1 unconditionally would undercount them.
+  const otherBaseCount = visibleBases.length - (primaryKb ? 1 : 0);
+
   // Support both controlled (open+onOpenChange) and uncontrolled usage.
   const isControlled = openProp !== undefined;
   const open = isControlled ? openProp : openInternal;
@@ -33,8 +38,13 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
         <span className="min-w-0 flex-1 truncate text-left font-semibold">
           {primaryKb?.name ?? 'No primary knowledge base'}
         </span>
-        {visibleBases.length > 1 && (
-          <span className="shrink-0 text-[11px] text-text-muted">+{visibleBases.length - 1}</span>
+        {otherBaseCount > 0 && (
+          <span
+            className="shrink-0 text-[11px] text-text-muted"
+            title={`${otherBaseCount} more knowledge base${otherBaseCount === 1 ? '' : 's'} in this chat`}
+          >
+            +{otherBaseCount}
+          </span>
         )}
         <Badge uppercase className="text-[10px]">
           KB
