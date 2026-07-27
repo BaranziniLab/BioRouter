@@ -1976,7 +1976,7 @@ function BaseChatContent({
         }
         droppedFiles={droppedFiles}
         onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-        messages={messages}
+        messagesLength={messages.length}
         disableAnimation={disableAnimation}
         sessionCosts={sessionCosts}
         modelCostRows={modelRows}
@@ -2222,9 +2222,7 @@ function BaseChatContent({
               // it untouched. This is the treatment a mobile-width window has
               // always got; rung 2 only changes WHEN it applies — a pane that
               // cannot seat a 360px chat beside a 360px panel, at any window size.
-              onResizeStart={
-                previewMode === 'overlay' ? undefined : handleArtifactPanelResizeStart
-              }
+              onResizeStart={previewMode === 'overlay' ? undefined : handleArtifactPanelResizeStart}
               onRenderError={handleArtifactRenderError}
               style={
                 previewMode === 'overlay'
