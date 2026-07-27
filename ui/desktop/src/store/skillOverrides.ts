@@ -21,14 +21,34 @@ export async function loadSkillOverrides(): Promise<boolean> {
   }
 }
 
+/** The config file's base object, re-read just before writing so fields other
+ * surfaces put there (the CLI, future versions) survive our read-modify-write
+ * instead of being replaced by a bare `{disabled}`. Unreadable or non-object
+ * content falls back to `{}` — same as the load path. */
+async function readConfigBase(): Promise<Record<string, unknown>> {
+  try {
+    const result = await window.electron.readFile(CONFIG_PATH);
+    if (result.found && result.file) {
+      const parsed: unknown = JSON.parse(result.file);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // fall through to an empty base
+  }
+  return {};
+}
+
 export function saveSkillOverrides(): Promise<void> {
   const disabled = Array.from(state.overrides.entries())
     .filter(([, enabled]) => !enabled)
     .map(([name]) => name);
-  const content = JSON.stringify({ disabled }, null, 2);
   const save = saveQueue
     .catch(() => undefined)
     .then(async () => {
+      const base = await readConfigBase();
+      const content = JSON.stringify({ ...base, disabled }, null, 2);
       const written = await window.electron.writeFile(CONFIG_PATH, content);
       if (!written) throw new Error('Could not save skill preferences');
     });

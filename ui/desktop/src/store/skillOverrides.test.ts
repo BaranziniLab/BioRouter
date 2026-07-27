@@ -7,13 +7,16 @@ import {
 } from './skillOverrides';
 
 const writeFile = vi.fn();
+const readFile = vi.fn();
 
 beforeEach(async () => {
   writeFile.mockReset();
+  readFile.mockReset();
+  readFile.mockResolvedValue({ found: false });
   Object.defineProperty(window, 'electron', {
     configurable: true,
     value: {
-      readFile: vi.fn(async () => ({ found: false })),
+      readFile,
       writeFile,
     },
   });
@@ -48,5 +51,41 @@ describe('skillOverrides persistence', () => {
     expect(writeFile.mock.calls[0][1]).toContain('analysis');
     expect(writeFile.mock.calls[1][1]).not.toContain('analysis');
     expect(isSkillEnabled('analysis')).toBe(true);
+  });
+
+  it('preserves unknown fields written by other surfaces on save', async () => {
+    // The CLI (and future versions) store additional fields in the same
+    // file; the GUI's read-modify-write must carry them through instead of
+    // replacing the file with a bare {disabled}.
+    writeFile.mockResolvedValue(true);
+    readFile.mockResolvedValue({
+      found: true,
+      file: JSON.stringify({
+        disabled: ['from-disk'],
+        future: { nested: true },
+        note: 'cli forward-compat',
+      }),
+    });
+
+    setSkillOverride('analysis', false);
+    await saveSkillOverrides();
+
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(writeFile.mock.calls[0][1] as string);
+    expect(written.future).toEqual({ nested: true });
+    expect(written.note).toBe('cli forward-compat');
+    // The disabled array reflects THIS surface's current overrides.
+    expect(written.disabled).toEqual(['analysis']);
+  });
+
+  it('falls back to a bare object when the on-disk config is unreadable', async () => {
+    writeFile.mockResolvedValue(true);
+    readFile.mockResolvedValue({ found: true, file: '{ not json' });
+
+    setSkillOverride('analysis', false);
+    await saveSkillOverrides();
+
+    const written = JSON.parse(writeFile.mock.calls[0][1] as string);
+    expect(written).toEqual({ disabled: ['analysis'] });
   });
 });

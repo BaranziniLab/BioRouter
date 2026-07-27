@@ -346,17 +346,62 @@ fn set_disabled_state(
     Ok(true)
 }
 
-/// Write the config atomically (temp file + rename) — the GUI writes the same
-/// file, so never leave a half-written JSON behind.
+/// Write the config atomically — the GUI writes the same file, so never
+/// leave a half-written JSON behind. The temp file is uniquely named
+/// (`tempfile`) so two concurrent writers can never scribble into the same
+/// staging file, and `persist` renames it over the target in one step.
 fn write_skills_config(path: &Path, config: &serde_json::Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent)?;
     let body = serde_json::to_string_pretty(config)?;
-    fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating a temp file in {}", parent.display()))?;
+    std::io::Write::write_all(&mut tmp, body.as_bytes())
+        .with_context(|| format!("writing {}", tmp.path().display()))?;
+    tmp.persist(path)
+        .with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
+}
+
+/// Advisory cross-process lock serializing every read-modify-write of
+/// `skills-config.json`. Held on a sibling `.lock` file — never on the
+/// config itself, whose inode is replaced by each atomic rename, which would
+/// make the lock worthless. Released when the returned handle drops.
+fn lock_skills_config(path: &Path) -> Result<fs::File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent)?;
+    let lock_path = path.with_extension("json.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening lock file {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("locking {}", lock_path.display()))?;
+    Ok(file)
+}
+
+/// The one way to change skills-config.json: take the advisory lock,
+/// re-read the file fresh under it (another process — GUI or a second CLI —
+/// may have written since any earlier read), apply `mutate`, and atomically
+/// replace the file only when something changed. Returns whether the config
+/// changed plus the final config.
+fn mutate_skills_config<F>(path: &Path, mutate: F) -> Result<(bool, serde_json::Value)>
+where
+    F: FnOnce(&mut serde_json::Value) -> Result<bool>,
+{
+    let _lock = lock_skills_config(path)?;
+    let mut config = load_skills_config(path)?;
+    let changed = mutate(&mut config)?;
+    if changed {
+        write_skills_config(path, &config)?;
+    }
+    Ok((changed, config))
 }
 
 fn disabled_set(config: &serde_json::Value) -> HashSet<String> {
@@ -695,10 +740,10 @@ pub async fn handle_disable(query: String) -> Result<()> {
     }
 
     let path = skills_config_path();
-    let mut config = load_skills_config(&path)?;
-    let changed = set_disabled_state(&mut config, target_identifier(&target), true)?;
+    let (changed, _) = mutate_skills_config(&path, |config| {
+        set_disabled_state(config, target_identifier(&target), true)
+    })?;
     if changed {
-        write_skills_config(&path, &config)?;
         println!(
             "  {} disabled {}",
             style("✓").green(),
@@ -731,9 +776,10 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
             // raw query matches it exactly. Genuine zero-match ONLY: an
             // ambiguity (or any other resolution failure) must surface, not
             // silently mutate the config and claim nothing matched.
-            let mut config = load_skills_config(path)?;
-            if set_disabled_state(&mut config, query.trim(), false)? {
-                write_skills_config(path, &config)?;
+            let (cleaned, _) = mutate_skills_config(path, |config| {
+                set_disabled_state(config, query.trim(), false)
+            })?;
+            if cleaned {
                 println!(
                     "  {} removed stale disabled entry {} (no installed skill matches it)",
                     style("✓").green(),
@@ -749,10 +795,10 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
         println!("{note}");
     }
 
-    let mut config = load_skills_config(path)?;
-    let changed = set_disabled_state(&mut config, target_identifier(&target), false)?;
+    let (changed, config) = mutate_skills_config(path, |config| {
+        set_disabled_state(config, target_identifier(&target), false)
+    })?;
     if changed {
-        write_skills_config(path, &config)?;
         println!("  {} enabled {}", style("✓").green(), target_label(&target));
     } else {
         println!(
@@ -1283,6 +1329,64 @@ mod tests {
             !path.with_extension("json.tmp").exists(),
             "temp file must be renamed away"
         );
+    }
+
+    // ── locked read-modify-write (finding 1) ─────────────────────────────────
+
+    // Concurrent writers must serialize on the advisory lock: every update
+    // lands, unknown fields survive. With the old fixed `.json.tmp` staging
+    // name and no lock, concurrent writers could clobber each other's temp
+    // file and drop updates.
+    #[test]
+    fn concurrent_locked_mutations_lose_no_updates() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("skills-config.json");
+        fs::write(&path, r#"{"disabled":[],"note":"keep"}"#).unwrap();
+
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    mutate_skills_config(&path, |config| {
+                        set_disabled_state(config, &format!("skill-{i}"), true)
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let disabled = disabled_set(&reread);
+        for i in 0..8 {
+            assert!(
+                disabled.contains(&format!("skill-{i}")),
+                "update for skill-{i} was lost: {reread}"
+            );
+        }
+        assert_eq!(reread["note"], json!("keep"), "unknown fields must survive");
+    }
+
+    // The mutation must re-read the file fresh under the lock — a write by
+    // another surface (GUI, second CLI) after any earlier read still lands in
+    // the final file.
+    #[test]
+    fn mutation_rereads_the_file_fresh_under_the_lock() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("skills-config.json");
+        fs::write(&path, r#"{"disabled":["a","external"],"gui":true}"#).unwrap();
+
+        let (changed, _) =
+            mutate_skills_config(&path, |config| set_disabled_state(config, "b", true)).unwrap();
+        assert!(changed);
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread["disabled"], json!(["a", "external", "b"]));
+        assert_eq!(reread["gui"], json!(true));
     }
 
     // ── list output ──────────────────────────────────────────────────────────
