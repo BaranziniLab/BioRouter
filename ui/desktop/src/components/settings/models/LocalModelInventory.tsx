@@ -1,12 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  llamacppDelete,
-  llamacppEnsure,
-  llamacppStatus,
-  llamacppWarmup,
-  type LlamaCppModel,
-  type LlamaCppStatusResponse,
-} from '../../../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { llamacppDelete, llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../../api';
 import { toastService } from '../../../toasts';
 import {
   checkOllamaStatus,
@@ -14,6 +7,12 @@ import {
   pullOllamaModel,
   type PullProgress,
 } from '../../../utils/ollamaDetection';
+import {
+  compactStatusMessage,
+  llamaServerStore,
+  useLlamaServer,
+  type LlamaServerOperation,
+} from './llamaServerStore';
 import { Button } from '../../ui/button';
 import {
   Dialog,
@@ -33,9 +32,6 @@ import {
   RefreshCw,
   Trash2,
 } from '../../icons/app-icons';
-
-const POLL_INTERVAL_MS = 1500;
-const INSTALL_TIMEOUT_MS = 60 * 60 * 1000;
 
 const formatContext = (value: number | null | undefined) =>
   typeof value === 'number' ? value.toLocaleString() : 'unknown';
@@ -83,11 +79,10 @@ const progressLabel = (progress: PullProgress) => {
   return progress.status;
 };
 
-const compactStatusMessage = (message: string) => {
-  const compacted = message.replace(/\s+/g, ' ').trim();
-  if (compacted.length <= 180) return compacted;
-  return `${compacted.slice(0, 177)}...`;
-};
+const operationFallbackLabel = (operation: LlamaServerOperation) =>
+  operation.kind === 'warmup'
+    ? `Warming up ${operation.model}...`
+    : `Preparing ${operation.model}...`;
 
 function DetailRow({
   label,
@@ -116,31 +111,25 @@ function DetailRow({
 }
 
 export default function LocalModelInventory() {
-  const [snapshot, setSnapshot] = useState<LlamaCppStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Status + any in-flight install/warm-up operation live in the shared
+  // store, so progress survives unmounting this panel (issue #34) and an
+  // operation started from onboarding is visible here too.
+  const { status: snapshot, operation } = useLlamaServer();
+  const [isLoading, setIsLoading] = useState(() => llamaServerStore.getSnapshot().status === null);
   const [error, setError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<LlamaCppModel | null>(null);
-  const [activeAction, setActiveAction] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const pollRef = useRef<number | null>(null);
+  // Deletes are quick, local HTTP calls with no polling; they keep
+  // component-local busy state.
+  const [deleteAction, setDeleteAction] = useState<{ model: string; message: string } | null>(null);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current !== null) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
+  const busy = !!operation || !!deleteAction;
 
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await llamacppStatus({ throwOnError: true });
-      setSnapshot(res.data);
-      return res.data;
+      await llamaServerStore.refresh();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      return null;
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoading(false);
     }
@@ -148,8 +137,7 @@ export default function LocalModelInventory() {
 
   useEffect(() => {
     void refresh();
-    return stopPolling;
-  }, [refresh, stopPolling]);
+  }, [refresh]);
 
   const catalog = useMemo(() => snapshot?.catalog ?? [], [snapshot]);
   const installedCount = useMemo(() => catalog.filter(isInstalled).length, [catalog]);
@@ -172,56 +160,20 @@ export default function LocalModelInventory() {
     [snapshot?.system]
   );
 
-  const waitForInstall = useCallback(
-    async (model: LlamaCppModel) => {
-      const startedAt = Date.now();
-      return new Promise<void>((resolve, reject) => {
-        stopPolling();
-        pollRef.current = window.setInterval(async () => {
-          try {
-            const res = await llamacppStatus({ throwOnError: true });
-            setSnapshot(res.data);
-            if (res.data.sidecar.detail) {
-              setActionMessage(compactStatusMessage(res.data.sidecar.detail));
-            }
-            if (res.data.sidecar.state === 'error') {
-              stopPolling();
-              reject(new Error(res.data.sidecar.detail || 'Llama Server failed to install model'));
-              return;
-            }
-            if (res.data.sidecar.state === 'ready' && res.data.sidecar.model === model.name) {
-              stopPolling();
-              resolve();
-              return;
-            }
-            if (Date.now() - startedAt > INSTALL_TIMEOUT_MS) {
-              stopPolling();
-              reject(new Error('Timed out waiting for the local model install'));
-            }
-          } catch {
-            if (Date.now() - startedAt > INSTALL_TIMEOUT_MS) {
-              stopPolling();
-              reject(new Error('Timed out waiting for the local model install'));
-            }
-          }
-        }, POLL_INTERVAL_MS);
-      });
-    },
-    [stopPolling]
-  );
-
   const runInstall = useCallback(
     async (model: LlamaCppModel) => {
+      if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!confirmResources(model)) return;
-      setActiveAction(`${model.name}:install`);
-      setActionMessage('Preparing install...');
+      llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
+        poll: false,
+      });
       try {
         if (model.ollama_name) {
           const ollama = await checkOllamaStatus();
           if (ollama.isRunning) {
-            setActionMessage(`Pulling ${model.ollama_name} from Ollama...`);
+            llamaServerStore.setOperationMessage(`Pulling ${model.ollama_name} from Ollama...`);
             const pulled = await pullOllamaModel(model.ollama_name, (progress) => {
-              setActionMessage(progressLabel(progress));
+              llamaServerStore.setOperationMessage(progressLabel(progress));
             });
             if (!pulled) throw new Error(`Ollama could not pull ${model.ollama_name}`);
             toastService.success({
@@ -233,10 +185,16 @@ export default function LocalModelInventory() {
           }
         }
 
-        setActionMessage('Starting Llama Server fallback download...');
+        // Switch to the polling operation: the store now tracks download
+        // progress until ready/error/timeout, even if this panel unmounts.
+        llamaServerStore.beginOperation(
+          'install',
+          model.name,
+          'Starting Llama Server fallback download...'
+        );
         const res = await llamacppEnsure({ body: { model: model.name }, throwOnError: true });
-        setSnapshot(res.data);
-        await waitForInstall(model);
+        llamaServerStore.applyStatus(res.data);
+        await llamaServerStore.waitForReady(model.name);
         toastService.success({
           title: 'Local model installed',
           msg: `${model.display_name} is ready in the Llama Server cache.`,
@@ -249,31 +207,17 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        stopPolling();
-        setActiveAction(null);
-        setActionMessage(null);
+        llamaServerStore.endOperation();
       }
     },
-    [confirmResources, refresh, stopPolling, waitForInstall]
+    [confirmResources, deleteAction, refresh]
   );
 
   const runWarmup = useCallback(
     async (model: LlamaCppModel) => {
+      if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!confirmResources(model)) return;
-      setActiveAction(`${model.name}:warmup`);
-      setActionMessage('Warming up model...');
-      stopPolling();
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const res = await llamacppStatus({ throwOnError: true });
-          setSnapshot(res.data);
-          if (res.data.sidecar.detail) {
-            setActionMessage(compactStatusMessage(res.data.sidecar.detail));
-          }
-        } catch {
-          // Polling is best-effort while warm-up owns the real error path.
-        }
-      }, POLL_INTERVAL_MS);
+      llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
 
       try {
         const res = await llamacppWarmup({ body: { model: model.name }, throwOnError: true });
@@ -292,12 +236,10 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        stopPolling();
-        setActiveAction(null);
-        setActionMessage(null);
+        llamaServerStore.endOperation();
       }
     },
-    [confirmResources, refresh, stopPolling]
+    [confirmResources, deleteAction, refresh]
   );
 
   const runDelete = useCallback(
@@ -305,8 +247,7 @@ export default function LocalModelInventory() {
       const label = model.ollama_name ?? model.name;
       if (!window.confirm(`Delete ${label} from the local model inventory?`)) return;
 
-      setActiveAction(`${model.name}:delete`);
-      setActionMessage('Deleting local model...');
+      setDeleteAction({ model: model.name, message: 'Deleting local model...' });
       try {
         let deletedSomething = false;
         if (model.download_source === 'ollama' && model.ollama_name) {
@@ -321,7 +262,7 @@ export default function LocalModelInventory() {
         if (model.fallback_download_status === 'downloaded') {
           const res = await llamacppDelete({ body: { model: model.name }, throwOnError: true });
           deletedSomething = res.data.deleted_fallback_cache || deletedSomething;
-          setSnapshot(res.data.status);
+          llamaServerStore.applyStatus(res.data.status);
         }
 
         if (!deletedSomething) {
@@ -339,14 +280,18 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        setActiveAction(null);
-        setActionMessage(null);
+        setDeleteAction(null);
       }
     },
     [refresh]
   );
 
   const renderAction = (model: LlamaCppModel) => {
+    const isInstalling =
+      (operation?.kind === 'install' || operation?.kind === 'start') &&
+      operation.model === model.name;
+    const isWarming = operation?.kind === 'warmup' && operation.model === model.name;
+    const isDeleting = deleteAction?.model === model.name;
     return (
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
         <Button
@@ -354,7 +299,7 @@ export default function LocalModelInventory() {
           size="xs"
           variant="outline"
           onClick={() => setSelectedModel(model)}
-          disabled={!!activeAction}
+          disabled={busy}
         >
           <Eye className="h-3 w-3" />
           View Info
@@ -366,9 +311,9 @@ export default function LocalModelInventory() {
               size="xs"
               variant="outline"
               onClick={() => void runWarmup(model)}
-              disabled={!!activeAction}
+              disabled={busy}
             >
-              {activeAction === `${model.name}:warmup` ? (
+              {isWarming ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <Play className="h-3 w-3" />
@@ -381,10 +326,10 @@ export default function LocalModelInventory() {
               variant="ghost"
               className="text-text-danger hover:bg-background-danger/10 hover:text-text-danger"
               onClick={() => void runDelete(model)}
-              disabled={!!activeAction}
+              disabled={busy}
               title="Delete local model"
             >
-              {activeAction === `${model.name}:delete` ? (
+              {isDeleting ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <Trash2 className="h-3 w-3" />
@@ -393,13 +338,8 @@ export default function LocalModelInventory() {
             </Button>
           </>
         ) : (
-          <Button
-            type="button"
-            size="xs"
-            onClick={() => void runInstall(model)}
-            disabled={!!activeAction}
-          >
-            {activeAction === `${model.name}:install` ? (
+          <Button type="button" size="xs" onClick={() => void runInstall(model)} disabled={busy}>
+            {isInstalling ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <Download className="h-3 w-3" />
@@ -430,7 +370,7 @@ export default function LocalModelInventory() {
           shape="round"
           variant="ghost"
           onClick={() => void refresh()}
-          disabled={isLoading || !!activeAction}
+          disabled={isLoading || busy}
           title="Refresh local model inventory"
         >
           <RefreshCw className={isLoading ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
@@ -453,9 +393,11 @@ export default function LocalModelInventory() {
         ) : (
           catalog.map((model) => {
             const busyLabel =
-              activeAction?.startsWith(`${model.name}:`) && actionMessage
-                ? compactStatusMessage(actionMessage)
-                : null;
+              operation && operation.model === model.name
+                ? compactStatusMessage(operation.message ?? operationFallbackLabel(operation))
+                : deleteAction && deleteAction.model === model.name
+                  ? deleteAction.message
+                  : null;
 
             return (
               <div key={model.name} className="biorouter-settings-row px-3 py-3">
@@ -578,7 +520,7 @@ export default function LocalModelInventory() {
                   type="button"
                   className="w-full sm:w-auto"
                   onClick={() => void runWarmup(selectedModel)}
-                  disabled={!!activeAction}
+                  disabled={busy}
                 >
                   Warm up model
                 </Button>
@@ -587,7 +529,7 @@ export default function LocalModelInventory() {
                   type="button"
                   className="w-full sm:w-auto"
                   onClick={() => void runInstall(selectedModel)}
-                  disabled={!!activeAction}
+                  disabled={busy}
                 >
                   Install model
                 </Button>
