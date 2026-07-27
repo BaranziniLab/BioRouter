@@ -297,4 +297,35 @@ describe('LlamaServerInlineCard', () => {
     expect(llamaServerStore.getSnapshot().operation?.id).toBe(retryId);
     expect(mockToastError).toHaveBeenCalledTimes(1);
   });
+
+  it('unmounting between config writes stops the remaining writes (re-review 5)', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({ state: 'ready', warmed: true, model: 'gemma4' })
+    );
+    let resolveUpsert!: () => void;
+    mockUpsert.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveUpsert = resolve;
+        })
+    );
+    const onSuccess = vi.fn();
+    const view = render(<LlamaServerInlineCard onSuccess={onSuccess} />);
+
+    fireEvent.click(await view.findByTestId('llamacpp-connect'));
+    await waitFor(() => expect(mockUpsert).toHaveBeenCalledTimes(1));
+    expect(mockUpsert).toHaveBeenCalledWith('LLAMACPP_PORT', '11543', false);
+
+    // The card unmounts while the FIRST write is still in flight; the two
+    // remaining provider/model writes must never happen.
+    view.unmount();
+    resolveUpsert();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
 });

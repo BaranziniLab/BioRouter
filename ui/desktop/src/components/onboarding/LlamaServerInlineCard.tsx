@@ -104,12 +104,18 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       connectingRef.current = true;
       setIsConnecting(true);
       try {
+        // Each write is awaited, so the card can unmount between any two of
+        // them; re-check ownership after EVERY await so a dead card stops
+        // writing provider config mid-sequence instead of finishing the
+        // group from beyond the grave.
         // Explicitly setting the (defaulted) port marks the provider configured.
         await upsert('LLAMACPP_PORT', '11543', false);
+        if (!mountedRef.current) return;
         await upsert('BIOROUTER_PROVIDER', 'llamacpp', false);
+        if (!mountedRef.current) return;
         await upsert('BIOROUTER_MODEL', model, false);
-        // Unmounted mid-write: the config is saved, but a dead card must not
-        // drive the onboarding navigation.
+        // Unmounted after the last write: the config is saved, but a dead
+        // card must not toast or drive the onboarding navigation.
         if (!mountedRef.current) return;
         toastService.success({
           title: 'Local model ready!',
