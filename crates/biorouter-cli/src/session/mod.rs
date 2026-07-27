@@ -439,15 +439,23 @@ impl CliSession {
         self.add_and_persist_extensions(configs).await
     }
 
-    /// Process a single message and get the response
+    /// Process a single message and get the response.
+    ///
+    /// `interactive` is the REAL interactivity of the surrounding run (#40):
+    /// it drives the headless auto-deny/auto-cancel of approval prompts and
+    /// elicitations inside `process_agent_response`. It used to be hardcoded
+    /// `false` here, so a classic interactive TTY session started WITH an
+    /// initial prompt (`interactive(Some(prompt))`) silently auto-denied
+    /// every approval in that first turn.
     pub(crate) async fn process_message(
         &mut self,
         message: Message,
+        interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
         let cancel_token = cancel_token.clone();
         self.push_message(message);
-        self.process_agent_response(false, cancel_token).await?;
+        self.process_agent_response(interactive, cancel_token).await?;
         Ok(())
     }
 
@@ -467,7 +475,10 @@ impl CliSession {
 
         if let Some(prompt) = prompt {
             let msg = Message::user().with_text(&prompt);
-            self.process_message(msg, CancellationToken::default())
+            // #40: this is a genuinely interactive session whose FIRST turn
+            // merely arrived as an argument — it must keep its ability to
+            // answer approval prompts and elicitations at the terminal.
+            self.process_message(msg, true, CancellationToken::default())
                 .await?;
         }
 
@@ -1008,8 +1019,10 @@ impl CliSession {
     /// run as successful. Before this, a 403'd run exited 0.
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
+        // #40: a headless run has nobody at the terminal — approvals
+        // auto-deny and elicitations auto-cancel.
         let result = self
-            .process_message(message, CancellationToken::default())
+            .process_message(message, false, CancellationToken::default())
             .await;
         self.fire_session_end_hooks("prompt_input_exit").await;
         result?;
@@ -2216,6 +2229,33 @@ mod tests {
                     "non-interactive must always auto-deny (format={output_format}, tty={stdin_is_tty})"
                 );
             }
+        }
+    }
+
+    /// #40: `interactive(Some(prompt))` — a classic interactive TTY session
+    /// that merely STARTS with a prompt argument — must run that first turn
+    /// with `interactive = true` (which `process_message` now threads through
+    /// instead of hardcoding `false`). The matrix rows below pin what each
+    /// wiring produces on a real TTY: the true the entry point now passes
+    /// keeps the prompt; the false it used to hardcode auto-denied approvals
+    /// and auto-cancelled elicitations in that first turn.
+    #[test]
+    fn initial_prompt_turn_keeps_interactivity() {
+        for output_format in ["text", "json", "stream-json"] {
+            // interactive(Some(prompt)) => process_message(msg, true, ..):
+            assert_eq!(
+                headless_auto_decision(true, output_format, true),
+                None,
+                "an interactive session with an initial prompt must keep its \
+                 prompts (format={output_format})"
+            );
+            // the old hardcoded false on the SAME run:
+            assert_eq!(
+                headless_auto_decision(false, output_format, true),
+                Some(Permission::DenyOnce),
+                "hardcoding interactive=false forced auto-denial \
+                 (format={output_format})"
+            );
         }
     }
 

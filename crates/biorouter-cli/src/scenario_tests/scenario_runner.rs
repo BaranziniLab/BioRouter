@@ -260,7 +260,8 @@ where
     let mut error = None;
     for message in &messages {
         if let Err(e) = cli_session
-            .process_message(message.clone(), CancellationToken::default())
+            // Scenario runs are non-interactive: no TTY answers prompts.
+            .process_message(message.clone(), false, CancellationToken::default())
             .await
         {
             error = Some(e.to_string());
