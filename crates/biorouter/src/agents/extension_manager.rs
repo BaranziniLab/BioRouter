@@ -1524,8 +1524,14 @@ impl ExtensionManager {
     pub async fn search_available_extensions(&self) -> Result<Vec<Content>, ErrorData> {
         let mut output_parts = vec![];
 
-        // First get disabled extensions from current config
-        let disabled_extensions = config_disabled_extension_lines(&get_all_extensions());
+        // First get disabled extensions from current config; only entries the
+        // operator actually persisted with `enabled: false` get the
+        // do-not-enable label (#42) — injected default-off platform entries
+        // stay listed as plainly enableable.
+        let disabled_extensions = config_disabled_extension_lines(
+            &get_all_extensions(),
+            &crate::config::persisted_extension_names(),
+        );
 
         // Get currently enabled extensions that can be disabled
         let enabled_extensions: Vec<String> =
@@ -1617,17 +1623,24 @@ impl ExtensionManager {
     }
 }
 
-/// Label appended to every config-disabled entry in
+/// Label appended to every **operator**-disabled entry in
 /// `search_available_extensions` output (#42): these extensions were turned
 /// off by the operator, so the model must not treat the listing as an
 /// invitation to enable them on its own (`manage_extensions` refuses anyway —
 /// see `extension_manager_extension::check_enable_allowed`).
 pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user — do not enable without asking)";
 
-/// One listing line per config-disabled extension, each carrying
-/// [`CONFIG_DISABLED_LABEL`]. Pure so the labeling is unit-testable without a
-/// global config.
-fn config_disabled_extension_lines(entries: &[crate::config::ExtensionEntry]) -> Vec<String> {
+/// One listing line per config-disabled extension. Only entries the operator
+/// actually wrote into the config file (`persisted`, keyed by
+/// `config.name()`) carry [`CONFIG_DISABLED_LABEL`] — an absent platform
+/// extension injected with a default-off entry (e.g. `chatrecall`) is still
+/// listed as available to enable, but unlabeled, because no operator ever
+/// disabled it. Pure so the labeling is unit-testable without a global
+/// config.
+fn config_disabled_extension_lines(
+    entries: &[crate::config::ExtensionEntry],
+    persisted: &std::collections::HashSet<String>,
+) -> Vec<String> {
     entries
         .iter()
         .filter(|extension| !extension.enabled)
@@ -1652,12 +1665,16 @@ fn config_disabled_extension_lines(entries: &[crate::config::ExtensionEntry]) ->
                 | ExtensionConfig::Frontend { description, .. }
                 | ExtensionConfig::InlinePython { description, .. } => description,
             };
-            format!(
-                "- {} - {} {}",
-                config.name(),
-                description,
-                CONFIG_DISABLED_LABEL
-            )
+            if persisted.contains(&config.name()) {
+                format!(
+                    "- {} - {} {}",
+                    config.name(),
+                    description,
+                    CONFIG_DISABLED_LABEL
+                )
+            } else {
+                format!("- {} - {}", config.name(), description)
+            }
         })
         .collect()
 }
@@ -2584,7 +2601,7 @@ mod tests {
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_b__")));
     }
 
-    // #42 hardening: config-disabled entries in search_available_extensions
+    // #42 hardening: operator-disabled entries in search_available_extensions
     // output must be labeled so the model doesn't treat the listing as an
     // invitation to silently re-enable what the operator turned off.
     #[test]
@@ -2612,12 +2629,17 @@ mod tests {
                 config: ExtensionConfig::stdio("custom", "cmd", "A custom server", 30_u64),
             },
         ];
+        let persisted = std::collections::HashSet::from([
+            "developer".to_string(),
+            "running".to_string(),
+            "custom".to_string(),
+        ]);
 
-        let lines = config_disabled_extension_lines(&entries);
+        let lines = config_disabled_extension_lines(&entries, &persisted);
         assert_eq!(lines.len(), 2, "enabled entries must not be listed");
         assert!(
             lines.iter().all(|l| l.contains(CONFIG_DISABLED_LABEL)),
-            "every config-disabled entry must carry the label: {lines:?}"
+            "every operator-disabled entry must carry the label: {lines:?}"
         );
         // Empty Builtin description falls back to the display name.
         assert!(
@@ -2636,6 +2658,52 @@ mod tests {
         );
     }
 
+    // #42 provenance: an absent platform extension is injected with its
+    // default — a default-off one (chatrecall) reads `enabled: false` without
+    // any operator action. It must still be listed as available to enable,
+    // but must NOT carry the do-not-enable label.
+    #[test]
+    fn config_disabled_lines_leave_injected_default_off_entries_unlabeled() {
+        use crate::config::ExtensionEntry;
+
+        let entries = vec![
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::Platform {
+                    name: "chatrecall".to_string(),
+                    description: "Recall previous chats".to_string(),
+                    bundled: Some(true),
+                    available_tools: vec![],
+                },
+            },
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::stdio("custom", "cmd", "A custom server", 30_u64),
+            },
+        ];
+        // Only `custom` was actually written to the config file.
+        let persisted = std::collections::HashSet::from(["custom".to_string()]);
+
+        let lines = config_disabled_extension_lines(&entries, &persisted);
+        assert_eq!(lines.len(), 2, "both entries stay listed as enableable");
+        let chatrecall = lines
+            .iter()
+            .find(|l| l.contains("chatrecall"))
+            .expect("injected default-off entry must stay listed");
+        assert!(
+            !chatrecall.contains(CONFIG_DISABLED_LABEL),
+            "no operator disabled chatrecall — it must not be labeled: {chatrecall}"
+        );
+        let custom = lines
+            .iter()
+            .find(|l| l.contains("custom"))
+            .expect("persisted entry listed");
+        assert!(
+            custom.contains(CONFIG_DISABLED_LABEL),
+            "operator-persisted enabled:false must be labeled: {custom}"
+        );
+    }
+
     #[test]
     fn config_disabled_lines_empty_when_everything_is_enabled() {
         use crate::config::ExtensionEntry;
@@ -2644,7 +2712,8 @@ mod tests {
             enabled: true,
             config: ExtensionConfig::default(),
         }];
-        assert!(config_disabled_extension_lines(&entries).is_empty());
-        assert!(config_disabled_extension_lines(&[]).is_empty());
+        let persisted = std::collections::HashSet::new();
+        assert!(config_disabled_extension_lines(&entries, &persisted).is_empty());
+        assert!(config_disabled_extension_lines(&[], &persisted).is_empty());
     }
 }

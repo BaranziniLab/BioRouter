@@ -102,6 +102,41 @@ pub fn get_extension_by_name(name: &str) -> Option<ExtensionConfig> {
     get_extension_entry_by_name(name).map(|entry| entry.config)
 }
 
+/// Names (`config.name()`) of every extension entry actually present in the
+/// persisted config file — i.e. operator-authored entries, before
+/// [`get_extensions_map`] injects absent platform extensions with their
+/// defaults. Malformed entries are skipped, mirroring `get_extensions_map`.
+///
+/// This is the provenance signal for the `manage_extensions` enable gate and
+/// the `search_available_extensions` labeling (#42): only an entry the
+/// operator wrote with `enabled: false` counts as operator-disabled. An
+/// injected default-off platform extension (e.g. `chatrecall`) is absent
+/// here and stays agent-enableable.
+pub fn persisted_extension_names() -> std::collections::HashSet<String> {
+    let raw: Mapping = Config::global()
+        .get_param(EXTENSIONS_CONFIG_KEY)
+        .unwrap_or_default();
+    persisted_names_from_raw(&raw)
+}
+
+fn persisted_names_from_raw(raw: &Mapping) -> std::collections::HashSet<String> {
+    raw.iter()
+        .filter_map(
+            |(k, v)| match (k, serde_yaml::from_value::<ExtensionEntry>(v.clone())) {
+                (serde_yaml::Value::String(_), Ok(entry)) => Some(entry.config.name().to_string()),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// True when `name` has an entry the operator actually wrote into the config
+/// file, as opposed to an injected platform default. See
+/// [`persisted_extension_names`].
+pub fn extension_entry_is_persisted(name: &str) -> bool {
+    persisted_extension_names().contains(name)
+}
+
 /// Like [`get_extension_by_name`], but returns the whole config entry so
 /// callers can see the operator's `enabled` flag, not just the config.
 pub fn get_extension_entry_by_name(name: &str) -> Option<ExtensionEntry> {
@@ -195,6 +230,69 @@ pub fn resolve_extensions_for_new_session(
     }
 
     get_enabled_extensions()
+}
+
+#[cfg(test)]
+mod persisted_provenance_tests {
+    use super::*;
+
+    fn raw_mapping(yaml: &str) -> Mapping {
+        serde_yaml::from_str(yaml).expect("valid yaml mapping")
+    }
+
+    // #42: provenance must come from the raw persisted mapping, not the
+    // post-injection map — an injected default-off platform extension
+    // (chatrecall) must NOT read as operator-authored.
+    #[test]
+    fn persisted_names_reflect_only_entries_written_to_the_config_file() {
+        let raw = raw_mapping(
+            r#"
+developer:
+  enabled: false
+  type: builtin
+  name: developer
+custom-key:
+  enabled: true
+  type: stdio
+  name: custom name
+  cmd: run-me
+  args: []
+  description: A custom server
+  timeout: 30
+"#,
+        );
+        let names = persisted_names_from_raw(&raw);
+        assert!(names.contains("developer"));
+        assert!(
+            names.contains("custom name"),
+            "must record config.name(), matching get_extension_entry_by_name: {names:?}"
+        );
+        assert!(
+            !names.contains("chatrecall"),
+            "absent platform extensions are injected, never persisted"
+        );
+        assert!(!names.contains("custom-key"), "map keys are not names");
+    }
+
+    #[test]
+    fn persisted_names_skip_malformed_entries_like_get_extensions_map() {
+        let raw = raw_mapping(
+            r#"
+broken:
+  type: no-such-type
+developer:
+  enabled: true
+  type: builtin
+  name: developer
+"#,
+        );
+        let names = persisted_names_from_raw(&raw);
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["developer".to_string()])
+        );
+        assert!(persisted_names_from_raw(&Mapping::new()).is_empty());
+    }
 }
 
 #[cfg(test)]
