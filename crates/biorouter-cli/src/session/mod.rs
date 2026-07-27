@@ -1081,8 +1081,8 @@ impl CliSession {
                                     eprintln!(
                                         "Tool call requires interactive approval ({}) but this \
                                          run is non-interactive - denied automatically. Do not \
-                                         retry the same call; run without --output-format \
-                                         json/--quiet in a terminal to approve it interactively.",
+                                         retry the same call; run interactively (`-s`) in a \
+                                         terminal with stdin attached to approve it.",
                                         reason.lines().next().unwrap_or(reason).trim()
                                     );
                                     if is_stream_json_mode {
@@ -1106,7 +1106,13 @@ impl CliSession {
                                 let permission = prompt_tool_confirmation(&security_prompt)?;
 
                                 if permission == Permission::Cancel {
-                                    output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
+                                    // #40: prompt-adjacent status stays off a structured stdout
+                                    // (the prompt itself already renders on stderr).
+                                    if is_json_mode || is_stream_json_mode {
+                                        eprintln!("Tool call cancelled. Returning to chat...");
+                                    } else {
+                                        output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
+                                    }
                                     let mut response_message = Message::user();
                                     response_message.content.push(MessageContent::tool_response(
                                         id,
@@ -1588,23 +1594,28 @@ async fn print_startup_notices() {
 /// #40: the auto-decision for a tool-confirmation prompt that cannot be
 /// answered, or `None` when the run is genuinely interactive.
 ///
-/// A cliclack prompt in a headless run wrote the security text to stdout
-/// (corrupting `--output-format json`), then blocked for ~30 minutes on a
-/// keypress that could never come — or, with no terminal at all, died as the
-/// opaque `Error: not connected`. Any of these conditions means "nobody can
-/// answer": the run was started non-interactively (`biorouter run` without
-/// `-s`), stdout is a structured document (`json` / `stream-json`), or stdin
-/// is not a TTY (piped/redirected). Deny-once is the only safe default; the
+/// A cliclack prompt in a headless run blocked for ~30 minutes on a keypress
+/// that could never come — or, with no terminal at all, died as the opaque
+/// `Error: not connected`. Auto-deny exactly when nobody can answer: the run
+/// was started non-interactively (`biorouter run` without `-s`), or stdin is
+/// not a TTY (piped/redirected). Deny-once is the only safe default; the
 /// denial goes back to the model as a tool error so the turn continues.
+///
+/// `interactive && stdin_is_tty` is authoritative — a structured stdout
+/// (`json` / `stream-json`) does NOT force a denial, because every piece of
+/// prompt UI (cliclack renders on stderr, the security text is `eprintln!`ed,
+/// cancel notices go to stderr in structured modes) stays off stdout, so the
+/// document remains valid while a human answers on the terminal. The
+/// `output_format` parameter is retained so the matrix test pins exactly
+/// that: format must never flip the decision.
 ///
 /// Pure (no I/O) so the full matrix is unit-testable without a pty.
 fn headless_auto_decision(
     interactive: bool,
-    output_format: &str,
+    _output_format: &str,
     stdin_is_tty: bool,
 ) -> Option<Permission> {
-    let structured_stdout = matches!(output_format, "json" | "stream-json");
-    if !interactive || structured_stdout || !stdin_is_tty {
+    if !interactive || !stdin_is_tty {
         Some(Permission::DenyOnce)
     } else {
         None
@@ -2016,34 +2027,37 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// #40: the full decision matrix for tool-confirmation prompts. The ONLY
-    /// combination that may reach the interactive cliclack prompt is a
-    /// genuinely interactive run: `-s`, human-facing output, stdin a TTY.
-    /// Everything else auto-denies so a headless run cannot block on a
-    /// keypress that will never come (the ~30-minute hang), die as
-    /// `Error: not connected`, or leak prompt text into json stdout.
+    /// #40: the full decision matrix for tool-confirmation prompts.
+    /// `interactive && stdin_is_tty` is authoritative: those runs keep the
+    /// prompt regardless of output format (all prompt UI renders on stderr,
+    /// so a structured stdout stays a valid document). Everything else
+    /// auto-denies so a headless run cannot block on a keypress that will
+    /// never come (the ~30-minute hang) or die as `Error: not connected`.
     #[test]
     fn headless_auto_decision_covers_the_full_matrix() {
-        // Interactive TTY runs keep the prompt (behavior unchanged).
-        assert_eq!(headless_auto_decision(true, "text", true), None);
+        // Interactive TTY runs keep the prompt — for EVERY output format.
+        // Structured stdout must never flip an answerable prompt into a
+        // silent denial; the prompt UI lives on stderr.
+        for output_format in ["text", "json", "stream-json"] {
+            assert_eq!(
+                headless_auto_decision(true, output_format, true),
+                None,
+                "interactive TTY must prompt, not auto-deny (format={output_format})"
+            );
+        }
 
         // Non-interactive (headless `biorouter run -t ...`): deny.
         assert_eq!(
             headless_auto_decision(false, "text", true),
             Some(Permission::DenyOnce)
         );
-        // Structured stdout: deny, whatever else claims to be interactive.
-        assert_eq!(
-            headless_auto_decision(true, "json", true),
-            Some(Permission::DenyOnce)
-        );
-        assert_eq!(
-            headless_auto_decision(true, "stream-json", true),
-            Some(Permission::DenyOnce)
-        );
-        // No TTY on stdin (piped/redirected/CI): deny.
+        // No TTY on stdin (piped/redirected/CI): deny, even if "interactive".
         assert_eq!(
             headless_auto_decision(true, "text", false),
+            Some(Permission::DenyOnce)
+        );
+        assert_eq!(
+            headless_auto_decision(true, "json", false),
             Some(Permission::DenyOnce)
         );
 
@@ -2059,10 +2073,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            headless_auto_decision(false, "json", false),
-            Some(Permission::DenyOnce)
-        );
     }
 
     /// #31: a session-store failure must gain an actionable stderr hint that
