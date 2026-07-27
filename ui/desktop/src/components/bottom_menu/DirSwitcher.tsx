@@ -8,15 +8,34 @@ interface DirSwitcherProps {
   className: string;
   sessionId: string | undefined;
   workingDir: string;
+  /**
+   * #44: the working directory is choosable only while the chat is completely
+   * empty. Once the chat has messages, the chip becomes a read-only label —
+   * basename only, full path on hover — with no chooser affordance. The
+   * backend enforces the same rule with a 409, so this is UX, not the guard.
+   */
+  locked?: boolean;
   onWorkingDirChange?: (newDir: string) => void;
   onRestartStart?: () => void;
   onRestartEnd?: () => void;
+}
+
+/**
+ * The short display name for a working directory: its basename ("Desktop" for
+ * /Users/wgu/Desktop). A filesystem root ("/", "C:\") has no basename and is
+ * shown as-is; the home directory shows its own basename (e.g. "wgu"), which
+ * stays unambiguous alongside the full path shown on hover.
+ */
+export function workingDirLabel(dir: string): string {
+  const segments = dir.split(/[/\\]+/).filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1] : dir;
 }
 
 export const DirSwitcher: React.FC<DirSwitcherProps> = ({
   className,
   sessionId,
   workingDir,
+  locked = false,
   onWorkingDirChange,
   onRestartStart,
   onRestartEnd,
@@ -81,6 +100,27 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       await handleDirectoryChange();
     }
   };
+
+  // #44: once the chat has messages the working dir is immutable — render a
+  // read-only label (basename, full path on hover) with no chooser affordance.
+  if (locked) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              data-testid="dir-switcher-locked"
+              className={`z-[100] h-7 min-w-0 rounded-md px-1 text-text-default/70 text-xs flex items-center select-none [&>svg]:size-4 ${className}`}
+            >
+              <FolderDot className="mr-0.5" size={16} />
+              <div className="max-w-[112px] min-w-0 truncate">{workingDirLabel(workingDir)}</div>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">{workingDir}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
 
   return (
     <TooltipProvider>

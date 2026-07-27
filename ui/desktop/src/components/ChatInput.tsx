@@ -1736,6 +1736,10 @@ export default function ChatInput({
             <DirSwitcher
               className="mr-0"
               sessionId={sessionId ?? undefined}
+              // #44: the working dir is choosable only while the chat is
+              // completely empty (pre-session #39 path included); the first
+              // message locks it for the session's lifetime.
+              locked={messagesLength > 0}
               workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
               onWorkingDirChange={(newDir) => {
                 setSessionWorkingDir(newDir);

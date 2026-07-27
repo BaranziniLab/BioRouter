@@ -85,10 +85,13 @@ beforeEach(() => {
   });
 });
 
-function renderChatInput(onWorkingDirChange: (dir: string) => void) {
+function renderChatInput(
+  onWorkingDirChange: (dir: string) => void,
+  { sessionId = null as string | null, messagesLength = 0 } = {}
+) {
   return render(
     <ChatInput
-      sessionId={null}
+      sessionId={sessionId}
       handleSubmit={vi.fn()}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
@@ -99,7 +102,7 @@ function renderChatInput(onWorkingDirChange: (dir: string) => void) {
       accumulatedOutputTokens={0}
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
-      messagesLength={0}
+      messagesLength={messagesLength}
       disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={onWorkingDirChange}
@@ -122,5 +125,31 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
     expect(updateWorkingDir).not.toHaveBeenCalled();
     // The chip reflects the choice locally (ChatInput's own state).
     await waitFor(() => expect(screen.getByText(CHOSEN_DIR)).toBeInTheDocument());
+  });
+});
+
+// #44 — once the chat has messages, ChatInput must render the folder chip
+// locked: a read-only basename label (full path on hover) with no chooser.
+describe('ChatInput working-directory lock once the chat has messages (#44)', () => {
+  it('renders the chip as a read-only basename label when messagesLength > 0', async () => {
+    renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 2 });
+
+    // Basename of the app-default dir ('/default/workdir' -> 'workdir'),
+    // never the interactive full-path chooser button.
+    const label = await screen.findByTestId('dir-switcher-locked');
+    expect(label).toHaveTextContent('workdir');
+    expect(screen.queryByText(DEFAULT_DIR)).not.toBeInTheDocument();
+
+    fireEvent.click(label);
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+    expect(updateWorkingDir).not.toHaveBeenCalled();
+  });
+
+  it('keeps the chip interactive for a session with zero messages', () => {
+    renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 0 });
+
+    const chip = screen.getByText(DEFAULT_DIR).closest('button');
+    expect(chip).not.toBeNull();
+    expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
   });
 });
