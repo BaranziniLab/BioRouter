@@ -22,14 +22,26 @@ function hiddenStorageKeyForSession(sessionId: string | null | undefined): strin
   return sessionId ? `${STORAGE_KEY_HIDDEN_KBS}:${sessionId}` : STORAGE_KEY_HIDDEN_KBS;
 }
 
+/**
+ * What a selection change wants to happen to the primary pointer — the mirror
+ * of the daemon's `PrimaryUpdate`. `unchanged` is what a set-only edit sends:
+ * the daemon then re-establishes "the primary is a member of the set" itself
+ * (promote to the first remaining base, or clear when none remain). Sending the
+ * current primary back on a set-only edit would instead be *rejected* the
+ * moment the user hides the primary, which is exactly when the repair matters.
+ */
+type PrimaryUpdate = { kind: 'unchanged' } | { kind: 'clear' } | { kind: 'set'; id: string };
+
 interface KnowledgeContextType {
   bases: Manifest[];
+  /** The session's knowledge bases — the one axis. Searchable, readable, usable. */
   visibleBases: Manifest[];
   loading: boolean;
-  activeKb: Manifest | null;
-  activeKbId: string | null;
+  /** The KB-less write target and the Knowledge view's subject. Always a member of visibleBases, or null. */
+  primaryKb: Manifest | null;
+  primaryKbId: string | null;
   hiddenKbIds: string[];
-  setActiveKbId: (id: string | null) => void;
+  setPrimaryKbId: (id: string | null) => void;
   setHiddenKbIds: (ids: string[]) => void;
   toggleKbHidden: (id: string) => void;
   hideAllKnowledgeBases: () => void;
@@ -54,7 +66,7 @@ export function KnowledgeProvider({
   const [loading, setLoading] = useState(true);
   const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
   const hiddenStorageKey = useMemo(() => hiddenStorageKeyForSession(sessionId), [sessionId]);
-  const [activeKbId, setActiveKbIdState] = useState<string | null>(() =>
+  const [primaryKbId, setPrimaryKbIdState] = useState<string | null>(() =>
     localStorage.getItem(storageKeyForSession(sessionId))
   );
   const [hiddenKbIds, setHiddenKbIdsState] = useState<string[]>(() => {
@@ -74,29 +86,54 @@ export function KnowledgeProvider({
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
 
   const syncSelection = useCallback(
-    (nextActiveKbId: string | null, nextHiddenKbIds: string[]) => {
-      setActiveKbIdState(nextActiveKbId);
+    (primary: PrimaryUpdate, nextHiddenKbIds: string[]) => {
+      // Optimistic: show the caller's intent now, then adopt whatever the
+      // daemon says it actually applied.
+      if (primary.kind === 'set') setPrimaryKbIdState(primary.id);
+      if (primary.kind === 'clear') setPrimaryKbIdState(null);
       setHiddenKbIdsState(nextHiddenKbIds);
-      if (nextActiveKbId) localStorage.setItem(storageKey, nextActiveKbId);
-      else localStorage.removeItem(storageKey);
+      if (primary.kind === 'set') localStorage.setItem(storageKey, primary.id);
+      if (primary.kind === 'clear') localStorage.removeItem(storageKey);
       localStorage.setItem(hiddenStorageKey, JSON.stringify(nextHiddenKbIds));
       void setActive({
         body: {
-          kb_id: nextActiveKbId,
+          primary_kb: primary.kind === 'set' ? primary.id : undefined,
+          clear_primary: primary.kind === 'clear',
           hidden_kbs: nextHiddenKbIds,
           session_id: sessionId || undefined,
         },
         throwOnError: false,
-      }).catch((err) => {
-        console.warn('setActive (server sync) failed:', err);
-      });
+      })
+        .then((res) => {
+          // The daemon owns the "primary must be a member" repair: hiding the
+          // primary promotes to the first remaining base, hiding everything
+          // clears it. Adopt its answer instead of re-implementing that rule
+          // here, where the two would silently drift apart. A rejected or
+          // failed request leaves the local state alone — treating "no data"
+          // as "no primary" would let one network hiccup erase the pointer.
+          const data = res?.data;
+          if (!data) {
+            console.warn('setActive (server sync) returned no selection:', res?.error);
+            return;
+          }
+          const applied = data.primary_kb ?? null;
+          setPrimaryKbIdState(applied);
+          if (applied) localStorage.setItem(storageKey, applied);
+          else localStorage.removeItem(storageKey);
+        })
+        .catch((err) => {
+          console.warn('setActive (server sync) failed:', err);
+        });
     },
     [hiddenStorageKey, sessionId, storageKey]
   );
 
-  const setActiveKbId = useCallback(
+  const setPrimaryKbId = useCallback(
     (id: string | null) => {
-      syncSelection(id, hiddenKbIds);
+      // The primary must be a member of the set, so making a base primary adds
+      // it to this chat in the same request — one gesture, one POST.
+      const nextHidden = id ? hiddenKbIds.filter((hiddenId) => hiddenId !== id) : hiddenKbIds;
+      syncSelection(id ? { kind: 'set', id } : { kind: 'clear' }, nextHidden);
     },
     [hiddenKbIds, syncSelection]
   );
@@ -104,9 +141,10 @@ export function KnowledgeProvider({
   const setHiddenKbIds = useCallback(
     (ids: string[]) => {
       const nextIds = Array.from(new Set(ids)).sort();
-      syncSelection(activeKbId, nextIds);
+      // A set-only edit never states a primary — see PrimaryUpdate above.
+      syncSelection({ kind: 'unchanged' }, nextIds);
     },
-    [activeKbId, syncSelection]
+    [syncSelection]
   );
 
   const toggleKbHidden = useCallback(
@@ -153,10 +191,13 @@ export function KnowledgeProvider({
   }, [refresh]);
 
   useEffect(() => {
-    if (activeKbId && bases.length > 0 && !bases.some((b) => b.id === activeKbId)) {
-      setActiveKbId(null);
+    // A primary that names a base which no longer exists is cleared, not
+    // promoted — deleting a base is destructive, so re-pointing the write
+    // target at an unrelated one is the wrong default (D2).
+    if (primaryKbId && bases.length > 0 && !bases.some((b) => b.id === primaryKbId)) {
+      setPrimaryKbId(null);
     }
-  }, [activeKbId, bases, setActiveKbId]);
+  }, [primaryKbId, bases, setPrimaryKbId]);
 
   useEffect(() => {
     const validIds = new Set(bases.map((base) => base.id));
@@ -180,7 +221,7 @@ export function KnowledgeProvider({
     } catch {
       localHidden = [];
     }
-    setActiveKbIdState(local);
+    setPrimaryKbIdState(local);
     setHiddenKbIdsState(localHidden);
     let cancelled = false;
 
@@ -191,11 +232,13 @@ export function KnowledgeProvider({
           throwOnError: true,
         });
         if (cancelled) return;
-        const server = res.data?.active_kb ?? null;
+        // `active_kb` is the deprecated mirror, read so a fresh renderer keeps
+        // working against a daemon that predates `primary_kb`.
+        const server = res.data?.primary_kb ?? res.data?.active_kb ?? null;
         const serverHidden = (res.data?.hidden_kbs ?? []).filter(
           (id): id is string => typeof id === 'string'
         );
-        setActiveKbIdState(server);
+        setPrimaryKbIdState(server);
         setHiddenKbIdsState(serverHidden);
         if (server) localStorage.setItem(storageKey, server);
         else localStorage.removeItem(storageKey);
@@ -203,7 +246,7 @@ export function KnowledgeProvider({
       } catch (err) {
         if (cancelled) return;
         console.warn('getActive (server hydrate) failed:', err);
-        setActiveKbIdState(local);
+        setPrimaryKbIdState(local);
         setHiddenKbIdsState(localHidden);
       }
     })();
@@ -212,9 +255,9 @@ export function KnowledgeProvider({
     };
   }, [hiddenStorageKey, sessionId, storageKey]);
 
-  const activeKb = useMemo(
-    () => bases.find((b) => b.id === activeKbId) ?? null,
-    [bases, activeKbId]
+  const primaryKb = useMemo(
+    () => bases.find((b) => b.id === primaryKbId) ?? null,
+    [bases, primaryKbId]
   );
   const visibleBases = useMemo(
     () => bases.filter((base) => !hiddenKbIds.includes(base.id)),
@@ -225,10 +268,10 @@ export function KnowledgeProvider({
     bases,
     visibleBases,
     loading,
-    activeKb,
-    activeKbId,
+    primaryKb,
+    primaryKbId,
     hiddenKbIds,
-    setActiveKbId,
+    setPrimaryKbId,
     setHiddenKbIds,
     toggleKbHidden,
     hideAllKnowledgeBases,
