@@ -465,13 +465,20 @@ pub(crate) enum BatchWake<T> {
 }
 
 /// Race the batch's next tool item against the turn's cancel token and the
-/// arrival of an elicitation request. Biased so a cancel always wins and an
-/// elicitation beats a tool item. Every branch is cancel-safe: `cancelled()`
-/// and `Notify::notified` re-arm losslessly, and `StreamExt::next` never
-/// drops a resolved item on a lost race.
+/// arrival of an elicitation request **for this session**. Biased so a cancel
+/// always wins and an elicitation beats a tool item. Every branch is
+/// cancel-safe: `cancelled()` and `Notify::notified` re-arm losslessly, and
+/// `StreamExt::next` never drops a resolved item on a lost race.
+///
+/// The wake is scoped by `session_id`: the manager is process-global, and an
+/// unscoped wake let ANY concurrent session's batch loop win the race, drain
+/// the request, and persist the elicitation prompt under its own session id
+/// (#40). A request scoped to another session neither wakes nor is drained
+/// by this loop.
 pub(crate) async fn next_batch_wake<T, S>(
     cancel_token: &Option<CancellationToken>,
     combined: &mut S,
+    session_id: &str,
 ) -> BatchWake<T>
 where
     S: Stream<Item = T> + Unpin,
@@ -484,7 +491,7 @@ where
                 None => std::future::pending::<()>().await,
             }
         } => BatchWake::Cancelled,
-        _ = ActionRequiredManager::global().request_arrived() => BatchWake::ElicitationReady,
+        _ = ActionRequiredManager::global().request_arrived(session_id) => BatchWake::ElicitationReady,
         item = combined.next() => BatchWake::Item(item),
     }
 }
@@ -1019,8 +1026,11 @@ impl Agent {
     async fn drain_elicitation_messages(&self, session_id: &str) -> Vec<Message> {
         let mut messages = Vec::new();
         let manager = self.config.session_manager.clone();
-        let mut elicitation_rx = ActionRequiredManager::global().request_rx.lock().await;
-        while let Ok(mut elicitation_message) = elicitation_rx.try_recv() {
+        // Only requests deliverable to THIS session (its own scope plus the
+        // unscoped fallback) — a request scoped to a concurrent session stays
+        // queued for that session's loop, so its prompt is never persisted or
+        // yielded under the wrong session id (#40).
+        for mut elicitation_message in ActionRequiredManager::global().drain_requests(session_id) {
             // #41: adopt the minted uid so the yielded copy matches the row.
             if let Err(e) = manager
                 .add_message_adopting_uid(session_id, &mut elicitation_message)
@@ -3849,6 +3859,7 @@ impl Agent {
                                         let next_item = match next_batch_wake(
                                             &cancel_token,
                                             &mut combined,
+                                            &session_config.id,
                                         )
                                         .await
                                         {
@@ -5271,6 +5282,20 @@ mod tests {
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
 
+    /// Extract the elicitation id from a queued request message.
+    fn queued_elicitation_id(messages: &[Message]) -> Option<String> {
+        use crate::conversation::message::ActionRequiredData;
+        messages.iter().find_map(|msg| {
+            msg.content.iter().find_map(|content| match content {
+                MessageContent::ActionRequired(action) => match &action.data {
+                    ActionRequiredData::Elicitation { id, .. } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+        })
+    }
+
     /// #40: an elicitation request must preempt a tool batch whose only tool
     /// is parked on that very elicitation. `combined` here is the shape of
     /// such a batch — a stream that will never yield — so if the wake still
@@ -5282,9 +5307,9 @@ mod tests {
     #[tokio::test]
     async fn elicitation_preempts_a_parked_tool_batch() {
         use crate::action_required_manager::ActionRequiredManager;
-        use crate::conversation::message::ActionRequiredData;
         use std::time::Duration;
 
+        const SESSION: &str = "preempt-test-session";
         let mut combined = futures::stream::pending::<(String, u8)>();
 
         let waiter = tokio::spawn(async {
@@ -5293,13 +5318,14 @@ mod tests {
                     "Need input".to_string(),
                     serde_json::json!({}),
                     Duration::from_secs(300),
+                    Some(SESSION),
                 )
                 .await
         });
 
         let wake = tokio::time::timeout(
             Duration::from_secs(5),
-            next_batch_wake(&None, &mut combined),
+            next_batch_wake(&None, &mut combined, SESSION),
         )
         .await
         .expect("the elicitation must preempt the parked batch");
@@ -5310,20 +5336,9 @@ mod tests {
 
         // Drain the queued request exactly as drain_elicitation_messages
         // would, then cancel it the way a headless CLI run does.
-        let id = {
-            let mut rx = ActionRequiredManager::global().request_rx.lock().await;
-            let msg = rx.try_recv().expect("the request message is queued");
-            msg.content
-                .iter()
-                .find_map(|content| match content {
-                    MessageContent::ActionRequired(action) => match &action.data {
-                        ActionRequiredData::Elicitation { id, .. } => Some(id.clone()),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .expect("the request message carries the elicitation id")
-        };
+        let drained = ActionRequiredManager::global().drain_requests(SESSION);
+        let id = queued_elicitation_id(&drained)
+            .expect("the request message carries the elicitation id");
         ActionRequiredManager::global()
             .submit_cancellation(id)
             .await
@@ -5335,6 +5350,77 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(outcome, None, "headless cancel resolves as Ok(None)");
+    }
+
+    /// #40 round 3: the wake and the drain are scoped per session. With two
+    /// concurrent daemon sessions, session B's elicitation must neither wake
+    /// session A's parked batch loop nor be drained by it — before scoping,
+    /// A's loop could win the process-global race and persist/yield B's
+    /// prompt under A's session id, leaking it to the wrong UI.
+    #[tokio::test]
+    async fn a_sessions_loop_never_drains_another_sessions_elicitation() {
+        use crate::action_required_manager::ActionRequiredManager;
+        use std::time::Duration;
+
+        const SESSION_A: &str = "two-session-test-a";
+        const SESSION_B: &str = "two-session-test-b";
+        let mut combined = futures::stream::pending::<(String, u8)>();
+
+        let waiter = tokio::spawn(async {
+            ActionRequiredManager::global()
+                .request_and_wait(
+                    "Need B's input".to_string(),
+                    serde_json::json!({}),
+                    Duration::from_secs(300),
+                    Some(SESSION_B),
+                )
+                .await
+        });
+
+        // Synchronize on the request being queued via B's own wake seam.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ActionRequiredManager::global().request_arrived(SESSION_B),
+        )
+        .await
+        .expect("the owning session must be woken");
+
+        // Session A's batch loop: B's request must NOT preempt it — the only
+        // way out of this race within the timeout would be the elicitation
+        // wake, and it must stay parked.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(300),
+                next_batch_wake::<(String, u8), _>(&None, &mut combined, SESSION_A),
+            )
+            .await
+            .is_err(),
+            "session A's loop must not be woken by session B's elicitation"
+        );
+
+        // Even an unconditional drain by A (the post-item / post-batch drains
+        // in the reply loop) must not surface B's request.
+        let drained_by_a = ActionRequiredManager::global().drain_requests(SESSION_A);
+        assert!(
+            queued_elicitation_id(&drained_by_a).is_none(),
+            "session A's drain must never return session B's request"
+        );
+
+        // The request is still intact for B's own loop, which can drain and
+        // cancel it as usual.
+        let drained_by_b = ActionRequiredManager::global().drain_requests(SESSION_B);
+        let id = queued_elicitation_id(&drained_by_b)
+            .expect("session B's request must still be deliverable to B");
+        ActionRequiredManager::global()
+            .submit_cancellation(id)
+            .await
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancel must unpark the waiter")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, None);
     }
 
     fn confirmation(permission: Permission) -> PermissionConfirmation {

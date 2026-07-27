@@ -60,6 +60,79 @@ pub type McpClientBox = Arc<dyn McpClientTrait>;
 /// process (the isolation core of the SharedMcpPool).
 type ProgressRoutes = Arc<Mutex<HashMap<String, Sender<ServerNotification>>>>;
 
+/// The session ids with an in-flight `call_tool` on this client connection —
+/// a multiset, one entry per in-flight call. Shared between the [`McpClient`]
+/// (whose `call_tool` records each dispatch for its duration) and its
+/// [`BioRouterClient`] handler, so a server-initiated elicitation raised
+/// mid-call can be attributed to the session actually running a tool on this
+/// connection (#40): the `ActionRequiredManager` then delivers the request
+/// ONLY to that session's agent loop, instead of letting whichever concurrent
+/// session wins the wake-up race persist the prompt under its own session id.
+/// A `std::sync::Mutex` so the RAII guard can clean up in `Drop` (a cancelled
+/// dispatch drops the `call_tool` future without reaching any `.await`).
+type ActiveCallSessions = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// RAII entry in [`ActiveCallSessions`]: registers the dispatching session on
+/// creation, removes ONE occurrence on drop — including when the `call_tool`
+/// future is dropped mid-await by a cancellation.
+struct ActiveCallGuard {
+    sessions: ActiveCallSessions,
+    session_id: String,
+}
+
+impl ActiveCallGuard {
+    fn register(sessions: &ActiveCallSessions, session_id: &str) -> Self {
+        sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(session_id.to_string());
+        Self {
+            sessions: sessions.clone(),
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+impl Drop for ActiveCallGuard {
+    fn drop(&mut self) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pos) = sessions.iter().position(|s| s == &self.session_id) {
+            sessions.swap_remove(pos);
+        }
+    }
+}
+
+/// The session an incoming elicitation request belongs to (#40).
+///
+/// MCP gives an elicitation no linkage to the tool call that raised it, so
+/// attribution is inferred:
+/// 1. a server that echoes the `biorouter-session-id` meta we attach to every
+///    call is believed exactly;
+/// 2. otherwise, if every in-flight tool call on this connection belongs to
+///    ONE session, it must be that session's;
+/// 3. otherwise (`None`) — no in-flight call, or a shared pooled client
+///    running calls for several sessions at once — the request goes out
+///    unscoped, deliverable by any session's loop (the pre-scoping behavior,
+///    kept so it still surfaces instead of timing out silently).
+fn elicitation_session_scope(meta: &Meta, active: &ActiveCallSessions) -> Option<String> {
+    if let Some(Value::String(session_id)) = meta
+        .0
+        .iter()
+        .find_map(|(k, v)| k.eq_ignore_ascii_case(SESSION_ID_HEADER).then_some(v))
+    {
+        return Some(session_id.clone());
+    }
+    let sessions = active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ids = sessions.iter();
+    let first = ids.next()?;
+    ids.all(|s| s == first).then(|| first.clone())
+}
+
 #[derive(Clone, Debug)]
 pub struct McpMeta {
     pub session_id: String,
@@ -184,6 +257,9 @@ pub struct BioRouterClient {
     /// cannot be attributed to a registered progress token is DROPPED rather than
     /// broadcast, so one session never sees another's progress/log stream.
     routed_only: bool,
+    /// Sessions with an in-flight `call_tool` on this connection, for
+    /// attributing server-initiated elicitations to their session (#40).
+    active_call_sessions: ActiveCallSessions,
     provider: SharedProvider,
 }
 
@@ -196,6 +272,7 @@ impl BioRouterClient {
             handlers,
             Arc::new(Mutex::new(HashMap::new())),
             false,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
             provider,
         )
     }
@@ -204,12 +281,14 @@ impl BioRouterClient {
         handlers: Arc<Mutex<Vec<Sender<ServerNotification>>>>,
         progress_routes: ProgressRoutes,
         routed_only: bool,
+        active_call_sessions: ActiveCallSessions,
         provider: SharedProvider,
     ) -> Self {
         BioRouterClient {
             notification_handlers: handlers,
             progress_routes,
             routed_only,
+            active_call_sessions,
             provider,
         }
     }
@@ -356,7 +435,7 @@ impl ClientHandler for BioRouterClient {
     async fn create_elicitation(
         &self,
         request: CreateElicitationRequestParams,
-        _context: RequestContext<RoleClient>,
+        context: RequestContext<RoleClient>,
     ) -> Result<CreateElicitationResult, ErrorData> {
         let schema_value = serde_json::to_value(&request.requested_schema).map_err(|e| {
             ErrorData::new(
@@ -366,11 +445,17 @@ impl ClientHandler for BioRouterClient {
             )
         })?;
 
+        // #40: attribute the request to the session whose tool call raised
+        // it, so the ActionRequiredManager delivers the prompt to THAT
+        // session's loop only — never to a concurrent session's UI.
+        let session_scope = elicitation_session_scope(&context.meta, &self.active_call_sessions);
+
         ActionRequiredManager::global()
             .request_and_wait(
                 request.message.clone(),
                 schema_value,
                 Duration::from_secs(300),
+                session_scope.as_deref(),
             )
             .await
             .map(|outcome| match outcome {
@@ -422,6 +507,9 @@ pub struct McpClient {
     notification_subscribers: Arc<Mutex<Vec<mpsc::Sender<ServerNotification>>>>,
     /// Per-dispatch progress-token routes (shared with the `BioRouterClient`).
     progress_routes: ProgressRoutes,
+    /// In-flight `call_tool` session ids (shared with the `BioRouterClient`),
+    /// for attributing server-initiated elicitations to their session (#40).
+    active_call_sessions: ActiveCallSessions,
     /// When true, this client is shared across sessions (via a SharedMcpPool) and
     /// notifications are routed per-dispatch instead of broadcast.
     routed_only: bool,
@@ -465,11 +553,13 @@ impl McpClient {
         let notification_subscribers =
             Arc::new(Mutex::new(Vec::<mpsc::Sender<ServerNotification>>::new()));
         let progress_routes: ProgressRoutes = Arc::new(Mutex::new(HashMap::new()));
+        let active_call_sessions: ActiveCallSessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let client = BioRouterClient::with_routing(
             notification_subscribers.clone(),
             progress_routes.clone(),
             routed_only,
+            active_call_sessions.clone(),
             provider,
         );
         let client: rmcp::service::RunningService<rmcp::RoleClient, BioRouterClient> =
@@ -480,6 +570,7 @@ impl McpClient {
             client: Mutex::new(client),
             notification_subscribers,
             progress_routes,
+            active_call_sessions,
             routed_only,
             next_token: AtomicU64::new(0),
             healthy: Arc::new(AtomicBool::new(true)),
@@ -661,6 +752,11 @@ impl McpClientTrait for McpClient {
         // Remember the per-dispatch progress route so we can clean it up after the
         // call completes (or errors), regardless of outcome.
         let progress_token = meta.progress_token.clone();
+        // #40: record which session this call belongs to for the duration of
+        // the dispatch, so an elicitation the server raises mid-call can be
+        // attributed to it (see `elicitation_session_scope`). RAII: the guard
+        // also unregisters when a cancellation drops this future mid-await.
+        let _active_call = ActiveCallGuard::register(&self.active_call_sessions, &meta.session_id);
         let res = self
             .send_request(
                 ClientRequest::CallToolRequest(CallToolRequest {
@@ -824,6 +920,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             routes.clone(),
             true,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
             empty_provider(),
         );
 
@@ -859,6 +956,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             routes,
             true,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
             empty_provider(),
         );
 
@@ -887,6 +985,7 @@ mod tests {
             subscribers,
             Arc::new(Mutex::new(HashMap::new())),
             false,
+            Arc::new(std::sync::Mutex::new(Vec::new())),
             empty_provider(),
         );
 
@@ -1011,5 +1110,74 @@ mod tests {
             );
         })
         .await;
+    }
+
+    fn active(sessions: &[&str]) -> ActiveCallSessions {
+        Arc::new(std::sync::Mutex::new(
+            sessions.iter().map(|s| s.to_string()).collect(),
+        ))
+    }
+
+    /// #40: how an incoming elicitation is attributed to a session. The
+    /// scope decides which agent loop the ActionRequiredManager may deliver
+    /// the prompt to, so a wrong `Some` here would leak the prompt into
+    /// another session's UI — ambiguity must yield `None` (unscoped), never
+    /// a guess.
+    #[test]
+    fn elicitation_scope_attribution_matrix() {
+        let meta = Meta::default();
+
+        // No in-flight call: nothing to attribute.
+        assert_eq!(elicitation_session_scope(&meta, &active(&[])), None);
+        // Exactly one in-flight call: unambiguous.
+        assert_eq!(
+            elicitation_session_scope(&meta, &active(&["sess-a"])),
+            Some("sess-a".to_string())
+        );
+        // Several in-flight calls, all one session (parallel tools in one
+        // batch): still unambiguous.
+        assert_eq!(
+            elicitation_session_scope(&meta, &active(&["sess-a", "sess-a"])),
+            Some("sess-a".to_string())
+        );
+        // A shared pooled client running calls for TWO sessions at once:
+        // ambiguous, must fall back to unscoped rather than guess.
+        assert_eq!(
+            elicitation_session_scope(&meta, &active(&["sess-a", "sess-b"])),
+            None
+        );
+    }
+
+    /// A server that echoes the `biorouter-session-id` meta we attach to
+    /// every call is believed exactly — even over ambiguous in-flight state.
+    #[test]
+    fn elicitation_scope_prefers_an_echoed_session_meta() {
+        let mut meta_map = rmcp::model::JsonObject::new();
+        meta_map.insert(
+            SESSION_ID_HEADER.to_string(),
+            Value::String("sess-echoed".to_string()),
+        );
+        let meta = Meta(meta_map);
+        assert_eq!(
+            elicitation_session_scope(&meta, &active(&["sess-a", "sess-b"])),
+            Some("sess-echoed".to_string())
+        );
+    }
+
+    /// The RAII guard must unregister its session even when the `call_tool`
+    /// future is dropped mid-await by a cancellation — a leaked entry would
+    /// mis-attribute every later elicitation on this connection.
+    #[test]
+    fn active_call_guard_unregisters_on_drop() {
+        let sessions = active(&[]);
+        {
+            let _a = ActiveCallGuard::register(&sessions, "sess-a");
+            let _b = ActiveCallGuard::register(&sessions, "sess-a");
+            assert_eq!(sessions.lock().unwrap().len(), 2);
+        }
+        assert!(
+            sessions.lock().unwrap().is_empty(),
+            "dropping the guards must remove exactly their entries"
+        );
     }
 }
