@@ -40,10 +40,8 @@ impl Agent {
             .filter(|v: &Vec<String>| !v.is_empty())
             .unwrap_or_else(|| vec![session.id.clone()]);
 
-        // Resolve target KB: explicit id → new-by-name → active.
-        let kb_id = self
-            .resolve_target_kb(&svc, &arguments)
-            .map_err(invalid_params)?;
+        // Resolve target KB: explicit id → new-by-name → this session's primary.
+        let kb_id = resolve_target_kb(&svc, &arguments, &session.id).map_err(invalid_params)?;
 
         // Load the sessions (with messages).
         let mut sessions = Vec::new();
@@ -78,52 +76,13 @@ impl Agent {
         .await
         .map_err(internal)?;
 
-        Ok(vec![Content::text(format!(
-            "Ingested {} conversation(s) into knowledge base '{}'. \
-             Source id: {}, commit: {}, sub-agent steps: {}.",
+        Ok(vec![Content::text(ingest_summary(
             session_ids.len(),
-            kb_id,
-            result.source_id,
-            result.commit_sha.chars().take(8).collect::<String>(),
-            result.steps
+            &kb_id,
+            &result.source_id,
+            &result.commit_sha,
+            result.steps,
         ))])
-    }
-
-    /// Resolve which KB to ingest into. Creates a new KB when `new_kb_name` is
-    /// given; otherwise uses `kb_id`, else the active KB.
-    fn resolve_target_kb(
-        &self,
-        svc: &KnowledgeService,
-        arguments: &Value,
-    ) -> anyhow::Result<String> {
-        if let Some(name) = arguments.get("new_kb_name").and_then(|v| v.as_str()) {
-            let name = name.trim();
-            if name.is_empty() {
-                anyhow::bail!("new_kb_name cannot be empty");
-            }
-            let id = slugify_kb_name(name);
-            if id.is_empty() {
-                anyhow::bail!("new_kb_name must contain letters or numbers");
-            }
-            // Create only if it does not already exist.
-            if !svc.list_bases()?.iter().any(|b| b.id == id) {
-                svc.create_base(&id, name, None)?;
-            }
-            return Ok(id);
-        }
-        if let Some(id) = arguments.get("kb_id").and_then(|v| v.as_str()) {
-            let id = id.trim();
-            if !svc.list_bases()?.iter().any(|b| b.id == id) {
-                anyhow::bail!("knowledge base '{id}' does not exist");
-            }
-            return Ok(id.to_string());
-        }
-        if let Some(active) = svc.get_primary_persisted()? {
-            return Ok(active);
-        }
-        anyhow::bail!(
-            "no target knowledge base: pass kb_id, new_kb_name, or set an active knowledge base first"
-        )
     }
 
     async fn conversation_ingest_completer(
@@ -150,6 +109,71 @@ impl Agent {
         })?;
         Ok(Box::new(ProviderCompleter::new(provider)))
     }
+}
+
+/// Resolve which KB a conversation ingest targets: `new_kb_name` creates one,
+/// else an explicit `kb_id`, else **this session's primary**.
+///
+/// It must be the session's primary, not the machine-wide pointer: every other
+/// surface writes session-scoped state, so reading the machine default here
+/// sent a workflow/Meditation session's transcript into an unrelated base.
+pub(crate) fn resolve_target_kb(
+    svc: &KnowledgeService,
+    arguments: &Value,
+    session_id: &str,
+) -> anyhow::Result<String> {
+    if let Some(name) = arguments.get("new_kb_name").and_then(|v| v.as_str()) {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("new_kb_name cannot be empty");
+        }
+        let id = slugify_kb_name(name);
+        if id.is_empty() {
+            anyhow::bail!("new_kb_name must contain letters or numbers");
+        }
+        if !svc.list_bases()?.iter().any(|b| b.id == id) {
+            svc.create_base(&id, name, None)?;
+        }
+        return Ok(id);
+    }
+    if let Some(id) = arguments.get("kb_id").and_then(|v| v.as_str()) {
+        let id = id.trim();
+        if !svc.list_bases()?.iter().any(|b| b.id == id) {
+            anyhow::bail!("knowledge base '{id}' does not exist");
+        }
+        return Ok(id.to_string());
+    }
+    if let Some(primary) = svc.primary_for_session(Some(session_id))? {
+        return Ok(primary);
+    }
+    let ids = svc.session_kb_ids(Some(session_id))?;
+    if ids.is_empty() {
+        anyhow::bail!(
+            "no target knowledge base: this chat has none. Pass new_kb_name to create one, \
+             or kb_id to name an existing base."
+        );
+    }
+    anyhow::bail!(
+        "no target knowledge base: pass kb_id (one of: {}) or new_kb_name, or call \
+         kb_set_active to make one of them this chat's primary.",
+        ids.join(", ")
+    )
+}
+
+/// The success text for a conversation ingest. A KB-less write resolves its
+/// target silently, so the result must name the base it landed in.
+fn ingest_summary(
+    session_count: usize,
+    kb_id: &str,
+    source_id: &str,
+    commit_sha: &str,
+    steps: usize,
+) -> String {
+    format!(
+        "Ingested {session_count} conversation(s) into knowledge base '{kb_id}'. \
+         Source id: {source_id}, commit: {}, sub-agent steps: {steps}.",
+        commit_sha.chars().take(8).collect::<String>()
+    )
 }
 
 fn should_use_knowledge_default_model(session: &Session) -> bool {
@@ -196,9 +220,54 @@ fn invalid_params(e: impl std::fmt::Display) -> ErrorData {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_use_knowledge_default_model, slugify_kb_name};
+    use super::{
+        ingest_summary, resolve_target_kb, should_use_knowledge_default_model, slugify_kb_name,
+    };
     use crate::session::session_manager::{Session, SessionType};
+    use biorouter_mcp::knowledge::service::KnowledgeService;
     use std::path::PathBuf;
+
+    /// Pre-existing bug: the KB-less target came from the **machine-wide**
+    /// `.active-kb`, while every other surface — the chat chip, kb_set_active,
+    /// workflows, the apps platform — writes session-scoped state. A
+    /// Meditation/workflow session whose KB was set per session therefore
+    /// ingested into whatever the machine happened to point at.
+    #[test]
+    fn resolve_target_kb_uses_the_session_primary_not_the_machine_default() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("machine-kb", "Machine", None)?;
+        svc.create_base("session-kb", "Session", None)?;
+        svc.set_primary_persisted(Some("machine-kb"))?;
+        svc.set_primary_for_session("chat-1", Some("session-kb"))?;
+
+        let args = serde_json::json!({});
+        assert_eq!(resolve_target_kb(&svc, &args, "chat-1")?, "session-kb");
+        assert_eq!(
+            resolve_target_kb(&svc, &args, "chat-2")?,
+            "machine-kb",
+            "a chat that never chose one still inherits the machine pointer"
+        );
+
+        svc.set_primary_persisted(None)?;
+        let err = resolve_target_kb(&svc, &args, "chat-9")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("machine-kb, session-kb") && err.contains("kb_id"),
+            "the error must list the candidates and the fix, got: {err}"
+        );
+        Ok(())
+    }
+
+    /// A KB-less write must name the base it wrote to, in the text the model
+    /// and the user both read.
+    #[test]
+    fn ingest_summary_names_the_target_base() {
+        let summary = ingest_summary(2, "my-kb", "src-1", "abcdef1234567890", 7);
+        assert!(summary.contains("'my-kb'"), "got: {summary}");
+        assert!(summary.contains("abcdef12") && !summary.contains("abcdef123"));
+    }
 
     #[test]
     fn slugify_produces_valid_ids() {

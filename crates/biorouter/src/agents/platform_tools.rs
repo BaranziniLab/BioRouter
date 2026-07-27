@@ -67,7 +67,9 @@ pub fn ingest_conversation_tool() -> Tool {
               - `kb_id`: ingest into an existing knowledge base, or
               - `new_kb_name`: create a new knowledge base with this display name
                 and ingest into it.
-            If neither is given, the currently active knowledge base is used.
+            If neither is given it uses this chat's primary knowledge base, and
+            the result names the base it wrote to. If the chat has no primary,
+            the error lists the bases you can pass as `kb_id`.
         "#}
         .to_string(),
         object!({
