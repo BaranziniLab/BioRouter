@@ -1525,32 +1525,7 @@ impl ExtensionManager {
         let mut output_parts = vec![];
 
         // First get disabled extensions from current config
-        let mut disabled_extensions: Vec<String> = vec![];
-        for extension in get_all_extensions() {
-            if !extension.enabled {
-                let config = extension.config.clone();
-                let description = match &config {
-                    ExtensionConfig::Builtin {
-                        description,
-                        display_name,
-                        ..
-                    } => {
-                        if description.is_empty() {
-                            display_name.as_deref().unwrap_or("Built-in extension")
-                        } else {
-                            description
-                        }
-                    }
-                    ExtensionConfig::Sse { .. } => "SSE extension (unsupported)",
-                    ExtensionConfig::Platform { description, .. }
-                    | ExtensionConfig::StreamableHttp { description, .. }
-                    | ExtensionConfig::Stdio { description, .. }
-                    | ExtensionConfig::Frontend { description, .. }
-                    | ExtensionConfig::InlinePython { description, .. } => description,
-                };
-                disabled_extensions.push(format!("- {} - {}", config.name(), description));
-            }
-        }
+        let disabled_extensions = config_disabled_extension_lines(&get_all_extensions());
 
         // Get currently enabled extensions that can be disabled
         let enabled_extensions: Vec<String> =
@@ -1559,7 +1534,7 @@ impl ExtensionManager {
         // Build output string
         if !disabled_extensions.is_empty() {
             output_parts.push(format!(
-                "Extensions available to enable:\n{}\n",
+                "Extensions disabled in the config:\n{}\n",
                 disabled_extensions.join("\n")
             ));
         } else {
@@ -1640,6 +1615,51 @@ impl ExtensionManager {
 
         Some(content)
     }
+}
+
+/// Label appended to every config-disabled entry in
+/// `search_available_extensions` output (#42): these extensions were turned
+/// off by the operator, so the model must not treat the listing as an
+/// invitation to enable them on its own (`manage_extensions` refuses anyway —
+/// see `extension_manager_extension::check_enable_allowed`).
+pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user — do not enable without asking)";
+
+/// One listing line per config-disabled extension, each carrying
+/// [`CONFIG_DISABLED_LABEL`]. Pure so the labeling is unit-testable without a
+/// global config.
+fn config_disabled_extension_lines(entries: &[crate::config::ExtensionEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|extension| !extension.enabled)
+        .map(|extension| {
+            let config = &extension.config;
+            let description = match config {
+                ExtensionConfig::Builtin {
+                    description,
+                    display_name,
+                    ..
+                } => {
+                    if description.is_empty() {
+                        display_name.as_deref().unwrap_or("Built-in extension")
+                    } else {
+                        description
+                    }
+                }
+                ExtensionConfig::Sse { .. } => "SSE extension (unsupported)",
+                ExtensionConfig::Platform { description, .. }
+                | ExtensionConfig::StreamableHttp { description, .. }
+                | ExtensionConfig::Stdio { description, .. }
+                | ExtensionConfig::Frontend { description, .. }
+                | ExtensionConfig::InlinePython { description, .. } => description,
+            };
+            format!(
+                "- {} - {} {}",
+                config.name(),
+                description,
+                CONFIG_DISABLED_LABEL
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2562,5 +2582,69 @@ mod tests {
 
         assert!(tool_names.iter().any(|n| n.starts_with("ext_a__")));
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_b__")));
+    }
+
+    // #42 hardening: config-disabled entries in search_available_extensions
+    // output must be labeled so the model doesn't treat the listing as an
+    // invitation to silently re-enable what the operator turned off.
+    #[test]
+    fn config_disabled_lines_label_every_disabled_entry_and_skip_enabled_ones() {
+        use crate::config::ExtensionEntry;
+
+        let entries = vec![
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::Builtin {
+                    name: "developer".to_string(),
+                    display_name: Some("Developer".to_string()),
+                    description: String::new(),
+                    timeout: None,
+                    bundled: Some(true),
+                    available_tools: vec![],
+                },
+            },
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("running", "cmd", "An enabled one", 30_u64),
+            },
+            ExtensionEntry {
+                enabled: false,
+                config: ExtensionConfig::stdio("custom", "cmd", "A custom server", 30_u64),
+            },
+        ];
+
+        let lines = config_disabled_extension_lines(&entries);
+        assert_eq!(lines.len(), 2, "enabled entries must not be listed");
+        assert!(
+            lines.iter().all(|l| l.contains(CONFIG_DISABLED_LABEL)),
+            "every config-disabled entry must carry the label: {lines:?}"
+        );
+        // Empty Builtin description falls back to the display name.
+        assert!(
+            lines[0].starts_with("- developer - Developer "),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with("- custom - A custom server "),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("running")),
+            "enabled extension leaked into the disabled list: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn config_disabled_lines_empty_when_everything_is_enabled() {
+        use crate::config::ExtensionEntry;
+
+        let entries = vec![ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::default(),
+        }];
+        assert!(config_disabled_extension_lines(&entries).is_empty());
+        assert!(config_disabled_extension_lines(&[]).is_empty());
     }
 }
