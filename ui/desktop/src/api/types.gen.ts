@@ -28,8 +28,20 @@ export type ActionRequiredData = {
 };
 
 export type ActiveKbResponse = {
+    /**
+     * Deprecated mirror of `primary_kb`.
+     */
     active_kb?: string | null;
     hidden_kbs: Array<string>;
+    /**
+     * The session's knowledge bases, sorted. Every one is searchable and
+     * readable; there is no narrower "active" list.
+     */
+    kb_ids: Array<string>;
+    /**
+     * The KB-less write target. Always a member of `kb_ids`, or `null`.
+     */
+    primary_kb?: string | null;
 };
 
 /**
@@ -1581,11 +1593,27 @@ export type SessionsQuery = {
 };
 
 export type SetActiveBody = {
+    /**
+     * Forget the primary. Wins over `primary_kb`.
+     */
+    clear_primary?: boolean;
+    /**
+     * Replace this scope's hidden list — i.e. redefine the session's set.
+     * Omit to leave the set alone. `[]` is an explicit "hide nothing here",
+     * not a request to inherit the machine-wide list.
+     */
     hidden_kbs?: Array<string> | null;
     /**
-     * `None` clears the active KB.
+     * Deprecated alias for `primary_kb`, kept for one release so a stale
+     * renderer bundle talking to a fresh daemon keeps working.
      */
     kb_id?: string | null;
+    /**
+     * Make this base the session's primary — the KB-less write target. It
+     * must be a member of the **resulting** set, so `hidden_kbs` in the same
+     * body is applied first. Omit to leave the pointer alone.
+     */
+    primary_kb?: string | null;
     session_id?: string | null;
 };
 
@@ -3349,7 +3377,7 @@ export type GetActiveData = {
     path?: never;
     query?: {
         /**
-         * Optional chat session id for session-scoped active KB selection
+         * Optional chat session id for the session-scoped selection
          */
         session_id?: string | null;
     };
@@ -3358,7 +3386,7 @@ export type GetActiveData = {
 
 export type GetActiveResponses = {
     /**
-     * Current active KB id
+     * The session's knowledge bases and its primary
      */
     200: ActiveKbResponse;
 };
@@ -3374,14 +3402,14 @@ export type SetActiveData = {
 
 export type SetActiveErrors = {
     /**
-     * Invalid kb id
+     * Unknown kb id, or a primary outside the resulting set
      */
     400: unknown;
 };
 
 export type SetActiveResponses = {
     /**
-     * Set successfully
+     * The resulting selection
      */
     200: ActiveKbResponse;
 };
