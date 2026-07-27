@@ -49,6 +49,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 const MESSAGES_FTS_INSERT: &str =
     "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
 
+/// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
+/// violation (SQLite error 2067) from the message insert — the one failure
+/// [`SessionStorage::add_message`] recovers from by re-minting the uid (#41).
+/// Scoped to the msg_uid index by message text so an unrelated unique
+/// violation still surfaces as an error.
+fn is_msg_uid_unique_violation(err: &anyhow::Error) -> bool {
+    match err.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::Database(db_err)) => {
+            db_err.is_unique_violation() && db_err.message().contains("messages.msg_uid")
+        }
+        _ => false,
+    }
+}
+
 /// Whether a stored message should be indexed for recall. Recall searches what
 /// the *user* saw, so only `user_visible` messages are indexed. A row with no
 /// (or unparseable) metadata predates the flag and defaults to visible.
@@ -2927,13 +2941,45 @@ impl SessionStorage {
         // response); the transaction covers the message row, blob spill and
         // FTS index write, so it is a plausible per-tool-call fixed cost.
         let _phase = crate::agents::phase_timing::Phase::start("session.add_message");
+
+        // Persist the message's stable id, minting a fresh UUIDv7 when the
+        // caller didn't supply one (BR-45).
+        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
+        match self.insert_message(session_id, message, &msg_uid).await {
+            // #41 resilience: a caller-supplied id that already exists in this
+            // session (an id-reuse bug upstream — a decoder stamping one shared
+            // id on several messages) must degrade to a logged anomaly with a
+            // re-minted uid, not abort the whole turn. Retried exactly once
+            // with a freshly minted UUIDv7, which cannot collide again.
+            Err(err) if is_msg_uid_unique_violation(&err) => {
+                let fresh_uid = new_message_id();
+                warn!(
+                    session_id,
+                    old_uid = %msg_uid,
+                    new_uid = %fresh_uid,
+                    "message uid already exists in this session; retrying the \
+                     insert with a re-minted uid instead of failing the turn"
+                );
+                self.insert_message(session_id, message, &fresh_uid).await
+            }
+            result => result,
+        }
+    }
+
+    /// One attempt at the transactional message insert (row + blob spill +
+    /// FTS index + session touch), with an explicit `msg_uid`. Split out of
+    /// [`Self::add_message`] so a uid collision can be retried with a fresh
+    /// uid on a clean transaction.
+    async fn insert_message(
+        &self,
+        session_id: &str,
+        message: &Message,
+        msg_uid: &str,
+    ) -> Result<()> {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
-        // Persist the message's stable id, minting a fresh UUIDv7 when the
-        // caller didn't supply one (BR-45).
-        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
         // BR-7: lift an oversized tool-result payload into the blob side table
         // so the `messages` row stays small. `None` (the common case) stores the
@@ -7539,6 +7585,70 @@ mod tests {
         let new_id = &after_ids[4];
         assert!(!new_id.starts_with("msg_"));
         assert!(!before.contains(new_id));
+    }
+
+    /// #41 resilience: inserting a message whose caller-supplied id already
+    /// exists in the session must NOT abort — the store re-mints the uid and
+    /// keeps both rows. Before this, the duplicate hit
+    /// `UNIQUE(session_id, msg_uid)` (SQLite 2067) and the whole turn died.
+    #[tokio::test]
+    async fn add_message_reminting_recovers_from_a_duplicate_uid() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/dup_uid"),
+                "Dup uid".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        sm.add_message(&session.id, &amsg(now, "first").with_id("shared-uid"))
+            .await
+            .unwrap();
+        // The forced duplicate: same session, same caller-supplied id.
+        sm.add_message(&session.id, &amsg(now + 1, "second").with_id("shared-uid"))
+            .await
+            .expect("a duplicate uid must be re-minted, not abort the turn");
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let messages = loaded.conversation.unwrap();
+        assert_eq!(messages.len(), 2, "both messages must be persisted");
+        let ids: Vec<String> = messages
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(ids[0], "shared-uid", "the first insert keeps its id");
+        assert_ne!(ids[1], "shared-uid", "the second insert was re-minted");
+        let texts: Vec<String> = messages
+            .messages()
+            .iter()
+            .map(Message::as_concat_text)
+            .collect();
+        assert_eq!(texts, vec!["first", "second"]);
+
+        // An id duplicated across DIFFERENT sessions is fine and untouched.
+        let other = sm
+            .create_session(
+                PathBuf::from("/tmp/dup_uid2"),
+                "Other".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&other.id, &amsg(now + 2, "elsewhere").with_id("shared-uid"))
+            .await
+            .unwrap();
+        let other_loaded = sm.get_session(&other.id, true).await.unwrap();
+        assert_eq!(
+            other_loaded.conversation.unwrap().messages()[0]
+                .id
+                .as_deref(),
+            Some("shared-uid")
+        );
     }
 
     #[tokio::test]
