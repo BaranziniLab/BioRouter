@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isTerminalFocused,
+  registerCloseTerminalPane,
   registerNewTerminalPane,
+  requestCloseTerminalPane,
   requestNewTerminalPane,
+  resetCloseTerminalPaneRegistry,
   resetNewTerminalPaneRegistry,
 } from './terminalFocus';
 
@@ -89,6 +92,63 @@ describe('new-terminal-pane registry', () => {
     const a = vi.fn();
     const disposeA = registerNewTerminalPane(a);
     disposeA();
+    expect(requestNewTerminalPane()).toBe(false);
+  });
+});
+
+describe('close-terminal-pane registry (issue #21 — the Cmd+W mirror)', () => {
+  beforeEach(() => resetCloseTerminalPaneRegistry());
+  afterEach(() => resetCloseTerminalPaneRegistry());
+
+  it('returns false when no terminal has registered (fall through to the chat tab)', () => {
+    expect(requestCloseTerminalPane()).toBe(false);
+  });
+
+  it('calls the registered handler and reports its claim', () => {
+    const closePane = vi.fn(() => true);
+    registerCloseTerminalPane(closePane);
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closePane).toHaveBeenCalledTimes(1);
+  });
+
+  it('a handler may DECLINE (no active pane) and the request falls through', () => {
+    registerCloseTerminalPane(() => false);
+    expect(requestCloseTerminalPane()).toBe(false);
+  });
+
+  it('last registration wins — the visible dock owns the gesture', () => {
+    const first = vi.fn(() => true);
+    const second = vi.fn(() => true);
+    registerCloseTerminalPane(first);
+    registerCloseTerminalPane(second);
+    requestCloseTerminalPane();
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposing clears only if still the installed handler (StrictMode-safe)', () => {
+    const a = vi.fn(() => true);
+    const b = vi.fn(() => true);
+    const disposeA = registerCloseTerminalPane(a);
+    registerCloseTerminalPane(b); // B mounts before A disposes
+    disposeA(); // must NOT clear B
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(a).not.toHaveBeenCalled();
+  });
+
+  it('disposing the current handler empties the registry', () => {
+    const a = vi.fn(() => true);
+    const disposeA = registerCloseTerminalPane(a);
+    disposeA();
+    expect(requestCloseTerminalPane()).toBe(false);
+  });
+
+  it('is independent of the new-pane registry — one never answers for the other', () => {
+    registerNewTerminalPane(vi.fn());
+    expect(requestCloseTerminalPane()).toBe(false);
+    resetNewTerminalPaneRegistry();
+    registerCloseTerminalPane(vi.fn(() => true));
     expect(requestNewTerminalPane()).toBe(false);
   });
 });

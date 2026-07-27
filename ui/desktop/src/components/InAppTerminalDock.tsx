@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, Terminal as TerminalIcon, X } from './icons/app-icons';
 import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
-import { registerNewTerminalPane } from '../utils/terminalFocus';
+import { registerCloseTerminalPane, registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
 
@@ -78,9 +78,6 @@ const TERMINAL_FONT =
   'ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_SIZE = 13;
 const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13/20
-
-
-
 
 /**
  * Terminal palettes, keyed by family then resolved mode — GENERATED.
@@ -403,6 +400,25 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     if (!open) return;
     return registerNewTerminalPane(addPane);
   }, [open, addPane]);
+
+  // …and the "close terminal pane" gesture (issue #21): focus-aware Cmd+W
+  // closes the focused PANE here instead of the chat tab. The ref keeps the
+  // registration stable across pane switches; closing the last pane flows
+  // through pendingDockCloseRef -> onEmptied above, so no extra teardown is
+  // needed — the dock disposes, the registry disposer runs, and the NEXT Cmd+W
+  // falls through to the chat tab.
+  const activePaneIdRef = useRef<string | null>(null);
+  activePaneIdRef.current = activePaneId;
+
+  useEffect(() => {
+    if (!open) return;
+    return registerCloseTerminalPane(() => {
+      const paneId = activePaneIdRef.current;
+      if (!paneId) return false;
+      closePane(paneId);
+      return true;
+    });
+  }, [open, closePane]);
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
