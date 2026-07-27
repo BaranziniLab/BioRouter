@@ -1064,6 +1064,45 @@ impl CliSession {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
                             if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
+                                // #40: a confirmation prompt cannot be answered in a
+                                // headless/structured/pipe run — cliclack would pollute
+                                // stdout and block ~forever (or die as the opaque
+                                // 'Error: not connected'). Auto-deny on stderr and hand
+                                // the denial to the agent so the TURN CONTINUES and
+                                // json-mode stdout stays a valid document.
+                                if let Some(permission) = headless_auto_decision(
+                                    interactive,
+                                    &self.output_format,
+                                    std::io::stdin().is_terminal(),
+                                ) {
+                                    let reason = security_prompt
+                                        .as_deref()
+                                        .unwrap_or("a tool call requested approval");
+                                    eprintln!(
+                                        "Tool call requires interactive approval ({}) but this \
+                                         run is non-interactive - denied automatically. Do not \
+                                         retry the same call; run without --output-format \
+                                         json/--quiet in a terminal to approve it interactively.",
+                                        reason.lines().next().unwrap_or(reason).trim()
+                                    );
+                                    if is_stream_json_mode {
+                                        emit_stream_event(&StreamEvent::Notification {
+                                            extension_id: "biorouter".to_string(),
+                                            data: NotificationData::Log {
+                                                message:
+                                                    "tool call denied automatically: approval \
+                                                     prompt cannot be answered in a \
+                                                     non-interactive run"
+                                                        .to_string(),
+                                            },
+                                        });
+                                    }
+                                    self.agent.handle_confirmation(id, PermissionConfirmation {
+                                        principal_type: PrincipalType::Tool,
+                                        permission,
+                                    }).await;
+                                    continue;
+                                }
                                 let permission = prompt_tool_confirmation(&security_prompt)?;
 
                                 if permission == Permission::Cancel {
@@ -1546,12 +1585,52 @@ async fn print_startup_notices() {
     }
 }
 
+/// #40: the auto-decision for a tool-confirmation prompt that cannot be
+/// answered, or `None` when the run is genuinely interactive.
+///
+/// A cliclack prompt in a headless run wrote the security text to stdout
+/// (corrupting `--output-format json`), then blocked for ~30 minutes on a
+/// keypress that could never come — or, with no terminal at all, died as the
+/// opaque `Error: not connected`. Any of these conditions means "nobody can
+/// answer": the run was started non-interactively (`biorouter run` without
+/// `-s`), stdout is a structured document (`json` / `stream-json`), or stdin
+/// is not a TTY (piped/redirected). Deny-once is the only safe default; the
+/// denial goes back to the model as a tool error so the turn continues.
+///
+/// Pure (no I/O) so the full matrix is unit-testable without a pty.
+fn headless_auto_decision(
+    interactive: bool,
+    output_format: &str,
+    stdin_is_tty: bool,
+) -> Option<Permission> {
+    let structured_stdout = matches!(output_format, "json" | "stream-json");
+    if !interactive || structured_stdout || !stdin_is_tty {
+        Some(Permission::DenyOnce)
+    } else {
+        None
+    }
+}
+
 /// Prompt user for tool call confirmation, returns the Permission selected
 fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permission> {
     output::hide_thinking();
 
+    // #40 defensive guard: even if a caller reaches this prompt without a
+    // usable stdin (headless_auto_decision should have caught it), deny
+    // explicitly instead of letting cliclack fail with the unexplained
+    // `Error: not connected` (io::ErrorKind::NotConnected on a non-terminal).
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "Tool call requires interactive approval but stdin is not a terminal - denied \
+             automatically."
+        );
+        return Ok(Permission::DenyOnce);
+    }
+
     let prompt = if let Some(security_message) = security_prompt {
-        println!("\n{}", security_message);
+        // stderr, where cliclack renders too: security-prompt text must never
+        // reach stdout, which may be a structured document or a pipe (#40).
+        eprintln!("\n{}", security_message);
         "Do you allow this tool call?".to_string()
     } else {
         "Biorouter would like to call the above tool, do you allow?".to_string()
@@ -1936,6 +2015,55 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// #40: the full decision matrix for tool-confirmation prompts. The ONLY
+    /// combination that may reach the interactive cliclack prompt is a
+    /// genuinely interactive run: `-s`, human-facing output, stdin a TTY.
+    /// Everything else auto-denies so a headless run cannot block on a
+    /// keypress that will never come (the ~30-minute hang), die as
+    /// `Error: not connected`, or leak prompt text into json stdout.
+    #[test]
+    fn headless_auto_decision_covers_the_full_matrix() {
+        // Interactive TTY runs keep the prompt (behavior unchanged).
+        assert_eq!(headless_auto_decision(true, "text", true), None);
+
+        // Non-interactive (headless `biorouter run -t ...`): deny.
+        assert_eq!(
+            headless_auto_decision(false, "text", true),
+            Some(Permission::DenyOnce)
+        );
+        // Structured stdout: deny, whatever else claims to be interactive.
+        assert_eq!(
+            headless_auto_decision(true, "json", true),
+            Some(Permission::DenyOnce)
+        );
+        assert_eq!(
+            headless_auto_decision(true, "stream-json", true),
+            Some(Permission::DenyOnce)
+        );
+        // No TTY on stdin (piped/redirected/CI): deny.
+        assert_eq!(
+            headless_auto_decision(true, "text", false),
+            Some(Permission::DenyOnce)
+        );
+
+        // Fully headless combinations: still exactly DenyOnce (never Cancel —
+        // the turn must CONTINUE with the denial as a tool error).
+        for output_format in ["text", "json", "stream-json"] {
+            for stdin_is_tty in [true, false] {
+                let decision = headless_auto_decision(false, output_format, stdin_is_tty);
+                assert_eq!(
+                    decision,
+                    Some(Permission::DenyOnce),
+                    "non-interactive must always auto-deny (format={output_format}, tty={stdin_is_tty})"
+                );
+            }
+        }
+        assert_eq!(
+            headless_auto_decision(false, "json", false),
+            Some(Permission::DenyOnce)
+        );
+    }
 
     /// #31: a session-store failure must gain an actionable stderr hint that
     /// names the store; unrelated errors must not.
