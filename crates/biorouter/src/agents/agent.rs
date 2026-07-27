@@ -141,6 +141,42 @@ pub(crate) fn assistant_turn_message_id(response: &Message) -> String {
         .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
 }
 
+/// Defense-in-depth for issue #41: one persist batch must never contain two
+/// messages with the same id — the session store enforces
+/// `UNIQUE(session_id, msg_uid)` and a single collision aborts the whole turn
+/// with SQLite error 2067.
+///
+/// Adjacent same-id messages were already merged by [`Conversation::push`], so
+/// any duplicate id left in the batch is **non-adjacent**: a decoder that
+/// stamped one shared per-response id on several yielded messages (the Bedrock
+/// decoder before its §6.2b batching; any streaming decoder with batching
+/// disabled) whose rebuilt tool requests ended up separated by their tool
+/// responses. Re-mint a fresh id on every later occurrence so the turn
+/// persists instead of dying; the first occurrence keeps the provider's id so
+/// desktop delta-merging is unaffected. Messages without ids are left alone —
+/// the store mints a fresh uid for each of those on insert.
+pub(crate) fn remint_duplicate_message_ids(batch: Conversation) -> Conversation {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut messages = batch.into_messages();
+    for message in &mut messages {
+        let Some(id) = message.id.clone() else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            let fresh = format!("msg_{}", Uuid::new_v4());
+            warn!(
+                old_id = %id,
+                new_id = %fresh,
+                "duplicate message id within one persist batch; re-minting to avoid a \
+                 UNIQUE(session_id, msg_uid) abort (decoder id-reuse bug?)"
+            );
+            seen.insert(fresh.clone());
+            message.id = Some(fresh);
+        }
+    }
+    Conversation::new_unvalidated(messages)
+}
+
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
 /// body every turn.
@@ -4462,6 +4498,11 @@ impl Agent {
                     }
                 }
 
+                // #41: re-mint any duplicate ids before persisting — a decoder
+                // that reused one id across several yielded messages would
+                // otherwise fail the UNIQUE(session_id, msg_uid) index here
+                // and kill the turn.
+                let messages_to_add = remint_duplicate_message_ids(messages_to_add);
                 for msg in &messages_to_add {
                     session_manager.add_message(&session_config.id, msg).await?;
                 }
@@ -5151,6 +5192,87 @@ mod tests {
             principal_type: crate::permission::permission_confirmation::PrincipalType::Tool,
             permission,
         }
+    }
+
+    /// #41 regression: the exact shape the Bedrock decoder used to produce —
+    /// two assistant tool-request messages sharing one id, separated by a
+    /// user tool-response (so `Conversation::push` cannot merge them). Before
+    /// the guard, persisting this batch aborted the turn with SQLite 2067
+    /// (UNIQUE constraint failed: messages.session_id, messages.msg_uid).
+    #[test]
+    fn remint_gives_a_fresh_id_to_a_nonadjacent_duplicate() {
+        let mut batch = Conversation::default();
+        batch.push(
+            Message::assistant()
+                .with_id("shared-id".to_string())
+                .with_tool_request(
+                    "call_a",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "shell".into(),
+                        arguments: Some(rmcp::object!({"command": "ls"})),
+                        meta: None,
+                    }),
+                ),
+        );
+        batch.push(
+            Message::user()
+                .with_id("resp-a".to_string())
+                .with_text("tool response a"),
+        );
+        batch.push(
+            Message::assistant()
+                .with_id("shared-id".to_string())
+                .with_tool_request(
+                    "call_b",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "shell".into(),
+                        arguments: Some(rmcp::object!({"command": "pwd"})),
+                        meta: None,
+                    }),
+                ),
+        );
+        // Not merged: the duplicate is non-adjacent.
+        assert_eq!(batch.len(), 3);
+
+        let fixed = remint_duplicate_message_ids(batch);
+        let ids: Vec<String> = fixed
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().expect("all messages keep an id"))
+            .collect();
+        assert_eq!(ids.len(), 3);
+        // The first occurrence keeps the provider's id (desktop delta-merge).
+        assert_eq!(ids[0], "shared-id");
+        assert_eq!(ids[1], "resp-a");
+        // The later occurrence was re-minted, and every id is now unique.
+        assert_ne!(ids[2], "shared-id");
+        assert!(ids[2].starts_with("msg_"));
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), 3, "all ids must be distinct: {ids:?}");
+        // Content is untouched.
+        assert!(matches!(
+            fixed.messages()[2].content[0],
+            MessageContent::ToolRequest(_)
+        ));
+    }
+
+    /// A batch with distinct (or absent) ids passes through byte-identical:
+    /// the store mints a fresh uid per id-less message, so `None` ids are
+    /// not duplicates of each other.
+    #[test]
+    fn remint_leaves_distinct_and_absent_ids_alone() {
+        let mut batch = Conversation::default();
+        batch.push(Message::assistant().with_id("a".to_string()).with_text("x"));
+        batch.push(Message::user().with_text("no id 1"));
+        batch.push(Message::assistant().with_id("b".to_string()).with_text("y"));
+        batch.push(Message::user().with_text("no id 2"));
+
+        let before: Vec<Option<String>> = batch.messages().iter().map(|m| m.id.clone()).collect();
+        let fixed = remint_duplicate_message_ids(batch);
+        let after: Vec<Option<String>> = fixed.messages().iter().map(|m| m.id.clone()).collect();
+        assert_eq!(before, after, "no id may change when there is no duplicate");
     }
 
     /// BR-62's core safety property. Confirmations used to land on a single
