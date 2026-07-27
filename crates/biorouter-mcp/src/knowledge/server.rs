@@ -305,8 +305,11 @@ impl KnowledgeServer {
         self.primary_kb_for_session(Self::session_id(context))
     }
 
-    /// Resolve `supplied` kb_id or fall back to the primary for this request context.
-    fn kb_id_or_active(
+    /// Resolve `supplied` kb_id, else this session's primary.
+    ///
+    /// An explicit `kb_id` always wins and is never filtered against the
+    /// session's set — that is how a hidden base (Soul) stays reachable.
+    fn kb_id_or_primary(
         &self,
         supplied: Option<String>,
         context: Option<&RequestContext<RoleServer>>,
@@ -314,12 +317,28 @@ impl KnowledgeServer {
         if let Some(id) = supplied {
             return Ok(id);
         }
-        self.primary_kb_for_context(context)?.ok_or_else(|| {
-            ErrorData::invalid_params(
-                "kb_id not supplied and no active knowledge base is set. Call kb_set_active first.",
-                None,
-            )
-        })
+        if let Some(primary) = self.primary_kb_for_context(context)? {
+            return Ok(primary);
+        }
+        let ids = self
+            .service
+            .session_kb_ids(Self::session_id(context))
+            .map_err(into_err)?;
+        Err(ErrorData::invalid_params(
+            if ids.is_empty() {
+                "this session has no knowledge bases, so there is nothing to read. \
+                 Create one with kb_create_base."
+                    .to_string()
+            } else {
+                format!(
+                    "kb_id not supplied and this session has no primary knowledge base. \
+                     Pass kb_id explicitly (one of: {}), or call kb_set_active to make one \
+                     the primary — that is also where KB-less writes go.",
+                    ids.join(", ")
+                )
+            },
+            None,
+        ))
     }
 
     #[tool(
@@ -349,7 +368,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_pages",
-        description = "List knowledge pages in a knowledge base. Omit kb_id to use the active KB."
+        description = "List knowledge pages in a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_list_pages(
         &self,
@@ -357,7 +376,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let pages = crate::knowledge::store::list_pages(&kb_root, p.path_prefix.as_deref())
             .map_err(into_err)?;
@@ -366,7 +385,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_read_page",
-        description = "Read a single knowledge page by path. Omit kb_id to use the active KB."
+        description = "Read a single knowledge page by path. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_read_page(
         &self,
@@ -374,7 +393,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
@@ -452,7 +471,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_get_graph",
-        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use the active KB."
+        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_get_graph(
         &self,
@@ -460,14 +479,14 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let g = self.service.get_graph(&kb_id).map_err(into_err)?;
         ok_json(&g)
     }
 
     #[tool(
         name = "kb_list_history",
-        description = "List recent change-log entries from the git history. Omit kb_id to use the active KB."
+        description = "List recent change-log entries from the git history. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_list_history(
         &self,
@@ -475,7 +494,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let h = self
             .service
             .list_history(&kb_id, p.limit)
@@ -824,6 +843,64 @@ mod tests {
             !src.contains(banned),
             "primary resolution must read the service, not a process-local cache"
         );
+    }
+
+    /// The hinge of the whole change. With no `kb_id` and no primary, the
+    /// error is the only instruction the model gets — it must name the
+    /// candidates and the exact recovery, never guess a base.
+    #[test]
+    fn kb_id_or_primary_errors_with_the_candidate_list() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("alpha", "Alpha", None)?;
+        server.service.create_base("beta", "Beta", None)?;
+
+        let err = server
+            .kb_id_or_primary(None, None)
+            .expect_err("no primary chosen");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("alpha, beta") && err.message.contains("kb_set_active"),
+            "the error must list the candidates and the fix, got: {}",
+            err.message
+        );
+
+        server.service.set_primary_persisted(Some("beta"))?;
+        assert_eq!(server.kb_id_or_primary(None, None)?, "beta");
+        assert_eq!(
+            server.kb_id_or_primary(Some("alpha".to_string()), None)?,
+            "alpha",
+            "an explicit kb_id always wins — that is how a base outside the set is reached"
+        );
+        Ok(())
+    }
+
+    /// The four read tools that fall back to the primary must say so, in the
+    /// new vocabulary — the model's mental model is built from these strings,
+    /// and "the active KB" is what makes it switch instead of passing kb_id.
+    #[test]
+    fn read_tool_descriptions_teach_the_primary_not_the_active_kb() {
+        let tools = KnowledgeServer::tool_router().list_all();
+        for name in [
+            "kb_list_pages",
+            "kb_read_page",
+            "kb_get_graph",
+            "kb_list_history",
+        ] {
+            let desc = tools
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.description.clone())
+                .unwrap_or_else(|| panic!("{name} has a description"));
+            assert!(
+                desc.contains("primary knowledge base"),
+                "{name} must name the primary, got: {desc}"
+            );
+            assert!(
+                !desc.contains("active KB"),
+                "{name} must not keep teaching the single-active model, got: {desc}"
+            );
+        }
     }
 
     #[test]
