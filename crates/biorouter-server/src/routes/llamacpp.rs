@@ -38,6 +38,12 @@ pub struct LlamaCppModel {
     pub min_gpu_memory_gib: u64,
     pub recommended_gpu_memory_gib: u64,
     pub context_limit: usize,
+    /// Approximate parameters active per generated token, in billions (MoE
+    /// models activate a subset per token; this drives tokens/sec).
+    pub active_params_b: u64,
+    /// Short human-readable expected-speed hint shown next to the download
+    /// size (e.g. "Fast per token — 3B active (MoE), but heavy to load").
+    pub speed_hint: String,
     /// True for the model Biorouter preselects.
     pub is_default: bool,
     /// Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache.
@@ -154,6 +160,8 @@ fn catalog() -> Vec<LlamaCppModel> {
                 min_gpu_memory_gib: e.min_gpu_memory_gib,
                 recommended_gpu_memory_gib: e.recommended_gpu_memory_gib,
                 context_limit: e.context_limit,
+                active_params_b: e.active_params_b,
+                speed_hint: e.speed_hint.to_string(),
                 is_default: e.name == default_model,
                 downloaded: download_status == ModelCacheStatus::Downloaded,
                 download_status,
