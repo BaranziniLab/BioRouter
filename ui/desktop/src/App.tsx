@@ -57,6 +57,7 @@ import { View, ViewOptions } from './utils/navigationUtils';
 import { useNavigation } from './hooks/useNavigation';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
+import { deliverLauncherMessage } from './utils/launcherMessage';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
 import { AppTooltipLayer } from './components/ui/AppTooltipLayer';
 
@@ -585,23 +586,17 @@ export function AppInner() {
     return window.electron.on('focus-input', handleFocusInput);
   }, []);
 
-  // Handle initial message from launcher
+  // Handle initial message from launcher. The session id must ride the query
+  // string (the ChatGroups URL-sync inbox reads nothing else) and the
+  // navigation must REPLACE the ?initialMessagePending=true bootstrap entry —
+  // both invariants live with deliverLauncherMessage, whose wiring test drives
+  // the real chain end to end (launcherMessageWiring.test.tsx).
   useEffect(() => {
-    const handleSetInitialMessage = async (_event: IpcRendererEvent, ...args: unknown[]) => {
+    const handleSetInitialMessage = (_event: IpcRendererEvent, ...args: unknown[]) => {
       const initialMessage = args[0] as string;
       if (initialMessage) {
         console.log('Received initial message from launcher:', initialMessage);
-        try {
-          const session = await createSession(getInitialWorkingDir(), {});
-          navigate('/pair', {
-            state: {
-              initialMessage,
-              resumeSessionId: session.id,
-            },
-          });
-        } catch (error) {
-          console.error('Failed to create session for launcher message:', error);
-        }
+        void deliverLauncherMessage(navigate, initialMessage);
       }
     };
     return window.electron.on('set-initial-message', handleSetInitialMessage);
