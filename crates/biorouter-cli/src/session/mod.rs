@@ -203,6 +203,10 @@ pub struct CliSession {
     /// `status` field in `--output-format json`, both of which used to claim
     /// success no matter what happened.
     last_abort: Option<TurnAbortCode>,
+    /// #31: the private per-run session store backing a `--no-session` run.
+    /// Held only so the temp directory outlives the session; dropped (and the
+    /// store deleted, best-effort) with the session.
+    ephemeral_store_dir: Option<tempfile::TempDir>,
 }
 
 // Cache structure for completion data
@@ -285,7 +289,14 @@ impl CliSession {
             retry_config,
             output_format,
             last_abort: None,
+            ephemeral_store_dir: None,
         }
+    }
+
+    /// #31: adopt the private `--no-session` store's temp directory so it
+    /// lives exactly as long as this session.
+    pub fn hold_ephemeral_store_dir(&mut self, dir: tempfile::TempDir) {
+        self.ephemeral_store_dir = Some(dir);
     }
 
     /// The abort code of the last turn, if it ended without doing its work.
