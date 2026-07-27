@@ -200,6 +200,13 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       return;
     }
 
+    // The ensure call may settle after this flow lost the operation (deadline
+    // timeout, or a newer operation superseded it — possibly for a DIFFERENT
+    // model). applyStatus above already dropped the stale payload, but the
+    // flow itself must also stop: warming up the OLD model here would
+    // interfere with the singleton sidecar the newer operation now owns.
+    if (llamaServerStore.getSnapshot().operation?.id !== opId) return;
+
     try {
       const warmed = await llamacppWarmup({ body: { model }, throwOnError: true });
       if (!warmed.data.output.trim()) {

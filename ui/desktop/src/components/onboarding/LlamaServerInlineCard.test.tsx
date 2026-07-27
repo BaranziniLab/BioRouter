@@ -5,6 +5,7 @@ import {
   llamaServerStore,
   resetLlamaServerStoreForTests,
   LLAMA_SERVER_POLL_INTERVAL_MS,
+  LLAMA_SERVER_OPERATION_TIMEOUT_MS,
 } from '../settings/models/llamaServerStore';
 
 const mockLlamacppStatus = vi.fn();
@@ -245,5 +246,55 @@ describe('LlamaServerInlineCard', () => {
     expect(mockToastError).toHaveBeenCalledTimes(1);
     expect(llamaServerStore.getSnapshot().operation).toMatchObject({ id: retryOp });
     llamaServerStore.endOperation(retryOp);
+  });
+
+  it('a superseded ensure never triggers warm-up for the old model (re-review 4)', async () => {
+    const ensureResolvers: Array<(value: unknown) => void> = [];
+    mockLlamacppEnsure.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          ensureResolvers.push(resolve);
+        })
+    );
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+    const start = await screen.findByTestId('llamacpp-start');
+
+    vi.useFakeTimers();
+    // Freeze status polling so the deadline advance below is deterministic.
+    mockLlamacppStatus.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(start);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockLlamacppEnsure).toHaveBeenCalledTimes(1);
+
+    // The deadline times the flow out while ensure is still in flight.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_OPERATION_TIMEOUT_MS);
+    });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+
+    // The user retries with a DIFFERENT model; a new operation now owns the
+    // singleton sidecar.
+    const select = screen.getByTestId('llamacpp-model-select');
+    fireEvent.change(select, { target: { value: 'gemma4-12b' } });
+    fireEvent.click(screen.getByTestId('llamacpp-start'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const retryId = llamaServerStore.getSnapshot().operation?.id;
+    expect(llamaServerStore.getSnapshot().operation).toMatchObject({ model: 'gemma4-12b' });
+    expect(mockLlamacppEnsure).toHaveBeenCalledTimes(2);
+
+    // The STALE ensure finally settles "successfully". The stale flow must
+    // abort: no warm-up of the OLD model, no disturbance of the retry.
+    await act(async () => {
+      ensureResolvers[0](statusResponse({ state: 'ready', model: 'gemma4' }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockLlamacppWarmup).not.toHaveBeenCalled();
+    expect(llamaServerStore.getSnapshot().operation?.id).toBe(retryId);
+    expect(mockToastError).toHaveBeenCalledTimes(1);
   });
 });
