@@ -13,45 +13,15 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashSet, sync::Arc};
+use std::{cmp::Ordering, collections::HashSet};
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
-
-/// Process-local active-KB state (one per KnowledgeServer instance).
-#[derive(Clone, Default)]
-pub struct ActiveKbState {
-    inner: Arc<tokio::sync::Mutex<Option<String>>>,
-}
-
-impl ActiveKbState {
-    pub async fn set(&self, kb_id: &str) {
-        *self.inner.lock().await = Some(kb_id.to_string());
-    }
-    pub async fn get(&self) -> Option<String> {
-        self.inner.lock().await.clone()
-    }
-    pub async fn clear(&self) {
-        *self.inner.lock().await = None;
-    }
-
-    /// Bootstrap the in-memory state from `<knowledge-root>/.active-kb` so a
-    /// freshly spawned MCP-server process picks up whatever KB the user had
-    /// selected previously. Errors are intentionally swallowed — a missing or
-    /// unreadable file simply yields an unset active KB.
-    pub fn from_persisted(service: &KnowledgeService) -> Self {
-        let initial = service.get_primary_persisted().ok().flatten();
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(initial)),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
     service: KnowledgeService,
     instructions: String,
-    active: ActiveKbState,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -242,13 +212,10 @@ pub struct HistoryOptParams {
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
-        let service = KnowledgeService::new_default()?;
-        let active = ActiveKbState::from_persisted(&service);
         Ok(Self {
             tool_router: Self::tool_router(),
-            service,
+            service: KnowledgeService::new_default()?,
             instructions: include_str!("instructions.md").to_string(),
-            active,
         })
     }
 
@@ -318,31 +285,28 @@ impl KnowledgeServer {
         Ok(hits)
     }
 
-    async fn active_kb_for_context(
+    /// This session's primary knowledge base — the write target for KB-less
+    /// mutating calls and the default subject for single-base reads. Resolved
+    /// from disk on every call: session file → machine file, returned only
+    /// while it names a member of the session's set.
+    fn primary_kb_for_session(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<Option<String>, ErrorData> {
+        self.service
+            .primary_for_session(session_id)
+            .map_err(into_err)
+    }
+
+    fn primary_kb_for_context(
         &self,
         context: Option<&RequestContext<RoleServer>>,
     ) -> Result<Option<String>, ErrorData> {
-        if let Some(context) = context {
-            if let Some(session_id) = Self::session_id_from_context(context) {
-                if let Some(session_active) = self
-                    .service
-                    .get_primary_for_session(session_id)
-                    .map_err(into_err)?
-                {
-                    return Ok(Some(session_active));
-                }
-            }
-        }
-
-        if let Some(active) = self.active.get().await {
-            return Ok(Some(active));
-        }
-
-        self.service.get_primary_persisted().map_err(into_err)
+        self.primary_kb_for_session(Self::session_id(context))
     }
 
-    /// Resolve `supplied` kb_id or fall back to the active KB for this request context.
-    async fn kb_id_or_active(
+    /// Resolve `supplied` kb_id or fall back to the primary for this request context.
+    fn kb_id_or_active(
         &self,
         supplied: Option<String>,
         context: Option<&RequestContext<RoleServer>>,
@@ -350,7 +314,7 @@ impl KnowledgeServer {
         if let Some(id) = supplied {
             return Ok(id);
         }
-        self.active_kb_for_context(context).await?.ok_or_else(|| {
+        self.primary_kb_for_context(context)?.ok_or_else(|| {
             ErrorData::invalid_params(
                 "kb_id not supplied and no active knowledge base is set. Call kb_set_active first.",
                 None,
@@ -393,7 +357,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let pages = crate::knowledge::store::list_pages(&kb_root, p.path_prefix.as_deref())
             .map_err(into_err)?;
@@ -410,7 +374,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
@@ -496,7 +460,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
         let g = self.service.get_graph(&kb_id).map_err(into_err)?;
         ok_json(&g)
     }
@@ -511,7 +475,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context))?;
         let h = self
             .service
             .list_history(&kb_id, p.limit)
@@ -689,7 +653,6 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
-        self.active.set(&p.0.kb_id).await;
         if let Some(session_id) = Self::session_id_from_context(&context) {
             self.service
                 .set_primary_for_session(session_id, Some(&p.0.kb_id))
@@ -710,7 +673,7 @@ impl KnowledgeServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self.active_kb_for_context(Some(&context)).await?;
+        let v = self.primary_kb_for_context(Some(&context))?;
         ok_json(&serde_json::json!({ "active_kb": v }))
     }
 
@@ -812,8 +775,55 @@ mod tests {
             tool_router: KnowledgeServer::tool_router(),
             service,
             instructions: String::new(),
-            active: ActiveKbState::default(),
         }
+    }
+
+    /// Regression (pre-existing, not introduced by the merge): the deleted
+    /// process-local active-KB cache was one `Option<String>` for the **whole
+    /// KnowledgeServer process**. `kb_set_active` wrote it alongside the
+    /// session file and `active_kb_for_context` consulted it for any session
+    /// that had no file of its own — so one chat's choice silently became
+    /// every other chat's write target inside one daemon, and it was never
+    /// invalidated on rename or delete.
+    #[test]
+    fn one_sessions_primary_does_not_leak_into_another() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("alpha", "Alpha", None)?;
+        server.service.create_base("beta", "Beta", None)?;
+
+        server
+            .service
+            .set_primary_for_session("session-a", Some("beta"))?;
+
+        assert_eq!(
+            server.primary_kb_for_session(Some("session-a"))?.as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            server.primary_kb_for_session(Some("session-b"))?,
+            None,
+            "session-b never chose a primary; session-a's choice must not become its write target"
+        );
+        Ok(())
+    }
+
+    /// The guard against re-introducing the cache. Primary resolution must be
+    /// a pure function of (session id, on-disk state) — any in-process slot
+    /// re-opens the cross-session leak and the stale-after-rename bug, and
+    /// neither has a cheap behavioural test because both need a live
+    /// `RequestContext`.
+    #[test]
+    fn knowledge_server_keeps_no_in_process_primary_cache() {
+        let src = include_str!("server.rs");
+        // Assembled at runtime: spelling the identifier literally anywhere in
+        // this file — including in this test — would make the guard pass
+        // vacuously the moment somebody re-introduced the struct.
+        let banned = concat!("Active", "KbState");
+        assert!(
+            !src.contains(banned),
+            "primary resolution must read the service, not a process-local cache"
+        );
     }
 
     #[test]
