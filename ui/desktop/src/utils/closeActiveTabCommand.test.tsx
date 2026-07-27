@@ -95,7 +95,10 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
 
   it('terminal focused, dock declines (no active pane): falls through to the chat tab', () => {
     const dock = focusInsideTerminal();
-    registerCloseTerminalPane(() => false, () => dock);
+    registerCloseTerminalPane(
+      () => false,
+      () => dock
+    );
     const closeChatTab = vi.fn(() => true);
     registerCloseActiveTab(closeChatTab);
 
@@ -186,7 +189,10 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
     dock.setAttribute('data-testid', 'in-app-terminal-dock');
     document.body.appendChild(dock);
     focusComposer();
-    registerCloseTerminalPane(() => false, () => dock); // no active pane
+    registerCloseTerminalPane(
+      () => false,
+      () => dock
+    ); // no active pane
     registerCloseActiveTab(() => false);
 
     expect(runCloseActiveTabCommand(closeWindow)).toBe('window');
@@ -199,11 +205,14 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
     // chat, the tab goes next, and only then does Cmd+W mean "close window".
     const dock = focusInsideTerminal();
     let panes = 2;
-    const dispose = registerCloseTerminalPane(() => {
-      if (panes === 0) return false;
-      panes -= 1;
-      return true;
-    }, () => dock);
+    const dispose = registerCloseTerminalPane(
+      () => {
+        if (panes === 0) return false;
+        panes -= 1;
+        return true;
+      },
+      () => dock
+    );
     let tabs = 1;
     registerCloseActiveTab(() => {
       if (tabs === 0) return false;

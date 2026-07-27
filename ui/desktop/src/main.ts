@@ -3318,7 +3318,10 @@ function registerTerminalOwnerTeardown(contents: Electron.WebContents) {
   const release = (reason: string) => {
     const released = terminalSessions.releaseOwner(contents.id);
     if (released > 0) {
-      log.info(`[terminal] released ${released} session(s) for webContents ${contents.id}:`, reason);
+      log.info(
+        `[terminal] released ${released} session(s) for webContents ${contents.id}:`,
+        reason
+      );
     }
   };
 

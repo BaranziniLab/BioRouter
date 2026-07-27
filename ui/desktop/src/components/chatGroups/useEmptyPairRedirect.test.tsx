@@ -61,7 +61,10 @@ let injectCmdTOnZeroTabs = false;
 function CmdTInjector() {
   const ctx = useChatGroups();
   const tabCount = ctx
-    ? leafGroupIds(ctx.state.layout).reduce((count, id) => count + ctx.state.groups[id].tabs.length, 0)
+    ? leafGroupIds(ctx.state.layout).reduce(
+        (count, id) => count + ctx.state.groups[id].tabs.length,
+        0
+      )
     : 0;
   useEffect(() => {
     if (injectCmdTOnZeroTabs && tabCount === 0) {

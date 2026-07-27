@@ -211,7 +211,10 @@ describe('multi-dock routing (split layouts)', () => {
     const a = dockWithInput();
     const b = dockWithInput();
     const closeB = vi.fn(() => true);
-    registerCloseTerminalPane(() => false, () => a.dock);
+    registerCloseTerminalPane(
+      () => false,
+      () => a.dock
+    );
     registerCloseTerminalPane(closeB, () => b.dock);
     a.input.focus();
 
