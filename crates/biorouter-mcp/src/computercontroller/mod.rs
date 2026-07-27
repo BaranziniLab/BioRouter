@@ -743,7 +743,11 @@ impl ComputerControllerServer {
             PowerShell is recommended for most tasks.
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
-            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
+            When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
+            It does NOT make ${...} literal — every ${...} (PowerShell's ${env:Path} included) is still parsed as a
+            JavaScript expression, and any backtick in the script (PowerShell's escape character) terminates the
+            template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a plain quoted
+            JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run that file.
 
             The script is saved to a temporary file and executed.
             Some examples:
@@ -768,7 +772,12 @@ impl ComputerControllerServer {
             Supports Shell and Ruby (on macOS).
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
-            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
+            When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
+            It does NOT make ${...} literal — every ${...} (bash's ${VAR:-default} or ${!v} included) is still parsed
+            as a JavaScript expression, and any backtick in the script (command substitution, markdown fences)
+            terminates the template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a
+            plain quoted JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run
+            that file.
 
             The script is saved to a temporary file and executed.
             Consider using shell script (bash) for most simple tasks first.
@@ -1848,6 +1857,43 @@ mod web_and_script_tests {
         assert!(!web_scrape_status_is_retryable(StatusCode::FORBIDDEN));
         assert!(!web_scrape_status_is_retryable(StatusCode::NOT_FOUND));
         assert!(!web_scrape_status_is_retryable(StatusCode::BAD_REQUEST));
+    }
+
+    /// The automation_script description must carry the CORRECTED String.raw
+    /// caveats from #23 (String.raw does not neutralise ${...} interpolation
+    /// or backticks), not the old unconditional "use String.raw" steer that
+    /// produced the very parse failures #23 fixed. Applies to both platform
+    /// variants — the asserted phrases are shared.
+    #[test]
+    fn automation_script_description_carries_corrected_string_raw_caveats() {
+        let server = ComputerControllerServer::new();
+        let tool = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "automation_script")
+            .expect("automation_script is registered");
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            !description.contains("so backslashes remain intact"),
+            "the old unconditional String.raw steer must be gone: {description}"
+        );
+        assert!(
+            description.contains("ONLY preserves backslashes"),
+            "must state String.raw's actual (narrow) effect: {description}"
+        );
+        assert!(
+            description.contains("does NOT make ${...} literal"),
+            "must correct the dollar-brace belief: {description}"
+        );
+        assert!(
+            description.contains("terminates the template literal"),
+            "must warn that payload backticks end the literal: {description}"
+        );
+        assert!(
+            description.contains(r#"${"$"}{"#),
+            "must teach the literal dollar-brace escape: {description}"
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
