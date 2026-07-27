@@ -117,7 +117,13 @@ interface ChatInputProps {
   totalTokens?: number;
   accumulatedInputTokens?: number;
   accumulatedOutputTokens?: number;
-  messages?: Message[];
+  /**
+   * #22 — the transcript LENGTH, not the array. The composer only ever asks
+   * "is the conversation empty?", and taking the whole array as a prop made
+   * this 1900-line component re-render on every streamed token (the array
+   * identity changes per event, the length almost never does).
+   */
+  messagesLength?: number;
   sessionCosts?: {
     [key: string]: {
       inputTokens: number;
@@ -158,7 +164,7 @@ export default function ChatInput({
   totalTokens,
   accumulatedInputTokens,
   accumulatedOutputTokens,
-  messages = [],
+  messagesLength = 0,
   disableAnimation = false,
   sessionCosts,
   modelCostRows,
@@ -355,14 +361,14 @@ export default function ChatInput({
   // Handle workflow prompt updates
   useEffect(() => {
     // If workflow is accepted and we have an initial prompt, and no messages yet, and we haven't set it before
-    if (workflowAccepted && initialPrompt && messages.length === 0) {
+    if (workflowAccepted && initialPrompt && messagesLength === 0) {
       setDisplayValue(initialPrompt);
       setValue(initialPrompt);
       setTimeout(() => {
         textAreaRef.current?.focus();
       }, 0);
     }
-  }, [workflowAccepted, initialPrompt, messages.length]);
+  }, [workflowAccepted, initialPrompt, messagesLength]);
 
   // State to track if the IME is composing (i.e., in the middle of Japanese IME input)
   const [isComposing, setIsComposing] = useState(false);

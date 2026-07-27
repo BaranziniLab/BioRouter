@@ -95,7 +95,7 @@ export default function Hub({
             accumulatedOutputTokens={0}
             droppedFiles={[]}
             onFilesProcessed={() => {}}
-            messages={[]}
+            messagesLength={0}
             disableAnimation={false}
             sessionCosts={undefined}
             toolCount={0}
