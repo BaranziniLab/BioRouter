@@ -1384,10 +1384,7 @@ fn is_session_digest(name: &std::ffi::OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
-    name.len() == 64
-        && name
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]
@@ -2112,7 +2109,10 @@ mod tests {
             "kb-a",
             "a crash leftover is not a session"
         );
-        assert_eq!(std::fs::read_to_string(&hidden_tmp)?, "half-written garbage");
+        assert_eq!(
+            std::fs::read_to_string(&hidden_tmp)?,
+            "half-written garbage"
+        );
         Ok(())
     }
 
