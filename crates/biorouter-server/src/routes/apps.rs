@@ -1206,6 +1206,36 @@ fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &Capability
     prompt
 }
 
+/// Make `kb` available to an app session without disturbing anything else.
+///
+/// Every profile of an app shares one session id, so per-profile KB isolation
+/// has never existed — the previous `set_active_for_session` per profile was
+/// simply last-writer-wins. Composing is not a widening of the sandbox: the
+/// grant never restricted what the session could reach, it only chose a focus.
+/// What changes is that the outcome is now stated rather than ordering-derived.
+pub(crate) fn grant_knowledge_base(
+    svc: &biorouter_mcp::knowledge::service::KnowledgeService,
+    session_id: &str,
+    kb: &str,
+    make_primary: bool,
+) -> anyhow::Result<()> {
+    let hidden = svc
+        .get_hidden_for_session_or_persisted(session_id)?
+        .into_iter()
+        .filter(|id| id != kb)
+        .collect::<Vec<_>>();
+    svc.set_selection(
+        Some(session_id),
+        Some(&hidden),
+        if make_primary {
+            biorouter_mcp::knowledge::service::PrimaryUpdate::Set(kb)
+        } else {
+            biorouter_mcp::knowledge::service::PrimaryUpdate::Unchanged
+        },
+    )?;
+    Ok(())
+}
+
 async fn configure_agent(
     agent: &biorouter::agents::Agent,
     state: &AppState,
@@ -1236,11 +1266,8 @@ async fn configure_agent(
     // is reported to the page and to the model rather than swallowed into a
     // `warn!` while its tools stay armed.
     if let Some(kb) = report.granted_knowledge_base.clone() {
-        if let Err(e) = state
-            .knowledge_service
-            .set_primary_for_session(session_id, Some(&kb))
-        {
-            warn!(app = %manifest.id, kb = %kb, "set active KB failed: {e}");
+        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, &kb, true) {
+            warn!(app = %manifest.id, kb = %kb, "grant knowledge base failed: {e}");
             report.granted_knowledge_base = None;
             report.missing_knowledge_base = Some(kb);
         }
@@ -1520,11 +1547,10 @@ async fn configure_worker_agent(
     configure_worker_extensions(agent, manifest, profile_name, cfg).await;
 
     if let Some(kb) = cfg.knowledge_base.as_ref() {
-        if let Err(e) = state
-            .knowledge_service
-            .set_primary_for_session(session_id, Some(kb))
-        {
-            warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker set active KB failed: {e}");
+        // A worker's grant joins the app session's set but never takes the
+        // primary — the main agent's grant owns that.
+        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb, false) {
+            warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker grant knowledge base failed: {e}");
         }
     }
 
@@ -4591,6 +4617,48 @@ mod tests {
         apply_pii_policy, decide_output, ClientFrame, OutputDecision, PiiMode, PiiOutcome,
     };
     use serde_json::json;
+
+    /// `configure_main_agent` and `configure_worker_agent` both called
+    /// `set_active_for_session` with the SAME session id (every profile in an
+    /// app shares one), so which base the app used depended on profile
+    /// configuration order. A grant now joins the session's set and only the
+    /// main agent's grant takes the primary.
+    #[test]
+    fn app_knowledge_grants_compose_and_only_main_takes_the_primary() -> anyhow::Result<()> {
+        use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["user-kb", "main-kb", "worker-kb"] {
+            svc.create_base(id, id, None)?;
+        }
+        // The user had narrowed this chat to their own base and chosen it.
+        svc.set_selection(
+            Some("app-session"),
+            Some(&["main-kb".to_string(), "worker-kb".to_string()]),
+            PrimaryUpdate::Set("user-kb"),
+        )?;
+
+        super::grant_knowledge_base(&svc, "app-session", "main-kb", true)?;
+        super::grant_knowledge_base(&svc, "app-session", "worker-kb", false)?;
+
+        let selection = svc.selection(Some("app-session"))?;
+        assert_eq!(
+            selection.kb_ids,
+            vec![
+                "main-kb".to_string(),
+                "user-kb".to_string(),
+                "worker-kb".to_string()
+            ],
+            "a grant adds to the session's set, it never replaces it"
+        );
+        assert_eq!(
+            selection.primary_kb.as_deref(),
+            Some("main-kb"),
+            "the main agent's grant owns the primary; a worker's grant must not steal it"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn app_redirect_rejects_invalid_ids_before_building_a_location() {
