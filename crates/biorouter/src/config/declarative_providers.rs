@@ -354,6 +354,25 @@ mod tests {
             };
             assert!((input - want_in).abs() < 1e-15, "{}", model.name);
             assert!((output - want_out).abs() < 1e-15, "{}", model.name);
+
+            // Vision: per Moonshot's platform docs ("Use the Kimi Vision
+            // Model", platform.kimi.ai, verified 2026-07), kimi-k2.5,
+            // kimi-k2.6, and kimi-k2.7-code ALL accept image input in
+            // png/jpeg/webp/gif. Without this declaration the metadata
+            // reports None and the desktop rejects image attachments.
+            assert_eq!(
+                model.supports_vision,
+                Some(true),
+                "{}: must declare vision",
+                model.name
+            );
+            let mimes = model
+                .supported_input_mime_types
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: image MIME types declared", model.name));
+            for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+                assert!(mimes.contains(&mime.to_string()), "{}: {mime}", model.name);
+            }
         }
     }
 

@@ -1661,6 +1661,7 @@
     "context_length": 262144,
     "max_completion_tokens": 65536,
     "input_modalities": [
+      "image",
       "text"
     ],
     "output_modalities": [
@@ -1678,6 +1679,7 @@
     "context_length": 262144,
     "max_completion_tokens": 65536,
     "input_modalities": [
+      "image",
       "text"
     ],
     "output_modalities": [

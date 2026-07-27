@@ -12,7 +12,15 @@
       "input_token_cost": 0.00000095,
       "output_token_cost": 0.000004,
       "currency": "$",
-      "supports_cache_control": null
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "kimi-k2.6",
@@ -20,7 +28,15 @@
       "input_token_cost": 0.00000095,
       "output_token_cost": 0.000004,
       "currency": "$",
-      "supports_cache_control": null
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     },
     {
       "name": "kimi-k2.5",
@@ -28,7 +44,15 @@
       "input_token_cost": 0.0000006,
       "output_token_cost": 0.000003,
       "currency": "$",
-      "supports_cache_control": null
+      "supports_cache_control": null,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
     }
   ],
   "headers": null,
