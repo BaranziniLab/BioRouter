@@ -166,8 +166,7 @@ export function steerWasEchoed(
     .slice(afterCount)
     .some(
       (m) =>
-        m.role === 'user' &&
-        m.content.some((c) => c.type === 'text' && c.text.trim() === wanted)
+        m.role === 'user' && m.content.some((c) => c.type === 'text' && c.text.trim() === wanted)
     );
 }
 
@@ -357,7 +356,7 @@ class ChatStreamController {
   }
 
   setChatState = (chatState: ChatState): void => {
-    this.updateSnapshot((prev) => ({ ...prev, chatState }));
+    this.updateSnapshot((prev) => (prev.chatState === chatState ? prev : { ...prev, chatState }));
   };
 
   private notify(): void {
@@ -365,15 +364,71 @@ class ChatStreamController {
     this.onActivityChange(this);
   }
 
+  // #22 — listener-notification batching. Token streaming delivers dozens of
+  // events per second, and notifying every subscriber synchronously per event
+  // re-rendered the whole chat tree (BaseChat → ChatInput → transcript) at
+  // event rate, which is what made typing lag while a response streamed.
+  // Snapshot writes stay SYNCHRONOUS (getSnapshot is always current); only the
+  // "tell React about it" step is deferred to at most once per animation frame.
+  private notifyScheduled = false;
+  private notifyHandle: number | null = null;
+  private notifyViaTimeout = false;
+
+  /** How long the fallback timer waits when rAF can't be used (~one frame). */
+  private static readonly NOTIFY_FALLBACK_MS = 16;
+
+  private scheduleNotify(): void {
+    if (this.notifyScheduled) return;
+    this.notifyScheduled = true;
+    // rAF is paused/heavily throttled in backgrounded Chromium windows — a
+    // hidden chat would freeze mid-stream without the timeout fallback. The
+    // same fallback covers environments with no rAF at all (jsdom, workers).
+    const hidden = typeof document !== 'undefined' && document.hidden;
+    if (!hidden && typeof requestAnimationFrame === 'function') {
+      this.notifyViaTimeout = false;
+      this.notifyHandle = requestAnimationFrame(() => this.flushNotify());
+    } else {
+      this.notifyViaTimeout = true;
+      this.notifyHandle = setTimeout(
+        () => this.flushNotify(),
+        ChatStreamController.NOTIFY_FALLBACK_MS
+      ) as unknown as number;
+    }
+  }
+
+  /**
+   * Run a pending scheduled notification NOW. Called at turn boundaries
+   * (submit start, stop, finish) so the transitions users act on — their
+   * message appearing, Stop feedback, the turn ending — are never a frame
+   * late. No-op when nothing is scheduled.
+   */
+  private flushNotify(): void {
+    if (!this.notifyScheduled) return;
+    if (this.notifyHandle !== null) {
+      if (this.notifyViaTimeout) {
+        clearTimeout(this.notifyHandle);
+      } else if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(this.notifyHandle);
+      }
+      this.notifyHandle = null;
+    }
+    this.notifyScheduled = false;
+    this.notify();
+  }
+
   private updateSnapshot(updater: (prev: ChatStreamSnapshot) => ChatStreamSnapshot): void {
-    this.snapshot = updater(this.snapshot);
+    const next = updater(this.snapshot);
+    // Several updaters return `prev` to mean "nothing changed" — that must not
+    // wake every subscriber (#22).
+    if (next === this.snapshot) return;
+    this.snapshot = next;
     if (this.snapshot.session) {
       cacheSet(this.sessionId, {
         session: this.snapshot.session,
         messages: this.snapshot.messages,
       });
     }
-    this.notify();
+    this.scheduleNotify();
   }
 
   // `receivedAt` is stamped ONLY by the live stream path. The other callers
@@ -396,6 +451,68 @@ class ChatStreamController {
 
   /** Transcript length when the in-flight steer was issued. See steerWasEchoed. */
   private steerAfterCount = 0;
+
+  /**
+   * #22 — apply one streamed `Message` event as a SINGLE snapshot swap.
+   *
+   * The live-stream Message case used to run three separate mutations
+   * (setChatState + updateTokenState + updateMessages), i.e. three snapshot
+   * swaps and three notifications per streamed token event. This folds the
+   * chat-state derivation, token state, transcript, `lastMessageAt` stamp,
+   * steer retirement, and landed-tool-skeleton removal into one updater, so a
+   * token event costs exactly one snapshot swap.
+   */
+  private applyMessageEvent = (
+    msg: Message,
+    messages: Message[],
+    tokenState: TokenState,
+    receivedAt: number
+  ): void => {
+    this.messagesRef = messages;
+
+    const hasToolConfirmation = msg.content.some(
+      (content) => content.type === 'toolConfirmationRequest'
+    );
+    const hasElicitation = msg.content.some(
+      (content) => content.type === 'actionRequired' && content.data.actionType === 'elicitation'
+    );
+    const chatState =
+      hasToolConfirmation || hasElicitation
+        ? ChatState.WaitingForUserInput
+        : getCompactingMessage(msg)
+          ? ChatState.Compacting
+          : getThinkingMessage(msg)
+            ? ChatState.Thinking
+            : ChatState.Streaming;
+
+    // The authoritative request(s) landed: drop any matching pending skeletons
+    // so the real tool card replaces the placeholder with no flicker or ghost.
+    const landedIds = new Set(
+      msg.content
+        .filter((c) => c.type === 'toolRequest' || c.type === 'frontendToolRequest')
+        .map((c) => (c as { id?: string }).id)
+        .filter((id): id is string => typeof id === 'string')
+    );
+
+    this.updateSnapshot((prev) => {
+      // BR-61: the echo of our own steer is what retires the optimistic chip.
+      const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerAfterCount);
+      let pendingToolCalls = prev.pendingToolCalls;
+      if (landedIds.size > 0) {
+        const remaining = pendingToolCalls.filter((p) => !landedIds.has(p.id));
+        if (remaining.length !== pendingToolCalls.length) pendingToolCalls = remaining;
+      }
+      return {
+        ...prev,
+        messages,
+        chatState,
+        tokenState,
+        lastMessageAt: receivedAt,
+        pendingSteer: steerLanded ? undefined : prev.pendingSteer,
+        pendingToolCalls,
+      };
+    });
+  };
 
   private clearPendingSteer = (): void => {
     if (!this.snapshot.pendingSteer) return;
@@ -424,25 +541,6 @@ class ChatStreamController {
       const next = prev.pendingToolCalls.slice();
       next[idx] = { ...next[idx], ...pending };
       return { ...prev, pendingToolCalls: next };
-    });
-  };
-
-  /**
-   * Remove any pending skeletons whose id matches a real tool request in the
-   * message just applied — the authoritative card now renders in its place.
-   */
-  private clearPendingToolCallsFromMessage = (msg: Message): void => {
-    const landedIds = new Set(
-      msg.content
-        .filter((c) => c.type === 'toolRequest' || c.type === 'frontendToolRequest')
-        .map((c) => (c as { id?: string }).id)
-        .filter((id): id is string => typeof id === 'string')
-    );
-    if (landedIds.size === 0) return;
-    this.updateSnapshot((prev) => {
-      const remaining = prev.pendingToolCalls.filter((p) => !landedIds.has(p.id));
-      if (remaining.length === prev.pendingToolCalls.length) return prev;
-      return { ...prev, pendingToolCalls: remaining };
     });
   };
 
@@ -747,6 +845,9 @@ class ChatStreamController {
       // is nothing left to steer.
       pendingSteer: undefined,
     }));
+    // #22 — turn boundary: the Idle transition must land NOW, not a frame
+    // later, so awaiting callers and finish listeners observe a settled store.
+    this.flushNotify();
     for (const listener of this.finishListeners) listener();
   };
 
@@ -776,29 +877,9 @@ class ChatStreamController {
           case 'Message': {
             const msg = event.message;
             currentMessages = pushMessage(currentMessages, msg);
-            // The authoritative request(s) landed: drop any matching skeletons so
-            // the real tool card replaces the placeholder with no flicker or ghost.
-            this.clearPendingToolCallsFromMessage(msg);
-            const hasToolConfirmation = msg.content.some(
-              (content) => content.type === 'toolConfirmationRequest'
-            );
-            const hasElicitation = msg.content.some(
-              (content) =>
-                content.type === 'actionRequired' && content.data.actionType === 'elicitation'
-            );
-
-            if (hasToolConfirmation || hasElicitation) {
-              this.setChatState(ChatState.WaitingForUserInput);
-            } else if (getCompactingMessage(msg)) {
-              this.setChatState(ChatState.Compacting);
-            } else if (getThinkingMessage(msg)) {
-              this.setChatState(ChatState.Thinking);
-            } else {
-              this.setChatState(ChatState.Streaming);
-            }
-
-            this.updateTokenState(event.token_state);
-            this.updateMessages(currentMessages, Date.now());
+            // #22 — one snapshot swap (state + tokens + transcript + skeleton
+            // cleanup) per streamed event, not three.
+            this.applyMessageEvent(msg, currentMessages, event.token_state, Date.now());
             break;
           }
           case 'Error':
@@ -865,6 +946,9 @@ class ChatStreamController {
       lastMessageAt: undefined,
       pendingSteer: undefined,
     }));
+    // #22 — turn boundary: the user's own message and the working indicator
+    // must paint immediately on submit, never an animation frame late.
+    this.flushNotify();
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
     this.activeStreamId = streamId;
@@ -1136,6 +1220,8 @@ class ChatStreamController {
       lastMessageAt: undefined,
       pendingSteer: undefined,
     }));
+    // #22 — turn boundary: Stop feedback must be synchronous.
+    this.flushNotify();
     this.lastInteractionTime = Date.now();
 
     // BR-62b: aborting the SSE socket only tears down *this* client's view of
@@ -1260,7 +1346,20 @@ export class ChatStreamRegistry {
   private handleControllerActivity = (controller: ChatStreamController): void => {
     const current = this.running.get(controller.sessionId);
     if (controller.isRunning()) {
-      this.running.set(controller.sessionId, controller.getRunningEntry());
+      const entry = controller.getRunningEntry();
+      // #22 — a token event changes the transcript, not the running entry.
+      // Re-emitting an identical entry re-rendered the sidebar and tab strip
+      // once per streamed token; skip when nothing material changed.
+      if (
+        current &&
+        !current.completedAt &&
+        current.chatState === entry.chatState &&
+        current.title === entry.title &&
+        current.startedAt === entry.startedAt
+      ) {
+        return;
+      }
+      this.running.set(controller.sessionId, entry);
     } else if (current && !current.completedAt) {
       this.running.set(controller.sessionId, {
         ...current,
@@ -1274,6 +1373,10 @@ export class ChatStreamRegistry {
           this.emitRunning();
         }
       }, 1600);
+    } else {
+      // Idle controller with no live entry (a session load, a token refresh on
+      // a finished chat): the running list is untouched — don't re-emit (#22).
+      return;
     }
     this.emitRunning();
   };

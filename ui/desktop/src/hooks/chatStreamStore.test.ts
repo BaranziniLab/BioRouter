@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
@@ -775,7 +775,8 @@ describe('ChatStreamRegistry', () => {
     // A POST that never settles: nothing about the acknowledgement may wait on it.
     let releaseInterrupt: (() => void) | null = null;
     vi.mocked(interrupt).mockImplementation(
-      () => new Promise((resolve) => (releaseInterrupt = () => resolve({ data: undefined } as never)))
+      () =>
+        new Promise((resolve) => (releaseInterrupt = () => resolve({ data: undefined } as never)))
     );
 
     const controller = registry.getController('s1');
@@ -1361,5 +1362,180 @@ describe('ChatStreamRegistry turn timestamps', () => {
     expect(snapshot.messages.length).toBeGreaterThan(0);
     expect(snapshot.lastMessageAt).toBeUndefined();
     expect(snapshot.turnStartedAt).toBeUndefined();
+  });
+});
+
+// #22 — streaming-notification batching. Token streaming delivers dozens of
+// events per second; without coalescing + per-frame batching, every event woke
+// every subscriber (BaseChat, ChatInput, the sidebar) synchronously, which is
+// what made typing lag while a response streamed.
+describe('notification batching (#22)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Queue rAF callbacks so the test controls exactly when a frame "renders". */
+  function stubRafQueue() {
+    const queue: Array<(time: number) => void> = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: (time: number) => void): number => {
+      queue.push(cb);
+      return queue.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (_id: number): void => undefined);
+    return {
+      queue,
+      runFrame() {
+        for (const cb of queue.splice(0)) cb(0);
+      },
+    };
+  }
+
+  /** rAF that fires synchronously: every scheduled flush lands immediately, so
+   * the listener call count equals the number of snapshot swaps. */
+  function stubRafSync() {
+    vi.stubGlobal('requestAnimationFrame', (cb: (time: number) => void): number => {
+      cb(0);
+      return 0;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (_id: number): void => undefined);
+  }
+
+  it('a burst of Message events wakes subscribers at most once per frame', async () => {
+    const raf = stubRafQueue();
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('batch-1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('batch-1');
+    const submitted = controller.handleSubmit('stream a lot');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    // The turn is launched (its boundary flush is behind us) before the
+    // listener subscribes, so only stream-event notifications are counted.
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+    const listener = vi.fn();
+    const unsubscribe = controller.subscribe(listener);
+
+    for (let i = 0; i < 50; i++) {
+      controlled.push({
+        type: 'Message',
+        message: assistantMessage('a1', `token-${i} `),
+        token_state: tokenState,
+      } as MessageEvent);
+      await flush();
+    }
+
+    // Snapshot writes are synchronous — the transcript already holds every
+    // token…
+    const streamed = controller.getSnapshot().messages.find((m) => m.id === 'a1');
+    const text = streamed?.content[0].type === 'text' ? streamed.content[0].text : '';
+    expect(text).toContain('token-0');
+    expect(text).toContain('token-49');
+    // …but no frame has rendered yet, so subscribers were never woken.
+    expect(listener).not.toHaveBeenCalled();
+
+    raf.runFrame();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+    unsubscribe();
+  });
+
+  it('setting the same chat state again never notifies subscribers', () => {
+    const raf = stubRafQueue();
+    const registry = new ChatStreamRegistry();
+    const controller = registry.getController('noop-state');
+    const listener = vi.fn();
+    controller.subscribe(listener);
+
+    controller.setChatState(ChatState.Idle); // already Idle — a no-op
+
+    raf.runFrame();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('one streamed Message event produces exactly one notification', async () => {
+    // Synchronous rAF: every snapshot swap notifies immediately, so the call
+    // count below counts SWAPS. Before the applyMessageEvent coalescing, one
+    // Message event ran three swaps (chat state + token state + messages).
+    stubRafSync();
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('one-1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const controller = registry.getController('one-1');
+    const submitted = controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(controller.getSnapshot().chatState).toBe(ChatState.Streaming);
+
+    const listener = vi.fn();
+    const unsubscribe = controller.subscribe(listener);
+
+    controlled.push({
+      type: 'Message',
+      message: assistantMessage('a1', 'hello'),
+      token_state: tokenState,
+    } as MessageEvent);
+    await flush();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+    unsubscribe();
+  });
+
+  it('token events with an unchanged running entry do not re-notify running listeners', async () => {
+    stubRafSync();
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('run-skip') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+
+    const runningListener = vi.fn();
+    registry.subscribeRunning(runningListener);
+
+    const controller = registry.getController('run-skip');
+    const submitted = controller.handleSubmit('go');
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    expect(registry.getRunningSnapshot()).toMatchObject([
+      { sessionId: 'run-skip', chatState: ChatState.Streaming },
+    ]);
+    const callsAfterStart = runningListener.mock.calls.length;
+    const snapshotAfterStart = registry.getRunningSnapshot();
+
+    for (let i = 0; i < 5; i++) {
+      controlled.push({
+        type: 'Message',
+        message: assistantMessage('a1', `token-${i} `),
+        token_state: tokenState,
+      } as MessageEvent);
+      await flush();
+    }
+
+    // Still Streaming with the same title and start time: the sidebar/tab
+    // strip must not have been re-rendered per token.
+    expect(runningListener.mock.calls.length).toBe(callsAfterStart);
+    expect(registry.getRunningSnapshot()).toBe(snapshotAfterStart);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent);
+    controlled.close();
+    await submitted;
+
+    // The Idle transition is material and does re-notify.
+    expect(runningListener.mock.calls.length).toBeGreaterThan(callsAfterStart);
+    expect(registry.getRunningSnapshot()[0]).toMatchObject({
+      sessionId: 'run-skip',
+      chatState: ChatState.Idle,
+    });
   });
 });
