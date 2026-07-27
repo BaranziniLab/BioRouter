@@ -142,8 +142,6 @@ mod tests {
     /// `sqlx::Error` under `context(...)` wrappers).
     #[test]
     fn store_errors_classify_as_session_store_not_provider_failure() {
-        use anyhow::Context as _;
-
         let store_error =
             anyhow::Error::new(sqlx::Error::PoolClosed).context("Failed to add message to session");
         assert_eq!(
