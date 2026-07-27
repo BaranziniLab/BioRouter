@@ -154,13 +154,10 @@ impl KnowledgeService {
             crate::knowledge::paths::validate_kb_id(id)?;
         }
 
-        if sanitized.is_empty() {
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
-            return Ok(());
-        }
-
+        // An empty list is written, not deleted: `get_hidden_for_session_or_persisted`
+        // discriminates on file *existence*, so `[]` is how a session says
+        // "I override, and I hide nothing". Deleting the file here made that
+        // state unrepresentable and silently re-inherited the machine default.
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, serde_json::to_vec(&sanitized)?)?;
         std::fs::rename(tmp, path)?;
@@ -1057,6 +1054,29 @@ impl KnowledgeService {
         self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)
     }
 
+    /// Drop a session's hidden-KB override so it inherits the machine-wide
+    /// list again. Distinct from `set_hidden_for_session(sid, &[])`, which is
+    /// an override that hides nothing.
+    pub fn clear_hidden_for_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        let path = self.hidden_session_path(session_id);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Remove the machine-wide hidden list entirely (equivalent to an empty
+    /// list at this scope, but leaves no file behind).
+    pub fn clear_hidden_persisted(&self) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        let path = crate::knowledge::paths::hidden_kbs_path(self.root());
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
     /// The knowledge bases this scope may use, as ids, sorted.
     ///
     /// This is *the* set under the merged model: every base returned here is
@@ -1762,12 +1782,14 @@ mod tests {
             vec!["kb-a".to_string(), "kb-b".to_string()]
         );
 
+        // Setting an empty list is an explicit override ("hide nothing here"),
+        // not a request to fall back to the machine-wide list. See
+        // `session_hidden_override_can_be_explicitly_empty`.
         svc.set_hidden_for_session("session-a", &[])?;
         assert!(svc.get_hidden_for_session("session-a")?.is_empty());
-        assert_eq!(
-            svc.get_hidden_for_session_or_persisted("session-a")?,
-            vec!["kb-a".to_string(), "kb-b".to_string()]
-        );
+        assert!(svc
+            .get_hidden_for_session_or_persisted("session-a")?
+            .is_empty());
 
         Ok(())
     }
@@ -1801,6 +1823,41 @@ mod tests {
         assert_eq!(
             svc.session_kb_ids(Some("session-b"))?,
             vec!["alpha".to_string(), "zulu".to_string()]
+        );
+        Ok(())
+    }
+
+    /// Under the merged model the hidden list *is* the session's set, so
+    /// "everything is in this chat" is the most common gesture there is. It
+    /// must be a state the store can hold — writing an empty list used to
+    /// delete the override file, and `get_hidden_for_session_or_persisted`
+    /// uses file existence as its discriminator, so the session silently
+    /// re-inherited the machine-wide list.
+    #[test]
+    fn session_hidden_override_can_be_explicitly_empty() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.set_hidden_persisted(&["kb-a".to_string()])?;
+
+        // "Show everything in this chat" must NOT re-inherit the machine list.
+        svc.set_hidden_for_session("session-a", &[])?;
+        assert!(
+            svc.get_hidden_for_session_or_persisted("session-a")?
+                .is_empty(),
+            "an explicitly empty session override must not inherit the machine default"
+        );
+
+        // A session that never overrode still inherits.
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-b")?,
+            vec!["kb-a".to_string()]
+        );
+
+        // Dropping the override is a separate, explicit gesture.
+        svc.clear_hidden_for_session("session-a")?;
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-a")?,
+            vec!["kb-a".to_string()]
         );
         Ok(())
     }
