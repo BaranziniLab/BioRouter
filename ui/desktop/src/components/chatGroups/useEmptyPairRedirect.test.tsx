@@ -163,6 +163,23 @@ describe('useEmptyPairRedirect — no tabs → Home (issue #38)', () => {
     expect(currentPath).toBe('/pair');
   });
 
+  it('a FRESH WINDOW awaiting its launcher message (?initialMessagePending=) is not bounced', async () => {
+    // The launcher cargo cannot ride the URL: main.ts parks it in the main
+    // process and delivers it as set-initial-message IPC only after App.tsx
+    // signals react-ready — an effect that runs AFTER this child hook's. The
+    // window's first commit is therefore a bare zero-tab /pair with NO route
+    // state; only the synchronous URL marker set at window creation can hold
+    // the surface until the cargo lands.
+    const { queryByTestId } = mountAt({
+      pathname: '/pair',
+      search: '?initialMessagePending=true',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(currentPath).toBe('/pair?initialMessagePending=true');
+    expect(queryByTestId('pair-surface')).toBeTruthy();
+    expect(queryByTestId('home')).toBeNull();
+  });
+
   it('mid-flight session creation (isCreatingSession) holds the surface', async () => {
     mountAt('/pair', { isCreatingSession: true });
     await new Promise((resolve) => setTimeout(resolve, 20));

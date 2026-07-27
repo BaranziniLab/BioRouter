@@ -29,7 +29,18 @@ import { hasPendingNewTab } from './newTabRegistry';
  *     create-session path — cargo with no session yet; PairRouteContent is
  *     mid-flight creating one (isCreatingSession is still false in the very
  *     commit that starts the creation, so the raw inputs must gate too).
- *   - hasPendingNewTab(): Cmd+T from Settings. PEEK, never consume — the
+ *   - initialMessagePending (URL): a FRESH WINDOW born for a launcher message.
+ *     That cargo cannot ride the URL — main.ts parks it in the main process
+ *     and delivers it as `set-initial-message` IPC only after App.tsx signals
+ *     react-ready, an effect that runs AFTER this child hook's. Without the
+ *     marker the window's very first commit is a bare zero-tab /pair and the
+ *     redirect bounces it Home before the message ever arrives. main.ts sets
+ *     the param at window creation; the set-initial-message handler's
+ *     navigation (with real route state) drops it. If session creation fails
+ *     the marker keeps the window parked on the empty pane — the pre-#38
+ *     resting state — rather than silently discarding the launch intent.
+ *   - hasPendingNewTab(): Cmd+T from Settings, or a Cmd+T dispatched to a live
+ *     provider whose tab has not COMMITTED yet. PEEK, never consume — the
  *     provider's consume-once effect runs after this one and must still find
  *     the request (see newTabRegistry).
  *
@@ -56,12 +67,16 @@ export function useEmptyPairRedirect(isCreatingSession: boolean): void {
   const workflowDeeplink = window.appConfig?.get('workflowDeeplink') as string | undefined;
   const isNewChat = routeState.newChat === true;
   const initialMessage = routeState.initialMessage;
+  // Set by main.ts on a fresh window whose launcher message is still parked in
+  // the main process (see the docblock) — the cargo exists, just not here yet.
+  const initialMessagePending = searchParams.get('initialMessagePending') !== null;
 
   const hasState = state !== undefined;
   useEffect(() => {
     if (!hasState) return; // outside a provider there is nothing to judge
     if (tabCount > 0) return;
     if (resumeSessionId || isNewChat || initialMessage) return;
+    if (initialMessagePending) return;
     if (workflowId || workflowDeeplink) return;
     if (isCreatingSession) return;
     if (hasPendingNewTab()) return;
@@ -72,6 +87,7 @@ export function useEmptyPairRedirect(isCreatingSession: boolean): void {
     resumeSessionId,
     isNewChat,
     initialMessage,
+    initialMessagePending,
     workflowId,
     workflowDeeplink,
     isCreatingSession,
