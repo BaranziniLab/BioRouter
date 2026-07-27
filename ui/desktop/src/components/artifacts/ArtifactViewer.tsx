@@ -55,7 +55,6 @@ import type {
   ArtifactGitEntry,
   ArtifactGitStatus,
   ArtifactSource,
-  PreparedArtifactHtml,
 } from './artifactTypes';
 import {
   basenameFromPath,
@@ -469,9 +468,9 @@ export default function ArtifactViewer({
 
       if (activeArtifact.kind === 'html') {
         try {
-          const prepared = (await window.electron.prepareArtifactHtml({
+          const prepared = await window.electron.prepareArtifactHtml({
             html: activeArtifact.html,
-          })) as PreparedArtifactHtml;
+          });
           if (!cancelled) setPreview({ kind: 'html', html: prepared.html });
         } catch {
           if (!cancelled) setPreview({ kind: 'html', html: activeArtifact.html });
@@ -490,9 +489,11 @@ export default function ArtifactViewer({
       }
 
       try {
-        const response = (await window.electron.readArtifactFile(
+        // No cast: the preload IPC contract and the shared ArtifactFilePreview
+        // union are kept in lockstep, so the result assigns structurally.
+        const response: ArtifactFilePreview = await window.electron.readArtifactFile(
           activeArtifact.path
-        )) as ArtifactFilePreview;
+        );
         if (cancelled) return;
         if (response.kind === 'html') {
           // An HTML file the agent wrote gets a Preview/Raw toggle, like markdown:
@@ -502,9 +503,9 @@ export default function ArtifactViewer({
           // still renders figure-only with no raw source — only real files land here.
           let preparedHtml = response.text;
           try {
-            const prepared = (await window.electron.prepareArtifactHtml({
+            const prepared = await window.electron.prepareArtifactHtml({
               html: response.text,
-            })) as PreparedArtifactHtml;
+            });
             preparedHtml = prepared.html;
           } catch {
             // Preparation failed; fall back to the raw HTML for the Preview.
@@ -1131,12 +1132,12 @@ function DirectoryTreePreview({
     setSelectedEntry(entry);
     setSelectedPreview(null);
     try {
-      let response = (await window.electron.readArtifactFile(entry.path)) as ArtifactFilePreview;
+      let response: ArtifactFilePreview = await window.electron.readArtifactFile(entry.path);
       if (response.kind === 'html') {
         try {
-          const prepared = (await window.electron.prepareArtifactHtml({
+          const prepared = await window.electron.prepareArtifactHtml({
             html: response.text,
-          })) as PreparedArtifactHtml;
+          });
           response = { ...response, preparedHtml: prepared.html };
         } catch {
           response = { ...response, preparedHtml: response.text };
