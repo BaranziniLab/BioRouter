@@ -199,6 +199,11 @@ export default function LocalModelInventory() {
       try {
         if (model.ollama_name) {
           const ollama = await checkOllamaStatus();
+          // The Ollama check may settle after this flow lost the operation
+          // (deadline timeout, or a newer retry superseded it). A stale flow
+          // must stop here: beginning the fallback operation below would
+          // supersede the newer operation and its timers.
+          if (llamaServerStore.getSnapshot().operation?.id !== opId) return;
           if (ollama.isRunning) {
             llamaServerStore.setOperationMessage(
               opId,
@@ -208,6 +213,11 @@ export default function LocalModelInventory() {
               llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
             if (!pulled) throw new Error(`Ollama could not pull ${model.ollama_name}`);
+            // End the operation BEFORE reporting success: a pull that
+            // completes after its deadline (or after being superseded) must
+            // not toast stale success, and ending first also disarms the
+            // deadline so it cannot fire during the post-success refresh.
+            if (!llamaServerStore.endOperation(opId)) return;
             toastService.success({
               title: 'Local model installed',
               msg: `${model.display_name} was downloaded with Ollama.`,
@@ -267,6 +277,12 @@ export default function LocalModelInventory() {
         if (!res.data.output.trim()) {
           throw new Error('Llama Server returned an empty warm-up response');
         }
+        // End the operation BEFORE reporting success: a warm-up that settles
+        // after a terminal failure (polled sidecar error / deadline timeout)
+        // or after being superseded must not toast stale success, and ending
+        // first disarms the deadline so it cannot fire during the
+        // post-success refresh below.
+        if (!llamaServerStore.endOperation(opId)) return;
         toastService.success({
           title: 'Local model warmed up',
           msg: `${model.display_name} produced a test response.`,

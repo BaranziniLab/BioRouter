@@ -1,21 +1,40 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import LocalModelInventory from './LocalModelInventory';
-import { llamaServerStore, resetLlamaServerStoreForTests } from './llamaServerStore';
+import {
+  llamaServerStore,
+  resetLlamaServerStoreForTests,
+  LLAMA_SERVER_OPERATION_TIMEOUT_MS,
+  LLAMA_SERVER_POLL_INTERVAL_MS,
+} from './llamaServerStore';
 
 const mockLlamacppStatus = vi.fn();
+const mockLlamacppEnsure = vi.fn();
+const mockLlamacppWarmup = vi.fn();
 
 vi.mock('../../../api', () => ({
   llamacppStatus: (...args: unknown[]) => mockLlamacppStatus(...args),
-  llamacppEnsure: vi.fn(),
-  llamacppWarmup: vi.fn(),
+  llamacppEnsure: (...args: unknown[]) => mockLlamacppEnsure(...args),
+  llamacppWarmup: (...args: unknown[]) => mockLlamacppWarmup(...args),
   llamacppDelete: vi.fn(),
 }));
 
+const mockCheckOllamaStatus = vi.fn();
+const mockPullOllamaModel = vi.fn();
+
 vi.mock('../../../utils/ollamaDetection', () => ({
-  checkOllamaStatus: vi.fn().mockResolvedValue({ isRunning: false }),
+  checkOllamaStatus: (...args: unknown[]) => mockCheckOllamaStatus(...args),
   deleteOllamaModel: vi.fn(),
-  pullOllamaModel: vi.fn(),
+  pullOllamaModel: (...args: unknown[]) => mockPullOllamaModel(...args),
+}));
+
+const mockToastError = vi.fn();
+const mockToastSuccess = vi.fn();
+vi.mock('../../../toasts', () => ({
+  toastService: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+  },
 }));
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
@@ -45,7 +64,10 @@ const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const statusResponse = () => ({
+const statusResponse = (
+  sidecar: Record<string, unknown> = {},
+  entry: Record<string, unknown> = {}
+) => ({
   data: {
     sidecar: {
       state: 'stopped',
@@ -53,8 +75,9 @@ const statusResponse = () => ({
       build: 'test',
       detail: null,
       model: null,
+      ...sidecar,
     },
-    catalog: [catalogEntry()],
+    catalog: [catalogEntry(entry)],
     system: {
       os: 'macos',
       total_memory_gib: 64,
@@ -72,10 +95,12 @@ describe('LocalModelInventory', () => {
     vi.clearAllMocks();
     resetLlamaServerStoreForTests();
     mockLlamacppStatus.mockResolvedValue(statusResponse());
+    mockCheckOllamaStatus.mockResolvedValue({ isRunning: false });
   });
 
   afterEach(() => {
     resetLlamaServerStoreForTests();
+    vi.useRealTimers();
   });
 
   it('shows the expected-speed hint next to the download size in each row (#35)', async () => {
@@ -121,5 +146,171 @@ describe('LocalModelInventory', () => {
     // The shared store still received the status; the guarded setters made
     // no post-unmount component-state writes (nothing to throw/warn on).
     expect(llamaServerStore.getSnapshot().status).not.toBeNull();
+  });
+
+  it('a stale Ollama check cannot begin a fallback operation that supersedes a retry (re-review 1)', async () => {
+    const checkResolvers: Array<(value: { isRunning: boolean }) => void> = [];
+    mockCheckOllamaStatus.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          checkResolvers.push(resolve);
+        })
+    );
+    render(<LocalModelInventory />);
+    const install = await screen.findByText('Install');
+
+    vi.useFakeTimers();
+    fireEvent.click(install);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(llamaServerStore.getSnapshot().operation).not.toBeNull();
+
+    // The 60-minute deadline fires while the Ollama check is still hanging:
+    // terminal timeout, toasted exactly once.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_OPERATION_TIMEOUT_MS);
+    });
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+
+    // The user retries; the retry's own Ollama check hangs too.
+    fireEvent.click(screen.getByText('Install'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const retryId = llamaServerStore.getSnapshot().operation?.id;
+    expect(retryId).toBeDefined();
+
+    // The STALE flow's check finally settles. It must not begin the fallback
+    // operation (which would supersede the retry and its timers) or reach
+    // the ensure call.
+    await act(async () => {
+      checkResolvers[0]({ isRunning: false });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(llamaServerStore.getSnapshot().operation?.id).toBe(retryId);
+    expect(mockLlamacppEnsure).not.toHaveBeenCalled();
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pull that completes after the deadline cannot toast stale success (re-review 2)', async () => {
+    mockCheckOllamaStatus.mockResolvedValue({ isRunning: true });
+    let resolvePull!: (value: boolean) => void;
+    mockPullOllamaModel.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePull = resolve;
+        })
+    );
+    render(<LocalModelInventory />);
+    const install = await screen.findByText('Install');
+
+    vi.useFakeTimers();
+    fireEvent.click(install);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockPullOllamaModel).toHaveBeenCalled();
+
+    // The pull outlives the 60-minute deadline: terminal timeout.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_OPERATION_TIMEOUT_MS);
+    });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+
+    // The pull finally completes; the stale flow must stay silent — no
+    // success toast, no post-success refresh.
+    const statusCalls = mockLlamacppStatus.mock.calls.length;
+    await act(async () => {
+      resolvePull(true);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockLlamacppStatus.mock.calls.length).toBe(statusCalls);
+  });
+
+  it('a warm-up that settles after a polled terminal error cannot toast stale success (re-review 3)', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { downloaded: true, download_status: 'downloaded' })
+    );
+    let resolveWarmup!: (value: unknown) => void;
+    mockLlamacppWarmup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveWarmup = resolve;
+        })
+    );
+    render(<LocalModelInventory />);
+    const warm = await screen.findByText('Warm up');
+
+    vi.useFakeTimers();
+    fireEvent.click(warm);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // A poll tick reports a terminal sidecar error while the warm-up HTTP
+    // call is still in flight; toasted immediately, operation cleared.
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse(
+        { state: 'error', model: 'gemma4', detail: 'model blew up' },
+        { downloaded: true, download_status: 'downloaded' }
+      )
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_POLL_INTERVAL_MS);
+    });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+
+    // The warm-up call then "succeeds" — but the flow already failed
+    // terminally, so it must not report success.
+    await act(async () => {
+      resolveWarmup({
+        data: {
+          output: 'OK',
+          sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends the warm-up operation before the post-success refresh, disarming the deadline (re-review 3)', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { downloaded: true, download_status: 'downloaded' })
+    );
+    mockLlamacppWarmup.mockResolvedValue({
+      data: {
+        output: 'OK',
+        sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+      },
+    });
+    render(<LocalModelInventory />);
+    const warm = await screen.findByText('Warm up');
+
+    vi.useFakeTimers();
+    // The post-success refresh hangs indefinitely.
+    mockLlamacppStatus.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(warm);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Success was reported, and the operation (with its deadline + poll
+    // loop) ended BEFORE the refresh started.
+    expect(mockToastSuccess).toHaveBeenCalledTimes(1);
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+
+    // The full deadline elapses while the refresh is still pending: it was
+    // disarmed with the operation, so no timeout error can fire.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_OPERATION_TIMEOUT_MS);
+    });
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 });
