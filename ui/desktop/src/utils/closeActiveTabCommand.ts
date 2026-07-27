@@ -19,7 +19,16 @@ export type CloseCommandOutcome = 'terminal-pane' | 'chat-tab' | 'window';
  *      (taking its terminal with it) or, with no tab active, the whole window.
  *   2. a chat tab is active → close it (closeActiveTabRegistry; the provider
  *      is mounted only under /pair, so this claims nothing elsewhere).
- *   3. nothing claimed the keystroke → close the window, which is what a macOS
+ *   3. no chat tab claimed it, but a VISIBLE terminal pane still exists →
+ *      close that pane (Codex review B6 finding 4). This is the last-chance
+ *      rung for the gated zero-tab /pair with a dock open on the empty pane:
+ *      if the user's focus wandered out of the terminal (a click on the
+ *      surface, a dismissed dialog), rung 1 stands down and rung 2 has
+ *      nothing, and pre-fix the WINDOW closed out from under a live pane.
+ *      Only registered (= visible) docks can answer; requestCloseTerminalPane
+ *      picks the last-focused one when none holds focus. On Settings and
+ *      other dock-less routes this rung claims nothing.
+ *   4. nothing claimed the keystroke → close the window, which is what a macOS
  *      user expects from Cmd+W on a tabless window.
  *
  * This is a separate module rather than an inline handler so the ladder the
@@ -30,6 +39,7 @@ export type CloseCommandOutcome = 'terminal-pane' | 'chat-tab' | 'window';
 export function runCloseActiveTabCommand(closeWindow: () => void): CloseCommandOutcome {
   if (isTerminalFocused() && requestCloseTerminalPane()) return 'terminal-pane';
   if (closeActiveTab()) return 'chat-tab';
+  if (requestCloseTerminalPane()) return 'terminal-pane';
   closeWindow();
   return 'window';
 }
