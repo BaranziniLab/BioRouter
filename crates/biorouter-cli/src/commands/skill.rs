@@ -401,6 +401,36 @@ enum ResolvedTarget {
     Bundle { name: String, skills: usize },
 }
 
+/// Typed outcome of [`resolve_identifier`], so callers can tell a genuine
+/// zero-match (the ONLY state where `handle_enable`'s stale-entry cleanup may
+/// mutate the config) from every other failure — ambiguity, empty query —
+/// which must surface to the user, never be swallowed by cleanup (Codex B2
+/// finding 3).
+#[derive(Debug)]
+enum ResolveError {
+    /// No installed skill or bundle matched the query in any namespace.
+    NoMatch(anyhow::Error),
+    /// A real resolution failure (ambiguous or empty query): report it,
+    /// change nothing.
+    Fatal(anyhow::Error),
+}
+
+impl ResolveError {
+    fn into_inner(self) -> anyhow::Error {
+        match self {
+            ResolveError::NoMatch(err) | ResolveError::Fatal(err) => err,
+        }
+    }
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::NoMatch(err) | ResolveError::Fatal(err) => err.fmt(f),
+        }
+    }
+}
+
 /// Resolve what the user typed — frontmatter name, bundle name, or directory
 /// slug — to the identifier the backend's disabled set matches on.
 ///
@@ -411,10 +441,13 @@ enum ResolvedTarget {
 /// would mutate skill A when the user meant skill B whose slug happens to
 /// equal A's name (Codex B2 finding 2). Exact matches (in any namespace) win
 /// over case-insensitive ones.
-fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<ResolvedTarget> {
+fn resolve_identifier(
+    skills: &[InstalledSkill],
+    query: &str,
+) -> Result<ResolvedTarget, ResolveError> {
     let q = query.trim();
     if q.is_empty() {
-        bail!("Empty skill name.");
+        return Err(ResolveError::Fatal(anyhow!("Empty skill name.")));
     }
     let ql = q.to_lowercase();
 
@@ -427,15 +460,15 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
 
     match candidates.len() {
         1 => Ok(candidates.into_iter().next().expect("len checked")),
-        0 => no_match_error(skills, q, &ql),
+        0 => Err(ResolveError::NoMatch(no_match_error(skills, q, &ql))),
         _ => {
             let listed: Vec<String> = candidates.iter().map(candidate_label).collect();
-            bail!(
+            Err(ResolveError::Fatal(anyhow!(
                 "'{q}' is ambiguous — it matches {} distinct targets: {}. \
                  Use the full slug for a skill, or the exact directory name for a bundle.",
                 candidates.len(),
                 listed.join("; ")
-            );
+            )))
         }
     }
 }
@@ -488,8 +521,9 @@ fn candidate_label(target: &ResolvedTarget) -> String {
     }
 }
 
-/// Nothing matched in any namespace — fail with close-identifier suggestions.
-fn no_match_error(skills: &[InstalledSkill], q: &str, ql: &str) -> Result<ResolvedTarget> {
+/// Nothing matched in any namespace — the error text, with close-identifier
+/// suggestions when any exist.
+fn no_match_error(skills: &[InstalledSkill], q: &str, ql: &str) -> anyhow::Error {
     let mut bundles: Vec<&str> = skills.iter().filter_map(|s| s.bundle.as_deref()).collect();
     bundles.sort_unstable();
     bundles.dedup();
@@ -511,14 +545,15 @@ fn no_match_error(skills: &[InstalledSkill], q: &str, ql: &str) -> Result<Resolv
     suggestions.sort();
     suggestions.dedup();
     if suggestions.is_empty() {
-        bail!(
+        anyhow!(
             "No installed skill or bundle matches '{q}'. Run `biorouter skill list` to see installed skills (slug, name, and enabled state)."
-        );
+        )
+    } else {
+        anyhow!(
+            "No installed skill or bundle matches '{q}'. Did you mean: {}?",
+            suggestions.join(", ")
+        )
     }
-    bail!(
-        "No installed skill or bundle matches '{q}'. Did you mean: {}?",
-        suggestions.join(", ")
-    );
 }
 
 fn target_identifier(target: &ResolvedTarget) -> &str {
@@ -654,7 +689,7 @@ pub async fn handle_list() -> Result<()> {
 
 pub async fn handle_disable(query: String) -> Result<()> {
     let skills = collect_installed_skills();
-    let target = resolve_identifier(&skills, &query)?;
+    let target = resolve_identifier(&skills, &query).map_err(ResolveError::into_inner)?;
     if let Some(note) = slug_mapping_note(&target) {
         println!("{note}");
     }
@@ -681,17 +716,24 @@ pub async fn handle_disable(query: String) -> Result<()> {
 
 pub async fn handle_enable(query: String) -> Result<()> {
     let skills = collect_installed_skills();
-    let path = skills_config_path();
-    let mut config = load_skills_config(&path)?;
+    enable_with(&skills, &skills_config_path(), &query)
+}
 
-    let target = match resolve_identifier(&skills, &query) {
+/// The whole enable flow over already-discovered skills and an explicit
+/// config path — split from `handle_enable` so tests can drive it against a
+/// temp tree and temp config file.
+fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()> {
+    let target = match resolve_identifier(skills, query) {
         Ok(target) => target,
-        Err(err) => {
+        Err(ResolveError::NoMatch(err)) => {
             // Nothing installed matches, but a stale entry (e.g. from a skill
             // removed after being disabled) can still be cleaned up when the
-            // raw query matches it exactly.
+            // raw query matches it exactly. Genuine zero-match ONLY: an
+            // ambiguity (or any other resolution failure) must surface, not
+            // silently mutate the config and claim nothing matched.
+            let mut config = load_skills_config(path)?;
             if set_disabled_state(&mut config, query.trim(), false)? {
-                write_skills_config(&path, &config)?;
+                write_skills_config(path, &config)?;
                 println!(
                     "  {} removed stale disabled entry {} (no installed skill matches it)",
                     style("✓").green(),
@@ -701,14 +743,16 @@ pub async fn handle_enable(query: String) -> Result<()> {
             }
             return Err(err);
         }
+        Err(ResolveError::Fatal(err)) => return Err(err),
     };
     if let Some(note) = slug_mapping_note(&target) {
         println!("{note}");
     }
 
+    let mut config = load_skills_config(path)?;
     let changed = set_disabled_state(&mut config, target_identifier(&target), false)?;
     if changed {
-        write_skills_config(&path, &config)?;
+        write_skills_config(path, &config)?;
         println!("  {} enabled {}", style("✓").green(), target_label(&target));
     } else {
         println!(
@@ -1070,6 +1114,72 @@ mod tests {
             err.contains("No installed skill or bundle matches"),
             "{err}"
         );
+    }
+
+    // ── typed resolution errors + stale-entry cleanup gating ─────────────────
+
+    // Finding 3: only a genuine zero-match may trigger handle_enable's
+    // stale-entry cleanup; ambiguity and other failures must surface.
+    #[test]
+    fn resolution_errors_are_typed_no_match_vs_fatal() {
+        let (_tmp, skills) = sample_tree();
+        assert!(
+            matches!(
+                resolve_identifier(&skills, "zzz-nothing"),
+                Err(ResolveError::NoMatch(_))
+            ),
+            "unknown identifier is a genuine zero-match"
+        );
+        assert!(
+            matches!(
+                resolve_identifier(&skills, "tool"),
+                Err(ResolveError::Fatal(_))
+            ),
+            "ambiguity is fatal, never a stale-cleanup trigger"
+        );
+        assert!(
+            matches!(
+                resolve_identifier(&skills, "   "),
+                Err(ResolveError::Fatal(_))
+            ),
+            "empty query is fatal"
+        );
+    }
+
+    #[test]
+    fn enable_does_not_treat_ambiguity_as_a_stale_entry() {
+        let (_tmp, skills) = sample_tree();
+        let cfg = TempDir::new().unwrap();
+        let path = cfg.path().join("skills-config.json");
+        // 'tool' is ambiguous (pack-a/tool vs pack-b/tool) AND present in the
+        // disabled list — the old code deleted it and reported "no installed
+        // skill matches", suppressing the ambiguity error.
+        fs::write(&path, r#"{"disabled":["tool"],"future":{"keep":1}}"#).unwrap();
+
+        let err = enable_with(&skills, &path, "tool").unwrap_err().to_string();
+        assert!(err.contains("ambiguous"), "ambiguity must surface: {err}");
+
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            reread["disabled"],
+            json!(["tool"]),
+            "config must be untouched on a fatal resolution error"
+        );
+        assert_eq!(reread["future"], json!({"keep": 1}));
+    }
+
+    #[test]
+    fn enable_cleans_up_stale_entry_only_on_genuine_zero_match() {
+        let (_tmp, skills) = sample_tree();
+        let cfg = TempDir::new().unwrap();
+        let path = cfg.path().join("skills-config.json");
+        fs::write(&path, r#"{"disabled":["ghost-skill"]}"#).unwrap();
+
+        enable_with(&skills, &path, "ghost-skill").unwrap();
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread["disabled"], json!([]), "stale entry cleaned up");
     }
 
     // ── skills-config.json mutation ──────────────────────────────────────────
