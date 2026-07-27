@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
-  const { activeKb } = useKnowledge();
+  const { primaryKb, visibleBases } = useKnowledge();
   const [openInternal, setOpenInternal] = useState(false);
 
   // Support both controlled (open+onOpenChange) and uncontrolled usage.
@@ -28,11 +28,14 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       >
         <span
           className="h-2 w-2 flex-shrink-0 rounded-full"
-          style={{ background: activeKb?.color ?? 'var(--text-muted)' }}
+          style={{ background: primaryKb?.color ?? 'var(--text-muted)' }}
         />
         <span className="min-w-0 flex-1 truncate text-left font-semibold">
-          {activeKb?.name ?? 'Focus a knowledge base'}
+          {primaryKb?.name ?? 'No primary knowledge base'}
         </span>
+        {visibleBases.length > 1 && (
+          <span className="shrink-0 text-[11px] text-text-muted">+{visibleBases.length - 1}</span>
+        )}
         <Badge uppercase className="text-[10px]">
           KB
         </Badge>
