@@ -38,6 +38,16 @@ const MAX_JS_LOOP_ITERATIONS: u64 = 1_000_000;
 const MAX_JS_ARRAY_BUFFER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_JS_TOOL_CALLS: usize = 256;
 const MAX_MODULE_SEARCH_RESULTS: usize = 12;
+/// Cap on per-run sub-call telemetry records (issue #28) so a loop-heavy
+/// script cannot grow the result meta without bound; calls past the cap are
+/// counted, not recorded.
+const MAX_TOOL_CALL_RECORDS: usize = 64;
+/// Per-field byte cap for recorded sub-call args / error text.
+const MAX_TOOL_CALL_RECORD_TEXT_BYTES: usize = 2048;
+/// Result-meta key carrying the executed sub-call records for the UI.
+const TOOL_CALLS_META_KEY: &str = "biorouter/tool-calls";
+/// Result-meta key carrying how many sub-calls were executed but not recorded.
+const TOOL_CALLS_DROPPED_META_KEY: &str = "biorouter/tool-calls-dropped";
 const MAX_COLLECTED_ARTIFACTS: usize = 16;
 const MAX_COLLECTED_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EMBEDDED_ARTIFACT_HTML_BYTES: usize = 16 * 1024 * 1024;
@@ -940,12 +950,73 @@ pub struct CodeExecutionClient {
     context: PlatformExtensionContext,
 }
 
+/// Truncate `text` to at most `max_bytes` bytes on a char boundary, marking
+/// the cut with an ellipsis. Records are UI telemetry, so a lossy-but-bounded
+/// copy beats an exact-but-unbounded one.
+fn truncate_record_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    // The loop above lands `end` on a char boundary, so `get` cannot fail;
+    // the fallback only defends against a future edit breaking that invariant.
+    format!("{}…", text.get(..end).unwrap_or_default())
+}
+
+/// One executed sub-call inside an `execute_code` run (issue #28). Attached to
+/// the result as `biorouter/tool-calls` META — never content — so the UI can
+/// show exactly which tools ran, with which inputs, and which one failed,
+/// without the records ever entering the model context.
+#[derive(Debug, Clone, Serialize)]
+struct ToolCallRecord {
+    /// Prefixed tool name, e.g. "developer__shell".
+    tool: String,
+    /// The exact JSON arguments string, truncated to
+    /// `MAX_TOOL_CALL_RECORD_TEXT_BYTES`.
+    args: String,
+    /// "ok" | "error".
+    status: &'static str,
+    /// The real error text on failure, truncated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// Size of the result handed back to the script on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_bytes: Option<usize>,
+}
+
+impl ToolCallRecord {
+    fn ok(tool: &str, args_json: &str, result_bytes: usize) -> Self {
+        Self {
+            tool: tool.to_string(),
+            args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
+            status: "ok",
+            error: None,
+            result_bytes: Some(result_bytes),
+        }
+    }
+
+    fn error(tool: &str, args_json: &str, error: &str) -> Self {
+        Self {
+            tool: tool.to_string(),
+            args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
+            status: "error",
+            error: Some(truncate_record_text(error, MAX_TOOL_CALL_RECORD_TEXT_BYTES)),
+            result_bytes: None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct CollectedArtifacts {
     content: Vec<Content>,
     encoded_bytes: usize,
     app_paths: Vec<String>,
     last_app_path: Option<String>,
+    tool_calls: Vec<ToolCallRecord>,
+    dropped_tool_calls: usize,
 }
 
 impl CollectedArtifacts {
@@ -987,6 +1058,14 @@ impl CollectedArtifacts {
             }
             self.app_paths.push(path.clone());
             self.last_app_path = Some(path);
+        }
+    }
+
+    fn push_tool_call(&mut self, record: ToolCallRecord) {
+        if self.tool_calls.len() < MAX_TOOL_CALL_RECORDS {
+            self.tool_calls.push(record);
+        } else {
+            self.dropped_tool_calls += 1;
         }
     }
 }
@@ -1317,12 +1396,9 @@ impl CodeExecutionClient {
 
         tool_handler.abort();
 
-        let mut contents = js_result.map(|r| vec![Content::text(format!("Result: {r}"))])?;
         let mut collected = collected_artifacts.lock().await;
-        contents.append(&mut collected.content);
-        let mut result = CallToolResult::success(contents);
+        let mut meta = JsonObject::new();
         if !collected.app_paths.is_empty() {
-            let mut meta = JsonObject::new();
             if let Some(path) = &collected.last_app_path {
                 meta.insert(
                     "biorouter/app-path".to_string(),
@@ -1333,9 +1409,39 @@ impl CodeExecutionClient {
                 "biorouter/app-paths".to_string(),
                 serde_json::to_value(&collected.app_paths).unwrap_or_default(),
             );
-            result.meta = Some(rmcp::model::Meta(meta));
         }
-        Ok(result)
+        if !collected.tool_calls.is_empty() {
+            meta.insert(
+                TOOL_CALLS_META_KEY.to_string(),
+                serde_json::to_value(&collected.tool_calls).unwrap_or_default(),
+            );
+            if collected.dropped_tool_calls > 0 {
+                meta.insert(
+                    TOOL_CALLS_DROPPED_META_KEY.to_string(),
+                    Value::from(collected.dropped_tool_calls),
+                );
+            }
+        }
+        let meta = (!meta.is_empty()).then_some(rmcp::model::Meta(meta));
+
+        match js_result {
+            Ok(r) => {
+                let mut contents = vec![Content::text(format!("Result: {r}"))];
+                contents.append(&mut collected.content);
+                let mut result = CallToolResult::success(contents);
+                result.meta = meta;
+                Ok(result)
+            }
+            Err(error) => {
+                // Keep the same error text `call_tool` used to produce, but
+                // attach the telemetry meta: a failing run is exactly when the
+                // executed-calls list matters most (issue #28).
+                let mut result =
+                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))]);
+                result.meta = meta;
+                Ok(result)
+            }
+        }
     }
 
     async fn handle_read_module(
@@ -1531,16 +1637,19 @@ impl CodeExecutionClient {
         while let Some((tool_name, arguments, response_tx)) = call_rx.recv().await {
             tool_calls += 1;
             if tool_calls > MAX_JS_TOOL_CALLS {
-                let _ = response_tx.send(Err(format!(
-                    "JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit"
-                )));
+                let error = format!("JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit");
+                collected_artifacts
+                    .lock()
+                    .await
+                    .push_tool_call(ToolCallRecord::error(&tool_name, &arguments, &error));
+                let _ = response_tx.send(Err(error));
                 continue;
             }
             let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
                 Some(manager) => {
                     let tool_call = CallToolRequestParams {
                         task: None,
-                        name: tool_name.into(),
+                        name: tool_name.clone().into(),
                         arguments: serde_json::from_str(&arguments).ok(),
                         meta: None,
                     };
@@ -1599,17 +1708,22 @@ impl CodeExecutionClient {
                                     )
                                 };
                                 if is_error {
+                                    // Name the failing tool (issue #28): this string is
+                                    // what the script throws, so an uncaught failure
+                                    // surfaces at the step level already attributed.
                                     match value {
-                                        Ok(message) => Err(format!("Tool error: {message}")),
+                                        Ok(message) => {
+                                            Err(format!("Tool error from {tool_name}: {message}"))
+                                        }
                                         Err(error) => Err(error),
                                     }
                                 } else {
                                     value
                                 }
                             }
-                            Err(e) => Err(format!("Tool error: {}", e.message)),
+                            Err(e) => Err(format!("Tool error from {tool_name}: {}", e.message)),
                         },
-                        Err(e) => Err(format!("Dispatch error: {e}")),
+                        Err(e) => Err(format!("Dispatch error from {tool_name}: {e}")),
                     }
                 }
                 None => Err("Extension manager not available".to_string()),
@@ -1623,6 +1737,14 @@ impl CodeExecutionClient {
                     Ok(value)
                 }
             });
+            // Per-call telemetry for the UI's executed-calls view (issue #28).
+            {
+                let record = match &result {
+                    Ok(value) => ToolCallRecord::ok(&tool_name, &arguments, value.len()),
+                    Err(error) => ToolCallRecord::error(&tool_name, &arguments, error),
+                };
+                collected_artifacts.lock().await.push_tool_call(record);
+            }
             let _ = response_tx.send(result);
         }
     }
@@ -2171,6 +2293,108 @@ mod tests {
             app_paths_from_meta(Some(&meta)),
             vec!["/apps/nested/".to_string(), "/apps/direct/".to_string()]
         );
+    }
+
+    // --- issue #28: per-sub-call telemetry -------------------------------
+
+    #[test]
+    fn record_text_truncation_is_bounded_and_char_safe() {
+        assert_eq!(truncate_record_text("short", 2048), "short");
+
+        let truncated = truncate_record_text(&"x".repeat(5000), 2048);
+        assert!(truncated.len() <= 2048 + '…'.len_utf8());
+        assert!(truncated.ends_with('…'));
+
+        // Cutting inside a multi-byte char must back up to a boundary.
+        let multi = "é".repeat(100);
+        let truncated = truncate_record_text(&multi, 3);
+        assert!(truncated.starts_with('é'));
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn tool_call_records_are_capped_not_unbounded() {
+        let mut collected = CollectedArtifacts::default();
+        for index in 0..(MAX_TOOL_CALL_RECORDS + 5) {
+            collected.push_tool_call(ToolCallRecord::ok(
+                &format!("developer__shell_{index}"),
+                "{}",
+                4,
+            ));
+        }
+        assert_eq!(collected.tool_calls.len(), MAX_TOOL_CALL_RECORDS);
+        assert_eq!(collected.dropped_tool_calls, 5);
+    }
+
+    #[test]
+    fn tool_call_record_serializes_args_and_status() {
+        let ok = serde_json::to_value(ToolCallRecord::ok(
+            "developer__shell",
+            r#"{"command":"echo hi"}"#,
+            42,
+        ))
+        .unwrap();
+        assert_eq!(ok["tool"], "developer__shell");
+        assert_eq!(ok["args"], r#"{"command":"echo hi"}"#);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["result_bytes"], 42);
+        assert!(ok.get("error").is_none());
+
+        let err = serde_json::to_value(ToolCallRecord::error(
+            "developer__text_editor",
+            r#"{"command":"view"}"#,
+            "Tool error from developer__text_editor: no such file",
+        ))
+        .unwrap();
+        assert_eq!(err["status"], "error");
+        assert_eq!(
+            err["error"],
+            "Tool error from developer__text_editor: no such file"
+        );
+        assert!(err.get("result_bytes").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_tool_handler_records_per_call_telemetry() {
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            "telemetry-session".to_string(),
+            call_rx,
+            None,
+            Arc::clone(&collected),
+            CancellationToken::new(),
+        ));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        call_tx
+            .send((
+                "developer__shell".to_string(),
+                r#"{"command":"echo hi"}"#.to_string(),
+                tx,
+            ))
+            .unwrap();
+        let response = rx.await.unwrap();
+        assert!(response.is_err(), "no manager: the call must fail");
+        drop(call_tx);
+        handler.await.unwrap();
+
+        let collected = collected.lock().await;
+        assert_eq!(collected.tool_calls.len(), 1);
+        let record = &collected.tool_calls[0];
+        assert_eq!(record.tool, "developer__shell");
+        assert!(record.args.contains("echo hi"), "args: {}", record.args);
+        assert_eq!(record.status, "error");
+        assert!(
+            record
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Extension manager"),
+            "error: {:?}",
+            record.error
+        );
+        assert!(record.result_bytes.is_none());
     }
 
     #[test]
