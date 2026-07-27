@@ -604,6 +604,118 @@ async fn case20_syntax_error_is_reported() {
         out.to_lowercase().contains("parse error") || out.to_lowercase().contains("syntaxerror"),
         "expected a parse error, got: {out}"
     );
+    // An ordinary typo carries NO embedded-payload hint (issue #23) — the hint
+    // must not fire on parse errors unrelated to templates.
+    assert!(
+        !out.contains("String.raw does NOT make"),
+        "unrelated parse error must not get the template hint, got: {out}"
+    );
+}
+
+// ---- issue #23: the six transcript parse-failure shapes now self-correct ----
+//
+// Each payload below reproduces one row of issue #23's failure table (session
+// "starsign master conversation"): model-generated scripts embedding shell,
+// CSS/markdown, or prose in template literals, mostly behind `String.raw` in
+// the belief that it neutralises `${…}` and backticks. It does not — the code
+// is genuinely invalid JS — so the fix is a parse-error annotation teaching the
+// escape (`${"$"}{`) and the plain-string / write-to-file recoveries.
+
+/// Assert the exec result is a parse error carrying the #23 recovery hint.
+fn assert_parse_error_with_hint(is_error: bool, out: &str) {
+    assert!(is_error, "embedded payload must fail the parse, got: {out}");
+    assert!(out.contains("Parse error"), "got: {out}");
+    assert!(
+        out.contains("String.raw does NOT make ${…} literal"),
+        "parse error must carry the self-correction hint, got: {out}"
+    );
+    assert!(
+        out.contains(r#"${"$"}{VAR}"#),
+        "hint must teach the dollar-brace escape, got: {out}"
+    );
+    assert!(
+        out.contains("developer/text_editor") && out.contains("developer/shell"),
+        "hint must offer the write-to-file recovery, got: {out}"
+    );
+}
+
+/// Row 1: bash indirect expansion `"${!v:-}"` inside a `String.raw` shell loop
+/// ("expected token '}', got ':' in template literal").
+#[tokio::test]
+async fn parse_hint_bash_indirect_expansion_in_string_raw() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const s = String.raw`for v in A B; do echo \"${!v:-}\"; done`;\nrecord_result(s);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
+}
+
+/// Row 2: CSS `@media (prefers-color-scheme: dark)` landing in object-literal
+/// position after a markdown code fence's backticks ended the template early.
+#[tokio::test]
+async fn parse_hint_css_media_query_after_fence_breakout() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const doc = String.raw`# Theme\n```css\n@media (prefers-color-scheme: dark) { body { background: black } }\n```\n`;\nrecord_result(doc);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
+}
+
+/// Row 3: multi-line Python heredoc whose embedded quotes/backticks unbalance
+/// the literal ("unterminated string literal").
+#[tokio::test]
+async fn parse_hint_python_heredoc_with_embedded_quotes() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "import { shell } from \"developer\";\nconst out = shell({ command: String.raw`python3 - <<'PY'\nprint(\"it's `quoted`\")\nPY` });\nrecord_result(out);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
+}
+
+/// Row 4: same class — shell heredoc using `${VAR:-default}` parameter
+/// expansion inside `String.raw`.
+#[tokio::test]
+async fn parse_hint_shell_heredoc_with_default_expansion() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const cmd = String.raw`cat <<EOF\nprefix=${PREFIX:-/usr/local}\nEOF`;\nrecord_result(cmd);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
+}
+
+/// Row 5: large `String.raw` payload whose stray tokens (a payload backtick)
+/// confuse the `const … = …` binding parse ("got 'value' in lexical
+/// declaration binding list").
+#[tokio::test]
+async fn parse_hint_stray_tokens_in_binding_list() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const summary = String.raw`Benchmarks:\n- 10`s faster than baseline\n- final index value: 42`;\nrecord_result(summary);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
+}
+
+/// Row 6: work-summary payload with a backticked path fragment
+/// (`a/Users/wanjun/Desktop/starsign master`) parsed as code.
+#[tokio::test]
+async fn parse_hint_backticked_path_fragment_in_summary() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const workSummary = String.raw`Files touched: `a/Users/wanjun/Desktop/starsign master` index rebuilt`;\nrecord_result(workSummary);",
+    )
+    .await;
+    assert_parse_error_with_hint(is_error, &out);
 }
 
 #[tokio::test]

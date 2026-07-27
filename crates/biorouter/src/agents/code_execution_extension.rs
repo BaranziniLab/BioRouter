@@ -470,6 +470,51 @@ fn annotate_opaque_js_error(message: &str) -> String {
     }
 }
 
+/// Bash/zsh parameter-expansion shapes (`${!v}`, `${#arr}`, `${VAR:-default}`,
+/// `${VAR%suffix}`, `${VAR/x/y}` …) that are invalid as JS template
+/// substitutions. `${VAR}` alone is deliberately NOT matched — it is valid JS
+/// (a substitution referencing `VAR`) and fails at runtime, not parse time.
+fn bash_param_expansion_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\$\{[!#]|\$\{[A-Za-z_][A-Za-z0-9_]*[:%#/\-]").expect("static regex compiles")
+    })
+}
+
+/// Parse-time analogue of [`annotate_opaque_js_error`] (issue #23).
+///
+/// The dominant parse failure in real sessions is a shell/CSS/markdown payload
+/// embedded in a template literal — usually behind `String.raw`, which the
+/// model believes makes the payload inert. It does not: `String.raw` only
+/// preserves backslash escapes; every `${…}` is still parsed as a JS
+/// expression (so bash's `${!v:-}` is a syntax error) and any backtick in the
+/// payload terminates the literal, dumping the rest of the payload into JS
+/// context (the "got 'prefers' in object literal" class of error). Boa's raw
+/// message names none of this, so the model retried the identical form.
+///
+/// Triggers when the engine's message points at a template/string-literal
+/// problem, or when the source visibly embeds a foreign payload (uses
+/// `String.raw`, or combines a backtick template with bash-style parameter
+/// expansion). Unrelated parse errors pass through untouched.
+fn annotate_parse_error(code: &str, message: &str) -> String {
+    let message_points_at_literal =
+        message.contains("template literal") || message.contains("unterminated string literal");
+    let source_embeds_payload = code.contains("String.raw")
+        || (code.contains('`') && bash_param_expansion_regex().is_match(code));
+    if !(message_points_at_literal || source_embeds_payload) {
+        return message.to_string();
+    }
+    format!(
+        "{message} — the script likely embeds shell/CSS/markdown text in a template \
+         literal. String.raw does NOT make ${{…}} literal: every ${{…}} in ANY template \
+         literal (String.raw included) is parsed as a JavaScript expression, and a \
+         backtick inside the payload terminates the literal early. To emit a literal \
+         dollar-brace write ${{\"$\"}}{{VAR}} — or avoid the template entirely: pass the \
+         payload as a plain quoted JS string with \\n escapes, or write it to a file \
+         with developer/text_editor (write) and run that file via developer/shell."
+    )
+}
+
 /// Module loader for the sandbox.
 ///
 /// Specifiers are extension (server) names, matched **verbatim** — there is no
@@ -772,8 +817,12 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
         loader.insert(*server_name, module);
     }
 
-    let user_module = Module::parse(Source::from_bytes(code), None, &mut ctx)
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let user_module = Module::parse(Source::from_bytes(code), None, &mut ctx).map_err(|e| {
+        format!(
+            "Parse error: {}",
+            annotate_parse_error(code, &e.to_string())
+        )
+    })?;
     loader.insert(MAIN_MODULE_KEY, user_module.clone());
 
     let promise = user_module.load_link_evaluate(&mut ctx);
@@ -1554,9 +1603,14 @@ impl McpClientTrait for CodeExecutionClient {
                         - Module names are case-sensitive and are the extension names, not package names.
 
                         MULTILINE SCRIPT ARGUMENTS:
-                        - Use String.raw`...` when passing shell, Ruby, PowerShell, or other source text.
+                        - String.raw`...` ONLY preserves backslashes (\n stays two characters). It does NOT
+                          make ${...} literal: every ${...} in ANY template literal is still parsed as a JS
+                          expression (bash's ${VAR:-x} or ${!v} is a syntax error), and a backtick inside the
+                          payload terminates the literal. Escape a literal dollar-brace as ${"$"}{ .
+                        - A payload containing backticks or ${...} (shell parameter expansion, markdown code
+                          fences, nested scripts) is safer passed as a plain quoted string with \n escapes, or
+                          written to a file with developer/text_editor (write) and run via developer/shell.
                         - Prefer one scripting language. Avoid nesting another interpreter unless the task requires it.
-                        - String.raw preserves backslashes such as \n instead of turning them into accidental source-code newlines.
 
                         TOOL_GRAPH: Always provide tool_graph to describe the execution flow for the UI.
                         Each node has: tool (server/name), description (what it does), depends_on (indices of dependencies).
@@ -1704,6 +1758,8 @@ impl McpClientTrait for CodeExecutionClient {
                 (no "fs", "path", "os", "child_process", "http"); use `import {{ shell, text_editor }} from "developer"`
                 for files and commands. Names are case-sensitive.
                 A tool call returns a parsed object when its result is JSON, a string otherwise.
+                String.raw does NOT make ${{...}} literal — a ${{...}} or backtick inside an embedded
+                shell/markdown payload still breaks the parse; write such payloads to a file instead.
 
                 For an unfamiliar task, call search_modules once. Its results contain complete imports and signatures.
                 Use read_module only when you know the module but the needed tool was not in the search results.
@@ -2514,6 +2570,94 @@ mod tests {
     fn unrelated_js_errors_are_not_annotated() {
         let message = "TypeError: cannot read properties of undefined";
         assert_eq!(annotate_opaque_js_error(message), message);
+    }
+
+    // ---- issue #23: parse-error self-correction ------------------------------
+
+    /// The distinctive fragment of the recovery hint appended by
+    /// [`annotate_parse_error`]; asserting on it keeps the tests stable if the
+    /// surrounding wording is polished.
+    const PARSE_HINT_MARKER: &str = "String.raw does NOT make ${…} literal";
+
+    /// Transcript occurrence 1: bash indirect expansion inside `String.raw`.
+    /// Boa's message names the template literal, so the message trigger fires.
+    #[test]
+    fn bash_expansion_in_string_raw_gets_the_escape_hint() {
+        let code = r#"const s = String.raw`for v in A B; do echo "${!v:-}"; done`;"#;
+        let message = "SyntaxError: expected token '}', got ':' in template literal at line 1";
+        let annotated = annotate_parse_error(code, message);
+        assert!(
+            annotated.starts_with(message),
+            "the engine's own message must survive, got: {annotated}"
+        );
+        assert!(
+            annotated.contains(PARSE_HINT_MARKER),
+            "hint must correct the String.raw belief, got: {annotated}"
+        );
+        assert!(
+            annotated.contains(r#"${"$"}{VAR}"#),
+            "hint must teach the literal dollar-brace escape, got: {annotated}"
+        );
+        assert!(
+            annotated.contains("developer/text_editor") && annotated.contains("developer/shell"),
+            "hint must offer the write-to-file recovery, got: {annotated}"
+        );
+    }
+
+    /// Transcript occurrence 2 class: a payload backtick (markdown fence)
+    /// terminated the literal early and CSS landed in JS context. The message
+    /// no longer mentions templates, but the source visibly uses String.raw.
+    #[test]
+    fn css_payload_in_object_position_still_gets_the_hint() {
+        let code = "const doc = String.raw`# Theme\n```css\n@media (prefers-color-scheme: dark) { body { background: black } }\n```\n`;";
+        let message =
+            "SyntaxError: expected one of ',' or '}', got 'prefers' in object literal at line 3";
+        let annotated = annotate_parse_error(code, message);
+        assert!(annotated.contains(PARSE_HINT_MARKER), "got: {annotated}");
+        assert!(
+            annotated.contains("backtick inside the payload terminates the literal"),
+            "hint must explain the early-termination mechanism, got: {annotated}"
+        );
+    }
+
+    /// Transcript occurrences 3/4: heredoc quoting → unterminated string
+    /// literal. The message trigger fires even without String.raw in source.
+    #[test]
+    fn unterminated_string_literal_message_gets_the_hint() {
+        let code = "const cmd = 'python3 - <<PY\nprint(1)\nPY';";
+        let message = "SyntaxError: unterminated string literal at line 1";
+        let annotated = annotate_parse_error(code, message);
+        assert!(annotated.contains(PARSE_HINT_MARKER), "got: {annotated}");
+    }
+
+    /// A plain backtick template (no String.raw) with bash parameter expansion
+    /// triggers on the source pattern alone.
+    #[test]
+    fn bare_template_with_bash_expansion_triggers_on_source() {
+        let code = "const s = `echo ${HOME:-/tmp}`;";
+        let message = "SyntaxError: expected token '}', got ':' at line 1, col 18";
+        let annotated = annotate_parse_error(code, message);
+        assert!(annotated.contains(PARSE_HINT_MARKER), "got: {annotated}");
+    }
+
+    /// Parse errors unrelated to embedded payloads must pass through untouched
+    /// — no hint noise on an ordinary typo.
+    #[test]
+    fn unrelated_parse_errors_are_not_annotated() {
+        let code = "record_result( this is not valid js )";
+        let message = "SyntaxError: expected token ')', got 'is' at line 1, col 20";
+        assert_eq!(annotate_parse_error(code, message), message);
+    }
+
+    /// `${VAR}` alone is valid JS (a substitution) — the bash-shape regex must
+    /// not fire on it, nor on scripts with no template at all.
+    #[test]
+    fn plain_js_substitution_is_not_treated_as_bash() {
+        assert!(!bash_param_expansion_regex().is_match("const s = `count: ${n}`;"));
+        assert!(bash_param_expansion_regex().is_match(r#"`echo "${!v:-}"`"#));
+        assert!(bash_param_expansion_regex().is_match("`echo ${#arr}`"));
+        assert!(bash_param_expansion_regex().is_match("`echo ${VAR%.txt}`"));
+        assert!(bash_param_expansion_regex().is_match("`echo ${VAR:-default}`"));
     }
 
     /// The message is assembled without a JS context so its exact wording is
