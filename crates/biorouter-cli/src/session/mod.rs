@@ -1175,11 +1175,25 @@ impl CliSession {
                         }
                         Some(Err(e)) => {
                             handle_agent_error(&e, is_stream_json_mode);
+                            // #31/#41: record the machine-checkable failure so
+                            // `--output-format json` reports status "failed"
+                            // (this path used to leave last_abort unset and the
+                            // document claimed "completed") and the process
+                            // exits nonzero via headless()'s TurnFailed check.
+                            let kind = e
+                                .downcast_ref::<biorouter::providers::errors::ProviderError>()
+                                .map(|provider_error| provider_error.kind())
+                                .unwrap_or(
+                                    biorouter::providers::errors::ProviderErrorKind::Other,
+                                );
+                            self.last_abort = Some(TurnAbortCode::ProviderFailure { kind });
                             cancel_token_clone.cancel();
                             drop(stream);
                             if let Err(e) = self.handle_interrupted_messages(false).await {
                                 eprintln!("Error handling interruption: {}", e);
                             } else if !is_stream_json_mode {
+                                // render_error writes to stderr, so this prose can
+                                // never contaminate a json-mode stdout document.
                                 output::render_error(
                                     "The error above was an exception we were not able to handle.\n\
                                     These errors are often related to connection or authentication\n\
@@ -1846,6 +1860,30 @@ fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool) {
     if !is_stream_json_mode {
         eprintln!("Error: {}", error_msg);
     }
+    // #31: a raw SQLite dump ("error returned from database…") tells the user
+    // nothing actionable. Name the store and the likely causes on stderr.
+    if let Some(hint) = session_store_error_hint(&error_msg) {
+        eprintln!("{}", hint);
+    }
+}
+
+/// A human-readable stderr hint for session-store failures, or `None` when the
+/// error is not store-shaped. Pure so the matching is unit-testable.
+fn session_store_error_hint(error_msg: &str) -> Option<String> {
+    let store_shaped = error_msg.contains("error returned from database")
+        || error_msg.contains("sessions.db")
+        || error_msg.contains("messages.msg_uid");
+    if !store_shaped {
+        return None;
+    }
+    let store = Paths::data_dir().join("sessions").join("sessions.db");
+    Some(format!(
+        "The session store ({}) rejected an operation. If another biorouter \
+         process (the desktop app, biorouterd, or a concurrent run) is using \
+         the same store, retry once it is idle — or use `--no-session` for a \
+         fully isolated run.",
+        store.display()
+    ))
 }
 
 async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
@@ -1898,6 +1936,28 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// #31: a session-store failure must gain an actionable stderr hint that
+    /// names the store; unrelated errors must not.
+    #[test]
+    fn session_store_errors_get_a_named_store_hint() {
+        let hint = session_store_error_hint(
+            "error returned from database: (code: 2067) UNIQUE constraint failed: \
+             messages.session_id, messages.msg_uid",
+        )
+        .expect("a database error is store-shaped");
+        assert!(hint.contains("sessions.db"), "hint must name the store");
+        assert!(
+            hint.contains("--no-session"),
+            "hint must offer the isolated-run escape"
+        );
+
+        assert_eq!(
+            session_store_error_hint("Request failed: 403 Forbidden"),
+            None,
+            "provider errors are not store-shaped"
+        );
+    }
 
     #[test]
     fn test_build_diverge_deeplink_basic() {
