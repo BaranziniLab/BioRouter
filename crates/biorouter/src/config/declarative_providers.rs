@@ -377,9 +377,15 @@ mod tests {
     }
 
     /// The sync pricing table (`providers::pricing`, used by the CLI cost
-    /// line and `/config/pricing`) and this declarative metadata (served by
-    /// the async resolved path) must agree for every model moonshot.json
+    /// line and `/config/pricing`) and this declarative metadata (preferred
+    /// by the async resolved path) must agree for every model EITHER side
     /// ships — a drift silently forks cost reports between the two paths.
+    ///
+    /// Bidirectional and full-field: every JSON model must be priced
+    /// identically on the sync path (rates, currency, cache rates, context),
+    /// and every sync-table entry must still exist in the JSON — so removing
+    /// or repricing a model on one side only, or forking the currency,
+    /// fails here instead of shipping divergent prices.
     #[test]
     fn moonshot_sync_pricing_matches_declarative_metadata() {
         let providers = load_fixed_providers().expect("bundled declarative providers must parse");
@@ -389,6 +395,8 @@ mod tests {
             .expect("moonshot.json is bundled");
 
         assert!(!moonshot.models.is_empty());
+        // Direction 1: every JSON model is priced on the sync path with the
+        // exact same full pricing record.
         for model in &moonshot.models {
             let sync = crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
                 .unwrap_or_else(|| panic!("{} must be priced on the sync path too", model.name));
@@ -409,10 +417,40 @@ mod tests {
                 meta_out
             );
             assert_eq!(
+                sync.currency,
+                model.currency.clone().unwrap_or_else(|| "$".to_string()),
+                "{}: the two paths must bill in the same currency",
+                model.name
+            );
+            // Neither source carries Moonshot cache rates today. If either
+            // side ever grows one, the other must learn it in the same
+            // change — a one-sided cache rate forks cached-turn costs.
+            assert_eq!(
+                sync.cache_read_cost, None,
+                "{}: sync cache-read rate has no metadata counterpart",
+                model.name
+            );
+            assert_eq!(
+                sync.cache_write_cost, None,
+                "{}: sync cache-write rate has no metadata counterpart",
+                model.name
+            );
+            assert_eq!(
                 sync.context_length,
                 u32::try_from(model.context_limit).ok(),
                 "{}",
                 model.name
+            );
+        }
+
+        // Direction 2: every sync-table entry still exists in moonshot.json.
+        // Removing a model from the JSON while the hardcoded table keeps
+        // pricing it would leave the sync path serving a phantom model.
+        for &(name, _, _, _) in crate::providers::pricing::MOONSHOT_SYNC_PRICING {
+            assert!(
+                moonshot.models.iter().any(|m| m.name == name),
+                "{name}: priced in pricing::MOONSHOT_SYNC_PRICING but missing from \
+                 moonshot.json — remove it from the sync table or restore it in the JSON"
             );
         }
     }

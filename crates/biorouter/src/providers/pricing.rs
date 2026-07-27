@@ -368,23 +368,33 @@ fn deepseek_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
 }
 
-/// Direct Moonshot AI (Kimi) platform rates, per-MTok USD, verified against
-/// the Moonshot/Kimi platform price sheet (2026-07). Deliberately distinct
-/// from OpenRouter's rates for the same models (`openrouter_pricing` above):
-/// without this branch the sync path fell through to the OpenRouter-derived
-/// canonical prices, underpricing k2.6/k2.7-code and leaving k2.5 unpriced.
-/// Must stay in lockstep with `providers/declarative/moonshot.json` (the
-/// async resolved path serves that metadata);
+/// Direct Moonshot AI (Kimi) platform rates as `(model, $/MTok input,
+/// $/MTok output, context)`, verified against the Moonshot/Kimi platform
+/// price sheet (2026-07). Deliberately distinct from OpenRouter's rates for
+/// the same models (`openrouter_pricing` above): without this table the sync
+/// path fell through to the OpenRouter-derived canonical prices,
+/// underpricing k2.6/k2.7-code and leaving k2.5 unpriced.
+///
+/// Kept as data (not match arms) so the drift guard —
 /// `config::declarative_providers::tests::moonshot_sync_pricing_matches_declarative_metadata`
-/// is the drift guard.
+/// — can enumerate it and fail when this table and
+/// `providers/declarative/moonshot.json` diverge in EITHER direction (a
+/// model added, removed, or repriced on one side only). The async resolved
+/// path prefers the JSON metadata; this table serves sync-only callers and
+/// is the async fallback.
+pub(crate) const MOONSHOT_SYNC_PRICING: &[(&str, f64, f64, u32)] = &[
+    ("kimi-k2.7-code", 0.95, 4.00, 262_144),
+    ("kimi-k2.6", 0.95, 4.00, 262_144),
+    ("kimi-k2.5", 0.60, 3.00, 262_144),
+];
+
 fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
-    match model {
-        "kimi-k2.7-code" | "kimi-k2.6" => {
-            Some(ProviderModelPricing::usd_per_million(0.95, 4.00, 262_144))
-        }
-        "kimi-k2.5" => Some(ProviderModelPricing::usd_per_million(0.60, 3.00, 262_144)),
-        _ => None,
-    }
+    MOONSHOT_SYNC_PRICING
+        .iter()
+        .find(|(name, _, _, _)| *name == model)
+        .map(|&(_, input, output, context)| {
+            ProviderModelPricing::usd_per_million(input, output, context)
+        })
 }
 
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
