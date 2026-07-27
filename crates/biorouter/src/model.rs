@@ -112,6 +112,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-opus-4-7", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
+        ("claude-opus-5", 1_000_000),
         ("claude-sonnet-4-5", 200_000),
         ("claude-sonnet-4-5-20250929", 200_000),
         ("claude-sonnet-4-5@20250929", 200_000),
@@ -274,10 +275,11 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("o3-mini", 200_000),
         ("o3", 200_000),
         ("o1", 200_000),
-        // anthropic — Fable 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older Claude 200k.
-        // Dotted variants cover OpenRouter/Copilot-style IDs.
+        // anthropic — Fable 5 / Opus 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older
+        // Claude 200k. Dotted variants cover OpenRouter/Copilot-style IDs.
         ("claude-fable-5", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
+        ("claude-opus-5", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
         ("claude-opus-4-7", 1_000_000),

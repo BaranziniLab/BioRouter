@@ -247,7 +247,14 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
     // Never infer a price for an unknown Claude tier. A guessed Sonnet price can
     // make a partial report look exact and silently misstate a user's budget.
-    if model.contains("opus") {
+    if model.contains("opus-5") {
+        // Claude Opus 5: $5/$25 per MTok, 1M context — the modern Opus tier
+        // (same price as Opus 4.8). Must be checked before the generic "opus"
+        // branch below, which still carries the legacy $15/$75 tier.
+        Some(ProviderModelPricing::usd_per_million_cached(
+            5.0, 25.0, 1_000_000,
+        ))
+    } else if model.contains("opus") {
         Some(ProviderModelPricing::usd_per_million_cached(
             15.0, 75.0, 200_000,
         ))
@@ -520,6 +527,37 @@ mod tests {
         assert_eq!(opus.input_token_cost, 15.0 / 1_000_000.0);
         let haiku = provider_model_pricing("anthropic", "claude-haiku-4-5").unwrap();
         assert_eq!(haiku.input_token_cost, 0.80 / 1_000_000.0);
+    }
+
+    #[test]
+    fn claude_opus_5_priced_at_modern_tier_not_legacy_opus() {
+        // Opus 5: $5/M input, $25/M output, 1M context — NOT the legacy
+        // $15/$75 tier the generic "opus" branch carries. Cache read 0.1x,
+        // cache write 1.25x of the input rate.
+        for (provider, model) in [
+            ("anthropic", "claude-opus-5"),
+            ("bedrock", "us.anthropic.claude-opus-5-v1:0"),
+        ] {
+            let p = provider_model_pricing(provider, model).unwrap();
+            assert_eq!(p.input_token_cost, 5.0 / 1_000_000.0, "{provider}/{model}");
+            assert_eq!(
+                p.output_token_cost,
+                25.0 / 1_000_000.0,
+                "{provider}/{model}"
+            );
+            assert!((p.cache_read_cost.unwrap() - 0.50 / 1_000_000.0).abs() < 1e-15);
+            assert!((p.cache_write_cost.unwrap() - 6.25 / 1_000_000.0).abs() < 1e-15);
+            assert_eq!(p.context_length, Some(1_000_000));
+        }
+        // The legacy tier still applies to older opus models (opus-4-1 and
+        // earlier) — the opus-5 branch must not widen.
+        let legacy = provider_model_pricing("anthropic", "claude-opus-4-1").unwrap();
+        assert_eq!(legacy.input_token_cost, 15.0 / 1_000_000.0);
+        assert_eq!(legacy.output_token_cost, 75.0 / 1_000_000.0);
+        // And opus-4-5 (contains "opus-4-5", not "opus-5") stays on the
+        // generic branch — the substring must not false-positive.
+        let opus45 = provider_model_pricing("anthropic", "claude-opus-4-5").unwrap();
+        assert_eq!(opus45.input_token_cost, 15.0 / 1_000_000.0);
     }
 
     #[test]

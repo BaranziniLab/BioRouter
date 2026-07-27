@@ -28,7 +28,11 @@ const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 // oldest; the UI auto-selects the first entry as the default model when
 // switching providers, so keep the latest opus at the top.
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.8 (latest Opus tier)
+    // Claude Opus 5 (latest Opus tier — 1M context, $5/$25 per MTok, same
+    // price as Opus 4.8). ANTHROPIC_DEFAULT_MODEL stays on claude-opus-4-8
+    // until a live smoke test promotes it.
+    "claude-opus-5",
+    // Claude 4.8
     "claude-opus-4-8",
     "claude-sonnet-5",
     // Claude Fable 5 (tier above Opus; pricier — deliberately not the default)
