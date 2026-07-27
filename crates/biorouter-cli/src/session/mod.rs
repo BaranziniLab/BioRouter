@@ -1431,37 +1431,7 @@ impl CliSession {
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
         if is_json_mode {
-            // A turn that aborted is NOT "completed". This used to be hardcoded,
-            // so a harness parsing the JSON was told a 403'd run succeeded.
-            let status = if self.last_abort.is_some() {
-                "failed"
-            } else {
-                "completed"
-            };
-            let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
-            let metadata = match self
-                .agent
-                .config
-                .session_manager
-                .get_session(&self.session_id, false)
-                .await
-            {
-                Ok(session) => JsonMetadata {
-                    total_tokens: session.total_tokens,
-                    status: status.to_string(),
-                    error,
-                },
-                Err(_) => JsonMetadata {
-                    total_tokens: None,
-                    status: status.to_string(),
-                    error,
-                },
-            };
-            let json_output = JsonOutput {
-                messages: self.messages.messages().to_vec(),
-                metadata,
-            };
-            println!("{}", serde_json::to_string_pretty(&json_output)?);
+            println!("{}", self.build_json_document().await?);
         } else if is_stream_json_mode {
             let total_tokens = self
                 .agent
@@ -1477,6 +1447,66 @@ impl CliSession {
         }
 
         Ok(())
+    }
+
+    /// The ONE document `--output-format json` prints on stdout — split out
+    /// of [`Self::emit_final_output`] so tests can assert stdout stays a
+    /// single valid document after a failure path ran
+    /// [`Self::handle_interrupted_messages`] (#31/#41).
+    async fn build_json_document(&self) -> Result<String> {
+        // A turn that aborted is NOT "completed". This used to be hardcoded,
+        // so a harness parsing the JSON was told a 403'd run succeeded.
+        let status = if self.last_abort.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
+        let metadata = match self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+        {
+            Ok(session) => JsonMetadata {
+                total_tokens: session.total_tokens,
+                status: status.to_string(),
+                error,
+            },
+            Err(_) => JsonMetadata {
+                total_tokens: None,
+                status: status.to_string(),
+                error,
+            },
+        };
+        let json_output = JsonOutput {
+            messages: self.messages.messages().to_vec(),
+            metadata,
+        };
+        Ok(serde_json::to_string_pretty(&json_output)?)
+    }
+
+    /// Where [`Self::handle_interrupted_messages`]'s prose belongs (#40/#31):
+    /// human-facing text mode renders it on stdout as usual; the structured
+    /// modes keep stdout a machine-parseable surface — `json` must stay ONE
+    /// valid document (printed solely by [`Self::emit_final_output`]) and
+    /// `stream-json` a sequence of events — so their prose goes to stderr,
+    /// like every other prompt-adjacent status in the #40 work. The messages
+    /// the handler *pushes* still reach structured consumers through the
+    /// final document's `messages`.
+    fn interruption_prose_belongs_on_stderr(output_format: &str) -> bool {
+        matches!(output_format, "json" | "stream-json")
+    }
+
+    /// Emit one line of interruption prose on the surface
+    /// [`Self::interruption_prose_belongs_on_stderr`] picks.
+    fn render_interruption_notice(&self, prose: &str) {
+        if Self::interruption_prose_belongs_on_stderr(&self.output_format) {
+            eprintln!("{prose}");
+        } else {
+            output::render_message(&Message::assistant().with_text(prose), self.debug);
+        }
     }
 
     async fn handle_interrupted_messages(&mut self, interrupt: bool) -> Result<()> {
@@ -1534,7 +1564,7 @@ impl CliSession {
                 last_tool_name
             );
             self.push_message(Message::assistant().with_text(&prompt));
-            output::render_message(&Message::assistant().with_text(&prompt), self.debug);
+            self.render_interruption_notice(&prompt);
         } else {
             // An interruption occurred outside of a tool request-response.
             if let Some(last_msg) = self.messages.last() {
@@ -1544,19 +1574,13 @@ impl CliSession {
                             // Interruption occurred after a tool had completed but not assistant reply
                             let prompt = "The tool calling loop was interrupted. How would you like to proceed?";
                             self.push_message(Message::assistant().with_text(prompt));
-                            output::render_message(
-                                &Message::assistant().with_text(prompt),
-                                self.debug,
-                            );
+                            self.render_interruption_notice(prompt);
                         }
                         Some(_) => {
                             // A real users message
                             self.messages.pop();
                             let prompt = "Interrupted before the model replied and removed the last message.";
-                            output::render_message(
-                                &Message::assistant().with_text(prompt),
-                                self.debug,
-                            );
+                            self.render_interruption_notice(prompt);
                         }
                         None => {
                             tracing::warn!(
@@ -2256,6 +2280,44 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// A `CliSession` over a private store rooted at `manager`'s directory,
+    /// with its session row already created — the shape of a `--no-session`
+    /// run, minus extensions and provider.
+    async fn test_cli_session(
+        manager: std::sync::Arc<biorouter::session::SessionManager>,
+        output_format: &str,
+    ) -> CliSession {
+        use biorouter::agents::AgentConfig;
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::session::session_manager::SessionType;
+
+        let session = manager
+            .create_session(
+                std::env::temp_dir(),
+                "CLI Test Session".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .expect("create the test session row");
+        let agent = Agent::with_config(AgentConfig::new(
+            manager,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        CliSession::new(
+            agent,
+            session.id,
+            false,
+            None,
+            None,
+            None,
+            None,
+            output_format.to_string(),
+        )
+        .await
+    }
+
     /// #40: the full decision matrix for tool-confirmation prompts.
     /// `interactive && stdin_is_tty` is authoritative: those runs keep the
     /// prompt regardless of output format (all prompt UI renders on stderr,
@@ -2425,6 +2487,61 @@ mod tests {
         assert!(
             !hint.contains("another biorouter process (") && !hint.contains("desktop app"),
             "the private store is exclusive to this run; contention advice is wrong: {hint}"
+        );
+    }
+
+    /// #40/#31: interruption prose belongs on stderr exactly in the
+    /// structured modes — `json` stdout must stay ONE valid document and
+    /// `stream-json` a sequence of events — while text mode keeps rendering
+    /// it on stdout for humans.
+    #[test]
+    fn interruption_prose_routes_by_output_format() {
+        assert!(!CliSession::interruption_prose_belongs_on_stderr("text"));
+        assert!(CliSession::interruption_prose_belongs_on_stderr("json"));
+        assert!(CliSession::interruption_prose_belongs_on_stderr(
+            "stream-json"
+        ));
+    }
+
+    /// #31: the elicitation-response failure path (record the abort, cancel,
+    /// `handle_interrupted_messages`, finalizer) must leave a json-mode
+    /// stdout holding a single valid document. The prose the handler used to
+    /// print to stdout in every mode now goes to stderr in structured modes
+    /// (pinned above), and the recovery prompt it pushes reaches structured
+    /// consumers through the document's `messages` instead.
+    #[tokio::test]
+    async fn json_mode_interruption_yields_one_valid_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager, "json").await;
+
+        // The aftermath of a failed elicitation reply: the abort is recorded
+        // and the interruption handler runs over a turn whose last message
+        // is a user tool-response (the loop was mid-tool-call).
+        session.last_abort = Some(TurnAbortCode::SessionStore);
+        let mut tool_response = Message::user();
+        tool_response.content.push(MessageContent::tool_response(
+            "req-1",
+            Err(ErrorData {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: std::borrow::Cow::from("interrupted"),
+                data: None,
+            }),
+        ));
+        session.messages.push(tool_response);
+        session.handle_interrupted_messages(false).await.unwrap();
+
+        // The one thing emit_final_output prints on stdout in json mode.
+        let document = session.build_json_document().await.unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&document).expect("stdout must be a single valid JSON document");
+        assert_eq!(parsed["metadata"]["status"], "failed");
+        assert_eq!(parsed["metadata"]["error"], "session_store_failure");
+        assert!(
+            document.contains("The tool calling loop was interrupted"),
+            "the recovery prompt must reach structured consumers via `messages`"
         );
     }
 
