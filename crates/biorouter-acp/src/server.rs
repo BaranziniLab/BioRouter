@@ -11,7 +11,7 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use biorouter::providers::create;
 use biorouter::session::session_manager::SessionType;
-use biorouter::session::{Session, SessionManager};
+use biorouter::session::{Session, SessionManager, WorkingDirUpdate};
 use fs_err as fs;
 use rmcp::model::{CallToolResult, RawContent, ResourceContents, Role};
 use sacp::schema::{
@@ -830,15 +830,35 @@ impl BioRouterAcpAgent {
                 .data(format!("Session {} has no conversation data", session_id))
         })?;
 
-        manager
-            .update(&session_id)
-            .working_dir(args.cwd.clone())
-            .apply()
+        // #44: an ACP `load_session` names the client's cwd, but a session's
+        // working directory is fixed once the conversation has messages, and
+        // ACP clients call `load_session` precisely to REOPEN an existing
+        // conversation — failing the load over a cwd mismatch would break
+        // every resume. Decision: apply the cwd only while the session is
+        // still empty (the same guarded update the HTTP route uses); a
+        // non-empty session keeps its own dir, logged at debug, and the load
+        // succeeds.
+        match manager
+            .try_update_working_dir_if_empty(&session_id, args.cwd.clone())
             .await
-            .map_err(|e| {
-                sacp::Error::internal_error()
-                    .data(format!("Failed to update session working directory: {}", e))
-            })?;
+        {
+            Ok(WorkingDirUpdate::Updated) => {}
+            Ok(WorkingDirUpdate::RefusedNotEmpty) => {
+                debug!(
+                    session_id = %session_id,
+                    requested_cwd = %args.cwd.display(),
+                    "load_session: working directory is fixed once the conversation has messages; keeping the session's own dir"
+                );
+            }
+            Ok(WorkingDirUpdate::SessionNotFound) => {
+                return Err(sacp::Error::invalid_params()
+                    .data(format!("Session {} disappeared during load", session_id)));
+            }
+            Err(e) => {
+                return Err(sacp::Error::internal_error()
+                    .data(format!("Failed to update session working directory: {}", e)));
+            }
+        }
 
         let mut session = BioRouterAcpSession {
             messages: conversation.clone(),

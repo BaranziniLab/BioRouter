@@ -85,10 +85,17 @@ beforeEach(() => {
   });
 });
 
-function renderChatInput(onWorkingDirChange: (dir: string) => void) {
+function renderChatInput(
+  onWorkingDirChange: (dir: string) => void,
+  {
+    sessionId = null as string | null,
+    messagesLength = 0,
+    workingDirLocked = undefined as boolean | undefined,
+  } = {}
+) {
   return render(
     <ChatInput
-      sessionId={null}
+      sessionId={sessionId}
       handleSubmit={vi.fn()}
       chatState={ChatState.Idle}
       onStop={vi.fn()}
@@ -99,7 +106,8 @@ function renderChatInput(onWorkingDirChange: (dir: string) => void) {
       accumulatedOutputTokens={0}
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
-      messagesLength={0}
+      messagesLength={messagesLength}
+      workingDirLocked={workingDirLocked}
       disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={onWorkingDirChange}
@@ -122,5 +130,63 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
     expect(updateWorkingDir).not.toHaveBeenCalled();
     // The chip reflects the choice locally (ChatInput's own state).
     await waitFor(() => expect(screen.getByText(CHOSEN_DIR)).toBeInTheDocument());
+  });
+});
+
+// #44 — once the chat has messages, ChatInput must render the folder chip
+// locked: a read-only basename label (full path on hover) with no chooser.
+describe('ChatInput working-directory lock once the chat has messages (#44)', () => {
+  it('renders the chip as a read-only basename label when messagesLength > 0', async () => {
+    renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 2 });
+
+    // Basename of the app-default dir ('/default/workdir' -> 'workdir'),
+    // never the interactive full-path chooser button.
+    const label = await screen.findByTestId('dir-switcher-locked');
+    expect(label).toHaveTextContent('workdir');
+    expect(screen.queryByText(DEFAULT_DIR)).not.toBeInTheDocument();
+
+    fireEvent.click(label);
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+    expect(updateWorkingDir).not.toHaveBeenCalled();
+  });
+
+  it('keeps the chip interactive for a session with zero messages', () => {
+    renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 0 });
+
+    const chip = screen.getByText(DEFAULT_DIR).closest('button');
+    expect(chip).not.toBeNull();
+    expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
+  });
+});
+
+// #44 — the authoritative lock prop. `messagesLength` alone is 0 while a
+// resumed transcript hydrates and >0 after a failed optimistic first submit,
+// so BaseChat derives `workingDirLocked` from session metadata
+// (deriveWorkingDirLocked) and, when provided, it must win over the
+// messagesLength fallback in BOTH directions.
+describe('ChatInput authoritative working-dir lock (#44)', () => {
+  it('locks from first paint while a resumed transcript is still hydrating', async () => {
+    // The store has not loaded the messages yet (messagesLength 0), but the
+    // session metadata says the chat is non-empty.
+    renderChatInput(vi.fn(), {
+      sessionId: 'session-1',
+      messagesLength: 0,
+      workingDirLocked: true,
+    });
+
+    expect(await screen.findByTestId('dir-switcher-locked')).toBeInTheDocument();
+  });
+
+  it('unlocks after a failed first submit whose optimistic message never reached the server', () => {
+    // The transcript retains the unsent message (messagesLength 1), but the
+    // server still reports an empty session.
+    renderChatInput(vi.fn(), {
+      sessionId: 'session-1',
+      messagesLength: 1,
+      workingDirLocked: false,
+    });
+
+    expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
+    expect(screen.getByText(DEFAULT_DIR).closest('button')).not.toBeNull();
   });
 });

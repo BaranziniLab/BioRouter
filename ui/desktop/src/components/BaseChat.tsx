@@ -15,6 +15,7 @@ import ProgressiveMessageList from './ProgressiveMessageList';
 import { PendingToolCallList } from './PendingToolCallCard';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
+import { deriveWorkingDirLocked } from './bottom_menu/DirSwitcher';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { selectBilledTokens } from '../utils/billedTokens';
@@ -1375,6 +1376,17 @@ function BaseChatContent({
     () => messages.some((message) => message.role === 'assistant'),
     [messages]
   );
+
+  // #44 — authoritative working-dir lock for the folder chip. Derived from the
+  // last-fetched session metadata (not the loaded transcript's length, which is
+  // 0 while a resumed transcript hydrates and >0 after a failed optimistic
+  // first submit). See deriveWorkingDirLocked for the full rationale.
+  const workingDirLocked = deriveWorkingDirLocked({
+    sessionId,
+    persistedMessageCount: session ? (session.message_count ?? 0) : undefined,
+    hasAssistantMessage: canDivergeSession,
+    chatState,
+  });
   const handleTitleDiverge = useCallback(async () => {
     if (!canDivergeSession) return;
     await diverge(sessionId);
@@ -2002,6 +2014,7 @@ function BaseChatContent({
         droppedFiles={droppedFiles}
         onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
         messagesLength={messages.length}
+        workingDirLocked={workingDirLocked}
         disableAnimation={disableAnimation}
         sessionCosts={sessionCosts}
         modelCostRows={modelRows}

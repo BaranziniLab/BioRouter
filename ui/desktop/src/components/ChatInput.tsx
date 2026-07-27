@@ -124,6 +124,15 @@ interface ChatInputProps {
    * identity changes per event, the length almost never does).
    */
   messagesLength?: number;
+  /**
+   * #44 — authoritative working-dir lock, derived by the owner of the session
+   * metadata (BaseChat, via `deriveWorkingDirLocked`). `messagesLength` alone
+   * misleads while a resumed transcript hydrates (0 for a non-empty session)
+   * and after a failed optimistic first submit (>0 for a server-empty
+   * session), so when this prop is provided it wins; the `messagesLength > 0`
+   * fallback keeps callers that do not track session metadata working.
+   */
+  workingDirLocked?: boolean;
   sessionCosts?: {
     [key: string]: {
       inputTokens: number;
@@ -165,6 +174,7 @@ export default function ChatInput({
   accumulatedInputTokens,
   accumulatedOutputTokens,
   messagesLength = 0,
+  workingDirLocked,
   disableAnimation = false,
   sessionCosts,
   modelCostRows,
@@ -1736,6 +1746,13 @@ export default function ChatInput({
             <DirSwitcher
               className="mr-0"
               sessionId={sessionId ?? undefined}
+              // #44: the working dir is choosable only while the chat is
+              // completely empty (pre-session #39 path included); the first
+              // message locks it for the session's lifetime. Prefer the
+              // authoritative lock from BaseChat (hydration- and
+              // failed-submit-aware); fall back to the transcript length for
+              // callers that do not track session metadata.
+              locked={workingDirLocked ?? messagesLength > 0}
               workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
               onWorkingDirChange={(newDir) => {
                 setSessionWorkingDir(newDir);

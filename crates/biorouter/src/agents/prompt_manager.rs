@@ -621,6 +621,14 @@ mod tests {
             p.contains("file_path:line_number"),
             "missing code-reference citation convention"
         );
+        // #44: with the session working dir immutable, printed file references
+        // must be absolute (or ~-relative) so the artifact previewer can
+        // always resolve them — a bare relative path only resolves against
+        // whatever directory happens to be current when it is read.
+        assert!(
+            p.contains("never a bare relative path"),
+            "missing absolute-path rule for printed file references (#44)"
+        );
         // Tool-routing discipline (prefer primitives; keep basic file/shell ops
         // off code-execution). Renders in every mode, including code-execution
         // mode where per-extension instructions are hidden.
