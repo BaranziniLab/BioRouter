@@ -484,7 +484,33 @@ fn rewrite_asset_css(raw: &str, base_path: &str) -> String {
 /// `&` (HTML character-reference hazard in attribute values), plus quotes,
 /// angle brackets, spaces, backslash, and non-ASCII. Spell those
 /// percent-encoded instead (`'` → `%27`, `&` → `%26`, …).
+///
+/// A nonempty prefix must also begin with exactly one `/`. A leading `//`
+/// splices into `src="//evil.example/…"` — a scheme-relative (network-path)
+/// URL the browser resolves against the *foreign* host, so
+/// `--public-url=https://host///evil.example` would point every rewritten
+/// script/asset/API URL at an attacker-chosen origin. Embedded `//`
+/// sequences are left as-is: past the first byte the spliced URL is already
+/// path-absolute (only the first two characters decide network-path form),
+/// empty path segments are legal per RFC 3986, and collapsing them would
+/// break the byte-exact round-trip a prefix-matching proxy relies on. The
+/// `/\` network-path spelling browsers also honour is already rejected by
+/// the charset rule (backslash is never allowed).
 fn validate_base_path(base_path: &str) -> Result<(), String> {
+    if !base_path.is_empty() && !base_path.starts_with('/') {
+        return Err(format!(
+            "invalid path prefix {base_path:?} derived from --public-url \
+             (a nonempty prefix must begin with '/')"
+        ));
+    }
+    if base_path.starts_with("//") {
+        return Err(format!(
+            "invalid path prefix {base_path:?} derived from --public-url \
+             (a prefix starting with \"//\" is a scheme-relative URL that \
+             would send asset and API requests to another host; use exactly \
+             one leading '/')"
+        ));
+    }
     let invalid = || {
         format!(
             "invalid path prefix {base_path:?} derived from --public-url \
@@ -1735,6 +1761,9 @@ mod tests {
             // Issue #18: both spellings survive derivation byte-exact.
             (Some("http://example.org/url%40prefix/"), "/url%40prefix"),
             (Some("http://example.org/url@prefix/"), "/url@prefix"),
+            // A tripled slash derives a scheme-relative prefix byte-exact;
+            // `validate_base_path` is the gate that then refuses to start.
+            (Some("https://host///evil.example"), "//evil.example"),
             (None, ""),
         ];
         for (input, expected) in cases {
@@ -1932,6 +1961,22 @@ mod tests {
         assert!(validate_base_path("/a&b").is_err()); // HTML char-reference hazard
         assert!(validate_base_path("/a\\b").is_err());
         assert!(validate_base_path("/caf\u{e9}").is_err()); // non-ASCII must be pct-encoded
+    }
+
+    #[test]
+    fn validate_base_path_rejects_scheme_relative_prefixes() {
+        // A leading "//" splices into src="//evil.example/…" — a
+        // network-path (scheme-relative) URL the browser resolves against
+        // the attacker's host, not this server.
+        assert!(validate_base_path("//evil.example").is_err());
+        assert!(validate_base_path("///evil.example").is_err());
+        assert!(validate_base_path("//evil.example/biorouter").is_err());
+        // Defense in depth: a nonempty prefix must begin with '/' at all
+        // (normalize_base_path always provides one in production).
+        assert!(validate_base_path("biorouter").is_err());
+        // An *embedded* "//" is not a network-path reference — the spliced
+        // URL is already path-absolute — and stays accepted byte-exact.
+        assert!(validate_base_path("/a//b").is_ok());
     }
 
     #[test]
