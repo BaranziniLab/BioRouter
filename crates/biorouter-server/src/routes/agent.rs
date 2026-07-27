@@ -909,24 +909,20 @@ async fn restart_agent(
     Ok(Json(RestartAgentResponse { extension_results }))
 }
 
-#[utoipa::path(
-    post,
-    path = "/agent/update_working_dir",
-    request_body = UpdateWorkingDirRequest,
-    responses(
-        (status = 200, description = "Working directory updated and agent restarted successfully"),
-        (status = 400, description = "Bad request - invalid directory path"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 404, description = "Session not found"),
-        (status = 500, description = "Internal server error")
-    )
-)]
-async fn update_working_dir(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<UpdateWorkingDirRequest>,
-) -> Result<StatusCode, ErrorResponse> {
-    let session_id = payload.session_id.clone();
-    let working_dir = payload.working_dir.trim();
+/// Validate and apply a working-directory change for `session_id`, enforcing
+/// the empty-chat-only rule (#44): the working directory is choosable only
+/// while the chat is completely empty and immutable once it has any messages.
+/// A mid-chat switch breaks the session's own history — file references
+/// printed earlier re-resolve against the new root — so a started session
+/// rejects the change with 409 CONFLICT, as defense in depth against stale or
+/// alternative clients. Returns the updated session so the caller can restart
+/// the agent from it.
+pub(crate) async fn apply_working_dir_update(
+    session_manager: &biorouter::session::SessionManager,
+    session_id: &str,
+    working_dir: &str,
+) -> Result<Session, ErrorResponse> {
+    let working_dir = working_dir.trim();
 
     if working_dir.is_empty() {
         return Err(ErrorResponse {
@@ -943,10 +939,28 @@ async fn update_working_dir(
         });
     }
 
+    // Load the session FIRST — the emptiness check must precede the update.
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|err| {
+            error!("Failed to get session for working dir update: {}", err);
+            ErrorResponse {
+                message: format!("Failed to get session: {}", err),
+                status: StatusCode::NOT_FOUND,
+            }
+        })?;
+
+    if session.message_count > 0 {
+        return Err(ErrorResponse {
+            message: "the working directory is fixed once a chat has messages".into(),
+            status: StatusCode::CONFLICT,
+        });
+    }
+
     // Update the session's working directory
-    state
-        .session_manager()
-        .update(&session_id)
+    session_manager
+        .update(session_id)
         .working_dir(path)
         .apply()
         .await
@@ -958,10 +972,9 @@ async fn update_working_dir(
             }
         })?;
 
-    // Get the updated session and restart the agent
-    let session = state
-        .session_manager()
-        .get_session(&session_id, false)
+    // Return the updated session for the agent restart.
+    session_manager
+        .get_session(session_id, false)
         .await
         .map_err(|err| {
             error!("Failed to get session after working dir update: {}", err);
@@ -969,7 +982,34 @@ async fn update_working_dir(
                 message: format!("Failed to get session: {}", err),
                 status: StatusCode::NOT_FOUND,
             }
-        })?;
+        })
+}
+
+#[utoipa::path(
+    post,
+    path = "/agent/update_working_dir",
+    request_body = UpdateWorkingDirRequest,
+    responses(
+        (status = 200, description = "Working directory updated and agent restarted successfully"),
+        (status = 400, description = "Bad request - invalid directory path"),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 404, description = "Session not found"),
+        (
+            status = 409,
+            description = "Conflict - the working directory is fixed once a chat has messages"
+        ),
+        (status = 500, description = "Internal server error")
+    )
+)]
+async fn update_working_dir(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpdateWorkingDirRequest>,
+) -> Result<StatusCode, ErrorResponse> {
+    let session_id = payload.session_id.clone();
+
+    let session =
+        apply_working_dir_update(state.session_manager(), &session_id, &payload.working_dir)
+            .await?;
 
     restart_agent_internal(&state, &session_id, &session).await?;
 
@@ -1195,4 +1235,105 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/remove_extension", post(agent_remove_extension))
         .route("/agent/stop", post(stop_agent))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod working_dir_lock_tests {
+    //! Route-level contract for `/agent/update_working_dir`'s empty-chat-only
+    //! rule (#44), exercised through [`apply_working_dir_update`] — the exact
+    //! validation + guard + update path the handler runs before restarting the
+    //! agent. A hermetic tempdir-backed [`SessionManager`] stands in for the
+    //! real one: `AppState::new()` opens the REAL user session database (see
+    //! the note in `routes/session.rs`), so a mutating route test must never
+    //! go through it.
+
+    use super::apply_working_dir_update;
+    use axum::http::StatusCode;
+    use biorouter::conversation::message::Message;
+    use biorouter::session::session_manager::SessionType;
+    use biorouter::session::SessionManager;
+    use tempfile::TempDir;
+
+    /// A store + one session whose working dir is `start_dir`.
+    async fn session_in(store: &TempDir, start_dir: &std::path::Path) -> (SessionManager, String) {
+        let sm = SessionManager::new(store.path().to_path_buf());
+        let session = sm
+            .create_session(
+                start_dir.to_path_buf(),
+                "test session".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        (sm, session.id)
+    }
+
+    #[tokio::test]
+    async fn an_empty_session_accepts_a_working_dir_change() {
+        let store = TempDir::new().unwrap();
+        let old_dir = TempDir::new().unwrap();
+        let new_dir = TempDir::new().unwrap();
+        let (sm, id) = session_in(&store, old_dir.path()).await;
+
+        let updated = apply_working_dir_update(&sm, &id, new_dir.path().to_str().unwrap())
+            .await
+            .expect("an empty session's working dir is still choosable");
+        assert_eq!(updated.working_dir, new_dir.path());
+
+        // And the change is persisted, not just echoed.
+        let reloaded = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(reloaded.working_dir, new_dir.path());
+    }
+
+    #[tokio::test]
+    async fn a_session_with_a_message_locks_its_working_dir_with_409() {
+        let store = TempDir::new().unwrap();
+        let old_dir = TempDir::new().unwrap();
+        let new_dir = TempDir::new().unwrap();
+        let (sm, id) = session_in(&store, old_dir.path()).await;
+
+        sm.add_message(&id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+
+        let err = apply_working_dir_update(&sm, &id, new_dir.path().to_str().unwrap())
+            .await
+            .expect_err("one message is enough to lock the working dir");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(
+            err.message,
+            "the working directory is fixed once a chat has messages"
+        );
+
+        // The rejected change must not have touched the session.
+        let reloaded = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(reloaded.working_dir, old_dir.path());
+    }
+
+    #[tokio::test]
+    async fn a_missing_session_is_a_404_not_a_silent_update() {
+        let store = TempDir::new().unwrap();
+        let new_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(store.path().to_path_buf());
+
+        let err =
+            apply_working_dir_update(&sm, "no_such_session", new_dir.path().to_str().unwrap())
+                .await
+                .expect_err("a missing session cannot accept a working dir");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_target_path_is_a_400() {
+        let store = TempDir::new().unwrap();
+        let old_dir = TempDir::new().unwrap();
+        let (sm, id) = session_in(&store, old_dir.path()).await;
+
+        for bad in ["", "   ", "/definitely/not/a/real/dir/for/br44"] {
+            let err = apply_working_dir_update(&sm, &id, bad)
+                .await
+                .expect_err("invalid paths are rejected");
+            assert_eq!(err.status, StatusCode::BAD_REQUEST, "for {bad:?}");
+        }
+    }
 }
