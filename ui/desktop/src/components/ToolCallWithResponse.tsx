@@ -533,6 +533,14 @@ const summarizeSearchQuery = (value: unknown): string | null => {
   if (!value) return null;
   if (typeof value === 'string') return compactValue(value);
   if (Array.isArray(value)) {
+    // A plain list of terms (e.g. search_modules' `terms: ["fetch", "http"]`)
+    // reads best joined, not JSON-stringified.
+    if (
+      value.length > 0 &&
+      value.every((item) => typeof item === 'string' || typeof item === 'number')
+    ) {
+      return compactValue(value.join(', '));
+    }
     const first = value[0] as Record<string, unknown> | undefined;
     return first ? compactValue(first.q ?? first.query ?? first.search_query ?? value) : null;
   }
@@ -568,6 +576,24 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+
+  // code_execution's module tools and the skills loader carry their targets
+  // under argument names (`module_path`, `terms`, `name`) the generic chains
+  // don't know, so their labels degraded to the opaque "Read Module" /
+  // "Search Modules" verbs the transcript audit flagged (#27). Name the exact
+  // target in the collapsed row.
+  if (toolName === 'read_module') {
+    const modulePath = compactValue(args.module_path ?? '');
+    return modulePath ? `Reading module ${modulePath}` : 'Reading a module';
+  }
+  if (toolName === 'search_modules') {
+    const terms = summarizeSearchQuery(args.terms);
+    return terms ? `Searching modules for ${terms}` : 'Searching modules';
+  }
+  if (toolName.toLowerCase() === 'loadskill') {
+    const skillName = compactValue(args.name ?? '');
+    return skillName ? `Loading skill ${skillName}` : 'Loading a skill';
+  }
 
   if (toolName === 'text_editor' || toolName.includes('editor')) {
     if (args.command === 'view' && targetName) return `Reading ${targetName}`;

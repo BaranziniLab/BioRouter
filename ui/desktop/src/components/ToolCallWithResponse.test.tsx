@@ -52,6 +52,49 @@ describe('summarizeToolCall', () => {
     ).toBe('Cohort Lookup with cohort_id, table');
   });
 
+  // #27 — module/skill tools carry their targets under argument names the
+  // generic chains don't know (module_path / terms / name), so their labels
+  // degraded to the opaque "Read Module" / "Search Modules".
+  it('names the exact module, terms, and skill in code_execution/skills labels', () => {
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__read_module',
+        arguments: { module_path: 'developer/shell' },
+      })
+    ).toBe('Reading module developer/shell');
+
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__search_modules',
+        arguments: { terms: ['fetch', 'http'] },
+      })
+    ).toBe('Searching modules for fetch, http');
+
+    expect(
+      summarizeToolCall({
+        name: 'code_execution__search_modules',
+        arguments: { terms: 'web search' },
+      })
+    ).toBe('Searching modules for web search');
+
+    expect(
+      summarizeToolCall({
+        name: 'skills__loadSkill',
+        arguments: { name: 'single-cell' },
+      })
+    ).toBe('Loading skill single-cell');
+  });
+
+  it('still says something for module/skill calls with missing targets', () => {
+    expect(summarizeToolCall({ name: 'code_execution__read_module', arguments: {} })).toBe(
+      'Reading a module'
+    );
+    expect(summarizeToolCall({ name: 'code_execution__search_modules', arguments: {} })).toBe(
+      'Searching modules'
+    );
+    expect(summarizeToolCall({ name: 'skills__loadSkill', arguments: {} })).toBe('Loading a skill');
+  });
+
   it('summarizes multi-step tool graphs as coordinated work', () => {
     expect(
       summarizeToolCall({
