@@ -187,7 +187,8 @@
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
     }
     .ext-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .ext-tags { display: flex; gap: 5px; flex-wrap: wrap; overflow: hidden; max-height: 19px; }
+    /* one exact tag row (22px = .tag height); wrapped overflow rows stay hidden */
+    .ext-tags { display: flex; gap: 5px; flex-wrap: wrap; overflow: hidden; max-height: 22px; }
     .ext-card .brxt-chip {
       max-width: 58%; min-width: 0; flex-shrink: 0;
       overflow: hidden; text-overflow: ellipsis;
@@ -228,7 +229,7 @@
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
     }
     .skill-footer { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
-    .skill-tags { display: flex; gap: 5px; flex-wrap: wrap; overflow: hidden; max-height: 19px; }
+    .skill-tags { display: flex; gap: 5px; flex-wrap: wrap; overflow: hidden; max-height: 22px; }
     .skill-dl-btn {
       display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
       max-width: 100%;

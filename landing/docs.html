@@ -54,6 +54,53 @@
     .doc-figure figcaption {
       margin-top: 12px; font-size: 12.5px; color: var(--text-3); text-align: center; line-height: 1.5;
     }
+    /* ── Theme-aware figure primitives ─────────────────────────────
+       Every schematic paints with these classes (never hardcoded hex),
+       so figures recolor with the light/dark theme automatically. */
+    .doc-figure {
+      --fig-bubble: #2a2520;                 /* user-message bubble ink */
+      --fig-ok-bg: #f0f7f1;   --fig-ok-line: #bcd9c2;   --fig-ok-text: #1f7a3d;
+      --fig-danger-bg: #fbf1f0; --fig-danger-line: #e6bcae; --fig-danger-text: #9b3b2a;
+    }
+    :root.dark .doc-figure {
+      --fig-bubble: var(--bg-4);
+      --fig-ok-bg: rgba(96,190,130,0.13);  --fig-ok-line: rgba(96,190,130,0.35);  --fig-ok-text: #8fd4a5;
+      --fig-danger-bg: rgba(224,110,84,0.13); --fig-danger-line: rgba(224,110,84,0.42); --fig-danger-text: #eda28d;
+    }
+    /* fills (compose with an s-* stroke class when the box is outlined) */
+    .doc-figure .f-card   { fill: var(--bg-2); }
+    .doc-figure .f-ground { fill: var(--bg); }
+    .doc-figure .f-panel  { fill: var(--sidebar); }
+    .doc-figure .f-soft   { fill: var(--accent-soft); }
+    .doc-figure .f-ok     { fill: var(--fig-ok-bg); }
+    .doc-figure .f-danger { fill: var(--fig-danger-bg); }
+    .doc-figure .f-skel   { fill: var(--bg-3); }
+    .doc-figure .f-skel2  { fill: var(--bg-4); }
+    .doc-figure .f-accent { fill: var(--accent); }
+    .doc-figure .f-bubble { fill: var(--fig-bubble); }
+    /* strokes */
+    .doc-figure .s-b      { stroke: var(--border-2); }
+    .doc-figure .s-soft   { stroke: var(--accent-soft2); }
+    .doc-figure .s-ok     { stroke: var(--fig-ok-line); }
+    .doc-figure .s-danger { stroke: var(--fig-danger-line); }
+    /* text */
+    .doc-figure .t-1 { fill: var(--text); }
+    .doc-figure .t-2 { fill: var(--text-2); }
+    .doc-figure .t-3 { fill: var(--text-3); }
+    .doc-figure .t-a { fill: var(--accent); }
+    .doc-figure .t-u { fill: var(--ucsf); }
+    .doc-figure .t-ok { fill: var(--fig-ok-text); }
+    .doc-figure .t-danger { fill: var(--fig-danger-text); }
+    .doc-figure .t-oncoral { fill: var(--text-on-accent); }
+    /* lines + arrows */
+    .doc-figure .l-a { stroke: var(--accent); fill: none; }
+    .doc-figure .l-u { stroke: var(--ucsf); fill: none; }
+    .doc-figure .l-n { stroke: var(--text-3); fill: none; }
+    .doc-figure .l-b { stroke: var(--border-2); fill: none; }
+    .doc-figure .l-danger { stroke: var(--fig-danger-text); fill: none; }
+    .doc-figure .m-a { fill: var(--accent); }
+    .doc-figure .m-u { fill: var(--ucsf); }
+    .doc-figure .m-n { fill: var(--text-3); }
     /* keep flag/option code chips whole (no mid-token breaks) and let code
        blocks wrap at spaces instead of hiding their ends behind a scroll */
     .docs-content .doc-table code { white-space: nowrap; }
@@ -150,6 +197,10 @@
         <button class="docs-nav-item" id="dnav-extensions" onclick="showDoc('extensions')">
           <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           Extensions &amp; skills
+        </button>
+        <button class="docs-nav-item" id="dnav-apps" onclick="showDoc('apps')">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M6 4v4"/><path d="M10 4v4"/></svg>
+          Apps &amp; Agent Drafter
         </button>
         <button class="docs-nav-item" id="dnav-knowledge" onclick="showDoc('knowledge')">
           <svg class="icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -271,36 +322,36 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 <p>Every Biorouter window has three regions. Across the top is a thin <strong>titlebar</strong> with the traffic-light window controls, a couple of quick actions, and the active session's name. Down the left is the <strong>sidebar</strong>, a fixed column of navigation and a list of recent chats. Everything else is the <strong>main area</strong>, which shows whichever section you have open (a chat, the Home page, History, Settings, and so on).</p>
 
 <figure class="doc-figure">
-<svg viewBox="0 0 720 420" role="img" aria-label="Anatomy of the desktop window">
+<svg viewBox="0 0 760 420" role="img" aria-label="Anatomy of the desktop window">
   <!-- window -->
-  <rect x="60" y="30" width="600" height="360" rx="14" fill="#ffffff" stroke="#d9cfba"/>
+  <rect x="60" y="30" width="600" height="360" rx="14" class="f-card s-b"/>
   <!-- titlebar -->
-  <path d="M60,44 a14,14 0 0 1 14,-14 h572 a14,14 0 0 1 14,14 v22 h-600 z" fill="#faf8f3"/>
-  <line x1="60" y1="66" x2="660" y2="66" stroke="#e6ddca"/>
+  <path d="M60,44 a14,14 0 0 1 14,-14 h572 a14,14 0 0 1 14,14 v22 h-600 z" class="f-ground"/>
+  <line x1="60" y1="66" x2="660" y2="66" class="l-b"/>
   <circle cx="82" cy="48" r="5" fill="#e0a59a"/><circle cx="98" cy="48" r="5" fill="#e6c98f"/><circle cx="114" cy="48" r="5" fill="#a9cfa9"/>
-  <text x="360" y="52" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7a736c">Session name</text>
+  <text x="360" y="52" text-anchor="middle" font-size="11.5" font-weight="600" class="t-3">Session name</text>
   <!-- sidebar -->
-  <rect x="60" y="66" width="150" height="324" fill="#f3ede1"/>
-  <line x1="210" y1="66" x2="210" y2="390" stroke="#e6ddca"/>
-  <rect x="76" y="86" width="118" height="16" rx="5" fill="#e4d9c3"/>
-  <rect x="76" y="112" width="118" height="12" rx="4" fill="#eee6d6"/><rect x="76" y="130" width="90" height="12" rx="4" fill="#eee6d6"/><rect x="76" y="148" width="104" height="12" rx="4" fill="#eee6d6"/>
-  <rect x="76" y="176" width="80" height="12" rx="4" fill="#eee6d6"/><rect x="76" y="194" width="110" height="12" rx="4" fill="#eee6d6"/><rect x="76" y="212" width="96" height="12" rx="4" fill="#eee6d6"/>
+  <rect x="60" y="66" width="150" height="324" class="f-panel"/>
+  <line x1="210" y1="66" x2="210" y2="390" class="l-b"/>
+  <rect x="76" y="86" width="118" height="16" rx="5" class="f-skel2"/>
+  <rect x="76" y="112" width="118" height="12" rx="4" class="f-skel"/><rect x="76" y="130" width="90" height="12" rx="4" class="f-skel"/><rect x="76" y="148" width="104" height="12" rx="4" class="f-skel"/>
+  <rect x="76" y="176" width="80" height="12" rx="4" class="f-skel"/><rect x="76" y="194" width="110" height="12" rx="4" class="f-skel"/><rect x="76" y="212" width="96" height="12" rx="4" class="f-skel"/>
   <!-- main chat -->
-  <rect x="250" y="92" width="360" height="30" rx="8" fill="#2a2520"/>
-  <rect x="250" y="140" width="330" height="14" rx="5" fill="#efe7d6"/><rect x="250" y="162" width="300" height="14" rx="5" fill="#efe7d6"/><rect x="250" y="184" width="340" height="14" rx="5" fill="#efe7d6"/>
+  <rect x="250" y="92" width="360" height="30" rx="8" class="f-bubble"/>
+  <rect x="250" y="140" width="330" height="14" rx="5" class="f-skel"/><rect x="250" y="162" width="300" height="14" rx="5" class="f-skel"/><rect x="250" y="184" width="340" height="14" rx="5" class="f-skel"/>
   <!-- composer -->
-  <rect x="250" y="312" width="360" height="58" rx="12" fill="#fff" stroke="#dfd6c2"/>
-  <rect x="264" y="346" width="22" height="12" rx="4" fill="#efe7d6"/><rect x="294" y="346" width="22" height="12" rx="4" fill="#efe7d6"/><rect x="324" y="346" width="22" height="12" rx="4" fill="#efe7d6"/>
-  <rect x="560" y="342" width="40" height="20" rx="8" fill="#b85a32"/>
+  <rect x="250" y="312" width="360" height="58" rx="12" class="f-card s-b"/>
+  <rect x="264" y="346" width="22" height="12" rx="4" class="f-skel"/><rect x="294" y="346" width="22" height="12" rx="4" class="f-skel"/><rect x="324" y="346" width="22" height="12" rx="4" class="f-skel"/>
+  <rect x="560" y="342" width="40" height="20" rx="8" class="f-accent"/>
   <!-- callout labels -->
-  <text x="360" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#b85a32">Title bar</text>
-  <line x1="360" y1="24" x2="360" y2="30" stroke="#b85a32" stroke-width="1.5"/>
-  <text x="135" y="420" text-anchor="middle" font-size="12" font-weight="700" fill="#b85a32">Sidebar</text>
-  <line x1="135" y1="392" x2="135" y2="408" stroke="#b85a32" stroke-width="1.5"/>
-  <text x="700" y="150" text-anchor="end" font-size="12" font-weight="700" fill="#b85a32">Chat</text>
-  <line x1="612" y1="150" x2="668" y2="150" stroke="#b85a32" stroke-width="1.5"/>
-  <text x="700" y="345" text-anchor="end" font-size="12" font-weight="700" fill="#b85a32">Composer</text>
-  <line x1="612" y1="342" x2="668" y2="342" stroke="#b85a32" stroke-width="1.5"/>
+  <text x="360" y="20" text-anchor="middle" font-size="12" font-weight="700" class="t-a">Title bar</text>
+  <line x1="360" y1="24" x2="360" y2="30" class="l-a" stroke-width="1.5"/>
+  <text x="135" y="420" text-anchor="middle" font-size="12" font-weight="700" class="t-a">Sidebar</text>
+  <line x1="135" y1="392" x2="135" y2="408" class="l-a" stroke-width="1.5"/>
+  <text x="676" y="154" text-anchor="start" font-size="12" font-weight="700" class="t-a">Chat</text>
+  <line x1="612" y1="150" x2="668" y2="150" class="l-a" stroke-width="1.5"/>
+  <text x="676" y="346" text-anchor="start" font-size="12" font-weight="700" class="t-a">Composer</text>
+  <line x1="612" y1="342" x2="668" y2="342" class="l-a" stroke-width="1.5"/>
 </svg>
 <figcaption>The window: a title bar across the top, the navigation sidebar on the left, the chat on the right, and the composer floating at the bottom.</figcaption>
 </figure>
@@ -313,28 +364,28 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <figure class="doc-figure">
 <svg viewBox="0 0 320 540" role="img" aria-label="The sidebar navigation order">
-  <rect x="20" y="16" width="280" height="508" rx="14" fill="#f3ede1" stroke="#e6ddca"/>
+  <rect x="20" y="16" width="280" height="508" rx="14" class="f-panel s-b"/>
   <!-- New Session -->
-  <rect x="36" y="34" width="248" height="30" rx="8" fill="#e4d9c3"/><text x="60" y="54" font-size="13" font-weight="700" fill="#2a2520">New Session</text>
-  <line x1="44" y1="78" x2="276" y2="78" stroke="#e0d5bf"/>
-  <text x="60" y="102" font-size="13" fill="#4a443c">Home</text>
-  <text x="60" y="126" font-size="13" fill="#4a443c">Chat</text>
-  <text x="60" y="150" font-size="13" fill="#4a443c">History</text>
-  <line x1="44" y1="166" x2="276" y2="166" stroke="#e0d5bf"/>
-  <text x="60" y="190" font-size="13" fill="#4a443c">Workflows</text>
-  <text x="60" y="214" font-size="13" fill="#4a443c">Scheduler</text>
-  <text x="60" y="238" font-size="13" fill="#4a443c">Extensions</text>
-  <text x="60" y="262" font-size="13" fill="#4a443c">Skills</text>
-  <text x="60" y="286" font-size="13" fill="#4a443c">Knowledge</text>
-  <text x="60" y="310" font-size="13" fill="#4a443c">Apps</text>
-  <line x1="44" y1="326" x2="276" y2="326" stroke="#e0d5bf"/>
-  <text x="44" y="348" font-size="10.5" font-weight="700" letter-spacing="0.8" fill="#8a806a">RECENTS</text>
-  <text x="44" y="372" font-size="12" fill="#635c54">GWAS on Type 2 Diabetes</text>
-  <text x="44" y="392" font-size="12" fill="#635c54">SPOKE MS query</text>
-  <text x="44" y="416" font-size="12" font-weight="600" fill="#b85a32">View all chat history</text>
+  <rect x="36" y="34" width="248" height="30" rx="8" class="f-skel2"/><text x="60" y="54" font-size="13" font-weight="700" class="t-1">New Session</text>
+  <line x1="44" y1="78" x2="276" y2="78" class="l-b"/>
+  <text x="60" y="102" font-size="13" class="t-2">Home</text>
+  <text x="60" y="126" font-size="13" class="t-2">Chat</text>
+  <text x="60" y="150" font-size="13" class="t-2">History</text>
+  <line x1="44" y1="166" x2="276" y2="166" class="l-b"/>
+  <text x="60" y="190" font-size="13" class="t-2">Workflows</text>
+  <text x="60" y="214" font-size="13" class="t-2">Scheduler</text>
+  <text x="60" y="238" font-size="13" class="t-2">Extensions</text>
+  <text x="60" y="262" font-size="13" class="t-2">Skills</text>
+  <text x="60" y="286" font-size="13" class="t-2">Knowledge</text>
+  <text x="60" y="310" font-size="13" class="t-2">Apps</text>
+  <line x1="44" y1="326" x2="276" y2="326" class="l-b"/>
+  <text x="44" y="348" font-size="10.5" font-weight="700" letter-spacing="0.8" class="t-3">RECENTS</text>
+  <text x="44" y="372" font-size="12" class="t-2">GWAS on Type 2 Diabetes</text>
+  <text x="44" y="392" font-size="12" class="t-2">SPOKE MS query</text>
+  <text x="44" y="416" font-size="12" font-weight="600" class="t-a">View all chat history</text>
   <!-- settings at bottom -->
-  <line x1="44" y1="470" x2="276" y2="470" stroke="#e0d5bf"/>
-  <text x="60" y="500" font-size="13" fill="#4a443c">Settings</text>
+  <line x1="44" y1="470" x2="276" y2="470" class="l-b"/>
+  <text x="60" y="500" font-size="13" class="t-2">Settings</text>
 </svg>
 <figcaption>The sidebar order: New Session, then Home, Chat, History, the feature sections, a date grouped Recents list, and Settings at the bottom.</figcaption>
 </figure>
@@ -387,23 +438,43 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 <p>Under the text box is a row of controls. Each one is a chip you click to open a picker or to change a setting for <em>this</em> chat. From left to right:</p>
 
 <figure class="doc-figure">
-<svg viewBox="0 0 760 140" role="img" aria-label="The composer toolbar">
-  <rect x="14" y="20" width="732" height="100" rx="14" fill="#fff" stroke="#dfd6c2"/>
-  <text x="34" y="46" font-size="11.5" fill="#8a806a">Ask anything, or type / for a skill</text>
-  <!-- chips row -->
-  <g font-size="11" font-weight="600" fill="#4a443c">
-    <rect x="34" y="78" width="96" height="26" rx="7" fill="#f4f0e6"/><text x="46" y="95">Directory</text>
-    <rect x="138" y="78" width="70" height="26" rx="7" fill="#f4f0e6"/><text x="150" y="95">Attach</text>
-    <rect x="216" y="78" width="96" height="26" rx="7" fill="#f4f0e6"/><text x="228" y="95">Extensions</text>
-    <rect x="320" y="78" width="62" height="26" rx="7" fill="#f4f0e6"/><text x="332" y="95">Skills</text>
-    <rect x="390" y="78" width="92" height="26" rx="7" fill="#f4f0e6"/><text x="402" y="95">Knowledge</text>
-    <rect x="490" y="78" width="54" height="26" rx="7" fill="#f4f0e6"/><text x="502" y="95">Cost</text>
-    <rect x="552" y="78" width="64" height="26" rx="7" fill="#f4f0e6"/><text x="564" y="95">Model</text>
-    <rect x="624" y="78" width="58" height="26" rx="7" fill="#f4f0e6"/><text x="636" y="95">Mode</text>
-  </g>
-  <rect x="690" y="76" width="52" height="30" rx="9" fill="#b85a32"/><text x="702" y="96" font-size="12" font-weight="700" fill="#fff">Send</text>
+<svg viewBox="0 0 760 150" role="img" aria-label="The composer toolbar">
+  <rect x="14" y="16" width="732" height="118" rx="14" class="f-card s-b"/>
+  <text x="34" y="48" font-size="11.5" class="t-3">Ask anything, or type / for a skill</text>
+  <!-- working directory chip -->
+  <rect x="30" y="90" width="118" height="26" rx="7" class="f-skel"/>
+  <path d="M39,99 h5 l2,2.5 h8 v7.5 h-15 z" class="l-n" stroke-width="1.4"/>
+  <text x="60" y="107" font-size="11" font-weight="600" class="t-2">~/project</text>
+  <line x1="156" y1="94" x2="156" y2="112" class="l-b"/>
+  <!-- extensions / skills / knowledge cluster -->
+  <rect x="164" y="90" width="48" height="26" rx="7" class="f-skel"/>
+  <rect x="173" y="97" width="5" height="5" rx="1" class="m-n"/><rect x="180" y="97" width="5" height="5" rx="1" class="m-n"/><rect x="173" y="104" width="5" height="5" rx="1" class="m-n"/><rect x="180" y="104" width="5" height="5" rx="1" class="m-n"/>
+  <text x="193" y="107" font-size="11" font-weight="600" class="t-2">3</text>
+  <rect x="216" y="90" width="48" height="26" rx="7" class="f-skel"/>
+  <path d="M225,101 l6,-3 6,3 -6,3 z" class="l-n" stroke-width="1.3"/><path d="M225,105 l6,3 6,-3" class="l-n" stroke-width="1.3"/><path d="M225,109 l6,3 6,-3" class="l-n" stroke-width="1.3"/>
+  <text x="245" y="107" font-size="11" font-weight="600" class="t-2">2</text>
+  <rect x="268" y="90" width="48" height="26" rx="7" class="f-skel"/>
+  <rect x="277" y="96" width="10" height="13" rx="1.5" class="l-n" stroke-width="1.3"/><line x1="280" y1="96" x2="280" y2="109" class="l-n" stroke-width="1.1"/>
+  <text x="295" y="107" font-size="11" font-weight="600" class="t-2">1</text>
+  <line x1="324" y1="94" x2="324" y2="112" class="l-b"/>
+  <!-- reasoning gauge (icon only) -->
+  <rect x="332" y="90" width="30" height="26" rx="7" class="f-skel"/>
+  <path d="M340,107 a7,7 0 0 1 14,0" class="l-n" stroke-width="1.4"/><line x1="347" y1="106" x2="351" y2="101" class="l-n" stroke-width="1.4"/>
+  <!-- model -->
+  <rect x="366" y="90" width="116" height="26" rx="7" class="f-skel"/>
+  <circle cx="379" cy="103" r="4.4" class="l-n" stroke-width="1.3"/><circle cx="385" cy="103" r="4.4" class="l-n" stroke-width="1.3"/>
+  <text x="394" y="107" font-size="11" font-weight="600" class="t-2">qwen3.5-4b</text>
+  <!-- context-window ring (icon only) -->
+  <rect x="486" y="90" width="30" height="26" rx="7" class="f-skel"/>
+  <circle cx="501" cy="103" r="6.5" class="l-b" stroke-width="2.6"/>
+  <path d="M501,96.5 a6.5,6.5 0 0 1 6.2,8.5" class="l-a" stroke-width="2.6"/>
+  <!-- cost -->
+  <text x="526" y="107" font-size="11" font-weight="600" class="t-2" font-family="ui-monospace, Menlo, monospace">$0.12</text>
+  <!-- send (square icon button, right-aligned) -->
+  <rect x="700" y="87" width="32" height="32" rx="8" class="f-accent"/>
+  <path d="M709,108 l17,-9.5 -7.5,17 -2.6,-6.9 z" class="t-oncoral"/>
 </svg>
-<figcaption>The composer toolbar, left to right: working directory, attach, extensions, skills, knowledge, cost, model, and mode, with Send on the right.</figcaption>
+<figcaption>The composer toolbar, left to right: working directory, then extensions, skills, and knowledge, then reasoning effort, model, context window, and cost, with the square Send button on the right.</figcaption>
 </figure>
 
 <div class="doc-table-scroll"><table class="doc-table">
@@ -411,20 +482,23 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
     <tr><th>#</th><th>Control</th><th>What it does</th></tr>
   </thead>
   <tbody>
-    <tr><td>1</td><td><strong>Working directory</strong> (folder icon + path)</td><td>The folder the agent reads and writes in. Click to switch it. Relative paths the agent uses resolve against this directory.</td></tr>
-    <tr><td>2</td><td><strong>Attach files</strong> (paperclip + count)</td><td>Attach files or images to the next message. The count shows how many are staged; remove one with its close control.</td></tr>
-    <tr><td>3</td><td><strong>Extensions</strong> (puzzle + count)</td><td>Which MCP extensions (tool servers) are active for this session. Open the picker to enable or disable them per chat.</td></tr>
-    <tr><td>4</td><td><strong>Skills</strong> (layers + count)</td><td>Which skills (instruction sets) are in play. Open to add or drop skills for this chat.</td></tr>
-    <tr><td>5</td><td><strong>Knowledge</strong> (book + KB count)</td><td>Which knowledge bases the agent can see and write to in this chat. Open to change the visible set.</td></tr>
-    <tr><td>6</td><td><strong>Cost</strong> (dollar + running total)</td><td>The estimated spend for this session so far, updated as turns complete.</td></tr>
-    <tr><td>7</td><td><strong>Model</strong> (brain + model name)</td><td>The model driving this chat. Click to switch model or provider mid-conversation.</td></tr>
-    <tr><td>8</td><td><strong>Mode</strong> (label)</td><td>The permission mode: how much the agent may do on its own (autonomous, approve each action, or chat only). Click to change it.</td></tr>
+    <tr><td>1</td><td><strong>Working directory</strong> (folder icon + path)</td><td>The folder the agent reads and writes in, with the tail of the path shown when it is long. Click to switch it. Relative paths the agent uses resolve against this directory.</td></tr>
+    <tr><td>2</td><td><strong>Extensions</strong> (puzzle + count)</td><td>Which MCP extensions (tool servers) are active for this session. Open the picker to enable or disable them per chat.</td></tr>
+    <tr><td>3</td><td><strong>Skills</strong> (layers + count)</td><td>Which skills (instruction sets) are in play. Open to add or drop skills for this chat.</td></tr>
+    <tr><td>4</td><td><strong>Knowledge</strong> (book + KB count)</td><td>Which knowledge bases the agent can see and write to in this chat. Open to change the visible set.</td></tr>
+    <tr><td>5</td><td><strong>Reasoning effort</strong> (gauge)</td><td>How hard the model should think. Icon-only while it is at the model's default; picking a quick or deep setting adds a label to the chip.</td></tr>
+    <tr><td>6</td><td><strong>Model</strong> (brain + model name)</td><td>The model driving this chat. Click to switch model or provider mid-conversation.</td></tr>
+    <tr><td>7</td><td><strong>Context window</strong> (ring gauge)</td><td>How full the conversation's context window is. Its popover shows the labeled gauge and a compact-conversation button that frees room in long chats.</td></tr>
+    <tr><td>8</td><td><strong>Cost</strong> (running total)</td><td>The estimated spend for this session so far, updated as turns complete. Shown when cost tracking is enabled.</td></tr>
+    <tr><td>9</td><td><strong>Send / Stop</strong> (square accent button, right edge)</td><td>Sends the message (paper-plane icon), and becomes a Stop control while the agent is working.</td></tr>
   </tbody>
 </table></div>
 
+<p>There is no separate attach button: add files or images by pasting them or dragging them onto the composer, and their previews appear in a strip above the toolbar, each removable with its close control.</p>
+
 <div class="info-box">
   <h4>The toolbar folds when the chat is narrow</h4>
-  <p>Inside a split pane, or in a small window, the composer keeps only the working-directory, attach, extensions, and skills chips visible and folds the rest (cost, model, mode) behind a chevron. Click the chevron to reach them. Nothing is removed, it is just tucked away so the row fits.</p>
+  <p>Inside a split pane, or in a small window, the whole left group collapses into a single <strong>+</strong> button ("Chat tools and settings"); only Send or Stop stays visible beside it. The + opens a popover stacking the same controls in three bands: the working directory, then extensions, skills, and knowledge, then reasoning, model, context, and cost. Nothing is removed, it is just tucked away so the row fits.</p>
 </div>
 
 <h3>Sending, stopping, and streaming</h3>
@@ -1338,7 +1412,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>Tutorial</strong></td><td>Off</td><td>Loads interactive, step-by-step walkthroughs of BioRouter features and guides you a step at a time. Seven tutorials ship, from getting started to building an MCP extension.</td><td><code>load_tutorial</code></td></tr>
     <tr><td><strong>Chat Recall</strong></td><td>Off</td><td>Searches your past session history by keyword or session ID so the agent can pull earlier context into the current conversation. Search runs entirely against local session history; nothing is sent to a remote service.</td><td><code>chatrecall</code> (search mode or load mode)</td></tr>
     <tr><td><strong>Code Execution</strong></td><td>On</td><td>Backs Code Mode: instead of calling tools one at a time, the model writes one short JavaScript program that batches many tool calls into a single execution, using the context window more efficiently.</td><td><code>execute_code</code>, <code>search_modules</code>, <code>read_module</code></td></tr>
-    <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds <a href="#doc-apps">BioRouter apps</a>: TypeScript front-ends wired to a live per-app agent, and exports them as standalone, directly runnable projects (see below).</td><td><code>create_app</code>, <code>configure_app</code>, <code>build_app</code>, <code>export_app</code>, plus the <code>ui_*</code> tools</td></tr>
+    <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds <a href="#apps" onclick="showDoc('apps');return false;">Biorouter apps</a>: TypeScript front-ends wired to a live per-app agent, and exports them as standalone, directly runnable projects (see the Apps &amp; Agent Drafter section).</td><td><code>create_app</code>, <code>configure_app</code>, <code>build_app</code>, <code>export_app</code>, plus the <code>ui_*</code> tools</td></tr>
   </tbody>
 </table></div>
 <div class="alert alert-warning">
@@ -1417,29 +1491,60 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 <h3>Installing and combining skills</h3>
 <p>Install a skill by dragging its <code>.zip</code> onto <strong>Skills &rarr; Add Skill</strong> in the app, with <code>biorouter skill install ./bundle.zip</code>, or in one click from BAAM. Around 85 skills are published through the marketplace, grouped into core, developer, and biomedical categories (single-cell, variant calling, differential expression, pathway analysis, clinical biostatistics, and more). BioRouter-specific global skills live under <code>~/.config/biorouter/skills/</code>; project-level skills live under <code>./.biorouter/skills/</code>, and portable locations shared with other AI agents (<code>~/.config/agents/skills/</code>, <code>.agents/skills/</code>) are also read. Skill folders are plain text, so a lab can share them to standardize analysis style without sharing any data. Because skills are just instructions, the agent can apply several at once in a single task, for example a scripting skill together with a visualization skill.</p>
 
-<h2 id="doc-apps">Apps and Agent Drafter</h2>
-<p>The <strong>Agent Drafter</strong> built-in extension builds <strong>BioRouter apps</strong>: each a TypeScript front-end (an <code>index.html</code> plus <code>src/main.ts</code>) wired to its own per-app BioRouter agent over a WebSocket. The distinguishing point is that the agent <em>drives</em> the interface rather than only answering inside it. It renders panels, charts, and graphs into the page, highlights regions, switches themes, and asks the user questions, all through typed <code>ui_*</code> tools whose command frames the app's runtime applies to the DOM. Because <code>ui_ask</code> blocks the tool call until the browser replies, the agent can branch on the user's answer within a single turn. Reach for an app when a workflow needs a richer surface than a transcript: a cohort reviewer, a calculator, a knowledge-map explorer, a data dashboard, or a lab-specific tool.</p>
+<h2>When a chat is not enough</h2>
+<p>Extensions add tools and skills add procedure, but some workflows need their own interface rather than a transcript. For those, Biorouter builds and runs <strong>apps</strong>: full pages driven by a dedicated agent, covered in the next section, <a href="#apps" onclick="showDoc('apps');return false;">Apps &amp; Agent Drafter</a>.</p>
+        <div class="doc-next"><span class="lbl">Next</span> <a href="#apps" onclick="showDoc('apps');return false;">Apps &amp; Agent Drafter &rarr;</a></div>
+      </div>
 
-<h3>The Apps SDK v2</h3>
+      <!-- ── APPS & AGENT DRAFTER ─────────────────────────────────── -->
+      <div class="doc-page" id="doc-apps">
+        <span class="doc-eyebrow">Features</span>
+<h1>Apps &amp; Agent Drafter</h1>
+<p class="doc-intro">The <strong>Agent Drafter</strong> built-in extension builds <strong>Biorouter apps</strong>: each a TypeScript front-end (an <code>index.html</code> plus <code>src/main.ts</code>) wired to its own per-app Biorouter agent over a WebSocket. The distinguishing point is that the agent <em>drives</em> the interface rather than only answering inside it: it renders panels, charts, and graphs into the page, highlights regions, switches themes, and asks the user questions. Reach for an app when a workflow needs a richer surface than a transcript: a cohort reviewer, a calculator, a knowledge-map explorer, a data dashboard, or a lab-specific tool. Apps live under <code>~/.config/biorouter/agent_drafter/</code> and are served by the local daemon; the desktop app opens them in your browser, and the Applications tab manages them.</p>
+
+<h2>The Apps SDK</h2>
 <p>Every app imports a small client runtime and talks to its agent over one WebSocket. The SDK provides:</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Piece</th><th>What it provides</th></tr></thead>
   <tbody>
     <tr><td><code>br.*</code> client runtime</td><td>Prompt, stream, cancel, subscribe to lifecycle events, and read context usage. <code>br.model</code> lists providers and live-switches the session model; <code>br.kb</code> reads and ingests into granted knowledge bases; <code>br.state</code> exposes the shared document; <code>br.agent(name)</code> reaches a worker profile.</td></tr>
     <tr><td>Component catalog</td><td>Agent-driven UI primitives (panels, charts, graphs, tables, highlights, notifications) that the SDK applies to the page. Authors expose render targets with a region attribute such as <code>&lt;section data-br-region="results"&gt;</code>, which the agent finds with <code>ui_describe</code> and writes to.</td></tr>
-    <tr><td>Shared reactive state document</td><td>One state document the app and agent both read and write (<code>br.state</code>), so the UI stays consistent across turns and across reconnects.</td></tr>
+    <tr><td>App contract</td><td>The manifest's <code>surface</code> block declares the app's state schema, the <strong>actions</strong> the agent may call (via <code>app_call</code>), and the <strong>signals</strong> the page emits back, so both sides work against a typed, server-enforced interface.</td></tr>
+    <tr><td>Shared reactive state document</td><td>One state document the app and agent both read and write (<code>br.state</code>), so the UI stays consistent across turns and across reconnects. Declarative <code>data-br-bind</code> attributes keep page elements in sync without any wiring code.</td></tr>
     <tr><td>Capability-gated security</td><td><strong>UI control is on by default</strong>, because its blast radius is the app's own page. <code>files</code>, <code>data</code>, <code>compute</code>, and the <code>vault</code> capability (encrypted credentials) are <strong>deny-by-default</strong> and granted explicitly, per app.</td></tr>
-    <tr><td>Theme packs</td><td>An app inherits BioRouter's look, and the agent can restyle it within allowed bounds using theme packs, accents, and custom tokens.</td></tr>
+    <tr><td>Theme packs</td><td>An app inherits Biorouter's look, and the agent can restyle it within allowed bounds using six theme packs (base, clinical, lab notebook, terminal, journal, midnight), accents, and custom tokens.</td></tr>
     <tr><td>Multi-agent worker profiles</td><td>An app can declare named worker profiles, each a full alternate agent config (its own model, prompt, extensions, and KB) validated to be a capability subset of the app. The main agent consults them for self-contained sub-questions.</td></tr>
   </tbody>
 </table></div>
 
-<h3>Building and exporting an app</h3>
-<p>Agent Drafter exposes tools for the whole lifecycle. <code>create_app</code> scaffolds a project (a working starter archetype plus a manifest); <code>configure_app</code> and <code>update_app</code> set the persona, model, capabilities, and edit the source; <code>build_app</code> bundles <code>src/main.ts</code> with esbuild, refreshes the vendored SDK, and runs its lint checks; and <code>export_app</code> writes a standalone folder.</p>
+<h2>The agent drives the app</h2>
+<p>Authors mark render targets with a region attribute, for example <code>&lt;section data-br-region="results"&gt;</code>. The agent discovers them with <code>ui_describe</code> (its first call in a fresh app) and then writes to targets like <code>@region:results</code>, <code>@panel:&lt;id&gt;</code>, or <code>@main</code> through typed tools, each pushing a frame down the app's socket that the runtime applies to the page:</p>
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>ui_describe</code></td><td>Inventories the page: regions, panels, declared actions and signals, and current state.</td></tr>
+    <tr><td><code>ui_panel</code> · <code>ui_render</code></td><td>Open a dock panel, or render widgets (cards, tables, stats, forms, markdown) into any target.</td></tr>
+    <tr><td><code>ui_chart</code> · <code>ui_graph</code> · <code>ui_figure</code></td><td>Draw charts, network graphs, and Auto Visualiser figures.</td></tr>
+    <tr><td><code>ui_highlight</code> · <code>ui_notify</code></td><td>Point at a region, or toast a status message.</td></tr>
+    <tr><td><code>ui_theme</code> · <code>ui_layout</code></td><td>Restyle the app within its allowed bounds; rearrange the declared layout.</td></tr>
+    <tr><td><code>ui_state</code> · <code>ui_patch_state</code></td><td>Read and patch the shared state document the page is bound to.</td></tr>
+    <tr><td><code>ui_ask</code></td><td>Show a blocking form and wait: the tool call does not return until the user answers, so the agent can branch on the reply inside a single turn.</td></tr>
+    <tr><td><code>app_call</code></td><td>Invoke an action the app registered with <code>br.actions.register</code>, and get its return value.</td></tr>
+  </tbody>
+</table></div>
+
+<h2>Archetypes</h2>
+<p>New apps start from one of six working <strong>archetypes</strong> rather than a blank page: <strong>explorer</strong> (graph plus inspector and search), <strong>dashboard</strong> (a KPI grid bound to state), <strong>workbench</strong> (table, row selection, detail pane), <strong>wizard</strong> (a staged form), <strong>canvas</strong> (an author-drawn surface), and <strong>chat</strong> (a plain conversation panel). Each starter is lint-clean, declares a matching app contract, and runs before you change a line.</p>
+
+<h2>Building and exporting an app</h2>
+<p>Agent Drafter exposes tools for the whole lifecycle. <code>create_app</code> scaffolds a project (a working starter archetype plus a manifest); <code>configure_app</code> and <code>update_app</code> set the persona, model, capabilities, and edit the source; <code>build_app</code> bundles <code>src/main.ts</code> with esbuild, refreshes the vendored SDK, and runs its lint checks; <code>launch_app</code> and <code>preview_app</code> open the result; and <code>export_app</code> writes a standalone folder. You can also just ask in chat: "build me an app that reviews this cohort" reaches the same tools. From the terminal, <code>biorouter apps list</code>, <code>biorouter apps open &lt;id&gt;</code>, and <code>biorouter apps serve &lt;id&gt;</code> mirror the desktop's Applications tab.</p>
 <div class="info-box">
   <h4>Exported apps are directly runnable, with no Node required</h4>
   <p><code>export_app</code> writes a self-contained project that runs without a build step: a <code>manifest.json</code>, the bundled front-end, launch scripts (<code>run.sh</code> / <code>run.command</code> / <code>biorouter-launch.sh</code>), and a small loopback server that proxies to a local <code>biorouterd</code> daemon. The launcher locates or installs the daemon, starts it headlessly, verifies the app responds, and opens it. Exported apps carry no API keys; they inherit the credentials of whoever runs them.</p>
 </div>
+
+<h2>Security model</h2>
+<p>Apps are treated as untrusted pages. Each session gets a per-app WebSocket token that never touches disk, pinned to a loopback origin. Everything the page sends the agent rides inside a data envelope the system prompt marks as content, not instructions. State bindings are non-executing sinks (text and a strict attribute allowlist), raw HTML rendering is off unless the manifest enables it and is server-sanitized even then, and knowledge access is scoped to the exact bases the manifest grants. One routing rule is enforced outright: an app holding sensitive data, such as a clinical-database source or a writable knowledge base, may not route its turns to an external commercial provider; it stays on local or institutional models.</p>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#knowledge" onclick="showDoc('knowledge');return false;">Knowledge bases &rarr;</a></div>
       </div>
       <div class="doc-page" id="doc-knowledge">
@@ -1490,28 +1595,28 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 <figure class="doc-figure">
 <svg viewBox="0 0 780 170" role="img" aria-label="Knowledge ingest pipeline">
-  <defs><marker id="ahK" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b85a32"/></marker></defs>
-  <rect x="16" y="52" width="120" height="66" rx="10" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="76" y="82" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Source</text>
-  <text x="76" y="99" text-anchor="middle" font-size="10.5" fill="#6e6760">PDF, URL, text</text>
-  <line x1="136" y1="85" x2="172" y2="85" stroke="#b85a32" stroke-width="2" marker-end="url(#ahK)"/>
+  <defs><marker id="ahK" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker></defs>
+  <rect x="16" y="52" width="120" height="66" rx="10" class="f-ground s-b"/>
+  <text x="76" y="82" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Source</text>
+  <text x="76" y="99" text-anchor="middle" font-size="10.5" class="t-3">PDF, URL, text</text>
+  <line x1="136" y1="85" x2="172" y2="85" class="l-a" stroke-width="2" marker-end="url(#ahK)"/>
 
-  <rect x="176" y="52" width="110" height="66" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="231" y="90" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Convert</text>
-  <line x1="286" y1="85" x2="322" y2="85" stroke="#b85a32" stroke-width="2" marker-end="url(#ahK)"/>
+  <rect x="176" y="52" width="110" height="66" rx="10" class="f-card s-b"/>
+  <text x="231" y="90" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Convert</text>
+  <line x1="286" y1="85" x2="322" y2="85" class="l-a" stroke-width="2" marker-end="url(#ahK)"/>
 
-  <rect x="326" y="52" width="132" height="66" rx="10" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="392" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="#8a3f1d">Digest agent</text>
-  <text x="392" y="99" text-anchor="middle" font-size="10.5" fill="#7a4a30">writes [[links]]</text>
-  <line x1="458" y1="85" x2="494" y2="85" stroke="#b85a32" stroke-width="2" marker-end="url(#ahK)"/>
+  <rect x="326" y="52" width="132" height="66" rx="10" class="f-soft s-soft"/>
+  <text x="392" y="82" text-anchor="middle" font-size="12.5" font-weight="700" class="t-a">Digest agent</text>
+  <text x="392" y="99" text-anchor="middle" font-size="10.5" class="t-a">writes [[links]]</text>
+  <line x1="458" y1="85" x2="494" y2="85" class="l-a" stroke-width="2" marker-end="url(#ahK)"/>
 
-  <rect x="498" y="52" width="132" height="66" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="564" y="82" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Wiki pages</text>
-  <text x="564" y="99" text-anchor="middle" font-size="10.5" fill="#6e6760">+ git commit</text>
-  <line x1="630" y1="85" x2="666" y2="85" stroke="#b85a32" stroke-width="2" marker-end="url(#ahK)"/>
+  <rect x="498" y="52" width="132" height="66" rx="10" class="f-card s-b"/>
+  <text x="564" y="82" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Wiki pages</text>
+  <text x="564" y="99" text-anchor="middle" font-size="10.5" class="t-3">+ git commit</text>
+  <line x1="630" y1="85" x2="666" y2="85" class="l-a" stroke-width="2" marker-end="url(#ahK)"/>
 
-  <rect x="670" y="52" width="94" height="66" rx="10" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="717" y="90" text-anchor="middle" font-size="12.5" font-weight="600" fill="#052049">Graph</text>
+  <rect x="670" y="52" width="94" height="66" rx="10" class="f-ground s-b"/>
+  <text x="717" y="90" text-anchor="middle" font-size="12.5" font-weight="600" class="t-u">Graph</text>
 </svg>
 <figcaption>A source becomes interlinked wiki pages: convert the file, let the digest agent write pages with cross links, commit to git, and render the graph.</figcaption>
 </figure>
@@ -1610,20 +1715,20 @@ instructions: "You are a biomedical research assistant."
 prompt: "Summarize the key findings, methods, and conclusions of the attached paper."</code></pre>
 
 <figure class="doc-figure">
-<svg viewBox="0 0 700 250" role="img" aria-label="A workflow combines four parts">
-  <defs><marker id="ahW" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b85a32"/></marker></defs>
-  <rect x="30" y="20" width="150" height="44" rx="10" fill="#fff" stroke="#e0d7c3"/><text x="105" y="47" text-anchor="middle" font-size="13" font-weight="600" fill="#2a2520">Extensions</text>
-  <rect x="30" y="82" width="150" height="44" rx="10" fill="#fff" stroke="#e0d7c3"/><text x="105" y="109" text-anchor="middle" font-size="13" font-weight="600" fill="#2a2520">Skills</text>
-  <rect x="30" y="144" width="150" height="44" rx="10" fill="#fff" stroke="#e0d7c3"/><text x="105" y="171" text-anchor="middle" font-size="13" font-weight="600" fill="#2a2520">Knowledge</text>
-  <rect x="30" y="206" width="150" height="44" rx="10" fill="#fff" stroke="#e0d7c3" transform="translate(0,-16)"/><text x="105" y="217" text-anchor="middle" font-size="13" font-weight="600" fill="#2a2520">Model</text>
-  <!-- arrows merging -->
-  <path d="M180,42 C300,42 300,120 356,120" fill="none" stroke="#b85a32" stroke-width="1.8" marker-end="url(#ahW)"/>
-  <path d="M180,104 C300,104 300,120 356,120" fill="none" stroke="#b85a32" stroke-width="1.8" marker-end="url(#ahW)"/>
-  <path d="M180,166 C300,166 300,120 356,120" fill="none" stroke="#b85a32" stroke-width="1.8" marker-end="url(#ahW)"/>
-  <path d="M180,194 C300,194 300,120 356,120" fill="none" stroke="#b85a32" stroke-width="1.8" marker-end="url(#ahW)"/>
-  <rect x="360" y="86" width="180" height="70" rx="12" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="450" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#8a3f1d">Workflow</text>
-  <text x="450" y="136" text-anchor="middle" font-size="11" fill="#7a4a30">one file, runs the same way</text>
+<svg viewBox="0 0 700 260" role="img" aria-label="A workflow combines four parts">
+  <defs><marker id="ahW" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker></defs>
+  <rect x="30" y="20" width="150" height="44" rx="10" class="f-card s-b"/><text x="105" y="47" text-anchor="middle" font-size="13" font-weight="600" class="t-1">Extensions</text>
+  <rect x="30" y="82" width="150" height="44" rx="10" class="f-card s-b"/><text x="105" y="109" text-anchor="middle" font-size="13" font-weight="600" class="t-1">Skills</text>
+  <rect x="30" y="144" width="150" height="44" rx="10" class="f-card s-b"/><text x="105" y="171" text-anchor="middle" font-size="13" font-weight="600" class="t-1">Knowledge</text>
+  <rect x="30" y="206" width="150" height="44" rx="10" class="f-card s-b"/><text x="105" y="233" text-anchor="middle" font-size="13" font-weight="600" class="t-1">Model</text>
+  <!-- arrows merging: each lands on its own spot on the workflow box edge -->
+  <path d="M180,42 C280,42 300,96 356,96" class="l-a" stroke-width="1.8" marker-end="url(#ahW)"/>
+  <path d="M180,104 C280,104 300,112 356,112" class="l-a" stroke-width="1.8" marker-end="url(#ahW)"/>
+  <path d="M180,166 C280,166 300,130 356,130" class="l-a" stroke-width="1.8" marker-end="url(#ahW)"/>
+  <path d="M180,228 C280,228 300,146 356,146" class="l-a" stroke-width="1.8" marker-end="url(#ahW)"/>
+  <rect x="360" y="86" width="180" height="70" rx="12" class="f-soft s-soft"/>
+  <text x="450" y="116" text-anchor="middle" font-size="15" font-weight="700" class="t-a">Workflow</text>
+  <text x="450" y="136" text-anchor="middle" font-size="11" class="t-a">one file, runs the same way</text>
 </svg>
 <figcaption>A workflow bundles the extensions, skills, knowledge, and model an agent needs into one file you can share and rerun.</figcaption>
 </figure>
@@ -1794,42 +1899,42 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <figure class="doc-figure">
 <svg viewBox="0 0 760 300" role="img" aria-label="The agent loop">
   <defs>
-    <marker id="ahL" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b85a32"/></marker>
-    <marker id="ahL2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#052049"/></marker>
+    <marker id="ahL" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker>
+    <marker id="ahL2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-u"/></marker>
   </defs>
   <!-- request in -->
-  <rect x="20" y="112" width="112" height="56" rx="10" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="76" y="145" text-anchor="middle" font-size="13" font-weight="600" fill="#2a2520">Request</text>
-  <line x1="132" y1="140" x2="176" y2="140" stroke="#b85a32" stroke-width="2" marker-end="url(#ahL)"/>
+  <rect x="20" y="112" width="112" height="56" rx="10" class="f-ground s-b"/>
+  <text x="76" y="145" text-anchor="middle" font-size="13" font-weight="600" class="t-1">Request</text>
+  <line x1="132" y1="140" x2="176" y2="140" class="l-a" stroke-width="2" marker-end="url(#ahL)"/>
 
   <!-- loop boxes -->
-  <rect x="180" y="112" width="126" height="56" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="243" y="136" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Build context</text>
-  <text x="243" y="152" text-anchor="middle" font-size="10.5" fill="#6e6760">tools, knowledge, skills</text>
-  <line x1="306" y1="140" x2="344" y2="140" stroke="#b85a32" stroke-width="2" marker-end="url(#ahL)"/>
+  <rect x="180" y="112" width="126" height="56" rx="10" class="f-card s-b"/>
+  <text x="243" y="136" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Build context</text>
+  <text x="243" y="152" text-anchor="middle" font-size="10.5" class="t-3">tools, knowledge, skills</text>
+  <line x1="306" y1="140" x2="344" y2="140" class="l-a" stroke-width="2" marker-end="url(#ahL)"/>
 
-  <rect x="348" y="112" width="104" height="56" rx="10" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="400" y="145" text-anchor="middle" font-size="13" font-weight="700" fill="#8a3f1d">Model</text>
-  <line x1="452" y1="140" x2="490" y2="140" stroke="#b85a32" stroke-width="2" marker-end="url(#ahL)"/>
+  <rect x="348" y="112" width="104" height="56" rx="10" class="f-soft s-soft"/>
+  <text x="400" y="145" text-anchor="middle" font-size="13" font-weight="700" class="t-a">Model</text>
+  <line x1="452" y1="140" x2="490" y2="140" class="l-a" stroke-width="2" marker-end="url(#ahL)"/>
 
-  <rect x="494" y="112" width="128" height="56" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="558" y="136" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Route + run tool</text>
-  <text x="558" y="152" text-anchor="middle" font-size="10.5" fill="#6e6760">permission gate</text>
+  <rect x="494" y="112" width="128" height="56" rx="10" class="f-card s-b"/>
+  <text x="558" y="136" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Route + run tool</text>
+  <text x="558" y="152" text-anchor="middle" font-size="10.5" class="t-3">permission gate</text>
 
   <!-- observe below, loops back to Model -->
-  <rect x="494" y="222" width="128" height="52" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="558" y="253" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Observe</text>
+  <rect x="494" y="222" width="128" height="52" rx="10" class="f-card s-b"/>
+  <text x="558" y="253" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Observe</text>
   <!-- run tool -> observe -->
-  <line x1="558" y1="168" x2="558" y2="218" stroke="#b85a32" stroke-width="2" marker-end="url(#ahL)"/>
+  <line x1="558" y1="168" x2="558" y2="218" class="l-a" stroke-width="2" marker-end="url(#ahL)"/>
   <!-- observe -> back to model (loop) -->
-  <path d="M494,248 C400,248 400,210 400,172" fill="none" stroke="#b85a32" stroke-width="2" marker-end="url(#ahL)"/>
-  <text x="400" y="212" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b85a32">repeat</text>
+  <path d="M494,248 C400,248 400,210 400,172" class="l-a" stroke-width="2" marker-end="url(#ahL)"/>
+  <text x="400" y="212" text-anchor="middle" font-size="10.5" font-weight="600" class="t-a">repeat</text>
 
   <!-- respond out (from Model, up) -->
-  <rect x="348" y="24" width="104" height="52" rx="10" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="400" y="55" text-anchor="middle" font-size="13" font-weight="600" fill="#052049">Respond</text>
-  <line x1="400" y1="108" x2="400" y2="80" stroke="#052049" stroke-width="2" marker-end="url(#ahL2)"/>
-  <text x="446" y="96" text-anchor="middle" font-size="10.5" font-weight="600" fill="#052049">when done</text>
+  <rect x="348" y="24" width="104" height="52" rx="10" class="f-ground s-b"/>
+  <text x="400" y="55" text-anchor="middle" font-size="13" font-weight="600" class="t-u">Respond</text>
+  <line x1="400" y1="108" x2="400" y2="80" class="l-u" stroke-width="2" marker-end="url(#ahL2)"/>
+  <text x="446" y="96" text-anchor="middle" font-size="10.5" font-weight="600" class="t-u">when done</text>
 </svg>
 <figcaption>Each turn: build context, call the model, route and run a tool through the permission gate, observe the result, and repeat until the model answers.</figcaption>
 </figure>
@@ -1978,28 +2083,28 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <figure class="doc-figure">
 <svg viewBox="0 0 640 300" role="img" aria-label="Lead agent delegating to worker subagents">
   <defs>
-    <marker id="oDown" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#b85a32"/></marker>
-    <marker id="oUp" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto-start-reverse"><path d="M0,0 L9,4.5 L0,9 Z" fill="#052049"/></marker>
+    <marker id="oDown" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" class="m-a"/></marker>
+    <marker id="oUp" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto-start-reverse"><path d="M0,0 L9,4.5 L0,9 Z" class="m-u"/></marker>
   </defs>
   <!-- one connector per worker: coral arrowhead into the worker (delegate),
        navy arrowhead back into the lead (report). Nothing crosses. -->
-  <line x1="300" y1="84" x2="140" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
-  <line x1="320" y1="84" x2="320" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
-  <line x1="340" y1="84" x2="500" y2="196" stroke="#dac6b4" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
+  <line x1="300" y1="84" x2="140" y2="196" class="l-b" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
+  <line x1="320" y1="84" x2="320" y2="196" class="l-b" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
+  <line x1="340" y1="84" x2="500" y2="196" class="l-b" stroke-width="1.8" marker-start="url(#oUp)" marker-end="url(#oDown)"/>
 
-  <rect x="238" y="24" width="164" height="58" rx="12" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="320" y="49" text-anchor="middle" font-size="14" font-weight="700" fill="#8a3f1d">Lead agent</text>
-  <text x="320" y="67" text-anchor="middle" font-size="11" fill="#7a4a30">plans and delegates</text>
+  <rect x="238" y="24" width="164" height="58" rx="12" class="f-soft s-soft"/>
+  <text x="320" y="49" text-anchor="middle" font-size="14" font-weight="700" class="t-a">Lead agent</text>
+  <text x="320" y="67" text-anchor="middle" font-size="11" class="t-a">plans and delegates</text>
 
-  <rect x="60" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="135" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 1</text>
-  <rect x="245" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="320" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 2</text>
-  <rect x="430" y="200" width="150" height="58" rx="12" fill="#fff" stroke="#e0d7c3"/>
-  <text x="505" y="234" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Worker 3</text>
+  <rect x="60" y="200" width="150" height="58" rx="12" class="f-card s-b"/>
+  <text x="135" y="234" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Worker 1</text>
+  <rect x="245" y="200" width="150" height="58" rx="12" class="f-card s-b"/>
+  <text x="320" y="234" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Worker 2</text>
+  <rect x="430" y="200" width="150" height="58" rx="12" class="f-card s-b"/>
+  <text x="505" y="234" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Worker 3</text>
 
-  <text x="178" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b85a32">delegate</text>
-  <text x="470" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#052049">report back</text>
+  <text x="178" y="150" text-anchor="middle" font-size="10.5" font-weight="600" class="t-a">delegate</text>
+  <text x="470" y="150" text-anchor="middle" font-size="10.5" font-weight="600" class="t-u">report back</text>
 </svg>
 <figcaption>A lead agent breaks a task into parts, hands each to a worker subagent, and collects what they return.</figcaption>
 </figure>
@@ -2020,31 +2125,31 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <figure class="doc-figure">
 <svg viewBox="0 0 740 220" role="img" aria-label="How secrets are vaulted">
   <defs>
-    <marker id="ahV" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b85a32"/></marker>
-    <marker id="ahV2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#052049"/></marker>
+    <marker id="ahV" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker>
+    <marker id="ahV2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-u"/></marker>
   </defs>
-  <rect x="20" y="80" width="140" height="60" rx="10" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="90" y="107" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Settings</text>
-  <text x="90" y="124" text-anchor="middle" font-size="10.5" fill="#6e6760">you paste a key</text>
-  <line x1="160" y1="110" x2="200" y2="110" stroke="#b85a32" stroke-width="2" marker-end="url(#ahV)"/>
+  <rect x="20" y="80" width="140" height="60" rx="10" class="f-ground s-b"/>
+  <text x="90" y="107" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Settings</text>
+  <text x="90" y="124" text-anchor="middle" font-size="10.5" class="t-3">you paste a key</text>
+  <line x1="160" y1="110" x2="200" y2="110" class="l-a" stroke-width="2" marker-end="url(#ahV)"/>
 
-  <rect x="204" y="80" width="168" height="60" rx="10" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="288" y="107" text-anchor="middle" font-size="12.5" font-weight="700" fill="#8a3f1d">OS credential store</text>
-  <text x="288" y="124" text-anchor="middle" font-size="10.5" fill="#7a4a30">Keychain / Cred Manager</text>
-  <line x1="372" y1="110" x2="412" y2="110" stroke="#052049" stroke-width="2" marker-end="url(#ahV2)"/>
-  <text x="394" y="127" text-anchor="middle" font-size="9" font-weight="600" fill="#052049">read once</text>
+  <rect x="204" y="80" width="168" height="60" rx="10" class="f-soft s-soft"/>
+  <text x="288" y="107" text-anchor="middle" font-size="12.5" font-weight="700" class="t-a">OS credential store</text>
+  <text x="288" y="124" text-anchor="middle" font-size="10.5" class="t-a">Keychain / Cred Manager</text>
+  <line x1="372" y1="110" x2="412" y2="110" class="l-u" stroke-width="2" marker-end="url(#ahV2)"/>
+  <text x="394" y="127" text-anchor="middle" font-size="9" font-weight="600" class="t-u">read once</text>
 
-  <rect x="416" y="80" width="150" height="60" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="491" y="107" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">In memory</text>
-  <text x="491" y="124" text-anchor="middle" font-size="10.5" fill="#6e6760">cached per process</text>
+  <rect x="416" y="80" width="150" height="60" rx="10" class="f-card s-b"/>
+  <text x="491" y="107" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">In memory</text>
+  <text x="491" y="124" text-anchor="middle" font-size="10.5" class="t-3">cached per process</text>
 
   <!-- never to config.yaml -->
-  <rect x="596" y="80" width="124" height="60" rx="10" fill="#fbf1f0" stroke="#e6bcae"/>
-  <text x="658" y="107" text-anchor="middle" font-size="12.5" font-weight="600" fill="#9b3b2a">config.yaml</text>
-  <text x="658" y="124" text-anchor="middle" font-size="10.5" fill="#9b3b2a">never</text>
-  <line x1="566" y1="110" x2="592" y2="110" stroke="#c0563a" stroke-width="2" stroke-dasharray="4 4"/>
-  <line x1="571" y1="100" x2="587" y2="120" stroke="#c0563a" stroke-width="2.4"/>
-  <line x1="587" y1="100" x2="571" y2="120" stroke="#c0563a" stroke-width="2.4"/>
+  <rect x="596" y="80" width="124" height="60" rx="10" class="f-danger s-danger"/>
+  <text x="658" y="107" text-anchor="middle" font-size="12.5" font-weight="600" class="t-danger">config.yaml</text>
+  <text x="658" y="124" text-anchor="middle" font-size="10.5" class="t-danger">never</text>
+  <line x1="566" y1="110" x2="592" y2="110" class="l-danger" stroke-width="2" stroke-dasharray="4 4"/>
+  <line x1="571" y1="100" x2="587" y2="120" class="l-danger" stroke-width="2.4"/>
+  <line x1="587" y1="100" x2="571" y2="120" class="l-danger" stroke-width="2.4"/>
 </svg>
 <figcaption>A key you enter goes to the operating system credential store, is read once per process into memory, and is never written to config.yaml.</figcaption>
 </figure>
@@ -2070,29 +2175,29 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <p>Biorouter apps (built with Agent Drafter) can hold their own secrets, kept separate from your global keys. Per-app secrets live behind the <strong>deny-by-default <code>vault</code> capability</strong>: an app gets none unless its manifest lists them (for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>). When an app is exported to a runnable folder, its secrets sit in a <code>.vault/</code> directory that is <strong>excluded from the export archive</strong>, so credentials never travel with the shared app.</p>
 
 <h2>Permission modes</h2>
-<p>A permission mode sets how much autonomy the agent has when it modifies files, runs shell commands, and drives the computer. It applies to the whole session, takes effect immediately, and can change before or during a session (the <code>/mode</code> command in the CLI, or the mode button in the desktop app). It is the <em>user-owned</em> tier.</p>
+<p>A permission mode sets how much autonomy the agent has when it modifies files, runs shell commands, and drives the computer. It applies to the whole session, takes effect immediately, and can change before or during a session (the <code>/mode</code> command in the CLI, or Settings &rarr; Mode in the desktop app). It is the <em>user-owned</em> tier.</p>
 <figure class="doc-figure">
 <svg viewBox="0 0 720 270" role="img" aria-label="How a tool call is gated by the permission mode">
-  <defs><marker id="ahP" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8a7f6a"/></marker></defs>
-  <rect x="20" y="105" width="130" height="60" rx="10" fill="#fff" stroke="#e0d7c3"/>
-  <text x="85" y="132" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2a2520">Tool call</text>
-  <text x="85" y="149" text-anchor="middle" font-size="10.5" fill="#6e6760">shell, editor, ...</text>
-  <line x1="150" y1="135" x2="196" y2="135" stroke="#8a7f6a" stroke-width="2" marker-end="url(#ahP)"/>
+  <defs><marker id="ahP" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-n"/></marker></defs>
+  <rect x="20" y="105" width="130" height="60" rx="10" class="f-card s-b"/>
+  <text x="85" y="132" text-anchor="middle" font-size="12.5" font-weight="600" class="t-1">Tool call</text>
+  <text x="85" y="149" text-anchor="middle" font-size="10.5" class="t-3">shell, editor, ...</text>
+  <line x1="150" y1="135" x2="196" y2="135" class="l-n" stroke-width="2" marker-end="url(#ahP)"/>
 
-  <path d="M200,135 L268,101 L336,135 L268,169 Z" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="268" y="131" text-anchor="middle" font-size="12" font-weight="700" fill="#8a3f1d">Permission</text>
-  <text x="268" y="146" text-anchor="middle" font-size="11" fill="#7a4a30">mode</text>
+  <path d="M200,135 L268,101 L336,135 L268,169 Z" class="f-soft s-soft"/>
+  <text x="268" y="131" text-anchor="middle" font-size="12" font-weight="700" class="t-a">Permission</text>
+  <text x="268" y="146" text-anchor="middle" font-size="11" class="t-a">mode</text>
 
   <!-- four outcomes -->
-  <line x1="336" y1="122" x2="470" y2="42" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
-  <line x1="336" y1="131" x2="470" y2="106" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
-  <line x1="336" y1="140" x2="470" y2="166" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
-  <line x1="336" y1="149" x2="470" y2="230" stroke="#8a7f6a" stroke-width="1.8" marker-end="url(#ahP)"/>
+  <line x1="336" y1="122" x2="470" y2="42" class="l-n" stroke-width="1.8" marker-end="url(#ahP)"/>
+  <line x1="336" y1="131" x2="470" y2="106" class="l-n" stroke-width="1.8" marker-end="url(#ahP)"/>
+  <line x1="336" y1="140" x2="470" y2="166" class="l-n" stroke-width="1.8" marker-end="url(#ahP)"/>
+  <line x1="336" y1="149" x2="470" y2="230" class="l-n" stroke-width="1.8" marker-end="url(#ahP)"/>
 
-  <rect x="474" y="20" width="220" height="44" rx="9" fill="#f0f7f1" stroke="#bcd9c2"/><text x="490" y="47" font-size="12.5" font-weight="600" fill="#1f7a3d">Autonomous</text><text x="608" y="47" font-size="11" fill="#4a7a55">runs freely</text>
-  <rect x="474" y="84" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="111" font-size="12.5" font-weight="600" fill="#2a2520">Manual approval</text><text x="626" y="111" font-size="11" fill="#6e6760">you confirm</text>
-  <rect x="474" y="144" width="220" height="44" rx="9" fill="#faf8f3" stroke="#e0d7c3"/><text x="490" y="171" font-size="12.5" font-weight="600" fill="#2a2520">Smart approval</text><text x="624" y="171" font-size="11" fill="#6e6760">risk based</text>
-  <rect x="474" y="208" width="220" height="44" rx="9" fill="#fbf1f0" stroke="#e6bcae"/><text x="490" y="235" font-size="12.5" font-weight="600" fill="#9b3b2a">Chat only</text><text x="608" y="235" font-size="11" fill="#9b3b2a">no tools</text>
+  <rect x="474" y="20" width="220" height="44" rx="9" class="f-ok s-ok"/><text x="490" y="47" font-size="12.5" font-weight="600" class="t-ok">Autonomous</text><text x="608" y="47" font-size="11" class="t-ok">runs freely</text>
+  <rect x="474" y="84" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="111" font-size="12.5" font-weight="600" class="t-1">Manual approval</text><text x="626" y="111" font-size="11" class="t-3">you confirm</text>
+  <rect x="474" y="144" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="171" font-size="12.5" font-weight="600" class="t-1">Smart approval</text><text x="624" y="171" font-size="11" class="t-3">risk based</text>
+  <rect x="474" y="208" width="220" height="44" rx="9" class="f-danger s-danger"/><text x="490" y="235" font-size="12.5" font-weight="600" class="t-danger">Chat only</text><text x="608" y="235" font-size="11" class="t-danger">no tools</text>
 </svg>
 <figcaption>Every tool call passes through the permission mode, which either runs it, asks you first, judges it by risk, or blocks it.</figcaption>
 </figure>
@@ -2224,31 +2329,31 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <figure class="doc-figure">
 <svg viewBox="0 0 720 300" role="img" aria-label="The three layers of Biorouter">
   <defs>
-    <marker id="dn3" markerWidth="9" markerHeight="9" refX="4.5" refY="8" orient="auto"><path d="M0,0 L9,0 L4.5,8 Z" fill="#b85a32"/></marker>
-    <marker id="up3" markerWidth="9" markerHeight="9" refX="4.5" refY="1" orient="auto"><path d="M0,9 L9,9 L4.5,1 Z" fill="#052049"/></marker>
+    <marker id="ah3a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker>
+    <marker id="ah3u" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-u"/></marker>
   </defs>
   <!-- layers -->
-  <rect x="150" y="20" width="440" height="66" rx="12" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="370" y="48" text-anchor="middle" font-size="15" font-weight="700" fill="#2a2520">Interface</text>
-  <text x="370" y="68" text-anchor="middle" font-size="12" fill="#635c54">Desktop app (Electron + React) or the biorouter CLI</text>
+  <rect x="150" y="20" width="440" height="66" rx="12" class="f-ground s-b"/>
+  <text x="370" y="48" text-anchor="middle" font-size="15" font-weight="700" class="t-1">Interface</text>
+  <text x="370" y="68" text-anchor="middle" font-size="12" class="t-2">Desktop app (Electron + React) or the biorouter CLI</text>
 
-  <rect x="150" y="117" width="440" height="66" rx="12" fill="#f7ece5" stroke="#e6c3ac"/>
-  <text x="370" y="145" text-anchor="middle" font-size="15" font-weight="700" fill="#8a3f1d">Agent</text>
-  <text x="370" y="165" text-anchor="middle" font-size="12" fill="#7a4a30">Reasoning loop, session and conversation state, providers</text>
+  <rect x="150" y="117" width="440" height="66" rx="12" class="f-soft s-soft"/>
+  <text x="370" y="145" text-anchor="middle" font-size="15" font-weight="700" class="t-a">Agent</text>
+  <text x="370" y="165" text-anchor="middle" font-size="12" class="t-a">Reasoning loop, session and conversation state, providers</text>
 
-  <rect x="150" y="214" width="440" height="66" rx="12" fill="#faf8f3" stroke="#e0d7c3"/>
-  <text x="370" y="242" text-anchor="middle" font-size="15" font-weight="700" fill="#2a2520">Extensions</text>
-  <text x="370" y="262" text-anchor="middle" font-size="12" fill="#635c54">Pluggable MCP servers that provide tools</text>
+  <rect x="150" y="214" width="440" height="66" rx="12" class="f-ground s-b"/>
+  <text x="370" y="242" text-anchor="middle" font-size="15" font-weight="700" class="t-1">Extensions</text>
+  <text x="370" y="262" text-anchor="middle" font-size="12" class="t-2">Pluggable MCP servers that provide tools</text>
 
-  <!-- flow shown between adjacent layers: request down (coral), result up (navy) -->
-  <line x1="322" y1="90" x2="322" y2="113" stroke="#b85a32" stroke-width="2.2" marker-end="url(#dn3)"/>
-  <line x1="418" y1="113" x2="418" y2="90" stroke="#052049" stroke-width="2.2" marker-end="url(#up3)"/>
-  <line x1="322" y1="187" x2="322" y2="210" stroke="#b85a32" stroke-width="2.2" marker-end="url(#dn3)"/>
-  <line x1="418" y1="210" x2="418" y2="187" stroke="#052049" stroke-width="2.2" marker-end="url(#up3)"/>
-  <text x="312" y="106" text-anchor="end" font-size="10.5" font-weight="600" fill="#b85a32">request</text>
-  <text x="428" y="106" text-anchor="start" font-size="10.5" font-weight="600" fill="#052049">result</text>
-  <text x="312" y="203" text-anchor="end" font-size="10.5" font-weight="600" fill="#b85a32">request</text>
-  <text x="428" y="203" text-anchor="start" font-size="10.5" font-weight="600" fill="#052049">result</text>
+  <!-- flow between adjacent layers: request down (coral), result up (navy) -->
+  <line x1="322" y1="89" x2="322" y2="112" class="l-a" stroke-width="2" marker-end="url(#ah3a)"/>
+  <line x1="418" y1="114" x2="418" y2="91" class="l-u" stroke-width="2" marker-end="url(#ah3u)"/>
+  <line x1="322" y1="186" x2="322" y2="209" class="l-a" stroke-width="2" marker-end="url(#ah3a)"/>
+  <line x1="418" y1="211" x2="418" y2="188" class="l-u" stroke-width="2" marker-end="url(#ah3u)"/>
+  <text x="312" y="106" text-anchor="end" font-size="10.5" font-weight="600" class="t-a">request</text>
+  <text x="428" y="106" text-anchor="start" font-size="10.5" font-weight="600" class="t-u">result</text>
+  <text x="312" y="203" text-anchor="end" font-size="10.5" font-weight="600" class="t-a">request</text>
+  <text x="428" y="203" text-anchor="start" font-size="10.5" font-weight="600" class="t-u">result</text>
 </svg>
 <figcaption>Three layers: the interface talks to the agent, which calls extensions and returns results back up.</figcaption>
 </figure>

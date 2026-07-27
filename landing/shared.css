@@ -249,6 +249,16 @@ body {
 .feature-tile:hover { background: var(--bg-3); }
 .feature-tile h3 { font-size: 15px; font-weight: 700; letter-spacing: -0.1px; }
 .feature-tile p { font-size: 13.5px; color: var(--text-2); line-height: 1.65; }
+/* Optional link line at the foot of a feature tile (bottom-aligned across the row) */
+.feature-tile .tile-link, .feature-tile .tile-link-row { margin-top: auto; }
+.tile-link {
+  align-self: flex-start;
+  font-size: 13px; font-weight: 600;
+  color: var(--accent); text-decoration: none;
+}
+.tile-link:hover { text-decoration: underline; }
+.tile-link-row { display: flex; align-items: center; gap: 8px; }
+.tile-link-row .sep { color: var(--text-3); }
 
 /* ─── Surface card (flat, soft shadow, no border) ────────────── */
 .surface {
@@ -394,10 +404,11 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 
 /* ─── Tags ───────────────────────────────────────────────────── */
 .tag {
-  padding: 3px 9px; border-radius: var(--radius-sm);
-  font-size: 10.5px; font-weight: 600;
+  display: inline-flex; align-items: center;
+  height: 22px; padding: 0 9px; border-radius: var(--radius-sm);
+  font-size: 10.5px; font-weight: 600; line-height: 1;
   background: var(--bg-3); color: var(--text-2);
-  letter-spacing: 0.2px;
+  letter-spacing: 0.2px; white-space: nowrap;
 }
 .tag.ucsf { background: rgba(5,32,73,0.07); color: var(--ucsf); }
 .tag.mcp { background: var(--accent-soft); color: var(--accent); }
@@ -529,9 +540,8 @@ footer p + p { margin-top: 5px; }
 /* nav chrome carries a hardcoded translucent light; give dark its own */
 :root.dark #navbar { background: rgba(18,14,9,0.82); }
 :root.dark .mobile-menu { background: var(--bg); }
-/* keep SVG figures on a light plate so diagrams read the same in both themes */
-:root.dark .doc-figure { background: #f2ede2; border-color: rgba(0,0,0,0.12); }
-:root.dark .doc-figure figcaption { color: #6e6760; }
+/* SVG figures are painted with theme-token classes (see docs.html), so they
+   recolor natively in dark mode — no light plate needed. */
 /* the product deck's warm workspace ground, dark variant */
 :root.dark .deck--live .deck-sticky {
   background:

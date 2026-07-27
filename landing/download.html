@@ -86,26 +86,8 @@
     .dl-chip:hover { background: var(--accent); color: #fff; }
     .dl-chip:active { transform: translateY(1px); }
 
-    /* Setup section — flat tiles */
-    .setup-section {
-      max-width: 920px; margin: 40px auto 64px; padding: 0 24px;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 12px;
-    }
-    .setup-tile {
-      background: var(--bg-2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: 22px 24px;
-      transition: background var(--transition), border-color var(--transition);
-    }
-    .setup-tile:hover { background: var(--bg-3); }
-    .setup-tile .icon-tile { margin-bottom: 12px; }
-    .setup-tile h4 { font-size: 15px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.1px; }
-    .setup-tile p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
-    .setup-tile a { color: var(--accent); text-decoration: none; font-weight: 600; }
-    .setup-tile a:hover { text-decoration: underline; }
+    /* Setup section — same flat feature-tile grid as the Introduction page */
+    .setup-section { max-width: 920px; margin: 40px auto 64px; padding: 0 24px; }
 
     @media (max-width: 640px) {
       .all-platforms { padding-inline: 16px; }
@@ -284,28 +266,37 @@
     </p>
   </div>
 
-  <!-- Setup tiles -->
+  <!-- Setup tiles — same flat feature-tile grid as the Introduction page -->
   <div class="setup-section">
-    <div class="setup-tile">
-      <div class="icon-tile">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
+    <div class="feature-grid">
+      <div class="feature-tile">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
+        </div>
+        <h3>UCSF affiliated</h3>
+        <p>Use <strong>UCSF Versa</strong>, the institutional AI platform, for secure, policy-compliant access.</p>
+        <a class="tile-link" href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa" target="_blank">Set up UCSF Versa →</a>
       </div>
-      <h4>UCSF affiliated</h4>
-      <p>Use <strong>UCSF Versa</strong>, the institutional AI platform, for secure, policy-compliant access.<br><br><a href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa" target="_blank">Set up UCSF Versa →</a></p>
-    </div>
-    <div class="setup-tile">
-      <div class="icon-tile">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="3"/><line x1="6" y1="10" x2="6" y2="14"/><line x1="10" y1="10" x2="10" y2="14"/><line x1="14" y1="12" x2="14" y2="12"/><line x1="18" y1="12" x2="18" y2="12"/></svg>
+      <div class="feature-tile">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="3"/><line x1="6" y1="10" x2="6" y2="14"/><line x1="10" y1="10" x2="10" y2="14"/><line x1="14" y1="12" x2="14" y2="12"/><line x1="18" y1="12" x2="18" y2="12"/></svg>
+        </div>
+        <h3>Local and private</h3>
+        <p>Run AI on your device with Biorouter's bundled Llama Server, or use Ollama if you already have it installed. No API key, no data leaves your machine.</p>
+        <a class="tile-link" href="docs.html#providers">Local model setup →</a>
       </div>
-      <h4>Local and private</h4>
-      <p>Run AI on your device with Biorouter's bundled Llama Server, or use Ollama if you already have it installed. No API key, no data leaves your machine.<br><br><a href="docs.html#providers">Local model setup →</a></p>
-    </div>
-    <div class="setup-tile">
-      <div class="icon-tile">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+      <div class="feature-tile">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+        </div>
+        <h3>Commercial API keys</h3>
+        <p>Use your own Anthropic or OpenAI key for direct cloud access. Per institution policy, access to research databases may be limited with personal keys.</p>
+        <div class="tile-link-row">
+          <a class="tile-link" href="https://platform.claude.com/" target="_blank">Anthropic</a>
+          <span class="sep">·</span>
+          <a class="tile-link" href="https://openai.com/api/" target="_blank">OpenAI</a>
+        </div>
       </div>
-      <h4>Commercial API keys</h4>
-      <p>Use your own Anthropic or OpenAI key for direct cloud access. Per institution policy, access to research databases may be limited with personal keys.<br><br><a href="https://platform.claude.com/" target="_blank">Anthropic</a> · <a href="https://openai.com/api/" target="_blank">OpenAI</a></p>
     </div>
   </div>
 
