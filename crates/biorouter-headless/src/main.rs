@@ -469,21 +469,93 @@ fn rewrite_asset_css(raw: &str, base_path: &str) -> String {
         .replace("url('/assets/", &format!("url('{base_path}/assets/"))
 }
 
-/// Restrict a derived path prefix to a conservative charset (URL-unreserved plus
-/// `/`) so it can be spliced into the injected shell HTML/JS without escaping.
-/// Rejects anything else with a clear startup error.
+/// Restrict a derived path prefix to the splice-safe subset of RFC 3986
+/// `pchar` (plus `/`) so it can be spliced verbatim into the shell's
+/// double-quoted HTML attributes, JS string literals, and CSS `url()` tokens
+/// without escaping: ASCII alphanumerics, the unreserved marks `. _ ~ -`,
+/// `/`, the inert pchar members `@ : ! $ * + , ; =`, and percent-encoded
+/// octets (`%` followed by exactly two ASCII hex digits — a three-character
+/// literal browsers never decode while parsing HTML/CSS/JS). The prefix is
+/// never percent-decoded: it must round-trip byte-exact so a proxy matching
+/// the encoded spelling (e.g. a JupyterHub `%40` username) keeps working.
+///
+/// Deliberately still rejected because they can break a splice context —
+/// `'` (single-quoted JS/CSS splices), `(` `)` (unquoted CSS `url()` token),
+/// `&` (HTML character-reference hazard in attribute values), plus quotes,
+/// angle brackets, spaces, backslash, and non-ASCII. Spell those
+/// percent-encoded instead (`'` → `%27`, `&` → `%26`, …).
+///
+/// A nonempty prefix must also begin with exactly one `/`. A leading `//`
+/// splices into `src="//evil.example/…"` — a scheme-relative (network-path)
+/// URL the browser resolves against the *foreign* host, so
+/// `--public-url=https://host///evil.example` would point every rewritten
+/// script/asset/API URL at an attacker-chosen origin. Embedded `//`
+/// sequences are left as-is: past the first byte the spliced URL is already
+/// path-absolute (only the first two characters decide network-path form),
+/// empty path segments are legal per RFC 3986, and collapsing them would
+/// break the byte-exact round-trip a prefix-matching proxy relies on. The
+/// `/\` network-path spelling browsers also honour is already rejected by
+/// the charset rule (backslash is never allowed).
 fn validate_base_path(base_path: &str) -> Result<(), String> {
-    if base_path
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '/' | '-'))
-    {
-        Ok(())
-    } else {
-        Err(format!(
+    if !base_path.is_empty() && !base_path.starts_with('/') {
+        return Err(format!(
             "invalid path prefix {base_path:?} derived from --public-url \
-             (allowed characters: letters, digits, and . _ ~ / -)"
-        ))
+             (a nonempty prefix must begin with '/')"
+        ));
     }
+    if base_path.starts_with("//") {
+        return Err(format!(
+            "invalid path prefix {base_path:?} derived from --public-url \
+             (a prefix starting with \"//\" is a scheme-relative URL that \
+             would send asset and API requests to another host; use exactly \
+             one leading '/')"
+        ));
+    }
+    let invalid = || {
+        format!(
+            "invalid path prefix {base_path:?} derived from --public-url \
+             (allowed: letters, digits, . _ ~ / - @ : ! $ * + , ; = and %XX \
+             percent-escapes with two hex digits; percent-encode anything else, \
+             e.g. ' as %27 and & as %26)"
+        )
+    };
+    let bytes = base_path.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let valid_escape = i + 2 < bytes.len()
+                    && bytes[i + 1].is_ascii_hexdigit()
+                    && bytes[i + 2].is_ascii_hexdigit();
+                if !valid_escape {
+                    return Err(invalid());
+                }
+                i += 3;
+            }
+            b if b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'.' | b'_'
+                        | b'~'
+                        | b'/'
+                        | b'-'
+                        | b'@'
+                        | b':'
+                        | b'!'
+                        | b'$'
+                        | b'*'
+                        | b'+'
+                        | b','
+                        | b';'
+                        | b'='
+                ) =>
+            {
+                i += 1;
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(())
 }
 
 /// The URL path prefix a reverse proxy serves this app under, derived from the
@@ -1686,6 +1758,12 @@ mod tests {
             (Some("http://host:8080"), ""),
             (Some("host:8080/prefix"), "/prefix"),
             (Some("https://host/p/?x=1#frag"), "/p"),
+            // Issue #18: both spellings survive derivation byte-exact.
+            (Some("http://example.org/url%40prefix/"), "/url%40prefix"),
+            (Some("http://example.org/url@prefix/"), "/url@prefix"),
+            // A tripled slash derives a scheme-relative prefix byte-exact;
+            // `validate_base_path` is the gate that then refuses to start.
+            (Some("https://host///evil.example"), "//evil.example"),
             (None, ""),
         ];
         for (input, expected) in cases {
@@ -1789,6 +1867,42 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_round_trips_percent_encoded_prefix_byte_exact() {
+        // Issue #18: a JupyterHub per-user prefix containing %40 must be
+        // spliced verbatim (never percent-decoded) into asset URLs, eager CSS
+        // links, and the runtime config, and every splice must stay
+        // well-formed.
+        let prefix = "/user/foo%40bar.org/biorouter";
+        let extra = vec!["App-test.css".to_string()];
+        let out = rewrite_index_html(SAMPLE_INDEX, prefix, &extra);
+        assert!(
+            out.contains(r#"src="/user/foo%40bar.org/biorouter/assets/index-abc.js""#),
+            "js asset not prefixed byte-exact: {out}"
+        );
+        assert!(
+            out.contains(r#"href="/user/foo%40bar.org/biorouter/assets/index-def.css""#),
+            "css asset not prefixed byte-exact: {out}"
+        );
+        assert!(
+            out.contains(
+                r#"<link rel="stylesheet" href="/user/foo%40bar.org/biorouter/assets/App-test.css">"#
+            ),
+            "eager css link not prefixed byte-exact: {out}"
+        );
+        let json = out
+            .split_once("window.__BIOROUTER_HEADLESS_CONFIG__=")
+            .and_then(|(_, rest)| rest.split_once(";</script>"))
+            .map(|(json, _)| json)
+            .expect("config marker present");
+        let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(parsed["apiBaseUrl"], "/user/foo%40bar.org/biorouter/api");
+        assert_eq!(
+            parsed["headlessBaseUrl"],
+            "/user/foo%40bar.org/biorouter/headless"
+        );
+    }
+
+    #[test]
     fn unreferenced_css_skips_shell_referenced_files() {
         let dir = std::env::temp_dir().join(format!("br-headless-css-{}", std::process::id()));
         let assets = dir.join("assets");
@@ -1808,6 +1922,34 @@ mod tests {
     fn validate_base_path_accepts_safe_charset() {
         assert!(validate_base_path("/biorouter").is_ok());
         assert!(validate_base_path("/a/b-c_d.e~f").is_ok());
+        // Empty prefix (no --public-url path) is trivially valid.
+        assert!(validate_base_path("").is_ok());
+    }
+
+    #[test]
+    fn validate_base_path_accepts_pchar_subset() {
+        // Issue #18: both reported spellings of a JupyterHub per-user prefix
+        // containing an email address must be accepted.
+        assert!(validate_base_path("/url@prefix").is_ok());
+        assert!(validate_base_path("/url%40prefix").is_ok());
+        assert!(validate_base_path("/user/foo@example.org/biorouter").is_ok());
+        // Other splice-inert RFC 3986 pchar members.
+        assert!(validate_base_path("/a:b").is_ok());
+        assert!(validate_base_path("/a!$*+,;=b").is_ok());
+        // Percent-escapes stay verbatim three-character literals — including
+        // ones that would decode to rejected characters.
+        assert!(validate_base_path("/a%20b").is_ok());
+        assert!(validate_base_path("/a%2Fb").is_ok());
+        assert!(validate_base_path("/a%27b%26c").is_ok());
+    }
+
+    #[test]
+    fn validate_base_path_accepts_lowercase_hex_escapes() {
+        // The escape check uses is_ascii_hexdigit(), so lowercase hex must
+        // stay as valid as uppercase and round-trip byte-exact.
+        assert!(validate_base_path("/url%2fprefix").is_ok());
+        assert!(validate_base_path("/a%c3%a9b").is_ok()); // é, pct-encoded lowercase
+        assert!(validate_base_path("/a%ffb").is_ok());
     }
 
     #[test]
@@ -1817,7 +1959,46 @@ mod tests {
         assert!(validate_base_path("/a\"b").is_err());
         assert!(validate_base_path("/a<script>").is_err());
         assert!(validate_base_path("/a b").is_err());
-        assert!(validate_base_path("/a%20b").is_err());
+    }
+
+    #[test]
+    fn validate_base_path_rejects_splice_breakers() {
+        // These pchar/sub-delim members can break a splice context, so they
+        // must stay rejected (percent-encode them instead).
+        assert!(validate_base_path("/a'b").is_err()); // single-quoted JS/CSS splice
+        assert!(validate_base_path("/a(b)").is_err()); // unquoted CSS url() token
+                                                       // Isolated close tokens, so a regression in one character alone is
+                                                       // caught (above, ')' rides along with '(' and '>' with '<').
+        assert!(validate_base_path("/a)b").is_err()); // ')' closes unquoted url(
+        assert!(validate_base_path("/a>b").is_err()); // '>' closes an HTML tag
+        assert!(validate_base_path("/a&b").is_err()); // HTML char-reference hazard
+        assert!(validate_base_path("/a\\b").is_err());
+        assert!(validate_base_path("/caf\u{e9}").is_err()); // non-ASCII must be pct-encoded
+    }
+
+    #[test]
+    fn validate_base_path_rejects_scheme_relative_prefixes() {
+        // A leading "//" splices into src="//evil.example/…" — a
+        // network-path (scheme-relative) URL the browser resolves against
+        // the attacker's host, not this server.
+        assert!(validate_base_path("//evil.example").is_err());
+        assert!(validate_base_path("///evil.example").is_err());
+        assert!(validate_base_path("//evil.example/biorouter").is_err());
+        // Defense in depth: a nonempty prefix must begin with '/' at all
+        // (normalize_base_path always provides one in production).
+        assert!(validate_base_path("biorouter").is_err());
+        // An *embedded* "//" is not a network-path reference — the spliced
+        // URL is already path-absolute — and stays accepted byte-exact.
+        assert!(validate_base_path("/a//b").is_ok());
+    }
+
+    #[test]
+    fn validate_base_path_rejects_malformed_percent_escapes() {
+        assert!(validate_base_path("/a%b").is_err()); // only one trailing char
+        assert!(validate_base_path("/a%zzb").is_err()); // not hex digits
+        assert!(validate_base_path("/a%").is_err()); // bare trailing percent
+        assert!(validate_base_path("/a%4").is_err()); // one hex digit then end
+        assert!(validate_base_path("/a%4Gb").is_err()); // second digit not hex
     }
 
     #[test]
