@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { llamacppDelete, llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../../api';
 import { toastService } from '../../../toasts';
 import {
@@ -84,6 +84,13 @@ const operationFallbackLabel = (operation: LlamaServerOperation) =>
     ? `Warming up ${operation.model}...`
     : `Preparing ${operation.model}...`;
 
+const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
+  kind === 'warmup'
+    ? 'Local model warm-up failed'
+    : kind === 'install'
+      ? 'Local model install failed'
+      : 'Could not start Llama Server';
+
 function DetailRow({
   label,
   children,
@@ -114,30 +121,52 @@ export default function LocalModelInventory() {
   // Status + any in-flight install/warm-up operation live in the shared
   // store, so progress survives unmounting this panel (issue #34) and an
   // operation started from onboarding is visible here too.
-  const { status: snapshot, operation } = useLlamaServer();
+  const { status: snapshot, operation, lastError } = useLlamaServer();
   const [isLoading, setIsLoading] = useState(() => llamaServerStore.getSnapshot().status === null);
   const [error, setError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<LlamaCppModel | null>(null);
   // Deletes are quick, local HTTP calls with no polling; they keep
   // component-local busy state.
   const [deleteAction, setDeleteAction] = useState<{ model: string; message: string } | null>(null);
+  // The install/warm-up/refresh flows outlive this panel by design (the
+  // store owns the operation), but component-local state must never be set
+  // after unmount — including refreshes performed after background installs.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const busy = !!operation || !!deleteAction;
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
+      if (mountedRef.current) setError(null);
       await llamaServerStore.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current) setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Surface a polled terminal failure (sidecar error / deadline timeout)
+  // immediately; claimErrorToast keeps it exactly-once across surfaces and
+  // the driving flow's own catch handler.
+  useEffect(() => {
+    if (!lastError) return;
+    if (!llamaServerStore.claimErrorToast(lastError.opId)) return;
+    toastService.error({
+      title: terminalErrorTitle(lastError.kind),
+      msg: lastError.message,
+    });
+  }, [lastError]);
 
   const catalog = useMemo(() => snapshot?.catalog ?? [], [snapshot]);
   const installedCount = useMemo(() => catalog.filter(isInstalled).length, [catalog]);
@@ -204,11 +233,22 @@ export default function LocalModelInventory() {
         });
         await refresh();
       } catch (err) {
-        toastService.error({
-          title: 'Local model install failed',
-          msg: err instanceof Error ? err.message : String(err),
-          traceback: err instanceof Error ? err.stack || '' : '',
-        });
+        const terminal = llamaServerStore.getSnapshot().lastError;
+        if (terminal?.opId === opId) {
+          // The store already failed this operation terminally (polled
+          // sidecar error / timeout); toast the retained error exactly once.
+          if (llamaServerStore.claimErrorToast(opId)) {
+            toastService.error({ title: terminalErrorTitle(terminal.kind), msg: terminal.message });
+          }
+        } else if (llamaServerStore.getSnapshot().operation?.id === opId) {
+          // Still ours: a plain driving-flow failure.
+          toastService.error({
+            title: 'Local model install failed',
+            msg: err instanceof Error ? err.message : String(err),
+            traceback: err instanceof Error ? err.stack || '' : '',
+          });
+        }
+        // Superseded by a newer operation: stay silent, it owns the UX.
       } finally {
         llamaServerStore.endOperation(opId);
       }
@@ -233,11 +273,18 @@ export default function LocalModelInventory() {
         });
         await refresh();
       } catch (err) {
-        toastService.error({
-          title: 'Local model warm-up failed',
-          msg: err instanceof Error ? err.message : String(err),
-          traceback: err instanceof Error ? err.stack || '' : '',
-        });
+        const terminal = llamaServerStore.getSnapshot().lastError;
+        if (terminal?.opId === opId) {
+          if (llamaServerStore.claimErrorToast(opId)) {
+            toastService.error({ title: terminalErrorTitle(terminal.kind), msg: terminal.message });
+          }
+        } else if (llamaServerStore.getSnapshot().operation?.id === opId) {
+          toastService.error({
+            title: 'Local model warm-up failed',
+            msg: err instanceof Error ? err.message : String(err),
+            traceback: err instanceof Error ? err.stack || '' : '',
+          });
+        }
       } finally {
         llamaServerStore.endOperation(opId);
       }
@@ -283,7 +330,7 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        setDeleteAction(null);
+        if (mountedRef.current) setDeleteAction(null);
       }
     },
     [refresh]

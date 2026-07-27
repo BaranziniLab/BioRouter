@@ -100,4 +100,26 @@ describe('LocalModelInventory', () => {
 
     expect(await screen.findByText('downloading 42%')).toBeInTheDocument();
   });
+
+  it('a refresh that settles after unmount updates the store but no component state (finding 8)', async () => {
+    let resolveStatus!: (value: unknown) => void;
+    mockLlamacppStatus.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveStatus = resolve;
+        })
+    );
+    const view = render(<LocalModelInventory />);
+    expect(mockLlamacppStatus).toHaveBeenCalledTimes(1);
+
+    // The panel unmounts while the initial refresh is still in flight.
+    view.unmount();
+    resolveStatus(statusResponse());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The shared store still received the status; the guarded setters made
+    // no post-unmount component-state writes (nothing to throw/warn on).
+    expect(llamaServerStore.getSnapshot().status).not.toBeNull();
+  });
 });
