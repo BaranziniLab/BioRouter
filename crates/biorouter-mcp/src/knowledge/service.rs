@@ -216,9 +216,12 @@ impl KnowledgeService {
             if !entry.file_type()?.is_file() {
                 continue;
             }
+            if !is_session_digest(&entry.file_name()) {
+                continue;
+            }
 
-            let active = std::fs::read_to_string(&path)?;
-            if active.trim() == current_kb_id {
+            let primary = std::fs::read_to_string(&path)?;
+            if primary.trim() == current_kb_id {
                 self.set_primary_path_unlocked(&path, next_kb_id)?;
             }
         }
@@ -241,7 +244,7 @@ impl KnowledgeService {
 
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
+            if !entry.file_type()?.is_file() || !is_session_digest(&entry.file_name()) {
                 continue;
             }
             self.rewrite_hidden_path_refs_unlocked(&entry.path(), current_kb_id, next_kb_id)?;
@@ -1282,6 +1285,20 @@ impl KnowledgeService {
     }
 }
 
+/// True when `name` is a session-digest filename — 64 lowercase hex chars,
+/// exactly what `raw::hash_bytes` produces. Everything else in a
+/// `.*-sessions/` directory is debris (most often a `<digest>.tmp` staged
+/// write that a crash left behind) and must never be read as session state.
+fn is_session_digest(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1966,6 +1983,45 @@ mod tests {
             None,
             "a machine default this session hides must not leak in as its primary"
         );
+        Ok(())
+    }
+
+    /// Both session directories are staged through `<digest>.tmp` in the same
+    /// directory they are read from, so a crash between write and rename
+    /// leaves a file the rewriters used to treat as a live session: the
+    /// primary rewriter edited it, and a torn hidden leftover made the whole
+    /// rename fail with `?` — a crash last week surfacing as "rename knowledge
+    /// base" erroring today.
+    #[test]
+    fn session_rewriters_skip_crash_leftover_tmp_files() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("kb-a", "KB A", None)?;
+        svc.set_primary_for_session("session-live", Some("kb-a"))?;
+        svc.set_hidden_for_session("session-live", &[])?;
+
+        let leftover = format!("{}.tmp", crate::knowledge::raw::hash_bytes(b"session-dead"));
+        let primary_tmp =
+            crate::knowledge::paths::primary_kb_sessions_dir(svc.root()).join(&leftover);
+        std::fs::write(&primary_tmp, b"kb-a")?;
+        let hidden_tmp =
+            crate::knowledge::paths::hidden_kb_sessions_dir(svc.root()).join(&leftover);
+        std::fs::write(&hidden_tmp, b"half-written garbage")?;
+
+        // A rename must succeed and must rewrite only the live session files.
+        let renamed = svc.update_base("kb-a", Some("Renamed KB"), None)?;
+        assert_eq!(renamed.id, "renamed-kb");
+        assert_eq!(
+            svc.get_primary_for_session("session-live")?.as_deref(),
+            Some("renamed-kb"),
+            "the live session file must still be rewritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&primary_tmp)?,
+            "kb-a",
+            "a crash leftover is not a session"
+        );
+        assert_eq!(std::fs::read_to_string(&hidden_tmp)?, "half-written garbage");
         Ok(())
     }
 
