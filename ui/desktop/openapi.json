@@ -682,7 +682,7 @@
             "description": "Session not found"
           },
           "409": {
-            "description": "Conflict - the working directory is fixed once a chat has messages"
+            "description": "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight"
           },
           "500": {
             "description": "Internal server error"

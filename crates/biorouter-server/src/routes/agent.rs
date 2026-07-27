@@ -24,7 +24,7 @@ use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
-use biorouter::session::{EnabledExtensionsState, Session};
+use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
 use biorouter::workflow::Workflow;
 use biorouter::workflow_deeplink;
 use biorouter::{
@@ -917,8 +917,15 @@ async fn restart_agent(
 /// rejects the change with 409 CONFLICT, as defense in depth against stale or
 /// alternative clients. Returns the updated session so the caller can restart
 /// the agent from it.
+///
+/// Concurrency: the emptiness check and the write are one atomic conditional
+/// `UPDATE` ([`SessionManager::try_update_working_dir_if_empty`]), so a first
+/// message landing concurrently can never slip between a check and a write.
+/// That closes the persisted-state race only; the HTTP handler additionally
+/// holds the per-session turn guard across the update + agent restart so a
+/// restart can't race an in-flight `/reply` either.
 pub(crate) async fn apply_working_dir_update(
-    session_manager: &biorouter::session::SessionManager,
+    session_manager: &SessionManager,
     session_id: &str,
     working_dir: &str,
 ) -> Result<Session, ErrorResponse> {
@@ -939,40 +946,32 @@ pub(crate) async fn apply_working_dir_update(
         });
     }
 
-    // Load the session FIRST — the emptiness check must precede the update.
-    let session = session_manager
-        .get_session(session_id, false)
+    match session_manager
+        .try_update_working_dir_if_empty(session_id, path)
         .await
-        .map_err(|err| {
-            error!("Failed to get session for working dir update: {}", err);
-            ErrorResponse {
-                message: format!("Failed to get session: {}", err),
+    {
+        Ok(WorkingDirUpdate::Updated) => {}
+        Ok(WorkingDirUpdate::RefusedNotEmpty) => {
+            return Err(ErrorResponse {
+                message: "the working directory is fixed once a chat has messages".into(),
+                status: StatusCode::CONFLICT,
+            });
+        }
+        Ok(WorkingDirUpdate::SessionNotFound) => {
+            return Err(ErrorResponse {
+                message: format!("Session not found: {}", session_id),
                 status: StatusCode::NOT_FOUND,
-            }
-        })?;
-
-    if session.message_count > 0 {
-        return Err(ErrorResponse {
-            message: "the working directory is fixed once a chat has messages".into(),
-            status: StatusCode::CONFLICT,
-        });
-    }
-
-    // Update the session's working directory
-    session_manager
-        .update(session_id)
-        .working_dir(path)
-        .apply()
-        .await
-        .map_err(|e| {
+            });
+        }
+        Err(e) => {
             error!("Failed to update session working directory: {}", e);
-            ErrorResponse {
+            return Err(ErrorResponse {
                 message: format!("Failed to update working directory: {}", e),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
+            });
+        }
+    }
 
-    // Return the updated session for the agent restart.
     session_manager
         .get_session(session_id, false)
         .await
@@ -996,7 +995,7 @@ pub(crate) async fn apply_working_dir_update(
         (status = 404, description = "Session not found"),
         (
             status = 409,
-            description = "Conflict - the working directory is fixed once a chat has messages"
+            description = "Conflict - the working directory is fixed once a chat has messages, or a turn is in flight"
         ),
         (status = 500, description = "Internal server error")
     )
@@ -1006,6 +1005,21 @@ async fn update_working_dir(
     Json(payload): Json<UpdateWorkingDirRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id.clone();
+
+    // Serialize with `/reply`'s per-session turn lock (BR-33) by claiming the
+    // turn slot for the whole update + restart. Without it, a first message
+    // accepted (but not yet persisted) by an in-flight reply could pass the
+    // emptiness check here, and that reply would then keep streaming against
+    // the old agent while the session already points at the new dir. Holding
+    // the guard means a reply either finished (its message makes the update
+    // 409) or has not begun (it will find the restarted agent); a turn in
+    // flight refuses the switch outright.
+    let _turn_guard = state
+        .try_begin_turn_idempotent(&session_id, CancellationToken::new(), None)
+        .map_err(|_conflict| ErrorResponse {
+            message: "cannot change the working directory while a turn is in progress".into(),
+            status: StatusCode::CONFLICT,
+        })?;
 
     let session =
         apply_working_dir_update(state.session_manager(), &session_id, &payload.working_dir)
