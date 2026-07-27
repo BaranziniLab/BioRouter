@@ -3,7 +3,8 @@ use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsag
 use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{
-    create_request, get_usage, model_uses_responses_api, response_to_message,
+    add_reasoning_content_to_request, create_request, get_usage, model_uses_responses_api,
+    response_to_message,
 };
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message,
@@ -401,7 +402,7 @@ impl Provider for OpenAiProvider {
             log.write(&json_response, Some(&usage))?;
             Ok((message, ProviderUsage::new(model, usage)))
         } else {
-            let payload = create_request(
+            let mut payload = create_request(
                 model_config,
                 system,
                 messages,
@@ -409,6 +410,9 @@ impl Provider for OpenAiProvider {
                 &ImageFormat::OpenAi,
                 false,
             )?;
+            if replays_reasoning_content(&self.name) {
+                add_reasoning_content_to_request(&mut payload, messages);
+            }
 
             let mut log = RequestLog::start(&self.model, &payload)?;
             let json_response = self
@@ -516,8 +520,11 @@ impl Provider for OpenAiProvider {
                 }
             }))
         } else {
-            let payload =
+            let mut payload =
                 create_request(model, system, messages, tools, &ImageFormat::OpenAi, true)?;
+            if replays_reasoning_content(&self.name) {
+                add_reasoning_content_to_request(&mut payload, messages);
+            }
             let mut log = RequestLog::start(model, &payload)?;
 
             let response = self
@@ -536,6 +543,18 @@ impl Provider for OpenAiProvider {
             stream_openai_compat(response, log)
         }
     }
+}
+
+/// OpenAI-compatible providers whose API REQUIRES the model's
+/// `reasoning_content` to be replayed on prior assistant messages during a
+/// tool-calling turn. Moonshot's Kimi docs (K2.6 quickstart, 2026-07):
+/// "During multi-step tool calling, you must keep the `reasoning_content` ...
+/// otherwise an error will be thrown"; K2.7-Code forces thinking on every
+/// turn. Deliberately a provider-name allowlist rather than
+/// metadata-presence gating: DeepSeek also *emits* `reasoning_content` but
+/// its API rejects the field on input, so replay must stay opt-in.
+fn replays_reasoning_content(provider_name: &str) -> bool {
+    provider_name == "moonshot"
 }
 
 fn parse_custom_headers(s: String) -> HashMap<String, String> {
@@ -557,6 +576,25 @@ mod alias_tests {
 
     fn model(name: &str) -> ModelConfig {
         ModelConfig::new(name).unwrap()
+    }
+
+    // Replay of `reasoning_content` is an explicit per-provider opt-in:
+    // Moonshot REQUIRES it mid tool-loop; DeepSeek (which also emits the
+    // field) rejects it on input; OpenAI proper never emits it.
+    #[test]
+    fn only_moonshot_replays_reasoning_content() {
+        assert!(replays_reasoning_content("moonshot"));
+        for name in [
+            "openai",
+            "deepseek",
+            "custom_deepseek",
+            "groq",
+            "mistral",
+            "inception",
+            "openrouter",
+        ] {
+            assert!(!replays_reasoning_content(name), "{name} must not replay");
+        }
     }
 
     fn provider_for_host(host: &str) -> OpenAiProvider {

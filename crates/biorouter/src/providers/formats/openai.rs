@@ -18,6 +18,17 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::ops::Deref;
 
+/// Metadata key under which DeepSeek/Moonshot-style chain-of-thought
+/// (`message.reasoning_content` / `delta.reasoning_content`) is preserved on
+/// an assistant message's ToolRequest contents. Twin of
+/// `formats::openrouter::REASONING_DETAILS_KEY`, for OpenAI-compatible hosts
+/// that surface reasoning as a plain string instead of OpenRouter's
+/// structured blocks. Capture is unconditional (an inert extra metadata key
+/// for providers that ignore it); replay via
+/// [`add_reasoning_content_to_request`] is opt-in per provider — Moonshot
+/// REQUIRES it mid tool-loop, while e.g. DeepSeek rejects the field on input.
+pub const REASONING_CONTENT_KEY: &str = "reasoning_content";
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct DeltaToolCallFunction {
     name: Option<String>,
@@ -39,6 +50,9 @@ struct Delta {
     role: Option<String>,
     tool_calls: Option<Vec<DeltaToolCall>>,
     reasoning_details: Option<Vec<Value>>,
+    /// DeepSeek/Moonshot-style thinking deltas (a plain string), distinct
+    /// from OpenRouter's structured `reasoning_details` blocks above.
+    reasoning_content: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -365,11 +379,104 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
         }
     }
 
+    // DeepSeek/Moonshot-style thinking: OpenAI-compatible hosts surface the
+    // chain of thought as `message.reasoning_content`. Keep it on the tool
+    // requests' metadata so providers that require it replayed (Moonshot
+    // errors without it mid tool-loop) can restore it via
+    // `add_reasoning_content_to_request`; for everyone else it is an inert
+    // extra key. Mirrors `formats::openrouter::response_to_message`.
+    if let Some(reasoning) = original
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        for item in &mut content {
+            if let MessageContent::ToolRequest(req) = item {
+                let mut meta = req.metadata.clone().unwrap_or_default();
+                meta.insert(REASONING_CONTENT_KEY.to_string(), json!(reasoning));
+                req.metadata = Some(meta);
+            }
+        }
+    }
+
     Ok(Message::new(
         Role::Assistant,
         chrono::Utc::now().timestamp(),
         content,
     ))
+}
+
+fn get_reasoning_content(metadata: &Option<ProviderMetadata>) -> Option<String> {
+    metadata
+        .as_ref()
+        .and_then(|m| m.get(REASONING_CONTENT_KEY))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Mirrors `formats::openrouter::has_assistant_content`: the same condition
+/// under which `format_messages` emits an assistant entry into the payload,
+/// so the index-matched walk in [`add_reasoning_content_to_request`] stays
+/// aligned with the payload it patches.
+fn message_has_assistant_content(message: &Message) -> bool {
+    message.content.iter().any(|c| match c {
+        MessageContent::Text(t) => !t.text.is_empty(),
+        MessageContent::Image(_) => true,
+        MessageContent::ToolRequest(req) => req.tool_call.is_ok(),
+        MessageContent::FrontendToolRequest(req) => req.tool_call.is_ok(),
+        _ => false,
+    })
+}
+
+/// Replay captured `reasoning_content` onto the matching assistant messages
+/// of an already-built Chat Completions payload.
+///
+/// Moonshot's Kimi docs (K2.6 quickstart, 2026-07): "During multi-step tool
+/// calling, you must keep the `reasoning_content` from the assistant message
+/// in the current turn's tool call within the context, otherwise an error
+/// will be thrown" — and K2.7-Code forces thinking on every turn. This is
+/// the request half of that contract; the capture half lives in
+/// [`response_to_message`] / [`response_to_streaming_message`].
+///
+/// Callers must opt in per provider (see `OpenAiProvider`): the field is a
+/// vendor extension, and some hosts that EMIT it (DeepSeek) reject it on
+/// input. Twin of `formats::openrouter::add_reasoning_details_to_request`.
+pub fn add_reasoning_content_to_request(payload: &mut Value, messages: &[Message]) {
+    let mut assistant_reasoning: Vec<Option<String>> = messages
+        .iter()
+        .filter(|m| m.is_agent_visible())
+        .filter(|m| m.role == Role::Assistant)
+        .filter(|m| message_has_assistant_content(m))
+        .map(|message| {
+            message.content.iter().find_map(|c| match c {
+                MessageContent::ToolRequest(req) => get_reasoning_content(&req.metadata),
+                _ => None,
+            })
+        })
+        .collect();
+
+    if let Some(payload_messages) = payload
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("messages"))
+        .and_then(|m| m.as_array_mut())
+    {
+        let mut assistant_idx = 0;
+        for payload_msg in payload_messages.iter_mut() {
+            if payload_msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                if assistant_idx < assistant_reasoning.len() {
+                    if let Some(reasoning) = assistant_reasoning
+                        .get_mut(assistant_idx)
+                        .and_then(|d| d.take())
+                    {
+                        if let Some(obj) = payload_msg.as_object_mut() {
+                            obj.insert(REASONING_CONTENT_KEY.to_string(), json!(reasoning));
+                        }
+                    }
+                }
+                assistant_idx += 1;
+            }
+        }
+    }
 }
 
 /// Extract usage from an OpenAI-compatible `usage` object.
@@ -491,6 +598,7 @@ where
         use futures::StreamExt;
 
         let mut accumulated_reasoning: Vec<Value> = Vec::new();
+        let mut accumulated_reasoning_content = String::new();
         // Track the most recent finish_reason across chunks. MiMo (and other
         // OpenAI-compatible hosts) send finish_reason in one chunk and the usage
         // in a later `choices: []` chunk, so we remember it and attach it to the
@@ -516,6 +624,9 @@ where
             if !chunk.choices.is_empty() {
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
                     accumulated_reasoning.extend(details.iter().cloned());
+                }
+                if let Some(reasoning) = &chunk.choices[0].delta.reasoning_content {
+                    accumulated_reasoning_content.push_str(reasoning);
                 }
                 if let Some(reason) = &chunk.choices[0].finish_reason {
                     last_finish_reason = Some(reason.clone());
@@ -588,6 +699,9 @@ where
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
                                         accumulated_reasoning.extend(details.iter().cloned());
                                     }
+                                    if let Some(reasoning) = &tool_chunk.choices[0].delta.reasoning_content {
+                                        accumulated_reasoning_content.push_str(reasoning);
+                                    }
                                     if let Some(reason) = &tool_chunk.choices[0].finish_reason {
                                         last_finish_reason = Some(reason.clone());
                                     }
@@ -655,9 +769,19 @@ where
                     }
                 }
 
-                let metadata: Option<ProviderMetadata> = if !accumulated_reasoning.is_empty() {
+                let metadata: Option<ProviderMetadata> = if !accumulated_reasoning.is_empty()
+                    || !accumulated_reasoning_content.is_empty()
+                {
                     let mut map = ProviderMetadata::new();
-                    map.insert("reasoning_details".to_string(), json!(accumulated_reasoning));
+                    if !accumulated_reasoning.is_empty() {
+                        map.insert("reasoning_details".to_string(), json!(accumulated_reasoning));
+                    }
+                    if !accumulated_reasoning_content.is_empty() {
+                        map.insert(
+                            REASONING_CONTENT_KEY.to_string(),
+                            json!(accumulated_reasoning_content),
+                        );
+                    }
                     Some(map)
                 } else {
                     None
@@ -923,6 +1047,186 @@ mod tests {
     use serde_json::json;
     use tokio::pin;
     use tokio_stream::{self, StreamExt};
+
+    // === reasoning_content passthrough (Moonshot/DeepSeek-style thinking) ===
+
+    #[test]
+    fn test_response_to_message_captures_reasoning_content() -> anyhow::Result<()> {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "reasoning_content": "I should list the files first.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{\"command\": \"ls\"}"}
+                    }]
+                }
+            }]
+        });
+
+        let message = response_to_message(&response)?;
+        let req = message
+            .content
+            .iter()
+            .find_map(|c| match c {
+                MessageContent::ToolRequest(req) => Some(req),
+                _ => None,
+            })
+            .expect("tool request decoded");
+        let meta = req.metadata.as_ref().expect("reasoning captured");
+        assert_eq!(
+            meta.get(REASONING_CONTENT_KEY).and_then(|v| v.as_str()),
+            Some("I should list the files first.")
+        );
+
+        // A response without the field must stay metadata-free — the key is
+        // only ever present when the host actually emitted reasoning.
+        let plain = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{}"}
+                    }]
+                }
+            }]
+        });
+        let message = response_to_message(&plain)?;
+        let req = message
+            .content
+            .iter()
+            .find_map(|c| match c {
+                MessageContent::ToolRequest(req) => Some(req),
+                _ => None,
+            })
+            .unwrap();
+        assert!(req.metadata.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_streaming_accumulates_reasoning_content_onto_tool_requests() -> anyhow::Result<()>
+    {
+        // Kimi K2.7-Code shape: thinking arrives as `delta.reasoning_content`
+        // string chunks before (and interleaved with) the tool call. The
+        // decoder must concatenate them onto the authoritative ToolRequest's
+        // metadata so the provider can replay them next turn.
+        let lines = r#"
+data: {"model":"kimi-k2.7-code","choices":[{"delta":{"role":"assistant","reasoning_content":"Let me "},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x"}
+data: {"model":"kimi-k2.7-code","choices":[{"delta":{"reasoning_content":"check the files."},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x"}
+data: {"model":"kimi-k2.7-code","choices":[{"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"shell","arguments":""}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x"}
+data: {"model":"kimi-k2.7-code","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\": \"ls\"}"}}]},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x"}
+data: {"model":"kimi-k2.7-code","choices":[{"delta":{"content":""},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"object":"chat.completion.chunk","id":"x"}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut captured: Option<String> = None;
+        while let Some(Ok((message, _usage, _pending))) = messages.next().await {
+            if let Some(msg) = message {
+                for content in &msg.content {
+                    if let MessageContent::ToolRequest(req) = content {
+                        captured = req
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get(REASONING_CONTENT_KEY))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(captured.as_deref(), Some("Let me check the files."));
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_reasoning_content_to_request_replays_onto_matching_assistant() -> anyhow::Result<()>
+    {
+        let mut meta = ProviderMetadata::new();
+        meta.insert(REASONING_CONTENT_KEY.to_string(), json!("thought hard"));
+        let tool_call = CallToolRequestParams {
+            task: None,
+            name: "shell".into(),
+            arguments: Some(object!({"command": "ls"})),
+            meta: None,
+        };
+
+        let messages = vec![
+            Message::user().with_text("hi"),
+            Message::assistant().with_content(MessageContent::tool_request_with_metadata(
+                "call_1",
+                Ok(tool_call),
+                Some(&meta),
+            )),
+            // A later assistant message with no captured reasoning must not
+            // receive the field.
+            Message::assistant().with_text("done"),
+        ];
+
+        let model_config = ModelConfig::new_or_fail("kimi-k2.7-code");
+        let mut payload = create_request(
+            &model_config,
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        add_reasoning_content_to_request(&mut payload, &messages);
+
+        let payload_msgs = payload["messages"].as_array().unwrap();
+        let assistant_msgs: Vec<&Value> = payload_msgs
+            .iter()
+            .filter(|m| m["role"] == "assistant")
+            .collect();
+        assert_eq!(assistant_msgs.len(), 2);
+        assert_eq!(
+            assistant_msgs[0]["reasoning_content"],
+            json!("thought hard"),
+            "the tool-calling assistant message carries its reasoning back"
+        );
+        assert!(
+            assistant_msgs[1].get("reasoning_content").is_none(),
+            "an assistant message without captured reasoning stays untouched"
+        );
+        // Non-assistant roles are never patched.
+        for msg in payload_msgs.iter().filter(|m| m["role"] != "assistant") {
+            assert!(msg.get("reasoning_content").is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_reasoning_content_is_a_noop_without_captured_metadata() -> anyhow::Result<()> {
+        // The self-gating property: a history produced by a host that never
+        // emits reasoning_content (OpenAI proper, Groq, ...) leaves the
+        // payload byte-identical.
+        let messages = vec![
+            Message::user().with_text("hi"),
+            Message::assistant().with_text("hello"),
+        ];
+        let model_config = ModelConfig::new_or_fail("gpt-4.1");
+        let payload = create_request(
+            &model_config,
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let mut patched = payload.clone();
+        add_reasoning_content_to_request(&mut patched, &messages);
+        assert_eq!(patched, payload);
+        Ok(())
+    }
 
     #[test]
     fn get_usage_subtracts_cached_tokens_from_prompt() {

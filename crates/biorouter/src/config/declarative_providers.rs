@@ -390,11 +390,8 @@ mod tests {
 
         assert!(!moonshot.models.is_empty());
         for model in &moonshot.models {
-            let sync =
-                crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
-                    .unwrap_or_else(|| {
-                        panic!("{} must be priced on the sync path too", model.name)
-                    });
+            let sync = crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
+                .unwrap_or_else(|| panic!("{} must be priced on the sync path too", model.name));
             let meta_in = model.input_token_cost.expect("input cost set");
             let meta_out = model.output_token_cost.expect("output cost set");
             assert!(
