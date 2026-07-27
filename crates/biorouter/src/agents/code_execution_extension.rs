@@ -979,7 +979,10 @@ struct ToolCallRecord {
     args: String,
     /// "ok" | "error".
     status: &'static str,
-    /// The real error text on failure, truncated.
+    /// User-audience error text on failure (truncated), or the sanitized
+    /// `tool failed (details hidden): <kind>` placeholder when the tool
+    /// produced none — never assistant-audience content, which the tool
+    /// deliberately kept out of the user's view.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     /// Size of the result handed back to the script on success.
@@ -998,12 +1001,24 @@ impl ToolCallRecord {
         }
     }
 
-    fn error(tool: &str, args_json: &str, error: &str) -> Self {
+    /// A failed sub-call. `user_error` must be text that is already safe to
+    /// show the user — User-audience (or untagged) content of the failed
+    /// result. When the tool produced none, the record carries a sanitized
+    /// placeholder naming only the failure class. The script-facing error
+    /// string is NEVER recorded here: it is built from assistant-audience
+    /// content (`assistant_tool_result_text`) that the tool deliberately kept
+    /// out of the user's view, and this record renders in the user's
+    /// executed-calls view.
+    fn failed(tool: &str, args_json: &str, user_error: Option<&str>, kind: &'static str) -> Self {
+        let error = match user_error {
+            Some(text) => truncate_record_text(text, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
+            None => format!("tool failed (details hidden): {kind}"),
+        };
         Self {
             tool: tool.to_string(),
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "error",
-            error: Some(truncate_record_text(error, MAX_TOOL_CALL_RECORD_TEXT_BYTES)),
+            error: Some(error),
             result_bytes: None,
         }
     }
@@ -1239,6 +1254,28 @@ fn is_valid_app_path(path: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         })
+}
+
+/// User-audience text of a tool result: only segments the tool explicitly
+/// aimed at the user, or left untagged (untagged content is visible to
+/// everyone) — the same audience filter the desktop transcript applies.
+/// Telemetry records read THIS, never `assistant_tool_result_text`, whose
+/// output the tool deliberately kept away from the user.
+fn user_tool_result_text(content: &[Content]) -> Option<String> {
+    let text = content
+        .iter()
+        .filter(|item| {
+            item.audience()
+                .is_none_or(|audience| audience.contains(&Role::User))
+        })
+        .filter_map(|item| match &item.raw {
+            RawContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 fn assistant_tool_result_text(
@@ -1626,6 +1663,74 @@ impl CodeExecutionClient {
         Ok(vec![Content::text(output)])
     }
 
+    /// Turn one COMPLETED dispatch into the script-facing value/error plus
+    /// what telemetry may keep: the failure class, and the user-audience error
+    /// text (the only verbatim error text a `ToolCallRecord` may carry — the
+    /// script-facing error is built from assistant-audience content).
+    async fn completed_sub_call_outcome(
+        tool_name: &str,
+        result: &CallToolResult,
+        collected_artifacts: &Mutex<CollectedArtifacts>,
+    ) -> (Result<String, String>, &'static str, Option<String>) {
+        let is_error = result.is_error.unwrap_or(false);
+        // Renderable resources are passed out-of-band because a JS string
+        // cannot preserve an MCP UI artifact. Plain text/file resources stay
+        // in the script result and are not duplicated.
+        let resources = result
+            .content
+            .iter()
+            .filter(|content| is_artifact_content(content));
+        let has_resources = resources.clone().next().is_some();
+        let mut collected_any = false;
+        {
+            let mut collected = collected_artifacts.lock().await;
+            for path in app_paths_from_meta(result.meta.as_ref()) {
+                collected.push_app_path(path);
+            }
+            for resource in resources {
+                if collected.push_artifact(resource) {
+                    collected_any = true;
+                }
+            }
+        }
+
+        let value = if let Some(sc) = &result.structured_content {
+            serialize_json_limited(sc, MAX_JS_TOOL_RESULT_BYTES, "Tool result", false)
+        } else {
+            // Surface exactly what the model itself would see: content
+            // targeted at the Assistant (or with no audience set), mirroring
+            // `From<Content> for MessageContent`. This (a) drops the
+            // duplicate User-audience copy some tools emit — e.g.
+            // developer/shell returns the same text twice, which would
+            // otherwise hand the script "40\n40" for `echo 40` — and (b)
+            // unwraps embedded text resources (developer/text_editor returns
+            // file contents as an Assistant-audience text resource).
+            // When a tool (e.g. autovisualiser) returns only resource
+            // content and no text, JS would receive an empty string and
+            // the model would see `Result: ""` and loop retrying. Return
+            // a terse confirmation so the model knows it succeeded.
+            assistant_tool_result_text(&result.content, collected_any, has_resources)
+        };
+        let failure_kind = if value.is_err() {
+            "result_too_large"
+        } else {
+            "tool_failure"
+        };
+        if is_error {
+            let user_error = user_tool_result_text(&result.content);
+            // Name the failing tool (issue #28): this string is what the
+            // script throws, so an uncaught failure surfaces at the step
+            // level already attributed.
+            let value = match value {
+                Ok(message) => Err(format!("Tool error from {tool_name}: {message}")),
+                Err(error) => Err(error),
+            };
+            (value, failure_kind, user_error)
+        } else {
+            (value, failure_kind, None)
+        }
+    }
+
     async fn run_tool_handler(
         session_id: String,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
@@ -1641,10 +1746,22 @@ impl CodeExecutionClient {
                 collected_artifacts
                     .lock()
                     .await
-                    .push_tool_call(ToolCallRecord::error(&tool_name, &arguments, &error));
+                    .push_tool_call(ToolCallRecord::failed(
+                        &tool_name,
+                        &arguments,
+                        None,
+                        "call_limit",
+                    ));
                 let _ = response_tx.send(Err(error));
                 continue;
             }
+            // Telemetry may only carry USER-audience error text (Codex review
+            // of #28): the script-facing error strings below are built from
+            // assistant-audience content. `user_error` is the sole verbatim
+            // text a record may keep; `failure_kind` names the failure class
+            // for the sanitized placeholder when the tool produced none.
+            let mut failure_kind: &'static str = "tool_failure";
+            let mut user_error: Option<String> = None;
             let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
                 Some(manager) => {
                     let tool_call = CallToolRequestParams {
@@ -1659,77 +1776,32 @@ impl CodeExecutionClient {
                     {
                         Ok(dispatch_result) => match dispatch_result.result.await {
                             Ok(result) => {
-                                let is_error = result.is_error.unwrap_or(false);
-                                // Renderable resources are passed out-of-band because a JS string
-                                // cannot preserve an MCP UI artifact. Plain text/file resources stay
-                                // in the script result and are not duplicated.
-                                let resources = result
-                                    .content
-                                    .iter()
-                                    .filter(|content| is_artifact_content(content));
-                                let has_resources = resources.clone().next().is_some();
-                                let mut collected_any = false;
-                                {
-                                    let mut collected = collected_artifacts.lock().await;
-                                    for path in app_paths_from_meta(result.meta.as_ref()) {
-                                        collected.push_app_path(path);
-                                    }
-                                    for resource in resources {
-                                        if collected.push_artifact(resource) {
-                                            collected_any = true;
-                                        }
-                                    }
-                                }
-
-                                let value = if let Some(sc) = &result.structured_content {
-                                    serialize_json_limited(
-                                        sc,
-                                        MAX_JS_TOOL_RESULT_BYTES,
-                                        "Tool result",
-                                        false,
-                                    )
-                                } else {
-                                    // Surface exactly what the model itself would see: content
-                                    // targeted at the Assistant (or with no audience set), mirroring
-                                    // `From<Content> for MessageContent`. This (a) drops the
-                                    // duplicate User-audience copy some tools emit — e.g.
-                                    // developer/shell returns the same text twice, which would
-                                    // otherwise hand the script "40\n40" for `echo 40` — and (b)
-                                    // unwraps embedded text resources (developer/text_editor returns
-                                    // file contents as an Assistant-audience text resource).
-                                    // When a tool (e.g. autovisualiser) returns only resource
-                                    // content and no text, JS would receive an empty string and
-                                    // the model would see `Result: ""` and loop retrying. Return
-                                    // a terse confirmation so the model knows it succeeded.
-                                    assistant_tool_result_text(
-                                        &result.content,
-                                        collected_any,
-                                        has_resources,
-                                    )
-                                };
-                                if is_error {
-                                    // Name the failing tool (issue #28): this string is
-                                    // what the script throws, so an uncaught failure
-                                    // surfaces at the step level already attributed.
-                                    match value {
-                                        Ok(message) => {
-                                            Err(format!("Tool error from {tool_name}: {message}"))
-                                        }
-                                        Err(error) => Err(error),
-                                    }
-                                } else {
-                                    value
-                                }
+                                let (value, kind, user) = Self::completed_sub_call_outcome(
+                                    &tool_name,
+                                    &result,
+                                    &collected_artifacts,
+                                )
+                                .await;
+                                failure_kind = kind;
+                                user_error = user;
+                                value
                             }
                             Err(e) => Err(format!("Tool error from {tool_name}: {}", e.message)),
                         },
-                        Err(e) => Err(format!("Dispatch error from {tool_name}: {e}")),
+                        Err(e) => {
+                            failure_kind = "dispatch_error";
+                            Err(format!("Dispatch error from {tool_name}: {e}"))
+                        }
                     }
                 }
-                None => Err("Extension manager not available".to_string()),
+                None => {
+                    failure_kind = "unavailable";
+                    Err("Extension manager not available".to_string())
+                }
             };
             let result = result.and_then(|value| {
                 if value.len() > MAX_JS_TOOL_RESULT_BYTES {
+                    failure_kind = "result_too_large";
                     Err(format!(
                         "Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit"
                     ))
@@ -1738,10 +1810,17 @@ impl CodeExecutionClient {
                 }
             });
             // Per-call telemetry for the UI's executed-calls view (issue #28).
+            // The Err string is intentionally NOT recorded — see
+            // `ToolCallRecord::failed`.
             {
                 let record = match &result {
                     Ok(value) => ToolCallRecord::ok(&tool_name, &arguments, value.len()),
-                    Err(error) => ToolCallRecord::error(&tool_name, &arguments, error),
+                    Err(_) => ToolCallRecord::failed(
+                        &tool_name,
+                        &arguments,
+                        user_error.as_deref(),
+                        failure_kind,
+                    ),
                 };
                 collected_artifacts.lock().await.push_tool_call(record);
             }
@@ -2340,18 +2419,70 @@ mod tests {
         assert_eq!(ok["result_bytes"], 42);
         assert!(ok.get("error").is_none());
 
-        let err = serde_json::to_value(ToolCallRecord::error(
+        let err = serde_json::to_value(ToolCallRecord::failed(
             "developer__text_editor",
             r#"{"command":"view"}"#,
-            "Tool error from developer__text_editor: no such file",
+            Some("no such file"),
+            "tool_failure",
         ))
         .unwrap();
         assert_eq!(err["status"], "error");
-        assert_eq!(
-            err["error"],
-            "Tool error from developer__text_editor: no such file"
-        );
+        assert_eq!(err["error"], "no such file");
         assert!(err.get("result_bytes").is_none());
+    }
+
+    // Codex review of #28: the recorded error must be user-audience text or a
+    // sanitized placeholder — never the script-facing (assistant-audience)
+    // error string.
+    #[test]
+    fn failed_record_uses_user_text_or_sanitized_placeholder() {
+        let with_user_text = ToolCallRecord::failed(
+            "developer__shell",
+            "{}",
+            Some("cat: /tmp/x: No such file or directory"),
+            "tool_failure",
+        );
+        assert_eq!(
+            with_user_text.error.as_deref(),
+            Some("cat: /tmp/x: No such file or directory")
+        );
+
+        let sanitized = ToolCallRecord::failed("developer__shell", "{}", None, "dispatch_error");
+        assert_eq!(
+            sanitized.error.as_deref(),
+            Some("tool failed (details hidden): dispatch_error")
+        );
+
+        // The user text is still bounded.
+        let long = "x".repeat(5000);
+        let truncated =
+            ToolCallRecord::failed("developer__shell", "{}", Some(&long), "tool_failure");
+        assert!(truncated.error.unwrap().len() <= MAX_TOOL_CALL_RECORD_TEXT_BYTES + '…'.len_utf8());
+    }
+
+    #[test]
+    fn user_tool_result_text_honours_audience_annotations() {
+        use rmcp::model::Role;
+
+        // Assistant-only content must never surface.
+        let assistant_only =
+            vec![Content::text("secret internals").with_audience(vec![Role::Assistant])];
+        assert_eq!(user_tool_result_text(&assistant_only), None);
+
+        // User-tagged and untagged content are both user-visible.
+        let mixed = vec![
+            Content::text("assistant copy").with_audience(vec![Role::Assistant]),
+            Content::text("user copy").with_audience(vec![Role::User]),
+            Content::text("untagged note"),
+        ];
+        assert_eq!(
+            user_tool_result_text(&mixed).as_deref(),
+            Some("user copy\nuntagged note")
+        );
+
+        // Whitespace-only user text counts as absent.
+        let blank = vec![Content::text("   ").with_audience(vec![Role::User])];
+        assert_eq!(user_tool_result_text(&blank), None);
     }
 
     #[tokio::test]
@@ -2385,12 +2516,11 @@ mod tests {
         assert_eq!(record.tool, "developer__shell");
         assert!(record.args.contains("echo hi"), "args: {}", record.args);
         assert_eq!(record.status, "error");
-        assert!(
-            record
-                .error
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Extension manager"),
+        // No user-audience error text exists on this path, so the record must
+        // carry the sanitized placeholder — not the internal error string.
+        assert_eq!(
+            record.error.as_deref(),
+            Some("tool failed (details hidden): unavailable"),
             "error: {:?}",
             record.error
         );

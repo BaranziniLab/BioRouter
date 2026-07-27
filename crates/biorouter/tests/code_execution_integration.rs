@@ -1096,12 +1096,18 @@ async fn case27_result_meta_records_executed_sub_calls() {
             .contains("/nonexistent/path/xyz123"),
         "exact args recorded: {failed_call:?}"
     );
+    // The recorded error is the USER-audience text of the failed result —
+    // shell tags a user copy of its output — never the script-facing
+    // (assistant-audience) error string, and not the sanitized placeholder
+    // reserved for tools that produce no user-visible text.
+    let recorded_error = failed_call["error"].as_str().unwrap_or_default();
     assert!(
-        failed_call["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Tool error from developer__shell"),
-        "the real, attributed error is recorded: {failed_call:?}"
+        recorded_error.contains("No such file"),
+        "the user-audience error text is recorded: {failed_call:?}"
+    );
+    assert!(
+        !recorded_error.contains("details hidden"),
+        "a user-visible error is recorded verbatim, not sanitized: {failed_call:?}"
     );
 }
 
