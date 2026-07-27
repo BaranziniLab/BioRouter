@@ -23,8 +23,8 @@ import { ChatType } from './types/chat';
 import Hub from './components/Hub';
 import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
-import { closeActiveTab } from './components/chatGroups/closeActiveTabRegistry';
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
+import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
@@ -526,17 +526,17 @@ export function AppInner() {
   //
   // This listener lives at the ROOT, not in ChatGroupsProvider, because it must
   // answer everywhere: the provider is mounted only under /pair, and Cmd+W on
-  // Settings must still close the window like any other macOS app. The provider
-  // registers a claim while it is mounted; if it claims nothing (not on /pair,
-  // or the last tab is already gone) the window closes.
+  // Settings must still close the window like any other macOS app. The ladder —
+  // focused terminal pane, then chat tab, then window — lives in
+  // runCloseActiveTabCommand so the registry-driven tests gate the exact code
+  // this handler runs (the keystroke never reaches the DOM; the menu owns it).
   //
   // No text-input guard: Cmd+W has no native editing behaviour to steal, and the
   // key never reaches the DOM anyway — the menu consumes it.
   useEffect(
     () =>
       window.electron.on('close-active-tab', () => {
-        if (closeActiveTab()) return;
-        window.electron.closeWindow();
+        runCloseActiveTabCommand(() => window.electron.closeWindow());
       }),
     []
   );
