@@ -28,6 +28,45 @@ use platform::{create_system_automation, SystemAutomation};
 
 const MAX_INLINE_WEB_CONTENT_BYTES: usize = 128 * 1024;
 
+/// `web_scrape` HTTP hardening (issue #25): a browser-compatible UA (the old
+/// bare `biorouter/1.0` was bot-flagged into 403s), a request timeout (a hung
+/// server used to hang the tool indefinitely), and one retry on transient
+/// failures only — connect errors, 429, and 5xx. A timed-out request is NOT
+/// retried: the client already waited the full timeout, so retrying a hung
+/// server would double worst-case latency.
+const WEB_SCRAPE_USER_AGENT: &str = "Mozilla/5.0 (compatible; biorouter/1.0)";
+const WEB_SCRAPE_TIMEOUT_SECS: u64 = 30;
+const WEB_SCRAPE_RETRY_BACKOFF_MS: u64 = 500;
+
+/// Whether a non-success status is worth one retry: 429 and 5xx are transient;
+/// 4xx client errors (403/404/…) are deterministic — an identical retry cannot
+/// succeed.
+fn web_scrape_status_is_retryable(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.is_server_error()
+}
+
+/// Per-status recovery hint appended to the error text. The status code itself
+/// stays in the message — the tool-error classifier keys on it ('403' →
+/// permission_denied, '404' → not_found, '429' → transient), so it is
+/// load-bearing, and the hint tells the model what to do instead of retrying.
+fn web_scrape_status_hint(status: reqwest::StatusCode) -> &'static str {
+    match status.as_u16() {
+        403 => {
+            " The site blocks automated clients — try an alternative source, \
+                 or browser automation if available."
+        }
+        404 => " The URL does not exist — verify the URL or pick another source.",
+        429 => {
+            " The site is rate-limiting requests — wait before retrying, or use \
+                 another source."
+        }
+        code if (500..600).contains(&code) => {
+            " The server failed — retry later or use another source."
+        }
+        _ => "",
+    }
+}
+
 fn bounded_web_content(content: &str) -> (&str, bool) {
     if content.len() <= MAX_INLINE_WEB_CONTENT_BYTES {
         return (content, false);
@@ -482,7 +521,9 @@ impl ComputerControllerServer {
               - Fetch content from html websites and APIs
               - Save as text, JSON, or binary files
               - Content is cached locally for later use
-              - This is not optimised for complex websites, so don't use this as the first tool.
+              - PREFER this as the FIRST tool for fetching any known URL — do not hand-roll
+                HTTP fetches in shell scripts (curl/wget/python urllib). Reserve browser
+                automation for JS-heavy or interactive sites.
             cache
               - Manage your cached files
               - List, view, delete files
@@ -500,7 +541,8 @@ impl ComputerControllerServer {
             cache_dir,
             active_resources: Arc::new(Mutex::new(HashMap::new())),
             http_client: Client::builder()
-                .user_agent("biorouter/1.0")
+                .user_agent(WEB_SCRAPE_USER_AGENT)
+                .timeout(std::time::Duration::from_secs(WEB_SCRAPE_TIMEOUT_SECS))
                 .build()
                 .unwrap(),
             instructions,
@@ -577,29 +619,54 @@ impl ComputerControllerServer {
         let url = &params.url;
         let save_as = params.save_as;
 
-        // Fetch the content
-        let response = self
-            .http_client
-            .get(url)
-            .header("Accept", "text/markdown, */*")
-            .send()
-            .await
-            .map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to fetch URL: {}", e),
-                    None,
-                )
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("HTTP request failed with status: {}", status),
-                None,
-            ));
+        // Fetch the content, with ONE retry on transient failures only —
+        // connect errors, 429, and 5xx. Deterministic client errors (403/404/…)
+        // fail immediately with a status-preserving message plus a recovery
+        // hint (issue #25). Timeouts are deliberately NOT retried: the client
+        // already waits up to WEB_SCRAPE_TIMEOUT_SECS, so a retry against a
+        // server that is still hung would double worst-case latency to ~60 s
+        // for no realistic gain.
+        let mut response = None;
+        let mut last_error = String::new();
+        for attempt in 0..2 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    WEB_SCRAPE_RETRY_BACKOFF_MS,
+                ))
+                .await;
+            }
+            match self
+                .http_client
+                .get(url)
+                .header("Accept", "text/markdown, */*")
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        response = Some(resp);
+                        break;
+                    }
+                    last_error = format!(
+                        "HTTP request failed with status: {status}.{}",
+                        web_scrape_status_hint(status)
+                    );
+                    if !web_scrape_status_is_retryable(status) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    last_error = format!("Failed to fetch URL: {e}");
+                    if !e.is_connect() {
+                        break;
+                    }
+                }
+            }
         }
+        let Some(response) = response else {
+            return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, last_error, None));
+        };
 
         // Process based on save_as parameter
         let (content, extension, mime_type, inline_content) = match save_as {
@@ -676,7 +743,11 @@ impl ComputerControllerServer {
             PowerShell is recommended for most tasks.
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
-            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
+            When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
+            It does NOT make ${...} literal — every ${...} (PowerShell's ${env:Path} included) is still parsed as a
+            JavaScript expression, and any backtick in the script (PowerShell's escape character) terminates the
+            template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a plain quoted
+            JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run that file.
 
             The script is saved to a temporary file and executed.
             Some examples:
@@ -701,7 +772,12 @@ impl ComputerControllerServer {
             Supports Shell and Ruby (on macOS).
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
-            When embedding a multiline script inside execute_code, use a String.raw JavaScript template literal so backslashes remain intact.
+            When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
+            It does NOT make ${...} literal — every ${...} (bash's ${VAR:-default} or ${!v} included) is still parsed
+            as a JavaScript expression, and any backtick in the script (command substitution, markdown fences)
+            terminates the template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a
+            plain quoted JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run
+            that file.
 
             The script is saved to a temporary file and executed.
             Consider using shell script (bash) for most simple tasks first.
@@ -1580,6 +1656,244 @@ mod web_and_script_tests {
             .strip_prefix("Content saved to: ")
             .unwrap();
         assert!(std::path::Path::new(saved_path).is_file());
+    }
+
+    // ---- issue #25: web_scrape hardening -------------------------------------
+
+    /// A 403 is deterministic: the error must keep the status (the tool-error
+    /// classifier keys on '403' → permission_denied), carry the bot-block hint,
+    /// and must NOT be retried.
+    #[tokio::test]
+    async fn web_scrape_403_keeps_status_adds_hint_and_does_not_retry() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1) // exactly one request — no retry on 403
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("403 must be a tool error");
+
+        let message = error.to_string();
+        assert!(message.contains("403"), "status must survive: {message}");
+        assert!(
+            message.contains("blocks automated clients"),
+            "403 must carry the bot-block hint: {message}"
+        );
+    }
+
+    /// A 404 is deterministic too: no retry, and the hint says to verify the URL.
+    #[tokio::test]
+    async fn web_scrape_404_keeps_status_adds_hint_and_does_not_retry() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("404 must be a tool error");
+
+        let message = error.to_string();
+        assert!(message.contains("404"), "status must survive: {message}");
+        assert!(
+            message.contains("verify the URL"),
+            "404 must carry the verify-URL hint: {message}"
+        );
+    }
+
+    /// A transient 500 gets exactly one retry; the second attempt's 200 wins.
+    #[tokio::test]
+    async fn web_scrape_retries_once_on_5xx_then_succeeds() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .expect(1)
+            .with_priority(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("recovered content"))
+            .expect(1)
+            .with_priority(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let result = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect("500-then-200 must succeed after one retry");
+
+        assert!(text_of(&result).contains("recovered content"));
+    }
+
+    /// A request timeout is NOT retried (review follow-up on #25): the retry
+    /// contract is connect errors, 429, and 5xx only. The client already
+    /// waited the full request timeout, so a retry against a still-hung
+    /// server would double worst-case latency for no realistic gain. The
+    /// mock's `expect(1)` is verified on drop — a retry fails the test.
+    #[tokio::test]
+    async fn web_scrape_timeout_is_not_retried() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(5))
+                    .set_body_string("too late"),
+            )
+            .expect(1) // exactly one request — a timeout must not be retried
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        // Production client shape with the 30 s timeout shrunk, so the test
+        // observes the timeout path in milliseconds instead of half a minute.
+        server.http_client = Client::builder()
+            .user_agent(WEB_SCRAPE_USER_AGENT)
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("a timed-out fetch must be a tool error");
+        assert!(
+            error.to_string().contains("Failed to fetch URL"),
+            "timeout must surface as a fetch failure, got: {error}"
+        );
+    }
+
+    /// The request must carry the browser-compatible UA — the old bare
+    /// `biorouter/1.0` was bot-flagged into 403s.
+    #[tokio::test]
+    async fn web_scrape_sends_browser_compatible_user_agent() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::header(
+                "user-agent",
+                WEB_SCRAPE_USER_AGENT,
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ua ok"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        let result = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect("UA-matched fetch should succeed");
+        assert!(text_of(&result).contains("ua ok"));
+    }
+
+    /// The extension instructions must agree with the tool description: the
+    /// old "don't use this as the first tool" line steered the model into
+    /// hand-rolled shell+urllib fetches (the issue's failure mode).
+    #[test]
+    fn instructions_prefer_web_scrape_as_first_fetcher() {
+        let server = ComputerControllerServer::new();
+        assert!(
+            !server
+                .instructions
+                .contains("don't use this as the first tool"),
+            "the contradictory steer must be gone"
+        );
+        assert!(
+            server
+                .instructions
+                .contains("FIRST tool for fetching any known URL"),
+            "instructions must prefer web_scrape for known URLs, got: {}",
+            &server.instructions
+        );
+    }
+
+    /// Retryability contract: 429/5xx retryable, deterministic 4xx not.
+    #[test]
+    fn web_scrape_retryable_statuses() {
+        use reqwest::StatusCode;
+        assert!(web_scrape_status_is_retryable(
+            StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(web_scrape_status_is_retryable(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(web_scrape_status_is_retryable(StatusCode::BAD_GATEWAY));
+        assert!(!web_scrape_status_is_retryable(StatusCode::FORBIDDEN));
+        assert!(!web_scrape_status_is_retryable(StatusCode::NOT_FOUND));
+        assert!(!web_scrape_status_is_retryable(StatusCode::BAD_REQUEST));
+    }
+
+    /// The automation_script description must carry the CORRECTED String.raw
+    /// caveats from #23 (String.raw does not neutralise ${...} interpolation
+    /// or backticks), not the old unconditional "use String.raw" steer that
+    /// produced the very parse failures #23 fixed. Applies to both platform
+    /// variants — the asserted phrases are shared.
+    #[test]
+    fn automation_script_description_carries_corrected_string_raw_caveats() {
+        let server = ComputerControllerServer::new();
+        let tool = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "automation_script")
+            .expect("automation_script is registered");
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            !description.contains("so backslashes remain intact"),
+            "the old unconditional String.raw steer must be gone: {description}"
+        );
+        assert!(
+            description.contains("ONLY preserves backslashes"),
+            "must state String.raw's actual (narrow) effect: {description}"
+        );
+        assert!(
+            description.contains("does NOT make ${...} literal"),
+            "must correct the dollar-brace belief: {description}"
+        );
+        assert!(
+            description.contains("terminates the template literal"),
+            "must warn that payload backticks end the literal: {description}"
+        );
+        assert!(
+            description.contains(r#"${"$"}{"#),
+            "must teach the literal dollar-brace escape: {description}"
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

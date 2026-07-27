@@ -13,6 +13,12 @@ pub struct SearchPaths {
 }
 
 impl SearchPaths {
+    // NOTE: the standard user-tool dirs below (~/.local/bin, /usr/local/bin,
+    // /opt/homebrew/bin, /opt/local/bin) are mirrored by
+    // `standard_user_tool_dirs()` in
+    // `crates/biorouter-mcp/src/developer/shell.rs` (issue #24) — that crate
+    // cannot import this one (dependency direction is biorouter →
+    // biorouter-mcp). Keep the two lists in sync when editing.
     pub fn builder() -> Self {
         let mut paths = Config::global()
             .get_biorouter_search_paths()
