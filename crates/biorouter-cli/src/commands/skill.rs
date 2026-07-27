@@ -5,6 +5,12 @@
 //! a bundle is `<bundle>/<slug>/SKILL.md`. Text files are written under
 //! `~/.config/biorouter/skills/<slug>/`, where they are auto-discovered.
 //!
+//! Discovery and frontmatter parsing are the backend's own
+//! (`biorouter::agents::skills_extension::SkillsClient`) — same roots
+//! (`~/.claude/skills`, `~/.config/agents/skills`, the Biorouter config
+//! skills dir, extension `skills/` subdirs, project-local dirs), same YAML
+//! semantics — so `skill list` shows exactly what the agent can load.
+//!
 //! Enable/disable state lives in `~/.config/biorouter/skills-config.json`
 //! (`{"disabled": [...]}`), shared with the desktop GUI's per-skill toggles.
 //! The backend (`skills_extension.rs`) matches entries against the skill's
@@ -12,12 +18,13 @@
 //! so `enable`/`disable` here resolve whatever the user typed to the
 //! identifier the backend actually filters on.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use biorouter::agents::skills_extension::{Skill, SkillsClient};
 use biorouter::config::paths::Paths;
 use console::{style, Color};
 
@@ -28,24 +35,13 @@ fn skills_root() -> PathBuf {
     Paths::config_dir().join("skills")
 }
 
-/// Parse the `name` and `description` out of a `SKILL.md` YAML frontmatter block.
+/// Parse the `name` and `description` out of a `SKILL.md` frontmatter block,
+/// with the backend's exact parsing semantics (YAML first, its lenient
+/// fallback second) so install accepts precisely what the agent will load.
 fn parse_frontmatter(content: &str) -> Option<(String, String)> {
-    let rest = content.strip_prefix("---")?;
-    let end = rest.find("\n---")?;
-    let front = rest.get(..end)?;
-    let mut name = None;
-    let mut description = None;
-    for line in front.lines() {
-        if let Some(v) = line.strip_prefix("name:") {
-            name = Some(v.trim().trim_matches(['"', '\'']).to_string());
-        } else if let Some(v) = line.strip_prefix("description:") {
-            description = Some(v.trim().trim_matches(['"', '\'']).to_string());
-        }
-    }
-    match (name, description) {
-        (Some(n), Some(d)) if !n.is_empty() => Some((n, d)),
-        _ => None,
-    }
+    SkillsClient::parse_frontmatter(content)
+        .ok()
+        .map(|(meta, _body)| (meta.name, meta.description))
 }
 
 fn slugify(name: &str) -> String {
@@ -235,91 +231,61 @@ fn report_single(name: &str, description: &str, slug: &str, dest: &Path, files: 
 // discovery (shared by list / enable / disable)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// An installed skill as the backend's skills extension will discover it:
-/// either `<slug>/SKILL.md` (single skill) or `<bundle>/<slug>/SKILL.md`
-/// (bundle). The backend's disabled set matches the frontmatter `name` and
-/// the bundle directory name — never the on-disk slug.
+/// An installed skill exactly as the backend's skills extension discovered
+/// it. The backend's disabled set matches the frontmatter `name` and the
+/// bundle directory name — never the on-disk slug. Files the backend rejects
+/// (unparseable frontmatter) never appear here, because the backend will
+/// never load them and toggling them would have no effect.
 #[derive(Debug, Clone)]
 struct InstalledSkill {
-    /// Relative directory path under the skills root
+    /// Directory path relative to its skills root
     /// (e.g. `my-skill` or `superpowers/brainstorming`).
     slug: String,
-    /// Frontmatter `name` — the identifier the backend filters on. `None`
-    /// when SKILL.md has no parseable frontmatter (the backend skips those).
-    name: Option<String>,
+    /// Frontmatter `name` — the identifier the backend filters on.
+    name: String,
     description: String,
     /// Top-level bundle directory name when the skill is part of a bundle.
     bundle: Option<String>,
+    /// The skills root directory this skill was discovered under.
+    source_root: PathBuf,
 }
 
-/// Mirror the backend's two-level discovery (`<slug>/SKILL.md` or
-/// `<bundle>/<slug>/SKILL.md`, see `skills_extension::discover_skills_in_directories`)
-/// so slugs, frontmatter names, and bundle names line up with what the skills
-/// extension actually loads. Deeper `SKILL.md` files are invisible to the
-/// backend and are therefore not reported here either.
-fn collect_installed_skills(root: &Path) -> Vec<InstalledSkill> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(dir_name) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        let skill_md = path.join("SKILL.md");
-        if skill_md.exists() {
-            out.push(read_skill(&skill_md, dir_name, None));
-        } else if let Ok(sub_entries) = fs::read_dir(&path) {
-            for sub in sub_entries.flatten() {
-                let sub_path = sub.path();
-                if !sub_path.is_dir() {
-                    continue;
-                }
-                let sub_md = sub_path.join("SKILL.md");
-                if !sub_md.exists() {
-                    continue;
-                }
-                let Some(sub_name) = sub_path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                out.push(read_skill(
-                    &sub_md,
-                    format!("{dir_name}/{sub_name}"),
-                    Some(dir_name.clone()),
-                ));
+/// Discover skills with the backend's own routine over the backend's own
+/// roots (`SkillsClient::get_default_skill_directories`), so the CLI sees the
+/// same set — including shared, extension-provided, and project-local skills
+/// — with identical YAML frontmatter semantics and identical later-root-wins
+/// shadowing.
+fn collect_installed_skills() -> Vec<InstalledSkill> {
+    let directories: Vec<PathBuf> = SkillsClient::get_default_skill_directories()
+        .into_iter()
+        .filter(|d| d.exists())
+        .collect();
+    installed_from_backend(SkillsClient::discover_skills_in_directories(&directories))
+}
+
+/// Map the backend's discovery result into rows for listing/resolution,
+/// sorted by (source root, slug) for stable grouped output.
+fn installed_from_backend(skills: HashMap<String, Skill>) -> Vec<InstalledSkill> {
+    let mut out: Vec<InstalledSkill> = skills
+        .into_values()
+        .map(|skill| {
+            let slug = skill
+                .directory
+                .strip_prefix(&skill.source_root)
+                .unwrap_or(&skill.directory)
+                .to_string_lossy()
+                .into_owned();
+            InstalledSkill {
+                slug,
+                name: skill.metadata.name,
+                description: skill.metadata.description,
+                bundle: skill.bundle_name,
+                source_root: skill.source_root,
             }
-        }
-    }
-    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+        })
+        .collect();
+    out.sort_by(|a, b| (&a.source_root, &a.slug).cmp(&(&b.source_root, &b.slug)));
     out
-}
-
-fn read_skill(skill_md: &Path, slug: String, bundle: Option<String>) -> InstalledSkill {
-    match fs::read_to_string(skill_md)
-        .ok()
-        .and_then(|c| parse_frontmatter(&c))
-    {
-        Some((name, description)) => InstalledSkill {
-            slug,
-            name: Some(name),
-            description,
-            bundle,
-        },
-        None => InstalledSkill {
-            slug,
-            name: None,
-            description: String::new(),
-            bundle,
-        },
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -408,7 +374,7 @@ fn disabled_set(config: &serde_json::Value) -> HashSet<String> {
 /// The exact enabled test the backend applies (`skills_extension::is_skill_enabled`):
 /// a skill is disabled when its frontmatter name or its bundle name is listed.
 fn is_enabled(skill: &InstalledSkill, disabled: &HashSet<String>) -> bool {
-    let name_disabled = skill.name.as_deref().is_some_and(|n| disabled.contains(n));
+    let name_disabled = disabled.contains(&skill.name);
     let bundle_disabled = skill
         .bundle
         .as_deref()
@@ -446,14 +412,11 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
     let ql = q.to_lowercase();
 
     // Tier 1: frontmatter name — exactly what the backend's disabled set matches.
-    let matches: Vec<&InstalledSkill> = skills
-        .iter()
-        .filter(|s| s.name.as_deref() == Some(q))
-        .collect();
+    let matches: Vec<&InstalledSkill> = skills.iter().filter(|s| s.name == q).collect();
     let matches = if matches.is_empty() {
         skills
             .iter()
-            .filter(|s| s.name.as_deref().is_some_and(|n| n.to_lowercase() == ql))
+            .filter(|s| s.name.to_lowercase() == ql)
             .collect()
     } else {
         matches
@@ -505,10 +468,8 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
         .iter()
         .flat_map(|s| {
             let mut ids = vec![s.slug.clone()];
-            if let Some(name) = &s.name {
-                if name != &s.slug {
-                    ids.push(name.clone());
-                }
+            if s.name != s.slug {
+                ids.push(s.name.clone());
             }
             ids
         })
@@ -541,14 +502,8 @@ fn single_skill(matches: Vec<&InstalledSkill>, q: &str, via_slug: bool) -> Resul
         );
     }
     let skill = matches[0];
-    let Some(name) = skill.name.clone() else {
-        bail!(
-            "Skill at '{}' has no parseable SKILL.md frontmatter, so Biorouter never loads it and enable/disable would have no effect. Fix its frontmatter (name + description) first.",
-            skill.slug
-        );
-    };
     Ok(ResolvedTarget::Skill {
-        name,
+        name: skill.name.clone(),
         slug: skill.slug.clone(),
         bundle: skill.bundle.clone(),
         via_slug,
@@ -611,20 +566,26 @@ fn list_rows(skills: &[InstalledSkill], disabled: &HashSet<String>) -> Vec<(Stri
         .map(|skill| {
             (
                 skill.slug.clone(),
-                skill
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "(invalid frontmatter)".to_string()),
-                skill.name.is_some() && is_enabled(skill, disabled),
+                skill.name.clone(),
+                is_enabled(skill, disabled),
             )
         })
         .collect()
 }
 
+/// `~`-shortened path for display.
+fn display_root(root: &Path) -> String {
+    if let Ok(home) = etcetera::home_dir() {
+        if let Ok(rel) = root.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    root.display().to_string()
+}
+
 pub async fn handle_list() -> Result<()> {
-    let root = skills_root();
     println!("  {} {}", style("▌").fg(ACCENT), style("Skills").bold());
-    let skills = collect_installed_skills(&root);
+    let skills = collect_installed_skills();
     if skills.is_empty() {
         println!("    {}", style("none installed").dim());
         return Ok(());
@@ -641,7 +602,17 @@ pub async fn handle_list() -> Result<()> {
     let rows = list_rows(&skills, &disabled);
     let slug_width = rows.iter().map(|(s, _, _)| s.len()).max().unwrap_or(0);
     let name_width = rows.iter().map(|(_, n, _)| n.len()).max().unwrap_or(0);
+    // Rows are sorted by (source root, slug); print a dim root header per
+    // group so the user can tell where each skill is loaded from.
+    let mut current_root: Option<&Path> = None;
     for ((slug, name, enabled), skill) in rows.iter().zip(&skills) {
+        if current_root != Some(skill.source_root.as_path()) {
+            current_root = Some(skill.source_root.as_path());
+            println!(
+                "    {}",
+                style(display_root(&skill.source_root)).dim().underlined()
+            );
+        }
         let dot = if *enabled {
             style("●").green().to_string()
         } else {
@@ -671,7 +642,7 @@ pub async fn handle_list() -> Result<()> {
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub async fn handle_disable(query: String) -> Result<()> {
-    let skills = collect_installed_skills(&skills_root());
+    let skills = collect_installed_skills();
     let target = resolve_identifier(&skills, &query)?;
     if let Some(note) = slug_mapping_note(&target) {
         println!("{note}");
@@ -698,7 +669,7 @@ pub async fn handle_disable(query: String) -> Result<()> {
 }
 
 pub async fn handle_enable(query: String) -> Result<()> {
-    let skills = collect_installed_skills(&skills_root());
+    let skills = collect_installed_skills();
     let path = skills_config_path();
     let mut config = load_skills_config(&path)?;
 
@@ -794,6 +765,13 @@ mod tests {
         .unwrap();
     }
 
+    /// Run the shared backend discovery over explicit roots and map into CLI
+    /// rows — what `collect_installed_skills` does, minus the global default
+    /// directories (which unit tests must not touch).
+    fn installed_at(roots: &[PathBuf]) -> Vec<InstalledSkill> {
+        installed_from_backend(SkillsClient::discover_skills_in_directories(roots))
+    }
+
     /// A skills tree with every shape the backend discovers: single skill,
     /// bundle sub-skills, an ambiguous last-component slug, broken
     /// frontmatter, and one dir nested too deep for the backend to see.
@@ -814,42 +792,87 @@ mod tests {
         let broken = root.join("broken");
         fs::create_dir_all(&broken).unwrap();
         fs::write(broken.join("SKILL.md"), "no frontmatter here").unwrap();
-        let skills = collect_installed_skills(root);
+        let skills = installed_at(&[root.to_path_buf()]);
         (tmp, skills)
     }
 
     // ── discovery ────────────────────────────────────────────────────────────
 
     #[test]
-    fn discovery_mirrors_backend_two_level_layout() {
-        let (_tmp, skills) = sample_tree();
+    fn discovery_is_the_backends_own() {
+        let (tmp, skills) = sample_tree();
         let slugs: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
         assert_eq!(
             slugs,
             vec![
-                "broken",
                 "my-skill",
                 "pack-a/tool",
                 "pack-b/tool",
                 "superpowers/brainstorming",
                 "superpowers/debugging",
             ],
-            "three-deep SKILL.md must be invisible, like in the backend"
+            "three-deep SKILL.md and backend-rejected frontmatter must be \
+             invisible, exactly like in the backend"
         );
 
         let single = skills.iter().find(|s| s.slug == "my-skill").unwrap();
-        assert_eq!(single.name.as_deref(), Some("My Skill"));
+        assert_eq!(single.name, "My Skill");
         assert_eq!(single.bundle, None);
+        assert_eq!(
+            single.source_root,
+            tmp.path(),
+            "each skill must carry the root it was discovered under"
+        );
 
         let sub = skills
             .iter()
             .find(|s| s.slug == "superpowers/brainstorming")
             .unwrap();
-        assert_eq!(sub.name.as_deref(), Some("brainstorming"));
+        assert_eq!(sub.name, "brainstorming");
         assert_eq!(sub.bundle.as_deref(), Some("superpowers"));
+    }
 
-        let broken = skills.iter().find(|s| s.slug == "broken").unwrap();
-        assert_eq!(broken.name, None, "unparseable frontmatter → no name");
+    // Finding 6 parity: the backend's YAML parser accepts frontmatter the old
+    // line-based CLI parser could not (e.g. a folded multi-line description),
+    // and the CLI must see the identical identifier + description.
+    #[test]
+    fn discovery_applies_backend_yaml_frontmatter_semantics() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("folded");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: folded-skill\ndescription: >-\n  Line one\n  and line two\n---\nBody\n",
+        )
+        .unwrap();
+
+        let skills = installed_at(&[tmp.path().to_path_buf()]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "folded-skill");
+        assert_eq!(
+            skills[0].description, "Line one and line two",
+            "folded YAML scalar must parse exactly as the backend parses it"
+        );
+    }
+
+    // Finding 5 parity: multiple roots, later root wins by frontmatter name —
+    // the CLI must report the same winner the backend loads.
+    #[test]
+    fn discovery_scans_multiple_roots_with_later_root_winning() {
+        let tmp = TempDir::new().unwrap();
+        let early = tmp.path().join("early");
+        let late = tmp.path().join("late");
+        write_skill(&early, "shared", "shared-skill", "From early root");
+        write_skill(&late, "shared", "shared-skill", "From late root");
+        write_skill(&early, "only-early", "only-early", "Unshadowed");
+
+        let skills = installed_at(&[early.clone(), late.clone()]);
+        assert_eq!(skills.len(), 2);
+        let shared = skills.iter().find(|s| s.name == "shared-skill").unwrap();
+        assert_eq!(shared.description, "From late root");
+        assert_eq!(shared.source_root, late, "later root must shadow earlier");
+        let unshadowed = skills.iter().find(|s| s.name == "only-early").unwrap();
+        assert_eq!(unshadowed.source_root, early);
     }
 
     // ── identifier resolution ────────────────────────────────────────────────
@@ -960,12 +983,22 @@ mod tests {
     }
 
     #[test]
-    fn broken_frontmatter_is_not_toggleable() {
+    fn backend_rejected_skill_is_invisible_and_not_resolvable() {
+        // The backend never loads a SKILL.md whose frontmatter fails to
+        // parse, so toggling it would be a silent no-op — the CLI reports it
+        // as not installed instead of listing a phantom entry.
         let (_tmp, skills) = sample_tree();
+        assert!(
+            !skills.iter().any(|s| s.slug == "broken"),
+            "backend-rejected file must not be listed"
+        );
         let err = resolve_identifier(&skills, "broken")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("frontmatter"), "{err}");
+        assert!(
+            err.contains("No installed skill or bundle matches"),
+            "{err}"
+        );
     }
 
     // ── skills-config.json mutation ──────────────────────────────────────────
@@ -1094,13 +1127,6 @@ mod tests {
         );
 
         assert!(by_slug("pack-a/tool").2, "untouched skill stays enabled");
-
-        let (_, broken_name, broken_enabled) = by_slug("broken");
-        assert_eq!(broken_name, "(invalid frontmatter)");
-        assert!(
-            !broken_enabled,
-            "a skill the backend cannot load must not be shown as enabled"
-        );
     }
 
     #[test]

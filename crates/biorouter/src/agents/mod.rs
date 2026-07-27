@@ -39,7 +39,10 @@ mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 mod session_blob_tool;
-pub(crate) mod skills_extension;
+// Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
+// roots and frontmatter parsing as this backend extension, instead of keeping
+// a drifting duplicate (Codex B2 findings 5+6).
+pub mod skills_extension;
 // BR-50: an optional, config-gated self-critique pass that re-reads an ordinary
 // answer for correctness before it is returned, reusing the goal-judge LLM
 // primitive. Default OFF (it costs an extra LLM call per turn).

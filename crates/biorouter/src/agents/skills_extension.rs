@@ -103,18 +103,25 @@ struct SearchSkillsParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkillMetadata {
-    name: String,
-    description: String,
+pub struct SkillMetadata {
+    pub name: String,
+    pub description: String,
 }
 
+/// A discovered skill. Pub (with pub fields) because the CLI's
+/// `biorouter skill` commands reuse this exact discovery representation —
+/// same roots, same frontmatter semantics — instead of a parallel scanner.
 #[derive(Debug, Clone)]
-struct Skill {
-    metadata: SkillMetadata,
-    body: String,
-    directory: PathBuf,
-    supporting_files: Vec<PathBuf>,
-    bundle_name: Option<String>,
+pub struct Skill {
+    pub metadata: SkillMetadata,
+    pub body: String,
+    pub directory: PathBuf,
+    pub supporting_files: Vec<PathBuf>,
+    pub bundle_name: Option<String>,
+    /// The skills root directory this skill was discovered under (one of
+    /// [`SkillsClient::get_default_skill_directories`]). Lets callers show
+    /// where a skill comes from and derive its root-relative slug.
+    pub source_root: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +185,7 @@ impl SkillsClient {
                             directory: Paths::config_dir().join("skills").join(name),
                             supporting_files: Vec::new(),
                             bundle_name: None,
+                            source_root: Paths::config_dir().join("skills"),
                         },
                     );
                 }
@@ -211,7 +219,12 @@ impl SkillsClient {
         }
     }
 
-    fn get_default_skill_directories() -> Vec<PathBuf> {
+    /// Every directory skills are discovered under, in override order (later
+    /// wins): `~/.claude/skills`, `~/.config/agents/skills`, the Biorouter
+    /// config skills dir, installed extensions' `skills/` subdirs, and the
+    /// working directory's `.claude/skills`, `.biorouter/skills`,
+    /// `.agents/skills`. Pub so the CLI scans the exact same roots.
+    pub fn get_default_skill_directories() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
 
         if let Some(home) = dirs::home_dir() {
@@ -265,7 +278,11 @@ impl SkillsClient {
             .unwrap_or_default()
     }
 
-    fn parse_skill_file(path: &Path, bundle_name: Option<String>) -> Result<Skill> {
+    fn parse_skill_file(
+        path: &Path,
+        bundle_name: Option<String>,
+        source_root: &Path,
+    ) -> Result<Skill> {
         let content = std::fs::read_to_string(path)?;
 
         let (metadata, body) = Self::parse_frontmatter(&content)?;
@@ -283,10 +300,15 @@ impl SkillsClient {
             directory,
             supporting_files,
             bundle_name,
+            source_root: source_root.to_path_buf(),
         })
     }
 
-    fn parse_frontmatter(content: &str) -> Result<(SkillMetadata, String)> {
+    /// Parse a SKILL.md: YAML frontmatter (with a line-based fallback for
+    /// technically-invalid-but-common YAML like unquoted colons in the
+    /// description) plus the markdown body. Pub so the CLI applies the exact
+    /// same frontmatter semantics as the backend.
+    pub fn parse_frontmatter(content: &str) -> Result<(SkillMetadata, String)> {
         let parts: Vec<&str> = content.split("---").collect();
 
         if parts.len() < 3 {
@@ -347,7 +369,12 @@ impl SkillsClient {
         Ok(files)
     }
 
-    fn discover_skills_in_directories(directories: &[PathBuf]) -> HashMap<String, Skill> {
+    /// Two-level discovery over the given roots: `<slug>/SKILL.md` (single
+    /// skill) or `<bundle>/<slug>/SKILL.md` (bundle sub-skill), keyed by
+    /// frontmatter name — a later root's skill overrides an earlier one's.
+    /// Files whose frontmatter fails to parse are skipped (never loaded).
+    /// Pub so the CLI lists exactly what this extension will load.
+    pub fn discover_skills_in_directories(directories: &[PathBuf]) -> HashMap<String, Skill> {
         let mut skills = HashMap::new();
 
         for dir in directories {
@@ -361,7 +388,7 @@ impl SkillsClient {
                     let skill_file = path.join("SKILL.md");
                     if skill_file.exists() {
                         // Single skill
-                        if let Ok(skill) = Self::parse_skill_file(&skill_file, None) {
+                        if let Ok(skill) = Self::parse_skill_file(&skill_file, None, dir) {
                             skills.insert(skill.metadata.name.clone(), skill);
                         }
                     } else {
@@ -384,6 +411,7 @@ impl SkillsClient {
                                     if let Ok(skill) = Self::parse_skill_file(
                                         &sub_skill_file,
                                         Some(bundle_name.clone()),
+                                        dir,
                                     ) {
                                         skills.insert(skill.metadata.name.clone(), skill);
                                     }
@@ -874,11 +902,12 @@ description: A test skill
         fs::create_dir(skill_dir.join("templates")).unwrap();
         fs::write(skill_dir.join("templates/template.txt"), "template").unwrap();
 
-        let skill = SkillsClient::parse_skill_file(&skill_file, None).unwrap();
+        let skill = SkillsClient::parse_skill_file(&skill_file, None, temp_dir.path()).unwrap();
         assert_eq!(skill.metadata.name, "test-skill");
         assert_eq!(skill.metadata.description, "A test skill");
         assert!(skill.body.contains("# Test Skill Content"));
         assert_eq!(skill.supporting_files.len(), 2);
+        assert_eq!(skill.source_root, temp_dir.path());
     }
 
     #[test]
@@ -1608,6 +1637,11 @@ Working dir biorouter content
 
         let br = skills.get("brainstorming").unwrap();
         assert_eq!(br.bundle_name.as_deref(), Some("superpowers"));
+        assert_eq!(
+            br.source_root,
+            temp_dir.path(),
+            "discovery must record which root a skill came from"
+        );
 
         let dbg = skills.get("debugging").unwrap();
         assert_eq!(dbg.bundle_name.as_deref(), Some("superpowers"));
