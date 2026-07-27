@@ -4,7 +4,11 @@
 > 24 issues) in one campaign: validated root causes, batch composition, ordering,
 > worktree strategy, test gates, and review gates. Companion documents in this folder
 > record the results as the campaign runs.
-> **Status:** Current — campaign in execution (started 2026-07-26).
+> **Status:** Historical record — campaign completed 2026-07-27. All 24 in-scope issues
+> (#18–#29, #31–#44, including #44 filed mid-campaign) were implemented, Codex-reviewed,
+> merged, regression-tested, GUI-verified, stress-tested, and closed on GitHub. #30 (BR-71)
+> received its execution plan (docs/agent-loop/designs/br71-execution-plan.md) and awaits
+> operator sign-off before implementation. Results: gui-vision-pass.md, stress-test.md.
 > **Audience:** anyone auditing how this sweep was planned and executed.
 
 ## 1. Scope and ground rules
