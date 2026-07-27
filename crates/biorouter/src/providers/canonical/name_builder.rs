@@ -427,6 +427,13 @@ mod tests {
             map_to_canonical_model("versa_bedrock", "us.anthropic.claude-opus-4-8-v1", r),
             Some("anthropic/claude-opus-4.8".to_string())
         );
+        // The id VERSA_BEDROCK_KNOWN_MODELS actually ships (proxy-verified
+        // 2026-07-26; the -v1 spelling above is rejected by the proxy but
+        // kept mapped for typed-in ids).
+        assert_eq!(
+            map_to_canonical_model("versa_bedrock", "us.anthropic.claude-opus-4-8", r),
+            Some("anthropic/claude-opus-4.8".to_string())
+        );
         assert_eq!(
             map_to_canonical_model("gcp_vertex_ai", "claude-sonnet-5", r),
             Some("anthropic/claude-sonnet-5".to_string())
