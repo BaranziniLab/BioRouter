@@ -568,10 +568,15 @@ fn target_label(target: &ResolvedTarget) -> String {
             format!("skill {}", style(name).fg(ACCENT).bold())
         }
         ResolvedTarget::Bundle { name, skills } => {
+            let count = if *skills == 1 {
+                "(1 skill)".to_string()
+            } else {
+                format!("({skills} skills)")
+            };
             format!(
                 "bundle {} {}",
                 style(name).fg(ACCENT).bold(),
-                style(format!("({skills} skills)")).dim()
+                style(count).dim()
             )
         }
     }
