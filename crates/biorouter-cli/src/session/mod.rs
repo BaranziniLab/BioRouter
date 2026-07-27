@@ -2611,7 +2611,10 @@ mod tests {
 
         // The store really is closed and gone...
         assert!(
-            manager.get_session(&session.session_id, false).await.is_err(),
+            manager
+                .get_session(&session.session_id, false)
+                .await
+                .is_err(),
             "the private store must be closed after teardown"
         );
         // ...yet the completion telemetry the caller logs still sees the run.

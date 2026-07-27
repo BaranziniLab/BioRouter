@@ -326,12 +326,9 @@ mod tests {
         timeout(Duration::from_secs(2), manager.request_arrived("sess-1"))
             .await
             .expect("request_arrived must wake without another stream item");
-        let id = timeout(
-            Duration::from_secs(2),
-            next_request_id(&manager, "sess-1"),
-        )
-        .await
-        .expect("the queued request must be drainable after the wake");
+        let id = timeout(Duration::from_secs(2), next_request_id(&manager, "sess-1"))
+            .await
+            .expect("the queued request must be drainable after the wake");
         manager.submit_cancellation(id).await.unwrap();
         let outcome = timeout(Duration::from_secs(2), waiter)
             .await
@@ -369,9 +366,12 @@ mod tests {
         // ...while A's is not (its scope and the unscoped fallback are both
         // empty, so this must still be parked when the timeout fires)...
         assert!(
-            timeout(Duration::from_millis(200), manager.request_arrived("sess-a"))
-                .await
-                .is_err(),
+            timeout(
+                Duration::from_millis(200),
+                manager.request_arrived("sess-a")
+            )
+            .await
+            .is_err(),
             "a foreign session must not be woken by B's request"
         );
         // ...and even an unconditional drain by A returns nothing.
