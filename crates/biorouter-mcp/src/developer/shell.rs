@@ -254,10 +254,68 @@ pub fn shell_sandbox_status_line(working_dir: Option<&std::path::Path>) -> Optio
     Some(line)
 }
 
+/// The standard user-tool directories appended to the shell child's `PATH`
+/// when missing (issue #24). A Finder/Dock-launched desktop app inherits
+/// launchd's minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), and the shell
+/// tool spawns `$SHELL -c` (non-login), so `~/.zprofile`'s `brew shellenv`
+/// never runs — Homebrew/MacPorts/user-local tools like `gh` and `brew` were
+/// "not found" even though installed.
+///
+/// This list mirrors `SearchPaths::builder()` in
+/// `crates/biorouter/src/config/search_path.rs` (which already augments the
+/// PATH of *external* MCP extensions). `biorouter-mcp` cannot import it — the
+/// dependency direction is `biorouter` → `biorouter-mcp` — so this is a small
+/// local copy; keep the two lists in sync by hand (cross-reference comment on
+/// both sides).
+fn standard_user_tool_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(unix)]
+    {
+        dirs.push(std::path::PathBuf::from(
+            shellexpand::tilde("~/.local/bin").as_ref(),
+        ));
+        dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+        if cfg!(target_os = "macos") {
+            dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+            dirs.push(std::path::PathBuf::from("/opt/local/bin"));
+        }
+    }
+    dirs
+}
+
+/// Pure core of [`augmented_path`]: append each of `extra` to `base` unless an
+/// identical entry is already present. Existing entries keep their order and
+/// priority (we append, never prepend, so a user whose PATH is already complete
+/// sees byte-for-byte identical resolution), and duplicates within `extra`
+/// collapse to one entry.
+fn augment_path_with(base: Option<&std::ffi::OsStr>, extra: &[std::path::PathBuf]) -> OsString {
+    let existing: Vec<std::path::PathBuf> =
+        base.map(env::split_paths).into_iter().flatten().collect();
+    let mut combined = existing;
+    for dir in extra {
+        if !combined.iter().any(|p| p == dir) {
+            combined.push(dir.clone());
+        }
+    }
+    env::join_paths(combined.iter())
+        .unwrap_or_else(|_| base.map(OsString::from).unwrap_or_default())
+}
+
+/// The `PATH` handed to shell-tool children: the daemon's own `PATH` plus the
+/// standard user-tool dirs ([`standard_user_tool_dirs`]) appended when absent.
+pub(crate) fn augmented_path() -> OsString {
+    augment_path_with(env::var_os("PATH").as_deref(), &standard_user_tool_dirs())
+}
+
 /// Configure a shell command with process group support for proper child process tracking.
 ///
 /// On Unix systems, creates a new process group so child processes can be killed together.
 /// On Windows, the default behavior already supports process tree termination.
+///
+/// The child's `PATH` is augmented with the standard user-tool directories
+/// (Homebrew, MacPorts, `~/.local/bin`, `/usr/local/bin`) when missing — see
+/// [`augmented_path`]. This covers both the foreground shell tool and
+/// background jobs (`background.rs` also builds through here).
 ///
 /// Returns `Err(message)` only when `BIOROUTER_SHELL_SANDBOX=strict` and the
 /// host cannot provide a full sandbox — the caller surfaces that as a tool error
@@ -287,6 +345,7 @@ pub fn configure_shell_command(
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .kill_on_drop(true)
+        .env("PATH", augmented_path())
         .env("BIOROUTER_TERMINAL", "1")
         .env("GIT_EDITOR", "sh -c 'echo \"Interactive Git commands are not supported in this environment.\" >&2; exit 1'")
         .env("GIT_SEQUENCE_EDITOR", "sh -c 'echo \"Interactive Git commands are not supported in this environment.\" >&2; exit 1'")
@@ -398,5 +457,104 @@ mod tests {
             return;
         }
         assert!(matches!(shell_sandbox_wrap("/bin/sh", None), Ok(None)));
+    }
+
+    // ---- issue #24: shell PATH augmentation ----------------------------------
+    // Pure-logic tests pass the base PATH as a parameter (no env mutation — the
+    // workspace has a known env-var test race).
+
+    #[cfg(unix)]
+    #[test]
+    fn augment_path_appends_missing_dirs_in_order() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        // launchd's minimal PATH, the exact shape from issue #24.
+        let base = "/usr/bin:/bin:/usr/sbin:/sbin";
+        let extra = vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ];
+        let got = augment_path_with(Some(OsStr::new(base)), &extra);
+        assert_eq!(
+            got.to_string_lossy(),
+            "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn augment_path_no_dupes_and_order_preserved() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        // A PATH that already contains the standard dirs must come back
+        // byte-for-byte unchanged: no duplicates, original priority intact.
+        let base = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+        let extra = vec![
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+        ];
+        let got = augment_path_with(Some(OsStr::new(base)), &extra);
+        assert_eq!(got.to_string_lossy(), base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn augment_path_handles_unset_base_and_dupes_in_extra() {
+        use std::path::PathBuf;
+        let extra = vec![
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/local/bin"),
+        ];
+        let got = augment_path_with(None, &extra);
+        assert_eq!(got.to_string_lossy(), "/usr/local/bin:/opt/local/bin");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standard_dirs_mirror_search_paths_list() {
+        // Guard the hand-maintained mirror of SearchPaths::builder()
+        // (crates/biorouter/src/config/search_path.rs).
+        let dirs = standard_user_tool_dirs();
+        let strs: Vec<String> = dirs
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(strs.iter().any(|p| p.ends_with("/.local/bin")));
+        assert!(strs.contains(&"/usr/local/bin".to_string()));
+        if cfg!(target_os = "macos") {
+            assert!(strs.contains(&"/opt/homebrew/bin".to_string()));
+            assert!(strs.contains(&"/opt/local/bin".to_string()));
+        }
+    }
+
+    #[test]
+    fn configure_shell_command_sets_augmented_path() {
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return; // don't fight an externally-set gate in this process
+        }
+        let cfg = ShellConfig::default();
+        let cmd = configure_shell_command(&cfg, "echo hi", None).expect("infallible when off");
+        let path_env = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == OsString::from("PATH").as_os_str())
+            .and_then(|(_, v)| v)
+            .expect("shell command must carry an explicit PATH env");
+        assert_eq!(path_env, augmented_path().as_os_str());
+        #[cfg(unix)]
+        {
+            let path_str = path_env.to_string_lossy();
+            assert!(
+                path_str.contains("/usr/local/bin"),
+                "augmented PATH must contain /usr/local/bin, got {path_str}"
+            );
+            if cfg!(target_os = "macos") {
+                assert!(
+                    path_str.contains("/opt/homebrew/bin"),
+                    "augmented PATH must contain /opt/homebrew/bin, got {path_str}"
+                );
+            }
+        }
     }
 }
