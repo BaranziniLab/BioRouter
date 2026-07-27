@@ -124,6 +124,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
         ("us.anthropic.claude-opus-4-8", 1_000_000),
+        ("us.anthropic.claude-opus-4-8-v1", 1_000_000),
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
         ("us.anthropic.claude-sonnet-4-6", 1_000_000),
         ("us.anthropic.claude-sonnet-5", 1_000_000),

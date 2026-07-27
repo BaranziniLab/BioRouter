@@ -28,11 +28,17 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
 // `us.` cross-region inference profile required by the UCSF MuleSoft proxy.
 //
 // Only models that UCSF's Bedrock account is entitled to invoke are listed —
-// every entry below has been verified end-to-end via the Versa proxy. Opus 4.7
-// and 4.8 are intentionally omitted because UCSF returns AccessDeniedException
-// for them; users can still type a newer ID via the "Enter a model not
-// listed..." option once UCSF enables it.
+// every entry below has been verified end-to-end via the Versa proxy, except
+// where noted. Users can type a newer ID via the "Enter a model not listed..."
+// option once UCSF enables it.
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
+    // Claude 4.8 (1M context). Added 2026-07 on the report that UCSF's
+    // Bedrock account is now entitled to the 4.8 models (issue #29); the
+    // AccessDeniedException that kept it off this list is reportedly gone.
+    // PENDING live Versa smoke test — the sweep orchestrator verifies this
+    // id end-to-end during the stress phase before release. The default
+    // model stays on 4.6 until that verification passes.
+    "us.anthropic.claude-opus-4-8-v1",
     // Claude 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-sonnet-4-6",
