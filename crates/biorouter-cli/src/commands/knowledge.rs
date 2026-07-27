@@ -12,7 +12,7 @@ use biorouter::knowledge::convert::SourceInput;
 use biorouter::knowledge::macros::{
     ingest as ingest_macro, lint as lint_macro, query as query_macro,
 };
-use biorouter::knowledge::service::KnowledgeService;
+use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter::knowledge::subagent::loop_::{Completer, SubAgentBounds};
 use biorouter::knowledge::ProviderCompleter;
 use biorouter::model::ModelConfig;
@@ -88,38 +88,51 @@ fn section(title: &str) {
 
 pub async fn handle_list(format: &str) -> Result<()> {
     let svc = service()?;
+    println!("{}", render_list(&svc, format)?);
+    Ok(())
+}
+
+/// Render the base list. Visible bases are the set the agent uses; exactly one
+/// of them may be the **primary** — the base a `--kb`-less write lands in — and
+/// it is marked, which `cli.rs` has promised since the focus/discovery split.
+fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
     let bases = svc.list_bases()?;
     let hidden = svc.get_hidden_persisted().unwrap_or_default();
+    let primary = svc.primary_for_session(None)?;
 
     if format == "json" {
-        println!(
-            "{}",
-            serde_json::json!({
-                "bases": bases.iter().map(|b| serde_json::json!({
-                    "id": b.id, "name": b.name, "color": b.color,
-                    "hidden": hidden.contains(&b.id),
-                })).collect::<Vec<_>>(),
-            })
-        );
-        return Ok(());
+        return Ok(serde_json::json!({
+            "primary_kb": primary,
+            "bases": bases.iter().map(|b| serde_json::json!({
+                "id": b.id, "name": b.name, "color": b.color,
+                "hidden": hidden.contains(&b.id),
+                "primary": primary.as_deref() == Some(b.id.as_str()),
+            })).collect::<Vec<_>>(),
+        })
+        .to_string());
     }
 
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  {} {}\n",
+        style("▌").fg(ACCENT),
+        style("Knowledge bases").bold()
+    ));
     if bases.is_empty() {
-        section("Knowledge bases");
-        println!(
+        out.push_str(&format!(
             "    {}",
             style("none yet — create one with `biorouter knowledge create <id> --name <name>`")
                 .dim()
-        );
-        return Ok(());
+        ));
+        return Ok(out);
     }
-
-    section("Knowledge bases");
-    println!(
-        "    {}",
-        style("Visible bases are available to the agent; hide ones you don't want it to use.")
-            .dim()
-    );
+    out.push_str(&format!(
+        "    {}\n",
+        style(
+            "Visible bases are available to the agent; the primary is where a --kb-less ingest writes."
+        )
+        .dim()
+    ));
     let width = bases.iter().map(|b| b.id.len()).max().unwrap_or(0);
     for base in &bases {
         let is_hidden = hidden.contains(&base.id);
@@ -131,19 +144,21 @@ pub async fn handle_list(format: &str) -> Result<()> {
         };
         let suffix = if is_hidden {
             style("  (hidden)").dim().to_string()
+        } else if primary.as_deref() == Some(base.id.as_str()) {
+            style("  (primary)").fg(ACCENT).to_string()
         } else {
             String::new()
         };
-        println!(
-            "    {} {:<width$}  {}{}",
+        out.push_str(&format!(
+            "    {} {:<width$}  {}{}\n",
             marker,
             style(&base.id).bold(),
             style(&base.name).dim(),
             suffix,
             width = width
-        );
+        ));
     }
-    Ok(())
+    Ok(out)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -193,42 +208,43 @@ pub async fn handle_unhide(id: String) -> Result<()> {
 
 pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
     let svc = service()?;
+    println!("{}", active_command(&svc, set, clear)?);
+    Ok(())
+}
 
+/// Show, set or clear the **primary** knowledge base — the base a `--kb`-less
+/// ingest/query/lint writes to. Setting one validates membership: a base the
+/// CLI hides from the agent can never be the primary.
+fn active_command(svc: &KnowledgeService, set: Option<String>, clear: bool) -> Result<String> {
     if clear {
-        svc.set_primary_persisted(None)?;
-        println!("  {} active knowledge base cleared", style("✓").green());
-        return Ok(());
+        svc.set_selection(None, None, PrimaryUpdate::Clear)?;
+        return Ok(format!(
+            "  {} primary knowledge base cleared",
+            style("✓").green()
+        ));
     }
 
     if let Some(id) = set {
-        // Validate the base exists before activating it.
-        if !svc.list_bases()?.iter().any(|b| b.id == id) {
-            bail!(
-                "No knowledge base with id '{}'. Run `biorouter knowledge list` to see them.",
-                id
-            );
-        }
-        svc.set_primary_persisted(Some(&id))?;
-        println!(
-            "  {} active knowledge base set to {}",
+        svc.set_selection(None, None, PrimaryUpdate::Set(&id))
+            .map_err(|e| anyhow!("{e} Run `biorouter knowledge list` to see them."))?;
+        return Ok(format!(
+            "  {} primary knowledge base set to {}",
             style("✓").green(),
             style(&id).fg(ACCENT).bold()
-        );
-        return Ok(());
+        ));
     }
 
-    match svc.get_primary_persisted()? {
-        Some(id) => println!(
+    Ok(match svc.primary_for_session(None)? {
+        Some(id) => format!(
             "  {} {}",
-            style("active:").dim(),
+            style("primary:").dim(),
             style(id).fg(ACCENT).bold()
         ),
-        None => println!(
+        None => format!(
             "  {}",
-            style("no active knowledge base (use --set <id>)").dim()
+            style("no primary knowledge base (use --set <id>)").dim()
         ),
-    }
-    Ok(())
+    })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -249,11 +265,11 @@ pub async fn handle_create(id: String, name: Option<String>, color: Option<Strin
         style(format!("({})", manifest.name)).dim()
     );
 
-    // Make it active when there was no prior selection, so the next ingest/query
-    // "just works" without an explicit --kb.
-    if svc.get_primary_persisted()?.is_none() {
-        svc.set_primary_persisted(Some(&manifest.id))?;
-        println!("  {} set as active", style("·").dim());
+    // Make it the primary when there was no prior choice, so the next
+    // --kb-less ingest/query "just works".
+    if svc.primary_for_session(None)?.is_none() {
+        svc.set_selection(None, None, PrimaryUpdate::Set(&manifest.id))?;
+        println!("  {} set as the primary knowledge base", style("·").dim());
     }
     Ok(())
 }
@@ -586,4 +602,68 @@ pub async fn handle_query(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_command, render_list};
+    use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+    fn svc() -> (tempfile::TempDir, KnowledgeService) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None).unwrap();
+        svc.create_base("beta", "Beta", None).unwrap();
+        (tmp, svc)
+    }
+
+    /// First-ever CLI coverage for the knowledge commands. `--set` used to
+    /// validate only that the base existed, so it would happily pin a base the
+    /// CLI hides from the agent — a primary outside the set.
+    #[test]
+    fn active_command_shows_sets_validates_and_clears_the_primary() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+
+        assert!(active_command(&svc, None, false)?.contains("no primary knowledge base"));
+        assert!(active_command(&svc, Some("beta".to_string()), false)?.contains("beta"));
+        assert!(active_command(&svc, None, false)?.contains("beta"));
+
+        svc.set_hidden_persisted(&["alpha".to_string()])?;
+        let err = active_command(&svc, Some("alpha".to_string()), false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("alpha") && err.contains("knowledge list"),
+            "a hidden base cannot be the primary, and the error must say how to look, got: {err}"
+        );
+
+        assert!(active_command(&svc, None, true)?.contains("cleared"));
+        assert_eq!(svc.primary_for_session(None)?, None);
+        Ok(())
+    }
+
+    /// `cli.rs:901` has promised "the active one is marked" since the
+    /// focus/discovery split; `handle_list` only ever marked hidden-vs-visible.
+    #[test]
+    fn list_marks_the_primary_base() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+
+        let text = render_list(&svc, "text")?;
+        assert!(
+            text.contains("beta") && text.contains("primary"),
+            "got: {text}"
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&render_list(&svc, "json")?)?;
+        assert_eq!(json["primary_kb"], serde_json::json!("beta"));
+        let beta = json["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == serde_json::json!("beta"))
+            .unwrap();
+        assert_eq!(beta["primary"], serde_json::json!(true));
+        Ok(())
+    }
 }

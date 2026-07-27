@@ -1225,15 +1225,26 @@ impl KnowledgeService {
             PrimaryUpdate::Set(id) => {
                 let ids = self.session_kb_ids(session_id)?;
                 if !ids.iter().any(|known| known == id) {
-                    anyhow::bail!(
-                        "knowledge base '{id}' is not one of this session's knowledge bases ({}). \
-                         Add it to the session first, or pass kb_id explicitly to read it once.",
-                        if ids.is_empty() {
-                            "none".to_string()
-                        } else {
-                            ids.join(", ")
-                        }
-                    );
+                    let available = if ids.is_empty() {
+                        "none".to_string()
+                    } else {
+                        ids.join(", ")
+                    };
+                    // Scope-appropriate vocabulary: the CLI and scheduled jobs
+                    // pass `None` and have no session concept at all (D11), so
+                    // telling them to "add it to the session" names nothing
+                    // they can act on.
+                    match session_id {
+                        Some(_) => anyhow::bail!(
+                            "knowledge base '{id}' is not one of this session's knowledge bases \
+                             ({available}). Add it to the session first, or pass kb_id \
+                             explicitly to read it once."
+                        ),
+                        None => anyhow::bail!(
+                            "knowledge base '{id}' is not available ({available}) — it does not \
+                             exist, or it is hidden."
+                        ),
+                    }
                 }
                 self.set_primary_path_unlocked(&primary_path, Some(id))?;
             }

@@ -898,7 +898,7 @@ enum SkillCommand {
 
 #[derive(Subcommand)]
 enum KnowledgeCommand {
-    /// List knowledge bases (the active one is marked)
+    /// List knowledge bases (hidden ones are dimmed; the primary is marked)
     #[command(about = "List knowledge bases")]
     List {
         #[arg(
@@ -910,16 +910,16 @@ enum KnowledgeCommand {
         format: String,
     },
 
-    /// Show, set, or clear the active knowledge base
-    #[command(about = "Show or set the active knowledge base")]
+    /// Show, set, or clear the primary knowledge base
+    #[command(about = "Show or set the primary knowledge base (the --kb-less write target)")]
     Active {
         #[arg(
             long = "set",
             value_name = "ID",
-            help = "Set the active knowledge base"
+            help = "Make this base the primary (it must not be hidden)"
         )]
         set: Option<String>,
-        #[arg(long = "clear", help = "Clear the active knowledge base")]
+        #[arg(long = "clear", help = "Clear the primary knowledge base")]
         clear: bool,
     },
 
