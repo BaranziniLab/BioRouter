@@ -24,14 +24,16 @@ import {
  */
 
 /** A stand-in dock: focus lands on a child of [data-testid=in-app-terminal-dock],
- *  which is where xterm parks focus in the real app. */
-function focusInsideTerminal(): void {
+ *  which is where xterm parks focus in the real app. Returns the dock root —
+ *  registrations are per dock and carry it, exactly as InAppTerminalDock does. */
+function focusInsideTerminal(): HTMLElement {
   const dock = document.createElement('section');
   dock.setAttribute('data-testid', 'in-app-terminal-dock');
   const xtermTextarea = document.createElement('textarea');
   dock.appendChild(xtermTextarea);
   document.body.appendChild(dock);
   xtermTextarea.focus();
+  return dock;
 }
 
 function focusComposer(): void {
@@ -55,9 +57,9 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
   });
 
   it('terminal focused + dock open: closes the PANE — never the chat tab, never the window', () => {
-    focusInsideTerminal();
+    const dock = focusInsideTerminal();
     const closePane = vi.fn(() => true);
-    registerCloseTerminalPane(closePane);
+    registerCloseTerminalPane(closePane, () => dock);
     const closeChatTab = vi.fn(() => true);
     registerCloseActiveTab(closeChatTab);
 
@@ -71,9 +73,9 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
     // The dangerous path the issue reports: on the tabless surface the chat
     // registry claims nothing, and pre-fix Cmd+W fell through to closeWindow
     // even though the user was typing in a terminal.
-    focusInsideTerminal();
+    const dock = focusInsideTerminal();
     const closePane = vi.fn(() => true);
-    registerCloseTerminalPane(closePane);
+    registerCloseTerminalPane(closePane, () => dock);
     registerCloseActiveTab(() => false); // no active tab to close
 
     expect(runCloseActiveTabCommand(closeWindow)).toBe('terminal-pane');
@@ -92,8 +94,8 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
   });
 
   it('terminal focused, dock declines (no active pane): falls through to the chat tab', () => {
-    focusInsideTerminal();
-    registerCloseTerminalPane(() => false);
+    const dock = focusInsideTerminal();
+    registerCloseTerminalPane(() => false, () => dock);
     const closeChatTab = vi.fn(() => true);
     registerCloseActiveTab(closeChatTab);
 
@@ -124,13 +126,13 @@ describe('runCloseActiveTabCommand — the Cmd+W ladder (issue #21)', () => {
     // The browser/terminal-emulator ladder from the issue, end to end: two
     // panes go first, the dock dies with the second, focus falls back to the
     // chat, the tab goes next, and only then does Cmd+W mean "close window".
-    focusInsideTerminal();
+    const dock = focusInsideTerminal();
     let panes = 2;
     const dispose = registerCloseTerminalPane(() => {
       if (panes === 0) return false;
       panes -= 1;
       return true;
-    });
+    }, () => dock);
     let tabs = 1;
     registerCloseActiveTab(() => {
       if (tabs === 0) return false;

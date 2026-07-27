@@ -152,3 +152,129 @@ describe('close-terminal-pane registry (issue #21 — the Cmd+W mirror)', () => 
     expect(requestNewTerminalPane()).toBe(false);
   });
 });
+
+// Terminals are PER-PANE: a split renders one dock per pane and several can be
+// open (registered) at once — see ChatGroupsShell. A single last-write-wins
+// slot routed Cmd+W to whichever dock rendered last; registrations now carry
+// the dock root and requests route by focus (Codex review B6 finding 3).
+describe('multi-dock routing (split layouts)', () => {
+  beforeEach(() => {
+    resetNewTerminalPaneRegistry();
+    resetCloseTerminalPaneRegistry();
+  });
+  afterEach(() => {
+    resetNewTerminalPaneRegistry();
+    resetCloseTerminalPaneRegistry();
+    document.body.innerHTML = '';
+  });
+
+  function dockWithInput(): { dock: HTMLElement; input: HTMLTextAreaElement } {
+    const dock = document.createElement('section');
+    dock.setAttribute('data-testid', 'in-app-terminal-dock');
+    const input = document.createElement('textarea'); // xterm's focus target
+    dock.appendChild(input);
+    document.body.appendChild(dock);
+    return { dock, input };
+  }
+
+  it('Cmd+W routes to the dock HOLDING FOCUS, not the last-registered one', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeA = vi.fn(() => true);
+    const closeB = vi.fn(() => true);
+    registerCloseTerminalPane(closeA, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock); // registered LAST
+    a.input.focus();
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closeA).toHaveBeenCalledTimes(1);
+    expect(closeB).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+T adds a pane to the focused dock, not the last-registered one', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const addA = vi.fn();
+    const addB = vi.fn();
+    registerNewTerminalPane(addA, () => a.dock);
+    registerNewTerminalPane(addB, () => b.dock);
+    a.input.focus();
+
+    expect(requestNewTerminalPane()).toBe(true);
+    expect(addA).toHaveBeenCalledTimes(1);
+    expect(addB).not.toHaveBeenCalled();
+  });
+
+  it('a focused dock answers ALONE: its decline falls through, never to a sibling', () => {
+    // The user means the terminal under their cursor; reaching into another
+    // pane's dock on a decline would close a pane they are not looking at.
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeB = vi.fn(() => true);
+    registerCloseTerminalPane(() => false, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock);
+    a.input.focus();
+
+    expect(requestCloseTerminalPane()).toBe(false);
+    expect(closeB).not.toHaveBeenCalled();
+  });
+
+  it('disposing one dock leaves the OTHER dock registered and reachable', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeA = vi.fn(() => true);
+    const closeB = vi.fn(() => true);
+    const disposeA = registerCloseTerminalPane(closeA, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock);
+    disposeA();
+    b.input.focus();
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closeB).toHaveBeenCalledTimes(1);
+    expect(closeA).not.toHaveBeenCalled();
+  });
+
+  it('focus LOST: the last-FOCUSED dock claims before the newest registration', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeA = vi.fn(() => true);
+    const closeB = vi.fn(() => true);
+    registerCloseTerminalPane(closeA, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock); // newest
+    a.input.focus(); // the user last typed in dock A…
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    composer.focus(); // …then clicked into the chat
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closeA).toHaveBeenCalledTimes(1);
+    expect(closeB).not.toHaveBeenCalled();
+  });
+
+  it('focus lost and never in a dock: the newest registration answers', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeA = vi.fn(() => true);
+    const closeB = vi.fn(() => true);
+    registerCloseTerminalPane(closeA, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock);
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closeB).toHaveBeenCalledTimes(1);
+    expect(closeA).not.toHaveBeenCalled();
+  });
+
+  it('a focused dock that never registered claims nothing (stale focus)', () => {
+    // Only a hidden dock is unregistered, and display:none cannot hold focus —
+    // but if focus IS somehow inside an unregistered dock, no other dock may
+    // answer for it.
+    const stale = dockWithInput();
+    const registered = dockWithInput();
+    const close = vi.fn(() => true);
+    registerCloseTerminalPane(close, () => registered.dock);
+    stale.input.focus();
+
+    expect(requestCloseTerminalPane()).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+  });
+});

@@ -12,17 +12,25 @@
  * Three pieces make that decision:
  *   1. `isTerminalFocused` — is the active element inside a visible terminal
  *      dock? (A hidden dock is display:none and cannot hold focus, so this is
- *      true only for the terminal you can actually see and type in.)
- *   2. the new-terminal-pane registry — the visible dock registers its "add a
- *      pane" handler while it is open, mirroring newTabRegistry. App.tsx asks it
- *      first, and only reaches for a chat tab when focus is not in a terminal or
- *      no terminal is open.
+ *      true only for a terminal you can actually see and type in.)
+ *   2. the new-terminal-pane registry — every VISIBLE dock registers its "add a
+ *      pane" handler while it is open. App.tsx asks it first, and only reaches
+ *      for a chat tab when focus is not in a terminal or no terminal is open.
  *   3. the close-terminal-pane registry — the exact mirror for Cmd+W (issue
  *      #21: Cmd+W used to skip the terminal entirely and close the chat tab, or
- *      the whole window). The visible dock registers "close the focused pane";
- *      App.tsx asks it before the chat-tab ladder, so Cmd+W in a terminal
- *      closes panes first, then (once the dock is gone) chat tabs, then the
- *      window — the same ladder every terminal emulator and browser walks.
+ *      the whole window). App.tsx asks it before the chat-tab ladder, so Cmd+W
+ *      in a terminal closes panes first, then (once the dock is gone) chat
+ *      tabs, then the window — the same ladder every terminal emulator and
+ *      browser walks.
+ *
+ * MULTIPLE docks can be open at once (Codex review B6 finding 3): terminals are
+ * per-pane, so a 4-way split shows up to four visible docks, each registered
+ * here — see ChatGroupsShell, which renders one InAppTerminalDock per pane. A
+ * single last-write-wins slot would route Cmd+W to whichever dock happened to
+ * render last, closing a pane the user is not even looking at. Registrations
+ * are therefore PER DOCK, each carrying a `getRoot` so requests can pick the
+ * dock that contains `document.activeElement`; when focus has wandered out of
+ * every dock, the last-FOCUSED dock answers, then the newest registration.
  */
 
 /** The dock section carries this testid; xterm focus lands on a child of it. */
@@ -43,38 +51,126 @@ export function isTerminalFocused(
   return active.closest(TERMINAL_DOCK_SELECTOR) !== null;
 }
 
-export type NewTerminalPaneHandler = () => void;
-
-let handler: NewTerminalPaneHandler | null = null;
+/** The dock root of the current active element, or null when focus is elsewhere. */
+function focusedDockRoot(): Element | null {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!(active instanceof Element)) return null;
+  return active.closest(TERMINAL_DOCK_SELECTOR);
+}
 
 /**
- * The currently-visible terminal dock registers its `addPane` here.
- *
- * Only one dock is ever open at a time (the shell gates `open` on the active
- * tab), so last-write-wins is correct. The disposer clears the slot only if it
- * still holds the handler we installed — the same StrictMode-safe discipline as
- * newTabRegistry, so a mount-B-then-dispose-A order cannot empty the registry.
+ * Resolves a registration's dock DOM root. The dock passes a ref-reader; test
+ * registrations that exercise pure registry semantics may omit it (they can
+ * then never match a focused dock, only the ordering fallbacks).
  */
-export function registerNewTerminalPane(next: NewTerminalPaneHandler): () => void {
-  handler = next;
+export type DockRootGetter = () => Element | null;
+
+interface DockRegistration<H> {
+  handler: H;
+  getRoot: DockRootGetter;
+}
+
+const NULL_ROOT: DockRootGetter = () => null;
+
+/**
+ * The dock the user last typed in, tracked with one document-level `focusin`
+ * listener that lives only while at least one dock is registered. It breaks the
+ * tie when focus has LEFT every dock (e.g. the user clicked the chat) but a
+ * pane-level command still has to pick among several visible docks.
+ */
+let lastFocusedDockRoot: Element | null = null;
+let focusTrackingInstalled = false;
+
+function trackDockFocus(event: FocusEvent): void {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const root = target.closest(TERMINAL_DOCK_SELECTOR);
+  if (root) lastFocusedDockRoot = root;
+}
+
+function syncFocusTracking(): void {
+  if (typeof document === 'undefined') return;
+  const needed = newPaneRegistrations.length + closeRegistrations.length > 0;
+  if (needed && !focusTrackingInstalled) {
+    document.addEventListener('focusin', trackDockFocus);
+    focusTrackingInstalled = true;
+  } else if (!needed && focusTrackingInstalled) {
+    document.removeEventListener('focusin', trackDockFocus);
+    focusTrackingInstalled = false;
+    lastFocusedDockRoot = null;
+  }
+}
+
+/**
+ * Registration is array-based and inherently StrictMode-safe: disposing removes
+ * exactly the entry it installed, so React's mount-B-then-dispose-A order can
+ * never empty the registry, and a split's OTHER docks survive one dock's
+ * unmount untouched.
+ */
+function register<H>(registrations: DockRegistration<H>[], entry: DockRegistration<H>): () => void {
+  registrations.push(entry);
+  syncFocusTracking();
   return () => {
-    if (handler === next) handler = null;
+    const index = registrations.indexOf(entry);
+    if (index !== -1) registrations.splice(index, 1);
+    syncFocusTracking();
   };
 }
 
 /**
- * Add a pane to the visible terminal. Returns false when no terminal is open, so
- * the caller falls through to opening a chat tab.
+ * Ordering fallbacks for a request made while focus is OUTSIDE every dock:
+ * the last-focused dock first (if still registered), then newest-first — the
+ * most recently opened dock is the likeliest subject of a pane command.
+ */
+function fallbackOrder<H>(registrations: DockRegistration<H>[]): DockRegistration<H>[] {
+  const ordered = [...registrations].reverse();
+  const remembered = lastFocusedDockRoot;
+  if (remembered && remembered.isConnected) {
+    const index = ordered.findIndex((entry) => entry.getRoot() === remembered);
+    if (index > 0) ordered.unshift(...ordered.splice(index, 1));
+  }
+  return ordered;
+}
+
+export type NewTerminalPaneHandler = () => void;
+
+const newPaneRegistrations: DockRegistration<NewTerminalPaneHandler>[] = [];
+
+/**
+ * A visible terminal dock registers its `addPane` here, with a reader for its
+ * own DOM root so requests can route to the dock that holds focus.
+ */
+export function registerNewTerminalPane(
+  next: NewTerminalPaneHandler,
+  getRoot: DockRootGetter = NULL_ROOT
+): () => void {
+  return register(newPaneRegistrations, { handler: next, getRoot });
+}
+
+/**
+ * Add a pane to the right visible terminal: the dock containing focus when
+ * there is one (a focused dock that never registered claims nothing), else the
+ * last-focused, else the newest. Returns false when no terminal can take the
+ * pane, so the caller falls through to opening a chat tab.
  */
 export function requestNewTerminalPane(): boolean {
-  if (!handler) return false;
-  handler();
+  if (newPaneRegistrations.length === 0) return false;
+  const focusedRoot = focusedDockRoot();
+  if (focusedRoot) {
+    const focused = newPaneRegistrations.find((entry) => entry.getRoot() === focusedRoot);
+    if (!focused) return false;
+    focused.handler();
+    return true;
+  }
+  const [first] = fallbackOrder(newPaneRegistrations);
+  first.handler();
   return true;
 }
 
 /** Tests only — the singleton must not leak across cases. */
 export function resetNewTerminalPaneRegistry(): void {
-  handler = null;
+  newPaneRegistrations.length = 0;
+  syncFocusTracking();
 }
 
 /**
@@ -84,31 +180,45 @@ export function resetNewTerminalPaneRegistry(): void {
  */
 export type CloseTerminalPaneHandler = () => boolean;
 
-let closeHandler: CloseTerminalPaneHandler | null = null;
+const closeRegistrations: DockRegistration<CloseTerminalPaneHandler>[] = [];
 
 /**
- * The currently-visible terminal dock registers its "close the focused pane"
- * here — the Cmd+W mirror of registerNewTerminalPane, with the same
- * last-write-wins + StrictMode-safe disposer discipline (only one dock is ever
- * open, and a mount-B-then-dispose-A order must not empty the registry).
+ * A visible terminal dock registers its "close the focused pane" here — the
+ * Cmd+W mirror of registerNewTerminalPane, same per-dock discipline.
  */
-export function registerCloseTerminalPane(next: CloseTerminalPaneHandler): () => void {
-  closeHandler = next;
-  return () => {
-    if (closeHandler === next) closeHandler = null;
-  };
+export function registerCloseTerminalPane(
+  next: CloseTerminalPaneHandler,
+  getRoot: DockRootGetter = NULL_ROOT
+): () => void {
+  return register(closeRegistrations, { handler: next, getRoot });
 }
 
 /**
- * Close the visible terminal's focused pane. Returns false when no terminal is
- * open (or it declined), so the caller falls through to closing a chat tab.
+ * Close a pane in the right visible terminal.
+ *
+ * When focus is INSIDE a dock, that dock and only that dock may answer — the
+ * user means the terminal under their cursor, so a decline (no active pane)
+ * falls through the Cmd+W ladder rather than reaching into a sibling dock.
+ * When focus is outside every dock (issue #21's window-close hazard — see
+ * runCloseActiveTabCommand's last-chance rung), the last-focused dock is asked
+ * first, then the rest newest-first, so a window is never closed out from
+ * under a live pane just because DOM focus wandered.
  */
 export function requestCloseTerminalPane(): boolean {
-  if (!closeHandler) return false;
-  return closeHandler();
+  if (closeRegistrations.length === 0) return false;
+  const focusedRoot = focusedDockRoot();
+  if (focusedRoot) {
+    const focused = closeRegistrations.find((entry) => entry.getRoot() === focusedRoot);
+    return focused ? focused.handler() : false;
+  }
+  for (const entry of fallbackOrder(closeRegistrations)) {
+    if (entry.handler()) return true;
+  }
+  return false;
 }
 
 /** Tests only — the singleton must not leak across cases. */
 export function resetCloseTerminalPaneRegistry(): void {
-  closeHandler = null;
+  closeRegistrations.length = 0;
+  syncFocusTracking();
 }
