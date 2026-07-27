@@ -27,7 +27,6 @@ use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
 use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
 use biorouter::workflow_deeplink;
-use biorouter_mcp::knowledge::service::PrimaryUpdate;
 use biorouter::{
     agents::{
         extension::ToolInfo,
@@ -35,6 +34,7 @@ use biorouter::{
     },
     config::permission::PermissionLevel,
 };
+use biorouter_mcp::knowledge::service::PrimaryUpdate;
 use rmcp::model::{CallToolRequestParams, Content};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1436,7 +1436,10 @@ mod knowledge_selection_tests {
             visible: ids(&["a"]),
         };
         let (hidden, primary) = plan_workflow_knowledge_selection(&selection, &all);
-        assert!(hidden.is_empty(), "b must not be hidden — it is the primary");
+        assert!(
+            hidden.is_empty(),
+            "b must not be hidden — it is the primary"
+        );
         assert_eq!(primary.as_deref(), Some("b"));
     }
 }
