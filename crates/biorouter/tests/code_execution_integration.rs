@@ -527,6 +527,43 @@ async fn case19_search_modules_finds_shell() {
     assert!(!out.contains("Use the read_module"), "got: {out}");
 }
 
+/// Issue #26: a search that matches nothing is an EMPTY RESULT, not a broken
+/// tool — it must come back is_error=false with guidance, instead of the old
+/// `[tool_error kind=tool_failure retryable=false] No matches found for: …`
+/// that read as tool breakage and fed the failure-streak counters.
+#[tokio::test]
+async fn search_modules_no_match_is_a_success_with_guidance() {
+    let m = manager().await;
+    let call = CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "code_execution__search_modules".into(),
+        arguments: Some(object!({
+            "terms": ["create skill", "make skill", "skill maker", "draft skill"]
+        })),
+    };
+    let dispatched = m
+        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .await
+        .expect("dispatch");
+    let result = dispatched.result.await.expect("tool result");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match &c.raw {
+            RawContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "a no-match search must not be a tool error, got: {text}"
+    );
+    assert!(text.contains("No tools matched"), "got: {text}");
+    assert!(text.contains("installed MCP tools"), "got: {text}");
+}
+
 #[tokio::test]
 async fn simple_news_search_discovery_and_fetch_needs_no_read_module_call() {
     let mock_server = MockServer::start().await;

@@ -133,15 +133,28 @@ pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std
     Ok(kb_root.join(logical))
 }
 
+/// The write-path contract: `knowledge/` pages plus the top-level `index.md`,
+/// `schema.md`, and `log.md`. `raw/` (and everything else) is read-only.
+/// Shared by [`resolve_writable_path`] and the MCP server's `kb_write_page`
+/// pre-validation (issue #26), so the two can never disagree.
+pub(crate) fn is_writable_page_path(logical: &str) -> bool {
+    logical.starts_with("knowledge/") || matches!(logical, "index.md" | "schema.md" | "log.md")
+}
+
+/// The recovery guidance appended to a write-path rejection (issue #26): the
+/// old message said only why the write failed, never what to do instead, so
+/// the agent had nothing to self-correct against.
+pub(crate) const WRITE_PATH_RECOVERY: &str = "raw/ holds immutable ingested sources; write \
+     curated content under knowledge/ (e.g. knowledge/<topic>.md); to add or update a source, \
+     use kb_add_raw_source or re-ingest it";
+
 /// Path is writable: `knowledge/` pages plus `index.md`, `schema.md`, and `log.md`.
 /// `raw/` is read-only — the raw source tree is immutable by design.
 fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    let ok =
-        logical.starts_with("knowledge/") || matches!(logical, "index.md" | "schema.md" | "log.md");
-    if !ok {
+    if !is_writable_page_path(logical) {
         anyhow::bail!(
             "write path must start with knowledge/ or be index.md/schema.md/log.md; \
-             raw/ paths are read-only"
+             raw/ paths are read-only. {WRITE_PATH_RECOVERY}"
         );
     }
     if logical.contains("..") {
@@ -482,6 +495,12 @@ mod tests {
             err.to_string().contains("knowledge/") || err.to_string().contains("write path"),
             "unexpected error: {err}"
         );
+        // Issue #26: the rejection must carry the recovery path, not just the rule.
+        assert!(
+            err.to_string().contains("kb_add_raw_source")
+                && err.to_string().contains("knowledge/<topic>.md"),
+            "rejection must name the recovery, got: {err}"
+        );
     }
 
     #[test]
@@ -516,6 +535,25 @@ mod tests {
             err.to_string().contains("knowledge/") || err.to_string().contains("write path"),
             "unexpected error: {err}"
         );
+        // Issue #26: pin the recovery guidance so it cannot silently regress.
+        assert!(
+            err.to_string().contains(WRITE_PATH_RECOVERY),
+            "rejection must carry the recovery guidance, got: {err}"
+        );
+    }
+
+    #[test]
+    fn writable_page_path_contract() {
+        // Shared predicate behind resolve_writable_path and the MCP server's
+        // kb_write_page pre-validation (issue #26).
+        assert!(is_writable_page_path("knowledge/topic.md"));
+        assert!(is_writable_page_path("knowledge/concepts/a.md"));
+        assert!(is_writable_page_path("index.md"));
+        assert!(is_writable_page_path("schema.md"));
+        assert!(is_writable_page_path("log.md"));
+        assert!(!is_writable_page_path("raw/x/source.md"));
+        assert!(!is_writable_page_path("notes.md"));
+        assert!(!is_writable_page_path(""));
     }
 
     #[test]

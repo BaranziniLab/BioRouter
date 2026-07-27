@@ -418,13 +418,30 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_write_page",
-        description = "Create or overwrite a knowledge page and commit."
+        description = "Create or overwrite a knowledge page and commit. The path must be under \
+                       knowledge/ (e.g. knowledge/<topic>.md) or be index.md/schema.md/log.md; \
+                       raw/ holds immutable ingested sources and is read-only — to add or update \
+                       a source, use kb_add_raw_source or re-ingest it."
     )]
     pub async fn kb_write_page(
         &self,
         p: Parameters<WritePageParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        // Issue #26: reject contract violations as INVALID_PARAMS (the error
+        // taxonomy reads that as invalid_args — "fix the call itself") instead
+        // of letting them flow through into_err as an opaque internal error.
+        if !crate::knowledge::store::is_writable_page_path(&p.path) {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "invalid write path {:?}: must start with knowledge/ or be \
+                     index.md/schema.md/log.md. {}",
+                    p.path,
+                    crate::knowledge::store::WRITE_PATH_RECOVERY
+                ),
+                None,
+            ));
+        }
         let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::store::write_page(
@@ -861,6 +878,49 @@ mod tests {
         assert!(kb_ids.contains(&"alpha".to_string()));
         assert!(kb_ids.contains(&"beta".to_string()));
         assert!(!kb_ids.contains(&"hidden".to_string()));
+        Ok(())
+    }
+
+    /// Issue #26: a raw/ write is a contract violation the caller can fix, so
+    /// it must surface as INVALID_PARAMS (taxonomy: invalid_args — "fix the
+    /// call itself") carrying the recovery path, not as an opaque internal
+    /// error classified tool_failure.
+    #[tokio::test]
+    async fn kb_write_page_rejects_raw_paths_as_invalid_params() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("kb", "KB", None)?;
+
+        let err = server
+            .kb_write_page(rmcp::handler::server::wrapper::Parameters(
+                WritePageParams {
+                    kb_id: "kb".to_string(),
+                    path: "raw/x/source.md".to_string(),
+                    content: "body".to_string(),
+                    commit_message: "try to edit a raw source".to_string(),
+                },
+            ))
+            .await
+            .expect_err("raw/ writes must be rejected");
+
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("knowledge/") && err.message.contains("kb_add_raw_source"),
+            "rejection must state the contract and the recovery, got: {}",
+            err.message
+        );
+
+        // The description itself must teach the path contract up front.
+        let desc = KnowledgeServer::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "kb_write_page")
+            .and_then(|t| t.description.clone())
+            .expect("kb_write_page has a description");
+        assert!(
+            desc.contains("knowledge/") && desc.contains("read-only"),
+            "kb_write_page description must state the path contract, got: {desc}"
+        );
         Ok(())
     }
 }

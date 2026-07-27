@@ -1413,7 +1413,19 @@ impl CodeExecutionClient {
         });
 
         if matching_tools.is_empty() {
-            return Err(format!("No matches found for: {}", terms.join(", ")));
+            // An empty result set is a valid answer, not a tool failure (issue
+            // #26): surfacing it as an error read as "broken tool" in the
+            // transcript ([tool_error kind=tool_failure retryable=false]) and
+            // fed the failure-streak counters for what was a perfectly good
+            // search that simply matched nothing.
+            return Ok(vec![Content::text(format!(
+                "No tools matched: {}. This catalog contains only the installed MCP tools — \
+                 it does not include skills, web search, documents, or knowledge bases, and \
+                 it does not answer questions. Try broader or different terms, or call \
+                 read_module(\"<module>\") for a module you already know from the \
+                 \"Modules:\" list.",
+                terms.join(", ")
+            ))]);
         }
 
         let total_matches = matching_tools.len();
@@ -2185,10 +2197,27 @@ mod tests {
         assert!(text.contains("developer/shell"));
         assert!(text.contains("git/commit"));
 
-        // Search with no matches
+        // Search with no matches is a SUCCESS carrying guidance, not a tool
+        // failure (issue #26) — an empty result set is a valid answer.
         let result =
-            CodeExecutionClient::handle_search(&tools, &["nonexistent".to_string()], false);
-        assert!(result.is_err());
+            CodeExecutionClient::handle_search(&tools, &["nonexistent".to_string()], false)
+                .expect("no-match search must be Ok");
+        let text = match &result[0].raw {
+            RawContent::Text(t) => &t.text,
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("No tools matched: nonexistent"),
+            "must state that nothing matched, got: {text}"
+        );
+        assert!(
+            text.contains("installed MCP tools"),
+            "must scope what the catalog covers, got: {text}"
+        );
+        assert!(
+            text.contains("broader or different terms"),
+            "must suggest the recovery, got: {text}"
+        );
     }
 
     #[test]
