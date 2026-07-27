@@ -132,12 +132,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
 
   const startModel = async (model: string) => {
     if (llamaServerStore.getSnapshot().operation || isConnecting) return;
-    llamaServerStore.beginOperation('start', model);
+    const opId = llamaServerStore.beginOperation('start', model);
     try {
       const res = await llamacppEnsure({ body: { model }, throwOnError: true });
-      llamaServerStore.applyStatus(res.data);
+      llamaServerStore.applyStatus(res.data, opId);
     } catch (error) {
-      llamaServerStore.endOperation();
+      llamaServerStore.endOperation(opId);
       toastService.error({
         title: 'Could not start Llama Server',
         msg: error instanceof Error ? error.message : String(error),
@@ -151,11 +151,11 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       if (!warmed.data.output.trim()) {
         throw new Error('Llama Server returned an empty warm-up response');
       }
-      llamaServerStore.applySidecar(warmed.data.sidecar);
-      llamaServerStore.endOperation();
+      llamaServerStore.applySidecar(warmed.data.sidecar, opId);
+      llamaServerStore.endOperation(opId);
       await connect(model);
     } catch (error) {
-      llamaServerStore.endOperation();
+      llamaServerStore.endOperation(opId);
       toastService.error({
         title: 'Llama Server warm-up failed',
         msg: error instanceof Error ? error.message : String(error),

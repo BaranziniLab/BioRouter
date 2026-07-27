@@ -164,16 +164,19 @@ export default function LocalModelInventory() {
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!confirmResources(model)) return;
-      llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
+      let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
         poll: false,
       });
       try {
         if (model.ollama_name) {
           const ollama = await checkOllamaStatus();
           if (ollama.isRunning) {
-            llamaServerStore.setOperationMessage(`Pulling ${model.ollama_name} from Ollama...`);
+            llamaServerStore.setOperationMessage(
+              opId,
+              `Pulling ${model.ollama_name} from Ollama...`
+            );
             const pulled = await pullOllamaModel(model.ollama_name, (progress) => {
-              llamaServerStore.setOperationMessage(progressLabel(progress));
+              llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
             if (!pulled) throw new Error(`Ollama could not pull ${model.ollama_name}`);
             toastService.success({
@@ -187,14 +190,14 @@ export default function LocalModelInventory() {
 
         // Switch to the polling operation: the store now tracks download
         // progress until ready/error/timeout, even if this panel unmounts.
-        llamaServerStore.beginOperation(
+        opId = llamaServerStore.beginOperation(
           'install',
           model.name,
           'Starting Llama Server fallback download...'
         );
         const res = await llamacppEnsure({ body: { model: model.name }, throwOnError: true });
-        llamaServerStore.applyStatus(res.data);
-        await llamaServerStore.waitForReady(model.name);
+        llamaServerStore.applyStatus(res.data, opId);
+        await llamaServerStore.waitForReady(model.name, opId);
         toastService.success({
           title: 'Local model installed',
           msg: `${model.display_name} is ready in the Llama Server cache.`,
@@ -207,7 +210,7 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        llamaServerStore.endOperation();
+        llamaServerStore.endOperation(opId);
       }
     },
     [confirmResources, deleteAction, refresh]
@@ -217,7 +220,7 @@ export default function LocalModelInventory() {
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!confirmResources(model)) return;
-      llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
+      const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
 
       try {
         const res = await llamacppWarmup({ body: { model: model.name }, throwOnError: true });
@@ -236,7 +239,7 @@ export default function LocalModelInventory() {
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
-        llamaServerStore.endOperation();
+        llamaServerStore.endOperation(opId);
       }
     },
     [confirmResources, deleteAction, refresh]
