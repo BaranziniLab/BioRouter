@@ -1020,8 +1020,12 @@ impl Agent {
         let mut messages = Vec::new();
         let manager = self.config.session_manager.clone();
         let mut elicitation_rx = ActionRequiredManager::global().request_rx.lock().await;
-        while let Ok(elicitation_message) = elicitation_rx.try_recv() {
-            if let Err(e) = manager.add_message(session_id, &elicitation_message).await {
+        while let Ok(mut elicitation_message) = elicitation_rx.try_recv() {
+            // #41: adopt the minted uid so the yielded copy matches the row.
+            if let Err(e) = manager
+                .add_message_adopting_uid(session_id, &mut elicitation_message)
+                .await
+            {
                 warn!("Failed to save elicitation message to session: {}", e);
             }
             messages.push(elicitation_message);
@@ -3352,8 +3356,13 @@ impl Agent {
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
                 for text in self.drain_soft_interrupts() {
-                    let m = Message::user().with_text(text);
-                    session_manager.add_message(&session_config.id, &m).await?;
+                    let mut m = Message::user().with_text(text);
+                    // #41: adopt the minted uid — the retained/yielded copy
+                    // must carry the same id as the stored row, or its next
+                    // persist duplicates it instead of replaying.
+                    session_manager
+                        .add_message_adopting_uid(&session_config.id, &mut m)
+                        .await?;
                     conversation.push(m.clone());
                     yield AgentEvent::Message(m);
                 }
@@ -3377,10 +3386,12 @@ impl Agent {
                                 .session(&session_config.id)
                                 .count(turns_taken),
                         );
-                        let nudge = Message::user()
+                        let mut nudge = Message::user()
                             .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &nudge).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut nudge)
+                            .await?;
                         conversation.push(nudge);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -3414,10 +3425,12 @@ impl Agent {
                         // after that the turn ends whether or not it complied.
                         stall_deadline =
                             Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
-                        let wrapup = Message::user()
+                        let mut wrapup = Message::user()
                             .with_text(crate::agents::stall::giveup_instruction(&reason))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
+                            .await?;
                         conversation.push(wrapup);
                         let why = if stalled {
                             "the same loop kept repeating"
@@ -3487,10 +3500,12 @@ impl Agent {
                         budget_deadline = Some(
                             turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
                         );
-                        let wrapup = Message::user()
+                        let mut wrapup = Message::user()
                             .with_text(crate::agents::budget::wrapup_instruction(&snapshot))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
+                            .await?;
                         conversation.push(wrapup);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -4672,13 +4687,13 @@ impl Agent {
                                         .count(done_gate_iterations)
                                         .limit(done_gate_config.max_iterations),
                                 );
-                                let feedback = Message::user()
+                                let mut feedback = Message::user()
                                     .with_text(crate::agents::done_gate::gate_instruction(
                                         &failures,
                                     ))
                                     .with_visibility(false, true);
                                 session_manager
-                                    .add_message(&session_config.id, &feedback)
+                                    .add_message_adopting_uid(&session_config.id, &mut feedback)
                                     .await?;
                                 conversation.push(feedback);
                                 // Keep looping so the model fixes the failures;
@@ -4733,12 +4748,14 @@ impl Agent {
                                     .session(&session_config.id)
                                     .count(self_critique_passes),
                             );
-                            let feedback = Message::user()
+                            let mut feedback = Message::user()
                                 .with_text(
                                     crate::agents::self_critique::revise_instruction(&reason),
                                 )
                                 .with_visibility(false, true);
-                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            session_manager
+                                .add_message_adopting_uid(&session_config.id, &mut feedback)
+                                .await?;
                             conversation.push(feedback);
                             // Keep looping so the model revises; skip this
                             // iteration's Stop hook. The next finish attempt runs
@@ -4825,10 +4842,12 @@ impl Agent {
                                 ),
                             };
 
-                            let feedback = Message::user()
+                            let mut feedback = Message::user()
                                 .with_text(feedback_text)
                                 .with_visibility(false, true);
-                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            session_manager
+                                .add_message_adopting_uid(&session_config.id, &mut feedback)
+                                .await?;
                             conversation.push(feedback);
                             yield AgentEvent::Message(
                                 Message::assistant()

@@ -1142,6 +1142,21 @@ impl SessionManager {
         self.storage.add_message(id, message).await
     }
 
+    /// [`Self::add_message`] that also stamps the EFFECTIVE uid onto the
+    /// caller's in-memory message (#41). The store mints a uid for idless
+    /// messages and re-mints on a collision; a retained copy that keeps
+    /// `id: None` (or a stale id) desynchronizes memory from storage — its
+    /// next persist would insert a duplicate row under a fresh uid instead
+    /// of being recognized as a replay. Use this on every path that both
+    /// persists a message AND keeps/yields it.
+    pub async fn add_message_adopting_uid(&self, id: &str, message: &mut Message) -> Result<()> {
+        let effective_uid = self.storage.add_message(id, message).await?;
+        if message.id.as_deref() != Some(effective_uid.as_str()) {
+            message.id = Some(effective_uid);
+        }
+        Ok(())
+    }
+
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
         self.storage.replace_conversation(id, conversation).await
     }
@@ -7933,6 +7948,55 @@ mod tests {
             loaded.conversation.unwrap().messages()[0].id.as_deref(),
             Some(minted.as_str()),
             "the persisted uid and the returned uid must agree"
+        );
+    }
+
+    /// #41: the idless soft-interrupt shape — a `Message::user()` minted
+    /// mid-turn, persisted, then retained in the in-memory conversation and
+    /// yielded. `add_message_adopting_uid` must stamp the store's minted uid
+    /// onto the in-memory copy, so a later re-persist of the retained copy is
+    /// an idempotent replay instead of a duplicate row under a fresh uid.
+    #[tokio::test]
+    async fn adopting_uid_keeps_an_idless_soft_interrupt_in_sync_with_storage() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/soft_interrupt"),
+                "SoftInterrupt".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // The soft-interrupt message carries no id when it is persisted.
+        let mut m = amsg(chrono::Utc::now().timestamp_millis(), "user correction");
+        assert!(m.id.is_none());
+        sm.add_message_adopting_uid(&session.id, &mut m)
+            .await
+            .unwrap();
+
+        let adopted = m.id.clone().expect("the minted uid must be adopted");
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.as_ref().unwrap().messages()[0]
+                .id
+                .as_deref(),
+            Some(adopted.as_str()),
+            "memory and storage must agree on the uid"
+        );
+
+        // Re-persisting the retained copy (e.g. a later conversation write)
+        // is now a replay — before adoption it minted a SECOND row.
+        sm.add_message_adopting_uid(&session.id, &mut m)
+            .await
+            .expect("re-persisting the adopted copy must be idempotent");
+        assert_eq!(m.id.as_deref(), Some(adopted.as_str()));
+        let reloaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            reloaded.conversation.unwrap().len(),
+            1,
+            "the adopted copy must replay, not duplicate"
         );
     }
 
