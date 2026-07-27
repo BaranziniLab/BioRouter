@@ -1398,10 +1398,10 @@ pub fn display_session_info(
         std::env::current_dir().unwrap().display().to_string(),
     );
 
-    // Surface the active knowledge base (the CLI equivalent of the GUI's
-    // active-KB chip), so chat-side knowledge tools have visible context.
+    // Surface the primary knowledge base — the base a `--kb`-less write lands
+    // in — so chat-side knowledge tools have visible context.
     if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
-        if let Ok(Some(kb)) = svc.get_primary_persisted() {
+        if let Ok(Some(kb)) = svc.primary_for_session(None) {
             row("knowledge", kb);
         }
     }

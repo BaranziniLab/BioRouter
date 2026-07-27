@@ -1,7 +1,10 @@
 //! `biorouter knowledge` subcommands — manage personal knowledge bases from the
 //! CLI with the same service the desktop GUI drives over HTTP: list bases, show
-//! or set the active base, create a base, and run the ingest / lint / query
+//! or set the primary base, create a base, and run the ingest / lint / query
 //! macros (each backed by a bounded knowledge sub-agent).
+//!
+//! The CLI has no session concept, so every command here is machine-wide: the
+//! primary it reads and writes is the one in `.active-kb`, not a chat's.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,19 +28,34 @@ fn service() -> Result<KnowledgeService> {
     KnowledgeService::new_default().map_err(|e| anyhow!("Failed to open knowledge store: {}", e))
 }
 
-/// Resolve the knowledge base to operate on: the explicit `--kb` flag, else the
-/// persisted active base, else an actionable error.
-fn resolve_kb(svc: &KnowledgeService, explicit: Option<String>) -> Result<String> {
+/// Resolve the base a command operates on: the explicit `--kb` flag, else the
+/// primary. Returns the id and, when it was resolved rather than given, a
+/// notice the caller must print *before* doing any work — a KB-less write
+/// must never be silent about which base it landed in.
+fn resolve_kb(
+    svc: &KnowledgeService,
+    explicit: Option<String>,
+) -> Result<(String, Option<String>)> {
     if let Some(id) = explicit {
-        return Ok(id);
+        return Ok((id, None));
     }
-    match svc.get_primary_persisted()? {
-        Some(id) => Ok(id),
-        None => bail!(
-            "No knowledge base selected. Pass --kb <id>, or set an active base with \
-             `biorouter knowledge active --set <id>`."
-        ),
+    if let Some(id) = svc.primary_for_session(None)? {
+        let notice = format!(
+            "  {} using primary knowledge base {}",
+            style("·").dim(),
+            style(&id).fg(ACCENT).bold()
+        );
+        return Ok((id, Some(notice)));
     }
+    let ids = svc.session_kb_ids(None)?;
+    if ids.is_empty() {
+        bail!("No knowledge bases yet. Create one with `biorouter knowledge create <id> --name <name>`.");
+    }
+    bail!(
+        "No primary knowledge base. Pass --kb <id> (one of: {}), or set one with \
+         `biorouter knowledge active --set <id>`.",
+        ids.join(", ")
+    )
 }
 
 /// Build an LLM completer from the configured (or overridden) provider/model,
@@ -289,7 +307,10 @@ pub async fn handle_ingest(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
 
     let source = match (url, file, text) {
         (Some(u), None, None) => SourceInput::Url(u),
@@ -388,7 +409,11 @@ pub async fn handle_ingest_conversation(
         }
         id
     } else {
-        resolve_kb(&svc, kb)?
+        let (kb_id, notice) = resolve_kb(&svc, kb)?;
+        if let Some(notice) = notice {
+            println!("{notice}");
+        }
+        kb_id
     };
 
     // Resolve which sessions to ingest. Default: the most recent session.
@@ -478,7 +503,10 @@ pub async fn handle_lint(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
 
     let completer = if fix {
         Some(build_completer(provider, model).await?)
@@ -559,7 +587,10 @@ pub async fn handle_query(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
     let completer = build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
@@ -664,6 +695,37 @@ mod tests {
             .find(|b| b["id"] == serde_json::json!("beta"))
             .unwrap();
         assert_eq!(beta["primary"], serde_json::json!(true));
+        Ok(())
+    }
+
+    /// A `--kb`-less ingest/query/lint resolves its target silently. It must
+    /// hand back a notice so the command can say where it is about to write —
+    /// an ingest commits to that base's git history and is hard to notice
+    /// afterwards.
+    #[test]
+    fn resolve_kb_names_the_primary_and_lists_candidates_when_there_is_none() -> anyhow::Result<()>
+    {
+        let (_tmp, svc) = svc();
+
+        let err = super::resolve_kb(&svc, None).unwrap_err().to_string();
+        assert!(
+            err.contains("alpha, beta") && err.contains("--kb"),
+            "with no primary the error must list the candidates, got: {err}"
+        );
+
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+        let (id, notice) = super::resolve_kb(&svc, None)?;
+        assert_eq!(id, "beta");
+        assert!(
+            notice
+                .expect("a resolved primary must be announced")
+                .contains("beta"),
+            "the notice must name the base"
+        );
+
+        let (id, notice) = super::resolve_kb(&svc, Some("alpha".to_string()))?;
+        assert_eq!(id, "alpha");
+        assert!(notice.is_none(), "an explicit --kb needs no notice");
         Ok(())
     }
 }
