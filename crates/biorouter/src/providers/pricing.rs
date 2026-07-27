@@ -147,24 +147,44 @@ pub async fn resolved_provider_model_pricing(
 ) -> Option<ProviderModelPricing> {
     let provider = provider.to_ascii_lowercase();
     let model = model.to_ascii_lowercase();
-    let explicit = explicit_provider_model_pricing(&provider, &model);
-    if explicit.is_some() || blocks_fallback_pricing(&provider) {
-        return explicit;
-    }
-
     let metadata = crate::providers::providers()
         .await
         .into_iter()
         .find(|(metadata, _)| metadata.name.eq_ignore_ascii_case(&provider))
         .map(|(metadata, _)| metadata);
-    if let Some(pricing) = metadata
-        .as_ref()
-        .and_then(|metadata| pricing_from_provider_metadata(metadata, &model))
+    resolve_pricing_with_metadata(&provider, &model, metadata.as_ref())
+}
+
+/// Resolution order for the async path: hardcoded-only providers
+/// ([`blocks_fallback_pricing`]) → provider metadata → the explicit override
+/// table → the canonical catalog. Provider metadata outranks the explicit
+/// sync table so a declarative provider's JSON (e.g.
+/// `providers/declarative/moonshot.json`) stays authoritative here; the sync
+/// table in this file serves sync-only callers (CLI cost line, BR-35 budget)
+/// and models the metadata doesn't price. The
+/// `moonshot_sync_pricing_matches_declarative_metadata` drift guard keeps
+/// the two sources aligned. `provider` and `model` are already lowercased.
+fn resolve_pricing_with_metadata(
+    provider: &str,
+    model: &str,
+    metadata: Option<&ProviderMetadata>,
+) -> Option<ProviderModelPricing> {
+    let explicit = explicit_provider_model_pricing(provider, model);
+    if blocks_fallback_pricing(provider) {
+        return explicit;
+    }
+
+    if let Some(pricing) =
+        metadata.and_then(|metadata| pricing_from_provider_metadata(metadata, model))
     {
         return Some(pricing);
     }
 
-    canonical_model_pricing(&provider, &model)
+    if explicit.is_some() {
+        return explicit;
+    }
+
+    canonical_model_pricing(provider, model)
 }
 
 pub fn pricing_from_provider_metadata(
@@ -508,6 +528,69 @@ mod tests {
         assert!((p.input_token_cost - 0.60 / 1_000_000.0).abs() < 1e-15);
         assert!((p.output_token_cost - 3.00 / 1_000_000.0).abs() < 1e-15);
         assert_eq!(p.context_length, Some(262_144));
+    }
+
+    #[test]
+    fn async_resolution_prefers_declarative_metadata_over_sync_override() {
+        // The async path treats provider metadata (declarative JSON, e.g.
+        // moonshot.json) as authoritative: when the metadata prices a model,
+        // that pricing wins even though the sync table also carries an
+        // explicit entry for the same (provider, model).
+        let metadata = ProviderMetadata::with_models(
+            "moonshot",
+            "Moonshot AI (Kimi)",
+            "test",
+            "kimi-k2.6",
+            vec![ModelInfo::with_cost(
+                "kimi-k2.6",
+                262_144,
+                0.000_001,
+                0.000_005,
+            )],
+            "",
+            vec![],
+        );
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.6", Some(&metadata)).unwrap();
+        assert_eq!(
+            p.input_token_cost, 0.000_001,
+            "metadata outranks sync table"
+        );
+        assert_eq!(p.output_token_cost, 0.000_005);
+
+        // Without metadata the explicit sync table is the fallback…
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.6", None).unwrap();
+        assert_eq!(p.input_token_cost, 0.95 / 1_000_000.0);
+        assert_eq!(p.output_token_cost, 4.00 / 1_000_000.0);
+        // …including for a model the metadata does not price.
+        let p = resolve_pricing_with_metadata("moonshot", "kimi-k2.5", Some(&metadata)).unwrap();
+        assert_eq!(p.input_token_cost, 0.60 / 1_000_000.0);
+    }
+
+    #[test]
+    fn blocked_provider_ignores_metadata_pricing_on_the_async_path() {
+        // Providers in blocks_fallback_pricing (Anthropic & co) stay
+        // hardcoded-only: metadata must not price an unknown tier, and the
+        // explicit table keeps serving the known ones.
+        let metadata = ProviderMetadata::with_models(
+            "anthropic",
+            "Anthropic",
+            "test",
+            "claude-fable-5",
+            vec![ModelInfo::with_cost(
+                "claude-fable-5",
+                200_000,
+                0.000_001,
+                0.000_005,
+            )],
+            "",
+            vec![],
+        );
+        assert!(
+            resolve_pricing_with_metadata("anthropic", "claude-fable-5", Some(&metadata)).is_none()
+        );
+        let p =
+            resolve_pricing_with_metadata("anthropic", "claude-opus-5", Some(&metadata)).unwrap();
+        assert_eq!(p.input_token_cost, 5.0 / 1_000_000.0);
     }
 
     #[test]
