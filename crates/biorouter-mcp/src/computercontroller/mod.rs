@@ -31,7 +31,9 @@ const MAX_INLINE_WEB_CONTENT_BYTES: usize = 128 * 1024;
 /// `web_scrape` HTTP hardening (issue #25): a browser-compatible UA (the old
 /// bare `biorouter/1.0` was bot-flagged into 403s), a request timeout (a hung
 /// server used to hang the tool indefinitely), and one retry on transient
-/// failures only.
+/// failures only — connect errors, 429, and 5xx. A timed-out request is NOT
+/// retried: the client already waited the full timeout, so retrying a hung
+/// server would double worst-case latency.
 const WEB_SCRAPE_USER_AGENT: &str = "Mozilla/5.0 (compatible; biorouter/1.0)";
 const WEB_SCRAPE_TIMEOUT_SECS: u64 = 30;
 const WEB_SCRAPE_RETRY_BACKOFF_MS: u64 = 500;
@@ -618,9 +620,12 @@ impl ComputerControllerServer {
         let save_as = params.save_as;
 
         // Fetch the content, with ONE retry on transient failures only —
-        // connect errors, timeouts, 429, and 5xx. Deterministic client errors
-        // (403/404/…) fail immediately with a status-preserving message plus a
-        // recovery hint (issue #25).
+        // connect errors, 429, and 5xx. Deterministic client errors (403/404/…)
+        // fail immediately with a status-preserving message plus a recovery
+        // hint (issue #25). Timeouts are deliberately NOT retried: the client
+        // already waits up to WEB_SCRAPE_TIMEOUT_SECS, so a retry against a
+        // server that is still hung would double worst-case latency to ~60 s
+        // for no realistic gain.
         let mut response = None;
         let mut last_error = String::new();
         for attempt in 0..2 {
@@ -653,7 +658,7 @@ impl ComputerControllerServer {
                 }
                 Err(e) => {
                     last_error = format!("Failed to fetch URL: {e}");
-                    if !(e.is_connect() || e.is_timeout()) {
+                    if !e.is_connect() {
                         break;
                     }
                 }
@@ -1736,6 +1741,48 @@ mod web_and_script_tests {
             .expect("500-then-200 must succeed after one retry");
 
         assert!(text_of(&result).contains("recovered content"));
+    }
+
+    /// A request timeout is NOT retried (review follow-up on #25): the retry
+    /// contract is connect errors, 429, and 5xx only. The client already
+    /// waited the full request timeout, so a retry against a still-hung
+    /// server would double worst-case latency for no realistic gain. The
+    /// mock's `expect(1)` is verified on drop — a retry fails the test.
+    #[tokio::test]
+    async fn web_scrape_timeout_is_not_retried() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(5))
+                    .set_body_string("too late"),
+            )
+            .expect(1) // exactly one request — a timeout must not be retried
+            .mount(&mock_server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache.path().to_path_buf();
+        // Production client shape with the 30 s timeout shrunk, so the test
+        // observes the timeout path in milliseconds instead of half a minute.
+        server.http_client = Client::builder()
+            .user_agent(WEB_SCRAPE_USER_AGENT)
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        let error = server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: mock_server.uri(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+            .expect_err("a timed-out fetch must be a tool error");
+        assert!(
+            error.to_string().contains("Failed to fetch URL"),
+            "timeout must surface as a fetch failure, got: {error}"
+        );
     }
 
     /// The request must carry the browser-compatible UA — the old bare
