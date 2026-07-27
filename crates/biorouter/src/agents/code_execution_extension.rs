@@ -44,6 +44,15 @@ const MAX_MODULE_SEARCH_RESULTS: usize = 12;
 const MAX_TOOL_CALL_RECORDS: usize = 64;
 /// Per-field byte cap for recorded sub-call args / error text.
 const MAX_TOOL_CALL_RECORD_TEXT_BYTES: usize = 2048;
+/// Byte cap for a recorded tool NAME — names are wire data from the script,
+/// so they need a bound of their own (real prefixed names are well under it).
+const MAX_TOOL_CALL_RECORD_NAME_BYTES: usize = 256;
+/// TOTAL serialized-byte budget for the whole `biorouter/tool-calls` array
+/// (Codex review of #28): the record-count and per-field caps alone still let
+/// 64 worst-case failure records reach ~¼ MB of meta, which persists in every
+/// transcript copy of the result. Records past the budget are counted in the
+/// dropped counter, not stored.
+const MAX_TOOL_CALL_META_TOTAL_BYTES: usize = 64 * 1024;
 /// Result-meta key carrying the executed sub-call records for the UI.
 const TOOL_CALLS_META_KEY: &str = "biorouter/tool-calls";
 /// Result-meta key carrying how many sub-calls were executed but not recorded.
@@ -993,7 +1002,7 @@ struct ToolCallRecord {
 impl ToolCallRecord {
     fn ok(tool: &str, args_json: &str, result_bytes: usize) -> Self {
         Self {
-            tool: tool.to_string(),
+            tool: truncate_record_text(tool, MAX_TOOL_CALL_RECORD_NAME_BYTES),
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "ok",
             error: None,
@@ -1015,12 +1024,22 @@ impl ToolCallRecord {
             None => format!("tool failed (details hidden): {kind}"),
         };
         Self {
-            tool: tool.to_string(),
+            tool: truncate_record_text(tool, MAX_TOOL_CALL_RECORD_NAME_BYTES),
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "error",
             error: Some(error),
             result_bytes: None,
         }
+    }
+
+    /// Serialized size this record contributes to the `biorouter/tool-calls`
+    /// array — what the total budget is charged. The +2 covers the record's
+    /// separator and its share of the array brackets, so the sum strictly
+    /// bounds the serialized array's length.
+    fn serialized_bytes(&self) -> usize {
+        serde_json::to_string(self)
+            .map_or(MAX_TOOL_CALL_META_TOTAL_BYTES, |json| json.len())
+            .saturating_add(2)
     }
 }
 
@@ -1031,6 +1050,9 @@ struct CollectedArtifacts {
     app_paths: Vec<String>,
     last_app_path: Option<String>,
     tool_calls: Vec<ToolCallRecord>,
+    /// Serialized bytes the records in `tool_calls` occupy, charged against
+    /// `MAX_TOOL_CALL_META_TOTAL_BYTES`.
+    tool_call_bytes: usize,
     dropped_tool_calls: usize,
 }
 
@@ -1077,11 +1099,15 @@ impl CollectedArtifacts {
     }
 
     fn push_tool_call(&mut self, record: ToolCallRecord) {
-        if self.tool_calls.len() < MAX_TOOL_CALL_RECORDS {
-            self.tool_calls.push(record);
-        } else {
+        let bytes = record.serialized_bytes();
+        if self.tool_calls.len() >= MAX_TOOL_CALL_RECORDS
+            || self.tool_call_bytes.saturating_add(bytes) > MAX_TOOL_CALL_META_TOTAL_BYTES
+        {
             self.dropped_tool_calls += 1;
+            return;
         }
+        self.tool_call_bytes += bytes;
+        self.tool_calls.push(record);
     }
 }
 
@@ -2403,6 +2429,49 @@ mod tests {
         }
         assert_eq!(collected.tool_calls.len(), MAX_TOOL_CALL_RECORDS);
         assert_eq!(collected.dropped_tool_calls, 5);
+    }
+
+    // Codex review of #28: the record-count cap alone still let 64 worst-case
+    // failure records reach ~¼ MB of persistent result meta. The WHOLE array
+    // must respect a total serialized-byte budget.
+    #[test]
+    fn tool_call_records_respect_a_total_byte_budget() {
+        let mut collected = CollectedArtifacts::default();
+        // Worst-case records: args and user error text both at the per-field
+        // cap (the 4096-byte inputs are truncated to 2 KB each).
+        let args = format!(r#"{{"data":"{}"}}"#, "a".repeat(4096));
+        let error = "e".repeat(4096);
+        for _ in 0..MAX_TOOL_CALL_RECORDS {
+            collected.push_tool_call(ToolCallRecord::failed(
+                "developer__shell",
+                &args,
+                Some(&error),
+                "tool_failure",
+            ));
+        }
+
+        assert!(
+            collected.dropped_tool_calls > 0,
+            "worst-case records must overflow the byte budget before the count cap"
+        );
+        assert_eq!(
+            collected.tool_calls.len() + collected.dropped_tool_calls,
+            MAX_TOOL_CALL_RECORDS,
+            "every call is either recorded or counted as dropped"
+        );
+        let serialized = serde_json::to_string(&collected.tool_calls).unwrap();
+        assert!(
+            serialized.len() <= MAX_TOOL_CALL_META_TOTAL_BYTES,
+            "the whole serialized array stays within the budget: {} bytes",
+            serialized.len()
+        );
+    }
+
+    #[test]
+    fn tool_call_record_tool_name_is_capped() {
+        let record = ToolCallRecord::ok(&"n".repeat(10_000), "{}", 1);
+        assert!(record.tool.len() <= MAX_TOOL_CALL_RECORD_NAME_BYTES + '…'.len_utf8());
+        assert!(record.tool.ends_with('…'));
     }
 
     #[test]
