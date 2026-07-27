@@ -4,7 +4,7 @@ use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{
     add_reasoning_content_to_request, create_request, get_usage, model_uses_responses_api,
-    response_to_message,
+    response_to_message, stamp_reasoning_provenance,
 };
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message,
@@ -411,7 +411,7 @@ impl Provider for OpenAiProvider {
                 false,
             )?;
             if replays_reasoning_content(&self.name) {
-                add_reasoning_content_to_request(&mut payload, messages);
+                add_reasoning_content_to_request(&mut payload, messages, &self.name);
             }
 
             let mut log = RequestLog::start(&self.model, &payload)?;
@@ -425,7 +425,11 @@ impl Provider for OpenAiProvider {
                     let _ = log.error(e);
                 })?;
 
-            let message = response_to_message(&json_response)?;
+            let mut message = response_to_message(&json_response)?;
+            // Record which provider produced any captured reasoning_content so
+            // replay (above) stays scoped to this provider across a mid-session
+            // provider switch.
+            stamp_reasoning_provenance(&mut message, &self.name);
             let usage = json_response
                 .get("usage")
                 .map(get_usage)
@@ -523,7 +527,7 @@ impl Provider for OpenAiProvider {
             let mut payload =
                 create_request(model, system, messages, tools, &ImageFormat::OpenAi, true)?;
             if replays_reasoning_content(&self.name) {
-                add_reasoning_content_to_request(&mut payload, messages);
+                add_reasoning_content_to_request(&mut payload, messages, &self.name);
             }
             let mut log = RequestLog::start(model, &payload)?;
 
@@ -540,7 +544,20 @@ impl Provider for OpenAiProvider {
                     let _ = log.error(e);
                 })?;
 
-            stream_openai_compat(response, log)
+            let stream = stream_openai_compat(response, log)?;
+            // Stamp reasoning provenance on streamed messages too — the
+            // decoder attaches captured reasoning_content to the final
+            // tool-request message it yields, and replay is provenance-gated.
+            let provider_name = self.name.clone();
+            Ok(Box::pin(stream.map(move |item| {
+                item.map(|(message, usage, pending)| {
+                    let message = message.map(|mut m| {
+                        stamp_reasoning_provenance(&mut m, &provider_name);
+                        m
+                    });
+                    (message, usage, pending)
+                })
+            })))
         }
     }
 }

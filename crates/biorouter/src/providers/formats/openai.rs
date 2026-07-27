@@ -29,6 +29,20 @@ use std::ops::Deref;
 /// REQUIRES it mid tool-loop, while e.g. DeepSeek rejects the field on input.
 pub const REASONING_CONTENT_KEY: &str = "reasoning_content";
 
+/// Metadata key recording WHICH provider captured the sibling
+/// [`REASONING_CONTENT_KEY`] value. Several OpenAI-compatible hosts emit
+/// `reasoning_content` (DeepSeek, Moonshot, …) and the capture below is
+/// shared by all of them, so replay must be scoped to the provider that
+/// produced the thinking: a session switched from DeepSeek to Moonshot must
+/// NOT replay DeepSeek's hidden reasoning into Moonshot. The format decoders
+/// are provider-agnostic and cannot stamp this themselves — the owning
+/// provider does, via [`stamp_reasoning_provenance`] — and
+/// [`add_reasoning_content_to_request`] only replays entries whose stamp
+/// matches the requesting provider. Unstamped captures (from a provider that
+/// never stamps, or persisted by a build predating the stamp) are dropped
+/// rather than leaked across providers.
+pub const REASONING_PROVIDER_KEY: &str = "reasoning_provider";
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct DeltaToolCallFunction {
     name: Option<String>,
@@ -406,11 +420,38 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
     ))
 }
 
-fn get_reasoning_content(metadata: &Option<ProviderMetadata>) -> Option<String> {
-    metadata
-        .as_ref()
-        .and_then(|m| m.get(REASONING_CONTENT_KEY))
-        .and_then(|v| v.as_str())
+/// Stamp provider provenance onto every tool request that carries captured
+/// `reasoning_content`. Called by the owning provider right after
+/// [`response_to_message`] (and on each streamed message) — the format
+/// decoders are shared across providers and cannot know who they decoded
+/// for. Requests without captured reasoning are left untouched.
+pub fn stamp_reasoning_provenance(message: &mut Message, provider_name: &str) {
+    for item in &mut message.content {
+        if let MessageContent::ToolRequest(req) = item {
+            if let Some(meta) = req.metadata.as_mut() {
+                if meta.contains_key(REASONING_CONTENT_KEY) {
+                    meta.insert(REASONING_PROVIDER_KEY.to_string(), json!(provider_name));
+                }
+            }
+        }
+    }
+}
+
+/// Captured reasoning for replay, gated on provenance: only reasoning the
+/// SAME provider captured (see [`REASONING_PROVIDER_KEY`]) is returned.
+/// Unstamped or foreign-stamped captures yield `None` so another provider's
+/// hidden chain of thought is never replayed across a provider switch.
+fn get_reasoning_content(
+    metadata: &Option<ProviderMetadata>,
+    provider_name: &str,
+) -> Option<String> {
+    let meta = metadata.as_ref()?;
+    let captured_by = meta.get(REASONING_PROVIDER_KEY)?.as_str()?;
+    if captured_by != provider_name {
+        return None;
+    }
+    meta.get(REASONING_CONTENT_KEY)?
+        .as_str()
         .map(str::to_string)
 }
 
@@ -441,7 +482,16 @@ fn message_has_assistant_content(message: &Message) -> bool {
 /// Callers must opt in per provider (see `OpenAiProvider`): the field is a
 /// vendor extension, and some hosts that EMIT it (DeepSeek) reject it on
 /// input. Twin of `formats::openrouter::add_reasoning_details_to_request`.
-pub fn add_reasoning_content_to_request(payload: &mut Value, messages: &[Message]) {
+///
+/// `provider_name` is the REQUESTING provider; only reasoning stamped with
+/// the same provenance (see [`stamp_reasoning_provenance`]) is replayed, so
+/// a session switched between providers never carries one provider's hidden
+/// reasoning into another.
+pub fn add_reasoning_content_to_request(
+    payload: &mut Value,
+    messages: &[Message],
+    provider_name: &str,
+) {
     let mut assistant_reasoning: Vec<Option<String>> = messages
         .iter()
         .filter(|m| m.is_agent_visible())
@@ -449,7 +499,9 @@ pub fn add_reasoning_content_to_request(payload: &mut Value, messages: &[Message
         .filter(|m| message_has_assistant_content(m))
         .map(|message| {
             message.content.iter().find_map(|c| match c {
-                MessageContent::ToolRequest(req) => get_reasoning_content(&req.metadata),
+                MessageContent::ToolRequest(req) => {
+                    get_reasoning_content(&req.metadata, provider_name)
+                }
                 _ => None,
             })
         })
@@ -1152,6 +1204,7 @@ data: [DONE]
     {
         let mut meta = ProviderMetadata::new();
         meta.insert(REASONING_CONTENT_KEY.to_string(), json!("thought hard"));
+        meta.insert(REASONING_PROVIDER_KEY.to_string(), json!("moonshot"));
         let tool_call = CallToolRequestParams {
             task: None,
             name: "shell".into(),
@@ -1180,7 +1233,7 @@ data: [DONE]
             &ImageFormat::OpenAi,
             false,
         )?;
-        add_reasoning_content_to_request(&mut payload, &messages);
+        add_reasoning_content_to_request(&mut payload, &messages, "moonshot");
 
         let payload_msgs = payload["messages"].as_array().unwrap();
         let assistant_msgs: Vec<&Value> = payload_msgs
@@ -1223,8 +1276,131 @@ data: [DONE]
             false,
         )?;
         let mut patched = payload.clone();
-        add_reasoning_content_to_request(&mut patched, &messages);
+        add_reasoning_content_to_request(&mut patched, &messages, "moonshot");
         assert_eq!(patched, payload);
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_reasoning_content_drops_cross_provider_capture() -> anyhow::Result<()> {
+        // Reasoning captured by ANOTHER provider must never be replayed: a
+        // session switched from DeepSeek to Moonshot would otherwise leak
+        // DeepSeek's hidden chain of thought into Moonshot's context.
+        let build_messages = |meta: &ProviderMetadata| {
+            vec![
+                Message::user().with_text("hi"),
+                Message::assistant().with_content(MessageContent::tool_request_with_metadata(
+                    "call_1",
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        name: "shell".into(),
+                        arguments: Some(object!({"command": "ls"})),
+                        meta: None,
+                    }),
+                    Some(meta),
+                )),
+            ]
+        };
+        let model_config = ModelConfig::new_or_fail("kimi-k2.7-code");
+
+        // Foreign provenance: stamped by DeepSeek, requested by Moonshot.
+        let mut foreign = ProviderMetadata::new();
+        foreign.insert(
+            REASONING_CONTENT_KEY.to_string(),
+            json!("deepseek thoughts"),
+        );
+        foreign.insert(REASONING_PROVIDER_KEY.to_string(), json!("custom_deepseek"));
+        let messages = build_messages(&foreign);
+        let mut payload = create_request(
+            &model_config,
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let before = payload.clone();
+        add_reasoning_content_to_request(&mut payload, &messages, "moonshot");
+        assert_eq!(payload, before, "foreign-stamped reasoning must be dropped");
+
+        // Missing provenance (captured by a provider that never stamps, or by
+        // a build predating the stamp): also dropped — fail closed.
+        let mut unstamped = ProviderMetadata::new();
+        unstamped.insert(REASONING_CONTENT_KEY.to_string(), json!("legacy thoughts"));
+        let messages = build_messages(&unstamped);
+        let mut payload = create_request(
+            &model_config,
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let before = payload.clone();
+        add_reasoning_content_to_request(&mut payload, &messages, "moonshot");
+        assert_eq!(payload, before, "unstamped reasoning must be dropped");
+        Ok(())
+    }
+
+    #[test]
+    fn test_stamp_reasoning_provenance_marks_only_captured_requests() -> anyhow::Result<()> {
+        let mut meta = ProviderMetadata::new();
+        meta.insert(REASONING_CONTENT_KEY.to_string(), json!("thoughts"));
+        let tool_call = || CallToolRequestParams {
+            task: None,
+            name: "shell".into(),
+            arguments: Some(object!({"command": "ls"})),
+            meta: None,
+        };
+        let mut message = Message::assistant()
+            .with_content(MessageContent::tool_request_with_metadata(
+                "call_1",
+                Ok(tool_call()),
+                Some(&meta),
+            ))
+            .with_content(MessageContent::tool_request("call_2", Ok(tool_call())));
+
+        stamp_reasoning_provenance(&mut message, "moonshot");
+
+        let requests: Vec<_> = message
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::ToolRequest(req) => Some(req),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), 2);
+        let stamped = requests[0].metadata.as_ref().unwrap();
+        assert_eq!(
+            stamped.get(REASONING_PROVIDER_KEY).and_then(|v| v.as_str()),
+            Some("moonshot"),
+            "the captured request gains provenance"
+        );
+        assert!(
+            requests[1].metadata.is_none(),
+            "a request without captured reasoning stays metadata-free"
+        );
+
+        // And the stamped capture round-trips through the replay gate.
+        let messages = vec![Message::user().with_text("hi"), message];
+        let model_config = ModelConfig::new_or_fail("kimi-k2.7-code");
+        let mut payload = create_request(
+            &model_config,
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        add_reasoning_content_to_request(&mut payload, &messages, "moonshot");
+        let assistant = payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["reasoning_content"], json!("thoughts"));
         Ok(())
     }
 
