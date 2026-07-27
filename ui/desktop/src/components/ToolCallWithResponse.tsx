@@ -635,16 +635,18 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   // under argument names (`module_path`, `terms`, `name`) the generic chains
   // don't know, so their labels degraded to the opaque "Read Module" /
   // "Search Modules" verbs the transcript audit flagged (#27). Name the exact
-  // target in the collapsed row.
-  if (toolName === 'read_module') {
+  // target in the collapsed row. Matched on the FULL prefixed name (the
+  // built-in extensions register as `code_execution` / `skills`), so an
+  // unrelated extension's same-named tool keeps its own generic label.
+  if (toolCall.name === 'code_execution__read_module') {
     const modulePath = compactValue(args.module_path ?? '');
     return modulePath ? `Reading module ${modulePath}` : 'Reading a module';
   }
-  if (toolName === 'search_modules') {
+  if (toolCall.name === 'code_execution__search_modules') {
     const terms = summarizeSearchQuery(args.terms);
     return terms ? `Searching modules for ${terms}` : 'Searching modules';
   }
-  if (toolName.toLowerCase() === 'loadskill') {
+  if (toolCall.name === 'skills__loadSkill') {
     const skillName = compactValue(args.name ?? '');
     return skillName ? `Loading skill ${skillName}` : 'Loading a skill';
   }

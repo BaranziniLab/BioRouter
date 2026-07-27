@@ -85,6 +85,33 @@ describe('summarizeToolCall', () => {
     ).toBe('Loading skill single-cell');
   });
 
+  // Codex review of #27: the special cases must match the FULL prefixed names
+  // (code_execution__… / skills__loadSkill). An unrelated extension's
+  // same-named tool keeps its generic label instead of being mislabeled with
+  // (or losing) a target it does not have.
+  it('leaves same-named tools from other extensions to the generic labels', () => {
+    expect(
+      summarizeToolCall({
+        name: 'otherext__read_module',
+        arguments: { module_path: 'developer/shell' },
+      })
+    ).toBe('Read Module');
+
+    expect(
+      summarizeToolCall({
+        name: 'otherext__search_modules',
+        arguments: { terms: ['fetch', 'http'] },
+      })
+    ).toBe('Search Modules');
+
+    expect(
+      summarizeToolCall({
+        name: 'otherext__loadSkill',
+        arguments: { name: 'single-cell' },
+      })
+    ).not.toContain('Loading skill');
+  });
+
   it('still says something for module/skill calls with missing targets', () => {
     expect(summarizeToolCall({ name: 'code_execution__read_module', arguments: {} })).toBe(
       'Reading a module'
