@@ -473,27 +473,31 @@ pub fn create_request(
     }
 
     if is_thinking_enabled {
-        // Minimum budget_tokens is 1024
-        let budget_tokens = std::env::var("CLAUDE_THINKING_BUDGET")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .or(effort_budget)
-            .unwrap_or(16000);
-
-        // The max_tokens bump applies on both paths: with a budget it makes
-        // room for the budgeted thinking, and with adaptive thinking
-        // max_tokens caps thinking + response together, so the same headroom
-        // is still needed.
-        payload
-            .as_object_mut()
-            .unwrap()
-            .insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
-
         let thinking = if adaptive_only {
             // budget_tokens is removed (the API 400s) on these models;
-            // `{"type": "adaptive"}` is the only on-mode.
+            // `{"type": "adaptive"}` is the only on-mode. max_tokens is NOT
+            // bumped here: adaptive thinking has no budget to make room for
+            // (max_tokens already caps thinking + response together), and
+            // inflating a configured max_tokens by a stale budget can push
+            // the request past the model's output ceiling — Opus 5 caps
+            // output at 128K, so a 128k config + the 16k default deep budget
+            // would be a guaranteed 400.
             json!({ "type": "adaptive" })
         } else {
+            // Minimum budget_tokens is 1024
+            let budget_tokens: i32 = std::env::var("CLAUDE_THINKING_BUDGET")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .or(effort_budget)
+                .unwrap_or(16000);
+
+            // The budgeted path needs the max_tokens bump: budget_tokens must
+            // fit under max_tokens, so make room for the thinking on top of
+            // the reply.
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("max_tokens".to_string(), json!(max_tokens + budget_tokens));
             json!({
                 "type": "enabled",
                 "budget_tokens": budget_tokens
@@ -1040,6 +1044,11 @@ mod tests {
             "claude-fable-5",
             "claude-opus-4-7",
             "claude-opus-4-8",
+            // Platform-prefixed and dotted spellings must land on the same
+            // path — Versa/Bedrock and OpenRouter/Copilot ids reach this
+            // code too.
+            "us.anthropic.claude-opus-4-8-v1",
+            "anthropic/claude-opus-4.8",
         ] {
             let mut model_config =
                 ModelConfig::new_or_fail(model).with_reasoning_effort(Some(ReasoningEffort::Deep));
@@ -1059,20 +1068,94 @@ mod tests {
                 thinking.get("budget_tokens").is_none(),
                 "{model}: budget_tokens is removed on this model"
             );
-            // max_tokens still grows by the would-be budget: with adaptive
-            // thinking, max_tokens caps thinking + response together, so the
-            // headroom the budget used to buy is still needed.
-            assert_eq!(
-                payload["max_tokens"],
-                json!(8000 + DEEP_THINKING_BUDGET_TOKENS as i32),
-                "{model}"
-            );
+            // max_tokens must stay exactly as configured: adaptive thinking
+            // has no budget to make room for, and inflating it can exceed
+            // the model's output ceiling (128K on Opus 5).
+            assert_eq!(payload["max_tokens"], json!(8000), "{model}");
             assert!(
                 payload.get("temperature").is_none(),
                 "{model}: sampling params are rejected on this model"
             );
         }
         Ok(())
+    }
+
+    // The 128k boundary case: Opus 5 caps output (thinking + response
+    // together) at 128K. A 128k max_tokens config plus the 16k default deep
+    // budget used to produce max_tokens = 144_000 — a guaranteed 400 from
+    // the API. The adaptive path must send the configured value untouched.
+    #[test]
+    fn test_adaptive_thinking_never_exceeds_configured_max_tokens() -> Result<()> {
+        let mut model_config = ModelConfig::new_or_fail("claude-opus-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        model_config.max_tokens = Some(128_000);
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        assert_eq!(payload["thinking"]["type"], "adaptive");
+        assert_eq!(
+            payload["max_tokens"],
+            json!(128_000),
+            "128k config + default deep budget must not become 144k"
+        );
+        Ok(())
+    }
+
+    // The adaptive-thinking gate itself, across every id spelling that can
+    // reach it: bare Anthropic ids, dotted OpenRouter/Copilot variants, and
+    // platform-prefixed Bedrock/proxy ids — plus boundary negatives that a
+    // sloppy substring match would swallow.
+    #[test]
+    fn test_adaptive_thinking_gate_covers_all_id_spellings() {
+        let adaptive_only = [
+            "claude-opus-5",
+            "anthropic/claude-opus-5",
+            "us.anthropic.claude-opus-5-v1:0",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-opus-4-7",
+            "claude-opus-4.7",
+            "claude-opus-4-8",
+            "claude-opus-4.8",
+            "us.anthropic.claude-opus-4-8-v1",
+            "anthropic/claude-opus-4.8",
+        ];
+        for model in adaptive_only {
+            assert!(
+                uses_adaptive_thinking(model),
+                "{model} must be adaptive-only"
+            );
+        }
+
+        let budgeted = [
+            // The 4.6 pair only deprecates budget_tokens — still budgeted.
+            "claude-opus-4-6",
+            "us.anthropic.claude-opus-4-6-v1",
+            "claude-sonnet-4-6",
+            // Older tiers and their dated/prefixed spellings.
+            "claude-opus-4-5",
+            "us.anthropic.claude-opus-4-5-20251101-v1:0",
+            "claude-opus-4-1-20250805",
+            "claude-haiku-4-5",
+            "claude-sonnet-4-20250514",
+            // Boundary negatives: contain "opus-4-6" / "sonnet-4" as
+            // substrings but are unknown tiers — they must stay on the
+            // conservative budgeted path, not match a 4-7/4-8 rule.
+            "claude-opus-4-68",
+            "claude-sonnet-4-62",
+        ];
+        for model in budgeted {
+            assert!(
+                !uses_adaptive_thinking(model),
+                "{model} must stay on the budgeted path"
+            );
+        }
     }
 
     #[test]
