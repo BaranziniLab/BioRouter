@@ -894,8 +894,13 @@ pub struct BedrockStreamDecoder {
     /// messages with one id in a single persist batch, which the session store
     /// rejects (`UNIQUE(session_id, msg_uid)`) — killing the whole turn.
     batch_tool_calls: bool,
-    /// Completed tool_use contents awaiting the batched flush, in block order.
-    pending_tool_contents: Vec<MessageContent>,
+    /// Completed tool_use contents awaiting the batched flush, keyed by
+    /// `content_block_index`. Buffered in `contentBlockStop` ARRIVAL order and
+    /// sorted by index at flush time: the decoder supports interleaved blocks
+    /// (see "Block indices" above), so a later block can close first, and the
+    /// batched message must follow the response's canonical block order — not
+    /// stop order — for dispatch and persistence.
+    pending_tool_contents: Vec<(i32, MessageContent)>,
 }
 
 /// One item of the decoded stream: a partial message and/or a usage snapshot.
@@ -1042,7 +1047,8 @@ impl BedrockStreamDecoder {
                             // `messageStop` (or `finish()`), so a multi-tool
                             // turn dispatches in parallel and never persists
                             // two assistant rows sharing this decoder's id.
-                            self.pending_tool_contents.push(content);
+                            self.pending_tool_contents
+                                .push((stop.content_block_index, content));
                             Vec::new()
                         } else {
                             vec![(Some(self.assistant_message(content)), None)]
@@ -1081,11 +1087,18 @@ impl BedrockStreamDecoder {
     /// response from persisting as several rows sharing one `msg_uid`
     /// (issue #41). The drain empties the buffer, so a second flush is a no-op;
     /// a batch is never delivered twice.
+    ///
+    /// Sorted by `content_block_index` before assembly: blocks are buffered in
+    /// stop-arrival order, and with interleaved blocks a later block can close
+    /// first. Request order is load-bearing downstream — Anthropic 400s a
+    /// tool-result batch whose order doesn't match the request order.
     fn flush_pending_tools(&mut self) -> Option<Message> {
         if self.pending_tool_contents.is_empty() {
             return None;
         }
-        let contents = std::mem::take(&mut self.pending_tool_contents);
+        let mut pending = std::mem::take(&mut self.pending_tool_contents);
+        pending.sort_by_key(|(index, _)| *index);
+        let contents = pending.into_iter().map(|(_, content)| content).collect();
         let mut message = Message::new(Role::Assistant, Utc::now().timestamp(), contents);
         message.id = Some(self.message_id.clone());
         Some(message)
@@ -1685,6 +1698,76 @@ mod bedrock_stream_tests {
             batched_item.1.is_some(),
             "the batched tool message must be yielded together with the usage snapshot"
         );
+    }
+
+    /// Interleaved blocks where the LATER block closes FIRST: the batched
+    /// message must order its requests by `content_block_index`, not by
+    /// `contentBlockStop` arrival. Before this fix the buffer kept stop order,
+    /// so block 2's request was dispatched and persisted ahead of block 1's.
+    #[test]
+    fn batched_tools_keep_block_order_when_stops_arrive_reversed() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                // Both blocks open, deltas interleave, then they close in
+                // REVERSE index order (2 before 1).
+                tool_start(1, "toolu_first", "developer__shell"),
+                tool_start(2, "toolu_second", "developer__text_editor"),
+                tool_delta(2, "{\"path\":"),
+                tool_delta(1, "{\"command\":"),
+                tool_delta(2, "\"/tmp/x\"}"),
+                tool_delta(1, "\"ls\"}"),
+                block_stop(2),
+                block_stop(1),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].0, "toolu_first",
+            "block 1 must come first even though block 2 closed first"
+        );
+        assert_eq!(requests[1].0, "toolu_second");
+        // Arguments were accumulated per index, unaffected by the reordering.
+        assert_eq!(
+            requests[0].1.as_ref().unwrap().1,
+            serde_json::json!({"command": "ls"})
+        );
+        assert_eq!(
+            requests[1].1.as_ref().unwrap().1,
+            serde_json::json!({"path": "/tmp/x"})
+        );
+    }
+
+    /// Same reversal, but the stream dies after the blocks closed and BEFORE
+    /// `messageStop` — the `finish()` flush must apply the same index sort.
+    #[test]
+    fn finish_flush_also_sorts_reversed_stop_order() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let during = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(1, "toolu_first", "shell"),
+                tool_start(2, "toolu_second", "text_editor"),
+                tool_delta(1, "{\"command\":\"pwd\"}"),
+                tool_delta(2, "{\"path\":\"/tmp/y\"}"),
+                block_stop(2),
+                block_stop(1),
+                // connection died here: no messageStop
+            ],
+        );
+        assert!(tool_requests(&during).is_empty());
+
+        let flushed = decoder.finish();
+        let requests = tool_requests(&flushed);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "toolu_first");
+        assert_eq!(requests[1].0, "toolu_second");
     }
 
     /// §6.2b kill switch: with batching OFF (`BIOROUTER_TOOL_CALL_BATCHING=0`
