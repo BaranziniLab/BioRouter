@@ -1944,6 +1944,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_base_path_accepts_lowercase_hex_escapes() {
+        // The escape check uses is_ascii_hexdigit(), so lowercase hex must
+        // stay as valid as uppercase and round-trip byte-exact.
+        assert!(validate_base_path("/url%2fprefix").is_ok());
+        assert!(validate_base_path("/a%c3%a9b").is_ok()); // é, pct-encoded lowercase
+        assert!(validate_base_path("/a%ffb").is_ok());
+    }
+
+    #[test]
     fn validate_base_path_rejects_unsafe_charset() {
         // A quote or angle bracket would break out of the injected attribute /
         // script context.
@@ -1958,6 +1967,10 @@ mod tests {
         // must stay rejected (percent-encode them instead).
         assert!(validate_base_path("/a'b").is_err()); // single-quoted JS/CSS splice
         assert!(validate_base_path("/a(b)").is_err()); // unquoted CSS url() token
+                                                       // Isolated close tokens, so a regression in one character alone is
+                                                       // caught (above, ')' rides along with '(' and '>' with '<').
+        assert!(validate_base_path("/a)b").is_err()); // ')' closes unquoted url(
+        assert!(validate_base_path("/a>b").is_err()); // '>' closes an HTML tag
         assert!(validate_base_path("/a&b").is_err()); // HTML char-reference hazard
         assert!(validate_base_path("/a\\b").is_err());
         assert!(validate_base_path("/caf\u{e9}").is_err()); // non-ASCII must be pct-encoded
