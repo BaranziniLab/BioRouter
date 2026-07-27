@@ -27,6 +27,8 @@ interface DirSwitcherProps {
  * stays unambiguous alongside the full path shown on hover.
  */
 export function workingDirLabel(dir: string): string {
+  // A Windows drive root ("C:\", "C:/") is a root, not a folder named "C:".
+  if (/^[A-Za-z]:[\\/]+$/.test(dir)) return dir;
   const segments = dir.split(/[/\\]+/).filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : dir;
 }
@@ -60,26 +62,39 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
 
     const newDir = result.filePaths[0];
 
-    window.electron.addRecentDir(newDir);
-
     if (sessionId) {
-      onWorkingDirChange?.(newDir);
       onRestartStart?.();
 
       try {
+        // `throwOnError` is load-bearing: the generated client otherwise
+        // RESOLVES with an error object on a non-2xx (e.g. the #44 409 once
+        // the chat has messages) and the catch below would never fire.
         await updateWorkingDir({
           body: { session_id: sessionId, working_dir: newDir },
+          throwOnError: true,
         });
+        // Reflect the change only after the server accepted it, so a refusal
+        // leaves the displayed dir and the recents list untouched.
+        window.electron.addRecentDir(newDir);
+        onWorkingDirChange?.(newDir);
       } catch (error) {
         console.error('[DirSwitcher] Failed to update working directory:', error);
+        const serverMessage =
+          typeof error === 'object' &&
+          error !== null &&
+          'message' in error &&
+          typeof (error as { message?: unknown }).message === 'string'
+            ? (error as { message: string }).message
+            : undefined;
         toastError({
           title: 'Working directory update failed',
-          msg: 'Failed to update the working directory.',
+          msg: serverMessage ?? 'Failed to update the working directory.',
         });
       } finally {
         onRestartEnd?.();
       }
     } else {
+      window.electron.addRecentDir(newDir);
       onWorkingDirChange?.(newDir);
     }
   };

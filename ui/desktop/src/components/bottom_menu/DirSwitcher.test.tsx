@@ -17,6 +17,7 @@ vi.mock('../../toasts', () => ({
 
 import { DirSwitcher, workingDirLabel } from './DirSwitcher';
 import { updateWorkingDir } from '../../api';
+import { toastError } from '../../toasts';
 
 const WORKING_DIR = '/Users/wgu/Desktop';
 const CHOSEN_DIR = '/Users/wgu/Desktop/data';
@@ -63,6 +64,12 @@ describe('workingDirLabel', () => {
     expect(workingDirLabel('/')).toBe('/');
     expect(workingDirLabel('')).toBe('');
   });
+
+  it('shows a Windows drive root as-is, not as a folder named "C:"', () => {
+    expect(workingDirLabel('C:\\')).toBe('C:\\');
+    expect(workingDirLabel('C:/')).toBe('C:/');
+    expect(workingDirLabel('d:\\\\')).toBe('d:\\\\');
+  });
 });
 
 describe('DirSwitcher while the chat is empty', () => {
@@ -83,12 +90,48 @@ describe('DirSwitcher while the chat is empty', () => {
     expect(chip).toHaveTextContent(WORKING_DIR);
     fireEvent.click(chip);
 
+    // throwOnError is required: without it the generated client resolves with
+    // an error object on a 409 and the failure path would never run.
     await waitFor(() =>
       expect(updateWorkingDir).toHaveBeenCalledWith({
         body: { session_id: 'session-1', working_dir: CHOSEN_DIR },
+        throwOnError: true,
       })
     );
+    // The displayed dir and the recents list update only after success.
     expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR);
+    expect(window.electron.addRecentDir).toHaveBeenCalledWith(CHOSEN_DIR);
+  });
+
+  it('leaves the displayed dir and recents untouched when the server refuses (409)', async () => {
+    vi.mocked(updateWorkingDir).mockRejectedValueOnce({
+      message: 'the working directory is fixed once a chat has messages',
+    });
+    const onWorkingDirChange = vi.fn();
+    const onRestartEnd = vi.fn();
+    render(
+      <DirSwitcher
+        className=""
+        sessionId="session-1"
+        workingDir={WORKING_DIR}
+        locked={false}
+        onWorkingDirChange={onWorkingDirChange}
+        onRestartEnd={onRestartEnd}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button'));
+
+    await waitFor(() => expect(updateWorkingDir).toHaveBeenCalled());
+    await waitFor(() => expect(onRestartEnd).toHaveBeenCalled());
+
+    // Refused server-side: nothing may change client-side.
+    expect(onWorkingDirChange).not.toHaveBeenCalled();
+    expect(window.electron.addRecentDir).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith({
+      title: 'Working directory update failed',
+      msg: 'the working directory is fixed once a chat has messages',
+    });
   });
 
   it('keeps the #39 pre-session path: forwards the choice without persisting', async () => {
