@@ -25,8 +25,9 @@ use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
-use biorouter::workflow::Workflow;
+use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
 use biorouter::workflow_deeplink;
+use biorouter_mcp::knowledge::service::PrimaryUpdate;
 use biorouter::{
     agents::{
         extension::ToolInfo,
@@ -84,6 +85,36 @@ pub struct StopAgentRequest {
     session_id: String,
 }
 
+/// Turn a workflow's `{ default, visible }` into "which bases to hide" and
+/// "what the primary should be".
+///
+/// `WorkflowKnowledgeBases` already expresses a set plus one primary, which is
+/// exactly the session model — so this is a translation, not a schema change.
+/// Two rules earn their keep: a `default` that was not listed is unioned into
+/// the set (the invariant requires the primary to be a member, and the author
+/// clearly meant it), and a missing `default` only yields a primary when the
+/// set has exactly one member — never the first of several.
+pub(crate) fn plan_workflow_knowledge_selection(
+    selection: &WorkflowKnowledgeBases,
+    all_base_ids: &[String],
+) -> (Vec<String>, Option<String>) {
+    let mut visible: HashSet<&str> = selection.visible.iter().map(String::as_str).collect();
+    if let Some(default) = selection.default.as_deref() {
+        visible.insert(default);
+    }
+    let hidden = all_base_ids
+        .iter()
+        .filter(|id| !visible.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let primary = match selection.default.clone() {
+        Some(default) => Some(default),
+        None if visible.len() == 1 => visible.iter().next().map(|id| id.to_string()),
+        None => None,
+    };
+    (hidden, primary)
+}
+
 fn apply_workflow_knowledge_selection(
     state: &AppState,
     session_id: &str,
@@ -93,39 +124,34 @@ fn apply_workflow_knowledge_selection(
         return Ok(());
     };
 
-    let visible: HashSet<&str> = selection.visible.iter().map(String::as_str).collect();
-    let all_bases = state.knowledge_service.list_bases().map_err(|err| {
-        error!(
-            "Failed to list knowledge bases for workflow session: {}",
-            err
-        );
-        ErrorResponse {
-            message: format!("Failed to apply workflow knowledge bases: {}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    })?;
-    let hidden: Vec<String> = all_bases
+    let all_base_ids = state
+        .knowledge_service
+        .list_bases()
+        .map_err(|err| {
+            error!(
+                "Failed to list knowledge bases for workflow session: {}",
+                err
+            );
+            ErrorResponse {
+                message: format!("Failed to apply workflow knowledge bases: {}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?
         .into_iter()
         .map(|base| base.id)
-        .filter(|id| !visible.contains(id.as_str()))
-        .collect();
-    let active = selection
-        .default
-        .as_deref()
-        .or_else(|| selection.visible.first().map(String::as_str));
+        .collect::<Vec<_>>();
+
+    let (hidden, primary) = plan_workflow_knowledge_selection(selection, &all_base_ids);
+    let primary = match primary.as_deref() {
+        Some(id) => PrimaryUpdate::Set(id),
+        None => PrimaryUpdate::Clear,
+    };
 
     state
         .knowledge_service
-        .set_primary_for_session(session_id, active)
+        .set_selection(Some(session_id), Some(&hidden), primary)
         .map_err(|err| ErrorResponse {
-            message: format!("Failed to set workflow default knowledge base: {}", err),
-            status: StatusCode::BAD_REQUEST,
-        })?;
-    state
-        .knowledge_service
-        .set_hidden_for_session(session_id, &hidden)
-        .map_err(|err| ErrorResponse {
-            message: format!("Failed to set workflow visible knowledge bases: {}", err),
+            message: format!("Failed to apply workflow knowledge bases: {}", err),
             status: StatusCode::BAD_REQUEST,
         })?;
 
@@ -1349,5 +1375,68 @@ mod working_dir_lock_tests {
                 .expect_err("invalid paths are rejected");
             assert_eq!(err.status, StatusCode::BAD_REQUEST, "for {bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod knowledge_selection_tests {
+    use super::plan_workflow_knowledge_selection;
+    use biorouter::workflow::WorkflowKnowledgeBases;
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A workflow that lists five bases used to activate exactly one, silently
+    /// (`selection.default.or(selection.visible.first())`). Under the merged
+    /// model `{ default, visible }` already *is* "a set plus one primary", so
+    /// the whole set applies and only `default` may set the pointer.
+    #[test]
+    fn workflow_applies_every_declared_base() {
+        let all = ids(&["a", "b", "c", "d", "e", "unrelated"]);
+        let selection = WorkflowKnowledgeBases {
+            default: Some("c".to_string()),
+            visible: ids(&["a", "b", "c", "d", "e"]),
+        };
+        let (hidden, primary) = plan_workflow_knowledge_selection(&selection, &all);
+        assert_eq!(hidden, ids(&["unrelated"]));
+        assert_eq!(primary.as_deref(), Some("c"));
+    }
+
+    /// No `default`: one visible base is unambiguous, several are not — and
+    /// picking the first of several is exactly the silent data loss being
+    /// removed. A KB-less write then fails with a candidate list instead.
+    #[test]
+    fn workflow_without_a_default_only_infers_an_unambiguous_primary() {
+        let all = ids(&["a", "b"]);
+        let one = WorkflowKnowledgeBases {
+            default: None,
+            visible: ids(&["a"]),
+        };
+        assert_eq!(
+            plan_workflow_knowledge_selection(&one, &all).1.as_deref(),
+            Some("a")
+        );
+
+        let many = WorkflowKnowledgeBases {
+            default: None,
+            visible: ids(&["a", "b"]),
+        };
+        assert_eq!(plan_workflow_knowledge_selection(&many, &all).1, None);
+    }
+
+    /// A `default` the author forgot to list is still the author's intent, and
+    /// the invariant requires the primary to be a member — so union it in
+    /// rather than dropping it.
+    #[test]
+    fn workflow_default_joins_the_set_when_it_was_not_listed() {
+        let all = ids(&["a", "b"]);
+        let selection = WorkflowKnowledgeBases {
+            default: Some("b".to_string()),
+            visible: ids(&["a"]),
+        };
+        let (hidden, primary) = plan_workflow_knowledge_selection(&selection, &all);
+        assert!(hidden.is_empty(), "b must not be hidden — it is the primary");
+        assert_eq!(primary.as_deref(), Some("b"));
     }
 }
