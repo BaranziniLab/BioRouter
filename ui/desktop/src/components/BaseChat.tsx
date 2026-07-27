@@ -702,6 +702,20 @@ export function runInitialMessageAutoSubmit(args: {
   return args.hasAutoSubmitted;
 }
 
+/**
+ * #39 — which working directory a brand-new session (the pre-session /pair
+ * composer) should be created with. The directory the user explicitly picked
+ * in the composer's folder chip wins; only when they never picked one does
+ * the app default apply. Exported for unit tests, matching this file's
+ * exported-helper pattern (handleCreateSessionError, runInitialMessageAutoSubmit).
+ */
+export function resolveNewSessionWorkingDir(
+  pending: string | null | undefined,
+  fallback: string
+): string {
+  return pending && pending.trim() ? pending : fallback;
+}
+
 export function formatCompactNumber(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
@@ -943,6 +957,12 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // #39 — the working directory chosen in the composer BEFORE a session
+  // exists (sidebar "New Session" mounts this chat with no sessionId, so
+  // DirSwitcher has nothing to persist to yet). Read exactly once, by the
+  // pre-session createSession below; once a session exists DirSwitcher
+  // persists directly via updateWorkingDir and this value is never consulted.
+  const [pendingWorkingDir, setPendingWorkingDir] = useState<string | null>(null);
   const [presentedArtifact, setPresentedArtifact] = useState<ArtifactSource | null>(null);
   const [isArtifactPanelOpen, setIsArtifactPanelOpen] = useState(false);
   const [isArtifactPanelResizing, setIsArtifactPanelResizing] = useState(false);
@@ -1504,9 +1524,14 @@ function BaseChatContent({
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
       setIsCreatingSession(true);
       try {
-        const newSession = await createSession(getInitialWorkingDir(), {
-          allExtensions: extensionsList,
-        });
+        // #39 — honour the directory picked in the composer before the
+        // session existed; default only when none was chosen.
+        const newSession = await createSession(
+          resolveNewSessionWorkingDir(pendingWorkingDir, getInitialWorkingDir()),
+          {
+            allExtensions: extensionsList,
+          }
+        );
         navigateWithViewTransition(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -1986,6 +2011,10 @@ function BaseChatContent({
         toolCount={toolCount || 0}
         supportsVisionOverride={sessionSupportsVision ?? undefined}
         supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
+        // #39 — capture a pre-session directory choice so the first message
+        // creates the session in it. Before the customChatInputProps spread,
+        // so callers can still override.
+        onWorkingDirChange={setPendingWorkingDir}
         {...customChatInputProps}
       />
     </div>
