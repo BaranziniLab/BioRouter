@@ -1125,6 +1125,27 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
   );
 }
 
+/**
+ * Executed-call telemetry is untrusted wire data replayed from the result
+ * meta, so keys and values render as PLAIN TEXT only — never through
+ * `ToolCallArguments`, whose expanded strings go through `MarkdownContent`
+ * and would turn crafted arguments into live links or remote-image fetches.
+ */
+function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgumentValue> }) {
+  return (
+    <div className="my-2">
+      {Object.entries(args).map(([key, value]) => (
+        <div key={key} className="mb-2 flex flex-row font-sans text-sm">
+          <span className="min-w-[140px] shrink-0 text-text-muted">{key}</span>
+          <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
+            {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: number }) {
   const parsedArgs = parsedCallArguments(call.args);
   return (
@@ -1148,7 +1169,7 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
     >
       <div className="pl-6 pr-2 pb-2">
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
-          <ToolCallArguments args={parsedArgs} />
+          <ExecutedCallArguments args={parsedArgs} />
         ) : call.args ? (
           // Truncated/malformed JSON still shows the exact recorded text.
           <pre className="whitespace-pre-wrap break-all font-mono text-xs text-text-muted">

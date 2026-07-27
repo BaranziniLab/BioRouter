@@ -526,6 +526,53 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     expect(document.querySelector('code .token')).not.toBeNull();
   });
 
+  // Codex review of #28: executed-call args are untrusted wire data. They must
+  // render as plain text — a crafted argument must never become a live link or
+  // a remote-image fetch via the markdown pipeline.
+  it('renders executed-call args as plain text, never as markdown', () => {
+    const marker = 'x'.repeat(80); // long enough for any length-gated markdown path
+    const crafted = `[click me](https://evil.example/exfil) ![tracker](https://evil.example/pixel.png) ${marker}`;
+    const craftedResponse = {
+      type: 'toolResponse' as const,
+      id: 'tool-exec-1',
+      toolResult: {
+        status: 'success',
+        value: {
+          isError: false,
+          content: [{ type: 'text', text: 'Result: done' }],
+          _meta: {
+            'biorouter/tool-calls': [
+              {
+                tool: 'developer__shell',
+                args: JSON.stringify({ command: crafted }),
+                status: 'ok',
+                result_bytes: 4,
+              },
+            ],
+          },
+        },
+      },
+    } as never;
+
+    const { container } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={coordinatedRequest}
+        toolResponse={craftedResponse}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/Coordinating 2 tool steps/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View executed calls (1)').closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/1\. developer__shell/).closest('button') as HTMLElement);
+
+    // The literal markdown source is visible as text…
+    expect(screen.getByText(new RegExp('\\[click me\\]\\(https://evil'))).toBeInTheDocument();
+    // …and was NOT interpreted: no link, no image request.
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+  });
+
   it('shows how many calls were executed but not recorded', () => {
     const responseWithDrop = {
       type: 'toolResponse' as const,
