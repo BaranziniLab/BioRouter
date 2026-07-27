@@ -1065,6 +1065,18 @@ impl CheckpointRow {
     }
 }
 
+/// Outcome of [`SessionManager::try_update_working_dir_if_empty`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkingDirUpdate {
+    /// The session had no messages; the working dir was updated.
+    Updated,
+    /// The session already has at least one message; the working dir is fixed
+    /// (#44) and was left untouched.
+    RefusedNotEmpty,
+    /// No session with that id exists; nothing was written.
+    SessionNotFound,
+}
+
 pub struct SessionManager {
     storage: Arc<SessionStorage>,
 }
@@ -1127,6 +1139,46 @@ impl SessionManager {
 
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
         SessionUpdateBuilder::new(self, id.to_string())
+    }
+
+    /// Set the session's working directory **only if the chat is still empty**
+    /// (#44), as one atomic conditional `UPDATE`: the emptiness check is the
+    /// statement's own `WHERE NOT EXISTS (…messages…)` clause, so a first
+    /// message landing concurrently can never slip between a check and a
+    /// write — the update either sees no messages and applies, or sees the
+    /// message and refuses. (The previous read-count-then-write sequence ran
+    /// as two statements and had exactly that TOCTOU window.)
+    ///
+    /// This closes the *persisted-state* race only. It cannot order itself
+    /// against a turn that has been accepted but has not yet persisted its
+    /// user message; callers that can (the HTTP route) additionally hold the
+    /// per-session turn guard across the update + agent restart.
+    pub async fn try_update_working_dir_if_empty(
+        &self,
+        id: &str,
+        working_dir: PathBuf,
+    ) -> Result<WorkingDirUpdate> {
+        self.storage
+            .try_update_working_dir_if_empty(id, &working_dir)
+            .await
+    }
+
+    /// Set the session's working directory **unconditionally**, bypassing the
+    /// empty-chat-only guard of [`Self::try_update_working_dir_if_empty`].
+    ///
+    /// ONLY for the terminal shell-following path (`biorouter term run`),
+    /// where the session's dir intentionally tracks the user's shell cwd
+    /// mid-conversation. Every other caller must use the guarded method — a
+    /// mid-chat switch breaks the session's own history (#44), which is why
+    /// this is the sole unguarded writer and is named to make misuse obvious.
+    pub async fn force_update_working_dir_unguarded(
+        &self,
+        id: &str,
+        working_dir: PathBuf,
+    ) -> Result<()> {
+        let mut builder = self.update(id);
+        builder.working_dir = Some(working_dir);
+        builder.apply().await
     }
 
     async fn apply_update_inner(&self, builder: SessionUpdateBuilder<'_>) -> Result<()> {
@@ -2725,6 +2777,43 @@ impl SessionStorage {
         .await?
         .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
         Ok(counts)
+    }
+
+    /// The atomic conditional update behind
+    /// [`SessionManager::try_update_working_dir_if_empty`]: one `UPDATE` whose
+    /// `WHERE` clause carries the emptiness check, so check and write cannot
+    /// be interleaved by a concurrent message insert (SQLite serializes
+    /// writers; the `NOT EXISTS` is evaluated within the same statement).
+    async fn try_update_working_dir_if_empty(
+        &self,
+        id: &str,
+        working_dir: &Path,
+    ) -> Result<WorkingDirUpdate> {
+        let pool = self.pool().await?;
+        let result = sqlx::query(
+            "UPDATE sessions SET working_dir = ?, updated_at = datetime('now') \
+             WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?)",
+        )
+        .bind(working_dir.to_string_lossy().as_ref())
+        .bind(id)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            return Ok(WorkingDirUpdate::Updated);
+        }
+
+        // 0 rows: either the session has messages or it does not exist.
+        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+        if exists > 0 {
+            Ok(WorkingDirUpdate::RefusedNotEmpty)
+        } else {
+            Ok(WorkingDirUpdate::SessionNotFound)
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4740,6 +4829,91 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    // #44 — the atomic empty-chat-only working-dir update. The emptiness check
+    // lives in the UPDATE's own WHERE clause, so "insert a message between the
+    // check and the write" is impossible by construction; these tests pin the
+    // SQL path's three outcomes and the unguarded escape hatch.
+    mod working_dir_guard {
+        use super::*;
+        use crate::session::session_manager::WorkingDirUpdate;
+
+        #[tokio::test]
+        async fn updates_an_empty_session_and_persists() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let session = sm
+                .create_session(PathBuf::from("/tmp/old"), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+
+            let outcome = sm
+                .try_update_working_dir_if_empty(&session.id, PathBuf::from("/tmp/new"))
+                .await
+                .unwrap();
+            assert_eq!(outcome, WorkingDirUpdate::Updated);
+
+            let reloaded = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(reloaded.working_dir, PathBuf::from("/tmp/new"));
+        }
+
+        #[tokio::test]
+        async fn refuses_once_any_message_exists() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let session = sm
+                .create_session(PathBuf::from("/tmp/old"), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+
+            let outcome = sm
+                .try_update_working_dir_if_empty(&session.id, PathBuf::from("/tmp/new"))
+                .await
+                .unwrap();
+            assert_eq!(outcome, WorkingDirUpdate::RefusedNotEmpty);
+
+            // The refused update must not have touched the row.
+            let reloaded = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(reloaded.working_dir, PathBuf::from("/tmp/old"));
+        }
+
+        #[tokio::test]
+        async fn reports_a_missing_session_without_writing() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+
+            let outcome = sm
+                .try_update_working_dir_if_empty("no_such_session", PathBuf::from("/tmp/new"))
+                .await
+                .unwrap();
+            assert_eq!(outcome, WorkingDirUpdate::SessionNotFound);
+        }
+
+        #[tokio::test]
+        async fn force_update_bypasses_the_guard_for_shell_following() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let session = sm
+                .create_session(PathBuf::from("/tmp/old"), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+
+            // The `biorouter term run` shell-following path may move the dir
+            // mid-conversation; nothing else may.
+            sm.force_update_working_dir_unguarded(&session.id, PathBuf::from("/tmp/new"))
+                .await
+                .unwrap();
+
+            let reloaded = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(reloaded.working_dir, PathBuf::from("/tmp/new"));
+        }
+    }
 
     #[tokio::test]
     async fn clear_all_sessions_removes_history_usage_and_side_tables() {
