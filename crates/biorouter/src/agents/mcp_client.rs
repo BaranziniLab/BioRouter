@@ -373,9 +373,19 @@ impl ClientHandler for BioRouterClient {
                 Duration::from_secs(300),
             )
             .await
-            .map(|user_data| CreateElicitationResult {
-                action: ElicitationAction::Accept,
-                content: Some(user_data),
+            .map(|outcome| match outcome {
+                Some(user_data) => CreateElicitationResult {
+                    action: ElicitationAction::Accept,
+                    content: Some(user_data),
+                },
+                // The user (or an unattended run that can never collect
+                // input, #40) cancelled: a first-class, model-visible MCP
+                // outcome — the server sees `action: cancel` instead of a
+                // 300s timeout error.
+                None => CreateElicitationResult {
+                    action: ElicitationAction::Cancel,
+                    content: None,
+                },
             })
             .map_err(|e| {
                 ErrorData::new(

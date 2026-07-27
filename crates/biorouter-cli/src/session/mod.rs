@@ -1154,6 +1154,55 @@ impl CliSession {
                                     permission,
                                 }).await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
+                                // #40/#31: an elicitation cannot be answered when nobody
+                                // is at the terminal — same predicate as tool
+                                // confirmations. Cancel it with a MODEL-VISIBLE result
+                                // (the manager unparks the waiting tool call with
+                                // ElicitationAction::Cancel) instead of printing prompt
+                                // text into a structured stdout and then blocking on
+                                // input that never comes.
+                                if headless_auto_decision(
+                                    interactive,
+                                    &self.output_format,
+                                    std::io::stdin().is_terminal(),
+                                )
+                                .is_some()
+                                {
+                                    eprintln!(
+                                        "An extension requested information interactively ({}) \
+                                         but this run is non-interactive - cancelled \
+                                         automatically. Run interactively (`-s`) in a terminal \
+                                         with stdin attached to answer it.",
+                                        elicitation_message
+                                            .lines()
+                                            .next()
+                                            .unwrap_or(&elicitation_message)
+                                            .trim()
+                                    );
+                                    if is_stream_json_mode {
+                                        emit_stream_event(&StreamEvent::Notification {
+                                            extension_id: "biorouter".to_string(),
+                                            data: NotificationData::Log {
+                                                message:
+                                                    "elicitation cancelled automatically: \
+                                                     information request cannot be answered in \
+                                                     a non-interactive run"
+                                                        .to_string(),
+                                            },
+                                        });
+                                    }
+                                    if let Err(e) =
+                                        biorouter::action_required_manager::ActionRequiredManager::global()
+                                            .submit_cancellation(elicitation_id)
+                                            .await
+                                    {
+                                        eprintln!(
+                                            "Failed to cancel the information request: {}",
+                                            e
+                                        );
+                                    }
+                                    continue;
+                                }
                                 output::hide_thinking();
                                 let _ = progress_bars.hide();
 
@@ -1173,7 +1222,13 @@ impl CliSession {
                                         let _ = self.agent.reply(response_message, session_config.clone(), Some(cancel_token.clone())).await?;
                                     }
                                     Ok(None) => {
-                                        output::render_text("Information request cancelled.", Some(Color::Yellow), true);
+                                        // Prompt-adjacent status stays off a structured
+                                        // stdout (#40), like the confirmation Cancel path.
+                                        if is_json_mode || is_stream_json_mode {
+                                            eprintln!("Information request cancelled.");
+                                        } else {
+                                            output::render_text("Information request cancelled.", Some(Color::Yellow), true);
+                                        }
                                         cancel_token_clone.cancel();
                                         drop(stream);
                                         break;
