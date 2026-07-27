@@ -98,6 +98,21 @@ impl KnowledgeService {
         paths::hidden_kb_sessions_dir(self.root()).join(digest)
     }
 
+    /// Read a single-id primary pointer file. Absent or blank ⇒ `None`.
+    /// The on-disk format is one bare kb id — see [`paths::primary_kb_path`].
+    fn get_primary_path_unlocked(&self, path: &Path) -> anyhow::Result<Option<String>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(path)?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+
     fn set_primary_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -969,27 +984,17 @@ impl KnowledgeService {
         Ok(std::fs::read_to_string(&abs)?)
     }
 
-    /// Read the persisted active-KB id (set via the UI or `kb_set_active`).
+    /// Read the persisted primary-KB id (set via the UI or `kb_set_active`).
     /// Returns `Ok(None)` if no file exists or the file is empty.
     pub fn get_primary_persisted(&self) -> anyhow::Result<Option<String>> {
         self.get_primary_persisted_unlocked()
     }
 
     fn get_primary_persisted_unlocked(&self) -> anyhow::Result<Option<String>> {
-        let path = crate::knowledge::paths::primary_kb_path(self.root());
-        if !path.exists() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&path)?;
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(trimmed.to_string()))
-        }
+        self.get_primary_path_unlocked(&crate::knowledge::paths::primary_kb_path(self.root()))
     }
 
-    /// Persist the active-KB id. Pass `None` to clear.
+    /// Persist the primary-KB id. Pass `None` to clear.
     pub fn set_primary_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         self.set_primary_persisted_unlocked(id)
@@ -1001,17 +1006,7 @@ impl KnowledgeService {
     }
 
     pub fn get_primary_for_session(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let path = self.primary_session_path(session_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(&path)?;
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(trimmed.to_string()))
-        }
+        self.get_primary_path_unlocked(&self.primary_session_path(session_id))
     }
 
     pub fn set_primary_for_session(
@@ -1030,7 +1025,9 @@ impl KnowledgeService {
 
     pub fn set_hidden_persisted(&self, ids: &[String]) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
-        self.set_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()), ids)
+        self.set_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()), ids)?;
+        self.repair_primary_unlocked(None)?;
+        Ok(())
     }
 
     pub fn get_hidden_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>> {
@@ -1051,7 +1048,9 @@ impl KnowledgeService {
 
     pub fn set_hidden_for_session(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
-        self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)
+        self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)?;
+        self.repair_primary_unlocked(Some(session_id))?;
+        Ok(())
     }
 
     /// Drop a session's hidden-KB override so it inherits the machine-wide
@@ -1063,6 +1062,7 @@ impl KnowledgeService {
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
+        self.repair_primary_unlocked(Some(session_id))?;
         Ok(())
     }
 
@@ -1074,6 +1074,7 @@ impl KnowledgeService {
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
+        self.repair_primary_unlocked(None)?;
         Ok(())
     }
 
@@ -1100,6 +1101,51 @@ impl KnowledgeService {
             .collect::<Vec<_>>();
         ids.sort();
         Ok(ids)
+    }
+
+    /// This scope's **primary** knowledge base: the write target for KB-less
+    /// mutating calls and the default subject for single-base reads.
+    ///
+    /// Resolution is session file → machine file, and the result is returned
+    /// only while it names a member of [`Self::session_kb_ids`]. A non-member
+    /// yields `None` rather than promoting: promoting at read time would make
+    /// "no primary" unreachable and let a KB-less *write* silently land in a
+    /// base the user never ranked. Promotion happens once, at the moment the
+    /// set changes, in [`Self::repair_primary_unlocked`].
+    pub fn primary_for_session(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
+        let stored = match session_id {
+            Some(session_id) => match self.get_primary_for_session(session_id)? {
+                Some(id) => Some(id),
+                None => self.get_primary_persisted()?,
+            },
+            None => self.get_primary_persisted()?,
+        };
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        let ids = self.session_kb_ids(session_id)?;
+        Ok(ids.into_iter().find(|id| id == &stored))
+    }
+
+    /// Re-establish "the primary is a member of the set" for one scope after
+    /// the set changed. Promotes to the lexicographically first remaining
+    /// member, or clears when nothing remains. Never invents a pointer where
+    /// there was none. Callers must already hold the root lock.
+    fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
+        let path = match session_id {
+            Some(session_id) => self.primary_session_path(session_id),
+            None => crate::knowledge::paths::primary_kb_path(self.root()),
+        };
+        let Some(stored) = self.get_primary_path_unlocked(&path)? else {
+            return Ok(None);
+        };
+        let ids = self.session_kb_ids(session_id)?;
+        if ids.iter().any(|id| id == &stored) {
+            return Ok(Some(stored));
+        }
+        let next = ids.into_iter().next();
+        self.set_primary_path_unlocked(&path, next.as_deref())?;
+        Ok(next)
     }
 }
 
@@ -1858,6 +1904,67 @@ mod tests {
         assert_eq!(
             svc.get_hidden_for_session_or_persisted("session-a")?,
             vec!["kb-a".to_string()]
+        );
+        Ok(())
+    }
+
+    /// The one invariant of the merged model: the primary is always a member
+    /// of the session's set. Enforced on the read side (never return a
+    /// non-member) and on the write side (repair, and persist the repair, when
+    /// a set change orphans it). It is never *invented* — a session with bases
+    /// but no chosen primary has none, so a KB-less write fails loudly instead
+    /// of landing in whichever base happens to sort first.
+    #[test]
+    fn primary_must_be_a_member_of_the_session_set() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None)?;
+        svc.create_base("beta", "Beta", None)?;
+        svc.create_base("gamma", "Gamma", None)?;
+
+        // Never invented.
+        assert_eq!(svc.primary_for_session(Some("session-a"))?, None);
+
+        svc.set_primary_for_session("session-a", Some("beta"))?;
+        assert_eq!(
+            svc.primary_for_session(Some("session-a"))?.as_deref(),
+            Some("beta")
+        );
+
+        // Hiding the primary from this chat promotes to the lexicographically
+        // first remaining member — and persists it, so the CLI and the GUI see
+        // the same answer as the model.
+        svc.set_hidden_for_session("session-a", &["beta".to_string()])?;
+        assert_eq!(
+            svc.primary_for_session(Some("session-a"))?.as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            svc.get_primary_for_session("session-a")?.as_deref(),
+            Some("alpha"),
+            "the promotion must be persisted, not re-derived on every read"
+        );
+
+        // Hiding everything clears it.
+        svc.set_hidden_for_session(
+            "session-a",
+            &["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        )?;
+        assert_eq!(svc.primary_for_session(Some("session-a"))?, None);
+        assert_eq!(svc.get_primary_for_session("session-a")?, None);
+
+        // A machine-wide primary is inherited by a session that has not chosen
+        // one — but only while that session actually holds the base.
+        svc.set_primary_persisted(Some("gamma"))?;
+        assert_eq!(
+            svc.primary_for_session(Some("session-b"))?.as_deref(),
+            Some("gamma")
+        );
+        svc.set_hidden_for_session("session-b", &["gamma".to_string()])?;
+        assert_eq!(
+            svc.primary_for_session(Some("session-b"))?,
+            None,
+            "a machine default this session hides must not leak in as its primary"
         );
         Ok(())
     }
