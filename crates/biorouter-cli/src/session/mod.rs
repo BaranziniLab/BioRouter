@@ -207,6 +207,12 @@ pub struct CliSession {
     /// Held only so the temp directory outlives the session; dropped (and the
     /// store deleted, best-effort) with the session.
     ephemeral_store_dir: Option<tempfile::TempDir>,
+    /// #31: the final session row, captured just before the private
+    /// `--no-session` store is closed. `headless()`/`interactive()` tear the
+    /// store down before `cli.rs` logs session completion, and that logging
+    /// queries the (by then closed) store — without this snapshot every
+    /// `--no-session` run reported zero tokens and zero messages.
+    final_session_snapshot: Option<biorouter::session::Session>,
 }
 
 // Cache structure for completion data
@@ -290,6 +296,7 @@ impl CliSession {
             output_format,
             last_abort: None,
             ephemeral_store_dir: None,
+            final_session_snapshot: None,
         }
     }
 
@@ -306,8 +313,21 @@ impl CliSession {
     /// directory leaks. The `Drop` of the held `TempDir` remains the
     /// best-effort fallback for abnormal exits, but it cannot close the pool
     /// first, so it keeps that platform caveat.
+    ///
+    /// The final session row is snapshotted BEFORE the pool closes: the
+    /// caller in `cli.rs` logs completion telemetry (tokens, message count)
+    /// *after* this teardown via [`Self::get_session`], which falls back to
+    /// the snapshot once the store is gone — every `--no-session` run used
+    /// to log zeros here.
     async fn close_ephemeral_store(&mut self) {
         if let Some(dir) = self.ephemeral_store_dir.take() {
+            self.final_session_snapshot = self
+                .agent
+                .config
+                .session_manager
+                .get_session(&self.session_id, false)
+                .await
+                .ok();
             self.agent.config.session_manager.close().await;
             if let Err(e) = dir.close() {
                 tracing::warn!(
@@ -1639,11 +1659,19 @@ impl CliSession {
     }
 
     pub async fn get_session(&self) -> Result<biorouter::session::Session> {
-        self.agent
+        match self
+            .agent
             .config
             .session_manager
             .get_session(&self.session_id, false)
             .await
+        {
+            Ok(session) => Ok(session),
+            // #31: the private --no-session store closes before cli.rs logs
+            // completion telemetry; answer from the snapshot captured at
+            // close so a no-session run reports its real counts, not zeros.
+            Err(e) => self.final_session_snapshot.clone().ok_or(e),
+        }
     }
 
     // Get the session's total token usage
@@ -2542,6 +2570,60 @@ mod tests {
         assert!(
             document.contains("The tool calling loop was interrupted"),
             "the recovery prompt must reach structured consumers via `messages`"
+        );
+    }
+
+    /// #31: `headless()` closes the private `--no-session` store before
+    /// returning, but `cli.rs` logs session completion AFTERWARDS via
+    /// `get_session` — which used to query the closed pool and report zero
+    /// tokens/messages for every no-session run. The final row is now
+    /// snapshotted at close, so completion telemetry sees the real counts.
+    #[tokio::test]
+    async fn no_session_completion_stats_survive_the_store_close() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+
+        // Real activity in the private store: two messages and a token total.
+        manager
+            .add_message(&session.session_id, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &session.session_id,
+                &Message::assistant().with_text("hello"),
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&session.session_id)
+            .total_tokens(Some(1234))
+            .apply()
+            .await
+            .unwrap();
+
+        // Tear down exactly as headless() does before cli.rs logs completion.
+        session.hold_ephemeral_store_dir(tmp);
+        session.close_ephemeral_store().await;
+
+        // The store really is closed and gone...
+        assert!(
+            manager.get_session(&session.session_id, false).await.is_err(),
+            "the private store must be closed after teardown"
+        );
+        // ...yet the completion telemetry the caller logs still sees the run.
+        let logged = session
+            .get_session()
+            .await
+            .expect("completion logging must still see the run after close");
+        assert_eq!(logged.message_count, 2, "real message count, not zero");
+        assert_eq!(
+            logged.total_tokens,
+            Some(1234),
+            "real token total, not zero"
         );
     }
 
