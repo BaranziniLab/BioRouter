@@ -210,10 +210,12 @@ pub async fn handle_term_run(prompt: Vec<String>) -> Result<()> {
     let working_dir = std::env::current_dir()?;
     let session_manager = SessionManager::instance();
 
+    // Shell-following: `term run` intentionally tracks the user's shell cwd
+    // mid-conversation, so it is the ONE sanctioned caller of the unguarded
+    // working-dir update (#44). Everything else goes through the empty-chat-only
+    // guarded update.
     session_manager
-        .update(&session_id)
-        .working_dir(working_dir)
-        .apply()
+        .force_update_working_dir_unguarded(&session_id, working_dir)
         .await?;
 
     let session = session_manager.get_session(&session_id, true).await?;

@@ -888,10 +888,10 @@ impl<'a> SessionUpdateBuilder<'a> {
         self
     }
 
-    pub fn working_dir(mut self, working_dir: PathBuf) -> Self {
-        self.working_dir = Some(working_dir);
-        self
-    }
+    // NOTE: there is deliberately no `working_dir` setter here. The working
+    // directory is guarded (#44): go through
+    // `SessionManager::try_update_working_dir_if_empty`, or — for the terminal
+    // shell-following path only — `force_update_working_dir_unguarded`.
 
     pub fn extension_data(mut self, data: ExtensionData) -> Self {
         self.extension_data = Some(data);
