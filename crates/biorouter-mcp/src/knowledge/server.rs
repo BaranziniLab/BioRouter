@@ -660,40 +660,74 @@ impl KnowledgeServer {
         ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
     }
 
-    // ── Task 5: Active-KB MCP tools ───────────────────────────────────────────
+    // ── The session's knowledge-base set and its primary ──────────────────────
+
+    /// Body of `kb_set_active`, split out so it can be unit-tested without
+    /// fabricating a `RequestContext`.
+    fn set_primary_json(
+        &self,
+        session_id: Option<&str>,
+        kb_id: &str,
+    ) -> Result<serde_json::Value, ErrorData> {
+        crate::knowledge::paths::validate_kb_id(kb_id)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let selection = self
+            .service
+            .set_selection(
+                session_id,
+                None,
+                crate::knowledge::service::PrimaryUpdate::Set(kb_id),
+            )
+            .map_err(|e| ErrorData::invalid_params(format!("{e:#}"), None))?;
+        Ok(Self::selection_value(&selection, true))
+    }
+
+    /// Body of `kb_get_active`.
+    fn selection_json(&self, session_id: Option<&str>) -> Result<serde_json::Value, ErrorData> {
+        let selection = self.service.selection(session_id).map_err(into_err)?;
+        Ok(Self::selection_value(&selection, false))
+    }
+
+    fn selection_value(
+        selection: &crate::knowledge::service::KbSelection,
+        ok: bool,
+    ) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "primary_kb": selection.primary_kb,
+            "knowledge_bases": selection.kb_ids,
+            // Deprecated mirror of `primary_kb`, kept for one release so
+            // anything that learned the old key keeps working.
+            "active_kb": selection.primary_kb,
+        });
+        if ok {
+            v["ok"] = serde_json::Value::Bool(true);
+        }
+        v
+    }
 
     #[tool(
         name = "kb_set_active",
-        description = "Set the active knowledge base for this session. Subsequent kb_* tool calls that omit kb_id will default to this one."
+        description = "Make one knowledge base this session's primary: the base that KB-less writes land in and that single-base reads default to. It does not change what you can search — kb_search with no kb_id already covers every knowledge base in this session, tagging each hit with its kb_id. To read or write another base, pass its kb_id; do not switch the primary to get at it. The base must be one of this session's knowledge bases."
     )]
     pub async fn kb_set_active(
         &self,
         p: Parameters<SetActiveParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
-        if let Some(session_id) = Self::session_id_from_context(&context) {
-            self.service
-                .set_primary_for_session(session_id, Some(&p.0.kb_id))
-                .map_err(into_err)?;
-        } else {
-            self.service
-                .set_primary_persisted(Some(&p.0.kb_id))
-                .map_err(into_err)?;
-        }
-        ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
+        let v = self.set_primary_json(Self::session_id(Some(&context)), &p.0.kb_id)?;
+        ok_json(&v)
     }
 
     #[tool(
         name = "kb_get_active",
-        description = "Return the currently active knowledge base id (if any)."
+        description = "Return this session's knowledge bases and which one is the primary (the KB-less write target)."
     )]
     pub async fn kb_get_active(
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self.primary_kb_for_context(Some(&context))?;
-        ok_json(&serde_json::json!({ "active_kb": v }))
+        let v = self.selection_json(Self::session_id(Some(&context)))?;
+        ok_json(&v)
     }
 
     #[tool(
@@ -901,6 +935,71 @@ mod tests {
                 "{name} must not keep teaching the single-active model, got: {desc}"
             );
         }
+    }
+
+    /// `kb_set_active` used to validate the id's *format* only — it would
+    /// happily point the session at a base that does not exist, and with a
+    /// KB-less write behind it that is a lost write. It now validates
+    /// membership, and reports the whole selection back so the model does not
+    /// need a second round-trip to see its bases.
+    #[test]
+    fn set_primary_validates_membership_and_reports_the_set() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            server.service.create_base(id, id, None)?;
+        }
+        server
+            .service
+            .set_hidden_for_session("session-a", &["gamma".to_string()])?;
+
+        let v = server.set_primary_json(Some("session-a"), "beta")?;
+        assert_eq!(v["primary_kb"], serde_json::json!("beta"));
+        assert_eq!(
+            v["active_kb"],
+            serde_json::json!("beta"),
+            "the deprecated mirror must track the primary for one release"
+        );
+        assert_eq!(
+            v["knowledge_bases"],
+            serde_json::json!(["alpha", "beta"]),
+            "the set comes back with the primary, so discovery is one call"
+        );
+
+        let err = server
+            .set_primary_json(Some("session-a"), "gamma")
+            .expect_err("gamma is not in this session");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("gamma") && err.message.contains("alpha, beta"),
+            "got: {}",
+            err.message
+        );
+
+        let err = server
+            .set_primary_json(Some("session-a"), "no-such-kb")
+            .expect_err("a base that does not exist can never be primary");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        assert_eq!(
+            server.selection_json(Some("session-a"))?["primary_kb"],
+            serde_json::json!("beta")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn state_tool_descriptions_teach_the_merged_model() {
+        let tools = KnowledgeServer::tool_router().list_all();
+        let desc = tools
+            .iter()
+            .find(|t| t.name == "kb_set_active")
+            .and_then(|t| t.description.clone())
+            .expect("kb_set_active has a description");
+        assert!(
+            desc.contains("primary") && desc.contains("does not change what you can search"),
+            "kb_set_active must stop implying that activating narrows search, got: {desc}"
+        );
     }
 
     #[test]
