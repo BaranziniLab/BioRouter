@@ -2664,7 +2664,17 @@ ipcMain.handle('write-file', async (_event, filePath, content) => {
   try {
     const expandedPath = expandBiorouterPath(filePath);
     await fs.mkdir(path.dirname(expandedPath), { recursive: true });
-    await fs.writeFile(expandedPath, content, { encoding: 'utf8' });
+    // Atomic replace via a uniquely named temp file + rename, so a concurrent
+    // reader (e.g. the CLI reading skills-config.json) never observes a
+    // truncated half-written file, and two writers never share a temp path.
+    const tmpPath = `${expandedPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fs.writeFile(tmpPath, content, { encoding: 'utf8' });
+    try {
+      await fs.rename(tmpPath, expandedPath);
+    } catch (renameError) {
+      await fs.unlink(tmpPath).catch(() => {});
+      throw renameError;
+    }
     return true;
   } catch (error) {
     console.error('Error writing to file:', error);

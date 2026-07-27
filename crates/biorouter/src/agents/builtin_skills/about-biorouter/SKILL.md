@@ -66,8 +66,10 @@ instructions. The agent sees the list of enabled skills and loads one with the
   bundles, and project-local `.biorouter/skills`, `.claude/skills`,
   `.agents/skills` directories.
 - Manage from the **Skills** page in the sidebar (add, toggle, delete) or with
-  `biorouter skill install|list|remove` in the CLI.
-- Toggles persist in `~/.config/biorouter/skills-config.json`.
+  `biorouter skill install|list|enable|disable|remove` in the CLI.
+- Toggles persist in `~/.config/biorouter/skills-config.json`, written by both
+  the GUI toggle and `biorouter skill enable|disable` (which accept a skill
+  name, bundle name, or directory slug).
 - This `about-biorouter` skill is built in: it ships with Biorouter, can be
   toggled off, and is restored automatically if its folder is removed.
 

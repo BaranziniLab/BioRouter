@@ -47,8 +47,9 @@ Biorouter auto-discovers skills at session start from several locations
 - Bundled inside an installed extension: `extensions/<name>/skills/<slug>/`
 
 A project-local skill overrides a global one of the same slug. Enable/disable
-per skill from the **Skills** page (or in `biorouter configure` → Toggle
-Extensions for the `skills` extension as a whole); per-skill disabled state
+per skill from the **Skills** page or with `biorouter skill enable|disable
+<name>` in the CLI (or in `biorouter configure` → Toggle Extensions for the
+`skills` extension as a whole); per-skill disabled state
 persists in `~/.config/biorouter/skills-config.json`. Built-in skills that ship
 with the app (like `about-biorouter`) can be toggled off but are restored if the
 folder is deleted.

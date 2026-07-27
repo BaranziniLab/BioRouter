@@ -1,6 +1,7 @@
+use crate::agents::extension::ExtensionConfig;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
-use crate::config::get_extension_by_name;
+use crate::config::{extension_entry_is_persisted, get_extension_entry_by_name, ExtensionEntry};
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -78,6 +79,49 @@ pub struct ExtensionManagerClient {
     info: InitializeResult,
     #[allow(dead_code)]
     context: PlatformExtensionContext,
+}
+
+/// Gate for the `manage_extensions` enable path (#42): an extension whose
+/// **persisted** config entry carries `enabled: false` was turned off by the
+/// operator, and the agent must not silently re-enable it — that would defeat
+/// the pinned tool environment the operator set up (benchmarking, safety).
+/// The refusal tells the model to ask the user instead; `/ext:` and the
+/// GUI/config remain the user-explicit escape hatches.
+///
+/// `persisted` is the provenance signal (`extension_entry_is_persisted`):
+/// `get_extension_entry_by_name` reads the post-injection map, where an
+/// absent platform extension is injected with its default — so a default-off
+/// one (e.g. `chatrecall`) shows up as `enabled: false` without any operator
+/// ever writing that. Only an entry actually present in the on-disk config
+/// counts as operator-disabled; injected defaults stay agent-enableable.
+fn check_enable_allowed(
+    entry: Option<ExtensionEntry>,
+    persisted: bool,
+    extension_name: &str,
+) -> Result<ExtensionConfig, ErrorData> {
+    match entry {
+        None => Err(ErrorData::new(
+            ErrorCode::RESOURCE_NOT_FOUND,
+            format!(
+                "Extension '{}' not found. Please check the extension name and try again.",
+                extension_name
+            ),
+            None,
+        )),
+        Some(entry) if !entry.enabled && persisted => Err(ErrorData::new(
+            ErrorCode::INVALID_REQUEST,
+            format!(
+                "Extension '{}' is disabled in the Biorouter configuration (enabled: false). \
+                 The operator turned it off deliberately, so do not enable it yourself. \
+                 If it is needed for this task, ask the user to re-enable it — in the desktop \
+                 app under Settings > Extensions, with `biorouter configure`, or by editing \
+                 the extension's entry in config.yaml.",
+                extension_name
+            ),
+            None,
+        )),
+        Some(entry) => Ok(entry.config),
+    }
 }
 
 impl ExtensionManagerClient {
@@ -196,19 +240,11 @@ impl ExtensionManagerClient {
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None));
         }
 
-        let config = match get_extension_by_name(&extension_name) {
-            Some(config) => config,
-            None => {
-                return Err(ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!(
-                        "Extension '{}' not found. Please check the extension name and try again.",
-                        extension_name
-                    ),
-                    None,
-                ));
-            }
-        };
+        let entry = get_extension_entry_by_name(&extension_name);
+        let persisted = entry
+            .as_ref()
+            .is_some_and(|entry| extension_entry_is_persisted(&entry.config.name()));
+        let config = check_enable_allowed(entry, persisted, &extension_name)?;
 
         extension_manager
             .add_extension(config)
@@ -476,5 +512,68 @@ impl McpClientTrait for ExtensionManagerClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(enabled: bool) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled,
+            config: ExtensionConfig::Builtin {
+                name: "developer".to_string(),
+                display_name: Some("Developer".to_string()),
+                description: "shell and file tools".to_string(),
+                timeout: None,
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn enable_of_unknown_extension_is_not_found() {
+        let err = check_enable_allowed(None, false, "ghost").unwrap_err();
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("not found"), "{}", err.message);
+    }
+
+    #[test]
+    fn enable_of_operator_disabled_extension_is_refused_with_guidance() {
+        // #42: `enabled: false` written into config.yaml must be a dependable
+        // pin — the agent may not silently re-enable what the operator turned
+        // off. `persisted: true` = the entry exists in the on-disk config.
+        let err = check_enable_allowed(Some(entry(false)), true, "developer").unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
+        assert!(err.message.contains("disabled"), "{}", err.message);
+        assert!(
+            err.message.contains("operator"),
+            "must say who disabled it: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("ask the user"),
+            "must direct the model to the user: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn enable_of_default_off_injected_extension_is_allowed() {
+        // #42 provenance: an absent platform extension is injected into the
+        // extensions map with its default — a default-off one (chatrecall)
+        // carries `enabled: false` without any operator writing it. That is
+        // not an operator pin, so the agent enable flow must stay open.
+        let config =
+            check_enable_allowed(Some(entry(false)), false, "chatrecall").expect("allowed");
+        assert_eq!(config.name(), "developer");
+    }
+
+    #[test]
+    fn enable_of_config_enabled_extension_passes_the_config_through() {
+        let config = check_enable_allowed(Some(entry(true)), true, "developer").expect("allowed");
+        assert_eq!(config.name(), "developer");
     }
 }
