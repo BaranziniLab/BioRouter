@@ -402,8 +402,15 @@ enum ResolvedTarget {
 }
 
 /// Resolve what the user typed — frontmatter name, bundle name, or directory
-/// slug — to the identifier the backend's disabled set matches on. Exact
-/// matches win over case-insensitive ones within each tier.
+/// slug — to the identifier the backend's disabled set matches on.
+///
+/// Candidates are collected across ALL identifier namespaces at once
+/// (frontmatter name, bundle directory, full slug, slug last component) and
+/// deduplicated when they refer to the same skill. Distinct targets are an
+/// error listing every candidate — never a silent precedence pick, which
+/// would mutate skill A when the user meant skill B whose slug happens to
+/// equal A's name (Codex B2 finding 2). Exact matches (in any namespace) win
+/// over case-insensitive ones.
 fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<ResolvedTarget> {
     let q = query.trim();
     if q.is_empty() {
@@ -411,59 +418,81 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
     }
     let ql = q.to_lowercase();
 
-    // Tier 1: frontmatter name — exactly what the backend's disabled set matches.
-    let matches: Vec<&InstalledSkill> = skills.iter().filter(|s| s.name == q).collect();
-    let matches = if matches.is_empty() {
-        skills
-            .iter()
-            .filter(|s| s.name.to_lowercase() == ql)
-            .collect()
+    let exact = collect_candidates(skills, &|id: &str| id == q);
+    let candidates = if exact.is_empty() {
+        collect_candidates(skills, &|id: &str| id.to_lowercase() == ql)
     } else {
-        matches
+        exact
     };
-    if !matches.is_empty() {
-        return single_skill(matches, q, false);
-    }
 
-    // Tier 2: bundle name (top-level directory) — also matched by the backend.
+    match candidates.len() {
+        1 => Ok(candidates.into_iter().next().expect("len checked")),
+        0 => no_match_error(skills, q, &ql),
+        _ => {
+            let listed: Vec<String> = candidates.iter().map(candidate_label).collect();
+            bail!(
+                "'{q}' is ambiguous — it matches {} distinct targets: {}. \
+                 Use the full slug for a skill, or the exact directory name for a bundle.",
+                candidates.len(),
+                listed.join("; ")
+            );
+        }
+    }
+}
+
+/// Every target the predicate selects, across all identifier namespaces: one
+/// candidate per matched skill (a skill matched via both its name and its
+/// slug is a single target, reported via the name) plus one per matched
+/// bundle directory.
+fn collect_candidates(
+    skills: &[InstalledSkill],
+    matches: &dyn Fn(&str) -> bool,
+) -> Vec<ResolvedTarget> {
+    let mut out = Vec::new();
+    for skill in skills {
+        let by_name = matches(&skill.name);
+        let last = skill.slug.rsplit('/').next().unwrap_or(&skill.slug);
+        let by_slug = matches(&skill.slug) || matches(last);
+        if by_name || by_slug {
+            out.push(ResolvedTarget::Skill {
+                name: skill.name.clone(),
+                slug: skill.slug.clone(),
+                bundle: skill.bundle.clone(),
+                via_slug: !by_name,
+            });
+        }
+    }
     let mut bundles: Vec<&str> = skills.iter().filter_map(|s| s.bundle.as_deref()).collect();
     bundles.sort_unstable();
     bundles.dedup();
-    if let Some(bundle) = bundles
-        .iter()
-        .find(|b| **b == q)
-        .or_else(|| bundles.iter().find(|b| b.to_lowercase() == ql))
-    {
-        let count = skills
-            .iter()
-            .filter(|s| s.bundle.as_deref() == Some(*bundle))
-            .count();
-        return Ok(ResolvedTarget::Bundle {
-            name: (*bundle).to_string(),
-            skills: count,
-        });
+    for bundle in bundles {
+        if matches(bundle) {
+            let count = skills
+                .iter()
+                .filter(|s| s.bundle.as_deref() == Some(bundle))
+                .count();
+            out.push(ResolvedTarget::Bundle {
+                name: bundle.to_string(),
+                skills: count,
+            });
+        }
     }
+    out
+}
 
-    // Tier 3: on-disk slug — full relative path, then last path component.
-    let matches: Vec<&InstalledSkill> = skills
-        .iter()
-        .filter(|s| s.slug == q || s.slug.to_lowercase() == ql)
-        .collect();
-    if !matches.is_empty() {
-        return single_skill(matches, q, true);
+/// How a candidate is presented in the ambiguity error.
+fn candidate_label(target: &ResolvedTarget) -> String {
+    match target {
+        ResolvedTarget::Skill { name, slug, .. } => format!("skill '{name}' ({slug})"),
+        ResolvedTarget::Bundle { name, skills } => format!("bundle '{name}' ({skills} skills)"),
     }
-    let matches: Vec<&InstalledSkill> = skills
-        .iter()
-        .filter(|s| {
-            let last = s.slug.rsplit('/').next().unwrap_or(&s.slug);
-            last == q || last.to_lowercase() == ql
-        })
-        .collect();
-    if !matches.is_empty() {
-        return single_skill(matches, q, true);
-    }
+}
 
-    // No match — suggest close identifiers.
+/// Nothing matched in any namespace — fail with close-identifier suggestions.
+fn no_match_error(skills: &[InstalledSkill], q: &str, ql: &str) -> Result<ResolvedTarget> {
+    let mut bundles: Vec<&str> = skills.iter().filter_map(|s| s.bundle.as_deref()).collect();
+    bundles.sort_unstable();
+    bundles.dedup();
     let mut suggestions: Vec<String> = skills
         .iter()
         .flat_map(|s| {
@@ -476,7 +505,7 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
         .chain(bundles.iter().map(|b| b.to_string()))
         .filter(|c| {
             let cl = c.to_lowercase();
-            cl.contains(&ql) || ql.contains(&cl)
+            cl.contains(ql) || ql.contains(&cl)
         })
         .collect();
     suggestions.sort();
@@ -490,24 +519,6 @@ fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<Resolved
         "No installed skill or bundle matches '{q}'. Did you mean: {}?",
         suggestions.join(", ")
     );
-}
-
-fn single_skill(matches: Vec<&InstalledSkill>, q: &str, via_slug: bool) -> Result<ResolvedTarget> {
-    if matches.len() > 1 {
-        let ids: Vec<&str> = matches.iter().map(|s| s.slug.as_str()).collect();
-        bail!(
-            "'{q}' is ambiguous — it matches {} skills: {}. Use the full slug or the frontmatter name.",
-            matches.len(),
-            ids.join(", ")
-        );
-    }
-    let skill = matches[0];
-    Ok(ResolvedTarget::Skill {
-        name: skill.name.clone(),
-        slug: skill.slug.clone(),
-        bundle: skill.bundle.clone(),
-        via_slug,
-    })
 }
 
 fn target_identifier(target: &ResolvedTarget) -> &str {
@@ -958,6 +969,66 @@ mod tests {
             err.contains("pack-a/tool") && err.contains("pack-b/tool"),
             "{err}"
         );
+    }
+
+    // Finding 2: a frontmatter-name match must not silently shadow a
+    // different skill whose slug equals that name — collect across
+    // namespaces and report distinct targets.
+    #[test]
+    fn name_matching_another_skills_slug_is_ambiguous_across_namespaces() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Skill at slug `alpha` is NAMED "shadow"; a different skill LIVES at
+        // slug `shadow`. The old tiered resolution silently picked the first.
+        write_skill(root, "alpha", "shadow", "Name is shadow");
+        write_skill(root, "shadow", "something-else", "Slug is shadow");
+        let skills = installed_at(&[root.to_path_buf()]);
+
+        let err = resolve_identifier(&skills, "shadow")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(
+            err.contains("skill 'shadow' (alpha)")
+                && err.contains("skill 'something-else' (shadow)"),
+            "both distinct targets must be listed as candidates: {err}"
+        );
+    }
+
+    #[test]
+    fn name_matching_a_bundle_directory_is_ambiguous_across_namespaces() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_skill(root, "sp", "superpowers", "A skill named like the bundle");
+        write_skill(root, "superpowers/brainstorming", "brainstorming", "Ideas");
+        let skills = installed_at(&[root.to_path_buf()]);
+
+        let err = resolve_identifier(&skills, "superpowers")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(
+            err.contains("skill 'superpowers' (sp)") && err.contains("bundle 'superpowers'"),
+            "skill and bundle candidates must both be listed: {err}"
+        );
+    }
+
+    #[test]
+    fn same_skill_matched_via_name_and_slug_is_a_single_target() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // name == slug for the same skill: two namespace hits, one target.
+        write_skill(root, "solo", "solo", "Name equals slug");
+        let skills = installed_at(&[root.to_path_buf()]);
+
+        let target = resolve_identifier(&skills, "solo").unwrap();
+        match &target {
+            ResolvedTarget::Skill { name, via_slug, .. } => {
+                assert_eq!(name, "solo");
+                assert!(!via_slug, "name match must be the reported route");
+            }
+            other => panic!("expected skill, got {other:?}"),
+        }
     }
 
     #[test]
