@@ -192,6 +192,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         "zai" | "z.ai" | "z-ai" => zai_pricing(model),
         "xiaomi_mimo" | "xiaomi-mimo" | "xiaomi" => xiaomi_mimo_pricing(model),
         "custom_deepseek" | "deepseek" => deepseek_pricing(model),
+        "moonshot" | "moonshotai" => moonshot_pricing(model),
         "inception" => inception_pricing(model),
         "mistral" | "mistralai" => mistral_pricing(model),
         "xai" | "x-ai" => xai_pricing(model),
@@ -347,6 +348,25 @@ fn deepseek_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
 }
 
+/// Direct Moonshot AI (Kimi) platform rates, per-MTok USD, verified against
+/// the Moonshot/Kimi platform price sheet (2026-07). Deliberately distinct
+/// from OpenRouter's rates for the same models (`openrouter_pricing` above):
+/// without this branch the sync path fell through to the OpenRouter-derived
+/// canonical prices, underpricing k2.6/k2.7-code and leaving k2.5 unpriced.
+/// Must stay in lockstep with `providers/declarative/moonshot.json` (the
+/// async resolved path serves that metadata);
+/// `config::declarative_providers::tests::moonshot_sync_pricing_matches_declarative_metadata`
+/// is the drift guard.
+fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
+    match model {
+        "kimi-k2.7-code" | "kimi-k2.6" => {
+            Some(ProviderModelPricing::usd_per_million(0.95, 4.00, 262_144))
+        }
+        "kimi-k2.5" => Some(ProviderModelPricing::usd_per_million(0.60, 3.00, 262_144)),
+        _ => None,
+    }
+}
+
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
     match model {
         "mercury-2" => Some(ProviderModelPricing::usd_per_million(0.25, 0.75, 128_000)),
@@ -456,14 +476,27 @@ mod tests {
     }
 
     #[test]
-    fn moonshot_canonical_pricing_resolves_via_moonshotai_mapping() {
-        // The direct `moonshot` provider has no explicit pricing table; the
-        // canonical fallback must land on the moonshotai/* registry entries
-        // via the canonical_provider "moonshot" -> "moonshotai" mapping.
-        let pricing = provider_model_pricing("moonshot", "kimi-k2.6").unwrap();
-        assert_eq!(pricing.input_token_cost, 0.66 / 1_000_000.0);
-        assert_eq!(pricing.output_token_cost, 3.41 / 1_000_000.0);
-        assert_eq!(pricing.context_length, Some(262_144));
+    fn direct_moonshot_uses_direct_platform_prices_for_all_shipped_models() {
+        // The sync path (CLI cost line, /config/pricing, BR-35 budget) must
+        // serve the direct-platform rates for every model moonshot.json
+        // ships — not the cheaper OpenRouter-derived canonical rates
+        // ($0.66/$3.41 for k2.6), and k2.5 has no OpenRouter listing at all,
+        // so without the explicit branch it was entirely unpriced.
+        for (model, want_in, want_out) in [
+            ("kimi-k2.7-code", 0.95, 4.00),
+            ("kimi-k2.6", 0.95, 4.00),
+            ("kimi-k2.5", 0.60, 3.00),
+        ] {
+            let p = provider_model_pricing("moonshot", model).unwrap();
+            assert_eq!(p.input_token_cost, want_in / 1_000_000.0, "{model}");
+            assert_eq!(p.output_token_cost, want_out / 1_000_000.0, "{model}");
+            assert_eq!(p.context_length, Some(262_144), "{model}");
+        }
+        // OpenRouter keeps its own (hosted) rates for the same models — the
+        // two tables are intentionally different price sheets.
+        let hosted = provider_model_pricing("openrouter", "moonshotai/kimi-k2.6").unwrap();
+        assert_eq!(hosted.input_token_cost, 0.66 / 1_000_000.0);
+        assert_eq!(hosted.output_token_cost, 3.41 / 1_000_000.0);
     }
 
     #[test]

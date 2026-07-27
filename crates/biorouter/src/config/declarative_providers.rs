@@ -356,4 +356,48 @@ mod tests {
             assert!((output - want_out).abs() < 1e-15, "{}", model.name);
         }
     }
+
+    /// The sync pricing table (`providers::pricing`, used by the CLI cost
+    /// line and `/config/pricing`) and this declarative metadata (served by
+    /// the async resolved path) must agree for every model moonshot.json
+    /// ships — a drift silently forks cost reports between the two paths.
+    #[test]
+    fn moonshot_sync_pricing_matches_declarative_metadata() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+        let moonshot = providers
+            .iter()
+            .find(|p| p.name == "moonshot")
+            .expect("moonshot.json is bundled");
+
+        assert!(!moonshot.models.is_empty());
+        for model in &moonshot.models {
+            let sync =
+                crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
+                    .unwrap_or_else(|| {
+                        panic!("{} must be priced on the sync path too", model.name)
+                    });
+            let meta_in = model.input_token_cost.expect("input cost set");
+            let meta_out = model.output_token_cost.expect("output cost set");
+            assert!(
+                (sync.input_token_cost - meta_in).abs() < 1e-15,
+                "{}: sync input {} != metadata {}",
+                model.name,
+                sync.input_token_cost,
+                meta_in
+            );
+            assert!(
+                (sync.output_token_cost - meta_out).abs() < 1e-15,
+                "{}: sync output {} != metadata {}",
+                model.name,
+                sync.output_token_cost,
+                meta_out
+            );
+            assert_eq!(
+                sync.context_length,
+                u32::try_from(model.context_limit).ok(),
+                "{}",
+                model.name
+            );
+        }
+    }
 }
