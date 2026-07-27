@@ -22,4 +22,5 @@ Two of those pages are worth knowing about before you go. [Developer](built-in/d
 - [Installation](../getting-started/installation.md) — the default-enabled extension list a new install starts from, before you add anything here
 - [Permission modes](../security/permission-modes.md) — how to decide whether BioRouter asks before `shell`, `text_editor` or `computer_control` acts on your machine
 - [Agent Drafter](../agent-drafter/README.md) — the built-in extension that builds interactive apps, documented separately because of its size
+- [Integrations with other tools](../integrations/README.md) — the opposite direction: adapters that let another host application, such as JupyterLab's Jupyter AI chat, run a Biorouter agent with everything documented here already attached
 - [Workflows](../workflows/README.md) — the scripted alternative to a skill when you want deterministic steps rather than agent judgement

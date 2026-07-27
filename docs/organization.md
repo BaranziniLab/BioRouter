@@ -84,6 +84,7 @@ Current top-level areas:
 | `agent-drafter/` | the apps platform — the agent that builds apps |
 | `apps-sdk/` | the SDK those apps are built against |
 | `extensions/` | the extension system, and `built-in/` for each shipped extension |
+| `integrations/` | adapters that let another host application run a Biorouter agent |
 | `knowledge-base/` | personal knowledge bases |
 | `providers/` | LLM provider integrations |
 | `security/` | permission modes, secrets, managed policy, data handling |

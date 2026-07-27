@@ -134,9 +134,16 @@ async fn agent_with_project_hooks_in_mode(
 
     let data_dir = TempDir::new().unwrap();
     let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+    // A per-test permission store, never the `instance()` singleton: that one
+    // reads the developer's real `~/.config/biorouter/permission.yaml`, so an
+    // `always_allow` entry for `developer__shell` — what clicking "always allow"
+    // once in the app leaves behind — auto-approves the call, no permission
+    // prompt is raised, and the `Notification` hook the BR-28 tests assert on
+    // never fires. Empty here means Approve mode really does prompt.
+    let permission_dir = TempDir::new().unwrap();
     let config = AgentConfig::new(
         session_manager.clone(),
-        PermissionManager::instance(),
+        Arc::new(PermissionManager::new(permission_dir.path().to_path_buf())),
         None,
         mode,
     );
@@ -153,10 +160,11 @@ async fn agent_with_project_hooks_in_mode(
 
     agent.update_provider(provider, &session.id).await.unwrap();
 
-    // data_dir must outlive the agent; leak it into the returned tempdir slot
-    // by keeping work_dir (sessions live under data_dir, but the session row
-    // is already created and cached). We keep work_dir alive for the hooks file.
+    // data_dir and permission_dir must outlive the agent; the returned tempdir
+    // slot holds work_dir (sessions live under data_dir, but the session row is
+    // already created and cached). We keep work_dir alive for the hooks file.
     std::mem::forget(data_dir);
+    std::mem::forget(permission_dir);
     (agent, session.id, work_dir)
 }
 

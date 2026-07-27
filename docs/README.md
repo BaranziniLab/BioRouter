@@ -37,6 +37,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [agent-drafter](agent-drafter/README.md) | The app-authoring MCP extension that builds BioRouter apps, and the frozen 100-spec corpus and runbook used to stress-test it. |
 | [apps-sdk](apps-sdk/README.md) | The contract behind BioRouter apps in three layers: the shipped reference, the v2 design of record, and the phase roadmap. |
 | [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension, plus an open investigation into Slack posting that has not been built. |
+| [integrations](integrations/README.md) | The opposite direction from `extensions/`: adapters that let another application host a Biorouter agent, starting with the `@Biorouter` persona for JupyterLab's Jupyter AI chat. |
 | [knowledge-base](knowledge-base/README.md) | The live working documents for the personal, LLM-maintained wiki: surveys of the ingestion pipeline and plans for extending it. |
 | [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. |
 | [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, and which providers are acceptable for patient and other sensitive data. |
