@@ -1304,6 +1304,21 @@ fn user_tool_result_text(content: &[Content]) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
+/// Final attribution for a sub-call failure (issue #28): EVERY failure path —
+/// tool errors, dispatch failures, a missing extension manager, size limits —
+/// must name its tool, so an uncaught failure surfaces at the step level
+/// already attributed. Errors that already carry the standard prefix (or the
+/// dispatch path's distinct one) pass through untouched.
+fn attribute_sub_call_error(tool_name: &str, error: String) -> String {
+    let attributed = format!("Tool error from {tool_name}:");
+    let dispatch = format!("Dispatch error from {tool_name}:");
+    if error.starts_with(&attributed) || error.starts_with(&dispatch) {
+        error
+    } else {
+        format!("Tool error from {tool_name}: {error}")
+    }
+}
+
 fn assistant_tool_result_text(
     content: &[Content],
     collected_any: bool,
@@ -1835,6 +1850,10 @@ impl CodeExecutionClient {
                     Ok(value)
                 }
             });
+            // Centralized attribution: whichever path failed, the error the
+            // script (and therefore the step-level result) sees names the
+            // tool — see `attribute_sub_call_error`.
+            let result = result.map_err(|error| attribute_sub_call_error(&tool_name, error));
             // Per-call telemetry for the UI's executed-calls view (issue #28).
             // The Err string is intentionally NOT recorded — see
             // `ToolCallRecord::failed`.
@@ -2529,6 +2548,43 @@ mod tests {
         assert!(truncated.error.unwrap().len() <= MAX_TOOL_CALL_RECORD_TEXT_BYTES + '…'.len_utf8());
     }
 
+    // Codex review of #28: extraction errors, the unavailable-manager error,
+    // and result-size errors reached the script unattributed. Attribution is
+    // now centralized, idempotent, and preserves the dispatch prefix.
+    #[test]
+    fn every_sub_call_failure_names_its_tool() {
+        assert_eq!(
+            attribute_sub_call_error(
+                "developer__shell",
+                "Extension manager not available".to_string()
+            ),
+            "Tool error from developer__shell: Extension manager not available"
+        );
+        assert_eq!(
+            attribute_sub_call_error(
+                "developer__shell",
+                "Tool result exceeds the 4194304 byte limit".to_string()
+            ),
+            "Tool error from developer__shell: Tool result exceeds the 4194304 byte limit"
+        );
+        // Already-attributed errors are not double-prefixed…
+        assert_eq!(
+            attribute_sub_call_error(
+                "developer__shell",
+                "Tool error from developer__shell: boom".to_string()
+            ),
+            "Tool error from developer__shell: boom"
+        );
+        // …and the dispatch path keeps its distinct prefix.
+        assert_eq!(
+            attribute_sub_call_error(
+                "developer__shell",
+                "Dispatch error from developer__shell: no such tool".to_string()
+            ),
+            "Dispatch error from developer__shell: no such tool"
+        );
+    }
+
     #[test]
     fn user_tool_result_text_honours_audience_annotations() {
         use rmcp::model::Role;
@@ -2574,8 +2630,15 @@ mod tests {
                 tx,
             ))
             .unwrap();
-        let response = rx.await.unwrap();
-        assert!(response.is_err(), "no manager: the call must fail");
+        let error = rx
+            .await
+            .unwrap()
+            .expect_err("no manager: the call must fail");
+        // Even this infrastructure failure names its tool for the script.
+        assert_eq!(
+            error,
+            "Tool error from developer__shell: Extension manager not available"
+        );
         drop(call_tx);
         handler.await.unwrap();
 
