@@ -1,9 +1,18 @@
 //! `biorouter skill` subcommands — install a skill (or skill bundle) from a
-//! `.zip`, list installed skills, and remove one. Mirrors the desktop GUI's
+//! `.zip`, list installed skills with their enabled state, enable/disable a
+//! skill without removing it, and remove one. Mirrors the desktop GUI's
 //! skill-zip flow: a single skill is `SKILL.md` (optionally under one folder);
 //! a bundle is `<bundle>/<slug>/SKILL.md`. Text files are written under
 //! `~/.config/biorouter/skills/<slug>/`, where they are auto-discovered.
+//!
+//! Enable/disable state lives in `~/.config/biorouter/skills-config.json`
+//! (`{"disabled": [...]}`), shared with the desktop GUI's per-skill toggles.
+//! The backend (`skills_extension.rs`) matches entries against the skill's
+//! frontmatter `name` and its bundle directory name — never the on-disk slug —
+//! so `enable`/`disable` here resolve whatever the user typed to the
+//! identifier the backend actually filters on.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -223,61 +232,521 @@ fn report_single(name: &str, description: &str, slug: &str, dest: &Path, files: 
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// discovery (shared by list / enable / disable)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// An installed skill as the backend's skills extension will discover it:
+/// either `<slug>/SKILL.md` (single skill) or `<bundle>/<slug>/SKILL.md`
+/// (bundle). The backend's disabled set matches the frontmatter `name` and
+/// the bundle directory name — never the on-disk slug.
+#[derive(Debug, Clone)]
+struct InstalledSkill {
+    /// Relative directory path under the skills root
+    /// (e.g. `my-skill` or `superpowers/brainstorming`).
+    slug: String,
+    /// Frontmatter `name` — the identifier the backend filters on. `None`
+    /// when SKILL.md has no parseable frontmatter (the backend skips those).
+    name: Option<String>,
+    description: String,
+    /// Top-level bundle directory name when the skill is part of a bundle.
+    bundle: Option<String>,
+}
+
+/// Mirror the backend's two-level discovery (`<slug>/SKILL.md` or
+/// `<bundle>/<slug>/SKILL.md`, see `skills_extension::discover_skills_in_directories`)
+/// so slugs, frontmatter names, and bundle names line up with what the skills
+/// extension actually loads. Deeper `SKILL.md` files are invisible to the
+/// backend and are therefore not reported here either.
+fn collect_installed_skills(root: &Path) -> Vec<InstalledSkill> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let skill_md = path.join("SKILL.md");
+        if skill_md.exists() {
+            out.push(read_skill(&skill_md, dir_name, None));
+        } else if let Ok(sub_entries) = fs::read_dir(&path) {
+            for sub in sub_entries.flatten() {
+                let sub_path = sub.path();
+                if !sub_path.is_dir() {
+                    continue;
+                }
+                let sub_md = sub_path.join("SKILL.md");
+                if !sub_md.exists() {
+                    continue;
+                }
+                let Some(sub_name) = sub_path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                out.push(read_skill(
+                    &sub_md,
+                    format!("{dir_name}/{sub_name}"),
+                    Some(dir_name.clone()),
+                ));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    out
+}
+
+fn read_skill(skill_md: &Path, slug: String, bundle: Option<String>) -> InstalledSkill {
+    match fs::read_to_string(skill_md)
+        .ok()
+        .and_then(|c| parse_frontmatter(&c))
+    {
+        Some((name, description)) => InstalledSkill {
+            slug,
+            name: Some(name),
+            description,
+            bundle,
+        },
+        None => InstalledSkill {
+            slug,
+            name: None,
+            description: String::new(),
+            bundle,
+        },
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// skills-config.json (shared with the GUI's per-skill toggles)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn skills_config_path() -> PathBuf {
+    Paths::config_dir().join("skills-config.json")
+}
+
+/// Read `skills-config.json` as a raw JSON value so unknown fields written by
+/// other surfaces (the GUI, future versions) survive a read-modify-write.
+fn load_skills_config(path: &Path) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("{} is not valid JSON — fix or remove it", path.display()))?;
+    if !value.is_object() {
+        bail!("{} must contain a JSON object", path.display());
+    }
+    Ok(value)
+}
+
+/// Add or remove `identifier` in the config's `disabled` array, touching
+/// nothing else. Idempotent; returns `true` when the config changed.
+fn set_disabled_state(
+    config: &mut serde_json::Value,
+    identifier: &str,
+    disable: bool,
+) -> Result<bool> {
+    let obj = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("skills-config.json must contain a JSON object"))?;
+    let entry = obj
+        .entry("disabled")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let arr = entry.as_array_mut().ok_or_else(|| {
+        anyhow!("the 'disabled' field in skills-config.json must be an array of skill names")
+    })?;
+    let present = arr.iter().any(|v| v.as_str() == Some(identifier));
+    if disable {
+        if present {
+            return Ok(false);
+        }
+        arr.push(serde_json::Value::String(identifier.to_string()));
+    } else {
+        if !present {
+            return Ok(false);
+        }
+        arr.retain(|v| v.as_str() != Some(identifier));
+    }
+    Ok(true)
+}
+
+/// Write the config atomically (temp file + rename) — the GUI writes the same
+/// file, so never leave a half-written JSON behind.
+fn write_skills_config(path: &Path, config: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(config)?;
+    fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
+fn disabled_set(config: &serde_json::Value) -> HashSet<String> {
+    config
+        .get("disabled")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The exact enabled test the backend applies (`skills_extension::is_skill_enabled`):
+/// a skill is disabled when its frontmatter name or its bundle name is listed.
+fn is_enabled(skill: &InstalledSkill, disabled: &HashSet<String>) -> bool {
+    let name_disabled = skill.name.as_deref().is_some_and(|n| disabled.contains(n));
+    let bundle_disabled = skill
+        .bundle
+        .as_deref()
+        .is_some_and(|b| disabled.contains(b));
+    !(name_disabled || bundle_disabled)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// identifier resolution (name / bundle / slug → what the backend matches on)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum ResolvedTarget {
+    /// A single skill, identified by its frontmatter name.
+    Skill {
+        name: String,
+        slug: String,
+        bundle: Option<String>,
+        /// True when the query matched the on-disk slug rather than the
+        /// frontmatter name (worth surfacing the mapping to the user).
+        via_slug: bool,
+    },
+    /// A whole bundle, identified by its top-level directory name.
+    Bundle { name: String, skills: usize },
+}
+
+/// Resolve what the user typed — frontmatter name, bundle name, or directory
+/// slug — to the identifier the backend's disabled set matches on. Exact
+/// matches win over case-insensitive ones within each tier.
+fn resolve_identifier(skills: &[InstalledSkill], query: &str) -> Result<ResolvedTarget> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Empty skill name.");
+    }
+    let ql = q.to_lowercase();
+
+    // Tier 1: frontmatter name — exactly what the backend's disabled set matches.
+    let matches: Vec<&InstalledSkill> = skills
+        .iter()
+        .filter(|s| s.name.as_deref() == Some(q))
+        .collect();
+    let matches = if matches.is_empty() {
+        skills
+            .iter()
+            .filter(|s| s.name.as_deref().is_some_and(|n| n.to_lowercase() == ql))
+            .collect()
+    } else {
+        matches
+    };
+    if !matches.is_empty() {
+        return single_skill(matches, q, false);
+    }
+
+    // Tier 2: bundle name (top-level directory) — also matched by the backend.
+    let mut bundles: Vec<&str> = skills.iter().filter_map(|s| s.bundle.as_deref()).collect();
+    bundles.sort_unstable();
+    bundles.dedup();
+    if let Some(bundle) = bundles
+        .iter()
+        .find(|b| **b == q)
+        .or_else(|| bundles.iter().find(|b| b.to_lowercase() == ql))
+    {
+        let count = skills
+            .iter()
+            .filter(|s| s.bundle.as_deref() == Some(*bundle))
+            .count();
+        return Ok(ResolvedTarget::Bundle {
+            name: (*bundle).to_string(),
+            skills: count,
+        });
+    }
+
+    // Tier 3: on-disk slug — full relative path, then last path component.
+    let matches: Vec<&InstalledSkill> = skills
+        .iter()
+        .filter(|s| s.slug == q || s.slug.to_lowercase() == ql)
+        .collect();
+    if !matches.is_empty() {
+        return single_skill(matches, q, true);
+    }
+    let matches: Vec<&InstalledSkill> = skills
+        .iter()
+        .filter(|s| {
+            let last = s.slug.rsplit('/').next().unwrap_or(&s.slug);
+            last == q || last.to_lowercase() == ql
+        })
+        .collect();
+    if !matches.is_empty() {
+        return single_skill(matches, q, true);
+    }
+
+    // No match — suggest close identifiers.
+    let mut suggestions: Vec<String> = skills
+        .iter()
+        .flat_map(|s| {
+            let mut ids = vec![s.slug.clone()];
+            if let Some(name) = &s.name {
+                if name != &s.slug {
+                    ids.push(name.clone());
+                }
+            }
+            ids
+        })
+        .chain(bundles.iter().map(|b| b.to_string()))
+        .filter(|c| {
+            let cl = c.to_lowercase();
+            cl.contains(&ql) || ql.contains(&cl)
+        })
+        .collect();
+    suggestions.sort();
+    suggestions.dedup();
+    if suggestions.is_empty() {
+        bail!(
+            "No installed skill or bundle matches '{q}'. Run `biorouter skill list` to see installed skills (slug, name, and enabled state)."
+        );
+    }
+    bail!(
+        "No installed skill or bundle matches '{q}'. Did you mean: {}?",
+        suggestions.join(", ")
+    );
+}
+
+fn single_skill(matches: Vec<&InstalledSkill>, q: &str, via_slug: bool) -> Result<ResolvedTarget> {
+    if matches.len() > 1 {
+        let ids: Vec<&str> = matches.iter().map(|s| s.slug.as_str()).collect();
+        bail!(
+            "'{q}' is ambiguous — it matches {} skills: {}. Use the full slug or the frontmatter name.",
+            matches.len(),
+            ids.join(", ")
+        );
+    }
+    let skill = matches[0];
+    let Some(name) = skill.name.clone() else {
+        bail!(
+            "Skill at '{}' has no parseable SKILL.md frontmatter, so Biorouter never loads it and enable/disable would have no effect. Fix its frontmatter (name + description) first.",
+            skill.slug
+        );
+    };
+    Ok(ResolvedTarget::Skill {
+        name,
+        slug: skill.slug.clone(),
+        bundle: skill.bundle.clone(),
+        via_slug,
+    })
+}
+
+fn target_identifier(target: &ResolvedTarget) -> &str {
+    match target {
+        ResolvedTarget::Skill { name, .. } => name,
+        ResolvedTarget::Bundle { name, .. } => name,
+    }
+}
+
+fn target_label(target: &ResolvedTarget) -> String {
+    match target {
+        ResolvedTarget::Skill { name, .. } => {
+            format!("skill {}", style(name).fg(ACCENT).bold())
+        }
+        ResolvedTarget::Bundle { name, skills } => {
+            format!(
+                "bundle {} {}",
+                style(name).fg(ACCENT).bold(),
+                style(format!("({skills} skills)")).dim()
+            )
+        }
+    }
+}
+
+/// When the user passed a slug, show which backend identifier it mapped to.
+fn slug_mapping_note(target: &ResolvedTarget) -> Option<String> {
+    match target {
+        ResolvedTarget::Skill {
+            name,
+            slug,
+            via_slug: true,
+            ..
+        } if name != slug => Some(format!(
+            "  {} slug {} → skill name {}",
+            style("·").dim(),
+            style(slug).bold(),
+            style(name).fg(ACCENT).bold()
+        )),
+        _ => None,
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // list
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// One rendered row of `skill list`: (slug, display name, enabled).
+fn list_rows(skills: &[InstalledSkill], disabled: &HashSet<String>) -> Vec<(String, String, bool)> {
+    skills
+        .iter()
+        .map(|skill| {
+            (
+                skill.slug.clone(),
+                skill
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "(invalid frontmatter)".to_string()),
+                skill.name.is_some() && is_enabled(skill, disabled),
+            )
+        })
+        .collect()
+}
 
 pub async fn handle_list() -> Result<()> {
     let root = skills_root();
     println!("  {} {}", style("▌").fg(ACCENT), style("Skills").bold());
-    if !root.exists() {
+    let skills = collect_installed_skills(&root);
+    if skills.is_empty() {
         println!("    {}", style("none installed").dim());
         return Ok(());
     }
 
-    let mut found: Vec<(String, String)> = Vec::new();
-    collect_skills(&root, &root, &mut found);
-    found.sort();
+    let disabled = match load_skills_config(&skills_config_path()) {
+        Ok(config) => disabled_set(&config),
+        Err(err) => {
+            println!("    {}", style(format!("warning: {err:#}")).yellow());
+            HashSet::new()
+        }
+    };
 
-    if found.is_empty() {
-        println!("    {}", style("none installed").dim());
-        return Ok(());
-    }
-    let width = found.iter().map(|(s, _)| s.len()).max().unwrap_or(0);
-    for (slug, desc) in &found {
+    let rows = list_rows(&skills, &disabled);
+    let slug_width = rows.iter().map(|(s, _, _)| s.len()).max().unwrap_or(0);
+    let name_width = rows.iter().map(|(_, n, _)| n.len()).max().unwrap_or(0);
+    for ((slug, name, enabled), skill) in rows.iter().zip(&skills) {
+        let dot = if *enabled {
+            style("●").green().to_string()
+        } else {
+            style("○").dim().to_string()
+        };
+        // Pad the raw strings first: styling adds invisible ANSI bytes that
+        // would break `{:<width$}` alignment when styles differ per row.
+        let slug_cell = style(format!("{slug:<slug_width$}")).bold();
+        let name_cell = if *enabled {
+            style(format!("{name:<name_width$}")).to_string()
+        } else {
+            style(format!("{name:<name_width$}")).dim().to_string()
+        };
         println!(
-            "    {} {:<width$}  {}",
-            style("·").dim(),
-            style(slug).bold(),
-            style(desc).dim(),
-            width = width
+            "    {} {}  {}  {}",
+            dot,
+            slug_cell,
+            name_cell,
+            style(&skill.description).dim()
         );
     }
     Ok(())
 }
 
-/// Recursively find `SKILL.md` files and record `(relative-slug, description)`.
-fn collect_skills(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+// ──────────────────────────────────────────────────────────────────────────────
+// enable / disable
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub async fn handle_disable(query: String) -> Result<()> {
+    let skills = collect_installed_skills(&skills_root());
+    let target = resolve_identifier(&skills, &query)?;
+    if let Some(note) = slug_mapping_note(&target) {
+        println!("{note}");
+    }
+
+    let path = skills_config_path();
+    let mut config = load_skills_config(&path)?;
+    let changed = set_disabled_state(&mut config, target_identifier(&target), true)?;
+    if changed {
+        write_skills_config(&path, &config)?;
+        println!(
+            "  {} disabled {}",
+            style("✓").green(),
+            target_label(&target)
+        );
+    } else {
+        println!(
+            "  {} {} is already disabled",
+            style("·").dim(),
+            target_label(&target)
+        );
+    }
+    Ok(())
+}
+
+pub async fn handle_enable(query: String) -> Result<()> {
+    let skills = collect_installed_skills(&skills_root());
+    let path = skills_config_path();
+    let mut config = load_skills_config(&path)?;
+
+    let target = match resolve_identifier(&skills, &query) {
+        Ok(target) => target,
+        Err(err) => {
+            // Nothing installed matches, but a stale entry (e.g. from a skill
+            // removed after being disabled) can still be cleaned up when the
+            // raw query matches it exactly.
+            if set_disabled_state(&mut config, query.trim(), false)? {
+                write_skills_config(&path, &config)?;
+                println!(
+                    "  {} removed stale disabled entry {} (no installed skill matches it)",
+                    style("✓").green(),
+                    style(query.trim()).bold()
+                );
+                return Ok(());
+            }
+            return Err(err);
+        }
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_skills(root, &path, out);
-        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
-            let rel = path
-                .parent()
-                .and_then(|p| p.strip_prefix(root).ok())
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            let desc = fs::read_to_string(&path)
-                .ok()
-                .and_then(|c| parse_frontmatter(&c))
-                .map(|(_, d)| d)
-                .unwrap_or_default();
-            out.push((rel, desc));
+    if let Some(note) = slug_mapping_note(&target) {
+        println!("{note}");
+    }
+
+    let changed = set_disabled_state(&mut config, target_identifier(&target), false)?;
+    if changed {
+        write_skills_config(&path, &config)?;
+        println!("  {} enabled {}", style("✓").green(), target_label(&target));
+    } else {
+        println!(
+            "  {} {} is already enabled",
+            style("·").dim(),
+            target_label(&target)
+        );
+    }
+
+    // Enabling a sub-skill is moot while its whole bundle stays disabled.
+    if let ResolvedTarget::Skill {
+        bundle: Some(bundle),
+        ..
+    } = &target
+    {
+        if disabled_set(&config).contains(bundle) {
+            println!(
+                "  {} its bundle {} is still disabled — run `biorouter skill enable {}` to re-enable the whole bundle",
+                style("!").yellow(),
+                style(bundle).bold(),
+                bundle
+            );
         }
     }
+    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

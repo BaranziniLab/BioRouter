@@ -870,9 +870,23 @@ enum SkillCommand {
         force: bool,
     },
 
-    /// List installed skills
-    #[command(about = "List installed skills")]
+    /// List installed skills with their enabled/disabled state
+    #[command(about = "List installed skills and their enabled state")]
     List {},
+
+    /// Re-enable a disabled skill (or bundle) without reinstalling it
+    #[command(about = "Enable a skill (remove it from the disabled list)")]
+    Enable {
+        #[arg(help = "Skill name, bundle name, or slug (as shown by `skill list`)")]
+        name: String,
+    },
+
+    /// Disable a skill (or bundle) while keeping it installed on disk
+    #[command(about = "Disable a skill without removing it")]
+    Disable {
+        #[arg(help = "Skill name, bundle name, or slug (as shown by `skill list`)")]
+        name: String,
+    },
 
     /// Remove an installed skill by slug
     #[command(about = "Remove an installed skill")]
@@ -1994,6 +2008,8 @@ async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
     match command {
         SkillCommand::Install { path, force } => skill::handle_install(path, force).await,
         SkillCommand::List {} => skill::handle_list().await,
+        SkillCommand::Enable { name } => skill::handle_enable(name).await,
+        SkillCommand::Disable { name } => skill::handle_disable(name).await,
         SkillCommand::Remove { slug } => skill::handle_remove(slug).await,
     }
 }
