@@ -706,6 +706,13 @@ pub async fn reply(
                                     kind.is_transient(),
                                     Some(kind.wire_code().to_string()),
                                 ),
+                                // #31/#41: a session-store failure is a
+                                // Session-scoped error — not the provider's
+                                // fault and not retryable until the local
+                                // db problem is fixed.
+                                TurnAbortCode::SessionStore => {
+                                    (TurnErrorScope::Session, false, None)
+                                }
                                 TurnAbortCode::ToolLoop { .. } => {
                                     (TurnErrorScope::Inference, false, None)
                                 }

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
 pub const CURRENT_SCHEMA_VERSION: i32 = 16;
@@ -48,6 +48,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 
 const MESSAGES_FTS_INSERT: &str =
     "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
+
+/// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
+/// violation (SQLite error 2067) from the message insert — the one failure
+/// [`SessionStorage::add_message`] recovers from by re-minting the uid (#41).
+/// Scoped to the msg_uid index by message text so an unrelated unique
+/// violation still surfaces as an error.
+fn is_msg_uid_unique_violation(err: &anyhow::Error) -> bool {
+    match err.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::Database(db_err)) => {
+            db_err.is_unique_violation() && db_err.message().contains("messages.msg_uid")
+        }
+        _ => false,
+    }
+}
 
 /// Whether a stored message should be indexed for recall. Recall searches what
 /// the *user* saw, so only `user_visible` messages are indexed. A row with no
@@ -1119,8 +1133,38 @@ impl SessionManager {
         self.storage.apply_update(builder).await
     }
 
-    pub async fn add_message(&self, id: &str, message: &Message) -> Result<()> {
+    /// Persist one message, returning the **effective** `msg_uid` it was stored
+    /// under. Usually the message's own id (or a freshly minted one when the
+    /// caller supplied none), but a uid collision re-mints — callers that keep
+    /// the message in memory must adopt the returned uid so the in-memory and
+    /// persisted ids agree (#41).
+    /// Close the underlying SQLite pool, releasing the store's file handles
+    /// (the db plus its WAL/-shm siblings). Ordering seam for #31: a private
+    /// `--no-session` store's temp directory can only be deleted reliably on
+    /// platforms where unlinking open files fails (Windows) if the pool is
+    /// closed FIRST. Every later store operation fails with a pool-closed
+    /// error, so call this only when the run is done with the store.
+    pub async fn close(&self) {
+        self.storage.close().await;
+    }
+
+    pub async fn add_message(&self, id: &str, message: &Message) -> Result<String> {
         self.storage.add_message(id, message).await
+    }
+
+    /// [`Self::add_message`] that also stamps the EFFECTIVE uid onto the
+    /// caller's in-memory message (#41). The store mints a uid for idless
+    /// messages and re-mints on a collision; a retained copy that keeps
+    /// `id: None` (or a stale id) desynchronizes memory from storage — its
+    /// next persist would insert a duplicate row under a fresh uid instead
+    /// of being recognized as a replay. Use this on every path that both
+    /// persists a message AND keeps/yields it.
+    pub async fn add_message_adopting_uid(&self, id: &str, message: &mut Message) -> Result<()> {
+        let effective_uid = self.storage.add_message(id, message).await?;
+        if message.id.as_deref() != Some(effective_uid.as_str()) {
+            message.id = Some(effective_uid);
+        }
+        Ok(())
     }
 
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
@@ -1709,6 +1753,12 @@ impl SessionStorage {
             initialized: tokio::sync::OnceCell::new(),
             session_dir,
         }
+    }
+
+    /// Close the SQLite pool (see [`SessionManager::close`]). Safe to call
+    /// even if the lazy pool never connected; idempotent.
+    pub async fn close(&self) {
+        self.pool.close().await;
     }
 
     async fn pool(&self) -> Result<&Pool<Sqlite>> {
@@ -2922,18 +2972,161 @@ impl SessionStorage {
         Ok(content)
     }
 
-    async fn add_message(&self, session_id: &str, message: &Message) -> Result<()> {
+    /// Returns the **effective** `msg_uid` the message was stored under, so a
+    /// caller keeping the message in memory can adopt it (#41). Usually the
+    /// caller-supplied id (or a freshly minted one when there was none); only
+    /// a uid collision with *different* content re-mints.
+    async fn add_message(&self, session_id: &str, message: &Message) -> Result<String> {
         // Runs on the turn path once per message (including every tool
         // response); the transaction covers the message row, blob spill and
         // FTS index write, so it is a plausible per-tool-call fixed cost.
         let _phase = crate::agents::phase_timing::Phase::start("session.add_message");
+
+        // Persist the message's stable id, minting a fresh UUIDv7 when the
+        // caller didn't supply one (BR-45).
+        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
+        match self.insert_message(session_id, message, &msg_uid).await {
+            Ok(()) => Ok(msg_uid),
+            Err(err) if is_msg_uid_unique_violation(&err) => {
+                // #41: an EXACT replay (same uid, identical role + content +
+                // metadata — e.g. a caller retrying a write it believes
+                // failed) is idempotent success, not an anomaly. No second
+                // row, and the in-memory id already agrees.
+                if self
+                    .existing_row_matches(session_id, message, &msg_uid)
+                    .await?
+                {
+                    debug!(
+                        session_id,
+                        %msg_uid,
+                        "message uid already persisted with identical content; \
+                         treating the replay as success"
+                    );
+                    return Ok(msg_uid);
+                }
+                // #41 resilience: a caller-supplied id that already exists in
+                // this session with DIFFERENT content (an id-reuse bug
+                // upstream — a decoder stamping one shared id on several
+                // messages) must degrade to a logged anomaly with a re-minted
+                // uid, not abort the whole turn. Retried exactly once with a
+                // freshly minted UUIDv7, which cannot collide again. The
+                // fresh uid is returned so the caller's in-memory message can
+                // adopt it.
+                let fresh_uid = new_message_id();
+                warn!(
+                    session_id,
+                    old_uid = %msg_uid,
+                    new_uid = %fresh_uid,
+                    "message uid already exists in this session; retrying the \
+                     insert with a re-minted uid instead of failing the turn"
+                );
+                self.insert_message(session_id, message, &fresh_uid).await?;
+                Ok(fresh_uid)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Whether the row already stored under `msg_uid` is identical to what
+    /// inserting `message` would store (role + created_timestamp + content +
+    /// metadata) — i.e. the insert is an exact replay, not an id collision
+    /// between two distinct messages.
+    ///
+    /// `created_timestamp` is part of the comparison (#41): two genuinely
+    /// distinct messages that happen to share uid, role, content and metadata
+    /// but were created at different times must NOT be collapsed into one —
+    /// treating the second as a replay would silently drop it.
+    async fn existing_row_matches(
+        &self,
+        session_id: &str,
+        message: &Message,
+        msg_uid: &str,
+    ) -> Result<bool> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, (String, String, i64, Option<String>)>(
+            "SELECT role, content_json, created_timestamp, metadata_json FROM messages \
+             WHERE session_id = ? AND msg_uid = ?",
+        )
+        .bind(session_id)
+        .bind(msg_uid)
+        .fetch_optional(pool)
+        .await?;
+        let Some((row_role, row_content, row_created, row_metadata)) = row else {
+            return Ok(false);
+        };
+
+        if row_role != role_to_string(&message.role) || row_created != message.created {
+            return Ok(false);
+        }
+
+        // `metadata_json` is nullable for rows migrated from older schemas
+        // (#41): a NULL there is the stored form of "no metadata was
+        // recorded", which can only be an exact replay of a message whose
+        // in-memory metadata is still the default. Decoding it as a bare
+        // `String` made the replay probe *error* on such rows, aborting the
+        // very turn the idempotent-replay path exists to save.
+        let metadata_matches = match row_metadata {
+            Some(row_metadata) => row_metadata == serde_json::to_string(&message.metadata)?,
+            None => message.metadata == crate::conversation::message::MessageMetadata::default(),
+        };
+        if !metadata_matches {
+            return Ok(false);
+        }
+
+        self.stored_content_matches(session_id, &row_content, message)
+            .await
+    }
+
+    /// Whether `row_content` (the stored `content_json`) and the candidate
+    /// message's content are the same payload.
+    ///
+    /// The comparison must be *stable* across externalization (#41):
+    /// [`message_blobs::externalize`] mints a fresh blob uid per call, so
+    /// serializing a freshly-externalized candidate could never equal the
+    /// stored row for an oversized message — every large-message replay
+    /// compared unequal and was re-inserted under a re-minted uid. Instead,
+    /// compare the pre-externalization forms: hydrate the stored stubs back
+    /// to their payloads (and any stubs the candidate itself carries, e.g. a
+    /// re-persisted already-externalized conversation) and compare those.
+    async fn stored_content_matches(
+        &self,
+        session_id: &str,
+        row_content: &str,
+        message: &Message,
+    ) -> Result<bool> {
+        if !message_blobs::content_json_has_stub(row_content) {
+            return Ok(row_content == serde_json::to_string(&message.content)?);
+        }
+
+        let mut stored: Vec<MessageContent> = serde_json::from_str(row_content)?;
+        let mut candidate = message.content.clone();
+        let mut uids = message_blobs::referenced_uids(&stored);
+        uids.extend(message_blobs::referenced_uids(&candidate));
+        let mut blobs = std::collections::HashMap::new();
+        for uid in uids {
+            if let Some(content) = self.get_message_blob(session_id, &uid).await? {
+                blobs.insert(uid, content);
+            }
+        }
+        message_blobs::hydrate(&mut stored, &blobs);
+        message_blobs::hydrate(&mut candidate, &blobs);
+        Ok(serde_json::to_string(&stored)? == serde_json::to_string(&candidate)?)
+    }
+
+    /// One attempt at the transactional message insert (row + blob spill +
+    /// FTS index + session touch), with an explicit `msg_uid`. Split out of
+    /// [`Self::add_message`] so a uid collision can be retried with a fresh
+    /// uid on a clean transaction.
+    async fn insert_message(
+        &self,
+        session_id: &str,
+        message: &Message,
+        msg_uid: &str,
+    ) -> Result<()> {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
-        // Persist the message's stable id, minting a fresh UUIDv7 when the
-        // caller didn't supply one (BR-45).
-        let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
         // BR-7: lift an oversized tool-result payload into the blob side table
         // so the `messages` row stays small. `None` (the common case) stores the
@@ -4218,6 +4411,44 @@ mod blob_tests {
         .await
         .unwrap()
         .id
+    }
+
+    /// #41: replaying an OVERSIZED message must be as idempotent as any other
+    /// replay. The probe used to re-externalize the candidate — minting a
+    /// fresh blob uid on every comparison — so a large-message replay never
+    /// compared equal to its stored row and was re-inserted (duplicated)
+    /// under a re-minted uid. The comparison now hydrates the stored stubs
+    /// and compares pre-externalization payloads, which is stable.
+    #[tokio::test]
+    async fn an_oversized_replay_is_idempotent_not_a_reminted_duplicate() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let message = tool_response_message("call_1", huge("r")).with_id("big-uid");
+        let first = sm.add_message(&id, &message).await.unwrap();
+        assert_eq!(first, "big-uid");
+
+        let replay = sm
+            .add_message(&id, &message)
+            .await
+            .expect("an oversized replay must be idempotent success");
+        assert_eq!(
+            replay, "big-uid",
+            "the replay returns the SAME uid — no re-mint for identical content"
+        );
+
+        let loaded = sm.get_session(&id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            1,
+            "an oversized replay must not create a duplicate row"
+        );
+        assert_eq!(
+            blob_count(&sm, &id).await,
+            1,
+            "an oversized replay must not spill a duplicate blob"
+        );
     }
 
     /// The core of BR-7: the oversized payload leaves `content_json` for the side
@@ -7539,6 +7770,343 @@ mod tests {
         let new_id = &after_ids[4];
         assert!(!new_id.starts_with("msg_"));
         assert!(!before.contains(new_id));
+    }
+
+    /// #41 resilience: inserting a message whose caller-supplied id already
+    /// exists in the session with DIFFERENT content must NOT abort — the store
+    /// re-mints the uid, keeps both rows, and RETURNS the effective uid so the
+    /// caller's in-memory message can adopt it. Before this, the duplicate hit
+    /// `UNIQUE(session_id, msg_uid)` (SQLite 2067) and the whole turn died;
+    /// then the re-mint happened only in SQLite while the caller kept the
+    /// stale id.
+    #[tokio::test]
+    async fn add_message_reminting_recovers_from_a_duplicate_uid() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/dup_uid"),
+                "Dup uid".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let first_uid = sm
+            .add_message(&session.id, &amsg(now, "first").with_id("shared-uid"))
+            .await
+            .unwrap();
+        assert_eq!(
+            first_uid, "shared-uid",
+            "the happy path returns the caller-supplied uid"
+        );
+        // The forced duplicate: same session, same caller-supplied id,
+        // different content.
+        let reminted_uid = sm
+            .add_message(&session.id, &amsg(now + 1, "second").with_id("shared-uid"))
+            .await
+            .expect("a duplicate uid must be re-minted, not abort the turn");
+        assert_ne!(
+            reminted_uid, "shared-uid",
+            "the returned uid must be the re-minted one, not the stale caller id"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let messages = loaded.conversation.unwrap();
+        assert_eq!(messages.len(), 2, "both messages must be persisted");
+        let ids: Vec<String> = messages
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect();
+        assert_eq!(ids[0], "shared-uid", "the first insert keeps its id");
+        assert_eq!(
+            ids[1], reminted_uid,
+            "the persisted row and the returned uid must agree"
+        );
+        let texts: Vec<String> = messages
+            .messages()
+            .iter()
+            .map(Message::as_concat_text)
+            .collect();
+        assert_eq!(texts, vec!["first", "second"]);
+
+        // An id duplicated across DIFFERENT sessions is fine and untouched.
+        let other = sm
+            .create_session(
+                PathBuf::from("/tmp/dup_uid2"),
+                "Other".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&other.id, &amsg(now + 2, "elsewhere").with_id("shared-uid"))
+            .await
+            .unwrap();
+        let other_loaded = sm.get_session(&other.id, true).await.unwrap();
+        assert_eq!(
+            other_loaded.conversation.unwrap().messages()[0]
+                .id
+                .as_deref(),
+            Some("shared-uid")
+        );
+    }
+
+    /// #41 idempotence: re-adding the EXACT same message (same uid, identical
+    /// role/content/metadata — a caller retrying a write it believes failed)
+    /// is success, not a re-mint. One row, same uid back, no duplicate.
+    #[tokio::test]
+    async fn add_message_treats_an_exact_replay_as_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/replay_uid"),
+                "Replay".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let message = amsg(now, "same words").with_id("replay-uid");
+        let first = sm.add_message(&session.id, &message).await.unwrap();
+        let second = sm
+            .add_message(&session.id, &message)
+            .await
+            .expect("an exact replay must be idempotent success");
+        assert_eq!(first, "replay-uid");
+        assert_eq!(
+            second, "replay-uid",
+            "the replay returns the SAME uid, so the caller's in-memory id \
+             stays in agreement"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let messages = loaded.conversation.unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "an exact replay must not create a duplicate row"
+        );
+        assert_eq!(messages.messages()[0].id.as_deref(), Some("replay-uid"));
+    }
+
+    /// #41 caller contract: after adopting the re-minted uid returned by a
+    /// collision, re-persisting that same in-memory message is an exact
+    /// replay — success, no third row. This is the loop the agent's persist
+    /// batch runs (adopt effective uid → later replays are idempotent).
+    #[tokio::test]
+    async fn adopted_reminted_uid_makes_later_replays_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/adopt_uid"),
+                "Adopt".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        sm.add_message(&session.id, &amsg(now, "original").with_id("clash-uid"))
+            .await
+            .unwrap();
+
+        // Collision with different content: the store re-mints and the caller
+        // adopts the returned uid (what agent.rs does after add_message).
+        let mut colliding = amsg(now + 1, "different").with_id("clash-uid");
+        let effective = sm.add_message(&session.id, &colliding).await.unwrap();
+        assert_ne!(effective, "clash-uid");
+        colliding.id = Some(effective.clone());
+
+        // Replaying the adopted message is idempotent success.
+        let replay = sm.add_message(&session.id, &colliding).await.unwrap();
+        assert_eq!(replay, effective);
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        let messages = loaded.conversation.unwrap();
+        assert_eq!(messages.len(), 2, "adopt-then-replay must not add a row");
+        let ids: Vec<&str> = messages
+            .messages()
+            .iter()
+            .map(|m| m.id.as_deref().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["clash-uid", effective.as_str()]);
+    }
+
+    /// #41: a message with NO caller id gets a minted uid, and the caller is
+    /// told which one, so it can stamp its in-memory copy.
+    #[tokio::test]
+    async fn add_message_returns_the_minted_uid_for_idless_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/minted_uid"),
+                "Minted".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let minted = sm
+            .add_message(&session.id, &amsg(now, "no id"))
+            .await
+            .unwrap();
+        assert!(!minted.is_empty());
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().messages()[0].id.as_deref(),
+            Some(minted.as_str()),
+            "the persisted uid and the returned uid must agree"
+        );
+    }
+
+    /// #41: the idless soft-interrupt shape — a `Message::user()` minted
+    /// mid-turn, persisted, then retained in the in-memory conversation and
+    /// yielded. `add_message_adopting_uid` must stamp the store's minted uid
+    /// onto the in-memory copy, so a later re-persist of the retained copy is
+    /// an idempotent replay instead of a duplicate row under a fresh uid.
+    #[tokio::test]
+    async fn adopting_uid_keeps_an_idless_soft_interrupt_in_sync_with_storage() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/soft_interrupt"),
+                "SoftInterrupt".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // The soft-interrupt message carries no id when it is persisted.
+        let mut m = amsg(chrono::Utc::now().timestamp_millis(), "user correction");
+        assert!(m.id.is_none());
+        sm.add_message_adopting_uid(&session.id, &mut m)
+            .await
+            .unwrap();
+
+        let adopted = m.id.clone().expect("the minted uid must be adopted");
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.as_ref().unwrap().messages()[0]
+                .id
+                .as_deref(),
+            Some(adopted.as_str()),
+            "memory and storage must agree on the uid"
+        );
+
+        // Re-persisting the retained copy (e.g. a later conversation write)
+        // is now a replay — before adoption it minted a SECOND row.
+        sm.add_message_adopting_uid(&session.id, &mut m)
+            .await
+            .expect("re-persisting the adopted copy must be idempotent");
+        assert_eq!(m.id.as_deref(), Some(adopted.as_str()));
+        let reloaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            reloaded.conversation.unwrap().len(),
+            1,
+            "the adopted copy must replay, not duplicate"
+        );
+    }
+
+    /// #41: the replay probe must include `created_timestamp`. Two genuinely
+    /// distinct messages that happen to share uid, role, content AND metadata
+    /// but were created at different times are NOT replays — collapsing them
+    /// would silently drop the second one.
+    #[tokio::test]
+    async fn same_content_different_created_timestamp_is_not_a_replay() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/created_ts"),
+                "CreatedTs".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let first = sm
+            .add_message(&session.id, &amsg(now, "same words").with_id("ts-uid"))
+            .await
+            .unwrap();
+        assert_eq!(first, "ts-uid");
+
+        // Identical role/content/metadata, later creation time: a distinct
+        // message, so it must be re-minted and kept — not treated as a replay.
+        let second = sm
+            .add_message(&session.id, &amsg(now + 5, "same words").with_id("ts-uid"))
+            .await
+            .expect("a distinct message must be re-minted, not abort");
+        assert_ne!(
+            second, "ts-uid",
+            "a different created_timestamp is a different message, not a replay"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            2,
+            "both distinct messages must be persisted"
+        );
+    }
+
+    /// #41: `metadata_json` is nullable for rows migrated from older schemas.
+    /// The replay probe must decode it as an `Option` and treat NULL as "no
+    /// metadata recorded" (matching a default-metadata message) — decoding a
+    /// bare String made the probe ERROR on such rows, aborting the very turn
+    /// the idempotent-replay path exists to save.
+    #[tokio::test]
+    async fn replay_against_a_null_metadata_row_still_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/null_md"),
+                "NullMd".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let message = amsg(now, "migrated row").with_id("null-md-uid");
+        sm.add_message(&session.id, &message).await.unwrap();
+
+        // Simulate a row migrated from a pre-metadata schema.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE messages SET metadata_json = NULL WHERE session_id = ? AND msg_uid = ?",
+        )
+        .bind(&session.id)
+        .bind("null-md-uid")
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let replay = sm
+            .add_message(&session.id, &message)
+            .await
+            .expect("a NULL-metadata row must not error the replay probe");
+        assert_eq!(
+            replay, "null-md-uid",
+            "the replay must match the migrated row, not re-mint"
+        );
+
+        let loaded = sm.get_session(&session.id, true).await.unwrap();
+        assert_eq!(
+            loaded.conversation.unwrap().len(),
+            1,
+            "the replay must not duplicate the migrated row"
+        );
     }
 
     #[tokio::test]

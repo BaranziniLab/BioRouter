@@ -20,7 +20,7 @@ use rmcp::model::{
 };
 use serde_json::Value;
 
-use super::super::base::Usage;
+use super::super::base::{tool_call_batching_enabled, Usage};
 use super::super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
 use crate::providers::utils::RequestLog;
@@ -884,6 +884,23 @@ pub struct BedrockStreamDecoder {
     /// Shared id stamped on every message yielded for this response, so the
     /// desktop store merges the deltas into one transcript entry.
     message_id: String,
+    /// §6.2b (issue #41): whether completed `tool_use` blocks are buffered and
+    /// flushed as ONE assistant message at `messageStop` / `finish()`, mirroring
+    /// the Anthropic decoder. Read once at construction from
+    /// `tool_call_batching_enabled()` (`BIOROUTER_TOOL_CALL_BATCHING`).
+    ///
+    /// Without batching, every tool_use block became its own message carrying
+    /// the SAME shared `message_id`; the agent loop then rebuilt two assistant
+    /// messages with one id in a single persist batch, which the session store
+    /// rejects (`UNIQUE(session_id, msg_uid)`) — killing the whole turn.
+    batch_tool_calls: bool,
+    /// Completed tool_use contents awaiting the batched flush, keyed by
+    /// `content_block_index`. Buffered in `contentBlockStop` ARRIVAL order and
+    /// sorted by index at flush time: the decoder supports interleaved blocks
+    /// (see "Block indices" above), so a later block can close first, and the
+    /// batched message must follow the response's canonical block order — not
+    /// stop order — for dispatch and persistence.
+    pending_tool_contents: Vec<(i32, MessageContent)>,
 }
 
 /// One item of the decoded stream: a partial message and/or a usage snapshot.
@@ -901,6 +918,21 @@ impl BedrockStreamDecoder {
             finish_reason: None,
             saw_message_stop: false,
             message_id: uuid::Uuid::new_v4().to_string(),
+            batch_tool_calls: tool_call_batching_enabled(),
+            pending_tool_contents: Vec::new(),
+        }
+    }
+
+    /// Test seam: construct with an explicit batching mode instead of reading
+    /// `BIOROUTER_TOOL_CALL_BATCHING`. Mutating that env var in tests races
+    /// every parallel test that constructs a decoder (a known workspace
+    /// gotcha), so the kill-switch shape test injects the flag directly; the
+    /// env parsing itself lives in `tool_call_batching_enabled()`.
+    #[cfg(test)]
+    fn with_batching(model_name: impl Into<String>, batch_tool_calls: bool) -> Self {
+        Self {
+            batch_tool_calls,
+            ..Self::new(model_name)
         }
     }
 
@@ -1008,7 +1040,20 @@ impl BedrockStreamDecoder {
 
             bedrock::ConverseStreamOutput::ContentBlockStop(stop) => {
                 match self.tool_blocks.remove(&stop.content_block_index) {
-                    Some(acc) => vec![(Some(self.finish_tool_block(acc)), None)],
+                    Some(acc) => {
+                        let content = self.finish_tool_content(acc);
+                        if self.batch_tool_calls {
+                            // §6.2b: defer — flushed as ONE message at
+                            // `messageStop` (or `finish()`), so a multi-tool
+                            // turn dispatches in parallel and never persists
+                            // two assistant rows sharing this decoder's id.
+                            self.pending_tool_contents
+                                .push((stop.content_block_index, content));
+                            Vec::new()
+                        } else {
+                            vec![(Some(self.assistant_message(content)), None)]
+                        }
+                    }
                     None => Vec::new(),
                 }
             }
@@ -1016,7 +1061,11 @@ impl BedrockStreamDecoder {
             bedrock::ConverseStreamOutput::MessageStop(stop) => {
                 self.saw_message_stop = true;
                 self.finish_reason = Some(map_bedrock_stop_reason(&stop.stop_reason));
-                vec![(None, Some(self.usage_snapshot()))]
+                // §6.2b: a messageStop closes the response, so every tool block
+                // that will arrive already has. Flush the batch here, riding the
+                // SAME stream item as the usage snapshot — agent.rs reads
+                // (message, usage) in one match arm.
+                vec![(self.flush_pending_tools(), Some(self.usage_snapshot()))]
             }
 
             bedrock::ConverseStreamOutput::Metadata(meta) => match meta.usage.as_ref() {
@@ -1031,11 +1080,35 @@ impl BedrockStreamDecoder {
         }
     }
 
-    /// Turn a completed tool-use block into a tool request message.
+    /// §6.2b: drain buffered `tool_use` contents into a **single** assistant
+    /// message stamped with the shared `message_id`, or `None` when nothing is
+    /// buffered. One message carrying N `ToolRequest`s is what makes the
+    /// agent's `select_all` dispatch them in parallel — and what keeps one
+    /// response from persisting as several rows sharing one `msg_uid`
+    /// (issue #41). The drain empties the buffer, so a second flush is a no-op;
+    /// a batch is never delivered twice.
+    ///
+    /// Sorted by `content_block_index` before assembly: blocks are buffered in
+    /// stop-arrival order, and with interleaved blocks a later block can close
+    /// first. Request order is load-bearing downstream — Anthropic 400s a
+    /// tool-result batch whose order doesn't match the request order.
+    fn flush_pending_tools(&mut self) -> Option<Message> {
+        if self.pending_tool_contents.is_empty() {
+            return None;
+        }
+        let mut pending = std::mem::take(&mut self.pending_tool_contents);
+        pending.sort_by_key(|(index, _)| *index);
+        let contents = pending.into_iter().map(|(_, content)| content).collect();
+        let mut message = Message::new(Role::Assistant, Utc::now().timestamp(), contents);
+        message.id = Some(self.message_id.clone());
+        Some(message)
+    }
+
+    /// Turn a completed tool-use block into a tool request content.
     ///
     /// Called only from the `contentBlockStop` arm, so `acc.input` is the
     /// complete argument JSON.
-    fn finish_tool_block(&self, acc: ToolUseAccumulator) -> Message {
+    fn finish_tool_content(&self, acc: ToolUseAccumulator) -> MessageContent {
         let ToolUseAccumulator {
             tool_use_id,
             name,
@@ -1050,7 +1123,7 @@ impl BedrockStreamDecoder {
                 .map_err(|e| format!("Could not parse tool arguments: {e}: {input}"))
         };
 
-        let content = match parsed {
+        match parsed {
             // `rmcp::model::object` debug-asserts its argument is an object, and
             // the agent expects a map. A non-object here means the stream was
             // corrupt; fail the call loudly rather than coercing it to `{}`.
@@ -1075,9 +1148,7 @@ impl BedrockStreamDecoder {
                 tool_use_id,
                 Err(ErrorData::new(ErrorCode::INVALID_PARAMS, message, None)),
             ),
-        };
-
-        self.assistant_message(content)
+        }
     }
 
     /// Flush state after the event stream ends.
@@ -1087,33 +1158,41 @@ impl BedrockStreamDecoder {
     /// never as a callable one — so the turn reports the truncation instead of
     /// silently dropping it (or, far worse, executing half a command).
     pub fn finish(&mut self) -> Vec<BedrockStreamItem> {
+        let mut items: Vec<BedrockStreamItem> = Vec::new();
+
+        // §6.2b: a stream that ended WITHOUT a `messageStop` (truncated after
+        // its blocks closed) still has its buffered COMPLETE tool blocks
+        // flushed as one batched message — otherwise a whole multi-tool turn
+        // would silently vanish. A no-op in the common path (`messageStop`
+        // already drained the buffer).
+        if let Some(batched) = self.flush_pending_tools() {
+            items.push((Some(batched), None));
+        }
+
         let mut pending: Vec<(i32, ToolUseAccumulator)> = self.tool_blocks.drain().collect();
         pending.sort_by_key(|(index, _)| *index);
 
-        let mut items: Vec<BedrockStreamItem> = pending
-            .into_iter()
-            .map(|(index, acc)| {
-                tracing::warn!(
-                    index,
-                    tool = %acc.name,
-                    "Bedrock stream ended before tool_use block completed; \
-                     surfacing it as a failed tool call rather than executing truncated arguments"
-                );
-                let content = MessageContent::tool_request(
-                    acc.tool_use_id,
-                    Err(ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!(
-                            "The Bedrock response stream ended before the arguments for `{}` \
+        items.extend(pending.into_iter().map(|(index, acc)| {
+            tracing::warn!(
+                index,
+                tool = %acc.name,
+                "Bedrock stream ended before tool_use block completed; \
+                 surfacing it as a failed tool call rather than executing truncated arguments"
+            );
+            let content = MessageContent::tool_request(
+                acc.tool_use_id,
+                Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!(
+                        "The Bedrock response stream ended before the arguments for `{}` \
                              were complete, so the call was not made. Please retry.",
-                            acc.name
-                        ),
-                        None,
-                    )),
-                );
-                (Some(self.assistant_message(content)), None)
-            })
-            .collect();
+                        acc.name
+                    ),
+                    None,
+                )),
+            );
+            (Some(self.assistant_message(content)), None)
+        }));
 
         // A truncated stream never reached `messageStop`/`metadata`, so no usage
         // snapshot was emitted. Emit whatever we have so a cancelled or cut-off
@@ -1344,6 +1423,8 @@ mod bedrock_stream_tests {
                 tool_start(1, "tooluse_abc", "shell"),
                 tool_delta(1, "{\"command\":\"ls\"}"),
                 block_stop(1),
+                // §6.2b: the batched tool message flushes at messageStop.
+                message_stop(StopReason::ToolUse),
             ],
         );
 
@@ -1417,10 +1498,11 @@ mod bedrock_stream_tests {
 
     // ---- single tool call ---------------------------------------------------
 
-    /// THE safety property: nothing tool-shaped is emitted until
-    /// `contentBlockStop`, and what is emitted then has complete arguments.
+    /// THE safety property: nothing tool-shaped is emitted until the block has
+    /// closed (complete arguments), and — with §6.2b batching on by default —
+    /// the request is delivered once, at `messageStop`.
     #[test]
-    fn tool_call_is_emitted_once_at_block_stop_with_complete_arguments() {
+    fn tool_call_is_emitted_once_at_message_stop_with_complete_arguments() {
         let mut decoder = BedrockStreamDecoder::new("m");
 
         let before_stop = drain(
@@ -1437,7 +1519,15 @@ mod bedrock_stream_tests {
             "no item may be emitted before contentBlockStop, got {before_stop:?}"
         );
 
-        let at_stop = drain(&mut decoder, &[block_stop(0)]);
+        // §6.2b: block close buffers the completed request; nothing is
+        // emitted until the response ends.
+        let at_block_stop = drain(&mut decoder, &[block_stop(0)]);
+        assert!(
+            tool_requests(&at_block_stop).is_empty(),
+            "batched: the request must not be emitted before messageStop"
+        );
+
+        let at_stop = drain(&mut decoder, &[message_stop(StopReason::ToolUse)]);
         let requests = tool_requests(&at_stop);
         assert_eq!(requests.len(), 1, "exactly one tool request");
         assert_eq!(requests[0].0, "tooluse_abc");
@@ -1446,8 +1536,7 @@ mod bedrock_stream_tests {
         assert_eq!(args, &serde_json::json!({"command": "ls -la /tmp"}));
 
         // And it is not re-emitted afterwards.
-        let after = drain(&mut decoder, &[message_stop(StopReason::ToolUse)]);
-        assert!(tool_requests(&after).is_empty());
+        assert!(tool_requests(&decoder.finish()).is_empty());
     }
 
     /// Bedrock splits `input` at arbitrary byte boundaries, including mid-token
@@ -1463,6 +1552,7 @@ mod bedrock_stream_tests {
             events.push(tool_delta(3, std::str::from_utf8(chunk).unwrap()));
         }
         events.push(block_stop(3));
+        events.push(message_stop(StopReason::ToolUse));
 
         let items = drain(&mut decoder, &events);
         let requests = tool_requests(&items);
@@ -1477,7 +1567,11 @@ mod bedrock_stream_tests {
         let mut decoder = BedrockStreamDecoder::new("m");
         let items = drain(
             &mut decoder,
-            &[tool_start(0, "id", "list_things"), block_stop(0)],
+            &[
+                tool_start(0, "id", "list_things"),
+                block_stop(0),
+                message_stop(StopReason::ToolUse),
+            ],
         );
         let requests = tool_requests(&items);
         assert_eq!(requests.len(), 1);
@@ -1519,6 +1613,238 @@ mod bedrock_stream_tests {
         let (name_b, args_b) = requests[1].1.as_ref().unwrap();
         assert_eq!(name_b, "text_editor");
         assert_eq!(args_b, &serde_json::json!({"path": "/etc/hosts"}));
+    }
+
+    /// §6.2b core gate (issue #41): two `tool_use` blocks in one response must
+    /// decode to **one** assistant message carrying **two** `ToolRequest`s —
+    /// mirroring the Anthropic decoder's
+    /// `test_streaming_batches_multiple_tool_uses_into_one_message`. Before
+    /// this, each block became its own message stamped with the SAME shared
+    /// `message_id`, and the agent loop persisted two assistant rows with one
+    /// `msg_uid` — which the session store rejects (UNIQUE constraint 2067),
+    /// killing the turn.
+    #[test]
+    fn two_tool_use_blocks_batch_into_one_assistant_message() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                text_delta(0, "Let me check."),
+                block_stop(0),
+                tool_start(1, "toolu_a", "developer__shell"),
+                tool_delta(1, "{\"command\":\"ls\"}"),
+                block_stop(1),
+                tool_start(2, "toolu_b", "developer__text_editor"),
+                tool_delta(2, "{\"command\":\"view\",\"path\":\"/tmp/x\"}"),
+                block_stop(2),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+
+        // Exactly ONE message carries tool requests, and it carries BOTH,
+        // in block order (request order is load-bearing — Anthropic 400s a
+        // reordered tool-result batch).
+        let tool_messages: Vec<&Message> = items
+            .iter()
+            .filter_map(|(m, _)| m.as_ref())
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+            })
+            .collect();
+        assert_eq!(
+            tool_messages.len(),
+            1,
+            "two tool_use blocks must batch into ONE assistant message, not one per block"
+        );
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "toolu_a");
+        assert_eq!(requests[1].0, "toolu_b");
+
+        // Identity: the batched message carries the decoder's shared id, so
+        // desktop delta-merging still folds the whole response into one bubble.
+        let text_id = items
+            .iter()
+            .filter_map(|(m, _)| m.as_ref())
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::Text(_)))
+            })
+            .and_then(|m| m.id.clone())
+            .expect("text message must carry the shared id");
+        assert_eq!(
+            tool_messages[0].id.as_deref(),
+            Some(text_id.as_str()),
+            "the batched tool message must share the response's message id"
+        );
+
+        // The batched message rides the SAME stream item as the messageStop
+        // usage snapshot (agent.rs reads message + usage in one match arm).
+        let batched_item = items
+            .iter()
+            .find(|(m, _)| {
+                m.as_ref().is_some_and(|m| {
+                    m.content
+                        .iter()
+                        .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+                })
+            })
+            .unwrap();
+        assert!(
+            batched_item.1.is_some(),
+            "the batched tool message must be yielded together with the usage snapshot"
+        );
+    }
+
+    /// Interleaved blocks where the LATER block closes FIRST: the batched
+    /// message must order its requests by `content_block_index`, not by
+    /// `contentBlockStop` arrival. Before this fix the buffer kept stop order,
+    /// so block 2's request was dispatched and persisted ahead of block 1's.
+    #[test]
+    fn batched_tools_keep_block_order_when_stops_arrive_reversed() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                // Both blocks open, deltas interleave, then they close in
+                // REVERSE index order (2 before 1).
+                tool_start(1, "toolu_first", "developer__shell"),
+                tool_start(2, "toolu_second", "developer__text_editor"),
+                tool_delta(2, "{\"path\":"),
+                tool_delta(1, "{\"command\":"),
+                tool_delta(2, "\"/tmp/x\"}"),
+                tool_delta(1, "\"ls\"}"),
+                block_stop(2),
+                block_stop(1),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+
+        let requests = tool_requests(&items);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].0, "toolu_first",
+            "block 1 must come first even though block 2 closed first"
+        );
+        assert_eq!(requests[1].0, "toolu_second");
+        // Arguments were accumulated per index, unaffected by the reordering.
+        assert_eq!(
+            requests[0].1.as_ref().unwrap().1,
+            serde_json::json!({"command": "ls"})
+        );
+        assert_eq!(
+            requests[1].1.as_ref().unwrap().1,
+            serde_json::json!({"path": "/tmp/x"})
+        );
+    }
+
+    /// Same reversal, but the stream dies after the blocks closed and BEFORE
+    /// `messageStop` — the `finish()` flush must apply the same index sort.
+    #[test]
+    fn finish_flush_also_sorts_reversed_stop_order() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let during = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(1, "toolu_first", "shell"),
+                tool_start(2, "toolu_second", "text_editor"),
+                tool_delta(1, "{\"command\":\"pwd\"}"),
+                tool_delta(2, "{\"path\":\"/tmp/y\"}"),
+                block_stop(2),
+                block_stop(1),
+                // connection died here: no messageStop
+            ],
+        );
+        assert!(tool_requests(&during).is_empty());
+
+        let flushed = decoder.finish();
+        let requests = tool_requests(&flushed);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "toolu_first");
+        assert_eq!(requests[1].0, "toolu_second");
+    }
+
+    /// §6.2b kill switch: with batching OFF (`BIOROUTER_TOOL_CALL_BATCHING=0`
+    /// at construction) the pre-batching serial shape is restored — one
+    /// assistant message per `tool_use` block.
+    ///
+    /// Injected via the `with_batching` test seam instead of mutating the env
+    /// var: env mutation races every parallel test that constructs a decoder
+    /// (`new()` reads the flag), and these sync tests hit that window
+    /// reliably. The env parsing is `tool_call_batching_enabled()`'s own
+    /// contract, exercised by the Anthropic decoder's serial kill-switch test.
+    #[test]
+    fn kill_switch_restores_serial_tool_messages() {
+        let mut decoder = BedrockStreamDecoder::with_batching("m", false);
+        let items = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(0, "toolu_a", "shell"),
+                tool_delta(0, "{\"command\":\"ls\"}"),
+                block_stop(0),
+                tool_start(1, "toolu_b", "text_editor"),
+                tool_delta(1, "{\"path\":\"/tmp/x\"}"),
+                block_stop(1),
+                message_stop(StopReason::ToolUse),
+            ],
+        );
+
+        let shape: Vec<usize> = items
+            .iter()
+            .filter_map(|(m, _)| m.as_ref())
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter(|c| matches!(c, MessageContent::ToolRequest(_)))
+                    .count()
+            })
+            .filter(|count| *count > 0)
+            .collect();
+        assert_eq!(
+            shape,
+            vec![1, 1],
+            "with batching OFF each tool_use block must be its own message (serial)"
+        );
+    }
+
+    /// §6.2b regression: a stream that ends after its blocks closed but
+    /// WITHOUT a `messageStop` (cut off cleanly) must still deliver the
+    /// batched tools via `finish()` — otherwise a whole multi-tool turn would
+    /// silently vanish.
+    #[test]
+    fn stream_ending_without_message_stop_still_flushes_batched_tools() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let during = drain(
+            &mut decoder,
+            &[
+                message_start(),
+                tool_start(0, "toolu_done", "shell"),
+                tool_delta(0, "{\"command\":\"pwd\"}"),
+                block_stop(0),
+                tool_start(1, "toolu_open", "text_editor"),
+                tool_delta(1, "{\"pa"),
+                // connection died here: no block_stop(1), no messageStop
+            ],
+        );
+        assert!(tool_requests(&during).is_empty());
+
+        let flushed = decoder.finish();
+        assert!(decoder.was_truncated());
+        let requests = tool_requests(&flushed);
+        assert_eq!(requests.len(), 2, "completed AND truncated calls surface");
+        // The completed block is callable (flushed batch)…
+        assert_eq!(requests[0].0, "toolu_done");
+        assert!(requests[0].1.is_ok());
+        // …the truncated one is a failed request, never callable.
+        assert_eq!(requests[1].0, "toolu_open");
+        assert!(requests[1].1.is_err());
     }
 
     #[test]
@@ -1626,6 +1952,7 @@ mod bedrock_stream_tests {
                 tool_start(0, "id", "shell"),
                 tool_delta(0, "{\"command\": not json"),
                 block_stop(0),
+                message_stop(StopReason::ToolUse),
             ],
         );
         let requests = tool_requests(&items);
@@ -1644,6 +1971,7 @@ mod bedrock_stream_tests {
                 tool_start(0, "id", "shell"),
                 tool_delta(0, "\"just a string\""),
                 block_stop(0),
+                message_stop(StopReason::ToolUse),
             ],
         );
         let requests = tool_requests(&items);

@@ -141,6 +141,42 @@ pub(crate) fn assistant_turn_message_id(response: &Message) -> String {
         .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
 }
 
+/// Defense-in-depth for issue #41: one persist batch must never contain two
+/// messages with the same id — the session store enforces
+/// `UNIQUE(session_id, msg_uid)` and a single collision aborts the whole turn
+/// with SQLite error 2067.
+///
+/// Adjacent same-id messages were already merged by [`Conversation::push`], so
+/// any duplicate id left in the batch is **non-adjacent**: a decoder that
+/// stamped one shared per-response id on several yielded messages (the Bedrock
+/// decoder before its §6.2b batching; any streaming decoder with batching
+/// disabled) whose rebuilt tool requests ended up separated by their tool
+/// responses. Re-mint a fresh id on every later occurrence so the turn
+/// persists instead of dying; the first occurrence keeps the provider's id so
+/// desktop delta-merging is unaffected. Messages without ids are left alone —
+/// the store mints a fresh uid for each of those on insert.
+pub(crate) fn remint_duplicate_message_ids(batch: Conversation) -> Conversation {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut messages = batch.into_messages();
+    for message in &mut messages {
+        let Some(id) = message.id.clone() else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            let fresh = format!("msg_{}", Uuid::new_v4());
+            warn!(
+                old_id = %id,
+                new_id = %fresh,
+                "duplicate message id within one persist batch; re-minting to avoid a \
+                 UNIQUE(session_id, msg_uid) abort (decoder id-reuse bug?)"
+            );
+            seen.insert(fresh.clone());
+            message.id = Some(fresh);
+        }
+    }
+    Conversation::new_unvalidated(messages)
+}
+
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
 /// body every turn.
@@ -409,6 +445,55 @@ where
             }
         }
     })
+}
+
+/// What woke the tool-batch loop (#40).
+#[derive(Debug)]
+pub(crate) enum BatchWake<T> {
+    /// The turn's cancel token tripped.
+    Cancelled,
+    /// An elicitation request was queued on the [`ActionRequiredManager`].
+    /// The tool call that raised it is itself parked *inside* the batch —
+    /// blocked in `create_elicitation` until the request is answered or
+    /// cancelled — so this MUST be able to preempt `combined.next()`: a
+    /// consumer that only drained the request queue after a tool item
+    /// yielded could never surface the request, and a headless auto-cancel
+    /// had to wait out the full 300 s elicitation timeout.
+    ElicitationReady,
+    /// The next tool-stream item (or `None`: the batch is drained).
+    Item(Option<T>),
+}
+
+/// Race the batch's next tool item against the turn's cancel token and the
+/// arrival of an elicitation request **for this session**. Biased so a cancel
+/// always wins and an elicitation beats a tool item. Every branch is
+/// cancel-safe: `cancelled()` and `Notify::notified` re-arm losslessly, and
+/// `StreamExt::next` never drops a resolved item on a lost race.
+///
+/// The wake is scoped by `session_id`: the manager is process-global, and an
+/// unscoped wake let ANY concurrent session's batch loop win the race, drain
+/// the request, and persist the elicitation prompt under its own session id
+/// (#40). A request scoped to another session neither wakes nor is drained
+/// by this loop.
+pub(crate) async fn next_batch_wake<T, S>(
+    cancel_token: &Option<CancellationToken>,
+    combined: &mut S,
+    session_id: &str,
+) -> BatchWake<T>
+where
+    S: Stream<Item = T> + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = async {
+            match cancel_token.as_ref() {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        } => BatchWake::Cancelled,
+        _ = ActionRequiredManager::global().request_arrived(session_id) => BatchWake::ElicitationReady,
+        item = combined.next() => BatchWake::Item(item),
+    }
 }
 
 /// BR-12: RAII marker that a session has a background eager-compaction task in
@@ -941,9 +1026,16 @@ impl Agent {
     async fn drain_elicitation_messages(&self, session_id: &str) -> Vec<Message> {
         let mut messages = Vec::new();
         let manager = self.config.session_manager.clone();
-        let mut elicitation_rx = ActionRequiredManager::global().request_rx.lock().await;
-        while let Ok(elicitation_message) = elicitation_rx.try_recv() {
-            if let Err(e) = manager.add_message(session_id, &elicitation_message).await {
+        // Only requests deliverable to THIS session (its own scope plus the
+        // unscoped fallback) — a request scoped to a concurrent session stays
+        // queued for that session's loop, so its prompt is never persisted or
+        // yielded under the wrong session id (#40).
+        for mut elicitation_message in ActionRequiredManager::global().drain_requests(session_id) {
+            // #41: adopt the minted uid so the yielded copy matches the row.
+            if let Err(e) = manager
+                .add_message_adopting_uid(session_id, &mut elicitation_message)
+                .await
+            {
                 warn!("Failed to save elicitation message to session: {}", e);
             }
             messages.push(elicitation_message);
@@ -3274,8 +3366,13 @@ impl Agent {
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
                 for text in self.drain_soft_interrupts() {
-                    let m = Message::user().with_text(text);
-                    session_manager.add_message(&session_config.id, &m).await?;
+                    let mut m = Message::user().with_text(text);
+                    // #41: adopt the minted uid — the retained/yielded copy
+                    // must carry the same id as the stored row, or its next
+                    // persist duplicates it instead of replaying.
+                    session_manager
+                        .add_message_adopting_uid(&session_config.id, &mut m)
+                        .await?;
                     conversation.push(m.clone());
                     yield AgentEvent::Message(m);
                 }
@@ -3299,10 +3396,12 @@ impl Agent {
                                 .session(&session_config.id)
                                 .count(turns_taken),
                         );
-                        let nudge = Message::user()
+                        let mut nudge = Message::user()
                             .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &nudge).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut nudge)
+                            .await?;
                         conversation.push(nudge);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -3336,10 +3435,12 @@ impl Agent {
                         // after that the turn ends whether or not it complied.
                         stall_deadline =
                             Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
-                        let wrapup = Message::user()
+                        let mut wrapup = Message::user()
                             .with_text(crate::agents::stall::giveup_instruction(&reason))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
+                            .await?;
                         conversation.push(wrapup);
                         let why = if stalled {
                             "the same loop kept repeating"
@@ -3409,10 +3510,12 @@ impl Agent {
                         budget_deadline = Some(
                             turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
                         );
-                        let wrapup = Message::user()
+                        let mut wrapup = Message::user()
                             .with_text(crate::agents::budget::wrapup_instruction(&snapshot))
                             .with_visibility(false, true);
-                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        session_manager
+                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
+                            .await?;
                         conversation.push(wrapup);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -3744,16 +3847,33 @@ impl Agent {
                                     // down there rather than literally at the cancel.
                                     // `StreamExt::next` is cancel-safe, so losing the race
                                     // never drops an item that had already resolved.
+                                    //
+                                    // The same argument covers elicitations (#40): the tool
+                                    // call that raises one is parked *inside* `combined`
+                                    // until the request is answered or cancelled, so the
+                                    // request must also be raced against the batch — the
+                                    // old post-item drain could never surface it, and a
+                                    // headless run's auto-cancel had to wait out the 300 s
+                                    // elicitation timeout.
                                     loop {
-                                        let next_item = tokio::select! {
-                                            biased;
-                                            _ = async {
-                                                match cancel_token.as_ref() {
-                                                    Some(token) => token.cancelled().await,
-                                                    None => std::future::pending::<()>().await,
+                                        let next_item = match next_batch_wake(
+                                            &cancel_token,
+                                            &mut combined,
+                                            &session_config.id,
+                                        )
+                                        .await
+                                        {
+                                            BatchWake::Cancelled => None,
+                                            BatchWake::ElicitationReady => {
+                                                for msg in self
+                                                    .drain_elicitation_messages(&session_config.id)
+                                                    .await
+                                                {
+                                                    yield AgentEvent::Message(msg);
                                                 }
-                                            } => None,
-                                            item = combined.next() => item,
+                                                continue;
+                                            }
+                                            BatchWake::Item(item) => item,
                                         };
                                         let Some((request_id, item)) = next_item else {
                                             break;
@@ -4462,8 +4582,20 @@ impl Agent {
                     }
                 }
 
-                for msg in &messages_to_add {
-                    session_manager.add_message(&session_config.id, msg).await?;
+                // #41: re-mint any duplicate ids before persisting — a decoder
+                // that reused one id across several yielded messages would
+                // otherwise fail the UNIQUE(session_id, msg_uid) index here
+                // and kill the turn.
+                let mut messages_to_add = remint_duplicate_message_ids(messages_to_add).into_messages();
+                for msg in &mut messages_to_add {
+                    // Adopt the EFFECTIVE uid the store persisted under: on a
+                    // collision it re-mints, and the in-memory conversation
+                    // must carry the same id as the row — otherwise the next
+                    // persist of this message duplicates it under a stale id.
+                    let effective_uid = session_manager.add_message(&session_config.id, msg).await?;
+                    if msg.id.as_deref() != Some(effective_uid.as_str()) {
+                        msg.id = Some(effective_uid);
+                    }
                 }
                 conversation.extend(messages_to_add);
 
@@ -4566,13 +4698,13 @@ impl Agent {
                                         .count(done_gate_iterations)
                                         .limit(done_gate_config.max_iterations),
                                 );
-                                let feedback = Message::user()
+                                let mut feedback = Message::user()
                                     .with_text(crate::agents::done_gate::gate_instruction(
                                         &failures,
                                     ))
                                     .with_visibility(false, true);
                                 session_manager
-                                    .add_message(&session_config.id, &feedback)
+                                    .add_message_adopting_uid(&session_config.id, &mut feedback)
                                     .await?;
                                 conversation.push(feedback);
                                 // Keep looping so the model fixes the failures;
@@ -4627,12 +4759,14 @@ impl Agent {
                                     .session(&session_config.id)
                                     .count(self_critique_passes),
                             );
-                            let feedback = Message::user()
+                            let mut feedback = Message::user()
                                 .with_text(
                                     crate::agents::self_critique::revise_instruction(&reason),
                                 )
                                 .with_visibility(false, true);
-                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            session_manager
+                                .add_message_adopting_uid(&session_config.id, &mut feedback)
+                                .await?;
                             conversation.push(feedback);
                             // Keep looping so the model revises; skip this
                             // iteration's Stop hook. The next finish attempt runs
@@ -4719,10 +4853,12 @@ impl Agent {
                                 ),
                             };
 
-                            let feedback = Message::user()
+                            let mut feedback = Message::user()
                                 .with_text(feedback_text)
                                 .with_visibility(false, true);
-                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            session_manager
+                                .add_message_adopting_uid(&session_config.id, &mut feedback)
+                                .await?;
                             conversation.push(feedback);
                             yield AgentEvent::Message(
                                 Message::assistant()
@@ -5146,11 +5282,233 @@ mod tests {
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
 
+    /// Extract the elicitation id from a queued request message.
+    fn queued_elicitation_id(messages: &[Message]) -> Option<String> {
+        use crate::conversation::message::ActionRequiredData;
+        messages.iter().find_map(|msg| {
+            msg.content.iter().find_map(|content| match content {
+                MessageContent::ActionRequired(action) => match &action.data {
+                    ActionRequiredData::Elicitation { id, .. } => Some(id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+        })
+    }
+
+    /// #40: an elicitation request must preempt a tool batch whose only tool
+    /// is parked on that very elicitation. `combined` here is the shape of
+    /// such a batch — a stream that will never yield — so if the wake still
+    /// depended on `combined.next()`, the 5 s timeout below would fire long
+    /// before the production 300 s elicitation timeout resolved anything.
+    /// The tail of the test asserts the full headless path: the queued
+    /// request can be drained and cancelled, and the cancel unparks the
+    /// waiting tool call promptly, without any other stream item arriving.
+    #[tokio::test]
+    async fn elicitation_preempts_a_parked_tool_batch() {
+        use crate::action_required_manager::ActionRequiredManager;
+        use std::time::Duration;
+
+        const SESSION: &str = "preempt-test-session";
+        let mut combined = futures::stream::pending::<(String, u8)>();
+
+        let waiter = tokio::spawn(async {
+            ActionRequiredManager::global()
+                .request_and_wait(
+                    "Need input".to_string(),
+                    serde_json::json!({}),
+                    Duration::from_secs(300),
+                    Some(SESSION),
+                )
+                .await
+        });
+
+        let wake = tokio::time::timeout(
+            Duration::from_secs(5),
+            next_batch_wake(&None, &mut combined, SESSION),
+        )
+        .await
+        .expect("the elicitation must preempt the parked batch");
+        assert!(
+            matches!(wake, BatchWake::ElicitationReady),
+            "expected ElicitationReady, got {wake:?}"
+        );
+
+        // Drain the queued request exactly as drain_elicitation_messages
+        // would, then cancel it the way a headless CLI run does.
+        let drained = ActionRequiredManager::global().drain_requests(SESSION);
+        let id = queued_elicitation_id(&drained)
+            .expect("the request message carries the elicitation id");
+        ActionRequiredManager::global()
+            .submit_cancellation(id)
+            .await
+            .unwrap();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancel must resolve without waiting for another stream item")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, None, "headless cancel resolves as Ok(None)");
+    }
+
+    /// #40 round 3: the wake and the drain are scoped per session. With two
+    /// concurrent daemon sessions, session B's elicitation must neither wake
+    /// session A's parked batch loop nor be drained by it — before scoping,
+    /// A's loop could win the process-global race and persist/yield B's
+    /// prompt under A's session id, leaking it to the wrong UI.
+    #[tokio::test]
+    async fn a_sessions_loop_never_drains_another_sessions_elicitation() {
+        use crate::action_required_manager::ActionRequiredManager;
+        use std::time::Duration;
+
+        const SESSION_A: &str = "two-session-test-a";
+        const SESSION_B: &str = "two-session-test-b";
+        let mut combined = futures::stream::pending::<(String, u8)>();
+
+        let waiter = tokio::spawn(async {
+            ActionRequiredManager::global()
+                .request_and_wait(
+                    "Need B's input".to_string(),
+                    serde_json::json!({}),
+                    Duration::from_secs(300),
+                    Some(SESSION_B),
+                )
+                .await
+        });
+
+        // Synchronize on the request being queued via B's own wake seam.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            ActionRequiredManager::global().request_arrived(SESSION_B),
+        )
+        .await
+        .expect("the owning session must be woken");
+
+        // Session A's batch loop: B's request must NOT preempt it — the only
+        // way out of this race within the timeout would be the elicitation
+        // wake, and it must stay parked.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(300),
+                next_batch_wake::<(String, u8), _>(&None, &mut combined, SESSION_A),
+            )
+            .await
+            .is_err(),
+            "session A's loop must not be woken by session B's elicitation"
+        );
+
+        // Even an unconditional drain by A (the post-item / post-batch drains
+        // in the reply loop) must not surface B's request.
+        let drained_by_a = ActionRequiredManager::global().drain_requests(SESSION_A);
+        assert!(
+            queued_elicitation_id(&drained_by_a).is_none(),
+            "session A's drain must never return session B's request"
+        );
+
+        // The request is still intact for B's own loop, which can drain and
+        // cancel it as usual.
+        let drained_by_b = ActionRequiredManager::global().drain_requests(SESSION_B);
+        let id = queued_elicitation_id(&drained_by_b)
+            .expect("session B's request must still be deliverable to B");
+        ActionRequiredManager::global()
+            .submit_cancellation(id)
+            .await
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("cancel must unpark the waiter")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, None);
+    }
+
     fn confirmation(permission: Permission) -> PermissionConfirmation {
         PermissionConfirmation {
             principal_type: crate::permission::permission_confirmation::PrincipalType::Tool,
             permission,
         }
+    }
+
+    /// #41 regression: the exact shape the Bedrock decoder used to produce —
+    /// two assistant tool-request messages sharing one id, separated by a
+    /// user tool-response (so `Conversation::push` cannot merge them). Before
+    /// the guard, persisting this batch aborted the turn with SQLite 2067
+    /// (UNIQUE constraint failed: messages.session_id, messages.msg_uid).
+    #[test]
+    fn remint_gives_a_fresh_id_to_a_nonadjacent_duplicate() {
+        let mut batch = Conversation::default();
+        batch.push(
+            Message::assistant()
+                .with_id("shared-id".to_string())
+                .with_tool_request(
+                    "call_a",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "shell".into(),
+                        arguments: Some(rmcp::object!({"command": "ls"})),
+                        meta: None,
+                    }),
+                ),
+        );
+        batch.push(
+            Message::user()
+                .with_id("resp-a".to_string())
+                .with_text("tool response a"),
+        );
+        batch.push(
+            Message::assistant()
+                .with_id("shared-id".to_string())
+                .with_tool_request(
+                    "call_b",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "shell".into(),
+                        arguments: Some(rmcp::object!({"command": "pwd"})),
+                        meta: None,
+                    }),
+                ),
+        );
+        // Not merged: the duplicate is non-adjacent.
+        assert_eq!(batch.len(), 3);
+
+        let fixed = remint_duplicate_message_ids(batch);
+        let ids: Vec<String> = fixed
+            .messages()
+            .iter()
+            .map(|m| m.id.clone().expect("all messages keep an id"))
+            .collect();
+        assert_eq!(ids.len(), 3);
+        // The first occurrence keeps the provider's id (desktop delta-merge).
+        assert_eq!(ids[0], "shared-id");
+        assert_eq!(ids[1], "resp-a");
+        // The later occurrence was re-minted, and every id is now unique.
+        assert_ne!(ids[2], "shared-id");
+        assert!(ids[2].starts_with("msg_"));
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), 3, "all ids must be distinct: {ids:?}");
+        // Content is untouched.
+        assert!(matches!(
+            fixed.messages()[2].content[0],
+            MessageContent::ToolRequest(_)
+        ));
+    }
+
+    /// A batch with distinct (or absent) ids passes through byte-identical:
+    /// the store mints a fresh uid per id-less message, so `None` ids are
+    /// not duplicates of each other.
+    #[test]
+    fn remint_leaves_distinct_and_absent_ids_alone() {
+        let mut batch = Conversation::default();
+        batch.push(Message::assistant().with_id("a".to_string()).with_text("x"));
+        batch.push(Message::user().with_text("no id 1"));
+        batch.push(Message::assistant().with_id("b".to_string()).with_text("y"));
+        batch.push(Message::user().with_text("no id 2"));
+
+        let before: Vec<Option<String>> = batch.messages().iter().map(|m| m.id.clone()).collect();
+        let fixed = remint_duplicate_message_ids(batch);
+        let after: Vec<Option<String>> = fixed.messages().iter().map(|m| m.id.clone()).collect();
+        assert_eq!(before, after, "no id may change when there is no duplicate");
     }
 
     /// BR-62's core safety property. Confirmations used to land on a single

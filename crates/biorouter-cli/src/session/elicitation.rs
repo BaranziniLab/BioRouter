@@ -3,12 +3,18 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 
+/// Collect the requested fields from the user at the terminal.
+///
+/// ALL prompt UI renders on **stderr** (matching cliclack, whose prompts
+/// also interact via `Term::stderr()`): stdout may be a structured
+/// `--output-format json`/`stream-json` document, and prompt text printed
+/// there would corrupt it (#40). Only the answers are read from stdin.
 pub fn collect_elicitation_input(
     message: &str,
     schema: &Value,
 ) -> io::Result<Option<HashMap<String, Value>>> {
     if !message.is_empty() {
-        println!("\n{}", style(message).cyan());
+        eprintln!("\n{}", style(message).cyan());
     }
 
     let properties = match schema.get("properties").and_then(|p| p.as_object()) {
@@ -57,21 +63,21 @@ pub fn collect_elicitation_input(
 
         if let Some(options) = enum_values {
             let opts: Vec<&str> = options.iter().filter_map(|v| v.as_str()).collect();
-            println!("  {}: {}", style("Options").dim(), opts.join(", "));
+            eprintln!("  {}: {}", style("Options").dim(), opts.join(", "));
         }
 
-        print!("{}", style(name).yellow());
+        eprint!("{}", style(name).yellow());
         if let Some(desc) = description {
-            print!(" {}", style(format!("({})", desc)).dim());
+            eprint!(" {}", style(format!("({})", desc)).dim());
         }
         if is_required {
-            print!("{}", style("*").red());
+            eprint!("{}", style("*").red());
         }
         if let Some(def) = default {
-            print!(" {}", style(format!("[{}]", format_default(def))).dim());
+            eprint!(" {}", style(format!("[{}]", format_default(def))).dim());
         }
-        print!(": ");
-        io::stdout().flush()?;
+        eprint!(": ");
+        io::stderr().flush()?;
 
         let input = read_line()?;
 
@@ -94,7 +100,7 @@ pub fn collect_elicitation_input(
         }
 
         if is_required && !data.contains_key(name) {
-            println!(
+            eprintln!(
                 "{}",
                 style(format!("Required field '{}' is missing", name)).red()
             );
@@ -102,7 +108,7 @@ pub fn collect_elicitation_input(
         }
     }
 
-    println!();
+    eprintln!();
     Ok(Some(data))
 }
 

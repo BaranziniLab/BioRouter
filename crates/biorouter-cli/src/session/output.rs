@@ -885,7 +885,10 @@ fn render_artifact_note(note: &ArtifactNote) {
 }
 
 pub fn render_error(message: &str) {
-    println!("\n  {} {}\n", style("error:").red().bold(), message);
+    // stderr, not stdout: error prose printed to stdout corrupts
+    // `--output-format json`, whose document is the ONLY thing stdout may
+    // carry (#31/#41 — the reporter's JSON file contained this prose).
+    eprintln!("\n  {} {}\n", style("error:").red().bold(), message);
 }
 
 pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {

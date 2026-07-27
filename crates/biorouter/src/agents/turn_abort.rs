@@ -29,6 +29,11 @@ use crate::providers::errors::ProviderErrorKind;
 pub enum TurnAbortCode {
     /// The provider call failed (auth, rate limit, network, server error).
     ProviderFailure { kind: ProviderErrorKind },
+    /// The session store (SQLite) failed while persisting or reading the
+    /// turn's messages (#31/#41). Distinct from `ProviderFailure` so wire
+    /// frames and exit codes stop blaming the provider for a local disk/db
+    /// problem — the operator remediation is completely different.
+    SessionStore,
     /// The model called the same tool with the same arguments until the loop
     /// guard terminated the turn (Wave 4).
     ToolLoop { tool: String },
@@ -41,6 +46,7 @@ impl TurnAbortCode {
     pub fn wire_code(&self) -> &'static str {
         match self {
             Self::ProviderFailure { .. } => "provider_failure",
+            Self::SessionStore => "session_store_failure",
             Self::ToolLoop { .. } => "tool_loop",
             Self::WorkerTimeout { .. } => "worker_timeout",
         }
@@ -55,10 +61,32 @@ impl TurnAbortCode {
         match self {
             Self::ProviderFailure { kind } if kind.is_auth() => exit::PROVIDER_AUTH,
             Self::ProviderFailure { .. } => exit::PROVIDER_FAILED,
+            Self::SessionStore => exit::SESSION_STORE,
             Self::ToolLoop { .. } => exit::TOOL_LOOP,
             Self::WorkerTimeout { .. } => exit::WORKER_TIMEOUT,
         }
     }
+}
+
+/// The machine-checkable abort code for a raw agent error — shared by the
+/// CLI's reply-construction failure path and its mid-stream `Err` branch so
+/// both report identically in structured output (#31/#41).
+///
+/// Classified by downcast, not by string matching: an error whose chain
+/// contains a [`sqlx::Error`] is a session-store failure (the only sqlx in
+/// the turn path is the session SQLite store), everything else falls back to
+/// the provider classification. Before this, a failed `add_message` inside
+/// `Agent::reply` was reported as `provider_failure` — the wire code and the
+/// process exit code blamed the provider for a local db problem.
+pub fn classify_agent_error(e: &anyhow::Error) -> TurnAbortCode {
+    if e.chain().any(|cause| cause.is::<sqlx::Error>()) {
+        return TurnAbortCode::SessionStore;
+    }
+    let kind = e
+        .downcast_ref::<crate::providers::errors::ProviderError>()
+        .map(crate::providers::errors::ProviderError::kind)
+        .unwrap_or(ProviderErrorKind::Other);
+    TurnAbortCode::ProviderFailure { kind }
 }
 
 /// A turn that ended without doing its work, as an `Error` — so it can travel
@@ -99,11 +127,56 @@ pub mod exit {
     pub const TOOL_LOOP: u8 = 76;
     /// A consulted worker profile never answered.
     pub const WORKER_TIMEOUT: u8 = 77;
+    /// The session store (SQLite) failed while persisting the turn (#31/#41).
+    pub const SESSION_STORE: u8 = 78;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #31/#41: a session-store failure inside `Agent::reply` must classify
+    /// as its own abort code — wire code and exit code stop blaming the
+    /// provider for a local db problem. Classified by downcast anywhere in
+    /// the anyhow chain, exactly how the store's errors travel (a root
+    /// `sqlx::Error` under `context(...)` wrappers).
+    #[test]
+    fn store_errors_classify_as_session_store_not_provider_failure() {
+        let store_error =
+            anyhow::Error::new(sqlx::Error::PoolClosed).context("Failed to add message to session");
+        assert_eq!(
+            classify_agent_error(&store_error),
+            TurnAbortCode::SessionStore
+        );
+        assert_eq!(
+            classify_agent_error(&store_error).wire_code(),
+            "session_store_failure"
+        );
+        assert_eq!(
+            classify_agent_error(&store_error).exit_code(),
+            exit::SESSION_STORE
+        );
+
+        // A typed provider error keeps its kind…
+        let provider_error = anyhow::Error::new(
+            crate::providers::errors::ProviderError::Authentication("403".to_string()),
+        );
+        assert_eq!(
+            classify_agent_error(&provider_error),
+            TurnAbortCode::ProviderFailure {
+                kind: ProviderErrorKind::Auth
+            }
+        );
+
+        // …and anything else stays the conservative provider/Other fallback.
+        let opaque = anyhow::anyhow!("something else entirely");
+        assert_eq!(
+            classify_agent_error(&opaque),
+            TurnAbortCode::ProviderFailure {
+                kind: ProviderErrorKind::Other
+            }
+        );
+    }
 
     #[test]
     fn auth_failures_get_their_own_exit_code() {

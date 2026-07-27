@@ -203,6 +203,16 @@ pub struct CliSession {
     /// `status` field in `--output-format json`, both of which used to claim
     /// success no matter what happened.
     last_abort: Option<TurnAbortCode>,
+    /// #31: the private per-run session store backing a `--no-session` run.
+    /// Held only so the temp directory outlives the session; dropped (and the
+    /// store deleted, best-effort) with the session.
+    ephemeral_store_dir: Option<tempfile::TempDir>,
+    /// #31: the final session row, captured just before the private
+    /// `--no-session` store is closed. `headless()`/`interactive()` tear the
+    /// store down before `cli.rs` logs session completion, and that logging
+    /// queries the (by then closed) store — without this snapshot every
+    /// `--no-session` run reported zero tokens and zero messages.
+    final_session_snapshot: Option<biorouter::session::Session>,
 }
 
 // Cache structure for completion data
@@ -285,6 +295,61 @@ impl CliSession {
             retry_config,
             output_format,
             last_abort: None,
+            ephemeral_store_dir: None,
+            final_session_snapshot: None,
+        }
+    }
+
+    /// #31: adopt the private `--no-session` store's temp directory so it
+    /// lives exactly as long as this session.
+    pub fn hold_ephemeral_store_dir(&mut self, dir: tempfile::TempDir) {
+        self.ephemeral_store_dir = Some(dir);
+    }
+
+    /// #31: close the private `--no-session` store at the natural end of a
+    /// run — SQLite pool first (releasing the WAL/-shm handles), then the
+    /// temp directory. Without the pool close, the deletion only works where
+    /// unlinking open files is allowed (Unix); on Windows it fails and the
+    /// directory leaks. The `Drop` of the held `TempDir` remains the
+    /// best-effort fallback for abnormal exits, but it cannot close the pool
+    /// first, so it keeps that platform caveat.
+    ///
+    /// The final session row is snapshotted BEFORE the pool closes: the
+    /// caller in `cli.rs` logs completion telemetry (tokens, message count)
+    /// *after* this teardown via [`Self::get_session`], which falls back to
+    /// the snapshot once the store is gone — every `--no-session` run used
+    /// to log zeros here.
+    async fn close_ephemeral_store(&mut self) {
+        if let Some(dir) = self.ephemeral_store_dir.take() {
+            self.final_session_snapshot = self
+                .agent
+                .config
+                .session_manager
+                .get_session(&self.session_id, false)
+                .await
+                .ok();
+            self.agent.config.session_manager.close().await;
+            if let Err(e) = dir.close() {
+                tracing::warn!(
+                    "failed to remove the --no-session session store on exit: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    /// The session store this run actually writes (#31): the private per-run
+    /// temp store under `--no-session`, otherwise the shared `sessions.db`.
+    /// Error hints derive from this, so they never blame the shared store for
+    /// a failure inside a private one.
+    fn active_session_store(&self) -> ActiveSessionStore {
+        match &self.ephemeral_store_dir {
+            Some(dir) => {
+                ActiveSessionStore::Private(dir.path().join("sessions").join("sessions.db"))
+            }
+            None => {
+                ActiveSessionStore::Shared(Paths::data_dir().join("sessions").join("sessions.db"))
+            }
         }
     }
 
@@ -413,15 +478,24 @@ impl CliSession {
         self.add_and_persist_extensions(configs).await
     }
 
-    /// Process a single message and get the response
+    /// Process a single message and get the response.
+    ///
+    /// `interactive` is the REAL interactivity of the surrounding run (#40):
+    /// it drives the headless auto-deny/auto-cancel of approval prompts and
+    /// elicitations inside `process_agent_response`. It used to be hardcoded
+    /// `false` here, so a classic interactive TTY session started WITH an
+    /// initial prompt (`interactive(Some(prompt))`) silently auto-denied
+    /// every approval in that first turn.
     pub(crate) async fn process_message(
         &mut self,
         message: Message,
+        interactive: bool,
         cancel_token: CancellationToken,
     ) -> Result<()> {
         let cancel_token = cancel_token.clone();
         self.push_message(message);
-        self.process_agent_response(false, cancel_token).await?;
+        self.process_agent_response(interactive, cancel_token)
+            .await?;
         Ok(())
     }
 
@@ -436,12 +510,16 @@ impl CliSession {
             self.update_completion_cache().await?;
             let result = tui::run(self, prompt).await;
             self.fire_session_end_hooks("exit").await;
+            self.close_ephemeral_store().await;
             return result;
         }
 
         if let Some(prompt) = prompt {
             let msg = Message::user().with_text(&prompt);
-            self.process_message(msg, CancellationToken::default())
+            // #40: this is a genuinely interactive session whose FIRST turn
+            // merely arrived as an argument — it must keep its ability to
+            // answer approval prompts and elicitations at the terminal.
+            self.process_message(msg, true, CancellationToken::default())
                 .await?;
         }
 
@@ -465,6 +543,7 @@ impl CliSession {
         }
 
         self.fire_session_end_hooks("exit").await;
+        self.close_ephemeral_store().await;
 
         println!(
             "Closing session. Session ID: {}",
@@ -982,10 +1061,13 @@ impl CliSession {
     /// run as successful. Before this, a 403'd run exited 0.
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
+        // #40: a headless run has nobody at the terminal — approvals
+        // auto-deny and elicitations auto-cancel.
         let result = self
-            .process_message(message, CancellationToken::default())
+            .process_message(message, false, CancellationToken::default())
             .await;
         self.fire_session_end_hooks("prompt_input_exit").await;
+        self.close_ephemeral_store().await;
         result?;
         if let Some(code) = self.last_abort.clone() {
             let message = format!("the turn did not complete: {}", code.wire_code());
@@ -1026,14 +1108,32 @@ impl CliSession {
         });
         let _drop_handle = AbortOnDropHandle::new(handle);
 
-        let reply_stream = self
+        // #31/#41: an error CONSTRUCTING the reply (e.g. the initial session-
+        // store writes inside `Agent::reply`, before any stream exists) must
+        // not bypass the structured-output finalizer — propagating it here
+        // left json-mode stdout empty and stream-json without a terminating
+        // `complete`. Record the abort, surface the error on stderr (plus the
+        // stream-json `error`/`aborted` events), and fall through to the one
+        // finalizer, exactly like a mid-stream failure.
+        let reply_stream = match self
             .agent
             .reply(
                 user_message.clone(),
                 session_config.clone(),
                 Some(cancel_token.clone()),
             )
-            .await?;
+            .await
+        {
+            Ok(reply_stream) => reply_stream,
+            Err(e) => {
+                self.last_abort = Some(record_reply_failure(
+                    &e,
+                    &self.output_format,
+                    &self.active_session_store(),
+                ));
+                return self.emit_final_output().await;
+            }
+        };
         // Merge per-token assistant text deltas into whole messages before
         // rendering. `stream-json` consumers want the raw event granularity,
         // so only coalesce for human-facing output.
@@ -1053,10 +1153,55 @@ impl CliSession {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
                             if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
+                                // #40: a confirmation prompt cannot be answered in a
+                                // headless/structured/pipe run — cliclack would pollute
+                                // stdout and block ~forever (or die as the opaque
+                                // 'Error: not connected'). Auto-deny on stderr and hand
+                                // the denial to the agent so the TURN CONTINUES and
+                                // json-mode stdout stays a valid document.
+                                if let Some(permission) = headless_auto_decision(
+                                    interactive,
+                                    &self.output_format,
+                                    std::io::stdin().is_terminal(),
+                                ) {
+                                    let reason = security_prompt
+                                        .as_deref()
+                                        .unwrap_or("a tool call requested approval");
+                                    eprintln!(
+                                        "Tool call requires interactive approval ({}) but this \
+                                         run is non-interactive - denied automatically. Do not \
+                                         retry the same call; run interactively (`-s`) in a \
+                                         terminal with stdin attached to approve it.",
+                                        reason.lines().next().unwrap_or(reason).trim()
+                                    );
+                                    if is_stream_json_mode {
+                                        emit_stream_event(&StreamEvent::Notification {
+                                            extension_id: "biorouter".to_string(),
+                                            data: NotificationData::Log {
+                                                message:
+                                                    "tool call denied automatically: approval \
+                                                     prompt cannot be answered in a \
+                                                     non-interactive run"
+                                                        .to_string(),
+                                            },
+                                        });
+                                    }
+                                    self.agent.handle_confirmation(id, PermissionConfirmation {
+                                        principal_type: PrincipalType::Tool,
+                                        permission,
+                                    }).await;
+                                    continue;
+                                }
                                 let permission = prompt_tool_confirmation(&security_prompt)?;
 
                                 if permission == Permission::Cancel {
-                                    output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
+                                    // #40: prompt-adjacent status stays off a structured stdout
+                                    // (the prompt itself already renders on stderr).
+                                    if is_json_mode || is_stream_json_mode {
+                                        eprintln!("Tool call cancelled. Returning to chat...");
+                                    } else {
+                                        output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
+                                    }
                                     let mut response_message = Message::user();
                                     response_message.content.push(MessageContent::tool_response(
                                         id,
@@ -1076,6 +1221,55 @@ impl CliSession {
                                     permission,
                                 }).await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
+                                // #40/#31: an elicitation cannot be answered when nobody
+                                // is at the terminal — same predicate as tool
+                                // confirmations. Cancel it with a MODEL-VISIBLE result
+                                // (the manager unparks the waiting tool call with
+                                // ElicitationAction::Cancel) instead of printing prompt
+                                // text into a structured stdout and then blocking on
+                                // input that never comes.
+                                if headless_auto_decision(
+                                    interactive,
+                                    &self.output_format,
+                                    std::io::stdin().is_terminal(),
+                                )
+                                .is_some()
+                                {
+                                    eprintln!(
+                                        "An extension requested information interactively ({}) \
+                                         but this run is non-interactive - cancelled \
+                                         automatically. Run interactively (`-s`) in a terminal \
+                                         with stdin attached to answer it.",
+                                        elicitation_message
+                                            .lines()
+                                            .next()
+                                            .unwrap_or(&elicitation_message)
+                                            .trim()
+                                    );
+                                    if is_stream_json_mode {
+                                        emit_stream_event(&StreamEvent::Notification {
+                                            extension_id: "biorouter".to_string(),
+                                            data: NotificationData::Log {
+                                                message:
+                                                    "elicitation cancelled automatically: \
+                                                     information request cannot be answered in \
+                                                     a non-interactive run"
+                                                        .to_string(),
+                                            },
+                                        });
+                                    }
+                                    if let Err(e) =
+                                        biorouter::action_required_manager::ActionRequiredManager::global()
+                                            .submit_cancellation(elicitation_id)
+                                            .await
+                                    {
+                                        eprintln!(
+                                            "Failed to cancel the information request: {}",
+                                            e
+                                        );
+                                    }
+                                    continue;
+                                }
                                 output::hide_thinking();
                                 let _ = progress_bars.hide();
 
@@ -1091,11 +1285,45 @@ impl CliSession {
                                             .with_visibility(false, true);
                                         self.messages.push(response_message.clone());
                                         // Elicitation responses return an empty stream - the response
-                                        // unblocks the waiting tool call via ActionRequiredManager
-                                        let _ = self.agent.reply(response_message, session_config.clone(), Some(cancel_token.clone())).await?;
+                                        // unblocks the waiting tool call via ActionRequiredManager.
+                                        //
+                                        // #31/#41: a CONSTRUCTION error here (e.g. persisting the
+                                        // response inside Agent::reply) must not `?` out past the
+                                        // structured-output finalizer — that left json-mode stdout
+                                        // empty and stream-json without a terminating `complete`.
+                                        // Record the abort and end the turn through the one
+                                        // finalizer, exactly like a mid-stream failure.
+                                        // `.err()` consumes the returned (empty)
+                                        // stream inside this statement, so no
+                                        // agent-borrowing temporary outlives it
+                                        // and the failure arm may call &mut self.
+                                        let elicitation_reply_err = self
+                                            .agent
+                                            .reply(response_message, session_config.clone(), Some(cancel_token.clone()))
+                                            .await
+                                            .err();
+                                        if let Some(e) = elicitation_reply_err {
+                                            self.last_abort = Some(record_reply_failure(
+                                                &e,
+                                                &self.output_format,
+                                                &self.active_session_store(),
+                                            ));
+                                            cancel_token_clone.cancel();
+                                            drop(stream);
+                                            if let Err(e) = self.handle_interrupted_messages(false).await {
+                                                eprintln!("Error handling interruption: {}", e);
+                                            }
+                                            break;
+                                        }
                                     }
                                     Ok(None) => {
-                                        output::render_text("Information request cancelled.", Some(Color::Yellow), true);
+                                        // Prompt-adjacent status stays off a structured
+                                        // stdout (#40), like the confirmation Cancel path.
+                                        if is_json_mode || is_stream_json_mode {
+                                            eprintln!("Information request cancelled.");
+                                        } else {
+                                            output::render_text("Information request cancelled.", Some(Color::Yellow), true);
+                                        }
                                         cancel_token_clone.cancel();
                                         drop(stream);
                                         break;
@@ -1163,12 +1391,31 @@ impl CliSession {
                             break;
                         }
                         Some(Err(e)) => {
-                            handle_agent_error(&e, is_stream_json_mode);
+                            // #31/#41: record the machine-checkable failure so
+                            // `--output-format json` reports status "failed"
+                            // (this path used to leave last_abort unset and the
+                            // document claimed "completed") and the process
+                            // exits nonzero via headless()'s TurnFailed check.
+                            // A raw stream error must also be visible to
+                            // stream-json consumers as an abort, exactly like
+                            // the TurnAborted branch above — before this, only
+                            // `error` (advisory) then `complete` were emitted,
+                            // and a structured consumer could not detect the
+                            // failed turn. All of that lives in
+                            // record_reply_failure, shared with the
+                            // reply-construction failure paths.
+                            self.last_abort = Some(record_reply_failure(
+                                &e,
+                                &self.output_format,
+                                &self.active_session_store(),
+                            ));
                             cancel_token_clone.cancel();
                             drop(stream);
                             if let Err(e) = self.handle_interrupted_messages(false).await {
                                 eprintln!("Error handling interruption: {}", e);
                             } else if !is_stream_json_mode {
+                                // render_error writes to stderr, so this prose can
+                                // never contaminate a json-mode stdout document.
                                 output::render_error(
                                     "The error above was an exception we were not able to handle.\n\
                                     These errors are often related to connection or authentication\n\
@@ -1191,38 +1438,20 @@ impl CliSession {
             }
         }
 
+        self.emit_final_output().await
+    }
+
+    /// The ONE structured-output finalizer: every exit from
+    /// [`Self::process_agent_response`] — a drained stream, an abort, a raw
+    /// stream error, or a reply-construction failure that never produced a
+    /// stream — must route through here, so `--output-format json` always
+    /// prints exactly one document (status derived from [`Self::last_abort`])
+    /// and `stream-json` always terminates with `complete` (#31/#41).
+    async fn emit_final_output(&self) -> Result<()> {
+        let is_json_mode = self.output_format == "json";
+        let is_stream_json_mode = self.output_format == "stream-json";
         if is_json_mode {
-            // A turn that aborted is NOT "completed". This used to be hardcoded,
-            // so a harness parsing the JSON was told a 403'd run succeeded.
-            let status = if self.last_abort.is_some() {
-                "failed"
-            } else {
-                "completed"
-            };
-            let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
-            let metadata = match self
-                .agent
-                .config
-                .session_manager
-                .get_session(&self.session_id, false)
-                .await
-            {
-                Ok(session) => JsonMetadata {
-                    total_tokens: session.total_tokens,
-                    status: status.to_string(),
-                    error,
-                },
-                Err(_) => JsonMetadata {
-                    total_tokens: None,
-                    status: status.to_string(),
-                    error,
-                },
-            };
-            let json_output = JsonOutput {
-                messages: self.messages.messages().to_vec(),
-                metadata,
-            };
-            println!("{}", serde_json::to_string_pretty(&json_output)?);
+            println!("{}", self.build_json_document().await?);
         } else if is_stream_json_mode {
             let total_tokens = self
                 .agent
@@ -1238,6 +1467,66 @@ impl CliSession {
         }
 
         Ok(())
+    }
+
+    /// The ONE document `--output-format json` prints on stdout — split out
+    /// of [`Self::emit_final_output`] so tests can assert stdout stays a
+    /// single valid document after a failure path ran
+    /// [`Self::handle_interrupted_messages`] (#31/#41).
+    async fn build_json_document(&self) -> Result<String> {
+        // A turn that aborted is NOT "completed". This used to be hardcoded,
+        // so a harness parsing the JSON was told a 403'd run succeeded.
+        let status = if self.last_abort.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
+        let metadata = match self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+        {
+            Ok(session) => JsonMetadata {
+                total_tokens: session.total_tokens,
+                status: status.to_string(),
+                error,
+            },
+            Err(_) => JsonMetadata {
+                total_tokens: None,
+                status: status.to_string(),
+                error,
+            },
+        };
+        let json_output = JsonOutput {
+            messages: self.messages.messages().to_vec(),
+            metadata,
+        };
+        Ok(serde_json::to_string_pretty(&json_output)?)
+    }
+
+    /// Where [`Self::handle_interrupted_messages`]'s prose belongs (#40/#31):
+    /// human-facing text mode renders it on stdout as usual; the structured
+    /// modes keep stdout a machine-parseable surface — `json` must stay ONE
+    /// valid document (printed solely by [`Self::emit_final_output`]) and
+    /// `stream-json` a sequence of events — so their prose goes to stderr,
+    /// like every other prompt-adjacent status in the #40 work. The messages
+    /// the handler *pushes* still reach structured consumers through the
+    /// final document's `messages`.
+    fn interruption_prose_belongs_on_stderr(output_format: &str) -> bool {
+        matches!(output_format, "json" | "stream-json")
+    }
+
+    /// Emit one line of interruption prose on the surface
+    /// [`Self::interruption_prose_belongs_on_stderr`] picks.
+    fn render_interruption_notice(&self, prose: &str) {
+        if Self::interruption_prose_belongs_on_stderr(&self.output_format) {
+            eprintln!("{prose}");
+        } else {
+            output::render_message(&Message::assistant().with_text(prose), self.debug);
+        }
     }
 
     async fn handle_interrupted_messages(&mut self, interrupt: bool) -> Result<()> {
@@ -1295,7 +1584,7 @@ impl CliSession {
                 last_tool_name
             );
             self.push_message(Message::assistant().with_text(&prompt));
-            output::render_message(&Message::assistant().with_text(&prompt), self.debug);
+            self.render_interruption_notice(&prompt);
         } else {
             // An interruption occurred outside of a tool request-response.
             if let Some(last_msg) = self.messages.last() {
@@ -1305,19 +1594,13 @@ impl CliSession {
                             // Interruption occurred after a tool had completed but not assistant reply
                             let prompt = "The tool calling loop was interrupted. How would you like to proceed?";
                             self.push_message(Message::assistant().with_text(prompt));
-                            output::render_message(
-                                &Message::assistant().with_text(prompt),
-                                self.debug,
-                            );
+                            self.render_interruption_notice(prompt);
                         }
                         Some(_) => {
                             // A real users message
                             self.messages.pop();
                             let prompt = "Interrupted before the model replied and removed the last message.";
-                            output::render_message(
-                                &Message::assistant().with_text(prompt),
-                                self.debug,
-                            );
+                            self.render_interruption_notice(prompt);
                         }
                         None => {
                             tracing::warn!(
@@ -1376,11 +1659,19 @@ impl CliSession {
     }
 
     pub async fn get_session(&self) -> Result<biorouter::session::Session> {
-        self.agent
+        match self
+            .agent
             .config
             .session_manager
             .get_session(&self.session_id, false)
             .await
+        {
+            Ok(session) => Ok(session),
+            // #31: the private --no-session store closes before cli.rs logs
+            // completion telemetry; answer from the snapshot captured at
+            // close so a no-session run reports its real counts, not zeros.
+            Err(e) => self.final_session_snapshot.clone().ok_or(e),
+        }
     }
 
     // Get the session's total token usage
@@ -1521,12 +1812,57 @@ async fn print_startup_notices() {
     }
 }
 
+/// #40: the auto-decision for a tool-confirmation prompt that cannot be
+/// answered, or `None` when the run is genuinely interactive.
+///
+/// A cliclack prompt in a headless run blocked for ~30 minutes on a keypress
+/// that could never come — or, with no terminal at all, died as the opaque
+/// `Error: not connected`. Auto-deny exactly when nobody can answer: the run
+/// was started non-interactively (`biorouter run` without `-s`), or stdin is
+/// not a TTY (piped/redirected). Deny-once is the only safe default; the
+/// denial goes back to the model as a tool error so the turn continues.
+///
+/// `interactive && stdin_is_tty` is authoritative — a structured stdout
+/// (`json` / `stream-json`) does NOT force a denial, because every piece of
+/// prompt UI (cliclack renders on stderr, the security text is `eprintln!`ed,
+/// cancel notices go to stderr in structured modes) stays off stdout, so the
+/// document remains valid while a human answers on the terminal. The
+/// `output_format` parameter is retained so the matrix test pins exactly
+/// that: format must never flip the decision.
+///
+/// Pure (no I/O) so the full matrix is unit-testable without a pty.
+fn headless_auto_decision(
+    interactive: bool,
+    _output_format: &str,
+    stdin_is_tty: bool,
+) -> Option<Permission> {
+    if !interactive || !stdin_is_tty {
+        Some(Permission::DenyOnce)
+    } else {
+        None
+    }
+}
+
 /// Prompt user for tool call confirmation, returns the Permission selected
 fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permission> {
     output::hide_thinking();
 
+    // #40 defensive guard: even if a caller reaches this prompt without a
+    // usable stdin (headless_auto_decision should have caught it), deny
+    // explicitly instead of letting cliclack fail with the unexplained
+    // `Error: not connected` (io::ErrorKind::NotConnected on a non-terminal).
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "Tool call requires interactive approval but stdin is not a terminal - denied \
+             automatically."
+        );
+        return Ok(Permission::DenyOnce);
+    }
+
     let prompt = if let Some(security_message) = security_prompt {
-        println!("\n{}", security_message);
+        // stderr, where cliclack renders too: security-prompt text must never
+        // reach stdout, which may be a structured document or a pipe (#40).
+        eprintln!("\n{}", security_message);
         "Do you allow this tool call?".to_string()
     } else {
         "Biorouter would like to call the above tool, do you allow?".to_string()
@@ -1803,8 +2139,46 @@ fn log_tool_metrics(message: &Message, messages: &Conversation) {
     }
 }
 
+/// The machine-checkable abort code for a raw agent error — the
+/// classification shared by the reply-construction failure paths (primary
+/// and elicitation-response replies) and the mid-stream `Err` branch, so all
+/// report identically in structured output. Classified by downcast in
+/// `biorouter` (#31): a session-store (sqlx) failure gets its own
+/// `session_store_failure` wire code and exit code instead of blaming the
+/// provider for a local db problem.
+fn reply_abort_code(e: &anyhow::Error) -> TurnAbortCode {
+    biorouter::agents::turn_abort::classify_agent_error(e)
+}
+
+/// Record a failed reply uniformly (#31/#41): stderr + the stream-json
+/// `error` event via [`handle_agent_error`], then the machine-checkable
+/// `aborted` event. Returns the classified abort code — the caller MUST
+/// store it in `last_abort` and fall through to the one finalizer
+/// (`emit_final_output`); never bypass that with `?`, which left json-mode
+/// stdout empty and stream-json without a terminating `complete`. Shared by
+/// the reply-construction failure paths (primary AND elicitation-response
+/// replies) and the mid-stream `Err` branch. A free function (not `&mut
+/// self`) so it can run while the reply stream still borrows the agent.
+#[must_use]
+fn record_reply_failure(
+    e: &anyhow::Error,
+    output_format: &str,
+    store: &ActiveSessionStore,
+) -> TurnAbortCode {
+    let is_stream_json_mode = output_format == "stream-json";
+    handle_agent_error(e, is_stream_json_mode, store);
+    let code = reply_abort_code(e);
+    if is_stream_json_mode {
+        emit_stream_event(&StreamEvent::Aborted {
+            code: code.wire_code().to_string(),
+            error: e.to_string(),
+        });
+    }
+    code
+}
+
 /// Handle and display an agent error
-fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool) {
+fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool, store: &ActiveSessionStore) {
     let error_msg = e.to_string();
 
     if is_stream_json_mode {
@@ -1835,6 +2209,52 @@ fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool) {
     if !is_stream_json_mode {
         eprintln!("Error: {}", error_msg);
     }
+    // #31: a raw SQLite dump ("error returned from database…") tells the user
+    // nothing actionable. Name the ACTIVE store and its likely causes on
+    // stderr.
+    if let Some(hint) = session_store_error_hint(&error_msg, store) {
+        eprintln!("{}", hint);
+    }
+}
+
+/// The session store a run actually writes: the shared
+/// `<data_dir>/sessions/sessions.db`, or the private per-run temp store a
+/// `--no-session` run gets (#31). Carried into error hints so they name the
+/// store that actually failed instead of always blaming the shared one.
+#[derive(Debug, Clone, PartialEq)]
+enum ActiveSessionStore {
+    Shared(PathBuf),
+    Private(PathBuf),
+}
+
+/// A human-readable stderr hint for session-store failures, or `None` when the
+/// error is not store-shaped. Pure so the matching is unit-testable. The
+/// advice follows the ACTIVE store: a run already on its private
+/// `--no-session` store cannot be contending with other biorouter processes,
+/// and recommending `--no-session` to it would be nonsense.
+fn session_store_error_hint(error_msg: &str, store: &ActiveSessionStore) -> Option<String> {
+    let store_shaped = error_msg.contains("error returned from database")
+        || error_msg.contains("sessions.db")
+        || error_msg.contains("messages.msg_uid");
+    if !store_shaped {
+        return None;
+    }
+    Some(match store {
+        ActiveSessionStore::Shared(path) => format!(
+            "The session store ({}) rejected an operation. If another biorouter \
+             process (the desktop app, biorouterd, or a concurrent run) is using \
+             the same store, retry once it is idle — or use `--no-session` for a \
+             fully isolated run.",
+            path.display()
+        ),
+        ActiveSessionStore::Private(path) => format!(
+            "This run's private session store ({}) rejected an operation. The \
+             store is exclusive to this `--no-session` run, so another biorouter \
+             process is not the cause — check for a full disk or the OS temp \
+             directory being cleaned mid-run, then retry.",
+            path.display()
+        ),
+    })
 }
 
 async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
@@ -1887,6 +2307,328 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A `CliSession` over a private store rooted at `manager`'s directory,
+    /// with its session row already created — the shape of a `--no-session`
+    /// run, minus extensions and provider.
+    async fn test_cli_session(
+        manager: std::sync::Arc<biorouter::session::SessionManager>,
+        output_format: &str,
+    ) -> CliSession {
+        use biorouter::agents::AgentConfig;
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::session::session_manager::SessionType;
+
+        let session = manager
+            .create_session(
+                std::env::temp_dir(),
+                "CLI Test Session".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .expect("create the test session row");
+        let agent = Agent::with_config(AgentConfig::new(
+            manager,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        CliSession::new(
+            agent,
+            session.id,
+            false,
+            None,
+            None,
+            None,
+            None,
+            output_format.to_string(),
+        )
+        .await
+    }
+
+    /// #40: the full decision matrix for tool-confirmation prompts.
+    /// `interactive && stdin_is_tty` is authoritative: those runs keep the
+    /// prompt regardless of output format (all prompt UI renders on stderr,
+    /// so a structured stdout stays a valid document). Everything else
+    /// auto-denies so a headless run cannot block on a keypress that will
+    /// never come (the ~30-minute hang) or die as `Error: not connected`.
+    #[test]
+    fn headless_auto_decision_covers_the_full_matrix() {
+        // Interactive TTY runs keep the prompt — for EVERY output format.
+        // Structured stdout must never flip an answerable prompt into a
+        // silent denial; the prompt UI lives on stderr.
+        for output_format in ["text", "json", "stream-json"] {
+            assert_eq!(
+                headless_auto_decision(true, output_format, true),
+                None,
+                "interactive TTY must prompt, not auto-deny (format={output_format})"
+            );
+        }
+
+        // Non-interactive (headless `biorouter run -t ...`): deny.
+        assert_eq!(
+            headless_auto_decision(false, "text", true),
+            Some(Permission::DenyOnce)
+        );
+        // No TTY on stdin (piped/redirected/CI): deny, even if "interactive".
+        assert_eq!(
+            headless_auto_decision(true, "text", false),
+            Some(Permission::DenyOnce)
+        );
+        assert_eq!(
+            headless_auto_decision(true, "json", false),
+            Some(Permission::DenyOnce)
+        );
+
+        // Fully headless combinations: still exactly DenyOnce (never Cancel —
+        // the turn must CONTINUE with the denial as a tool error).
+        for output_format in ["text", "json", "stream-json"] {
+            for stdin_is_tty in [true, false] {
+                let decision = headless_auto_decision(false, output_format, stdin_is_tty);
+                assert_eq!(
+                    decision,
+                    Some(Permission::DenyOnce),
+                    "non-interactive must always auto-deny (format={output_format}, tty={stdin_is_tty})"
+                );
+            }
+        }
+    }
+
+    /// #40: `interactive(Some(prompt))` — a classic interactive TTY session
+    /// that merely STARTS with a prompt argument — must run that first turn
+    /// with `interactive = true` (which `process_message` now threads through
+    /// instead of hardcoding `false`). The matrix rows below pin what each
+    /// wiring produces on a real TTY: the true the entry point now passes
+    /// keeps the prompt; the false it used to hardcode auto-denied approvals
+    /// and auto-cancelled elicitations in that first turn.
+    #[test]
+    fn initial_prompt_turn_keeps_interactivity() {
+        for output_format in ["text", "json", "stream-json"] {
+            // interactive(Some(prompt)) => process_message(msg, true, ..):
+            assert_eq!(
+                headless_auto_decision(true, output_format, true),
+                None,
+                "an interactive session with an initial prompt must keep its \
+                 prompts (format={output_format})"
+            );
+            // the old hardcoded false on the SAME run:
+            assert_eq!(
+                headless_auto_decision(false, output_format, true),
+                Some(Permission::DenyOnce),
+                "hardcoding interactive=false forced auto-denial \
+                 (format={output_format})"
+            );
+        }
+    }
+
+    /// #31: a real session-store failure (here: the pool is closed, the same
+    /// sqlx error shape a broken/locked db produces inside `Agent::reply`)
+    /// must classify as `SessionStore` — its own wire code and exit code —
+    /// while non-store errors keep the provider classification. This is the
+    /// classification `record_reply_failure` stamps into `last_abort`, so
+    /// json/stream-json `error` codes and the process exit code stop blaming
+    /// the provider for a local db problem.
+    #[tokio::test]
+    async fn store_failures_get_their_own_abort_code() {
+        use biorouter::session::SessionManager;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "AbortCode".to_string(),
+                biorouter::session::session_manager::SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        sm.close().await;
+
+        let store_error = sm
+            .add_message(&session.id, &Message::user().with_text("x"))
+            .await
+            .expect_err("a closed pool must fail the write");
+        let code = reply_abort_code(&store_error);
+        assert_eq!(code, TurnAbortCode::SessionStore);
+        assert_eq!(code.wire_code(), "session_store_failure");
+        assert_eq!(
+            code.exit_code(),
+            biorouter::agents::turn_abort::exit::SESSION_STORE
+        );
+
+        // Anything without a sqlx error in its chain keeps the provider
+        // classification.
+        assert!(matches!(
+            reply_abort_code(&anyhow::anyhow!("403 Forbidden")),
+            TurnAbortCode::ProviderFailure { .. }
+        ));
+    }
+
+    /// #31: a session-store failure must gain an actionable stderr hint that
+    /// names the ACTIVE store; unrelated errors must not.
+    #[test]
+    fn session_store_errors_get_a_named_store_hint() {
+        let db_error = "error returned from database: (code: 2067) UNIQUE constraint failed: \
+             messages.session_id, messages.msg_uid";
+
+        let shared =
+            ActiveSessionStore::Shared(PathBuf::from("/data/biorouter/sessions/sessions.db"));
+        let hint =
+            session_store_error_hint(db_error, &shared).expect("a database error is store-shaped");
+        assert!(
+            hint.contains("/data/biorouter/sessions/sessions.db"),
+            "hint must name the shared store"
+        );
+        assert!(
+            hint.contains("--no-session"),
+            "the shared-store hint must offer the isolated-run escape"
+        );
+
+        assert_eq!(
+            session_store_error_hint("Request failed: 403 Forbidden", &shared),
+            None,
+            "provider errors are not store-shaped"
+        );
+    }
+
+    /// #31: a run already on its private `--no-session` store must get a hint
+    /// naming THAT store — not the shared sessions.db it never touched, and
+    /// not a recommendation to use the flag it is already using.
+    #[test]
+    fn private_store_errors_name_the_private_store() {
+        let db_error = "error returned from database: (code: 2067) UNIQUE constraint failed: \
+             messages.session_id, messages.msg_uid";
+
+        let private = ActiveSessionStore::Private(PathBuf::from(
+            "/tmp/biorouter-no-session-abc/sessions/sessions.db",
+        ));
+        let hint =
+            session_store_error_hint(db_error, &private).expect("a database error is store-shaped");
+        assert!(
+            hint.contains("/tmp/biorouter-no-session-abc/sessions/sessions.db"),
+            "hint must name the private per-run store, got: {hint}"
+        );
+        assert!(
+            !hint.contains("use `--no-session`"),
+            "the private-store hint must not recommend the flag the run already uses"
+        );
+        assert!(
+            !hint.contains("another biorouter process (") && !hint.contains("desktop app"),
+            "the private store is exclusive to this run; contention advice is wrong: {hint}"
+        );
+    }
+
+    /// #40/#31: interruption prose belongs on stderr exactly in the
+    /// structured modes — `json` stdout must stay ONE valid document and
+    /// `stream-json` a sequence of events — while text mode keeps rendering
+    /// it on stdout for humans.
+    #[test]
+    fn interruption_prose_routes_by_output_format() {
+        assert!(!CliSession::interruption_prose_belongs_on_stderr("text"));
+        assert!(CliSession::interruption_prose_belongs_on_stderr("json"));
+        assert!(CliSession::interruption_prose_belongs_on_stderr(
+            "stream-json"
+        ));
+    }
+
+    /// #31: the elicitation-response failure path (record the abort, cancel,
+    /// `handle_interrupted_messages`, finalizer) must leave a json-mode
+    /// stdout holding a single valid document. The prose the handler used to
+    /// print to stdout in every mode now goes to stderr in structured modes
+    /// (pinned above), and the recovery prompt it pushes reaches structured
+    /// consumers through the document's `messages` instead.
+    #[tokio::test]
+    async fn json_mode_interruption_yields_one_valid_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager, "json").await;
+
+        // The aftermath of a failed elicitation reply: the abort is recorded
+        // and the interruption handler runs over a turn whose last message
+        // is a user tool-response (the loop was mid-tool-call).
+        session.last_abort = Some(TurnAbortCode::SessionStore);
+        let mut tool_response = Message::user();
+        tool_response.content.push(MessageContent::tool_response(
+            "req-1",
+            Err(ErrorData {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: std::borrow::Cow::from("interrupted"),
+                data: None,
+            }),
+        ));
+        session.messages.push(tool_response);
+        session.handle_interrupted_messages(false).await.unwrap();
+
+        // The one thing emit_final_output prints on stdout in json mode.
+        let document = session.build_json_document().await.unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&document).expect("stdout must be a single valid JSON document");
+        assert_eq!(parsed["metadata"]["status"], "failed");
+        assert_eq!(parsed["metadata"]["error"], "session_store_failure");
+        assert!(
+            document.contains("The tool calling loop was interrupted"),
+            "the recovery prompt must reach structured consumers via `messages`"
+        );
+    }
+
+    /// #31: `headless()` closes the private `--no-session` store before
+    /// returning, but `cli.rs` logs session completion AFTERWARDS via
+    /// `get_session` — which used to query the closed pool and report zero
+    /// tokens/messages for every no-session run. The final row is now
+    /// snapshotted at close, so completion telemetry sees the real counts.
+    #[tokio::test]
+    async fn no_session_completion_stats_survive_the_store_close() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+
+        // Real activity in the private store: two messages and a token total.
+        manager
+            .add_message(&session.session_id, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &session.session_id,
+                &Message::assistant().with_text("hello"),
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&session.session_id)
+            .total_tokens(Some(1234))
+            .apply()
+            .await
+            .unwrap();
+
+        // Tear down exactly as headless() does before cli.rs logs completion.
+        session.hold_ephemeral_store_dir(tmp);
+        session.close_ephemeral_store().await;
+
+        // The store really is closed and gone...
+        assert!(
+            manager
+                .get_session(&session.session_id, false)
+                .await
+                .is_err(),
+            "the private store must be closed after teardown"
+        );
+        // ...yet the completion telemetry the caller logs still sees the run.
+        let logged = session
+            .get_session()
+            .await
+            .expect("completion logging must still see the run after close");
+        assert_eq!(logged.message_count, 2, "real message count, not zero");
+        assert_eq!(
+            logged.total_tokens,
+            Some(1234),
+            "real token total, not zero"
+        );
+    }
 
     #[test]
     fn test_build_diverge_deeplink_basic() {

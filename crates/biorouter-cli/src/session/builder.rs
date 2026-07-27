@@ -1,14 +1,15 @@
 use super::output;
 use super::CliSession;
-use biorouter::agents::Agent;
+use biorouter::agents::{Agent, AgentConfig};
 use biorouter::config::get_enabled_extensions;
 use biorouter::config::resolve_extensions_for_new_session;
 use biorouter::config::{
-    extensions::get_extension_by_name, get_all_extensions, Config, ExtensionConfig,
+    extensions::get_extension_by_name, get_all_extensions, BioRouterMode, Config, ExtensionConfig,
+    PermissionManager,
 };
 use biorouter::providers::create;
 use biorouter::session::session_manager::SessionType;
-use biorouter::session::{EnabledExtensionsState, ExtensionState};
+use biorouter::session::{EnabledExtensionsState, ExtensionState, SessionManager};
 use biorouter::workflow::Workflow;
 use console::style;
 use rustyline::EditMode;
@@ -363,10 +364,100 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
     }
 }
 
+/// #31: the private, per-run session store backing a `--no-session` run.
+///
+/// `--no-session` is documented as "run without storing a session file", yet
+/// it used to create a hidden session in the SHARED
+/// `<data_dir>/sessions/sessions.db` — every message of every headless run
+/// landed in (and contended on) the same store the desktop app and daemon
+/// write. This builds a `SessionManager` rooted in a fresh temp directory
+/// instead, giving each `--no-session` run structural isolation. The
+/// returned `TempDir` deletes the store when dropped. `build_session`'s
+/// early-exit paths call [`close_ephemeral_store_with_manager`] before
+/// `process::exit` (which skips destructors) so the pool is closed and the
+/// directory removed; panics unwind and drop it normally.
+fn ephemeral_session_store() -> anyhow::Result<(tempfile::TempDir, Arc<SessionManager>)> {
+    let dir = tempfile::Builder::new()
+        .prefix("biorouter-no-session-")
+        .tempdir()?;
+    let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+    Ok((dir, manager))
+}
+
+/// #31: `process::exit` skips destructors, so bailing out of `build_session`
+/// after the private `--no-session` store was created would leak a
+/// `biorouter-no-session-*` directory under the OS temp root on every early
+/// exit. Close the store explicitly — **pool first, then the directory** —
+/// and let the caller `process::exit`.
+///
+/// The ordering matters: by the later early-exit paths the agent's SQLite
+/// pool is already open on this directory (WAL + -shm files). Deleting the
+/// directory while those handles are open happens to work on Unix, but on
+/// platforms where unlinking open files fails (Windows) the removal errors
+/// and the directory leaks. Closing the pool first releases the handles, so
+/// the deletion is reliable everywhere.
+async fn close_ephemeral_store_with_manager(
+    session_manager: &SessionManager,
+    ephemeral_store_dir: Option<tempfile::TempDir>,
+) {
+    if ephemeral_store_dir.is_some() {
+        session_manager.close().await;
+    }
+    close_ephemeral_store(ephemeral_store_dir);
+}
+
+/// Best-effort removal of the private `--no-session` store directory. Split
+/// out so the cleanup itself is unit-testable (`process::exit` is not).
+/// Prefer [`close_ephemeral_store_with_manager`], which also closes the
+/// SQLite pool first.
+fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
+    if let Some(dir) = ephemeral_store_dir {
+        if let Err(e) = dir.close() {
+            tracing::warn!(
+                "failed to remove the --no-session session store on exit: {}",
+                e
+            );
+        }
+    }
+}
+
+/// An [`Agent`] whose session manager is the given (private) store, with every
+/// other config knob identical to [`Agent::new`].
+fn agent_with_session_manager(session_manager: Arc<SessionManager>) -> Agent {
+    Agent::with_config(AgentConfig::new(
+        session_manager,
+        PermissionManager::instance(),
+        None,
+        Config::global()
+            .get_biorouter_mode()
+            .unwrap_or(BioRouterMode::Auto),
+    ))
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let config = Config::global();
-    let agent: Agent = Agent::new();
+    // #31: `--no-session` gets a private per-run store so it can never write
+    // to — or contend on — the shared sessions.db.
+    let mut ephemeral_store_dir: Option<tempfile::TempDir> = None;
+    let agent: Agent = if session_config.no_session {
+        match ephemeral_session_store() {
+            Ok((dir, manager)) => {
+                let agent = agent_with_session_manager(manager);
+                ephemeral_store_dir = Some(dir);
+                agent
+            }
+            Err(e) => {
+                output::render_error(&format!(
+                    "Failed to create the private session store for --no-session: {}",
+                    e
+                ));
+                process::exit(1);
+            }
+        }
+    } else {
+        Agent::new()
+    };
     let session_manager = agent.config.session_manager.clone();
 
     let (saved_provider, saved_model_config) = if session_config.resume {
@@ -411,12 +502,14 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         config
     } else {
         let temperature = workflow_settings.and_then(|s| s.temperature);
-        biorouter::model::ModelConfig::new(&model_name)
-            .unwrap_or_else(|e| {
+        match biorouter::model::ModelConfig::new(&model_name) {
+            Ok(config) => config.with_temperature(temperature),
+            Err(e) => {
                 output::render_error(&format!("Failed to create model configuration: {}", e));
+                close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
                 process::exit(1);
-            })
-            .with_temperature(temperature)
+            }
+        }
     };
 
     agent
@@ -437,6 +530,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors",
                 e
             ));
+            close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
             process::exit(1);
         }
     };
@@ -455,10 +549,27 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let session_id: String = if session_config.no_session {
         let working_dir = std::env::current_dir().expect("Could not get working directory");
-        let session = session_manager
+        // The hidden session lives in the PRIVATE per-run store built above,
+        // never in the shared sessions.db (#31).
+        let session = match session_manager
             .create_session(working_dir, "CLI Session".to_string(), SessionType::Hidden)
             .await
-            .expect("Could not create session");
+        {
+            Ok(session) => session,
+            Err(e) => {
+                let store = ephemeral_store_dir
+                    .as_ref()
+                    .map(|d| d.path().join("sessions").join("sessions.db"))
+                    .unwrap_or_default();
+                output::render_error(&format!(
+                    "Could not initialize the --no-session session store at {}: {}",
+                    store.display(),
+                    e
+                ));
+                close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+                process::exit(1);
+            }
+        };
         session.id
     } else if session_config.resume {
         if let Some(session_id) = session_config.session_id {
@@ -469,6 +580,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                         "Cannot resume session {} - no such session exists",
                         style(&session_id).cyan()
                     ));
+                    close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
                     process::exit(1);
                 }
             }
@@ -477,6 +589,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 Ok(sessions) if !sessions.is_empty() => sessions[0].id.clone(),
                 _ => {
                     output::render_error("Cannot resume - no previous sessions found");
+                    close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
                     process::exit(1);
                 }
             }
@@ -485,24 +598,26 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session_config.session_id.unwrap()
     };
 
-    agent
-        .update_provider(new_provider, &session_id)
-        .await
-        .unwrap_or_else(|e| {
-            output::render_error(&format!("Failed to initialize agent: {}", e));
-            process::exit(1);
-        });
+    if let Err(e) = agent.update_provider(new_provider, &session_id).await {
+        output::render_error(&format!("Failed to initialize agent: {}", e));
+        close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+        process::exit(1);
+    }
 
     if session_config.resume {
-        let session = agent
+        let session = match agent
             .config
             .session_manager
             .get_session(&session_id, false)
             .await
-            .unwrap_or_else(|e| {
+        {
+            Ok(session) => session,
+            Err(e) => {
                 output::render_error(&format!("Failed to read session metadata: {}", e));
+                close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
                 process::exit(1);
-            });
+            }
+        };
 
         let current_workdir =
             std::env::current_dir().expect("Failed to get current working directory");
@@ -598,7 +713,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let debug_mode = session_config.debug || config.get_param("BIOROUTER_DEBUG").unwrap_or(false);
 
-    let session = CliSession::new(
+    let mut session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
         session_id.clone(),
         debug_mode,
@@ -609,6 +724,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session_config.output_format.clone(),
     )
     .await;
+    // #31: keep the private --no-session store alive for the whole run; its
+    // temp dir is deleted (best-effort) when the session is dropped.
+    if let Some(dir) = ephemeral_store_dir {
+        session.hold_ephemeral_store_dir(dir);
+    }
 
     if let Err(e) = session
         .agent
@@ -653,6 +773,146 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #31: the `--no-session` store must be a private per-run directory —
+    /// never the shared `<data_dir>/sessions/sessions.db` — and it must be a
+    /// fully functional session store (create / write / read back).
+    #[tokio::test]
+    async fn no_session_store_is_private_and_functional() {
+        let shared_root = biorouter::config::paths::Paths::data_dir();
+        let shared_db = shared_root.join("sessions").join("sessions.db");
+        let shared_mtime_before = std::fs::metadata(&shared_db)
+            .and_then(|m| m.modified())
+            .ok();
+
+        let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
+        assert_ne!(dir.path(), shared_root.as_path());
+        assert!(
+            !dir.path().starts_with(&shared_root),
+            "the ephemeral store must not live under the shared data dir ({})",
+            shared_root.display()
+        );
+
+        // The exact operations a --no-session run performs against its store.
+        let session = manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "CLI Session".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .expect("create session in the private store");
+        manager
+            .add_message(
+                &session.id,
+                &biorouter::conversation::message::Message::user().with_text("hello"),
+            )
+            .await
+            .expect("write a message to the private store");
+        let loaded = manager
+            .get_session(&session.id, true)
+            .await
+            .expect("read back from the private store");
+        assert_eq!(loaded.conversation.unwrap().len(), 1);
+
+        // The writes landed in the private store...
+        assert!(
+            dir.path().join("sessions").join("sessions.db").exists(),
+            "the private sessions.db must exist under the temp dir"
+        );
+        // ...and the shared sessions.db was untouched (same mtime, or still
+        // absent) throughout the run.
+        let shared_mtime_after = std::fs::metadata(&shared_db)
+            .and_then(|m| m.modified())
+            .ok();
+        assert_eq!(
+            shared_mtime_before, shared_mtime_after,
+            "a --no-session run must not touch the shared session store"
+        );
+    }
+
+    /// #31: the explicit early-exit cleanup removes the private store (and
+    /// tolerates `None`). `process::exit` itself is untestable; this pins the
+    /// close half that every early-exit path runs first.
+    #[tokio::test]
+    async fn close_ephemeral_store_removes_the_directory() {
+        let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
+        let path = dir.path().to_path_buf();
+        manager
+            .create_session(path.clone(), "CLI Session".to_string(), SessionType::Hidden)
+            .await
+            .expect("create session");
+        drop(manager);
+        assert!(path.exists());
+        close_ephemeral_store(Some(dir));
+        assert!(
+            !path.exists(),
+            "an early exit must not leak the biorouter-no-session-* directory"
+        );
+        // A run without --no-session has no store to close.
+        close_ephemeral_store(None);
+    }
+
+    /// #31 ordering: the early-exit cleanup closes the SQLite pool BEFORE
+    /// deleting the temp directory, releasing the WAL/-shm handles that made
+    /// the removal fail (and leak the dir) on platforms where deleting open
+    /// files is not allowed. On Unix the deletion succeeds either way, so
+    /// the pool-closed assertion is the cross-platform proof of ordering.
+    #[tokio::test]
+    async fn early_exit_cleanup_closes_the_pool_before_deleting_the_store() {
+        let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
+        let path = dir.path().to_path_buf();
+        // Open the pool with real traffic so WAL files exist.
+        manager
+            .create_session(path.clone(), "CLI Session".to_string(), SessionType::Hidden)
+            .await
+            .expect("create session");
+
+        close_ephemeral_store_with_manager(&manager, Some(dir)).await;
+
+        assert!(
+            !path.exists(),
+            "the biorouter-no-session-* directory must be removed"
+        );
+        assert!(
+            manager
+                .create_session(path, "again".to_string(), SessionType::Hidden)
+                .await
+                .is_err(),
+            "the pool must be closed, not still writing into deleted files"
+        );
+
+        // A run without --no-session must leave its (shared) store untouched.
+        let (dir2, manager2) = ephemeral_session_store().expect("ephemeral store");
+        close_ephemeral_store_with_manager(&manager2, None).await;
+        manager2
+            .create_session(
+                dir2.path().to_path_buf(),
+                "still open".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .expect("no dir handed over means the store must stay usable");
+    }
+
+    /// #31: dropping the `TempDir` (end of run) removes the private store —
+    /// the best-effort cleanup contract.
+    #[tokio::test]
+    async fn dropping_the_ephemeral_store_removes_it() {
+        let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
+        let path = dir.path().to_path_buf();
+        manager
+            .create_session(path.clone(), "CLI Session".to_string(), SessionType::Hidden)
+            .await
+            .expect("create session");
+        assert!(path.exists());
+        drop(manager);
+        drop(dir);
+        assert!(
+            !path.exists(),
+            "the private store must be cleaned up on drop"
+        );
+    }
 
     #[test]
     fn test_session_builder_config_creation() {
