@@ -299,6 +299,25 @@ impl CliSession {
         self.ephemeral_store_dir = Some(dir);
     }
 
+    /// #31: close the private `--no-session` store at the natural end of a
+    /// run — SQLite pool first (releasing the WAL/-shm handles), then the
+    /// temp directory. Without the pool close, the deletion only works where
+    /// unlinking open files is allowed (Unix); on Windows it fails and the
+    /// directory leaks. The `Drop` of the held `TempDir` remains the
+    /// best-effort fallback for abnormal exits, but it cannot close the pool
+    /// first, so it keeps that platform caveat.
+    async fn close_ephemeral_store(&mut self) {
+        if let Some(dir) = self.ephemeral_store_dir.take() {
+            self.agent.config.session_manager.close().await;
+            if let Err(e) = dir.close() {
+                tracing::warn!(
+                    "failed to remove the --no-session session store on exit: {}",
+                    e
+                );
+            }
+        }
+    }
+
     /// The session store this run actually writes (#31): the private per-run
     /// temp store under `--no-session`, otherwise the shared `sessions.db`.
     /// Error hints derive from this, so they never blame the shared store for
@@ -470,6 +489,7 @@ impl CliSession {
             self.update_completion_cache().await?;
             let result = tui::run(self, prompt).await;
             self.fire_session_end_hooks("exit").await;
+            self.close_ephemeral_store().await;
             return result;
         }
 
@@ -502,6 +522,7 @@ impl CliSession {
         }
 
         self.fire_session_end_hooks("exit").await;
+        self.close_ephemeral_store().await;
 
         println!(
             "Closing session. Session ID: {}",
@@ -1025,6 +1046,7 @@ impl CliSession {
             .process_message(message, false, CancellationToken::default())
             .await;
         self.fire_session_end_hooks("prompt_input_exit").await;
+        self.close_ephemeral_store().await;
         result?;
         if let Some(code) = self.last_abort.clone() {
             let message = format!("the turn did not complete: {}", code.wire_code());
