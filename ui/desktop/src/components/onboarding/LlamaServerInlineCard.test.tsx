@@ -37,6 +37,8 @@ const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
   min_gpu_memory_gib: 16,
   recommended_gpu_memory_gib: 16,
   context_limit: 131072,
+  active_params_b: 4,
+  speed_hint: 'Fast — ~4B active parameters',
   is_default: true,
   downloaded: false,
   download_status: 'not_downloaded',
@@ -66,6 +68,8 @@ const statusResponse = (sidecar: Record<string, unknown> = {}) => ({
         name: 'gemma4-12b',
         display_name: 'Gemma 4 12B',
         download_size: '7.6 GB',
+        active_params_b: 12,
+        speed_hint: 'Fast — dense 12B, quick to load',
         is_default: false,
       }),
     ],
@@ -96,6 +100,12 @@ describe('LlamaServerInlineCard', () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const select = await screen.findByTestId('llamacpp-model-select');
     await waitFor(() => expect(select).toHaveValue('gemma4'));
+  });
+
+  it('shows download size and expected speed for the selected model (#35)', async () => {
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+    const info = await screen.findByTestId('llamacpp-size-speed');
+    expect(info).toHaveTextContent('9.6 GB download · Fast — ~4B active parameters');
   });
 
   it('restores the live progress box when remounting during an in-flight download', async () => {

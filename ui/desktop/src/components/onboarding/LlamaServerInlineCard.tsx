@@ -328,6 +328,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 <p className="break-words text-[11px] text-text-muted">
                   {selectedEntry.description}
                 </p>
+                <p
+                  className="break-words text-[11px] text-text-muted"
+                  data-testid="llamacpp-size-speed"
+                >
+                  {selectedEntry.download_size} download · {selectedEntry.speed_hint}
+                </p>
                 <p className="break-words text-[11px] text-text-muted">
                   {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
                 </p>

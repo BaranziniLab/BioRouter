@@ -429,8 +429,9 @@ export default function LocalModelInventory() {
                       </span>
                     </div>
                     <p className="mt-1 truncate text-xs text-text-muted">
-                      {model.family} · {model.download_size} · {formatContext(model.context_limit)}{' '}
-                      context · {model.ollama_name ?? model.hf_spec}
+                      {model.family} · {model.download_size} · {model.speed_hint} ·{' '}
+                      {formatContext(model.context_limit)} context ·{' '}
+                      {model.ollama_name ?? model.hf_spec}
                     </p>
                   </div>
                   {renderAction(model)}
@@ -461,6 +462,7 @@ export default function LocalModelInventory() {
               <DetailRow label="Status">{installedLabel(selectedModel)}</DetailRow>
               <DetailRow label="Family">{selectedModel.family}</DetailRow>
               <DetailRow label="Download">{selectedModel.download_size}</DetailRow>
+              <DetailRow label="Expected speed">{selectedModel.speed_hint}</DetailRow>
               <DetailRow label="Context">
                 {formatContext(selectedModel.context_limit)} tokens
               </DetailRow>
