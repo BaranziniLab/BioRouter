@@ -1234,12 +1234,17 @@
   /* Selection settles with a small spring (#37). The keyframes animate the
      STANDALONE `scale` property, never `transform`: when closing the active
      tab, the successor gains data-active (starting this animation) in the same
-     commit the FLIP pass writes an inline `transform: translateX(...)` on the
-     same element — and a keyframe on `transform` overrides inline styles for
-     its whole run, so the slide became a pop. Individual transform properties
-     compose (translate → rotate → scale → transform matrix), so the settle
-     scale and the FLIP slide now play together. Re-runs whenever data-active
-     lands on a tab; suppressed under prefers-reduced-motion below. */
+     commit the FLIP pass writes its inline slide offset on the same element —
+     and a keyframe on `transform` overrides inline styles for its whole run,
+     so the slide became a pop. The FLIP offset in turn rides the individual
+     `translate` property, not the `transform` list: the CTM composes
+     translate → rotate → scale → `transform` (CSS Transforms 2 §ctm), so a
+     translateX() left in `transform` sits INSIDE this scale and gets shrunk
+     with it — the successor started slightly off-slot while settling from
+     0.97 (Codex B6 re-review finding 4). As individual properties, translate
+     and scale compose cleanly: the slide stays exact while the tab scales.
+     Re-runs whenever data-active lands on a tab; suppressed under
+     prefers-reduced-motion below. */
   animation: br-tab-select var(--motion-base) var(--ease-spring);
 }
 

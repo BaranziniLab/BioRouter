@@ -116,29 +116,36 @@ export function ChatTabStrip({
       if (delta === 0) continue;
 
       // Invert without transitioning, then release to identity on the next
-      // frame with the spring. Transform-only: never left/top, and never a
-      // reparent — the divider (::before) and drop hairline (::after)
-      // contracts stay untouched.
+      // frame with the spring. The offset rides the individual `translate`
+      // property, NOT the `transform` list: the br-tab-select settle animates
+      // the individual `scale`, and per CSS Transforms 2 the CTM composes
+      // translate → rotate → scale → transform — so a translateX() in
+      // `transform` sits INSIDE the scale and gets shrunk with it (the active
+      // successor would start off-slot while settling from 0.97), while the
+      // individual `translate` composes OUTSIDE it and the slide stays exact
+      // (Codex B6 re-review finding 4). Never left/top, and never a reparent —
+      // the divider (::before) and drop hairline (::after) contracts stay
+      // untouched.
       el.style.transition = 'none';
-      el.style.transform = `translateX(${delta}px)`;
+      el.style.translate = `${delta}px`;
 
       // Named + idempotent: reached from transitionend, transitioncancel AND
       // the effect cleanup, whichever comes first.
       const restore = () => {
         // Give the stylesheet back its own transition (hover colours).
         el.style.removeProperty('transition');
-        el.style.removeProperty('transform');
+        el.style.removeProperty('translate');
         el.removeEventListener('transitionend', onDone);
         el.removeEventListener('transitioncancel', onDone);
       };
       const onDone = (event: Event) => {
-        // Only OUR transform transition on THIS element: transitionend
+        // Only OUR translate transition on THIS element: transitionend
         // bubbles, so a child's opacity fade (the close control) must not cut
         // the slide short. propertyName is best-effort — jsdom's synthetic
         // events omit it.
         if (event.target !== el) return;
         const propertyName = (event as TransitionEvent).propertyName;
-        if (propertyName && propertyName !== 'transform') return;
+        if (propertyName && propertyName !== 'translate') return;
         restore();
       };
       restores.push(restore);
@@ -146,8 +153,8 @@ export function ChatTabStrip({
       rafIds.push(
         window.requestAnimationFrame(() => {
           if (!el.isConnected) return;
-          el.style.transition = 'transform var(--motion-base) var(--ease-spring)';
-          el.style.transform = '';
+          el.style.transition = 'translate var(--motion-base) var(--ease-spring)';
+          el.style.translate = '';
           el.addEventListener('transitionend', onDone);
           el.addEventListener('transitioncancel', onDone);
         })
