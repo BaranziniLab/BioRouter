@@ -299,6 +299,21 @@ impl CliSession {
         self.ephemeral_store_dir = Some(dir);
     }
 
+    /// The session store this run actually writes (#31): the private per-run
+    /// temp store under `--no-session`, otherwise the shared `sessions.db`.
+    /// Error hints derive from this, so they never blame the shared store for
+    /// a failure inside a private one.
+    fn active_session_store(&self) -> ActiveSessionStore {
+        match &self.ephemeral_store_dir {
+            Some(dir) => {
+                ActiveSessionStore::Private(dir.path().join("sessions").join("sessions.db"))
+            }
+            None => {
+                ActiveSessionStore::Shared(Paths::data_dir().join("sessions").join("sessions.db"))
+            }
+        }
+    }
+
     /// The abort code of the last turn, if it ended without doing its work.
     pub fn last_abort(&self) -> Option<&TurnAbortCode> {
         self.last_abort.as_ref()
@@ -1055,7 +1070,7 @@ impl CliSession {
         {
             Ok(reply_stream) => reply_stream,
             Err(e) => {
-                handle_agent_error(&e, is_stream_json_mode);
+                handle_agent_error(&e, is_stream_json_mode, &self.active_session_store());
                 let code = provider_abort_code(&e);
                 if is_stream_json_mode {
                     emit_stream_event(&StreamEvent::Aborted {
@@ -1296,7 +1311,7 @@ impl CliSession {
                             break;
                         }
                         Some(Err(e)) => {
-                            handle_agent_error(&e, is_stream_json_mode);
+                            handle_agent_error(&e, is_stream_json_mode, &self.active_session_store());
                             // #31/#41: record the machine-checkable failure so
                             // `--output-format json` reports status "failed"
                             // (this path used to leave last_abort unset and the
@@ -2026,7 +2041,7 @@ fn provider_abort_code(e: &anyhow::Error) -> TurnAbortCode {
 }
 
 /// Handle and display an agent error
-fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool) {
+fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool, store: &ActiveSessionStore) {
     let error_msg = e.to_string();
 
     if is_stream_json_mode {
@@ -2058,29 +2073,51 @@ fn handle_agent_error(e: &anyhow::Error, is_stream_json_mode: bool) {
         eprintln!("Error: {}", error_msg);
     }
     // #31: a raw SQLite dump ("error returned from database…") tells the user
-    // nothing actionable. Name the store and the likely causes on stderr.
-    if let Some(hint) = session_store_error_hint(&error_msg) {
+    // nothing actionable. Name the ACTIVE store and its likely causes on
+    // stderr.
+    if let Some(hint) = session_store_error_hint(&error_msg, store) {
         eprintln!("{}", hint);
     }
 }
 
+/// The session store a run actually writes: the shared
+/// `<data_dir>/sessions/sessions.db`, or the private per-run temp store a
+/// `--no-session` run gets (#31). Carried into error hints so they name the
+/// store that actually failed instead of always blaming the shared one.
+#[derive(Debug, Clone, PartialEq)]
+enum ActiveSessionStore {
+    Shared(PathBuf),
+    Private(PathBuf),
+}
+
 /// A human-readable stderr hint for session-store failures, or `None` when the
-/// error is not store-shaped. Pure so the matching is unit-testable.
-fn session_store_error_hint(error_msg: &str) -> Option<String> {
+/// error is not store-shaped. Pure so the matching is unit-testable. The
+/// advice follows the ACTIVE store: a run already on its private
+/// `--no-session` store cannot be contending with other biorouter processes,
+/// and recommending `--no-session` to it would be nonsense.
+fn session_store_error_hint(error_msg: &str, store: &ActiveSessionStore) -> Option<String> {
     let store_shaped = error_msg.contains("error returned from database")
         || error_msg.contains("sessions.db")
         || error_msg.contains("messages.msg_uid");
     if !store_shaped {
         return None;
     }
-    let store = Paths::data_dir().join("sessions").join("sessions.db");
-    Some(format!(
-        "The session store ({}) rejected an operation. If another biorouter \
-         process (the desktop app, biorouterd, or a concurrent run) is using \
-         the same store, retry once it is idle — or use `--no-session` for a \
-         fully isolated run.",
-        store.display()
-    ))
+    Some(match store {
+        ActiveSessionStore::Shared(path) => format!(
+            "The session store ({}) rejected an operation. If another biorouter \
+             process (the desktop app, biorouterd, or a concurrent run) is using \
+             the same store, retry once it is idle — or use `--no-session` for a \
+             fully isolated run.",
+            path.display()
+        ),
+        ActiveSessionStore::Private(path) => format!(
+            "This run's private session store ({}) rejected an operation. The \
+             store is exclusive to this `--no-session` run, so another biorouter \
+             process is not the cause — check for a full disk or the OS temp \
+             directory being cleaned mid-run, then retry.",
+            path.display()
+        ),
+    })
 }
 
 async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
@@ -2183,24 +2220,57 @@ mod tests {
     }
 
     /// #31: a session-store failure must gain an actionable stderr hint that
-    /// names the store; unrelated errors must not.
+    /// names the ACTIVE store; unrelated errors must not.
     #[test]
     fn session_store_errors_get_a_named_store_hint() {
-        let hint = session_store_error_hint(
-            "error returned from database: (code: 2067) UNIQUE constraint failed: \
-             messages.session_id, messages.msg_uid",
-        )
-        .expect("a database error is store-shaped");
-        assert!(hint.contains("sessions.db"), "hint must name the store");
+        let db_error = "error returned from database: (code: 2067) UNIQUE constraint failed: \
+             messages.session_id, messages.msg_uid";
+
+        let shared =
+            ActiveSessionStore::Shared(PathBuf::from("/data/biorouter/sessions/sessions.db"));
+        let hint =
+            session_store_error_hint(db_error, &shared).expect("a database error is store-shaped");
+        assert!(
+            hint.contains("/data/biorouter/sessions/sessions.db"),
+            "hint must name the shared store"
+        );
         assert!(
             hint.contains("--no-session"),
-            "hint must offer the isolated-run escape"
+            "the shared-store hint must offer the isolated-run escape"
         );
 
         assert_eq!(
-            session_store_error_hint("Request failed: 403 Forbidden"),
+            session_store_error_hint("Request failed: 403 Forbidden", &shared),
             None,
             "provider errors are not store-shaped"
+        );
+    }
+
+    /// #31: a run already on its private `--no-session` store must get a hint
+    /// naming THAT store — not the shared sessions.db it never touched, and
+    /// not a recommendation to use the flag it is already using.
+    #[test]
+    fn private_store_errors_name_the_private_store() {
+        let db_error = "error returned from database: (code: 2067) UNIQUE constraint failed: \
+             messages.session_id, messages.msg_uid";
+
+        let private = ActiveSessionStore::Private(PathBuf::from(
+            "/tmp/biorouter-no-session-abc/sessions/sessions.db",
+        ));
+        let hint = session_store_error_hint(db_error, &private)
+            .expect("a database error is store-shaped");
+        assert!(
+            hint.contains("/tmp/biorouter-no-session-abc/sessions/sessions.db"),
+            "hint must name the private per-run store, got: {hint}"
+        );
+        assert!(
+            !hint.contains("use `--no-session`"),
+            "the private-store hint must not recommend the flag the run already uses"
+        );
+        assert!(
+            !hint.contains("another biorouter process (")
+                && !hint.contains("desktop app"),
+            "the private store is exclusive to this run; contention advice is wrong: {hint}"
         );
     }
 
