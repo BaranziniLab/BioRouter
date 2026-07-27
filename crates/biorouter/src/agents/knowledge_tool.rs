@@ -118,7 +118,7 @@ impl Agent {
             }
             return Ok(id.to_string());
         }
-        if let Some(active) = svc.get_active_persisted()? {
+        if let Some(active) = svc.get_primary_persisted()? {
             return Ok(active);
         }
         anyhow::bail!(

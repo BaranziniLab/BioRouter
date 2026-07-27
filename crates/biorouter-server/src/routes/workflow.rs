@@ -156,7 +156,7 @@ fn workflow_knowledge_bases_for_session(
 
     let default = state
         .knowledge_service
-        .get_active_for_session(session_id)
+        .get_primary_for_session(session_id)
         .map_err(|err| {
             tracing::error!(
                 "Failed to get active knowledge base for workflow creation: {}",
@@ -167,7 +167,7 @@ fn workflow_knowledge_bases_for_session(
         .or_else(|| {
             state
                 .knowledge_service
-                .get_active_persisted()
+                .get_primary_persisted()
                 .ok()
                 .flatten()
         })

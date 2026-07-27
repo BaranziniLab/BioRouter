@@ -39,7 +39,7 @@ impl ActiveKbState {
     /// selected previously. Errors are intentionally swallowed — a missing or
     /// unreadable file simply yields an unset active KB.
     pub fn from_persisted(service: &KnowledgeService) -> Self {
-        let initial = service.get_active_persisted().ok().flatten();
+        let initial = service.get_primary_persisted().ok().flatten();
         Self {
             inner: Arc::new(tokio::sync::Mutex::new(initial)),
         }
@@ -326,7 +326,7 @@ impl KnowledgeServer {
             if let Some(session_id) = Self::session_id_from_context(context) {
                 if let Some(session_active) = self
                     .service
-                    .get_active_for_session(session_id)
+                    .get_primary_for_session(session_id)
                     .map_err(into_err)?
                 {
                     return Ok(Some(session_active));
@@ -338,7 +338,7 @@ impl KnowledgeServer {
             return Ok(Some(active));
         }
 
-        self.service.get_active_persisted().map_err(into_err)
+        self.service.get_primary_persisted().map_err(into_err)
     }
 
     /// Resolve `supplied` kb_id or fall back to the active KB for this request context.
@@ -692,11 +692,11 @@ impl KnowledgeServer {
         self.active.set(&p.0.kb_id).await;
         if let Some(session_id) = Self::session_id_from_context(&context) {
             self.service
-                .set_active_for_session(session_id, Some(&p.0.kb_id))
+                .set_primary_for_session(session_id, Some(&p.0.kb_id))
                 .map_err(into_err)?;
         } else {
             self.service
-                .set_active_persisted(Some(&p.0.kb_id))
+                .set_primary_persisted(Some(&p.0.kb_id))
                 .map_err(into_err)?;
         }
         ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))

@@ -49,12 +49,24 @@ pub fn kb_root(root: &Path, id: &str) -> PathBuf {
 }
 
 /// Returns `<knowledge-root>/.active-kb` — the file that persists the
-/// currently-active KB id across MCP-server processes.
-pub fn active_kb_path(root: &std::path::Path) -> std::path::PathBuf {
+/// **primary** knowledge base id (the write target for KB-less mutating calls).
+///
+/// The filename keeps its historical `.active-kb` spelling on purpose. The
+/// merged model needs exactly one id, which is exactly what this file already
+/// holds, so today's value *is* the primary and reading it is the entire
+/// migration. It also keeps a lagging PATH-installed `biorouter` (see CLAUDE.md,
+/// "Runtime CLI-vs-app drift") working: it reads a bare kb id whose meaning is
+/// unchanged for it. Renaming the file, or writing anything structured into it,
+/// would break that binary — `get_primary_persisted` performs no validation, so
+/// it would happily join a JSON array into a filesystem path.
+pub fn primary_kb_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".active-kb")
 }
 
-pub fn active_kb_sessions_dir(root: &std::path::Path) -> std::path::PathBuf {
+/// Returns `<knowledge-root>/.active-kb-sessions` — one file per session,
+/// named `sha256(session_id)`, each holding that session's primary kb id.
+/// Same naming rationale as [`primary_kb_path`].
+pub fn primary_kb_sessions_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".active-kb-sessions")
 }
 

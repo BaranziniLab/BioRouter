@@ -116,7 +116,7 @@ fn apply_workflow_knowledge_selection(
 
     state
         .knowledge_service
-        .set_active_for_session(session_id, active)
+        .set_primary_for_session(session_id, active)
         .map_err(|err| ErrorResponse {
             message: format!("Failed to set workflow default knowledge base: {}", err),
             status: StatusCode::BAD_REQUEST,

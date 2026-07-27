@@ -1401,7 +1401,7 @@ pub fn display_session_info(
     // Surface the active knowledge base (the CLI equivalent of the GUI's
     // active-KB chip), so chat-side knowledge tools have visible context.
     if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
-        if let Ok(Some(kb)) = svc.get_active_persisted() {
+        if let Ok(Some(kb)) = svc.get_primary_persisted() {
             row("knowledge", kb);
         }
     }

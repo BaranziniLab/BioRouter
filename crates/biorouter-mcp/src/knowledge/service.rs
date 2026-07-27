@@ -88,9 +88,9 @@ pub struct KnowledgeWriteGuard {
 }
 
 impl KnowledgeService {
-    fn active_session_path(&self, session_id: &str) -> PathBuf {
+    fn primary_session_path(&self, session_id: &str) -> PathBuf {
         let digest = raw::hash_bytes(session_id.as_bytes());
-        paths::active_kb_sessions_dir(self.root()).join(digest)
+        paths::primary_kb_sessions_dir(self.root()).join(digest)
     }
 
     fn hidden_session_path(&self, session_id: &str) -> PathBuf {
@@ -98,7 +98,7 @@ impl KnowledgeService {
         paths::hidden_kb_sessions_dir(self.root()).join(digest)
     }
 
-    fn set_active_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
+    fn set_primary_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -185,12 +185,12 @@ impl KnowledgeService {
         self.set_hidden_path_unlocked(path, &next_hidden)
     }
 
-    fn rewrite_session_active_refs_unlocked(
+    fn rewrite_session_primary_refs_unlocked(
         &self,
         current_kb_id: &str,
         next_kb_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let dir = paths::active_kb_sessions_dir(self.root());
+        let dir = paths::primary_kb_sessions_dir(self.root());
         if !dir.exists() {
             return Ok(());
         }
@@ -204,7 +204,7 @@ impl KnowledgeService {
 
             let active = std::fs::read_to_string(&path)?;
             if active.trim() == current_kb_id {
-                self.set_active_path_unlocked(&path, next_kb_id)?;
+                self.set_primary_path_unlocked(&path, next_kb_id)?;
             }
         }
 
@@ -465,10 +465,10 @@ impl KnowledgeService {
                     },
                 )?;
 
-                if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
-                    self.set_active_persisted_unlocked(Some(&target_id))?;
+                if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
+                    self.set_primary_persisted_unlocked(Some(&target_id))?;
                 }
-                self.rewrite_session_active_refs_unlocked(id, Some(&target_id))?;
+                self.rewrite_session_primary_refs_unlocked(id, Some(&target_id))?;
                 self.rewrite_hidden_refs_unlocked(id, Some(&target_id))?;
             }
 
@@ -529,10 +529,10 @@ impl KnowledgeService {
             return Err(err.into());
         }
 
-        if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
-            self.set_active_persisted_unlocked(None)?;
+        if self.get_primary_persisted_unlocked()?.as_deref() == Some(id) {
+            self.set_primary_persisted_unlocked(None)?;
         }
-        self.rewrite_session_active_refs_unlocked(id, None)?;
+        self.rewrite_session_primary_refs_unlocked(id, None)?;
         self.rewrite_hidden_refs_unlocked(id, None)?;
 
         Ok(())
@@ -971,12 +971,12 @@ impl KnowledgeService {
 
     /// Read the persisted active-KB id (set via the UI or `kb_set_active`).
     /// Returns `Ok(None)` if no file exists or the file is empty.
-    pub fn get_active_persisted(&self) -> anyhow::Result<Option<String>> {
-        self.get_active_persisted_unlocked()
+    pub fn get_primary_persisted(&self) -> anyhow::Result<Option<String>> {
+        self.get_primary_persisted_unlocked()
     }
 
-    fn get_active_persisted_unlocked(&self) -> anyhow::Result<Option<String>> {
-        let path = crate::knowledge::paths::active_kb_path(self.root());
+    fn get_primary_persisted_unlocked(&self) -> anyhow::Result<Option<String>> {
+        let path = crate::knowledge::paths::primary_kb_path(self.root());
         if !path.exists() {
             return Ok(None);
         }
@@ -990,18 +990,18 @@ impl KnowledgeService {
     }
 
     /// Persist the active-KB id. Pass `None` to clear.
-    pub fn set_active_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
+    pub fn set_primary_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
-        self.set_active_persisted_unlocked(id)
+        self.set_primary_persisted_unlocked(id)
     }
 
-    fn set_active_persisted_unlocked(&self, id: Option<&str>) -> anyhow::Result<()> {
-        let path = crate::knowledge::paths::active_kb_path(self.root());
-        self.set_active_path_unlocked(&path, id)
+    fn set_primary_persisted_unlocked(&self, id: Option<&str>) -> anyhow::Result<()> {
+        let path = crate::knowledge::paths::primary_kb_path(self.root());
+        self.set_primary_path_unlocked(&path, id)
     }
 
-    pub fn get_active_for_session(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let path = self.active_session_path(session_id);
+    pub fn get_primary_for_session(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let path = self.primary_session_path(session_id);
         if !path.exists() {
             return Ok(None);
         }
@@ -1014,14 +1014,14 @@ impl KnowledgeService {
         }
     }
 
-    pub fn set_active_for_session(
+    pub fn set_primary_for_session(
         &self,
         session_id: &str,
         kb_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
-        let path = self.active_session_path(session_id);
-        self.set_active_path_unlocked(&path, kb_id)
+        let path = self.primary_session_path(session_id);
+        self.set_primary_path_unlocked(&path, kb_id)
     }
 
     pub fn get_hidden_persisted(&self) -> anyhow::Result<Vec<String>> {
@@ -1672,52 +1672,52 @@ mod tests {
     }
 
     #[test]
-    fn active_kb_persists_to_disk() -> anyhow::Result<()> {
+    fn primary_kb_persists_to_disk() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
-        assert!(svc.get_active_persisted()?.is_none());
+        assert!(svc.get_primary_persisted()?.is_none());
 
-        svc.set_active_persisted(Some("my-kb"))?;
-        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("my-kb"));
+        svc.set_primary_persisted(Some("my-kb"))?;
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("my-kb"));
 
         // Setting again overwrites.
-        svc.set_active_persisted(Some("other-kb"))?;
-        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("other-kb"));
+        svc.set_primary_persisted(Some("other-kb"))?;
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("other-kb"));
 
         // Clearing removes the file.
-        svc.set_active_persisted(None)?;
-        assert!(svc.get_active_persisted()?.is_none());
+        svc.set_primary_persisted(None)?;
+        assert!(svc.get_primary_persisted()?.is_none());
 
         // Invalid IDs are rejected.
-        let err = svc.set_active_persisted(Some("INVALID--KB"));
+        let err = svc.set_primary_persisted(Some("INVALID--KB"));
         assert!(err.is_err());
         Ok(())
     }
 
     #[test]
-    fn active_kb_can_be_scoped_per_session() -> anyhow::Result<()> {
+    fn primary_kb_can_be_scoped_per_session() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
 
-        assert!(svc.get_active_for_session("session-a")?.is_none());
-        assert!(svc.get_active_for_session("session-b")?.is_none());
+        assert!(svc.get_primary_for_session("session-a")?.is_none());
+        assert!(svc.get_primary_for_session("session-b")?.is_none());
 
-        svc.set_active_for_session("session-a", Some("kb-a"))?;
-        svc.set_active_for_session("session-b", Some("kb-b"))?;
+        svc.set_primary_for_session("session-a", Some("kb-a"))?;
+        svc.set_primary_for_session("session-b", Some("kb-b"))?;
 
         assert_eq!(
-            svc.get_active_for_session("session-a")?.as_deref(),
+            svc.get_primary_for_session("session-a")?.as_deref(),
             Some("kb-a")
         );
         assert_eq!(
-            svc.get_active_for_session("session-b")?.as_deref(),
+            svc.get_primary_for_session("session-b")?.as_deref(),
             Some("kb-b")
         );
 
-        svc.set_active_for_session("session-a", None)?;
-        assert!(svc.get_active_for_session("session-a")?.is_none());
+        svc.set_primary_for_session("session-a", None)?;
+        assert!(svc.get_primary_for_session("session-a")?.is_none());
         assert_eq!(
-            svc.get_active_for_session("session-b")?.as_deref(),
+            svc.get_primary_for_session("session-b")?.as_deref(),
             Some("kb-b")
         );
 
@@ -1725,31 +1725,31 @@ mod tests {
     }
 
     #[test]
-    fn session_scoped_active_kb_tracks_rename_and_delete() -> anyhow::Result<()> {
+    fn session_scoped_primary_kb_tracks_rename_and_delete() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
 
         svc.create_base("kb-a", "KB A", None)?;
-        svc.set_active_persisted(Some("kb-a"))?;
-        svc.set_active_for_session("session-a", Some("kb-a"))?;
-        svc.set_active_for_session("session-b", Some("kb-a"))?;
+        svc.set_primary_persisted(Some("kb-a"))?;
+        svc.set_primary_for_session("session-a", Some("kb-a"))?;
+        svc.set_primary_for_session("session-b", Some("kb-a"))?;
 
         let renamed = svc.update_base("kb-a", Some("Renamed KB"), None)?;
         assert_eq!(renamed.id, "renamed-kb");
-        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("renamed-kb"));
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("renamed-kb"));
         assert_eq!(
-            svc.get_active_for_session("session-a")?.as_deref(),
+            svc.get_primary_for_session("session-a")?.as_deref(),
             Some("renamed-kb")
         );
         assert_eq!(
-            svc.get_active_for_session("session-b")?.as_deref(),
+            svc.get_primary_for_session("session-b")?.as_deref(),
             Some("renamed-kb")
         );
 
         svc.delete_base("renamed-kb")?;
-        assert!(svc.get_active_persisted()?.is_none());
-        assert!(svc.get_active_for_session("session-a")?.is_none());
-        assert!(svc.get_active_for_session("session-b")?.is_none());
+        assert!(svc.get_primary_persisted()?.is_none());
+        assert!(svc.get_primary_for_session("session-a")?.is_none());
+        assert!(svc.get_primary_for_session("session-b")?.is_none());
 
         Ok(())
     }

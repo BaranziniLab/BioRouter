@@ -1238,7 +1238,7 @@ async fn configure_agent(
     if let Some(kb) = report.granted_knowledge_base.clone() {
         if let Err(e) = state
             .knowledge_service
-            .set_active_for_session(session_id, Some(&kb))
+            .set_primary_for_session(session_id, Some(&kb))
         {
             warn!(app = %manifest.id, kb = %kb, "set active KB failed: {e}");
             report.granted_knowledge_base = None;
@@ -1522,7 +1522,7 @@ async fn configure_worker_agent(
     if let Some(kb) = cfg.knowledge_base.as_ref() {
         if let Err(e) = state
             .knowledge_service
-            .set_active_for_session(session_id, Some(kb))
+            .set_primary_for_session(session_id, Some(kb))
         {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker set active KB failed: {e}");
         }

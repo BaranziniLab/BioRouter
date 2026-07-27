@@ -31,7 +31,7 @@ fn resolve_kb(svc: &KnowledgeService, explicit: Option<String>) -> Result<String
     if let Some(id) = explicit {
         return Ok(id);
     }
-    match svc.get_active_persisted()? {
+    match svc.get_primary_persisted()? {
         Some(id) => Ok(id),
         None => bail!(
             "No knowledge base selected. Pass --kb <id>, or set an active base with \
@@ -195,7 +195,7 @@ pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
     let svc = service()?;
 
     if clear {
-        svc.set_active_persisted(None)?;
+        svc.set_primary_persisted(None)?;
         println!("  {} active knowledge base cleared", style("✓").green());
         return Ok(());
     }
@@ -208,7 +208,7 @@ pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
                 id
             );
         }
-        svc.set_active_persisted(Some(&id))?;
+        svc.set_primary_persisted(Some(&id))?;
         println!(
             "  {} active knowledge base set to {}",
             style("✓").green(),
@@ -217,7 +217,7 @@ pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
         return Ok(());
     }
 
-    match svc.get_active_persisted()? {
+    match svc.get_primary_persisted()? {
         Some(id) => println!(
             "  {} {}",
             style("active:").dim(),
@@ -251,8 +251,8 @@ pub async fn handle_create(id: String, name: Option<String>, color: Option<Strin
 
     // Make it active when there was no prior selection, so the next ingest/query
     // "just works" without an explicit --kb.
-    if svc.get_active_persisted()?.is_none() {
-        svc.set_active_persisted(Some(&manifest.id))?;
+    if svc.get_primary_persisted()?.is_none() {
+        svc.set_primary_persisted(Some(&manifest.id))?;
         println!("  {} set as active", style("·").dim());
     }
     Ok(())
