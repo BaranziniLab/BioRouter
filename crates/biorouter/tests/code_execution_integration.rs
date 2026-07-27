@@ -755,6 +755,29 @@ async fn parse_hint_backticked_path_fragment_in_summary() {
     assert_parse_error_with_hint(is_error, &out);
 }
 
+/// Review follow-up on #23: a script that uses `String.raw` CORRECTLY but has
+/// an unrelated syntax error elsewhere must NOT get the template hint — the
+/// error is outside the template span, so blaming the payload would send the
+/// model off rewriting the one part of the script that is fine.
+#[tokio::test]
+async fn parse_hint_not_added_for_unrelated_error_despite_valid_string_raw() {
+    let m = manager().await;
+    let (is_error, out) = exec_raw(
+        &m,
+        "const path = String.raw`/tmp/report.txt`;\nrecord_result( this is not valid js );",
+    )
+    .await;
+    assert!(is_error, "the typo must still fail the parse, got: {out}");
+    assert!(
+        out.contains("Parse error"),
+        "still a parse error, got: {out}"
+    );
+    assert!(
+        !out.contains("String.raw does NOT make"),
+        "unrelated syntax error must not get the template hint, got: {out}"
+    );
+}
+
 #[tokio::test]
 async fn case22_autovisualiser_blob_resource_is_collected_and_rendered_inline() {
     // A tool (autovisualiser) that returns a ui:// blob resource for the User

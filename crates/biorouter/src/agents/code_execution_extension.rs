@@ -481,6 +481,95 @@ fn bash_param_expansion_regex() -> &'static Regex {
     })
 }
 
+/// Best-effort extraction of the `at line N, col M` position boa appends to
+/// every lexer/parser error (`col` in parser errors, `column` in lexer
+/// errors). Returns `(line, Some(col))`, or `(line, None)` if only the line
+/// is present, or `None` when the message carries no position at all.
+fn parse_error_position(message: &str) -> Option<(usize, Option<usize>)> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"at line (\d+)(?:, col(?:umn)? (\d+))?").expect("static regex compiles")
+    });
+    let caps = re.captures(message)?;
+    let line = caps.get(1)?.as_str().parse().ok()?;
+    let col = caps.get(2).and_then(|m| m.as_str().parse().ok());
+    Some((line, col))
+}
+
+/// Byte offset of a 1-based `(line, col)` position in `code`, clamped to the
+/// line's length. Column is treated as a character count (boa counts code
+/// points); payloads are overwhelmingly ASCII, and the span check below only
+/// needs the position to land on the right side of a backtick.
+fn line_col_to_offset(code: &str, line: usize, col: usize) -> usize {
+    let mut offset = 0;
+    for (idx, text) in code.split('\n').enumerate() {
+        if idx + 1 == line {
+            let char_offset: usize = text
+                .char_indices()
+                .nth(col.saturating_sub(1))
+                .map_or(text.len(), |(byte_idx, _)| byte_idx);
+            return offset + char_offset;
+        }
+        offset += text.len() + 1;
+    }
+    code.len()
+}
+
+/// Whether the parse error's reported position falls within the source's
+/// outermost backtick pair — the territory a template-literal payload
+/// occupies, *including* the code a breakout backtick spills the payload into
+/// (the "got 'prefers' in object literal" class lexes as plain JS between two
+/// payload backticks). An error before the first or after the last backtick
+/// cannot be the payload's fault. Falls back to line granularity when the
+/// message carries no column, and stays quiet when it carries no position.
+fn error_within_outermost_template(code: &str, message: &str) -> bool {
+    let (Some(first), Some(last)) = (code.find('`'), code.rfind('`')) else {
+        return false;
+    };
+    let Some((line, col)) = parse_error_position(message) else {
+        return false;
+    };
+    match col {
+        Some(col) => {
+            let offset = line_col_to_offset(code, line, col);
+            first <= offset && offset <= last
+        }
+        None => {
+            let line_of =
+                |offset: usize| code.bytes().take(offset).filter(|&b| b == b'\n').count() + 1;
+            line_of(first) <= line && line <= line_of(last)
+        }
+    }
+}
+
+/// Evidence gate for the #23 hint. Each arm requires the failure to actually
+/// sit in embedded-payload territory — the mere *presence* of `String.raw`
+/// (or any unterminated string) is not enough, so a valid `String.raw`
+/// template plus an unrelated syntax error elsewhere passes through unhinted.
+///
+/// 1. Boa itself locates the error in a template literal (parser context
+///    `in template literal`, lexer `unterminated template literal`).
+/// 2. `unterminated string literal`, corroborated by embedded-payload
+///    evidence: a heredoc marker (`<<`), bash-style parameter expansion, or
+///    the error position inside the outermost template span. A short
+///    missing-quote typo has none of these.
+/// 3. A message naming neither, but whose reported position falls within the
+///    outermost backtick pair of a source that visibly embeds a payload
+///    (`String.raw`, or a backtick template with bash-style expansion).
+fn parse_error_is_embedded_payload_shaped(code: &str, message: &str) -> bool {
+    if message.contains("template literal") {
+        return true;
+    }
+    if message.contains("unterminated string literal") {
+        return code.contains("<<")
+            || bash_param_expansion_regex().is_match(code)
+            || error_within_outermost_template(code, message);
+    }
+    let source_embeds_payload = code.contains("String.raw")
+        || (code.contains('`') && bash_param_expansion_regex().is_match(code));
+    source_embeds_payload && error_within_outermost_template(code, message)
+}
+
 /// Parse-time analogue of [`annotate_opaque_js_error`] (issue #23).
 ///
 /// The dominant parse failure in real sessions is a shell/CSS/markdown payload
@@ -492,16 +581,12 @@ fn bash_param_expansion_regex() -> &'static Regex {
 /// context (the "got 'prefers' in object literal" class of error). Boa's raw
 /// message names none of this, so the model retried the identical form.
 ///
-/// Triggers when the engine's message points at a template/string-literal
-/// problem, or when the source visibly embeds a foreign payload (uses
-/// `String.raw`, or combines a backtick template with bash-style parameter
-/// expansion). Unrelated parse errors pass through untouched.
+/// Triggers only on evidence the failure is *within* a template literal or
+/// embedded payload (see [`parse_error_is_embedded_payload_shaped`]).
+/// Unrelated parse errors pass through untouched — including an ordinary typo
+/// in a script that also happens to use `String.raw` correctly.
 fn annotate_parse_error(code: &str, message: &str) -> String {
-    let message_points_at_literal =
-        message.contains("template literal") || message.contains("unterminated string literal");
-    let source_embeds_payload = code.contains("String.raw")
-        || (code.contains('`') && bash_param_expansion_regex().is_match(code));
-    if !(message_points_at_literal || source_embeds_payload) {
+    if !parse_error_is_embedded_payload_shaped(code, message) {
         return message.to_string();
     }
     format!(
@@ -2650,7 +2735,8 @@ mod tests {
     }
 
     /// Transcript occurrences 3/4: heredoc quoting → unterminated string
-    /// literal. The message trigger fires even without String.raw in source.
+    /// literal. No String.raw in source, but the heredoc marker corroborates
+    /// that a multi-line payload is embedded in the string.
     #[test]
     fn unterminated_string_literal_message_gets_the_hint() {
         let code = "const cmd = 'python3 - <<PY\nprint(1)\nPY';";
@@ -2676,6 +2762,56 @@ mod tests {
         let code = "record_result( this is not valid js )";
         let message = "SyntaxError: expected token ')', got 'is' at line 1, col 20";
         assert_eq!(annotate_parse_error(code, message), message);
+    }
+
+    /// Review follow-up on #23: VALID `String.raw` usage plus an unrelated
+    /// syntax error on a later line must NOT earn the template hint — the
+    /// error position sits outside the template span, so `String.raw`'s mere
+    /// presence is not evidence.
+    #[test]
+    fn valid_string_raw_with_unrelated_error_is_not_annotated() {
+        let code = "const path = String.raw`C:\\temp\\report.txt`;\nrecord_result( this is not valid js );";
+        let message = "SyntaxError: expected token ')', got 'is' at line 2, col 22";
+        assert_eq!(annotate_parse_error(code, message), message);
+    }
+
+    /// Same on ONE line: the reported column lands after the template's
+    /// closing backtick, so the span check must still say "unrelated".
+    #[test]
+    fn valid_string_raw_same_line_unrelated_error_is_not_annotated() {
+        let code = "const s = String.raw`ok`; record_result( this is not valid js );";
+        let message = "SyntaxError: expected token ')', got 'is' at line 1, col 48";
+        assert_eq!(annotate_parse_error(code, message), message);
+    }
+
+    /// A short missing-quote typo also reads "unterminated string literal",
+    /// but carries no payload evidence (no heredoc, no template, no bash
+    /// expansion) — it must not be blamed on template embedding.
+    #[test]
+    fn plain_unterminated_quote_typo_is_not_annotated() {
+        let code = "const s = 'oops;\nrecord_result(s);";
+        let message = "SyntaxError: unterminated string literal at line 1, col 11";
+        assert_eq!(annotate_parse_error(code, message), message);
+    }
+
+    /// The position extractor understands both parser (`col`) and lexer
+    /// (`column`) forms, tolerates a missing column, and stays quiet on a
+    /// message with no position.
+    #[test]
+    fn parse_error_position_handles_boa_forms() {
+        assert_eq!(
+            parse_error_position("expected token ')', got 'is' at line 3, col 7"),
+            Some((3, Some(7)))
+        );
+        assert_eq!(
+            parse_error_position("unexpected 'x' at line 12, column 4"),
+            Some((12, Some(4)))
+        );
+        assert_eq!(
+            parse_error_position("got 'prefers' in object literal at line 3"),
+            Some((3, None))
+        );
+        assert_eq!(parse_error_position("no position here"), None);
     }
 
     /// `${VAR}` alone is valid JS (a substitution) — the bash-shape regex must
