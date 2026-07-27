@@ -7831,7 +7831,10 @@ mod tests {
             .unwrap();
 
         let now = chrono::Utc::now().timestamp_millis();
-        let minted = sm.add_message(&session.id, &amsg(now, "no id")).await.unwrap();
+        let minted = sm
+            .add_message(&session.id, &amsg(now, "no id"))
+            .await
+            .unwrap();
         assert!(!minted.is_empty());
 
         let loaded = sm.get_session(&session.id, true).await.unwrap();

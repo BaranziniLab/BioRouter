@@ -2257,8 +2257,8 @@ mod tests {
         let private = ActiveSessionStore::Private(PathBuf::from(
             "/tmp/biorouter-no-session-abc/sessions/sessions.db",
         ));
-        let hint = session_store_error_hint(db_error, &private)
-            .expect("a database error is store-shaped");
+        let hint =
+            session_store_error_hint(db_error, &private).expect("a database error is store-shaped");
         assert!(
             hint.contains("/tmp/biorouter-no-session-abc/sessions/sessions.db"),
             "hint must name the private per-run store, got: {hint}"
@@ -2268,8 +2268,7 @@ mod tests {
             "the private-store hint must not recommend the flag the run already uses"
         );
         assert!(
-            !hint.contains("another biorouter process (")
-                && !hint.contains("desktop app"),
+            !hint.contains("another biorouter process (") && !hint.contains("desktop app"),
             "the private store is exclusive to this run; contention advice is wrong: {hint}"
         );
     }
