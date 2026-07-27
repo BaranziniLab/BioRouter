@@ -118,12 +118,41 @@ function register<H>(registrations: DockRegistration<H>[], entry: DockRegistrati
 }
 
 /**
+ * May this registration answer a FALLBACK request right now? Only while its
+ * dock is still in the DOM and visible (Codex B6 re-review finding 3).
+ *
+ * Registration lifetime is a passive effect, and passive cleanups run AFTER
+ * the commit that hides or removes the dock's DOM has painted. So there is a
+ * real window — `open` just flipped false, or the dock unmounted — where the
+ * registry still holds a dock the user can no longer see, and a Cmd+W IPC
+ * landing in it would close a pane in an invisible dock (or a Cmd+T would add
+ * one there). The FOCUSED path needs no such guard: display:none cannot hold
+ * focus. checkVisibility covers a hidden ancestor too; the computed-display
+ * fallback (jsdom has no checkVisibility) reads the dock's own `hidden` class.
+ *
+ * A registration with no root reader (pure-registry tests, see DockRootGetter)
+ * stays eligible — it can never match a focused dock, and ordering semantics
+ * are exactly what those tests exercise.
+ */
+function canAnswerFallback(getRoot: DockRootGetter): boolean {
+  const root = getRoot();
+  if (!root) return true;
+  if (!root.isConnected) return false;
+  const el = root as Element & { checkVisibility?: () => boolean };
+  if (typeof el.checkVisibility === 'function') return el.checkVisibility();
+  const view = root.ownerDocument?.defaultView;
+  return !view || view.getComputedStyle(root).display !== 'none';
+}
+
+/**
  * Ordering fallbacks for a request made while focus is OUTSIDE every dock:
  * the last-focused dock first (if still registered), then newest-first — the
  * most recently opened dock is the likeliest subject of a pane command.
+ * Registrations whose dock is gone or hidden (cleanup still pending) are not
+ * offered at all — see canAnswerFallback.
  */
 function fallbackOrder<H>(registrations: DockRegistration<H>[]): DockRegistration<H>[] {
-  const ordered = [...registrations].reverse();
+  const ordered = [...registrations].reverse().filter((entry) => canAnswerFallback(entry.getRoot));
   const remembered = lastFocusedDockRoot;
   if (remembered && remembered.isConnected) {
     const index = ordered.findIndex((entry) => entry.getRoot() === remembered);
@@ -162,7 +191,11 @@ export function requestNewTerminalPane(): boolean {
     focused.handler();
     return true;
   }
+  // Every registered dock may be gone/hidden with its cleanup still pending
+  // (the commit-to-cleanup race) — then there is nothing to add a pane to and
+  // the caller falls through to a chat tab.
   const [first] = fallbackOrder(newPaneRegistrations);
+  if (!first) return false;
   first.handler();
   return true;
 }

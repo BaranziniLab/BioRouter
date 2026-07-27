@@ -281,3 +281,85 @@ describe('multi-dock routing (split layouts)', () => {
     expect(close).not.toHaveBeenCalled();
   });
 });
+
+// Codex B6 re-review finding 3 — the commit-to-cleanup race. A dock's
+// registration is disposed by a passive effect cleanup, which runs AFTER the
+// commit that hid (`open` -> false paints the `hidden` class) or removed its
+// DOM. A Cmd+W IPC landing in that window found the stale registration still
+// in the registry, and the last-chance fallback let it close a pane in a dock
+// the user could no longer see. The fallback now rechecks the root: connected
+// AND visible, or the registration is not offered.
+describe('commit-to-cleanup race — a hidden or unmounted dock cannot claim the fallback', () => {
+  beforeEach(() => {
+    resetNewTerminalPaneRegistry();
+    resetCloseTerminalPaneRegistry();
+  });
+  afterEach(() => {
+    resetNewTerminalPaneRegistry();
+    resetCloseTerminalPaneRegistry();
+    document.body.innerHTML = '';
+  });
+
+  function dockWithInput(): { dock: HTMLElement; input: HTMLTextAreaElement } {
+    const dock = document.createElement('section');
+    dock.setAttribute('data-testid', 'in-app-terminal-dock');
+    const input = document.createElement('textarea');
+    dock.appendChild(input);
+    document.body.appendChild(dock);
+    return { dock, input };
+  }
+
+  it('Cmd+W skips a still-registered dock whose root was HIDDEN this commit', () => {
+    const a = dockWithInput();
+    const close = vi.fn(() => true);
+    registerCloseTerminalPane(close, () => a.dock);
+    a.dock.style.display = 'none'; // committed; the unregistering cleanup has not run yet
+
+    expect(requestCloseTerminalPane()).toBe(false); // falls through the Cmd+W ladder
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+W skips a still-registered dock whose root was UNMOUNTED this commit', () => {
+    const a = dockWithInput();
+    const close = vi.fn(() => true);
+    registerCloseTerminalPane(close, () => a.dock);
+    a.dock.remove();
+
+    expect(requestCloseTerminalPane()).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('the next USABLE dock answers instead of the newest-but-hidden one', () => {
+    const a = dockWithInput();
+    const b = dockWithInput();
+    const closeA = vi.fn(() => true);
+    const closeB = vi.fn(() => true);
+    registerCloseTerminalPane(closeA, () => a.dock);
+    registerCloseTerminalPane(closeB, () => b.dock); // newest — would win the fallback
+    b.dock.style.display = 'none';
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(closeA).toHaveBeenCalledTimes(1);
+    expect(closeB).not.toHaveBeenCalled();
+  });
+
+  it('Cmd+T falls through to a chat tab when every registered dock is hidden', () => {
+    const a = dockWithInput();
+    const add = vi.fn();
+    registerNewTerminalPane(add, () => a.dock);
+    a.dock.style.display = 'none';
+
+    expect(requestNewTerminalPane()).toBe(false);
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('a rootless (pure-registry) registration keeps its fallback semantics', () => {
+    // Test registrations may omit getRoot; they can never match a focused dock
+    // but must stay reachable through the ordering fallbacks.
+    const close = vi.fn(() => true);
+    registerCloseTerminalPane(close);
+
+    expect(requestCloseTerminalPane()).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+});
