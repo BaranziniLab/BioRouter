@@ -1138,6 +1138,16 @@ impl SessionManager {
     /// caller supplied none), but a uid collision re-mints — callers that keep
     /// the message in memory must adopt the returned uid so the in-memory and
     /// persisted ids agree (#41).
+    /// Close the underlying SQLite pool, releasing the store's file handles
+    /// (the db plus its WAL/-shm siblings). Ordering seam for #31: a private
+    /// `--no-session` store's temp directory can only be deleted reliably on
+    /// platforms where unlinking open files fails (Windows) if the pool is
+    /// closed FIRST. Every later store operation fails with a pool-closed
+    /// error, so call this only when the run is done with the store.
+    pub async fn close(&self) {
+        self.storage.close().await;
+    }
+
     pub async fn add_message(&self, id: &str, message: &Message) -> Result<String> {
         self.storage.add_message(id, message).await
     }
@@ -1743,6 +1753,12 @@ impl SessionStorage {
             initialized: tokio::sync::OnceCell::new(),
             session_dir,
         }
+    }
+
+    /// Close the SQLite pool (see [`SessionManager::close`]). Safe to call
+    /// even if the lazy pool never connected; idempotent.
+    pub async fn close(&self) {
+        self.pool.close().await;
     }
 
     async fn pool(&self) -> Result<&Pool<Sqlite>> {

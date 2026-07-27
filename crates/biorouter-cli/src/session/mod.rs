@@ -1083,15 +1083,11 @@ impl CliSession {
         {
             Ok(reply_stream) => reply_stream,
             Err(e) => {
-                handle_agent_error(&e, is_stream_json_mode, &self.active_session_store());
-                let code = provider_abort_code(&e);
-                if is_stream_json_mode {
-                    emit_stream_event(&StreamEvent::Aborted {
-                        code: code.wire_code().to_string(),
-                        error: e.to_string(),
-                    });
-                }
-                self.last_abort = Some(code);
+                self.last_abort = Some(record_reply_failure(
+                    &e,
+                    &self.output_format,
+                    &self.active_session_store(),
+                ));
                 return self.emit_final_output().await;
             }
         };
@@ -1246,8 +1242,36 @@ impl CliSession {
                                             .with_visibility(false, true);
                                         self.messages.push(response_message.clone());
                                         // Elicitation responses return an empty stream - the response
-                                        // unblocks the waiting tool call via ActionRequiredManager
-                                        let _ = self.agent.reply(response_message, session_config.clone(), Some(cancel_token.clone())).await?;
+                                        // unblocks the waiting tool call via ActionRequiredManager.
+                                        //
+                                        // #31/#41: a CONSTRUCTION error here (e.g. persisting the
+                                        // response inside Agent::reply) must not `?` out past the
+                                        // structured-output finalizer — that left json-mode stdout
+                                        // empty and stream-json without a terminating `complete`.
+                                        // Record the abort and end the turn through the one
+                                        // finalizer, exactly like a mid-stream failure.
+                                        // `.err()` consumes the returned (empty)
+                                        // stream inside this statement, so no
+                                        // agent-borrowing temporary outlives it
+                                        // and the failure arm may call &mut self.
+                                        let elicitation_reply_err = self
+                                            .agent
+                                            .reply(response_message, session_config.clone(), Some(cancel_token.clone()))
+                                            .await
+                                            .err();
+                                        if let Some(e) = elicitation_reply_err {
+                                            self.last_abort = Some(record_reply_failure(
+                                                &e,
+                                                &self.output_format,
+                                                &self.active_session_store(),
+                                            ));
+                                            cancel_token_clone.cancel();
+                                            drop(stream);
+                                            if let Err(e) = self.handle_interrupted_messages(false).await {
+                                                eprintln!("Error handling interruption: {}", e);
+                                            }
+                                            break;
+                                        }
                                     }
                                     Ok(None) => {
                                         // Prompt-adjacent status stays off a structured
@@ -1324,26 +1348,24 @@ impl CliSession {
                             break;
                         }
                         Some(Err(e)) => {
-                            handle_agent_error(&e, is_stream_json_mode, &self.active_session_store());
                             // #31/#41: record the machine-checkable failure so
                             // `--output-format json` reports status "failed"
                             // (this path used to leave last_abort unset and the
                             // document claimed "completed") and the process
                             // exits nonzero via headless()'s TurnFailed check.
-                            let code = provider_abort_code(&e);
-                            // A raw stream error must be visible to stream-json
-                            // consumers as an abort, exactly like the
-                            // TurnAborted branch above — before this, only
+                            // A raw stream error must also be visible to
+                            // stream-json consumers as an abort, exactly like
+                            // the TurnAborted branch above — before this, only
                             // `error` (advisory) then `complete` were emitted,
                             // and a structured consumer could not detect the
-                            // failed turn.
-                            if is_stream_json_mode {
-                                emit_stream_event(&StreamEvent::Aborted {
-                                    code: code.wire_code().to_string(),
-                                    error: e.to_string(),
-                                });
-                            }
-                            self.last_abort = Some(code);
+                            // failed turn. All of that lives in
+                            // record_reply_failure, shared with the
+                            // reply-construction failure paths.
+                            self.last_abort = Some(record_reply_failure(
+                                &e,
+                                &self.output_format,
+                                &self.active_session_store(),
+                            ));
                             cancel_token_clone.cancel();
                             drop(stream);
                             if let Err(e) = self.handle_interrupted_messages(false).await {
@@ -2042,15 +2064,42 @@ fn log_tool_metrics(message: &Message, messages: &Conversation) {
     }
 }
 
-/// The machine-checkable abort code for a raw agent/provider error — the
-/// classification shared by the reply-construction failure path and the
-/// mid-stream `Err` branch, so both report identically in structured output.
-fn provider_abort_code(e: &anyhow::Error) -> TurnAbortCode {
-    let kind = e
-        .downcast_ref::<biorouter::providers::errors::ProviderError>()
-        .map(|provider_error| provider_error.kind())
-        .unwrap_or(biorouter::providers::errors::ProviderErrorKind::Other);
-    TurnAbortCode::ProviderFailure { kind }
+/// The machine-checkable abort code for a raw agent error — the
+/// classification shared by the reply-construction failure paths (primary
+/// and elicitation-response replies) and the mid-stream `Err` branch, so all
+/// report identically in structured output. Classified by downcast in
+/// `biorouter` (#31): a session-store (sqlx) failure gets its own
+/// `session_store_failure` wire code and exit code instead of blaming the
+/// provider for a local db problem.
+fn reply_abort_code(e: &anyhow::Error) -> TurnAbortCode {
+    biorouter::agents::turn_abort::classify_agent_error(e)
+}
+
+/// Record a failed reply uniformly (#31/#41): stderr + the stream-json
+/// `error` event via [`handle_agent_error`], then the machine-checkable
+/// `aborted` event. Returns the classified abort code — the caller MUST
+/// store it in `last_abort` and fall through to the one finalizer
+/// (`emit_final_output`); never bypass that with `?`, which left json-mode
+/// stdout empty and stream-json without a terminating `complete`. Shared by
+/// the reply-construction failure paths (primary AND elicitation-response
+/// replies) and the mid-stream `Err` branch. A free function (not `&mut
+/// self`) so it can run while the reply stream still borrows the agent.
+#[must_use]
+fn record_reply_failure(
+    e: &anyhow::Error,
+    output_format: &str,
+    store: &ActiveSessionStore,
+) -> TurnAbortCode {
+    let is_stream_json_mode = output_format == "stream-json";
+    handle_agent_error(e, is_stream_json_mode, store);
+    let code = reply_abort_code(e);
+    if is_stream_json_mode {
+        emit_stream_event(&StreamEvent::Aborted {
+            code: code.wire_code().to_string(),
+            error: e.to_string(),
+        });
+    }
+    code
 }
 
 /// Handle and display an agent error
@@ -2257,6 +2306,49 @@ mod tests {
                  (format={output_format})"
             );
         }
+    }
+
+    /// #31: a real session-store failure (here: the pool is closed, the same
+    /// sqlx error shape a broken/locked db produces inside `Agent::reply`)
+    /// must classify as `SessionStore` — its own wire code and exit code —
+    /// while non-store errors keep the provider classification. This is the
+    /// classification `record_reply_failure` stamps into `last_abort`, so
+    /// json/stream-json `error` codes and the process exit code stop blaming
+    /// the provider for a local db problem.
+    #[tokio::test]
+    async fn store_failures_get_their_own_abort_code() {
+        use biorouter::session::SessionManager;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "AbortCode".to_string(),
+                biorouter::session::session_manager::SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        sm.close().await;
+
+        let store_error = sm
+            .add_message(&session.id, &Message::user().with_text("x"))
+            .await
+            .expect_err("a closed pool must fail the write");
+        let code = reply_abort_code(&store_error);
+        assert_eq!(code, TurnAbortCode::SessionStore);
+        assert_eq!(code.wire_code(), "session_store_failure");
+        assert_eq!(
+            code.exit_code(),
+            biorouter::agents::turn_abort::exit::SESSION_STORE
+        );
+
+        // Anything without a sqlx error in its chain keeps the provider
+        // classification.
+        assert!(matches!(
+            reply_abort_code(&anyhow::anyhow!("403 Forbidden")),
+            TurnAbortCode::ProviderFailure { .. }
+        ));
     }
 
     /// #31: a session-store failure must gain an actionable stderr hint that
