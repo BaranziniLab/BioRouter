@@ -1,7 +1,12 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InAppTerminalDock, { MAX_TERMINAL_PANES } from './InAppTerminalDock';
+import {
+  requestCloseTerminalPane,
+  resetCloseTerminalPaneRegistry,
+  resetNewTerminalPaneRegistry,
+} from '../utils/terminalFocus';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -26,6 +31,8 @@ const terminalDisposer = vi.fn();
 
 beforeEach(() => {
   terminalDisposer.mockClear();
+  resetCloseTerminalPaneRegistry();
+  resetNewTerminalPaneRegistry();
   Object.defineProperty(window, 'electron', {
     configurable: true,
     value: {
@@ -158,6 +165,91 @@ describe('InAppTerminalDock', () => {
     expect(screen.getByRole('tablist', { name: /terminal sessions/i })).toHaveClass(
       'overflow-x-auto'
     );
+  });
+
+  // Issue #21 — the Cmd+W ladder's first rung. The keystroke never reaches the
+  // DOM (the Electron menu owns Cmd+W and delivers IPC), so the registry IS the
+  // keyboard's entry point: requestCloseTerminalPane() here is exactly what
+  // runCloseActiveTabCommand calls when the terminal has focus.
+  describe('Cmd+W via the close-pane registry', () => {
+    it('closes the ACTIVE pane and keeps the dock when others remain', async () => {
+      const user = userEvent.setup();
+      const onClose = vi.fn();
+      const onEmptied = vi.fn();
+
+      render(
+        <InAppTerminalDock
+          open
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={onClose}
+          onEmptied={onEmptied}
+        />
+      );
+
+      await user.click(await screen.findByRole('button', { name: /new terminal session/i }));
+      await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+      // The newest pane is the active one — precisely the pane Cmd+W must take.
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter 2');
+
+      let claimed = false;
+      act(() => {
+        claimed = requestCloseTerminalPane();
+      });
+
+      expect(claimed).toBe(true);
+      await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(1));
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter');
+      expect(onClose).not.toHaveBeenCalled();
+      expect(onEmptied).not.toHaveBeenCalled();
+    });
+
+    it('closing the last pane destroys the dock (onEmptied), still claiming the key', async () => {
+      const onClose = vi.fn();
+      const onEmptied = vi.fn();
+
+      render(
+        <InAppTerminalDock
+          open
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={onClose}
+          onEmptied={onEmptied}
+        />
+      );
+      await screen.findByRole('tab', { selected: true });
+
+      let claimed = false;
+      act(() => {
+        claimed = requestCloseTerminalPane();
+      });
+
+      expect(claimed).toBe(true);
+      await waitFor(() => expect(screen.queryByRole('tab')).not.toBeInTheDocument());
+      expect(onEmptied).toHaveBeenCalledTimes(1);
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('a HIDDEN dock does not register — the request falls through to the chat tab', async () => {
+      const { rerender } = render(
+        <InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />
+      );
+      await screen.findByRole('tab', { selected: true });
+
+      rerender(
+        <InAppTerminalDock
+          open={false}
+          workingDir="/Users/wgu/Desktop/biorouter"
+          onClose={vi.fn()}
+        />
+      );
+
+      let claimed = true;
+      act(() => {
+        claimed = requestCloseTerminalPane();
+      });
+      expect(claimed).toBe(false);
+      // The hidden dock's panes survive — hiding is not closing.
+      expect(screen.getAllByRole('tab', { hidden: true })).toHaveLength(1);
+    });
   });
 
   // The terminal used to be a rounded, bordered box painted bg-background-muted

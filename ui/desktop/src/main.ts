@@ -1335,6 +1335,18 @@ const createChat = async (
     }
   }
 
+  // The initial message CANNOT ride the URL: it is delivered as IPC only after
+  // the renderer signals react-ready (pendingInitialMessages below). Until that
+  // round trip completes the window sits on a bare /pair with zero tabs and no
+  // route state, which the empty-pair redirect (issue #38) would read as a
+  // stale deep link and bounce Home before the cargo ever arrives. This marker
+  // is the synchronous bootstrap flag the redirect can see from the very first
+  // render; it disappears when App.tsx's set-initial-message handler navigates
+  // to /pair with the real route state.
+  if (initialMessage) {
+    searchParams.set('initialMessagePending', 'true');
+  }
+
   // Biorouter's react app uses HashRouter, so the path + search params follow a #/
   url.hash = `${appPath}?${searchParams.toString()}`;
   let formattedUrl = formatUrl(url);
@@ -3306,7 +3318,10 @@ function registerTerminalOwnerTeardown(contents: Electron.WebContents) {
   const release = (reason: string) => {
     const released = terminalSessions.releaseOwner(contents.id);
     if (released > 0) {
-      log.info(`[terminal] released ${released} session(s) for webContents ${contents.id}:`, reason);
+      log.info(
+        `[terminal] released ${released} session(s) for webContents ${contents.id}:`,
+        reason
+      );
     }
   };
 

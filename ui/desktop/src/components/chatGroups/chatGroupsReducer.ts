@@ -363,10 +363,12 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
  * last group.
  *
  * The single-group case is a deliberate exception: closing the last tab of the
- * last group leaves an EMPTY group that renders BaseChat's own empty state. It
- * does not navigate away and it does not delete the session. That is the Stage-2
- * invariant and it must survive the split unchanged, which is why this is gated
- * on the group COUNT rather than on "is there a branch".
+ * last group leaves an EMPTY group — the reducer itself never navigates and
+ * never deletes the session. That is the Stage-2 invariant and it must survive
+ * the split unchanged, which is why this is gated on the group COUNT rather
+ * than on "is there a branch". (What the ROUTE does with that empty layout is
+ * a separate, later decision: /pair now redirects Home when the whole layout
+ * is empty — see useEmptyPairRedirect and the closeTab comment below.)
  */
 function collapseEmptyGroup(state: ChatGroupsState, groupId: ChatGroupId): ChatGroupsState {
   const group = state.groups[groupId];
@@ -401,13 +403,18 @@ function closeTab(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
     return collapseEmptyGroup(withGroup(state, group.groupId, { ...group, tabs }), group.groupId);
   }
   const successor = tabs[Math.min(closingIndex, tabs.length - 1)] ?? null;
-  // Closing the last tab of the last group leaves an EMPTY group. It renders
-  // BaseChat's existing empty state. It does NOT navigate away, and it does NOT
-  // delete the session — there is no createdHere here, by construction.
+  // Closing the last tab of the last group leaves an EMPTY group, and it does
+  // NOT delete the session — there is no createdHere here, by construction.
+  // The REDUCER still never navigates; but the empty pane is no longer the
+  // resting state: /pair itself redirects Home (the Hub) when the whole layout
+  // has zero tabs and nothing is en route to becoming one (issue #38 —
+  // useEmptyPairRedirect, mounted in App.tsx's PairRouteContent, with gates
+  // for deep links, new-chat, workflows and pending Cmd+T).
   //
   // In a SPLIT, closing the last tab of a non-last group collapses that group
   // out of the tree instead: an empty half of a split is a dead pane the user
-  // has to close twice.
+  // has to close twice — and the survivor keeps the layout non-empty, so the
+  // redirect never fires for a collapsed half.
   return collapseEmptyGroup(
     withGroup(state, group.groupId, { ...group, tabs, activeTabId: successor?.tabId ?? null }),
     group.groupId

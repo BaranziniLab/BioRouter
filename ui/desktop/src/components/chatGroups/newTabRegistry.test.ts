@@ -3,6 +3,8 @@ import {
   registerNewTab,
   requestNewTab,
   consumePendingNewTab,
+  hasPendingNewTab,
+  acknowledgeNewTabCommit,
   resetNewTabRegistry,
 } from './newTabRegistry';
 
@@ -15,7 +17,9 @@ describe('newTabRegistry — the Cmd+T hand-off', () => {
 
     expect(requestNewTab()).toBe(true);
     expect(handler).toHaveBeenCalledTimes(1);
-    // Nothing to cash in later — the tab already opened.
+    // The provider commits the dispatched tab and acknowledges; nothing is
+    // left to cash in later.
+    acknowledgeNewTabCommit(1);
     expect(consumePendingNewTab()).toBe(false);
   });
 
@@ -45,6 +49,57 @@ describe('newTabRegistry — the Cmd+T hand-off', () => {
 
     expect(requestNewTab()).toBe(false);
     expect(consumePendingNewTab()).toBe(true);
+  });
+
+  describe('hasPendingNewTab — the non-consuming peek (issue #38)', () => {
+    it('peeking does NOT consume: the provider still cashes the request in', () => {
+      requestNewTab(); // no handler -> remembered
+      expect(hasPendingNewTab()).toBe(true);
+      expect(hasPendingNewTab()).toBe(true); // still there — peek is idempotent
+      expect(consumePendingNewTab()).toBe(true); // the consume still wins the race
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('reports false when nothing is pending', () => {
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('a DISPATCHED request stays observable until the provider commits nonzero tabs', () => {
+      // Codex review B6 finding 2: Cmd+T on a mounted /pair dispatches through
+      // the handler, but the tab exists only after React commits the reducer
+      // update. The zero-tab redirect effect can run in that gap and must
+      // still see the request, or the keystroke is bounced Home.
+      registerNewTab(vi.fn());
+      requestNewTab();
+      expect(hasPendingNewTab()).toBe(true);
+
+      // A zero-tab commit (e.g. the stale close that preceded the Cmd+T) does
+      // NOT retire it…
+      acknowledgeNewTabCommit(0);
+      expect(hasPendingNewTab()).toBe(true);
+
+      // …the commit that actually lands the tab does.
+      acknowledgeNewTabCommit(1);
+      expect(hasPendingNewTab()).toBe(false);
+    });
+
+    it('a dispatch that died with an unmounting provider is honoured by the next mount', () => {
+      // The dispatch was queued into a reducer that unmounted before
+      // committing: never acknowledged. The next provider's consume-once must
+      // treat it as a remembered request — the user pressed Cmd+T.
+      registerNewTab(vi.fn());
+      requestNewTab();
+      expect(consumePendingNewTab()).toBe(true);
+      expect(consumePendingNewTab()).toBe(false); // still consume-once
+    });
+
+    it('consume still clears exactly once after any number of peeks', () => {
+      requestNewTab();
+      hasPendingNewTab();
+      hasPendingNewTab();
+      expect(consumePendingNewTab()).toBe(true);
+      expect(consumePendingNewTab()).toBe(false);
+    });
   });
 
   it('a StrictMode double-mount cannot leave the registry empty', () => {

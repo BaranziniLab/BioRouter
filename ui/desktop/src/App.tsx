@@ -23,8 +23,9 @@ import { ChatType } from './types/chat';
 import Hub from './components/Hub';
 import { PairRouteState } from './components/Pair';
 import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext';
-import { closeActiveTab } from './components/chatGroups/closeActiveTabRegistry';
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
+import { useEmptyPairRedirect } from './components/chatGroups/useEmptyPairRedirect';
+import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
@@ -56,6 +57,7 @@ import { View, ViewOptions } from './utils/navigationUtils';
 import { useNavigation } from './hooks/useNavigation';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
+import { deliverLauncherMessage } from './utils/launcherMessage';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
 import { AppTooltipLayer } from './components/ui/AppTooltipLayer';
 
@@ -121,6 +123,13 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   const initialAttachments = isNewChat ? undefined : routeState.initialAttachments;
 
   const dispatch = groups?.dispatch;
+
+  // No tabs → Home (issue #38). When the whole layout is empty and no cargo is
+  // en route to becoming a tab (deep link, Hub submit, sidebar new-chat,
+  // workflow, mid-flight session creation, pending Cmd+T), /pair is a dead-end
+  // "New Session" pane — redirect to the Hub instead. All gates live in the
+  // hook; isCreatingSession is the only piece that is component state here.
+  useEmptyPairRedirect(isCreatingSession);
 
   // The sidebar's new-chat button: open ONE empty tab per navigation. The tab
   // carries sessionId '' until BaseChat's pre-session submit creates a real
@@ -526,17 +535,17 @@ export function AppInner() {
   //
   // This listener lives at the ROOT, not in ChatGroupsProvider, because it must
   // answer everywhere: the provider is mounted only under /pair, and Cmd+W on
-  // Settings must still close the window like any other macOS app. The provider
-  // registers a claim while it is mounted; if it claims nothing (not on /pair,
-  // or the last tab is already gone) the window closes.
+  // Settings must still close the window like any other macOS app. The ladder —
+  // focused terminal pane, then chat tab, then window — lives in
+  // runCloseActiveTabCommand so the registry-driven tests gate the exact code
+  // this handler runs (the keystroke never reaches the DOM; the menu owns it).
   //
   // No text-input guard: Cmd+W has no native editing behaviour to steal, and the
   // key never reaches the DOM anyway — the menu consumes it.
   useEffect(
     () =>
       window.electron.on('close-active-tab', () => {
-        if (closeActiveTab()) return;
-        window.electron.closeWindow();
+        runCloseActiveTabCommand(() => window.electron.closeWindow());
       }),
     []
   );
@@ -577,23 +586,17 @@ export function AppInner() {
     return window.electron.on('focus-input', handleFocusInput);
   }, []);
 
-  // Handle initial message from launcher
+  // Handle initial message from launcher. The session id must ride the query
+  // string (the ChatGroups URL-sync inbox reads nothing else) and the
+  // navigation must REPLACE the ?initialMessagePending=true bootstrap entry —
+  // both invariants live with deliverLauncherMessage, whose wiring test drives
+  // the real chain end to end (launcherMessageWiring.test.tsx).
   useEffect(() => {
-    const handleSetInitialMessage = async (_event: IpcRendererEvent, ...args: unknown[]) => {
+    const handleSetInitialMessage = (_event: IpcRendererEvent, ...args: unknown[]) => {
       const initialMessage = args[0] as string;
       if (initialMessage) {
         console.log('Received initial message from launcher:', initialMessage);
-        try {
-          const session = await createSession(getInitialWorkingDir(), {});
-          navigate('/pair', {
-            state: {
-              initialMessage,
-              resumeSessionId: session.id,
-            },
-          });
-        } catch (error) {
-          console.error('Failed to create session for launcher message:', error);
-        }
+        void deliverLauncherMessage(navigate, initialMessage);
       }
     };
     return window.electron.on('set-initial-message', handleSetInitialMessage);

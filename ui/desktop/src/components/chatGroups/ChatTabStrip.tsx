@@ -1,4 +1,4 @@
-import { CSSProperties, useCallback, useEffect, useRef } from 'react';
+import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ChevronDown, MessageSquare, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
@@ -12,6 +12,13 @@ import {
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useChatTabDrag } from './ChatTabDragContext';
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 export interface ChatTabStripProps {
   tabs: ChatTab[];
@@ -62,6 +69,104 @@ export function ChatTabStrip({
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLButtonElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // #37 — FLIP: tabs SLIDE to their new slots with the spring easing instead
+  // of teleporting. Reorder is a pure array move in the reducer, so React
+  // re-renders the strip with the tabs already in their final DOM positions;
+  // this layout effect measures where each tab WAS (last snapshot), applies
+  // the inverted translate, and lets a transition play it back to identity.
+  // It keys on the rendered ORDER, so one pass covers drag-reorder, the shift
+  // after a close, and a cross-group move — with no animation library.
+  //
+  // offsetLeft, not getBoundingClientRect: it is layout-relative, so a scrolled
+  // strip or a moved window cannot poison the deltas between snapshots. In
+  // jsdom every offset is 0, so the pass is a structural no-op there — the
+  // spring itself is browser-verified (the repo's Prism/Tailwind lesson).
+  const tabOffsetsRef = useRef<Map<string, number>>(new Map());
+  const orderKey = tabs.map((t) => t.tabId).join('␟');
+
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const previous = tabOffsetsRef.current;
+    const next = new Map<string, number>();
+    const els = Array.from(strip.querySelectorAll<HTMLElement>('[data-tab-id]'));
+    for (const el of els) {
+      if (el.dataset.tabId) next.set(el.dataset.tabId, el.offsetLeft);
+    }
+    tabOffsetsRef.current = next;
+
+    if (prefersReducedMotion()) return;
+
+    // Everything this pass schedules is retained so the cleanup can undo it:
+    // an interrupted animation (unmount, or another reorder mid-slide) must
+    // not leave a stale rAF callback scheduled or an inline transition
+    // override shadowing the stylesheet's hover colours forever.
+    const rafIds: number[] = [];
+    const restores: Array<() => void> = [];
+
+    for (const el of els) {
+      const tabId = el.dataset.tabId;
+      if (!tabId) continue;
+      const before = previous.get(tabId);
+      // A tab with no previous slot is newly opened — it appears in place
+      // rather than sliding in from nowhere.
+      if (before === undefined) continue;
+      const delta = before - (next.get(tabId) ?? before);
+      if (delta === 0) continue;
+
+      // Invert without transitioning, then release to identity on the next
+      // frame with the spring. The offset rides the individual `translate`
+      // property, NOT the `transform` list: the br-tab-select settle animates
+      // the individual `scale`, and per CSS Transforms 2 the CTM composes
+      // translate → rotate → scale → transform — so a translateX() in
+      // `transform` sits INSIDE the scale and gets shrunk with it (the active
+      // successor would start off-slot while settling from 0.97), while the
+      // individual `translate` composes OUTSIDE it and the slide stays exact
+      // (Codex B6 re-review finding 4). Never left/top, and never a reparent —
+      // the divider (::before) and drop hairline (::after) contracts stay
+      // untouched.
+      el.style.transition = 'none';
+      el.style.translate = `${delta}px`;
+
+      // Named + idempotent: reached from transitionend, transitioncancel AND
+      // the effect cleanup, whichever comes first.
+      const restore = () => {
+        // Give the stylesheet back its own transition (hover colours).
+        el.style.removeProperty('transition');
+        el.style.removeProperty('translate');
+        el.removeEventListener('transitionend', onDone);
+        el.removeEventListener('transitioncancel', onDone);
+      };
+      const onDone = (event: Event) => {
+        // Only OUR translate transition on THIS element: transitionend
+        // bubbles, so a child's opacity fade (the close control) must not cut
+        // the slide short. propertyName is best-effort — jsdom's synthetic
+        // events omit it.
+        if (event.target !== el) return;
+        const propertyName = (event as TransitionEvent).propertyName;
+        if (propertyName && propertyName !== 'translate') return;
+        restore();
+      };
+      restores.push(restore);
+
+      rafIds.push(
+        window.requestAnimationFrame(() => {
+          if (!el.isConnected) return;
+          el.style.transition = 'translate var(--motion-base) var(--ease-spring)';
+          el.style.translate = '';
+          el.addEventListener('transitionend', onDone);
+          el.addEventListener('transitioncancel', onDone);
+        })
+      );
+    }
+
+    return () => {
+      for (const id of rafIds) window.cancelAnimationFrame(id);
+      for (const restore of restores) restore();
+    };
+    // Keyed on the rendered order string — the DOM is the dependency here.
+  }, [orderKey]);
 
   // Keep the focused tab in view as the strip scrolls past its shrink floor.
   useEffect(() => {

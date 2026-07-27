@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, Terminal as TerminalIcon, X } from './icons/app-icons';
 import { Button } from './ui/button';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
-import { registerNewTerminalPane } from '../utils/terminalFocus';
+import { registerCloseTerminalPane, registerNewTerminalPane } from '../utils/terminalFocus';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
 
@@ -78,9 +78,6 @@ const TERMINAL_FONT =
   'ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_SIZE = 13;
 const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13/20
-
-
-
 
 /**
  * Terminal palettes, keyed by family then resolved mode — GENERATED.
@@ -338,6 +335,11 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const suppressAutoOpenRef = useRef(false);
   const pendingDockCloseRef = useRef(false);
+  // This dock's own DOM root, handed to the pane registries so a Cmd+T/Cmd+W
+  // routes to THIS dock only when it is the one holding (or last holding)
+  // focus — several docks can be visible at once in a split (one per pane).
+  const rootRef = useRef<HTMLElement | null>(null);
+  const getRoot = useCallback(() => rootRef.current, []);
 
   const addPane = useCallback(() => {
     setPanes((current) => {
@@ -395,14 +397,34 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     (onEmptied ?? onClose)();
   }, [onClose, onEmptied, open, panes.length]);
 
-  // While this dock is the VISIBLE one, own the "new terminal pane" gesture:
-  // focus-aware Cmd+T (routed in App.tsx) adds a pane here instead of a chat
-  // tab. Only the open dock registers, and the shell keeps exactly one open at a
-  // time, so last-write-wins in the registry is correct.
+  // While this dock is VISIBLE, own the "new terminal pane" gesture: focus-aware
+  // Cmd+T (routed in App.tsx) adds a pane here instead of a chat tab. Only open
+  // docks register — but a split can show SEVERAL open docks at once (one per
+  // pane), so the registration carries this dock's root and the registry routes
+  // the keystroke to the dock that holds focus (Codex review B6 finding 3).
   useEffect(() => {
     if (!open) return;
-    return registerNewTerminalPane(addPane);
-  }, [open, addPane]);
+    return registerNewTerminalPane(addPane, getRoot);
+  }, [open, addPane, getRoot]);
+
+  // …and the "close terminal pane" gesture (issue #21): focus-aware Cmd+W
+  // closes the focused PANE here instead of the chat tab. The ref keeps the
+  // registration stable across pane switches; closing the last pane flows
+  // through pendingDockCloseRef -> onEmptied above, so no extra teardown is
+  // needed — the dock disposes, the registry disposer runs, and the NEXT Cmd+W
+  // falls through to the chat tab.
+  const activePaneIdRef = useRef<string | null>(null);
+  activePaneIdRef.current = activePaneId;
+
+  useEffect(() => {
+    if (!open) return;
+    return registerCloseTerminalPane(() => {
+      const paneId = activePaneIdRef.current;
+      if (!paneId) return false;
+      closePane(paneId);
+      return true;
+    }, getRoot);
+  }, [open, closePane, getRoot]);
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
@@ -414,6 +436,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
 
   return (
     <section
+      ref={rootRef}
       data-testid="in-app-terminal-dock"
       className={cn(
         'no-drag flex min-h-[100px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
