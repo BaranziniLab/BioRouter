@@ -44,6 +44,13 @@ const modelDownloadNote = (model: LlamaCppModel | undefined) => {
   }
 };
 
+const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
+  kind === 'warmup'
+    ? 'Llama Server warm-up failed'
+    : kind === 'install'
+      ? 'Local model install failed'
+      : 'Could not start Llama Server';
+
 const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.fallback_download_status) {
     case 'downloaded':
@@ -60,7 +67,7 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
 export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const navigate = useNavigate();
   const { upsert } = useConfig();
-  const { status, operation } = useLlamaServer();
+  const { status, operation, lastError } = useLlamaServer();
   // Skip the "Checking…" state when the shared store already has a status
   // (e.g. remounting while a download started elsewhere is still running).
   const [isChecking, setIsChecking] = useState(
@@ -70,6 +77,17 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingModelStart, setPendingModelStart] = useState<string | null>(null);
   const connectingRef = useRef(false);
+  // Ownership guard: the start flow deliberately keeps driving the shared
+  // store after this card unmounts (progress lives in the store, issue #34),
+  // but a DEAD card must never write provider config, call its own state
+  // setters, or fire the onSuccess navigation.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const sidecar = status?.sidecar ?? null;
   const catalog = useMemo(() => status?.catalog ?? [], [status]);
@@ -80,6 +98,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
 
   const connect = useCallback(
     async (model: string) => {
+      // Never configure the provider or navigate from an unmounted card.
+      if (!mountedRef.current) return;
       if (connectingRef.current) return;
       connectingRef.current = true;
       setIsConnecting(true);
@@ -88,6 +108,9 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         await upsert('LLAMACPP_PORT', '11543', false);
         await upsert('BIOROUTER_PROVIDER', 'llamacpp', false);
         await upsert('BIOROUTER_MODEL', model, false);
+        // Unmounted mid-write: the config is saved, but a dead card must not
+        // drive the onboarding navigation.
+        if (!mountedRef.current) return;
         toastService.success({
           title: 'Local model ready!',
           msg: `Llama Server is running ${model} on your computer.`,
@@ -95,7 +118,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         onSuccess();
       } catch (error) {
         connectingRef.current = false;
-        setIsConnecting(false);
+        if (mountedRef.current) setIsConnecting(false);
         toastService.error({
           title: 'Connection Failed',
           msg: `Failed to configure Llama Server: ${error instanceof Error ? error.message : String(error)}`,
@@ -130,6 +153,42 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     setSelectedModel((prev) => prev || status.sidecar.model || defaultModel);
   }, [status]);
 
+  // Surface a polled terminal failure (sidecar error / deadline timeout)
+  // IMMEDIATELY, instead of leaving the user staring at a silently cleared
+  // busy state until the separate in-flight warm-up HTTP call gets around to
+  // rejecting. claimErrorToast makes this exactly-once across surfaces and
+  // the driving flow's own catch handler.
+  useEffect(() => {
+    if (!lastError) return;
+    if (!llamaServerStore.claimErrorToast(lastError.opId)) return;
+    toastService.error({
+      title: terminalErrorTitle(lastError.kind),
+      msg: lastError.message,
+    });
+  }, [lastError]);
+
+  // Toast a driving-flow failure exactly once. If the store already failed
+  // this operation terminally (polled sidecar error / timeout), the effect
+  // above may have surfaced it — claim before toasting the retained error.
+  // A flow superseded by a newer operation stays silent: the new flow owns
+  // the UX, and its operation/interval must not be touched (scoped
+  // endOperation guarantees that).
+  const surfaceStartFailure = (opId: number, title: string, error: unknown) => {
+    const endedByUs = llamaServerStore.endOperation(opId);
+    if (!endedByUs) {
+      const terminal = llamaServerStore.getSnapshot().lastError;
+      if (terminal?.opId === opId && llamaServerStore.claimErrorToast(opId)) {
+        toastService.error({ title: terminalErrorTitle(terminal.kind), msg: terminal.message });
+      }
+      return;
+    }
+    toastService.error({
+      title,
+      msg: error instanceof Error ? error.message : String(error),
+      traceback: error instanceof Error ? error.stack || '' : '',
+    });
+  };
+
   const startModel = async (model: string) => {
     if (llamaServerStore.getSnapshot().operation || isConnecting) return;
     const opId = llamaServerStore.beginOperation('start', model);
@@ -137,12 +196,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       const res = await llamacppEnsure({ body: { model }, throwOnError: true });
       llamaServerStore.applyStatus(res.data, opId);
     } catch (error) {
-      llamaServerStore.endOperation(opId);
-      toastService.error({
-        title: 'Could not start Llama Server',
-        msg: error instanceof Error ? error.message : String(error),
-        traceback: error instanceof Error ? error.stack || '' : '',
-      });
+      surfaceStartFailure(opId, 'Could not start Llama Server', error);
       return;
     }
 
@@ -152,15 +206,16 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         throw new Error('Llama Server returned an empty warm-up response');
       }
       llamaServerStore.applySidecar(warmed.data.sidecar, opId);
-      llamaServerStore.endOperation(opId);
+      // Scoped endOperation: false means this flow was superseded or already
+      // failed terminally in the store — a stale flow must not connect.
+      if (!llamaServerStore.endOperation(opId)) return;
+      // A dead card never writes provider config or navigates; the model is
+      // ready in the store, and a remounted card will offer "Use Llama
+      // Server" from the ready status.
+      if (!mountedRef.current) return;
       await connect(model);
     } catch (error) {
-      llamaServerStore.endOperation(opId);
-      toastService.error({
-        title: 'Llama Server warm-up failed',
-        msg: error instanceof Error ? error.message : String(error),
-        traceback: error instanceof Error ? error.stack || '' : '',
-      });
+      surfaceStartFailure(opId, 'Llama Server warm-up failed', error);
     }
   };
 

@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import LlamaServerInlineCard from './LlamaServerInlineCard';
 import {
   llamaServerStore,
   resetLlamaServerStoreForTests,
+  LLAMA_SERVER_POLL_INTERVAL_MS,
 } from '../settings/models/llamaServerStore';
 
 const mockLlamacppStatus = vi.fn();
@@ -23,6 +24,15 @@ vi.mock('react-router-dom', () => ({
 const mockUpsert = vi.fn();
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({ upsert: mockUpsert }),
+}));
+
+const mockToastError = vi.fn();
+const mockToastSuccess = vi.fn();
+vi.mock('../../toasts', () => ({
+  toastService: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+  },
 }));
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
@@ -94,6 +104,7 @@ describe('LlamaServerInlineCard', () => {
 
   afterEach(() => {
     resetLlamaServerStoreForTests();
+    vi.useRealTimers();
   });
 
   it('preselects the default catalog model', async () => {
@@ -155,5 +166,84 @@ describe('LlamaServerInlineCard', () => {
     expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_MODEL', 'gemma4', false);
     // The operation ended, so the shared poll interval is stopped.
     expect(llamaServerStore.getSnapshot().operation).toBeNull();
+  });
+
+  it('never writes config or navigates from an unmounted card (finding 7)', async () => {
+    mockUpsert.mockResolvedValue(undefined);
+    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting', model: 'gemma4' }));
+    let resolveWarmup!: (value: unknown) => void;
+    mockLlamacppWarmup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveWarmup = resolve;
+        })
+    );
+    const onSuccess = vi.fn();
+    const view = render(<LlamaServerInlineCard onSuccess={onSuccess} />);
+
+    fireEvent.click(await view.findByTestId('llamacpp-start'));
+    await waitFor(() => expect(mockLlamacppWarmup).toHaveBeenCalled());
+
+    // The user navigates away mid warm-up; the flow keeps running.
+    view.unmount();
+    resolveWarmup({
+      data: {
+        output: 'OK',
+        sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+      },
+    });
+
+    // The flow still ends the shared operation cleanly...
+    await waitFor(() => expect(llamaServerStore.getSnapshot().operation).toBeNull());
+    // ...but the dead card must not configure the provider or navigate.
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a polled sidecar error immediately; the stale flow cannot double-toast or kill a retry (finding 9)', async () => {
+    mockUpsert.mockResolvedValue(undefined);
+    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting', model: 'gemma4' }));
+    let rejectWarmup!: (err: Error) => void;
+    mockLlamacppWarmup.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectWarmup = reject;
+        })
+    );
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+    const start = await screen.findByTestId('llamacpp-start');
+
+    vi.useFakeTimers();
+    fireEvent.click(start);
+    // Let the ensure call settle and the shared poll loop start.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // The next poll tick reports a terminal sidecar error while the warm-up
+    // HTTP call is still hanging.
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({ state: 'error', model: 'gemma4', detail: 'model blew up' })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LLAMA_SERVER_POLL_INTERVAL_MS);
+    });
+
+    // Toasted immediately from the retained store error — NOT deferred until
+    // the warm-up request eventually rejects.
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(mockToastError.mock.calls[0][0]).toMatchObject({ msg: 'model blew up' });
+    expect(llamaServerStore.getSnapshot().operation).toBeNull();
+
+    // The user retries; when the stale flow's warm-up finally rejects it
+    // must neither toast a second time nor end the retry's operation.
+    const retryOp = llamaServerStore.beginOperation('start', 'gemma4');
+    await act(async () => {
+      rejectWarmup(new Error('502 Bad Gateway'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(llamaServerStore.getSnapshot().operation).toMatchObject({ id: retryOp });
+    llamaServerStore.endOperation(retryOp);
   });
 });
