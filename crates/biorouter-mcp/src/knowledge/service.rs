@@ -87,6 +87,31 @@ pub struct KnowledgeWriteGuard {
     _file_guard: FileLockGuard,
 }
 
+/// One coherent knowledge-base selection for a scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KbSelection {
+    /// The scope's knowledge bases, sorted. Every one is searchable, readable,
+    /// and eligible to be the primary.
+    pub kb_ids: Vec<String>,
+    /// The hidden ids that produced `kb_ids`.
+    pub hidden_kbs: Vec<String>,
+    /// The write target for KB-less mutating calls. Always a member of
+    /// `kb_ids`, or `None` when the scope has not chosen one.
+    pub primary_kb: Option<String>,
+}
+
+/// What a caller wants to happen to the primary pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryUpdate<'a> {
+    /// Leave the stored pointer alone. A set-only edit must never move it —
+    /// this is what stops one surface's write clobbering another's choice.
+    Unchanged,
+    /// Forget the pointer. KB-less writes then fail until one is chosen.
+    Clear,
+    /// Pin this id. It must be a member of the *resulting* set.
+    Set(&'a str),
+}
+
 impl KnowledgeService {
     fn primary_session_path(&self, session_id: &str) -> PathBuf {
         let digest = raw::hash_bytes(session_id.as_bytes());
@@ -1150,6 +1175,72 @@ impl KnowledgeService {
         self.set_primary_path_unlocked(&path, next.as_deref())?;
         Ok(next)
     }
+
+    /// Read-only snapshot of a scope's selection.
+    pub fn selection(&self, session_id: Option<&str>) -> anyhow::Result<KbSelection> {
+        Ok(KbSelection {
+            kb_ids: self.session_kb_ids(session_id)?,
+            hidden_kbs: match session_id {
+                Some(session_id) => self.get_hidden_for_session_or_persisted(session_id)?,
+                None => self.get_hidden_persisted()?,
+            },
+            primary_kb: self.primary_for_session(session_id)?,
+        })
+    }
+
+    /// Apply a set change and a primary change as one operation under one root
+    /// lock, validating the primary against the **resulting** set. `hidden =
+    /// None` leaves the set alone.
+    ///
+    /// Every helper called here is an `*_unlocked` variant: taking `lock_root`
+    /// twice in one call stack deadlocks (the guard is an `flock` on one path,
+    /// and a second acquisition from the same process blocks forever).
+    pub fn set_selection(
+        &self,
+        session_id: Option<&str>,
+        hidden: Option<&[String]>,
+        primary: PrimaryUpdate<'_>,
+    ) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+
+        if let Some(hidden) = hidden {
+            let path = match session_id {
+                Some(session_id) => self.hidden_session_path(session_id),
+                None => crate::knowledge::paths::hidden_kbs_path(self.root()),
+            };
+            self.set_hidden_path_unlocked(&path, hidden)?;
+        }
+
+        let primary_path = match session_id {
+            Some(session_id) => self.primary_session_path(session_id),
+            None => crate::knowledge::paths::primary_kb_path(self.root()),
+        };
+        match primary {
+            PrimaryUpdate::Unchanged => {
+                self.repair_primary_unlocked(session_id)?;
+            }
+            PrimaryUpdate::Clear => {
+                self.set_primary_path_unlocked(&primary_path, None)?;
+            }
+            PrimaryUpdate::Set(id) => {
+                let ids = self.session_kb_ids(session_id)?;
+                if !ids.iter().any(|known| known == id) {
+                    anyhow::bail!(
+                        "knowledge base '{id}' is not one of this session's knowledge bases ({}). \
+                         Add it to the session first, or pass kb_id explicitly to read it once.",
+                        if ids.is_empty() {
+                            "none".to_string()
+                        } else {
+                            ids.join(", ")
+                        }
+                    );
+                }
+                self.set_primary_path_unlocked(&primary_path, Some(id))?;
+            }
+        }
+
+        self.selection(session_id)
+    }
 }
 
 impl KnowledgeService {
@@ -2022,6 +2113,51 @@ mod tests {
             "a crash leftover is not a session"
         );
         assert_eq!(std::fs::read_to_string(&hidden_tmp)?, "half-written garbage");
+        Ok(())
+    }
+
+    /// One request, one lock, validated against the *resulting* set — so
+    /// "add this base to the chat and make it primary" is expressible, and a
+    /// set-only edit can never move the pointer.
+    #[test]
+    fn set_selection_applies_set_and_primary_as_one_operation() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            svc.create_base(id, id, None)?;
+        }
+        svc.set_hidden_for_session("session-a", &["beta".to_string()])?;
+
+        let sel = svc.set_selection(Some("session-a"), Some(&[]), PrimaryUpdate::Set("beta"))?;
+        assert_eq!(
+            sel.kb_ids,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+        assert_eq!(sel.primary_kb.as_deref(), Some("beta"));
+
+        let sel = svc.set_selection(
+            Some("session-a"),
+            Some(&["gamma".to_string()]),
+            PrimaryUpdate::Unchanged,
+        )?;
+        assert_eq!(sel.kb_ids, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            sel.primary_kb.as_deref(),
+            Some("beta"),
+            "a set-only edit must not move the pointer"
+        );
+
+        let err = svc
+            .set_selection(Some("session-a"), None, PrimaryUpdate::Set("gamma"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("gamma") && err.contains("alpha, beta"),
+            "the rejection must name the id and the set it is not in, got: {err}"
+        );
+
+        let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
+        assert_eq!(sel.primary_kb, None);
         Ok(())
     }
 
