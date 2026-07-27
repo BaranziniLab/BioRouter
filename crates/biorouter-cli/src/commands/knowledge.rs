@@ -106,7 +106,9 @@ fn section(title: &str) {
 
 pub async fn handle_list(format: &str) -> Result<()> {
     let svc = service()?;
-    println!("{}", render_list(&svc, format)?);
+    // `render_list` builds a block with one newline per row; `println!` supplies
+    // the last one, so trim or every listing ends in a blank line.
+    println!("{}", render_list(&svc, format)?.trim_end());
     Ok(())
 }
 
