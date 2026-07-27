@@ -188,6 +188,12 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("x-ai/grok-4.3", 1_000_000),
         ("x-ai/grok-build-0.1", 256_000),
         // ── Moonshot Kimi ──
+        // Bare ids are what the direct Moonshot platform serves (the
+        // `moonshot` declarative provider); the moonshotai/-prefixed forms
+        // are OpenRouter's ids for the same models.
+        ("kimi-k2.5", 262_144),
+        ("kimi-k2.6", 262_144),
+        ("kimi-k2.7-code", 262_144),
         ("moonshotai/kimi-k2.6", 262_144),
         ("moonshotai/kimi-k2.7-code", 262_144),
         // ── Xiaomi MiMo ──

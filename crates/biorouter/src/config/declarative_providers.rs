@@ -313,3 +313,47 @@ pub fn register_declarative_provider(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A malformed JSON in `providers/declarative/` fails
+    /// `load_fixed_providers` wholesale, silently dropping every fixed
+    /// provider — this test is the guard that keeps the bundled set parsing.
+    #[test]
+    fn fixed_providers_parse_and_include_moonshot() {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+
+        let moonshot = providers
+            .iter()
+            .find(|p| p.name == "moonshot")
+            .expect("moonshot.json is bundled");
+        assert!(matches!(moonshot.engine, ProviderEngine::OpenAI));
+        assert_eq!(moonshot.display_name, "Moonshot AI (Kimi)");
+        assert_eq!(moonshot.api_key_env, "MOONSHOT_API_KEY");
+        assert_eq!(moonshot.base_url, "https://api.moonshot.ai/v1");
+        assert_eq!(moonshot.supports_streaming, Some(true));
+
+        // Newest-first: the first entry becomes the UI's default model.
+        let names: Vec<&str> = moonshot.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5"]);
+
+        // Real token costs so pricing flows from provider metadata
+        // (pricing_from_provider_metadata) with no pricing.rs entry.
+        // Direct-platform rates: k2.7-code/k2.6 $0.95/$4.00, k2.5 $0.60/$3.00
+        // per MTok — distinct from OpenRouter's rates for the same models.
+        for model in &moonshot.models {
+            assert_eq!(model.context_limit, 262_144, "{}", model.name);
+            let input = model.input_token_cost.expect("input cost set");
+            let output = model.output_token_cost.expect("output cost set");
+            let (want_in, want_out) = if model.name == "kimi-k2.5" {
+                (0.60 / 1_000_000.0, 3.00 / 1_000_000.0)
+            } else {
+                (0.95 / 1_000_000.0, 4.00 / 1_000_000.0)
+            };
+            assert!((input - want_in).abs() < 1e-15, "{}", model.name);
+            assert!((output - want_out).abs() < 1e-15, "{}", model.name);
+        }
+    }
+}

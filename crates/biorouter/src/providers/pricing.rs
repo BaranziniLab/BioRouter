@@ -456,6 +456,17 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_canonical_pricing_resolves_via_moonshotai_mapping() {
+        // The direct `moonshot` provider has no explicit pricing table; the
+        // canonical fallback must land on the moonshotai/* registry entries
+        // via the canonical_provider "moonshot" -> "moonshotai" mapping.
+        let pricing = provider_model_pricing("moonshot", "kimi-k2.6").unwrap();
+        assert_eq!(pricing.input_token_cost, 0.66 / 1_000_000.0);
+        assert_eq!(pricing.output_token_cost, 3.41 / 1_000_000.0);
+        assert_eq!(pricing.context_length, Some(262_144));
+    }
+
+    #[test]
     fn declarative_provider_metadata_resolves_configured_prices() {
         let metadata = ProviderMetadata::with_models(
             "custom_acme",

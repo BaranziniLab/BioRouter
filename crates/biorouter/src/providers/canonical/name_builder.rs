@@ -121,6 +121,7 @@ fn canonical_provider(provider: &str) -> &str {
         "gemini_cli" => "google",
         "custom_deepseek" => "deepseek",
         "mistral" => "mistralai",
+        "moonshot" => "moonshotai",
         "xai" => "x-ai",
         "zai" => "z-ai",
         "xiaomi_mimo" => "xiaomi",
@@ -429,6 +430,16 @@ mod tests {
         assert_eq!(
             map_to_canonical_model("gcp_vertex_ai", "claude-sonnet-5", r),
             Some("anthropic/claude-sonnet-5".to_string())
+        );
+
+        // === Moonshot Kimi — the direct provider maps to the moonshotai canon ===
+        assert_eq!(
+            map_to_canonical_model("moonshot", "kimi-k2.6", r),
+            Some("moonshotai/kimi-k2.6".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("moonshot", "kimi-k2.7-code", r),
+            Some("moonshotai/kimi-k2.7-code".to_string())
         );
 
         // === OpenAI GPT ===
