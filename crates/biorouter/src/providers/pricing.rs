@@ -500,6 +500,17 @@ mod tests {
     }
 
     #[test]
+    fn kimi_k2_5_canonical_record_prices_hosted_access() {
+        // k2.5 has no OpenRouter-specific override, so this exercises the
+        // canonical registry record end-to-end via the fallback path — the
+        // record any hosting provider's usage attribution resolves through.
+        let p = provider_model_pricing("openrouter", "moonshotai/kimi-k2.5").unwrap();
+        assert!((p.input_token_cost - 0.60 / 1_000_000.0).abs() < 1e-15);
+        assert!((p.output_token_cost - 3.00 / 1_000_000.0).abs() < 1e-15);
+        assert_eq!(p.context_length, Some(262_144));
+    }
+
+    #[test]
     fn declarative_provider_metadata_resolves_configured_prices() {
         let metadata = ProviderMetadata::with_models(
             "custom_acme",

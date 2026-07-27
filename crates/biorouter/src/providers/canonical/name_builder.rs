@@ -434,6 +434,10 @@ mod tests {
 
         // === Moonshot Kimi — the direct provider maps to the moonshotai canon ===
         assert_eq!(
+            map_to_canonical_model("moonshot", "kimi-k2.5", r),
+            Some("moonshotai/kimi-k2.5".to_string())
+        );
+        assert_eq!(
             map_to_canonical_model("moonshot", "kimi-k2.6", r),
             Some("moonshotai/kimi-k2.6".to_string())
         );

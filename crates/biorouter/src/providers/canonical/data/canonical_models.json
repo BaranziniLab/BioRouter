@@ -1638,6 +1638,24 @@
     }
   },
   {
+    "id": "moonshotai/kimi-k2.5",
+    "name": "Moonshot AI: Kimi K2.5",
+    "context_length": 262144,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 6e-7,
+      "completion": 0.000003
+    }
+  },
+  {
     "id": "moonshotai/kimi-k2.6",
     "name": "Moonshot AI: Kimi K2.6",
     "context_length": 262144,
