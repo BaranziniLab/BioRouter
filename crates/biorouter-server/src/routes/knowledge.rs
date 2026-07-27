@@ -12,7 +12,7 @@ use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
     paths,
-    service::{KnowledgeService, ReadPageError},
+    service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
@@ -598,24 +598,43 @@ pub struct ReadPageResponse {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Plan 6 Task 2: GET + POST /knowledge/active — cross-session active-KB sync.
-// Thin pass-throughs to `KnowledgeService::{get,set}_active_persisted` so the
-// frontend can render the chat chip on startup and persist user picks.
+// GET + POST /knowledge/active — the session's knowledge-base set and its
+// primary. One axis (the set, expressed as the hidden complement) plus one
+// pointer. Both halves travel in one body so the primary is validated against
+// the state the request produces, not the state it started from.
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, ToSchema)]
 pub struct SetActiveBody {
-    /// `None` clears the active KB.
+    /// Make this base the session's primary — the KB-less write target. It
+    /// must be a member of the **resulting** set, so `hidden_kbs` in the same
+    /// body is applied first. Omit to leave the pointer alone.
+    #[serde(default)]
+    pub primary_kb: Option<String>,
+    /// Deprecated alias for `primary_kb`, kept for one release so a stale
+    /// renderer bundle talking to a fresh daemon keeps working.
     #[serde(default)]
     pub kb_id: Option<String>,
+    /// Forget the primary. Wins over `primary_kb`.
+    #[serde(default)]
+    pub clear_primary: bool,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Replace this scope's hidden list — i.e. redefine the session's set.
+    /// Omit to leave the set alone. `[]` is an explicit "hide nothing here",
+    /// not a request to inherit the machine-wide list.
     #[serde(default)]
     pub hidden_kbs: Option<Vec<String>>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct ActiveKbResponse {
+    /// The session's knowledge bases, sorted. Every one is searchable and
+    /// readable; there is no narrower "active" list.
+    pub kb_ids: Vec<String>,
+    /// The KB-less write target. Always a member of `kb_ids`, or `null`.
+    pub primary_kb: Option<String>,
+    /// Deprecated mirror of `primary_kb`.
     pub active_kb: Option<String>,
     pub hidden_kbs: Vec<String>,
 }
@@ -626,84 +645,68 @@ pub struct GetActiveQuery {
     pub session_id: Option<String>,
 }
 
+fn selection_response(
+    svc: &KnowledgeService,
+    session_id: Option<&str>,
+) -> Result<ActiveKbResponse, (StatusCode, String)> {
+    let selection = svc
+        .selection(session_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(ActiveKbResponse {
+        kb_ids: selection.kb_ids,
+        active_kb: selection.primary_kb.clone(),
+        primary_kb: selection.primary_kb,
+        hidden_kbs: selection.hidden_kbs,
+    })
+}
+
 #[utoipa::path(
     get, path = "/knowledge/active",
     params(
-        ("session_id" = Option<String>, Query, description = "Optional chat session id for session-scoped active KB selection"),
+        ("session_id" = Option<String>, Query, description = "Optional chat session id for the session-scoped selection"),
     ),
-    responses((status = 200, description = "Current active KB id", body = ActiveKbResponse))
+    responses((status = 200, description = "The session's knowledge bases and its primary", body = ActiveKbResponse))
 )]
 pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
     Query(q): Query<GetActiveQuery>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let (active_kb, hidden_kbs) = if let Some(session_id) = q.session_id.as_deref() {
-        (
-            svc.get_primary_for_session(session_id)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .or_else(|| svc.get_primary_persisted().ok().flatten()),
-            svc.get_hidden_for_session_or_persisted(session_id)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-        )
-    } else {
-        (
-            svc.get_primary_persisted()
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-            svc.get_hidden_persisted()
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-        )
-    };
-    Ok(Json(ActiveKbResponse {
-        active_kb,
-        hidden_kbs,
-    }))
+    Ok(Json(selection_response(&svc, q.session_id.as_deref())?))
 }
 
 #[utoipa::path(
     post, path = "/knowledge/active",
     request_body = SetActiveBody,
     responses(
-        (status = 200, description = "Set successfully", body = ActiveKbResponse),
-        (status = 400, description = "Invalid kb id"),
+        (status = 200, description = "The resulting selection", body = ActiveKbResponse),
+        (status = 400, description = "Unknown kb id, or a primary outside the resulting set"),
     )
 )]
 pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let session_id = body.session_id.clone();
-    if let Some(session_id) = body.session_id.as_deref() {
-        svc.set_primary_for_session(session_id, body.kb_id.as_deref())
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
-            svc.set_hidden_for_session(session_id, hidden_kbs)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        }
+    let primary_id = body.primary_kb.clone().or_else(|| body.kb_id.clone());
+    let primary = if body.clear_primary {
+        PrimaryUpdate::Clear
     } else {
-        svc.set_primary_persisted(body.kb_id.as_deref())
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
-            svc.set_hidden_persisted(hidden_kbs)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        match primary_id.as_deref() {
+            Some(id) => PrimaryUpdate::Set(id),
+            None => PrimaryUpdate::Unchanged,
         }
-    }
-    let active_kb = if let Some(session_id) = session_id.as_deref() {
-        svc.get_primary_for_session(session_id)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-            .or_else(|| svc.get_primary_persisted().ok().flatten())
-    } else {
-        svc.get_primary_persisted()
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     };
+    let selection = svc
+        .set_selection(
+            body.session_id.as_deref(),
+            body.hidden_kbs.as_deref(),
+            primary,
+        )
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     Ok(Json(ActiveKbResponse {
-        active_kb,
-        hidden_kbs: if let Some(session_id) = session_id.as_deref() {
-            svc.get_hidden_for_session_or_persisted(session_id)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-        } else {
-            svc.get_hidden_persisted()
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-        },
+        kb_ids: selection.kb_ids,
+        active_kb: selection.primary_kb.clone(),
+        primary_kb: selection.primary_kb,
+        hidden_kbs: selection.hidden_kbs,
     }))
 }
 

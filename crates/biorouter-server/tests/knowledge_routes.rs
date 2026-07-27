@@ -15,6 +15,46 @@ fn build_test_router() -> (tempfile::TempDir, Router) {
     (dir, router)
 }
 
+async fn post_active(app: &Router, body: serde_json::Value) -> (u16, serde_json::Value) {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+async fn get_active(app: &Router, session_id: Option<&str>) -> serde_json::Value {
+    let uri = match session_id {
+        Some(sid) => format!("/active?session_id={sid}"),
+        None => "/active".to_string(),
+    };
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 /// Build a router and also return the underlying KB root directory so tests
 /// can seed files directly on disk (needed for routes that read from `raw/`
 /// where there is no write API).
@@ -1699,8 +1739,10 @@ async fn active_kb_roundtrip() {
         "hidden_kbs should round-trip the set value"
     );
 
-    // Clear it.
-    let clear_body = serde_json::to_vec(&serde_json::json!({"kb_id": null})).unwrap();
+    // Clearing is now an explicit flag. A body that simply does not mention
+    // the primary leaves it alone, so a hidden-only edit can never nuke it —
+    // the same composability rule the app-grant fix relies on.
+    let clear_body = serde_json::to_vec(&serde_json::json!({"clear_primary": true})).unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -1760,7 +1802,7 @@ async fn active_kb_roundtrip() {
 }
 
 #[tokio::test]
-async fn active_kb_can_be_scoped_per_session() {
+async fn primary_kb_can_be_scoped_per_session() {
     let (_d, app) = build_test_router();
 
     for (id, name) in [("act", "Act"), ("session-kb", "Session KB")] {
@@ -1780,96 +1822,109 @@ async fn active_kb_can_be_scoped_per_session() {
         assert_eq!(res.status(), 200);
     }
 
-    let global_body = serde_json::to_vec(&serde_json::json!({
-        "kb_id": "act",
-        "hidden_kbs": ["act"]
-    }))
-    .unwrap();
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/active")
-                .header("content-type", "application/json")
-                .body(Body::from(global_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    // Machine-wide: both bases in play, "act" is the primary.
+    let global = post_active(&app, serde_json::json!({"primary_kb": "act"})).await;
+    assert_eq!(global.0, 200);
+    assert_eq!(global.1["primary_kb"].as_str(), Some("act"));
+    assert_eq!(
+        global.1["kb_ids"],
+        serde_json::json!(["act", "session-kb"]),
+        "the response carries the session's whole set, not just the pointer"
+    );
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active?session_id=session-a")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("act"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
+    // session-a narrows to one base and points at it.
+    let scoped = post_active(
+        &app,
+        serde_json::json!({
+            "primary_kb": "session-kb",
+            "session_id": "session-a",
+            "hidden_kbs": ["act"],
+        }),
+    )
+    .await;
+    assert_eq!(scoped.0, 200);
+    assert_eq!(scoped.1["primary_kb"].as_str(), Some("session-kb"));
+    assert_eq!(scoped.1["kb_ids"], serde_json::json!(["session-kb"]));
+    assert_eq!(
+        scoped.1["active_kb"].as_str(),
+        Some("session-kb"),
+        "the deprecated mirror must track the primary for one release"
+    );
 
-    let session_body = serde_json::to_vec(&serde_json::json!({
-        "kb_id": "session-kb",
-        "session_id": "session-a",
-        "hidden_kbs": ["session-kb"]
-    }))
-    .unwrap();
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/active")
-                .header("content-type", "application/json")
-                .body(Body::from(session_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    // The machine scope is untouched, and a session that never overrode inherits it.
+    let machine = get_active(&app, None).await;
+    assert_eq!(machine["primary_kb"].as_str(), Some("act"));
+    let other = get_active(&app, Some("session-b")).await;
+    assert_eq!(other["primary_kb"].as_str(), Some("act"));
+    assert_eq!(other["kb_ids"], serde_json::json!(["act", "session-kb"]));
+}
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active?session_id=session-a")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("session-kb"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["session-kb"]));
+/// The merged model's one invariant, at the wire. A primary that is not in the
+/// resulting set is rejected with both halves named; the un-hide and the
+/// re-point travel in ONE body so the GUI's "make primary" on an off row is a
+/// single request validated against the state it produces.
+#[tokio::test]
+async fn primary_must_be_a_member_of_the_resulting_set() {
+    let (_d, app) = build_test_router();
+    for id in ["alpha", "beta"] {
+        let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("act"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
+    let bad = post_active(
+        &app,
+        serde_json::json!({"primary_kb": "beta", "hidden_kbs": ["beta"]}),
+    )
+    .await;
+    assert_eq!(bad.0, 400, "a hidden base cannot be the primary");
+
+    let good = post_active(
+        &app,
+        serde_json::json!({"primary_kb": "beta", "hidden_kbs": []}),
+    )
+    .await;
+    assert_eq!(good.0, 200);
+    assert_eq!(good.1["primary_kb"].as_str(), Some("beta"));
+}
+
+/// A set-only edit must never move the pointer, and hiding the primary must
+/// promote deterministically rather than leaving a dangling write target.
+#[tokio::test]
+async fn set_only_edit_keeps_the_primary_until_it_leaves_the_set() {
+    let (_d, app) = build_test_router();
+    for id in ["alpha", "beta", "gamma"] {
+        let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    post_active(&app, serde_json::json!({"primary_kb": "beta"})).await;
+
+    let narrowed = post_active(&app, serde_json::json!({"hidden_kbs": ["gamma"]})).await;
+    assert_eq!(narrowed.1["primary_kb"].as_str(), Some("beta"));
+
+    let orphaned = post_active(&app, serde_json::json!({"hidden_kbs": ["beta"]})).await;
+    assert_eq!(
+        orphaned.1["primary_kb"].as_str(),
+        Some("alpha"),
+        "hiding the primary promotes to the first remaining member"
+    );
 }
