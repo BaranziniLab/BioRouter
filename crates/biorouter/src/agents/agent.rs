@@ -4502,9 +4502,16 @@ impl Agent {
                 // that reused one id across several yielded messages would
                 // otherwise fail the UNIQUE(session_id, msg_uid) index here
                 // and kill the turn.
-                let messages_to_add = remint_duplicate_message_ids(messages_to_add);
-                for msg in &messages_to_add {
-                    session_manager.add_message(&session_config.id, msg).await?;
+                let mut messages_to_add = remint_duplicate_message_ids(messages_to_add).into_messages();
+                for msg in &mut messages_to_add {
+                    // Adopt the EFFECTIVE uid the store persisted under: on a
+                    // collision it re-mints, and the in-memory conversation
+                    // must carry the same id as the row — otherwise the next
+                    // persist of this message duplicates it under a stale id.
+                    let effective_uid = session_manager.add_message(&session_config.id, msg).await?;
+                    if msg.id.as_deref() != Some(effective_uid.as_str()) {
+                        msg.id = Some(effective_uid);
+                    }
                 }
                 conversation.extend(messages_to_add);
 
