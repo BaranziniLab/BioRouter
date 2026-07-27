@@ -144,9 +144,12 @@ mod tests {
     fn store_errors_classify_as_session_store_not_provider_failure() {
         use anyhow::Context as _;
 
-        let store_error = anyhow::Error::new(sqlx::Error::PoolClosed)
-            .context("Failed to add message to session");
-        assert_eq!(classify_agent_error(&store_error), TurnAbortCode::SessionStore);
+        let store_error =
+            anyhow::Error::new(sqlx::Error::PoolClosed).context("Failed to add message to session");
+        assert_eq!(
+            classify_agent_error(&store_error),
+            TurnAbortCode::SessionStore
+        );
         assert_eq!(
             classify_agent_error(&store_error).wire_code(),
             "session_store_failure"

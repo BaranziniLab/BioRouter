@@ -8083,12 +8083,14 @@ mod tests {
 
         // Simulate a row migrated from a pre-metadata schema.
         let pool = sm.storage().pool().await.unwrap();
-        sqlx::query("UPDATE messages SET metadata_json = NULL WHERE session_id = ? AND msg_uid = ?")
-            .bind(&session.id)
-            .bind("null-md-uid")
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE messages SET metadata_json = NULL WHERE session_id = ? AND msg_uid = ?",
+        )
+        .bind(&session.id)
+        .bind("null-md-uid")
+        .execute(pool)
+        .await
+        .unwrap();
 
         let replay = sm
             .add_message(&session.id, &message)

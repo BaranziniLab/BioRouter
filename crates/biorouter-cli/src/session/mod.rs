@@ -474,7 +474,8 @@ impl CliSession {
     ) -> Result<()> {
         let cancel_token = cancel_token.clone();
         self.push_message(message);
-        self.process_agent_response(interactive, cancel_token).await?;
+        self.process_agent_response(interactive, cancel_token)
+            .await?;
         Ok(())
     }
 
