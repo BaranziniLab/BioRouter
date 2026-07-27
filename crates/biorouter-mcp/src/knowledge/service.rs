@@ -1056,6 +1056,31 @@ impl KnowledgeService {
         let _lock = self.lock_root()?;
         self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)
     }
+
+    /// The knowledge bases this scope may use, as ids, sorted.
+    ///
+    /// This is *the* set under the merged model: every base returned here is
+    /// searchable by a `kb_id`-less `kb_search`, readable, and eligible to be
+    /// the primary. `session_id = None` means "no session in scope" — the CLI
+    /// and scheduled jobs — and falls back to the machine-wide hidden list.
+    ///
+    /// Sorted deliberately: the "lexicographically first member" promotion rule
+    /// in [`Self::repair_primary_unlocked`] must not depend on registry
+    /// insertion order, which differs between machines.
+    pub fn session_kb_ids(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>> {
+        let hidden = match session_id {
+            Some(session_id) => self.get_hidden_for_session_or_persisted(session_id)?,
+            None => self.get_hidden_persisted()?,
+        };
+        let mut ids = self
+            .list_bases()?
+            .into_iter()
+            .map(|base| base.id)
+            .filter(|id| !hidden.contains(id))
+            .collect::<Vec<_>>();
+        ids.sort();
+        Ok(ids)
+    }
 }
 
 impl KnowledgeService {
@@ -1744,6 +1769,39 @@ mod tests {
             vec!["kb-a".to_string(), "kb-b".to_string()]
         );
 
+        Ok(())
+    }
+
+    /// The session's knowledge-base *set* — the one axis. Sorted, so any
+    /// "first member" rule downstream is stable across processes and
+    /// independent of registry insertion order.
+    #[test]
+    fn session_kb_ids_are_the_visible_set_sorted() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("zulu", "Zulu", None)?;
+        svc.create_base("alpha", "Alpha", None)?;
+        svc.create_base("mike", "Mike", None)?;
+
+        // No session in scope (the CLI, a scheduled job): the machine list applies.
+        svc.set_hidden_persisted(&["mike".to_string()])?;
+        assert_eq!(
+            svc.session_kb_ids(None)?,
+            vec!["alpha".to_string(), "zulu".to_string()]
+        );
+
+        // A session override replaces the machine list wholesale, never unions.
+        svc.set_hidden_for_session("session-a", &["zulu".to_string()])?;
+        assert_eq!(
+            svc.session_kb_ids(Some("session-a"))?,
+            vec!["alpha".to_string(), "mike".to_string()]
+        );
+
+        // A session that never overrode inherits.
+        assert_eq!(
+            svc.session_kb_ids(Some("session-b"))?,
+            vec!["alpha".to_string(), "zulu".to_string()]
+        );
         Ok(())
     }
 
