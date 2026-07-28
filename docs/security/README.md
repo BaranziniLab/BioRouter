@@ -23,6 +23,7 @@ documents below cover those layers in that order.
 | [Managed enterprise policy](managed-policy.md) | The admin-owned policy tier that overrides user and project config for permissions and hooks: file locations, ownership verification, and the YAML schema. |
 | [Secret storage](secret-storage.md) | How API keys are held in the macOS Keychain, Windows Credential Manager, or Linux Secret Service, why macOS prompts for a password, and the plaintext escape hatch. |
 | [Data privacy and patient data](data-privacy-and-phi.md) | UCSF guidance on which providers are acceptable for PHI, clinical records, and other sensitive research data, plus de-identification practice. |
+| [Privacy tiers](privacy-tiers.md) | **Proposed.** The two-lattice capability system that stops a conversation touched by a private model or a private data source from ever reaching an externally hosted model: how models, sessions and extensions acquire a tier, the five enforcement gates, and the cost. |
 
 ## Where to start
 
