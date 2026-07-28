@@ -185,8 +185,9 @@ pub struct StartedTurn {
 /// spawned task really can get there first. Returning the subscription removes
 /// the window instead of documenting it.
 ///
-/// Callers that spawn [`run_turn`] themselves take the same obligation on:
-/// subscribe before spawning, not after.
+/// Callers that spawn [`run_turn`] themselves take on both obligations:
+/// subscribe before spawning, not after, and supervise the `JoinHandle` (see
+/// [`spawn_supervised`]).
 pub async fn start_turn(
     state: Arc<AppState>,
     request: TurnRequest,
@@ -207,8 +208,51 @@ pub async fn start_turn(
     // Before the spawn, never after it.
     let events = session_events::subscribe(&request.session_id);
 
-    tokio::spawn(run_turn(state, request, turn_guard, cancel_token));
+    let session_id = request.session_id.clone();
+    spawn_supervised(
+        session_id,
+        run_turn(state, request, turn_guard, cancel_token),
+    );
     Ok(StartedTurn { turn_id, events })
+}
+
+/// Spawn a turn and publish a terminal event on its behalf if it dies without
+/// one.
+///
+/// `run_turn` publishes `TurnStarted` before any fallible work, and
+/// `tokio::spawn` captures a panic into a `JoinHandle`. Drop that handle and a
+/// turn that panics anywhere afterwards publishes a start and then nothing,
+/// forever — "one terminal event per turn, always" becomes zero, and every
+/// observer (Task 7's watcher, Task 14's `wait:"final_message"`) blocks on a
+/// frame that never comes.
+///
+/// `/reply` has had this backstop since BR-33: its own supervisor task turns a
+/// `JoinError` into `internal_error` / `TurnErrorScope::Internal`. A *detached*
+/// turn has no handler to do that for it, so the runner carries its own — which
+/// is why this is a named function and not two lines inlined into
+/// [`start_turn`]: a panicking future is the only way to test it.
+///
+/// Only fires on `JoinError`, so a turn that ended cleanly is not given a
+/// second terminal. A turn that panics *after* publishing its own terminal
+/// still gets this one — two frames rather than none, matching `/reply` and the
+/// safer direction for a consumer that is blocked waiting.
+fn spawn_supervised<F>(session_id: String, turn: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(join_error) = tokio::spawn(turn).await {
+            tracing::error!("turn: task terminated unexpectedly: {join_error}");
+            publish_turn_error(
+                &session_id,
+                "The model turn ended unexpectedly. Please retry.".to_string(),
+                "internal_error",
+                TurnErrorScope::Internal,
+                true,
+                None,
+            );
+        }
+    });
 }
 
 /// The turn body. Split out of `start_turn` so Task 8 can also call it with a
@@ -312,7 +356,10 @@ pub async fn run_turn(
     );
 
     // One terminal event per turn, always. Every exit path below publishes
-    // exactly one `TurnError` or one `TurnFinished`, never both and never two.
+    // exactly one `TurnError` or one `TurnFinished`, never both and never two —
+    // and the one exit path that cannot publish anything, a panic, is covered
+    // by `spawn_supervised`, which publishes `internal_error` on the turn's
+    // behalf when the task's `JoinHandle` comes back `Err`.
     //
     // `provider_kind` is a parameter, not a hardcoded `None`: it is one of the
     // three fields the desktop's rate-limit/retry/compaction recovery reads, and
@@ -979,6 +1026,68 @@ mod tests {
             provider_kind.as_deref(),
             Some(ProviderErrorKind::RateLimit.wire_code())
         );
+    }
+
+    /// A turn that dies without publishing a terminal still gets one.
+    ///
+    /// `run_turn` publishes `TurnStarted` before any fallible work, and
+    /// `tokio::spawn` swallows a panic into a `JoinHandle`. Drop that handle
+    /// and a turn that panics anywhere afterwards — in the agent stream, in
+    /// `track_tool_telemetry`, in a `Conversation` op — publishes a start and
+    /// then nothing, forever: the module's "one terminal event per turn,
+    /// always" becomes zero, and every observer (Task 7's watcher, Task 14's
+    /// `wait:"final_message"`) blocks on a frame that will never come.
+    ///
+    /// `/reply` has had exactly this backstop since BR-33 ("Reply task
+    /// terminated unexpectedly" → `internal_error`), but a *detached* turn has
+    /// no handler to supervise it, so the runner has to carry its own.
+    #[tokio::test]
+    async fn a_turn_that_panics_still_publishes_a_terminal_event() {
+        let sid = "br71-supervised-panic";
+        let mut rx = session_events::subscribe(sid);
+
+        spawn_supervised(sid.to_string(), async {
+            panic!("br71: deliberate panic, this backtrace is expected");
+        });
+
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a panicking turn must still be bracketed")
+            .unwrap();
+        let SessionBusEvent::TurnError {
+            code,
+            scope,
+            retryable,
+            ..
+        } = &ev
+        else {
+            panic!("expected a TurnError, got {ev:?}");
+        };
+        assert_eq!(code, "internal_error");
+        assert_eq!(scope, TurnErrorScope::Internal.wire_value());
+        assert!(retryable, "the client may retry a turn that fell over");
+    }
+
+    /// A turn that ends normally must NOT also get the supervisor's terminal —
+    /// otherwise every turn would publish two.
+    #[tokio::test]
+    async fn a_turn_that_ends_cleanly_gets_no_extra_terminal() {
+        let sid = "br71-supervised-clean";
+        let mut rx = session_events::subscribe(sid);
+
+        spawn_supervised(sid.to_string(), async {
+            session_events::publish(
+                "br71-supervised-clean",
+                SessionBusEvent::TurnFinished {
+                    reason: "stop".into(),
+                    token_state: None,
+                },
+            );
+        });
+
+        let seen = drain(&mut rx).await;
+        assert_eq!(seen.len(), 1, "the supervisor must stay quiet: {seen:?}");
+        assert!(matches!(seen[0], SessionBusEvent::TurnFinished { .. }));
     }
 
     /// `start_turn` must hand back a subscription it opened itself, not leave
