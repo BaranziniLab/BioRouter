@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Clipboard } from '../../icons/app-icons';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
@@ -38,24 +38,39 @@ export function IngestPanel() {
   const [savingDefaultModel, setSavingDefaultModel] = useState(false);
   const stopRequestedRef = useRef(false);
 
+  // Only the user's explicit pick lives in state, and it is stamped with the
+  // base it was made for. Everything else is derived below, in this render,
+  // from this render's inputs.
+  //
+  // Mirroring the resolved model into state through an effect instead meant the
+  // panel spent a commit — and every click landing in it — displaying and
+  // dispatching the model belonging to the base or provider the user had just
+  // navigated away from. Worse, when neither base carried its own
+  // `default_model` the effect's dependencies did not change at all on a base
+  // switch, so a model chosen for one base silently became the digest target
+  // for the next one.
+  const [modelOverride, setModelOverride] = useState<{ kbId: string; model: ModelRef } | null>(
+    null
+  );
+
   // The base's own default wins; otherwise fall back to the app's configured
   // model. Never a hardcoded vendor — an unresolvable model leaves this null and
   // digestion stays disabled (issue #46).
-  const [model, setModel] = useState<ModelRef | null>(null);
-  useEffect(() => {
-    setModel(resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel));
-  }, [primaryKb?.default_model, currentProvider, currentModel]);
+  const resolvedModel = resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel);
+  const model =
+    modelOverride && modelOverride.kbId === primaryKbId ? modelOverride.model : resolvedModel;
 
   async function onDefaultModelChange(next: ModelRef) {
-    const previous = model;
-    setModel(next);
     if (!primaryKbId) {
       return;
     }
+    const kbId = primaryKbId;
+    const previousOverride = modelOverride;
+    setModelOverride({ kbId, model: next });
 
     setSavingDefaultModel(true);
     try {
-      const response = await knowledgeFetch(`/knowledge/bases/${primaryKbId}/default-model`, {
+      const response = await knowledgeFetch(`/knowledge/bases/${kbId}/default-model`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: next }),
@@ -69,7 +84,7 @@ export function IngestPanel() {
         msg: `${next.provider} / ${next.model} will digest staged sources and scheduled knowledge jobs.`,
       });
     } catch (err) {
-      setModel(previous);
+      setModelOverride(previousOverride);
       toastError({
         title: 'Could not save knowledge model',
         msg: err instanceof Error ? err.message : String(err),

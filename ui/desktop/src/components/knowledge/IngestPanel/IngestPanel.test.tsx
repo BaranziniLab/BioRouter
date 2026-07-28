@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   knowledge: {
     primaryKbId: 'kb-1' as string | null,
     primaryKb: { id: 'kb-1', name: 'Notes', default_model: null as ModelRef | null },
+    loading: false,
     refresh: vi.fn(),
     triggerGraphRefresh: vi.fn(),
   },
@@ -18,21 +19,47 @@ const mocks = vi.hoisted(() => ({
   start: vi.fn(),
   startMultipart: vi.fn(),
   abort: vi.fn(),
+  knowledgeFetch: vi.fn(),
+  expandKnowledgePath: vi.fn(),
+  config: { getProviders: vi.fn(), getProviderModels: vi.fn() },
+  /** Every `value` the model picker has been rendered with, oldest first. */
+  pickerValues: [] as (ModelRef | null)[],
+  /** The picker's latest `onChange`, so a test can pick a model without a provider list. */
+  pickModel: null as ((next: ModelRef) => void) | null,
 }));
 
 vi.mock('../KnowledgeContext', () => ({
   useKnowledge: () => mocks.knowledge,
 }));
 
+// The real picker still renders — this only records what it was handed on each
+// commit, so a test can assert on the *sequence* of values and not just the
+// settled one. A model that is only wrong for one commit is still a model the
+// user can see and click Digest against.
+vi.mock('./IngestModelPicker', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./IngestModelPicker')>();
+  return {
+    IngestModelPicker: (props: Parameters<typeof actual.IngestModelPicker>[0]) => {
+      mocks.pickerValues.push(props.value);
+      mocks.pickModel = props.onChange;
+      return <actual.IngestModelPicker {...props} />;
+    },
+  };
+});
+
+vi.mock('../hooks/knowledgeRequest', () => ({
+  knowledgeFetch: mocks.knowledgeFetch,
+  expandKnowledgePath: mocks.expandKnowledgePath,
+}));
+
 vi.mock('../../ModelAndProviderContext', () => ({
   useModelAndProvider: () => mocks.modelAndProvider,
 }));
 
+// One stable object: `useConfig()` handing back a fresh one on every call would
+// change the picker's effect dependencies on every render.
 vi.mock('../../ConfigContext', () => ({
-  useConfig: () => ({
-    getProviders: vi.fn().mockResolvedValue([]),
-    getProviderModels: vi.fn().mockResolvedValue([]),
-  }),
+  useConfig: () => mocks.config,
 }));
 
 vi.mock('../../../api/sdk.gen', () => ({
@@ -68,14 +95,24 @@ function stageSomeText() {
   fireEvent.click(screen.getByRole('button', { name: 'Stage' }));
 }
 
+function modelLabels(): string[] {
+  return mocks.pickerValues.map((value) => (value ? `${value.provider} / ${value.model}` : 'none'));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.knowledge.primaryKbId = 'kb-1';
   mocks.knowledge.primaryKb = { id: 'kb-1', name: 'Notes', default_model: null };
+  mocks.knowledge.loading = false;
   mocks.modelAndProvider.currentProvider = null;
   mocks.modelAndProvider.currentModel = null;
   mocks.checkModel.mockResolvedValue({ data: { ok: true } });
   mocks.start.mockResolvedValue({ status: 'done' });
+  mocks.knowledgeFetch.mockResolvedValue({ ok: true, text: async () => '' });
+  mocks.config.getProviders.mockResolvedValue([]);
+  mocks.config.getProviderModels.mockResolvedValue([]);
+  mocks.pickerValues.length = 0;
+  mocks.pickModel = null;
 });
 
 describe('IngestPanel model selection', () => {
@@ -134,5 +171,61 @@ describe('IngestPanel model selection', () => {
     fireEvent.click(digest);
     await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('IngestPanel model freshness', () => {
+  it('never renders the previous base’s model after the primary base changes', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    mocks.knowledge.primaryKb = {
+      id: 'kb-1',
+      name: 'Notes',
+      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+    };
+
+    const { rerender } = render(<IngestPanel />);
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+
+    mocks.pickerValues.length = 0;
+    mocks.knowledge.primaryKbId = 'kb-2';
+    mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };
+    rerender(<IngestPanel />);
+
+    // Not "settles on the right model eventually" — the base that is no longer
+    // primary must never be named once the switch has been committed.
+    expect(modelLabels()).not.toContain('ollama / qwen3.6:latest');
+    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+  });
+
+  it('does not carry a model chosen for one base over to another', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+
+    const { rerender } = render(<IngestPanel />);
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    await waitFor(() => expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24'));
+
+    // Pick a per-base model for kb-1. Neither base has a `default_model` in this
+    // fixture, so nothing the resolver reads changes when the base does — the
+    // choice must be scoped to kb-1 by construction, not by a dependency array.
+    await act(async () => {
+      mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.6:latest' });
+    });
+    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+
+    mocks.knowledge.primaryKbId = 'kb-2';
+    mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };
+    rerender(<IngestPanel />);
+
+    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+
+    stageSomeText();
+    fireEvent.click(screen.getByTestId('knowledge-digest-button'));
+    await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
+    expect(mocks.checkModel).toHaveBeenCalledWith({
+      body: { model: { provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' } },
+    });
   });
 });
