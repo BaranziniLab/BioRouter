@@ -97,14 +97,26 @@ pub struct EditMessageRequest {
     /// Your view of this session: the durable ids (`Message.id`) of every
     /// message it holds, in any order.
     ///
-    /// REQUIRED for `edit`, which truncates the live session: it is how the
-    /// server checks that you are deleting the history you actually saw. Ignored
-    /// for `diverge`, which writes only to a new session and cannot destroy
-    /// anything.
+    /// OPTIONAL, and enforced when you send it. For `edit`, which truncates the
+    /// live session, supplying it is how the server checks that you are deleting
+    /// the history you actually saw: a stored message your list does not name
+    /// landed after you rendered the conversation, and the cut is refused with
+    /// 409 `conversation_out_of_date` rather than destroying it. Omit it and the
+    /// cut still runs under the turn lock and is still bounded to the rows the
+    /// server itself just read — safe, but blind to that wider race. Ignored for
+    /// `diverge`, which writes only to a new session and cannot destroy anything.
+    ///
+    /// An EMPTY list is not the same as omitting the field: it asserts your view
+    /// holds nothing, and is checked as such (so a non-empty session refuses it).
     //
     // The same precondition `/reply`'s `conversation_so_far` carries (#51 W5),
     // reduced to what a truncation needs: ids alone prove the client has seen
     // everything stored, and unlike that field this one supplies no content.
+    //
+    // Optional rather than required because of #59: the reply stream does not
+    // publish the ids messages are persisted under, so a client that watched a
+    // live turn cannot name them and a REQUIRED field would 409 every in-place
+    // edit in every live chat. See `edit_in_place`.
     #[serde(default)]
     expected_message_ids: Option<Vec<String>>,
 }
@@ -149,18 +161,6 @@ fn edit_conflict_response(missing: Vec<String>, stored_message_count: usize) -> 
             "code": "conversation_out_of_date",
             "missing_message_ids": missing,
             "stored_message_count": stored_message_count,
-        })),
-    )
-        .into_response()
-}
-
-fn edit_error_response(status: StatusCode, code: &str, error: &str) -> Response {
-    (
-        status,
-        Json(serde_json::json!({
-            "type": "Error",
-            "error": error,
-            "code": code,
         })),
     )
         .into_response()
@@ -664,11 +664,12 @@ async fn import_session(
 ///
 /// `edit` truncates THIS session in place, dropping every message from
 /// `timestamp` onwards. Because that destroys history a concurrent writer may
-/// already have been told was saved, it must carry `expectedMessageIds` — the
-/// ids of every message your view of the session holds. The cut is refused, with
-/// nothing deleted, if a turn is in flight or if the session holds a message
-/// your view does not name; the 409 body's `missing_message_ids` says which, so
-/// you can re-read the session and retry.
+/// already have been told was saved, the cut is refused — with nothing deleted —
+/// while a turn is in flight, and it never reaches past the rows the server read
+/// when it took the request. You may additionally send `expectedMessageIds`, the
+/// ids of every message your view of the session holds: the cut is then also
+/// refused if the session holds a message your view does not name, and the 409
+/// body's `missing_message_ids` says which, so you can re-read and retry.
 #[utoipa::path(
     post,
     path = "/sessions/{session_id}/edit_message",
@@ -678,11 +679,10 @@ async fn import_session(
     ),
     responses(
         (status = 200, description = "Session prepared for editing - frontend should submit the edited message", body = EditMessageResponse),
-        (status = 400, description = "Bad request - invalid session id, or an `edit` with no \
-                                      `expectedMessageIds` to check the truncation against"),
+        (status = 400, description = "Bad request - invalid session id"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 404, description = "Session or message not found"),
-        (status = 409, description = "A turn is in flight for this session, or \
+        (status = 409, description = "A turn is in flight for this session, or a supplied \
                                       `expectedMessageIds` is missing messages the server holds \
                                       (nothing was deleted; re-read the session and retry)"),
         (status = 500, description = "Internal server error")
@@ -733,15 +733,31 @@ async fn edit_message(
 /// 1. the BR-33 per-session turn lock, so a cut cannot land in a session an
 ///    agent is generating into — `/reply` refuses a second writer with 409 and
 ///    so does this;
-/// 2. the client's view of the conversation (`expected_message_ids`), refused
-///    with 409 + `missing_message_ids` when the store holds a message that view
-///    never saw — the WIDE race, between the client rendering the conversation
-///    and the user clicking edit;
+/// 2. the client's view of the conversation (`expected_message_ids`) **when it
+///    is supplied**, refused with 409 + `missing_message_ids` when the store
+///    holds a message that view never saw — the WIDE race, between the client
+///    rendering the conversation and the user clicking edit;
 /// 3. [`biorouter::session::session_manager::SessionManager::truncate_conversation_bounded`]
 ///    rather than the open-above `truncate_conversation`, so a message landing
 ///    between the check above and the DELETE — the NARROW race, which no
 ///    client-side check can close — is kept rather than destroyed, and a basis
 ///    from a previous incarnation of a recycled session id is refused outright.
+///
+/// Guard 2 is the only one that needs the client's cooperation, and it is
+/// therefore the only optional one. It landed REQUIRED, which was wrong: #59
+/// established that the reply stream never publishes the ids messages are
+/// persisted under, so a client that has watched a live turn cannot name them —
+/// a required field would 409 every in-place edit in every live chat, which is a
+/// regression against the unguarded endpoint this replaced. Sent, it is enforced
+/// exactly as strictly as before; omitted, the cut falls back to guards 1 and 3,
+/// which need nothing from the client and are still strictly more than the
+/// nothing that shipped before this. The gap is logged at `warn`, per cut, so it
+/// shows up in an operator's log and not only in a design document.
+///
+/// An EMPTY `expected_message_ids` is *not* omission: it is a client asserting
+/// its view holds nothing, so it goes down the checked path and a non-empty
+/// session refuses it. Folding the two together would hand every client a
+/// one-token opt-out of guard 2 and quietly delete the check.
 async fn edit_in_place(
     state: &Arc<AppState>,
     session_id: &str,
@@ -779,22 +795,11 @@ async fn edit_in_place(
         }
     };
 
-    // (2) An `edit` with no view of the conversation is a cut the server cannot
-    // check. Refusing is the whole point of NF-D: the unverifiable case is
-    // exactly the one that silently deleted acknowledged messages.
-    let Some(client_view) = request.expected_message_ids.as_deref() else {
-        return edit_error_response(
-            StatusCode::BAD_REQUEST,
-            "expected_message_ids_required",
-            "An `edit` deletes a tail of this live session, so it must carry \
-             `expectedMessageIds` — the ids of every message your view holds. Use `diverge` to \
-             branch instead of truncating.",
-        );
-    };
-
     // Revision first, then conversation (see `snapshot_for_rewrite`): a message
     // landing between the two reads is then inside the snapshot rather than
-    // looking foreign.
+    // looking foreign. Taken before the client-view check because `basis` bounds
+    // the cut in BOTH cases — it is the server's own view, and the fallback when
+    // there is no client one.
     let (session, basis) = match state
         .session_manager()
         .snapshot_for_rewrite(session_id)
@@ -813,21 +818,38 @@ async fn edit_in_place(
     };
     let stored = session.conversation.unwrap_or_default();
 
-    // (3) The wide race: anything stored the client never saw would be deleted
-    // by a cut it planned without knowing about it.
-    let missing = unacknowledged_stored_ids(stored.messages(), client_view);
-    if !missing.is_empty() {
-        tracing::warn!(
-            "Refused an in-place edit of session {}: {} stored message(s) the client's view does \
-             not contain",
-            session_id,
-            missing.len()
-        );
-        return edit_conflict_response(missing, stored.messages().len());
+    // (2) The wide race: anything stored the client never saw would be deleted
+    // by a cut it planned without knowing about it. Checkable only against a
+    // view the client supplied; `Some(&[])` is such a view (it claims to hold
+    // nothing) and is checked, `None` is the absence of one.
+    match request.expected_message_ids.as_deref() {
+        Some(client_view) => {
+            let missing = unacknowledged_stored_ids(stored.messages(), client_view);
+            if !missing.is_empty() {
+                tracing::warn!(
+                    "Refused an in-place edit of session {}: {} stored message(s) the client's \
+                     view does not contain",
+                    session_id,
+                    missing.len()
+                );
+                return edit_conflict_response(missing, stored.messages().len());
+            }
+        }
+        None => {
+            tracing::warn!(
+                "In-place edit of session {} carries no `expectedMessageIds`, so the wide race \
+                 (a message appended between the client rendering the conversation and this \
+                 request) is unchecked; the cut is still under the turn lock and bounded to the \
+                 {} message(s) the server just read. See issue #59 — the reply stream does not \
+                 publish the ids messages are persisted under, so clients cannot yet supply one.",
+                session_id,
+                stored.messages().len()
+            );
+        }
     }
 
-    // (4) The narrow race: `basis` bounds the delete to the rows this check
-    // actually saw, inside the truncation's own transaction.
+    // (3) The narrow race: `basis` bounds the delete to the rows this handler
+    // actually read, inside the truncation's own transaction.
     match state
         .session_manager()
         .truncate_conversation_bounded(session_id, request.timestamp, basis)
@@ -1545,12 +1567,17 @@ mod edit_message_tests {
             .unwrap();
     }
 
-    /// An `Edit` that supplies no view at all cannot be checked, so the
-    /// destructive path refuses it rather than falling back to the open-above
-    /// cut it was hardened against.
+    /// An `Edit` that supplies no view is NOT refused. The field landed
+    /// required, and #59 proved no client can satisfy it — the reply stream
+    /// never publishes the ids messages are persisted under — so requiring it
+    /// broke "Edit in Place" in every live chat, which is a regression against
+    /// the unguarded endpoint it replaced. Omitting it now falls back to the two
+    /// guards that need nothing from the client: the turn lock (covered by
+    /// `edit_without_an_expected_view_still_refuses_while_a_turn_is_in_flight`)
+    /// and the bounded cut against the server's own snapshot.
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn edit_without_an_expected_view_is_refused() {
+    async fn edit_without_an_expected_view_still_cuts() {
         let state = AppState::new().await.unwrap();
         let (session_id, _) = seeded_session(&state, "/tmp/edit_route_unchecked").await;
 
@@ -1563,15 +1590,137 @@ mod edit_message_tests {
 
         assert_eq!(
             status,
-            axum::http::StatusCode::BAD_REQUEST,
-            "an unverifiable truncation must not proceed; got {body}"
+            axum::http::StatusCode::OK,
+            "an edit with no client view must proceed under the remaining guards; got {body}"
         );
-        assert_eq!(body["code"], "expected_message_ids_required");
+        assert_eq!(body["sessionId"], serde_json::json!(session_id));
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            1,
+            "the tail from 1010 onwards is cut"
+        );
+        assert!(
+            !state.is_turn_active(&session_id),
+            "the edit must release the turn lock it took"
+        );
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// `null` is how a JSON client spells "not sending this", so it must land on
+    /// the same fallback as omitting the key entirely — not on the checked path
+    /// with an empty view.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_with_a_null_expected_view_is_the_same_as_omitting_it() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, _) = seeded_session(&state, "/tmp/edit_route_null_view").await;
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                "expectedMessageIds": serde_json::Value::Null,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        assert_eq!(message_count(&state, &session_id).await, 1);
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// THE EMPTY-VS-ABSENT DECISION. `[]` is a client asserting its view holds
+    /// NOTHING — a claim, not the absence of one — so it goes down the checked
+    /// path and a session with messages refuses it, naming every one of them.
+    /// Folding `[]` into "absent" would hand any caller a one-token opt-out of
+    /// the client-view guard, which would delete the guard rather than make it
+    /// optional.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_with_an_empty_expected_view_is_checked_not_waived() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, ids) = seeded_session(&state, "/tmp/edit_route_empty_view").await;
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                "expectedMessageIds": [],
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "an empty view of a non-empty session is a stale view; got {body}"
+        );
+        assert_eq!(body["code"], "conversation_out_of_date");
+        assert_eq!(
+            body["missing_message_ids"],
+            serde_json::json!(ids),
+            "every stored message is one the view does not name"
+        );
         assert_eq!(
             message_count(&state, &session_id).await,
             3,
             "a refused edit must write nothing"
         );
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// The fallback is a fallback, not a bypass: dropping the client view does
+    /// not drop the turn lock, which is the guard that stops a cut landing in a
+    /// session an agent is generating into.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_without_an_expected_view_still_refuses_while_a_turn_is_in_flight() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, _) = seeded_session(&state, "/tmp/edit_route_unchecked_live").await;
+
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), None)
+            .expect("no turn should be running for a session we just created");
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({ "timestamp": 1_010, "editType": "edit" }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "a live turn must block an unchecked cut too; got {body}"
+        );
+        assert_eq!(body["code"], "turn_in_flight");
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            3,
+            "a refused edit must write nothing"
+        );
+
+        drop(guard);
 
         state
             .session_manager()
@@ -1679,8 +1828,13 @@ mod edit_message_tests {
         manager.delete_session(&session_id).await.unwrap();
     }
 
-    /// The new field is optional on the wire (so `Diverge` bodies stay valid)
-    /// and camelCase, matching every other request type in this module.
+    /// The field is optional on the wire (so `Diverge` bodies stay valid, and so
+    /// an `Edit` from a client that cannot name its view still parses) and
+    /// camelCase, matching every other request type in this module.
+    ///
+    /// The three states must stay distinct at the type level, because the
+    /// handler treats `Some([])` (a view that holds nothing — checked) and
+    /// `None` (no view — unchecked) differently.
     #[test]
     fn expected_message_ids_deserializes_from_camel_case() {
         let request: EditMessageRequest = serde_json::from_value(serde_json::json!({
@@ -1697,5 +1851,24 @@ mod edit_message_tests {
         let absent: EditMessageRequest =
             serde_json::from_value(serde_json::json!({ "timestamp": 1 })).unwrap();
         assert!(absent.expected_message_ids.is_none());
+
+        // An empty list is a view, not the absence of one: it must survive
+        // deserialization as `Some([])` so the handler can check it.
+        let empty: EditMessageRequest = serde_json::from_value(serde_json::json!({
+            "timestamp": 1,
+            "editType": "edit",
+            "expectedMessageIds": [],
+        }))
+        .unwrap();
+        assert_eq!(empty.expected_message_ids.as_deref(), Some([].as_slice()));
+
+        // ... and an explicit `null` is the absence of one, like omitting it.
+        let null: EditMessageRequest = serde_json::from_value(serde_json::json!({
+            "timestamp": 1,
+            "editType": "edit",
+            "expectedMessageIds": serde_json::Value::Null,
+        }))
+        .unwrap();
+        assert!(null.expected_message_ids.is_none());
     }
 }
