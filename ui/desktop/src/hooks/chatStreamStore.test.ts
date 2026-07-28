@@ -794,13 +794,19 @@ describe('ChatStreamRegistry', () => {
     });
   });
 
-  // #59: a message we were streamed carries `id: null` — the reply loop yields
-  // it before persisting it and never publishes the id it was persisted under.
-  // A list built from that transcript is missing exactly those ids, so sending
-  // it would assert a view we do not have and buy a guaranteed 409 on a session
-  // nobody else has touched. Omit the field instead and let the server fall back
-  // to its turn lock and its bounded cut. THIS is what keeps "Edit in Place"
-  // working in a live chat; if it regresses, the button dies again.
+  // #59: a message we hold can still carry `id: null` — a cached transcript, a
+  // frame from before the loop stamped ids on the copies it yields. A list built
+  // from it is missing exactly those ids, so sending it would assert a view we
+  // do not have and buy a guaranteed 409 on a session nobody else has touched.
+  // Omit the field instead and let the server fall back to its turn lock and its
+  // bounded cut. THIS is what keeps "Edit in Place" working in a live chat; if it
+  // regresses, the button dies again.
+  //
+  // This is the second half of the guard and it is independently necessary. The
+  // first half is `viewNamesEveryStoredRow` (below): the stream DOES publish the
+  // ids a turn persisted now (`MessagesPersisted`), but this client does not
+  // consume that frame, so naming every message we hold still does not mean we
+  // hold every row the store has.
   it('omits its view when a message it holds has no id to name it by', async () => {
     const registry = new ChatStreamRegistry();
     const sessionId = 'edit-in-place-unnamed';
