@@ -395,6 +395,12 @@ async fn harness(build: impl FnOnce(RaceProvider) -> RaceProvider) -> (Harness, 
 
 impl Harness {
     async fn run_turn(&self, prompt: &str) -> Result<Vec<AgentEvent>> {
+        self.run_turn_with(Message::user().with_text(prompt)).await
+    }
+
+    /// The same turn, for a prompt that is not plain text — an elicitation
+    /// answer, say, which `reply()` handles before it reaches the loop at all.
+    async fn run_turn_with(&self, message: Message) -> Result<Vec<AgentEvent>> {
         let session_config = SessionConfig {
             id: self.session_id.clone(),
             schedule_id: None,
@@ -404,10 +410,7 @@ impl Harness {
             budget: None,
             reasoning_effort: None,
         };
-        let stream = self
-            .agent
-            .reply(Message::user().with_text(prompt), session_config, None)
-            .await?;
+        let stream = self.agent.reply(message, session_config, None).await?;
         tokio::pin!(stream);
         let mut out = Vec::new();
         while let Some(ev) = stream.next().await {
@@ -2368,6 +2371,41 @@ async fn a_slash_command_hands_over_its_messages_before_it_names_them() {
          {early:#?}\nevents: {:#?}",
         early.len(),
         event_shapes(&events)
+    );
+}
+
+/// #59 ordering at the second batch `reply()` can return instead of running the
+/// loop: an elicitation answer with nowhere to go.
+///
+/// BR-41 — a daemon restart between the elicitation and the reply leaves no live
+/// request for the answer, so the turn ends immediately: the prompt is stored and
+/// an "it was interrupted" notice is streamed. The stored row is never yielded as
+/// a `Message` here, so this batch could not corrupt a client's id set the way
+/// the slash-command one could. It is ordered the same way regardless, because a
+/// rule carrying a per-site exemption ("this one's trailing frame happens not to
+/// be persisted") is the reasoning that produced the defect above.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undeliverable_elicitation_answer_is_ordered_the_same_way() {
+    let (h, _provider) = harness(|p| p).await;
+
+    // Nothing ever elicited, so no live request is waiting on this id — the
+    // post-restart state exactly.
+    let events = h
+        .run_turn_with(Message::user().with_content(
+            MessageContent::action_required_elicitation_response(
+                "no-such-elicitation",
+                serde_json::json!({ "answer": "yes" }),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        event_shapes(&events),
+        vec!["Message(assistant)", "MessagesPersisted[1]"],
+        "content first, then the accounting frame — the same order every batch \
+         uses, so the rule can be checked by reading rather than by re-deriving \
+         which rows happen to be yielded at each site"
     );
 }
 
