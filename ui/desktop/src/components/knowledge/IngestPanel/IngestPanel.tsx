@@ -3,6 +3,7 @@ import { Clipboard } from '../../icons/app-icons';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { toastError, toastSuccess } from '../../../toasts';
+import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
@@ -16,8 +17,7 @@ import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
 import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
-
-const FALLBACK_MODEL: ModelRef = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
+import { resolveIngestModel } from './resolveIngestModel';
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
@@ -25,6 +25,9 @@ function genId(): string {
 
 export function IngestPanel() {
   const { primaryKbId, primaryKb, refresh, triggerGraphRefresh } = useKnowledge();
+  // The provider/model the app is configured with — the same pair the chat
+  // composer's model selector shows.
+  const { currentProvider, currentModel } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
@@ -35,10 +38,13 @@ export function IngestPanel() {
   const [savingDefaultModel, setSavingDefaultModel] = useState(false);
   const stopRequestedRef = useRef(false);
 
-  const [model, setModel] = useState<ModelRef>(FALLBACK_MODEL);
+  // The base's own default wins; otherwise fall back to the app's configured
+  // model. Never a hardcoded vendor — an unresolvable model leaves this null and
+  // digestion stays disabled (issue #46).
+  const [model, setModel] = useState<ModelRef | null>(null);
   useEffect(() => {
-    setModel(primaryKb?.default_model ?? FALLBACK_MODEL);
-  }, [primaryKb?.default_model]);
+    setModel(resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel));
+  }, [primaryKb?.default_model, currentProvider, currentModel]);
 
   async function onDefaultModelChange(next: ModelRef) {
     const previous = model;
@@ -169,7 +175,7 @@ export function IngestPanel() {
   }
 
   async function onDigest() {
-    if (!primaryKbId || digestState !== 'idle') return;
+    if (!primaryKbId || !model || digestState !== 'idle') return;
     stopRequestedRef.current = false;
     setDigestState('checking');
     const queue = [...items];
@@ -330,7 +336,14 @@ export function IngestPanel() {
   // K-04: the one primary action stays full-opacity even with nothing staged,
   // guarded by a cursor + helper line, so it never trains the eye to ignore a
   // permanently half-lit button.
-  const nothingToDigest = !primaryKbId || items.length === 0;
+  const nothingToDigest = !primaryKbId || !model || items.length === 0;
+  const digestBlockedReason = !primaryKbId
+    ? 'Choose or create a primary knowledge base above to enable digestion.'
+    : !model
+      ? 'No model is configured. Choose a model above to enable digestion.'
+      : items.length === 0
+        ? 'Stage a file to digest.'
+        : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -399,12 +412,8 @@ export function IngestPanel() {
         >
           {digestLabel}
         </Button>
-        {nothingToDigest && !busy && (
-          <p className="text-center text-[11px] text-text-muted">
-            {primaryKbId
-              ? 'Stage a file to digest.'
-              : 'Choose or create a primary knowledge base above to enable digestion.'}
-          </p>
+        {digestBlockedReason && !busy && (
+          <p className="text-center text-[11px] text-text-muted">{digestBlockedReason}</p>
         )}
       </div>
     </div>

@@ -18,7 +18,8 @@ import {
 } from '../../settings/providers/providerOrdering';
 
 interface Props {
-  value: ModelRef;
+  /** `null` when no model could be resolved — the trigger says so instead of naming a vendor. */
+  value: ModelRef | null;
   onChange: (v: ModelRef) => void;
   disabled?: boolean;
   saving?: boolean;
@@ -88,14 +89,23 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
   }, [getProviderModels, getProviders]);
 
   const hasModels = sections.length > 0;
-  const currentProviderLabel = providerDisplayNames[value.provider] ?? value.provider;
+  const currentProviderLabel = value
+    ? (providerDisplayNames[value.provider] ?? value.provider)
+    : '';
   const selectedProvider = useMemo(
     () =>
-      sections
-        .flatMap((section) => section.providers)
-        .find((provider) => provider.name === value.provider) ?? null,
-    [sections, value.provider]
+      value
+        ? (sections
+            .flatMap((section) => section.providers)
+            .find((provider) => provider.name === value.provider) ?? null)
+        : null,
+    [sections, value]
   );
+  const triggerLabel = !value
+    ? 'No model configured'
+    : selectedProvider
+      ? `${currentProviderLabel} / ${value.model}`
+      : `${value.provider} / ${value.model}`;
 
   function renderProvider(provider: ProviderDetails, section: ProviderModelsSection) {
     const models = section.modelsByProvider[provider.name] ?? [];
@@ -110,7 +120,7 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
         </div>
         <div className="space-y-0.5">
           {models.map((model) => {
-            const selected = value.provider === provider.name && value.model === model;
+            const selected = value?.provider === provider.name && value.model === model;
             return (
               <button
                 key={`${provider.name}:${model}`}
@@ -153,10 +163,10 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
           <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-text-muted">
             Model
           </span>
-          <span className="min-w-0 truncate text-xs font-medium text-text-default">
-            {selectedProvider
-              ? `${currentProviderLabel} / ${value.model}`
-              : `${value.provider} / ${value.model}`}
+          <span
+            className={`min-w-0 truncate text-xs font-medium ${value ? 'text-text-default' : 'text-text-muted'}`}
+          >
+            {triggerLabel}
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 rounded-sm bg-background-medium px-2 py-1 text-[11px] font-medium text-text-muted">
