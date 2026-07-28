@@ -15,6 +15,20 @@
 //! that started the turn and an observer that did not see byte-identical
 //! frames. That equality is the design's actual goal, and it is now structural
 //! rather than maintained by hand across two loops.
+//!
+//! **With one exception, and Task 7 should know about it before it starts.**
+//! The bus carries no per-frame token state. `/reply` seeds a running
+//! `TokenState` from the session (`TokenState::from(&session)`), folds every
+//! `AgentEvent::TokenUsage` into it, and attaches a clone to every `Message`,
+//! `UpdateConversation` and `Finish` frame it emits — `MessageEvent` has no
+//! `TokenUsage` variant at all, so that fold is the only way the value reaches
+//! a client. This runner does not fold: it republishes `TokenUsage` raw, like
+//! every other `AgentEvent`, because reordering or rewriting frames here is
+//! forbidden for the reasons in [`run_turn`]'s stated non-goal 2. A bus
+//! consumer therefore has to do the accumulation itself, *and* seed it from the
+//! store when it attaches mid-turn. For `token_state` specifically the
+//! equality above is still maintained by hand — just in one mapper instead of
+//! two loops.
 
 use std::sync::Arc;
 
@@ -315,12 +329,19 @@ pub async fn run_turn(
     // Defer scheduled background jobs while a turn is in flight.
     let _interactive_turn = biorouter::scheduler::interactive_turn_guard();
 
-    // Reclaim this session's 1024-slot broadcast ring once its consumers are
-    // gone. `broadcast::channel` allocates the whole ring at creation
-    // (`Sender::new_with_receiver_count`), so an insert-and-never-remove map is
-    // a real leak on a daemon that publishes for every turn of every session and
-    // stays up for days. RAII, so every `return` below is covered — there are
-    // several of them and enumerating them by hand is how one gets missed.
+    // Belt-and-braces sweep of this session's broadcast ring, which
+    // `broadcast::channel` allocates in full (1024 slots) at creation.
+    //
+    // Read the comment this replaces carefully if you are tempted to lean on
+    // this guard: it claimed the registry was an insert-and-never-remove map
+    // and that this sweep was what stopped the leak. That has not been true
+    // since `publish` became a pure lookup that never inserts and
+    // `Subscription::drop` took ownership of the reclaim — every ring in the
+    // registry now belongs to some observer, and the last observer to leave
+    // frees it. `session_events::release_if_idle` is still public *for* this
+    // call and says so, so the sweep stays; but it is a second line of defence,
+    // not the mechanism, and a reader who believes otherwise will draw the
+    // wrong conclusion about who owns a ring.
     struct BusRelease(String);
     impl Drop for BusRelease {
         fn drop(&mut self) {
