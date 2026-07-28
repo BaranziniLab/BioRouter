@@ -18,6 +18,7 @@ export function BottomMenuKnowledgeSelection() {
     bases,
     visibleBases,
     hiddenKbIds,
+    setHiddenKbIds,
     toggleKbHidden,
     hideAllKnowledgeBases,
     showAllKnowledgeBases,
@@ -49,10 +50,16 @@ export function BottomMenuKnowledgeSelection() {
       return;
     }
 
-    filteredBases.forEach((base) => {
-      const visible = !hiddenKbIds.includes(base.id);
-      if (visible !== targetVisible) toggleKbHidden(base.id);
-    });
+    // One complete set, one write. Toggling id by id looks equivalent but is
+    // not: every `toggleKbHidden` derives its next set from the same captured
+    // `hiddenKbIds`, so each call overwrites the one before it and only the last
+    // base in the filter actually changes — and each is its own daemon
+    // round-trip. Bases the search did not match keep whatever they had.
+    const filteredIds = new Set(filteredBases.map((base) => base.id));
+    const nextHidden = targetVisible
+      ? hiddenKbIds.filter((id) => !filteredIds.has(id))
+      : [...hiddenKbIds, ...filteredIds];
+    setHiddenKbIds(nextHidden);
   };
 
   return (
