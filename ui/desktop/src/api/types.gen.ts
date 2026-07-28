@@ -1594,7 +1594,9 @@ export type SessionsQuery = {
 
 export type SetActiveBody = {
     /**
-     * Forget the primary. Wins over `primary_kb`.
+     * Forget the primary *at this scope*: the session then has no primary
+     * even while the machine-wide default names a base. Mutually exclusive
+     * with `primary_kb` and `inherit_primary`.
      */
     clear_primary?: boolean;
     /**
@@ -1603,6 +1605,16 @@ export type SetActiveBody = {
      * not a request to inherit the machine-wide list.
      */
     hidden_kbs?: Array<string> | null;
+    /**
+     * Drop this session's own primary override so it follows the machine-wide
+     * default again — the way back from `clear_primary`, and the only way out
+     * of the explicit "no primary" that deleting a session's pinned base
+     * leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
+     *
+     * At machine scope there is nothing above to inherit, so this coincides
+     * with `clear_primary`.
+     */
+    inherit_primary?: boolean;
     /**
      * Deprecated alias for `primary_kb`, kept for one release so a stale
      * renderer bundle talking to a fresh daemon keeps working. Follows the
@@ -3405,7 +3417,7 @@ export type SetActiveData = {
 
 export type SetActiveErrors = {
     /**
-     * Unknown kb id, or a primary outside the resulting set
+     * Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields
      */
     400: unknown;
 };

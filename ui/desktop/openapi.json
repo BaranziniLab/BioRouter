@@ -1551,7 +1551,7 @@
             }
           },
           "400": {
-            "description": "Unknown kb id, or a primary outside the resulting set"
+            "description": "Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields"
           }
         }
       }
@@ -8682,7 +8682,7 @@
         "properties": {
           "clear_primary": {
             "type": "boolean",
-            "description": "Forget the primary. Wins over `primary_kb`."
+            "description": "Forget the primary *at this scope*: the session then has no primary\neven while the machine-wide default names a base. Mutually exclusive\nwith `primary_kb` and `inherit_primary`."
           },
           "hidden_kbs": {
             "type": "array",
@@ -8691,6 +8691,10 @@
             },
             "description": "Replace this scope's hidden list — i.e. redefine the session's set.\nOmit to leave the set alone. `[]` is an explicit \"hide nothing here\",\nnot a request to inherit the machine-wide list.",
             "nullable": true
+          },
+          "inherit_primary": {
+            "type": "boolean",
+            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again — the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
           },
           "kb_id": {
             "type": "string",
