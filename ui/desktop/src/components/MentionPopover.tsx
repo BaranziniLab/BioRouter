@@ -75,6 +75,33 @@ const isKnownBuiltInExtension = (name: string) => {
   );
 };
 
+/**
+ * The `/ext:` token to insert for an extension named `name` (issue #60).
+ *
+ * The backend extracts inline markers with `extract_inline_refs`, which splits
+ * the message on whitespace — so `/ext:Chat Recall` reaches the resolver as
+ * `Chat`, matches nothing, and the agent reports "not a known built-in
+ * extension", which reads exactly like a policy refusal. Two bundled extensions
+ * are registered under a display string with a space (`Extension Manager`,
+ * `Chat Recall`), and any user extension may have one.
+ *
+ * Dropping *only* the whitespace is lossless: an extension's canonical key is
+ * `config::extensions::name_to_key`, i.e. the name with whitespace removed and
+ * lowercased, and both `/ext:` consumers already discard it —
+ * `resolve_bundled_extension` filters the reference down to alphanumerics, and
+ * `Agent::extension_resource_context` falls back to `normalize`, which strips
+ * whitespace. So `/ext:ChatRecall` and a hypothetical untruncated
+ * `/ext:Chat Recall` resolve to the identical extension, for bundled and user
+ * extensions alike.
+ *
+ * Nothing else may be collapsed. `_` and `-` are *kept* by `normalize`, so they
+ * are part of a user extension's key: mapping them away — the tempting
+ * "normalise to an id" fix — would turn `/ext:my_tool` into `/ext:mytool`,
+ * which no longer matches the enabled extension stored under `my_tool` and
+ * breaks the by-name match user extensions rely on today.
+ */
+const extensionMarkerName = (name: string) => name.replace(/\s+/g, '');
+
 const referenceInsert = (item: DisplayItem) => {
   switch (item.itemType) {
     case 'KnowledgeBase':
@@ -82,7 +109,7 @@ const referenceInsert = (item: DisplayItem) => {
     case 'Skill':
       return `/skill:${item.relativePath} `;
     case 'Extension':
-      return `/ext:${item.relativePath} `;
+      return `/ext:${extensionMarkerName(item.relativePath)} `;
     default:
       return null;
   }
