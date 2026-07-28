@@ -1006,6 +1006,13 @@ export type MessageMetadata = {
      */
     agentVisible: boolean;
     /**
+     * #51: carry this message verbatim through every compaction instead of
+     * dissolving it into a summary. Never dropped by summarization — but still
+     * subject to the overall context budget, which trims the oldest pins first
+     * and reports it. Defaults to false.
+     */
+    pinned?: boolean;
+    /**
      * Whether the message should be visible to the user in the UI
      */
     userVisible: boolean;

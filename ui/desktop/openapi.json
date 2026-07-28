@@ -7169,6 +7169,10 @@
             "type": "boolean",
             "description": "Whether the message should be included in the agent's context window"
           },
+          "pinned": {
+            "type": "boolean",
+            "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
+          },
           "userVisible": {
             "type": "boolean",
             "description": "Whether the message should be visible to the user in the UI"

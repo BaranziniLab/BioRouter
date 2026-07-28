@@ -540,37 +540,39 @@ pub struct MessageMetadata {
     pub user_visible: bool,
     /// Whether the message should be included in the agent's context window
     pub agent_visible: bool,
-    /// #51: the PRESERVATION MARKER — "carry this message verbatim through every
-    /// compaction; never dissolve it into a summary".
-    ///
-    /// Compaction keeps only the last `keep_last_turns` turns verbatim and
-    /// summarizes the older prefix, so an ordinary message that falls out of that
-    /// window stops reaching the model. A pinned message is exempt from
-    /// summarization on every compaction path (see
-    /// [`crate::context_mgmt`]): the older prefix around it is summarized and
-    /// hidden, and it stays where it is, agent-visible.
-    ///
-    /// It is NOT exempt from the overall context budget. A pinned set that
-    /// cannot fit is trimmed OLDEST-FIRST and the eviction is reported — see
-    /// `BIOROUTER_MAX_PINNED_MESSAGES` / `BIOROUTER_MAX_PINNED_CONTEXT_SHARE`.
-    /// So the guarantee is "never dropped by summarization", not "never dropped".
-    ///
-    /// A pin is only honoured on a message that carries no tool request/response
-    /// content: relocating or exempting half of a tool pair would hand the
-    /// provider an invalid request. Pins are for standalone messages — which is
-    /// exactly the shape of the first consumer.
-    ///
-    /// **Nothing sets this yet, deliberately.** BR-71's
-    /// `workspace_send_prompt { mode: "note" }` (issue #30) is the first
-    /// consumer: it appends a note to another session's conversation and must be
-    /// able to promise the note reaches the model wherever the conversation has
-    /// got to. When that lands it attaches here, via [`Message::pinned`].
-    ///
-    /// `#[serde(default)]` is load-bearing: `metadata_json` rows written before
-    /// this field existed omit it, and the read path decodes with
-    /// `from_str(..).ok().unwrap_or_default()` — without the default, every
-    /// pre-existing message would fail to decode and silently reset to fully
-    /// default metadata, losing its `user_visible` / `agent_visible` state.
+    /// #51: carry this message verbatim through every compaction instead of
+    /// dissolving it into a summary. Never dropped by summarization — but still
+    /// subject to the overall context budget, which trims the oldest pins first
+    /// and reports it. Defaults to false.
+    //
+    // The long form, deliberately NOT a doc comment so it stays out of the
+    // OpenAPI schema and the generated TypeScript:
+    //
+    // Compaction keeps only the last `keep_last_turns` turns verbatim and
+    // summarizes the older prefix, so an ordinary message that falls out of
+    // that window stops reaching the model. A pinned message is exempt from
+    // summarization on every compaction path (`crate::context_mgmt`): the
+    // older prefix around it is summarized and hidden, and it stays where it
+    // is, agent-visible. See `crate::context_mgmt::pins` for the budget
+    // (`BIOROUTER_MAX_PINNED_MESSAGES` / `BIOROUTER_MAX_PINNED_CONTEXT_SHARE`),
+    // the oldest-first eviction order, and how an eviction is reported.
+    //
+    // A pin is only honoured on a message carrying no tool request/response
+    // content: exempting half of a tool pair from a summarization that hides
+    // the other half hands the provider an invalid request. Pins are for
+    // standalone messages — exactly the shape of the first consumer.
+    //
+    // NOTHING SETS THIS YET, deliberately. BR-71's
+    // `workspace_send_prompt { mode: "note" }` (issue #30) is the first
+    // consumer: it appends a note to another session's conversation and must
+    // be able to promise the note reaches the model wherever that conversation
+    // has got to. When it lands it attaches via `Message::pinned`.
+    //
+    // `#[serde(default)]` is load-bearing: `metadata_json` rows written before
+    // this field existed omit it, and the read path decodes with
+    // `from_str(..).ok().unwrap_or_default()` — without the default every
+    // pre-existing message would fail to decode and silently reset to fully
+    // default metadata, losing its `user_visible` / `agent_visible` state.
     #[serde(default)]
     pub pinned: bool,
 }
