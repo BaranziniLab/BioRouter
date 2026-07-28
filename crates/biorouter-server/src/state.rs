@@ -68,6 +68,18 @@ impl TurnGuard {
     pub fn turn_id(&self) -> &str {
         &self.turn_id
     }
+
+    /// The session this guard locked.
+    ///
+    /// BR-71's `run_turn` takes the request and the guard as separate
+    /// arguments, and both Task 8 and Task 14 acquire the guard themselves
+    /// before calling it — so without this there is nothing stopping
+    /// `run_turn(state, request_for_B, guard_for_A)` from compiling, running an
+    /// unguarded turn on B while holding A's lock. The runner `debug_assert`s
+    /// on it.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
 }
 
 impl Drop for TurnGuard {
@@ -421,6 +433,22 @@ mod tests {
             .try_begin_turn_idempotent("tg-id-test", CancellationToken::new(), None)
             .unwrap();
         assert!(guard.turn_id().starts_with("turn-"));
+    }
+
+    /// A guard must also say WHICH session it locked.
+    ///
+    /// BR-71's runner takes a `TurnRequest` and a `TurnGuard` as separate
+    /// arguments, and Tasks 8 and 14 both acquire the guard themselves before
+    /// calling `run_turn`. Without an accessor there is nothing — not a type,
+    /// not an assertion — stopping `run_turn(state, request_for_B, guard_for_A)`
+    /// from compiling and running an unguarded turn on B while holding A's lock.
+    #[tokio::test]
+    async fn turn_guard_exposes_the_session_it_locked() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("tg-session-test", CancellationToken::new(), None)
+            .unwrap();
+        assert_eq!(guard.session_id(), "tg-session-test");
     }
 
     /// A guard may only ever clear its own turn. If a guard outlived its slot and

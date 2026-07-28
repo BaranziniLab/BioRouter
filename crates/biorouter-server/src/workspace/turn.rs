@@ -296,6 +296,18 @@ pub async fn run_turn(
     } = request;
     let turn_started = std::time::Instant::now();
 
+    // The guard must be the one taken for THIS session. `run_turn` receives the
+    // request and the guard as separate arguments and Tasks 8 and 14 both
+    // acquire the guard themselves, so a mismatch is a plain argument mix-up
+    // that would otherwise run an unguarded turn on one session while holding
+    // another's lock. Nothing recovers from that at runtime, so it is a
+    // `debug_assert`: caught in tests and in dev builds, free in release.
+    debug_assert_eq!(
+        turn_guard.session_id(),
+        session_id,
+        "run_turn was handed another session's turn guard"
+    );
+
     // Holds the per-session turn lock for the turn's lifetime; dropped
     // (releasing the session) when this future ends — the same RAII discipline
     // the pre-BR-71 /reply task used.
