@@ -64,6 +64,8 @@ function heatStyle(m: HeatMetrics): React.CSSProperties {
     '--heat-labels': `${m.labels}px`,
     '--heat-day-font': `${m.cell >= 12 ? 10 : m.cell >= 9 ? 9 : 8}px`,
     '--heat-month-font': `${m.cell >= 12 ? 11 : 10}px`,
+    // A fixed 5px radius turns small cells into circles; keep them squares.
+    '--heat-radius': `${m.cell >= 15 ? 5 : m.cell >= 11 ? 4 : 2}px`,
   } as React.CSSProperties;
 }
 
@@ -306,7 +308,7 @@ export function UsageHeatmapLoading() {
                 <i
                   key={index}
                   data-testid="heatmap-loading-cell"
-                  className="biorouter-heatmap-loading-cell block h-[var(--heat-cell)] w-[var(--heat-cell)] rounded-[5px] bg-heat-0"
+                  className="biorouter-heatmap-loading-cell block h-[var(--heat-cell)] w-[var(--heat-cell)] rounded-[var(--heat-radius,5px)] bg-heat-0"
                   style={{ animationDelay: `${-((column * 70 + row * 25) % 1400)}ms` }}
                 />
               );
@@ -427,7 +429,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
                   : `${cell.key}: no activity`
               }
               className={[
-                'relative h-[var(--heat-cell)] w-[var(--heat-cell)] appearance-none rounded-[5px] border-0 p-0',
+                'relative h-[var(--heat-cell)] w-[var(--heat-cell)] appearance-none rounded-[var(--heat-radius,5px)] border-0 p-0',
                 // hover:z-10 lifts the grown cell above its neighbors so scaling
                 // up doesn't get clipped by later-painted cells.
                 'transition-transform duration-[var(--motion-fast)] hover:z-10 hover:scale-110',

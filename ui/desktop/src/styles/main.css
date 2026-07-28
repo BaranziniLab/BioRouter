@@ -1575,7 +1575,8 @@
 
 @container biorouter-home-content (max-height: 560px) {
   .biorouter-home-hero {
-    padding-top: 28px;
+    /* Keep clear of the floating titlebar/sidebar controls at top-left. */
+    padding-top: 44px;
     padding-bottom: 12px;
   }
 }
@@ -1583,6 +1584,12 @@
 @container biorouter-home-content (max-height: 340px) {
   .biorouter-home-hero {
     display: none;
+  }
+
+  /* With the hero gone the heatmap is the first content: keep its header
+     clear of the floating titlebar/sidebar controls at top-left. */
+  .biorouter-home-activity {
+    padding-top: 44px;
   }
 }
 
