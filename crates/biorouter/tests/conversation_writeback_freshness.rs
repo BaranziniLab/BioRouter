@@ -55,6 +55,11 @@ struct RaceProvider {
     /// should land during. Appending from inside the summarizer call is exactly
     /// the window the freshness discipline protects.
     notes_during_summarization: Vec<(usize, String)>,
+    /// #51: the same, but the appended note carries the PRESERVATION MARKER.
+    /// Together these two cover the whole promise — part (a) has to carry the
+    /// note over the write-back, part (b) has to keep it out of the summary
+    /// once it ages past the verbatim window.
+    pinned_notes_during_summarization: Vec<(usize, String)>,
     /// Summarizer call indices during which the session's whole history is
     /// wholesale-rewritten by someone else, which moves the basis and makes the
     /// caller's write-back stale.
@@ -70,6 +75,10 @@ struct RaceProvider {
     context_limit: usize,
     /// Message texts the provider saw on each main-loop call.
     seen: Mutex<Vec<Vec<String>>>,
+    /// #51: the summarizer carries the history it is asked to condense in the
+    /// SYSTEM prompt, so this is how a test asserts what did — and did not —
+    /// reach it.
+    summarizer_payloads: Mutex<Vec<String>>,
 }
 
 impl RaceProvider {
@@ -81,11 +90,13 @@ impl RaceProvider {
             summarizer_calls: AtomicUsize::new(0),
             overflow_on: Vec::new(),
             notes_during_summarization: Vec::new(),
+            pinned_notes_during_summarization: Vec::new(),
             rewrites_during_summarization: Vec::new(),
             notes_during_main_call: Vec::new(),
             fail_summarization_on: Vec::new(),
             context_limit: 200_000,
             seen: Mutex::new(Vec::new()),
+            summarizer_payloads: Mutex::new(Vec::new()),
         }
     }
 
@@ -101,6 +112,13 @@ impl RaceProvider {
 
     fn note_during_summarization(mut self, call: usize, text: &str) -> Self {
         self.notes_during_summarization
+            .push((call, text.to_string()));
+        self
+    }
+
+    /// #51: append a note that carries the preservation marker.
+    fn pinned_note_during_summarization(mut self, call: usize, text: &str) -> Self {
+        self.pinned_notes_during_summarization
             .push((call, text.to_string()));
         self
     }
@@ -128,6 +146,11 @@ impl RaceProvider {
         self.summarizer_calls.load(Ordering::SeqCst)
     }
 
+    /// Everything every summarization round-trip was handed, concatenated.
+    fn all_summarizer_payloads(&self) -> String {
+        self.summarizer_payloads.lock().unwrap().join("\n")
+    }
+
     fn texts_seen_on_main_call(&self, n: usize) -> Vec<String> {
         self.seen
             .lock()
@@ -153,7 +176,7 @@ impl Provider for RaceProvider {
     async fn complete_with_model(
         &self,
         _model_config: &ModelConfig,
-        _system_prompt: &str,
+        system_prompt: &str,
         messages: &[Message],
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
@@ -164,6 +187,10 @@ impl Provider for RaceProvider {
 
         if Self::is_summarizer_call(messages) {
             let n = self.summarizer_calls.fetch_add(1, Ordering::SeqCst);
+            self.summarizer_payloads
+                .lock()
+                .unwrap()
+                .push(system_prompt.to_string());
             if self.fail_summarization_on.contains(&n) {
                 return Err(ProviderError::RequestFailed(
                     "mock summarizer failure".to_string(),
@@ -178,6 +205,15 @@ impl Provider for RaceProvider {
                         .add_message(id, &Message::user().with_text(text.clone()))
                         .await
                         .expect("note append");
+                }
+            }
+            for (call, text) in &self.pinned_notes_during_summarization {
+                if *call == n {
+                    let id = self.session_id.get().expect("session id set");
+                    self.session_manager
+                        .add_message(id, &Message::user().with_text(text.clone()).pinned())
+                        .await
+                        .expect("pinned note append");
                 }
             }
             if self.rewrites_during_summarization.contains(&n) {
@@ -918,4 +954,237 @@ async fn manual_compact_reports_a_skipped_compaction_to_the_user() {
         !after.iter().any(|t| t.contains("User Intent")),
         "nothing may be persisted when the swap was declined"
     );
+}
+
+// ── #51 part (b): the preservation marker, through the real reply loop ───────
+
+/// The pinned-message texts stored for the session, with their agent visibility.
+async fn stored_pins(h: &Harness) -> Vec<(String, bool)> {
+    h.session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .filter(|m| m.is_pinned())
+        .map(|m| {
+            (
+                m.content
+                    .iter()
+                    .filter_map(|c| match c {
+                        MessageContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+                m.is_agent_visible(),
+            )
+        })
+        .collect()
+}
+
+/// Is `text` still in the agent's context, per the store?
+async fn agent_sees(h: &Harness, text: &str) -> bool {
+    h.session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .agent_visible_messages()
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|c| matches!(c, MessageContent::Text(t) if t.text.contains(text)))
+}
+
+/// **The whole promise, in one test.** A message appended concurrently AND
+/// marked must survive both halves of #51: the write-back that would have
+/// deleted it (part a), and the compaction that would have summarized it away
+/// several turns later (part b).
+///
+/// Fixing only part (a) produces exactly the failure this test would catch — a
+/// note that lands, is confirmed, and quietly evaporates once it falls out of
+/// the four-turn verbatim window.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_note_survives_both_the_writeback_and_a_later_compaction() {
+    const NOTE: &str = "NOTE: always report the log-scale version";
+
+    let (h, provider) = harness(|p| {
+        p.overflow_on(&[0])
+            .pinned_note_during_summarization(0, NOTE)
+    })
+    .await;
+
+    // Turn 1: the overflow-recovery summarizer runs and the note lands inside
+    // its round-trip. Part (a) has to carry it over the write-back.
+    h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert_eq!(
+        stored_pins(&h).await,
+        vec![(NOTE.to_string(), true)],
+        "part (a): the pinned note must survive the write-back, still marked"
+    );
+
+    // Age it well out of the verbatim window: six more user-prompt turns plus
+    // the next turn's own prompt, against a default keep-last of four.
+    for i in 0..6 {
+        h.session_manager
+            .add_message(&h.session_id, &Message::user().with_text(format!("q{i}")))
+            .await
+            .unwrap();
+        h.session_manager
+            .add_message(
+                &h.session_id,
+                &Message::assistant().with_text(format!("a{i}")),
+            )
+            .await
+            .unwrap();
+    }
+    // Push reported usage over the auto-compaction threshold so turn 2 compacts.
+    h.session_manager
+        .update(&h.session_id)
+        .total_tokens(Some(190_000))
+        .apply()
+        .await
+        .unwrap();
+
+    h.run_turn("and now the second question").await.unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        2,
+        "turn 2 must actually have compacted, or this proves nothing"
+    );
+    assert_eq!(
+        stored_pins(&h).await,
+        vec![(NOTE.to_string(), true)],
+        "part (b): the note must still be in the agent's context after the \
+         compaction that summarized everything around it"
+    );
+    // The control: an unmarked message from the same summarized prefix is gone
+    // from the agent's context, so the compaction really did run over it.
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "an unmarked older message must have been summarized away"
+    );
+}
+
+/// The in-turn auto-compaction site (`agent.rs`), reached when a turn starts
+/// over the threshold.
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_compaction_keeps_a_pinned_message() {
+    const NOTE: &str = "NOTE: the cohort is 2019, not 2024";
+
+    let (h, provider) = harness(|p| p.context_limit(100)).await;
+
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NOTE).pinned())
+        .await
+        .unwrap();
+    for i in 0..6 {
+        h.session_manager
+            .add_message(&h.session_id, &Message::user().with_text(format!("q{i}")))
+            .await
+            .unwrap();
+        h.session_manager
+            .add_message(
+                &h.session_id,
+                &Message::assistant().with_text(format!("a{i}")),
+            )
+            .await
+            .unwrap();
+    }
+    h.session_manager
+        .update(&h.session_id)
+        .total_tokens(Some(95))
+        .apply()
+        .await
+        .unwrap();
+
+    h.run_turn(USER_PROMPT).await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert_eq!(stored_pins(&h).await, vec![(NOTE.to_string(), true)]);
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "control: q0 was summarized away"
+    );
+    // ...and it reached the model on the very turn that compacted.
+    assert!(
+        provider
+            .texts_seen_on_main_call(0)
+            .iter()
+            .any(|t| t.contains(NOTE)),
+        "the pinned note must be in this turn's request, saw: {:?}",
+        provider.texts_seen_on_main_call(0)
+    );
+}
+
+/// The `/compact` and `/summarize` site (`execute_commands.rs`). A user who
+/// explicitly compacts must not thereby destroy the note they pinned.
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_compact_keeps_a_pinned_message() {
+    const NOTE: &str = "NOTE: keep the units in mg/dL";
+
+    let (h, provider) = harness(|p| p).await;
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NOTE).pinned())
+        .await
+        .unwrap();
+    seed_history(&h, 6).await;
+
+    h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert_eq!(stored_pins(&h).await, vec![(NOTE.to_string(), true)]);
+    assert!(
+        h.stored_texts()
+            .await
+            .iter()
+            .any(|t| t.contains("User Intent")),
+        "the compaction itself must still have landed"
+    );
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "control: q0 was summarized away"
+    );
+}
+
+/// The marker must not be sent to the summarizer as well as kept. Its text
+/// survives verbatim, so summarizing it too spends the window on the same
+/// content twice — and on a long-lived session that cost recurs every
+/// compaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_message_is_not_also_summarized() {
+    const NOTE: &str = "NOTE: unique-marker-string-for-the-summarizer-payload";
+
+    let (h, provider) = harness(|p| p).await;
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NOTE).pinned())
+        .await
+        .unwrap();
+    seed_history(&h, 6).await;
+
+    h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    let payload = provider.all_summarizer_payloads();
+    assert!(
+        !payload.contains(NOTE),
+        "the pinned note must not be summarized as well as kept; payload: {payload}"
+    );
+    assert!(
+        payload.contains("q0"),
+        "control: the unpinned history WAS handed to the summarizer"
+    );
+    // And exactly one copy is stored — no duplicate re-appended alongside it.
+    let occurrences = h
+        .stored_texts()
+        .await
+        .iter()
+        .filter(|t| t.contains(NOTE))
+        .count();
+    assert_eq!(occurrences, 1, "the pinned note must appear exactly once");
 }
