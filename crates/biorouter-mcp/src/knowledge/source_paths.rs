@@ -390,6 +390,7 @@ fn extract_archive_with_command(
         cmd.arg(out_dir);
     }
 
+    crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
     let output = cmd.output().with_context(|| format!("spawn {command}"))?;
     if output.status.success() {
         Ok(())

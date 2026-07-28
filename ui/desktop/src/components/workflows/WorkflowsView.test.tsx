@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,8 @@ import WorkflowsView from './WorkflowsView';
 
 const mocks = vi.hoisted(() => ({
   listSavedWorkflows: vi.fn(),
+  refreshConfig: vi.fn(),
+  setWorkflowSlashCommand: vi.fn(),
 }));
 
 vi.mock('../../workflow/workflow_management', () => ({
@@ -14,12 +16,21 @@ vi.mock('../../workflow/workflow_management', () => ({
 }));
 
 vi.mock('../../hooks/useNavigation', () => ({ useNavigation: () => vi.fn() }));
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  setWorkflowSlashCommand: mocks.setWorkflowSlashCommand,
+}));
+vi.mock('../ConfigContext', () => ({
+  useConfig: () => ({ refreshConfig: mocks.refreshConfig }),
+}));
 vi.mock('../conversation/SearchView', () => ({
   SearchView: ({ children }: { children: ReactNode }) => children,
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.refreshConfig.mockResolvedValue(undefined);
+  mocks.setWorkflowSlashCommand.mockResolvedValue({ data: undefined });
 });
 
 describe('WorkflowsView loading transition', () => {
@@ -51,6 +62,32 @@ describe('WorkflowsView loading transition', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="skeleton"]')).not.toBeInTheDocument();
     });
+  });
+
+  it('refreshes the config cache after writing a workflow slash command', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([
+      {
+        id: 'workflow-1',
+        file_path: '/tmp/workflow.yaml',
+        last_modified: '2026-07-11',
+        workflow: { title: 'Cohort Review', description: 'Review cohort results' },
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByTitle('Add slash command'));
+    fireEvent.change(screen.getByPlaceholderText('command-name'), {
+      target: { value: 'cohort-review' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(mocks.setWorkflowSlashCommand).toHaveBeenCalledOnce());
+    expect(mocks.refreshConfig).toHaveBeenCalledOnce();
   });
 
   it('presents an accessible empty state with create and import actions', async () => {

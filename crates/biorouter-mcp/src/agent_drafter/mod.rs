@@ -832,18 +832,9 @@ pub fn default_root() -> PathBuf {
 /// of `biorouterd`'s REST API, which is a cross-session read of everything
 /// (issue #57).
 ///
-/// The rule is the *shared* one — [`strip_daemon_private_env_std`], the same
-/// function the developer shell, stdio extensions, `computer_controller` and
-/// `computer_control` now call. A second, stricter mechanism here (an
-/// allow-list of, say, `PATH` + `HOME`) was considered and rejected: it would
-/// be a parallel copy of one security rule, which is how the next hole appears,
-/// and it would break the harness in ordinary configurations. Playwright
-/// resolves its browser cache from `HOME` *or* `PLAYWRIGHT_BROWSERS_PATH`,
-/// chromium wants `TMPDIR`/`XDG_*`, corporate installs need the proxy
-/// variables, and on Windows a child holding only `PATH` cannot even open the
-/// loopback socket the harness's mock daemon binds (no `SystemRoot`). Issue #24
-/// was that regression in miniature, for `PATH` alone. Nothing here needs a
-/// credential; if it ever does, it should be passed explicitly.
+/// The rule is the *shared* one, applied through
+/// [`prepare_agent_drafter_child`] — where the reasons for using it rather than
+/// a stricter allow-list are recorded.
 fn run_smoke(dir: &Path) -> Result<String, String> {
     if std::env::var("BIOROUTER_APP_SMOKE")
         .unwrap_or_default()
@@ -853,11 +844,11 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
     }
 
     let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
-    let mut cmd = std::process::Command::new("node");
-    cmd.arg(&script).arg(dir);
+    let mut command = std::process::Command::new("node");
+    command.arg(&script).arg(dir);
     // Last, so nothing set above can leave a daemon credential in the child.
-    strip_daemon_private_env_std(&mut cmd);
-    let out = cmd
+    prepare_agent_drafter_child(&mut command);
+    let out = command
         .output()
         .map_err(|e| format!("could not run node: {e}"))?;
 
@@ -870,6 +861,27 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
         )),
         _ => Err(format!("{stderr}{stdout}").trim().to_string()),
     }
+}
+
+/// The environment every Agent Drafter child is spawned with (issue #62).
+///
+/// One named seam for both spawns — [`run_smoke`]'s node harness and
+/// `bundle::run_esbuild` — so neither can drift and a third one has an obvious
+/// thing to call. The rule itself is the *shared* one,
+/// [`strip_daemon_private_env_std`], the same function the developer shell,
+/// stdio extensions, `computer_controller` and `computer_control` call.
+///
+/// A second, stricter mechanism here (an allow-list of, say, `PATH` + `HOME`)
+/// was considered and rejected: it would be a parallel copy of one security
+/// rule, which is how the next hole appears, and it would break the harness in
+/// ordinary configurations. Playwright resolves its browser cache from `HOME`
+/// *or* `PLAYWRIGHT_BROWSERS_PATH`, chromium wants `TMPDIR`/`XDG_*`, corporate
+/// installs need the proxy variables, and on Windows a child holding only
+/// `PATH` cannot even open the loopback socket the harness's mock daemon binds
+/// (no `SystemRoot`). Issue #24 was that regression in miniature, for `PATH`
+/// alone. Nothing here needs a credential; if it ever does, pass it explicitly.
+pub(super) fn prepare_agent_drafter_child(command: &mut std::process::Command) {
+    strip_daemon_private_env_std(command);
 }
 
 /// Absolute path to `printenv`, for the environment-probe shims in this
@@ -2890,6 +2902,32 @@ mod tests {
     use super::*;
     use rmcp::model::RawContent;
     use tempfile::TempDir;
+
+    #[test]
+    fn agent_drafter_children_strip_daemon_credentials_only() {
+        let mut command = std::process::Command::new("node");
+        command
+            .env("BIOROUTER_SERVER__SECRET_KEY", "daemon-private")
+            .env("BIOROUTER_PORT", "4931")
+            .env("SPOKEAGENT_PASSCODE", "extension-private");
+        prepare_agent_drafter_child(&mut command);
+
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(envs.contains(&("BIOROUTER_SERVER__SECRET_KEY".to_string(), None)));
+        assert!(envs.contains(&("BIOROUTER_PORT".to_string(), Some("4931".to_string()))));
+        assert!(envs.contains(&(
+            "SPOKEAGENT_PASSCODE".to_string(),
+            Some("extension-private".to_string())
+        )));
+    }
 
     /// Opt this test out of catalog strictness.
     ///

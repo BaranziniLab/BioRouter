@@ -89,7 +89,9 @@ impl LinuxAutomation {
 
     fn check_dependencies(&self, deps: &[&str]) -> Result<()> {
         for dep in deps {
-            if !Command::new("which").arg(dep).output()?.status.success() {
+            let mut command = Command::new("which");
+            command.arg(dep);
+            if !Self::output(command)?.status.success() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("Required dependency '{}' not found", dep),
@@ -111,8 +113,8 @@ impl LinuxAutomation {
     /// so a missing tool or a failed action is reported instead of silently
     /// swallowed — the same honest-reporting contract as the macOS/Windows
     /// backends.
-    fn run_checked(mut command: Command, action: &str) -> Result<String> {
-        let output = command.output()?;
+    fn run_checked(command: Command, action: &str) -> Result<String> {
+        let output = Self::output(command)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -127,6 +129,16 @@ impl LinuxAutomation {
                 stderr.trim()
             )))
         }
+    }
+
+    fn output(mut command: Command) -> Result<std::process::Output> {
+        crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        command.output()
+    }
+
+    fn spawn(mut command: Command) -> Result<std::process::Child> {
+        crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        command.spawn()
     }
 
     fn execute_x11_command(&self, cmd: &str) -> Result<String> {
@@ -151,18 +163,17 @@ impl LinuxAutomation {
             Self::run_checked(c, "activate")?;
             Ok(String::new())
         } else if cmd == "get clipboard" {
-            let output = Command::new("xclip")
-                .arg("-o")
-                .arg("-selection")
-                .arg("clipboard")
-                .output()?;
+            let mut command = Command::new("xclip");
+            command.arg("-o").arg("-selection").arg("clipboard");
+            let output = Self::output(command)?;
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else if let Some(text) = cmd.strip_prefix("set clipboard ") {
-            let mut child = Command::new("xclip")
+            let mut command = Command::new("xclip");
+            command
                 .arg("-selection")
                 .arg("clipboard")
-                .stdin(std::process::Stdio::piped())
-                .spawn()?;
+                .stdin(std::process::Stdio::piped());
+            let mut child = Self::spawn(command)?;
             if let Some(mut stdin) = child.stdin.take() {
                 use std::io::Write;
                 stdin.write_all(text.as_bytes())?;
@@ -176,18 +187,22 @@ impl LinuxAutomation {
 
     fn execute_wayland_command(&self, cmd: &str) -> Result<String> {
         if let Some(text) = cmd.strip_prefix("type ") {
-            Command::new("wtype").arg(text).output()?;
+            let mut command = Command::new("wtype");
+            command.arg(text);
+            Self::output(command)?;
             Ok(String::new())
         } else if let Some(key) = cmd.strip_prefix("key ") {
-            Command::new("wtype").arg(key).output()?;
+            let mut command = Command::new("wtype");
+            command.arg(key);
+            Self::output(command)?;
             Ok(String::new())
         } else if cmd == "get clipboard" {
-            let output = Command::new("wl-paste").output()?;
+            let output = Self::output(Command::new("wl-paste"))?;
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else if let Some(text) = cmd.strip_prefix("set clipboard ") {
-            let mut child = Command::new("wl-copy")
-                .stdin(std::process::Stdio::piped())
-                .spawn()?;
+            let mut command = Command::new("wl-copy");
+            command.stdin(std::process::Stdio::piped());
+            let mut child = Self::spawn(command)?;
             if let Some(mut stdin) = child.stdin.take() {
                 use std::io::Write;
                 stdin.write_all(text.as_bytes())?;

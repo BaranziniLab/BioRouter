@@ -133,12 +133,13 @@ fn python_pdfminer_extract_text(bytes: &[u8]) -> Result<String> {
     file.write_all(bytes)
         .context("write temp pdf for pdfminer")?;
 
-    let output = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg("-c")
         .arg(PYTHON_PDFMINER_SCRIPT)
-        .arg(file.path())
-        .output()
-        .context("run python pdfminer extractor")?;
+        .arg(file.path());
+    crate::developer::shell::strip_daemon_private_env_std(&mut command);
+    let output = command.output().context("run python pdfminer extractor")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

@@ -219,6 +219,15 @@ impl BundledExtensionTarget {
             },
         }
     }
+
+    fn matches_config(&self, config: &ExtensionConfig) -> bool {
+        let name = match (self.kind, config) {
+            (BundledExtensionKind::Builtin, ExtensionConfig::Builtin { name, .. })
+            | (BundledExtensionKind::Platform, ExtensionConfig::Platform { name, .. }) => name,
+            _ => return false,
+        };
+        extension_reference_key(name) == extension_reference_key(&self.name)
+    }
 }
 
 /// Reduce an extension reference to its comparable id: letters and digits only,
@@ -254,28 +263,32 @@ pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarg
     } else {
         key
     };
-
-    // Platform first: its registry is the smaller, hand-written one and shares
-    // no ids with the builtin registry.
-    if let Some(def) = PLATFORM_EXTENSIONS.iter().find(|(registry_key, def)| {
-        extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
-    }) {
-        return Some(BundledExtensionTarget {
-            kind: BundledExtensionKind::Platform,
-            name: def.1.name.to_string(),
-        });
+    if key.is_empty() {
+        return None;
     }
 
-    if let Some(def) = biorouter_mcp::BUILTIN_EXTENSIONS.iter().find(|(k, def)| {
-        extension_reference_key(k) == key || extension_reference_key(def.name) == key
-    }) {
-        return Some(BundledExtensionTarget {
-            kind: BundledExtensionKind::Builtin,
-            name: def.1.name.to_string(),
-        });
+    let mut matches = Vec::new();
+    for (registry_key, def) in PLATFORM_EXTENSIONS.iter() {
+        if extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+        {
+            matches.push(BundledExtensionTarget {
+                kind: BundledExtensionKind::Platform,
+                name: def.name.to_string(),
+            });
+        }
     }
 
-    None
+    for (registry_key, def) in biorouter_mcp::BUILTIN_EXTENSIONS.iter() {
+        if extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+        {
+            matches.push(BundledExtensionTarget {
+                kind: BundledExtensionKind::Builtin,
+                name: def.name.to_string(),
+            });
+        }
+    }
+
+    (matches.len() == 1).then(|| matches.remove(0))
 }
 
 /// Generates extension name from server info; adds random suffix on collision.
@@ -973,6 +986,14 @@ impl ExtensionManager {
 
     pub async fn is_extension_enabled(&self, name: &str) -> bool {
         self.extensions.lock().await.contains_key(name)
+    }
+
+    pub async fn is_bundled_target_enabled(&self, target: &BundledExtensionTarget) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .get(&target.key())
+            .is_some_and(|extension| target.matches_config(&extension.config))
     }
 
     pub async fn get_extension_configs(&self) -> Vec<ExtensionConfig> {
@@ -2952,6 +2973,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bundled_extension_reference_ids_are_nonempty_and_unique() {
+        let mut owners = HashMap::<String, String>::new();
+        let mut record = |kind: &str, registry_key: &str, name: &str| {
+            let owner = format!("{kind}:{registry_key}");
+            for reference in [registry_key, name] {
+                let key = extension_reference_key(reference);
+                assert!(!key.is_empty(), "`{owner}` has an empty comparable id");
+                if let Some(existing) = owners.insert(key.clone(), owner.clone()) {
+                    assert_eq!(
+                        existing, owner,
+                        "bundled extensions `{existing}` and `{owner}` collide on `{key}`"
+                    );
+                }
+            }
+        };
+
+        for (registry_key, def) in PLATFORM_EXTENSIONS.iter() {
+            record("platform", registry_key, def.name);
+        }
+        for (registry_key, def) in biorouter_mcp::BUILTIN_EXTENSIONS.iter() {
+            record("builtin", registry_key, def.name);
+        }
+    }
+
     /// Moved here from `resource_refs`, which used to own this table.
     #[test]
     fn resolves_bundled_extension_spelling_aliases() {
@@ -2975,12 +3021,17 @@ mod tests {
             "extension-manager",
             "extension_manager",
             "Extension Manager",
+            // Issue #60: the exact token the desktop mention popover and both
+            // CLI completers now insert for a display name with a space, since
+            // `extract_inline_refs` splits the message on whitespace and
+            // `/ext:Extension Manager` would arrive truncated to `Extension`.
+            "ExtensionManager",
         ] {
             let target = resolve_bundled_extension(reference).expect(reference);
             assert_eq!(target.kind(), BundledExtensionKind::Platform);
             assert_eq!(target.key(), "extensionmanager");
         }
-        for reference in ["chatrecall", "chat-recall", "Chat Recall"] {
+        for reference in ["chatrecall", "chat-recall", "Chat Recall", "ChatRecall"] {
             let target = resolve_bundled_extension(reference).expect(reference);
             assert_eq!(target.kind(), BundledExtensionKind::Platform);
             assert_eq!(target.key(), "chatrecall");
@@ -2992,12 +3043,26 @@ mod tests {
     /// inline_python / frontend / sse) extension the operator turned off.
     #[test]
     fn does_not_resolve_non_bundled_extensions() {
-        for reference in ["", "pubmed", "spokeagent", "some-stdio-server"] {
+        for reference in ["", "東京", "pubmed", "spokeagent", "some-stdio-server"] {
             assert!(
                 resolve_bundled_extension(reference).is_none(),
                 "`{reference}` must not resolve to a bundled extension"
             );
         }
+    }
+
+    #[test]
+    fn bundled_target_does_not_accept_a_user_extension_with_the_same_key() {
+        let target =
+            resolve_bundled_extension("developer").expect("`developer` is a bundled extension");
+        let user_extension =
+            ExtensionConfig::stdio("developer", "custom-server", "custom extension", 30_u64);
+        assert!(!target.matches_config(&user_extension));
+
+        let bundled = target.into_config(String::new());
+        assert!(resolve_bundled_extension("developer")
+            .expect("`developer` is a bundled extension")
+            .matches_config(&bundled));
     }
 
     // ---- issue #57: the daemon's auth secret must not reach an extension ------

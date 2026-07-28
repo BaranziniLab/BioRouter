@@ -16,6 +16,7 @@ import {
 import { errorMessage } from '../../../utils/conversionUtils';
 import { startTunnel, stopTunnel, getTunnelStatus } from '../../../api/sdk.gen';
 import type { TunnelInfo } from '../../../api/types.gen';
+import { useConfig } from '../../ConfigContext';
 
 const STATUS_MESSAGES = {
   idle: 'Tunnel is not running',
@@ -28,6 +29,7 @@ const STATUS_MESSAGES = {
 const IOS_APP_STORE_URL = 'https://apps.apple.com/us/app/biorouter-ai/id6752889295';
 
 export default function TunnelSection() {
+  const { refreshConfig } = useConfig();
   const [tunnelInfo, setTunnelInfo] = useState<TunnelInfo>({
     state: 'idle',
     url: '',
@@ -40,6 +42,14 @@ export default function TunnelSection() {
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+
+  const refreshConfigAfterTunnelWrite = async () => {
+    try {
+      await refreshConfig();
+    } catch (err) {
+      console.error('Failed to refresh config after updating the tunnel:', err);
+    }
+  };
 
   useEffect(() => {
     const loadTunnelInfo = async () => {
@@ -62,6 +72,7 @@ export default function TunnelSection() {
     if (tunnelInfo.state === 'running') {
       try {
         await stopTunnel();
+        await refreshConfigAfterTunnelWrite();
         setTunnelInfo({ state: 'idle', url: '', hostname: '', secret: '' });
         setShowQRModal(false);
       } catch (err) {
@@ -81,6 +92,7 @@ export default function TunnelSection() {
 
       try {
         const { data } = await startTunnel();
+        await refreshConfigAfterTunnelWrite();
         if (data) {
           setTunnelInfo(data);
           setShowQRModal(true);

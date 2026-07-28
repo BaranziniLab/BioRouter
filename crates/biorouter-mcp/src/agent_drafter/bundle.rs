@@ -15,7 +15,6 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::agent_drafter::store::{ArtifactKind, Manifest};
-use crate::developer::shell::strip_daemon_private_env_std;
 
 // ---------------------------------------------------------------------------
 // Build-time guardrail harness
@@ -934,9 +933,10 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
 
 /// Bundle `entry` with esbuild.
 ///
-/// **Environment (issue #62).** The child gets the shared curated environment —
-/// [`strip_daemon_private_env_std`], the same rule every other spawn on the
-/// agent's behalf uses. esbuild only parses the agent's TypeScript, so this is
+/// **Environment (issue #62).** The child gets the shared curated environment
+/// via [`super::prepare_agent_drafter_child`] —
+/// `developer::shell::strip_daemon_private_env_std`, the same rule every other
+/// spawn on the agent's behalf uses. esbuild only parses the agent's TypeScript, so this is
 /// a weaker boundary than the smoke test's; the reason it gets the rule anyway
 /// is the `npx --yes esbuild` fallback in [`find_esbuild`], which downloads a
 /// package from the public registry at build time and runs it, lifecycle
@@ -962,7 +962,7 @@ fn run_esbuild(
     cmd.arg(format!("--outfile={}", out.display()));
     cmd.arg("--log-level=warning");
     // Last, so nothing set above can leave a daemon credential in the child.
-    strip_daemon_private_env_std(&mut cmd);
+    super::prepare_agent_drafter_child(&mut cmd);
     let output = cmd.output()?;
     drop(npx_guard);
     let log = format!(

@@ -13,8 +13,9 @@ use crate::{resolve_in_workspace, ExecOutput, Result, SandboxClient, SandboxErro
 /// `read`/`write`/`list` and a wall-clock timeout (killing the child on
 /// expiry via `kill_on_drop`), but it does **not** sandbox the process — no
 /// namespaces, no cgroups, no capability dropping, and the host environment is
-/// inherited (the spec's `env` is *added*, not a clean slate). It exists as the
-/// today-behavior baseline and the migration target for [`crate::DockerSandbox`].
+/// inherited except for daemon-private credentials (the spec's `env` is *added*,
+/// not a clean slate). It exists as the today-behavior baseline and the migration
+/// target for [`crate::DockerSandbox`].
 pub struct LocalProcessSandbox {
     spec: SandboxSpec,
 }
@@ -61,6 +62,7 @@ impl SandboxClient for LocalProcessSandbox {
         for (k, v) in &self.spec.env {
             cmd.env(k, v);
         }
+        crate::environment::strip_daemon_private_env(&mut cmd);
 
         let mut child = cmd.spawn()?;
         if let Some(input) = stdin {

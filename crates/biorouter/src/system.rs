@@ -272,7 +272,10 @@ fn install_info(name: &str) -> InstallInfo {
 
 /// Probe one command; returns its first version line on success.
 fn probe(cmd: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(cmd).args(args).output().ok()?;
+    let mut command = Command::new(cmd);
+    command.args(args);
+    biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }

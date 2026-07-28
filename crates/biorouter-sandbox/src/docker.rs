@@ -87,6 +87,9 @@ impl DockerSandbox {
 
         // Env (vault-resolved secrets land here).
         for (k, v) in &self.spec.env {
+            if crate::environment::is_daemon_private_env_key(k) {
+                continue;
+            }
             a.push("-e".into());
             a.push(format!("{k}={v}"));
         }
@@ -130,6 +133,7 @@ impl SandboxClient for DockerSandbox {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        crate::environment::strip_daemon_private_env(&mut cmd);
 
         let mut child = cmd.spawn()?;
         if let Some(input) = stdin {
@@ -193,12 +197,11 @@ impl SandboxClient for DockerSandbox {
 
 /// Returns true if the `docker` CLI is invokable.
 async fn which_docker() -> bool {
-    tokio::process::Command::new("docker")
+    let mut command = tokio::process::Command::new("docker");
+    command
         .arg("--version")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::null());
+    crate::environment::strip_daemon_private_env(&mut command);
+    command.status().await.map(|s| s.success()).unwrap_or(false)
 }

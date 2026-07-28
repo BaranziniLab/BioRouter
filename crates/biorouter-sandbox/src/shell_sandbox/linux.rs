@@ -123,14 +123,15 @@ fn which_on_path(bin: &str) -> bool {
 /// `None` if it could not be spawned / did not exit with a signal-free code.
 fn run_selftest() -> Option<i32> {
     let exe = std::env::current_exe().ok()?;
-    let status = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .arg(HELPER_MARKER)
         .arg("--selftest")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    crate::environment::strip_daemon_private_env_std(&mut command);
+    let status = command.status().ok()?;
     status.code()
 }
 
