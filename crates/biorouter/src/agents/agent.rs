@@ -210,14 +210,28 @@ pub struct PersistedMessage {
     /// `POST /sessions/{id}/edit_message` compares `expectedMessageIds`
     /// against.
     pub id: String,
-    /// Whether the client is meant to draw this row.
+    /// Whether this row is HIDDEN from the transcript. It is not a rendering
+    /// instruction, and reading it as one double-draws.
     ///
     /// `false` is the model-only plumbing a turn stores but deliberately keeps
     /// out of the transcript (the BR-47 post-edit diagnostics, the loop-guard /
     /// stall / budget nudges, hook context). Publishing it *with* the flag is
     /// what separates "you are deliberately not being shown this row" from "you
     /// were never told it exists" — the client can name the id without drawing
-    /// anything for it.
+    /// anything for it. That direction is exact: `false` means the row must not
+    /// appear in the transcript.
+    ///
+    /// `true` means only "not hidden" — NOT "draw this". The content may
+    /// already have been delivered inside a `Message` frame, and on a
+    /// tool-bearing turn it has been: one streamed reply is stored as a rebuilt
+    /// thinking row plus one `tool_use` row per request, each built from
+    /// `Message::assistant()` / `Message::new` and so carrying the default
+    /// `user_visible: true`, while the client was shown that same content once
+    /// already as the reply itself. A client that drew every `true` row would
+    /// render the same tool request twice.
+    ///
+    /// This frame is for ACCOUNTING — naming rows so `expectedMessageIds` can
+    /// be complete. The transcript still comes from `Message` frames alone.
     pub user_visible: bool,
 }
 

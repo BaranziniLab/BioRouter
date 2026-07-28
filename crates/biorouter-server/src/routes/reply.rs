@@ -331,7 +331,13 @@ pub enum MessageEvent {
     /// Ids only: this frame never re-sends message bodies. Each entry carries
     /// `userVisible`, which is what separates a row the client is deliberately
     /// not shown from one it was simply never told about — a client draws
-    /// nothing for a hidden row but must still name it.
+    /// nothing for a `userVisible: false` row but must still name it.
+    ///
+    /// The converse does NOT hold: `userVisible: true` is not an instruction to
+    /// draw, it is the absence of the hidden flag, and the content usually
+    /// arrived already inside a `Message` frame (one streamed reply is stored as
+    /// several rows). This frame is for accounting; the transcript comes from
+    /// `Message` frames alone. See `PersistedMessage::user_visible`.
     MessagesPersisted {
         messages: Vec<PersistedMessage>,
     },

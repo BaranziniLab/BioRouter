@@ -2184,3 +2184,90 @@ async fn nothing_is_published_that_the_store_does_not_hold() {
         phantom.len()
     );
 }
+
+/// #59 contract: `userVisible: true` on a published row is **not** an
+/// instruction to draw it.
+///
+/// `PersistedMessage::user_visible` is `Message::is_user_visible()`, and the
+/// rows one streamed reply is split into — the rebuilt thinking row and one
+/// `tool_use` row per request — are built with `Message::assistant()` /
+/// `Message::new`, i.e. `MessageMetadata::default()`, i.e. `user_visible: true`.
+/// Only the first of them keeps the reply's id; every later one is stored under
+/// a fresh uuid and is therefore an ASSISTANT row, marked visible, that the
+/// client was never streamed — even though it was shown that exact content once
+/// already, inside the single `filtered_response` it did receive. A client
+/// implementing "true means draw" renders the same tool request twice.
+///
+/// The flag is exact in ONE direction only: `false` means "must not appear in
+/// the transcript". `true` means "not hidden", and the frame is for accounting —
+/// naming rows so `expectedMessageIds` can be complete.
+///
+/// This pins both halves, because the tempting "fix" is to flip the split rows
+/// to `user_visible: false` so the flag can mean "draw this" — which would be a
+/// real regression: those rows ARE the transcript when the session is re-read
+/// from disk, so hiding them erases the assistant side of every tool call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
+    let (h, provider) = harness(|p| p.tools_on(0)).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "the tool call must have run and the loop come back for a second reply"
+    );
+
+    let drawn: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::Message(m) => m.id.clone(),
+            _ => None,
+        })
+        .collect();
+    let published: std::collections::HashMap<String, bool> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::MessagesPersisted(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p.id.clone(), p.user_visible))
+        .collect();
+
+    // Assistant rows only: the user's own prompt is also visible-and-unstreamed
+    // (the client authored it), and counting it would make this pass whatever
+    // the split rows are flagged as.
+    let split_rows: Vec<String> = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::Assistant && m.is_user_visible())
+        .filter_map(|m| m.id.clone())
+        .filter(|id| !drawn.contains(id))
+        .collect();
+
+    assert!(
+        !split_rows.is_empty(),
+        "expected at least one user-visible ASSISTANT row the client was never \
+         streamed — the split `tool_use` row. If that stopped being true, the \
+         split rows were probably re-flagged hidden, which erases the assistant \
+         side of every tool call from a re-read session.\nstored: {:#?}\n\
+         streamed ids: {drawn:#?}",
+        stored_ids(&h).await
+    );
+    for id in &split_rows {
+        assert_eq!(
+            published.get(id),
+            Some(&true),
+            "row {id} is a user-visible assistant row the client never saw, so \
+             `MessagesPersisted` must publish it as user_visible=true — which is \
+             precisely why that flag cannot mean \"draw this\".\npublished: \
+             {published:#?}"
+        );
+    }
+}
