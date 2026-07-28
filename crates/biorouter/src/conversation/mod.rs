@@ -505,19 +505,16 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
 /// what the overflow path writes back to the store. The boundary has to survive
 /// here or it never reaches the code that respects it.
 ///
-/// Tool content is excluded for the same reason `context_mgmt::pins` refuses to
-/// honour it: a request and its response are one unit to every provider, so a
-/// marker on either half is never honoured anyway. Leaving those merges alone
-/// keeps the change scoped to markers that actually mean something — the
-/// provider-shape passes win wherever no pin is at stake.
+/// A marker is a boundary only where it could actually be honoured, which is
+/// [`MessageContent::is_pin_eligible`]'s exhaustive ruling — not a second
+/// exclusion list here. Duplicating it would default every future content
+/// variant to "boundary" and let the two drift, which is exactly the failure that
+/// put `FrontendToolRequest` on the preservable side to begin with. Delegating
+/// also keeps the provider-shape passes untouched wherever no pin is at stake:
+/// a marker on thinking content, on either half of a tool pair, or on a UI
+/// handshake merges exactly as it did before.
 fn is_pin_boundary(message: &Message) -> bool {
-    message.metadata.pinned
-        && !message.content.iter().any(|content| {
-            matches!(
-                content,
-                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-            )
-        })
+    message.metadata.pinned && message.content.iter().all(MessageContent::is_pin_eligible)
 }
 
 pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
@@ -1415,6 +1412,38 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.contains("Merged consecutive tool")),
             "a pin that can never be honoured must not block the merge: {issues:?}"
+        );
+        assert_eq!(fixed.len(), 3, "{:#?}", fixed.messages());
+    }
+
+    /// The boundary rule delegates to `MessageContent::is_pin_eligible`, the one
+    /// exhaustive ruling on what a pin can preserve — it must not re-derive its
+    /// own exclusion list, which would default every future content variant to
+    /// "boundary" and drift from what compaction actually honours.
+    ///
+    /// A thinking block is the case that proves the delegation: it is bound to
+    /// the assistant turn that produced it, so it is never pin-eligible, so a
+    /// marker on it must not block the merge that keeps thinking and the rest of
+    /// the turn in ONE assistant message (which is what Anthropic requires).
+    #[test]
+    fn a_marker_on_non_preservable_content_still_merges() {
+        let messages = vec![
+            Message::user().with_text("go"),
+            Message::assistant()
+                .with_thinking("reasoning", "sig")
+                .with_text("part one")
+                .pinned(),
+            Message::assistant().with_text("part two"),
+            Message::user().with_text("thanks"),
+        ];
+
+        let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("Merged consecutive assistant")),
+            "a marker that can never be honoured must not block the merge: {issues:?}"
         );
         assert_eq!(fixed.len(), 3, "{:#?}", fixed.messages());
     }
