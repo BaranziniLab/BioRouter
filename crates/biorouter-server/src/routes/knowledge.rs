@@ -12,7 +12,7 @@ use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
     paths,
-    service::{KnowledgeService, ReadPageError},
+    service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
@@ -598,24 +598,139 @@ pub struct ReadPageResponse {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Plan 6 Task 2: GET + POST /knowledge/active — cross-session active-KB sync.
-// Thin pass-throughs to `KnowledgeService::{get,set}_active_persisted` so the
-// frontend can render the chat chip on startup and persist user picks.
+// GET + POST /knowledge/active — the session's knowledge-base set and its
+// primary. One axis (the set, expressed as the hidden complement) plus one
+// pointer. Both halves travel in one body so the primary is validated against
+// the state the request produces, not the state it started from.
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Deserialize a nullable field while keeping "absent" and "explicitly null"
+/// apart: absent → `None`, `null` → `Some(None)`, a value → `Some(Some(v))`.
+///
+/// A plain `Option<String>` collapses the first two, which costs a meaning the
+/// wire needs. On this body the three primary-pointer states are *leave it*,
+/// *forget it*, and *set it*, and the deprecated `kb_id` alias only ever spoke
+/// the first and third — so the one gesture the alias was kept alive for, a
+/// pre-`primary_kb` bundle sending `kb_id: null` to clear, silently did nothing.
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
 
 #[derive(Deserialize, ToSchema)]
 pub struct SetActiveBody {
-    /// `None` clears the active KB.
+    /// Make this base the session's primary — the KB-less write target. It
+    /// must be a member of the **resulting** set, so `hidden_kbs` in the same
+    /// body is applied first. Omit to leave the pointer alone; send `null` to
+    /// forget it (the same as `clear_primary`).
+    #[serde(default, deserialize_with = "present_or_null")]
+    #[schema(value_type = Option<String>)]
+    pub primary_kb: Option<Option<String>>,
+    /// Deprecated alias for `primary_kb`, kept for one release so a stale
+    /// renderer bundle talking to a fresh daemon keeps working. Follows the
+    /// same rule: omitted leaves the pointer alone, `null` forgets it — which
+    /// is exactly how such a bundle clears.
+    #[serde(default, deserialize_with = "present_or_null")]
+    #[schema(value_type = Option<String>)]
+    pub kb_id: Option<Option<String>>,
+    /// Forget the primary *at this scope*: the session then has no primary
+    /// even while the machine-wide default names a base. Mutually exclusive
+    /// with `primary_kb` and `inherit_primary`.
     #[serde(default)]
-    pub kb_id: Option<String>,
+    pub clear_primary: bool,
+    /// Drop this session's own primary override so it follows the machine-wide
+    /// default again — the way back from `clear_primary`, and the only way out
+    /// of the explicit "no primary" that deleting a session's pinned base
+    /// leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
+    ///
+    /// At machine scope there is nothing above to inherit, so this coincides
+    /// with `clear_primary`.
+    #[serde(default)]
+    pub inherit_primary: bool,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Replace this scope's hidden list — i.e. redefine the session's set.
+    /// Omit to leave the set alone. `[]` is an explicit "hide nothing here",
+    /// not a request to inherit the machine-wide list.
     #[serde(default)]
     pub hidden_kbs: Option<Vec<String>>,
 }
 
+impl SetActiveBody {
+    /// Fold the spellings of a primary change — `clear_primary`,
+    /// `inherit_primary`, the current `primary_kb`, and the deprecated `kb_id`
+    /// — into one decision, or reject the request.
+    ///
+    /// A field that is merely absent never votes. That is what lets a modern
+    /// set-only edit (`{"hidden_kbs": [...]}`) leave the pointer where it is
+    /// instead of clearing it as a side effect.
+    ///
+    /// Two fields asking for two *different* things is an error rather than a
+    /// precedence rule. "Pin beta", "this chat has no primary" and "follow the
+    /// machine default" are three incompatible outcomes; honouring one
+    /// silently leaves the caller believing it got another, and the caller
+    /// cannot tell which from a 200. Two fields asking for the *same* thing is
+    /// not a conflict — `clear_primary` alongside `primary_kb: null` is how a
+    /// bundle that predates `clear_primary` spells the identical gesture.
+    fn primary_update(&self) -> Result<PrimaryUpdate<'_>, String> {
+        let mut votes: Vec<(&'static str, PrimaryUpdate<'_>)> = Vec::new();
+        if self.clear_primary {
+            votes.push(("clear_primary", PrimaryUpdate::Clear));
+        }
+        if self.inherit_primary {
+            votes.push(("inherit_primary", PrimaryUpdate::Inherit));
+        }
+        // `primary_kb` still shadows its deprecated alias: they are two names
+        // for one field, not two opinions.
+        let aliased = match self.primary_kb.as_ref() {
+            Some(value) => Some(("primary_kb", value)),
+            None => self.kb_id.as_ref().map(|value| ("kb_id", value)),
+        };
+        if let Some((field, value)) = aliased {
+            votes.push((
+                field,
+                match value {
+                    Some(id) => PrimaryUpdate::Set(id),
+                    None => PrimaryUpdate::Clear,
+                },
+            ));
+        }
+
+        let mut distinct: Vec<(&'static str, PrimaryUpdate<'_>)> = Vec::new();
+        for (field, update) in votes {
+            if !distinct.iter().any(|(_, seen)| *seen == update) {
+                distinct.push((field, update));
+            }
+        }
+
+        match distinct.as_slice() {
+            [] => Ok(PrimaryUpdate::Unchanged),
+            [(_, update)] => Ok(*update),
+            conflicting => Err(format!(
+                "conflicting primary-KB fields ({}): send at most one of `primary_kb` \
+                 (pin a base), `clear_primary` (this scope has no primary), or \
+                 `inherit_primary` (follow the machine-wide default).",
+                conflicting
+                    .iter()
+                    .map(|(field, _)| *field)
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            )),
+        }
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ActiveKbResponse {
+    /// The session's knowledge bases, sorted. Every one is searchable and
+    /// readable; there is no narrower "active" list.
+    pub kb_ids: Vec<String>,
+    /// The KB-less write target. Always a member of `kb_ids`, or `null`.
+    pub primary_kb: Option<String>,
+    /// Deprecated mirror of `primary_kb`.
     pub active_kb: Option<String>,
     pub hidden_kbs: Vec<String>,
 }
@@ -626,84 +741,63 @@ pub struct GetActiveQuery {
     pub session_id: Option<String>,
 }
 
+fn selection_response(
+    svc: &KnowledgeService,
+    session_id: Option<&str>,
+) -> Result<ActiveKbResponse, (StatusCode, String)> {
+    let selection = svc
+        .selection(session_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(ActiveKbResponse {
+        kb_ids: selection.kb_ids,
+        active_kb: selection.primary_kb.clone(),
+        primary_kb: selection.primary_kb,
+        hidden_kbs: selection.hidden_kbs,
+    })
+}
+
 #[utoipa::path(
     get, path = "/knowledge/active",
     params(
-        ("session_id" = Option<String>, Query, description = "Optional chat session id for session-scoped active KB selection"),
+        ("session_id" = Option<String>, Query, description = "Optional chat session id for the session-scoped selection"),
     ),
-    responses((status = 200, description = "Current active KB id", body = ActiveKbResponse))
+    responses((status = 200, description = "The session's knowledge bases and its primary", body = ActiveKbResponse))
 )]
 pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
     Query(q): Query<GetActiveQuery>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let (active_kb, hidden_kbs) = if let Some(session_id) = q.session_id.as_deref() {
-        (
-            svc.get_active_for_session(session_id)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .or_else(|| svc.get_active_persisted().ok().flatten()),
-            svc.get_hidden_for_session_or_persisted(session_id)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-        )
-    } else {
-        (
-            svc.get_active_persisted()
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-            svc.get_hidden_persisted()
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-        )
-    };
-    Ok(Json(ActiveKbResponse {
-        active_kb,
-        hidden_kbs,
-    }))
+    Ok(Json(selection_response(&svc, q.session_id.as_deref())?))
 }
 
 #[utoipa::path(
     post, path = "/knowledge/active",
     request_body = SetActiveBody,
     responses(
-        (status = 200, description = "Set successfully", body = ActiveKbResponse),
-        (status = 400, description = "Invalid kb id"),
+        (status = 200, description = "The resulting selection", body = ActiveKbResponse),
+        (status = 400, description = "Unknown kb id, a primary outside the resulting set, \
+                                      or conflicting primary-KB fields"),
     )
 )]
 pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let session_id = body.session_id.clone();
-    if let Some(session_id) = body.session_id.as_deref() {
-        svc.set_active_for_session(session_id, body.kb_id.as_deref())
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
-            svc.set_hidden_for_session(session_id, hidden_kbs)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        }
-    } else {
-        svc.set_active_persisted(body.kb_id.as_deref())
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
-            svc.set_hidden_persisted(hidden_kbs)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        }
-    }
-    let active_kb = if let Some(session_id) = session_id.as_deref() {
-        svc.get_active_for_session(session_id)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-            .or_else(|| svc.get_active_persisted().ok().flatten())
-    } else {
-        svc.get_active_persisted()
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-    };
+    let primary = body
+        .primary_update()
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let selection = svc
+        .set_selection(
+            body.session_id.as_deref(),
+            body.hidden_kbs.as_deref(),
+            primary,
+        )
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     Ok(Json(ActiveKbResponse {
-        active_kb,
-        hidden_kbs: if let Some(session_id) = session_id.as_deref() {
-            svc.get_hidden_for_session_or_persisted(session_id)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-        } else {
-            svc.get_hidden_persisted()
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-        },
+        kb_ids: selection.kb_ids,
+        active_kb: selection.primary_kb.clone(),
+        primary_kb: selection.primary_kb,
+        hidden_kbs: selection.hidden_kbs,
     }))
 }
 

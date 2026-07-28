@@ -9,6 +9,8 @@ Come here when you are changing the Knowledge subsystem and need to know the cur
 | Document | What it covers |
 |---|---|
 | [Knowledge ingestion format roadmap](ingestion-format-roadmap.md) | A survey of the conversion pipeline as it stood on 2026-06-10, a licensed comparison of open-source document converters, and a phased plan to extend ingestion to PowerPoint, Excel/ODS and a higher-fidelity PDF path. **Partially implemented** — Phases 1, 2, 3 and 4.1 shipped and were verified on 2026-06-10; Phases 4.2, 4.3 and 5 are open work. The architecture survey and the June 2026 licensing research inside it are reference snapshots of that date, not live registers. |
+| [One knowledge-base set per session, one primary](multi-kb-implementation-plan.md) | The merged-axes design: the session's visible set *is* its knowledge-base set, and the old single `active_kb` becomes an explicit primary pointer (KB-less write target, default single-base read, Knowledge-view subject) that is always a member of the set. Also carries the fixes for six pre-existing bugs the survey found. |
+| [Multi-KB verification record](multi-kb-verification.md) | What was tested and found for that change: the sixteen defects an adversarial review caught after a green suite, the two GUI passes that reproduced two of them in a running app, the promote-on-hide conflict that went to the operator, and what was deliberately left unfixed. |
 
 ## Related documentation
 

@@ -34,7 +34,18 @@ interface Props {
 type DraftMode = { kind: 'create' } | { kind: 'rename'; base: Manifest } | null;
 
 export function KBSelectorPalette({ onClose }: Props) {
-  const { bases, activeKbId, hiddenKbIds, refresh, setActiveKbId, toggleKbHidden } = useKnowledge();
+  const {
+    bases,
+    primaryKbId,
+    hiddenKbIds,
+    defaultPrimaryKb,
+    canFollowDefaultPrimary,
+    followDefaultPrimary,
+    refreshDefaultPrimary,
+    refresh,
+    setPrimaryKbId,
+    toggleKbHidden,
+  } = useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
@@ -51,7 +62,10 @@ export function KBSelectorPalette({ onClose }: Props) {
     // created elsewhere (e.g. via chat / the knowledge MCP tools) appear here
     // without requiring a full app reload.
     void refresh();
-  }, [refresh]);
+    // Same reasoning for the machine-wide default: it is not part of the base
+    // list and another chat may have moved it since this one last looked.
+    void refreshDefaultPrimary();
+  }, [refresh, refreshDefaultPrimary]);
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -124,13 +138,13 @@ export function KBSelectorPalette({ onClose }: Props) {
         setBusyId('__create');
         const manifest = await create(id, trimmed);
         if (manifest?.id) {
-          setActiveKbId(manifest.id);
+          setPrimaryKbId(manifest.id);
         }
       } else if (draftMode?.kind === 'rename') {
         setBusyId(draftMode.base.id);
         const manifest = await rename(draftMode.base.id, trimmed);
-        if (activeKbId === draftMode.base.id) {
-          setActiveKbId(manifest.id);
+        if (primaryKbId === draftMode.base.id) {
+          setPrimaryKbId(manifest.id);
         }
       }
       resetDraft();
@@ -195,8 +209,8 @@ export function KBSelectorPalette({ onClose }: Props) {
           <DialogHeader className="px-6 pt-6 pb-0">
             <DialogTitle>Knowledge Bases</DialogTitle>
             <DialogDescription>
-              Focus one knowledge base for graphing and ingest while choosing which ones stay
-              visible to chat discovery.
+              Choose which knowledge bases this chat uses, and which one of them is the primary —
+              the base a knowledge write lands in when none is named.
             </DialogDescription>
           </DialogHeader>
 
@@ -291,6 +305,37 @@ export function KBSelectorPalette({ onClose }: Props) {
             {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
           </div>
 
+          {/*
+            The way back to the default. It is deliberately not a third state on
+            every row — the row is "in this chat" plus "make it primary", and a
+            third control there would make the invariant look violable. This is
+            one notice about the whole chat, and it exists only while the chat is
+            holding a primary of its own: a chat already following the default
+            has nothing to inherit, and saying so would be noise on every open.
+          */}
+          {canFollowDefaultPrimary && defaultPrimaryKb && (
+            <div className="border-b border-border-subtle px-6 py-3">
+              <div className="biorouter-modal-panel flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 text-xs text-text-muted">
+                  {primaryKbId
+                    ? `This chat uses its own primary, so it no longer follows your default knowledge base, ${defaultPrimaryKb.name}.`
+                    : `This chat has no primary knowledge base, even though your default is ${defaultPrimaryKb.name}. Deleting the base a chat was using leaves it this way.`}
+                </div>
+                <Button
+                  data-testid="knowledge-kb-follow-default"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={followDefaultPrimary}
+                  title={`This chat will use ${defaultPrimaryKb.name}, and will keep following your default if it changes.`}
+                >
+                  Follow the default ({defaultPrimaryKb.name})
+                </Button>
+              </div>
+            </div>
+          )}
+
           <div className="max-h-[420px] overflow-y-auto px-4 py-4">
             {filtered.length === 0 ? (
               <div className="biorouter-modal-panel rounded-xl px-4 py-10 text-center text-sm text-text-muted">
@@ -299,21 +344,20 @@ export function KBSelectorPalette({ onClose }: Props) {
             ) : (
               <div className="biorouter-list-shell">
                 {filtered.map((base) => {
-                  const isActive = activeKbId === base.id;
+                  const isPrimary = primaryKbId === base.id;
                   const isBusy = busyId === base.id;
                   const hidden = hiddenKbIds.includes(base.id);
 
                   return (
                     <div
                       key={base.id}
-                      className={`biorouter-list-row flex items-center gap-3 px-3 py-2 transition-colors ${isActive ? 'bg-background-medium' : ''}`}
+                      className={`biorouter-list-row flex items-center gap-3 px-3 py-2 transition-colors ${isPrimary ? 'bg-background-medium' : ''}`}
                     >
                       <button
                         type="button"
-                        onClick={() => {
-                          setActiveKbId(base.id);
-                          onClose();
-                        }}
+                        // Making a base primary is not a navigation: the palette
+                        // is where the whole selection is managed, so it stays open.
+                        onClick={() => setPrimaryKbId(base.id)}
                         className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       >
                         <span
@@ -330,7 +374,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                             )}
                             {hidden && (
                               <Badge uppercase className="text-[10px]">
-                                Hidden from chat
+                                Not in this chat
                               </Badge>
                             )}
                           </div>
@@ -338,9 +382,9 @@ export function KBSelectorPalette({ onClose }: Props) {
                             {base.id}
                           </div>
                         </div>
-                        {isActive && (
+                        {isPrimary && (
                           <Badge uppercase tone="accent" className="text-[10px]">
-                            Focused
+                            Primary
                           </Badge>
                         )}
                       </button>
@@ -352,7 +396,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                             checked={!hidden}
                             onCheckedChange={() => toggleKbHidden(base.id)}
                             variant="mono"
-                            aria-label={`Toggle chat discovery for ${base.name}`}
+                            aria-label={`Include ${base.name} in this chat`}
                           />
                         </div>
                         <Button
@@ -401,8 +445,8 @@ export function KBSelectorPalette({ onClose }: Props) {
 
           <DialogFooter className="border-t border-border-subtle px-6 py-4 sm:justify-between">
             <div className="text-xs text-text-muted">
-              Tip: focus a knowledge base here for editing and ingest. Hidden knowledge bases stay
-              available here even when chats stop searching them by default.
+              Tip: the switch decides whether a base is in this chat; clicking its name makes it the
+              primary. Bases left out are still reachable by naming them explicitly.
             </div>
             <Button
               type="button"

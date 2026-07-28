@@ -13,45 +13,15 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashSet, sync::Arc};
+use std::{cmp::Ordering, collections::HashSet};
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
-
-/// Process-local active-KB state (one per KnowledgeServer instance).
-#[derive(Clone, Default)]
-pub struct ActiveKbState {
-    inner: Arc<tokio::sync::Mutex<Option<String>>>,
-}
-
-impl ActiveKbState {
-    pub async fn set(&self, kb_id: &str) {
-        *self.inner.lock().await = Some(kb_id.to_string());
-    }
-    pub async fn get(&self) -> Option<String> {
-        self.inner.lock().await.clone()
-    }
-    pub async fn clear(&self) {
-        *self.inner.lock().await = None;
-    }
-
-    /// Bootstrap the in-memory state from `<knowledge-root>/.active-kb` so a
-    /// freshly spawned MCP-server process picks up whatever KB the user had
-    /// selected previously. Errors are intentionally swallowed — a missing or
-    /// unreadable file simply yields an unset active KB.
-    pub fn from_persisted(service: &KnowledgeService) -> Self {
-        let initial = service.get_active_persisted().ok().flatten();
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(initial)),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
     service: KnowledgeService,
     instructions: String,
-    active: ActiveKbState,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -242,13 +212,10 @@ pub struct HistoryOptParams {
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
-        let service = KnowledgeService::new_default()?;
-        let active = ActiveKbState::from_persisted(&service);
         Ok(Self {
             tool_router: Self::tool_router(),
-            service,
+            service: KnowledgeService::new_default()?,
             instructions: include_str!("instructions.md").to_string(),
-            active,
         })
     }
 
@@ -318,31 +285,31 @@ impl KnowledgeServer {
         Ok(hits)
     }
 
-    async fn active_kb_for_context(
+    /// This session's primary knowledge base — the write target for KB-less
+    /// mutating calls and the default subject for single-base reads. Resolved
+    /// from disk on every call: session file → machine file, returned only
+    /// while it names a member of the session's set.
+    fn primary_kb_for_session(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<Option<String>, ErrorData> {
+        self.service
+            .primary_for_session(session_id)
+            .map_err(into_err)
+    }
+
+    fn primary_kb_for_context(
         &self,
         context: Option<&RequestContext<RoleServer>>,
     ) -> Result<Option<String>, ErrorData> {
-        if let Some(context) = context {
-            if let Some(session_id) = Self::session_id_from_context(context) {
-                if let Some(session_active) = self
-                    .service
-                    .get_active_for_session(session_id)
-                    .map_err(into_err)?
-                {
-                    return Ok(Some(session_active));
-                }
-            }
-        }
-
-        if let Some(active) = self.active.get().await {
-            return Ok(Some(active));
-        }
-
-        self.service.get_active_persisted().map_err(into_err)
+        self.primary_kb_for_session(Self::session_id(context))
     }
 
-    /// Resolve `supplied` kb_id or fall back to the active KB for this request context.
-    async fn kb_id_or_active(
+    /// Resolve `supplied` kb_id, else this session's primary.
+    ///
+    /// An explicit `kb_id` always wins and is never filtered against the
+    /// session's set — that is how a hidden base (Soul) stays reachable.
+    fn kb_id_or_primary(
         &self,
         supplied: Option<String>,
         context: Option<&RequestContext<RoleServer>>,
@@ -350,12 +317,28 @@ impl KnowledgeServer {
         if let Some(id) = supplied {
             return Ok(id);
         }
-        self.active_kb_for_context(context).await?.ok_or_else(|| {
-            ErrorData::invalid_params(
-                "kb_id not supplied and no active knowledge base is set. Call kb_set_active first.",
-                None,
-            )
-        })
+        if let Some(primary) = self.primary_kb_for_context(context)? {
+            return Ok(primary);
+        }
+        let ids = self
+            .service
+            .session_kb_ids(Self::session_id(context))
+            .map_err(into_err)?;
+        Err(ErrorData::invalid_params(
+            if ids.is_empty() {
+                "this session has no knowledge bases, so there is nothing to read. \
+                 Create one with kb_create_base."
+                    .to_string()
+            } else {
+                format!(
+                    "kb_id not supplied and this session has no primary knowledge base. \
+                     Pass kb_id explicitly (one of: {}), or call kb_set_active to make one \
+                     the primary — that is also where KB-less writes go.",
+                    ids.join(", ")
+                )
+            },
+            None,
+        ))
     }
 
     #[tool(
@@ -385,7 +368,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_pages",
-        description = "List knowledge pages in a knowledge base. Omit kb_id to use the active KB."
+        description = "List knowledge pages in a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_list_pages(
         &self,
@@ -393,7 +376,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let pages = crate::knowledge::store::list_pages(&kb_root, p.path_prefix.as_deref())
             .map_err(into_err)?;
@@ -402,7 +385,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_read_page",
-        description = "Read a single knowledge page by path. Omit kb_id to use the active KB."
+        description = "Read a single knowledge page by path. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_read_page(
         &self,
@@ -410,7 +393,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
@@ -488,7 +471,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_get_graph",
-        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use the active KB."
+        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_get_graph(
         &self,
@@ -496,14 +479,14 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let g = self.service.get_graph(&kb_id).map_err(into_err)?;
         ok_json(&g)
     }
 
     #[tool(
         name = "kb_list_history",
-        description = "List recent change-log entries from the git history. Omit kb_id to use the active KB."
+        description = "List recent change-log entries from the git history. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
     )]
     pub async fn kb_list_history(
         &self,
@@ -511,7 +494,7 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
+        let kb_id = self.kb_id_or_primary(p.kb_id, Some(&context))?;
         let h = self
             .service
             .list_history(&kb_id, p.limit)
@@ -677,41 +660,74 @@ impl KnowledgeServer {
         ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
     }
 
-    // ── Task 5: Active-KB MCP tools ───────────────────────────────────────────
+    // ── The session's knowledge-base set and its primary ──────────────────────
+
+    /// Body of `kb_set_active`, split out so it can be unit-tested without
+    /// fabricating a `RequestContext`.
+    fn set_primary_json(
+        &self,
+        session_id: Option<&str>,
+        kb_id: &str,
+    ) -> Result<serde_json::Value, ErrorData> {
+        crate::knowledge::paths::validate_kb_id(kb_id)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let selection = self
+            .service
+            .set_selection(
+                session_id,
+                None,
+                crate::knowledge::service::PrimaryUpdate::Set(kb_id),
+            )
+            .map_err(|e| ErrorData::invalid_params(format!("{e:#}"), None))?;
+        Ok(Self::selection_value(&selection, true))
+    }
+
+    /// Body of `kb_get_active`.
+    fn selection_json(&self, session_id: Option<&str>) -> Result<serde_json::Value, ErrorData> {
+        let selection = self.service.selection(session_id).map_err(into_err)?;
+        Ok(Self::selection_value(&selection, false))
+    }
+
+    fn selection_value(
+        selection: &crate::knowledge::service::KbSelection,
+        ok: bool,
+    ) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "primary_kb": selection.primary_kb,
+            "knowledge_bases": selection.kb_ids,
+            // Deprecated mirror of `primary_kb`, kept for one release so
+            // anything that learned the old key keeps working.
+            "active_kb": selection.primary_kb,
+        });
+        if ok {
+            v["ok"] = serde_json::Value::Bool(true);
+        }
+        v
+    }
 
     #[tool(
         name = "kb_set_active",
-        description = "Set the active knowledge base for this session. Subsequent kb_* tool calls that omit kb_id will default to this one."
+        description = "Make one knowledge base this session's primary: the base that KB-less writes land in and that single-base reads default to. It does not change what you can search — kb_search with no kb_id already covers every knowledge base in this session, tagging each hit with its kb_id. To read or write another base, pass its kb_id; do not switch the primary to get at it. The base must be one of this session's knowledge bases."
     )]
     pub async fn kb_set_active(
         &self,
         p: Parameters<SetActiveParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
-        self.active.set(&p.0.kb_id).await;
-        if let Some(session_id) = Self::session_id_from_context(&context) {
-            self.service
-                .set_active_for_session(session_id, Some(&p.0.kb_id))
-                .map_err(into_err)?;
-        } else {
-            self.service
-                .set_active_persisted(Some(&p.0.kb_id))
-                .map_err(into_err)?;
-        }
-        ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
+        let v = self.set_primary_json(Self::session_id(Some(&context)), &p.0.kb_id)?;
+        ok_json(&v)
     }
 
     #[tool(
         name = "kb_get_active",
-        description = "Return the currently active knowledge base id (if any)."
+        description = "Return this session's knowledge bases and which one is the primary (the KB-less write target)."
     )]
     pub async fn kb_get_active(
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self.active_kb_for_context(Some(&context)).await?;
-        ok_json(&serde_json::json!({ "active_kb": v }))
+        let v = self.selection_json(Self::session_id(Some(&context)))?;
+        ok_json(&v)
     }
 
     #[tool(
@@ -812,8 +828,203 @@ mod tests {
             tool_router: KnowledgeServer::tool_router(),
             service,
             instructions: String::new(),
-            active: ActiveKbState::default(),
         }
+    }
+
+    /// Regression (pre-existing, not introduced by the merge): the deleted
+    /// process-local active-KB cache was one `Option<String>` for the **whole
+    /// KnowledgeServer process**. `kb_set_active` wrote it alongside the
+    /// session file and `active_kb_for_context` consulted it for any session
+    /// that had no file of its own — so one chat's choice silently became
+    /// every other chat's write target inside one daemon, and it was never
+    /// invalidated on rename or delete.
+    #[test]
+    fn one_sessions_primary_does_not_leak_into_another() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("alpha", "Alpha", None)?;
+        server.service.create_base("beta", "Beta", None)?;
+
+        server
+            .service
+            .set_primary_for_session("session-a", Some("beta"))?;
+
+        assert_eq!(
+            server.primary_kb_for_session(Some("session-a"))?.as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            server.primary_kb_for_session(Some("session-b"))?,
+            None,
+            "session-b never chose a primary; session-a's choice must not become its write target"
+        );
+        Ok(())
+    }
+
+    /// The guard against re-introducing the cache. Primary resolution must be
+    /// a pure function of (session id, on-disk state) — any in-process slot
+    /// re-opens the cross-session leak and the stale-after-rename bug, and
+    /// neither has a cheap behavioural test because both need a live
+    /// `RequestContext`.
+    #[test]
+    fn knowledge_server_keeps_no_in_process_primary_cache() {
+        let src = include_str!("server.rs");
+        // Assembled at runtime: spelling the identifier literally anywhere in
+        // this file — including in this test — would make the guard pass
+        // vacuously the moment somebody re-introduced the struct.
+        let banned = concat!("Active", "KbState");
+        assert!(
+            !src.contains(banned),
+            "primary resolution must read the service, not a process-local cache"
+        );
+    }
+
+    /// The hinge of the whole change. With no `kb_id` and no primary, the
+    /// error is the only instruction the model gets — it must name the
+    /// candidates and the exact recovery, never guess a base.
+    #[test]
+    fn kb_id_or_primary_errors_with_the_candidate_list() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("alpha", "Alpha", None)?;
+        server.service.create_base("beta", "Beta", None)?;
+
+        let err = server
+            .kb_id_or_primary(None, None)
+            .expect_err("no primary chosen");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("alpha, beta") && err.message.contains("kb_set_active"),
+            "the error must list the candidates and the fix, got: {}",
+            err.message
+        );
+
+        server.service.set_primary_persisted(Some("beta"))?;
+        assert_eq!(server.kb_id_or_primary(None, None)?, "beta");
+        assert_eq!(
+            server.kb_id_or_primary(Some("alpha".to_string()), None)?,
+            "alpha",
+            "an explicit kb_id always wins — that is how a base outside the set is reached"
+        );
+        Ok(())
+    }
+
+    /// The four read tools that fall back to the primary must say so, in the
+    /// new vocabulary — the model's mental model is built from these strings,
+    /// and "the active KB" is what makes it switch instead of passing kb_id.
+    #[test]
+    fn read_tool_descriptions_teach_the_primary_not_the_active_kb() {
+        let tools = KnowledgeServer::tool_router().list_all();
+        for name in [
+            "kb_list_pages",
+            "kb_read_page",
+            "kb_get_graph",
+            "kb_list_history",
+        ] {
+            let desc = tools
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.description.clone())
+                .unwrap_or_else(|| panic!("{name} has a description"));
+            assert!(
+                desc.contains("primary knowledge base"),
+                "{name} must name the primary, got: {desc}"
+            );
+            assert!(
+                !desc.contains("active KB"),
+                "{name} must not keep teaching the single-active model, got: {desc}"
+            );
+        }
+    }
+
+    /// `kb_set_active` used to validate the id's *format* only — it would
+    /// happily point the session at a base that does not exist, and with a
+    /// KB-less write behind it that is a lost write. It now validates
+    /// membership, and reports the whole selection back so the model does not
+    /// need a second round-trip to see its bases.
+    #[test]
+    fn set_primary_validates_membership_and_reports_the_set() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            server.service.create_base(id, id, None)?;
+        }
+        server
+            .service
+            .set_hidden_for_session("session-a", &["gamma".to_string()])?;
+
+        let v = server.set_primary_json(Some("session-a"), "beta")?;
+        assert_eq!(v["primary_kb"], serde_json::json!("beta"));
+        assert_eq!(
+            v["active_kb"],
+            serde_json::json!("beta"),
+            "the deprecated mirror must track the primary for one release"
+        );
+        assert_eq!(
+            v["knowledge_bases"],
+            serde_json::json!(["alpha", "beta"]),
+            "the set comes back with the primary, so discovery is one call"
+        );
+
+        let err = server
+            .set_primary_json(Some("session-a"), "gamma")
+            .expect_err("gamma is not in this session");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("gamma") && err.message.contains("alpha, beta"),
+            "got: {}",
+            err.message
+        );
+
+        let err = server
+            .set_primary_json(Some("session-a"), "no-such-kb")
+            .expect_err("a base that does not exist can never be primary");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+
+        assert_eq!(
+            server.selection_json(Some("session-a"))?["primary_kb"],
+            serde_json::json!("beta")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn state_tool_descriptions_teach_the_merged_model() {
+        let tools = KnowledgeServer::tool_router().list_all();
+        let desc = tools
+            .iter()
+            .find(|t| t.name == "kb_set_active")
+            .and_then(|t| t.description.clone())
+            .expect("kb_set_active has a description");
+        assert!(
+            desc.contains("primary") && desc.contains("does not change what you can search"),
+            "kb_set_active must stop implying that activating narrows search, got: {desc}"
+        );
+    }
+
+    /// Prose is behaviour here. Pin the sentences the model needs: that every
+    /// base in the session is already in play, that one of them is the primary
+    /// write target, and — the load-bearing one — that reading another base
+    /// means passing kb_id, not switching the primary.
+    #[test]
+    fn instructions_teach_the_session_set_and_the_primary() {
+        let instructions = include_str!("instructions.md");
+        assert!(
+            instructions.contains("primary") && instructions.contains("kb_get_active"),
+            "instructions must name the primary and how to read it"
+        );
+        assert!(
+            instructions.contains("Do not switch the primary"),
+            "instructions must forbid switching the primary just to read another base"
+        );
+        assert!(
+            instructions.contains("every knowledge base in this session"),
+            "instructions must state that a kb_id-less kb_search already covers the whole set"
+        );
+        assert!(
+            instructions.contains("kb_set_active"),
+            "instructions must name the recovery when there is no primary"
+        );
     }
 
     #[test]

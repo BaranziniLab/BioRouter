@@ -1,7 +1,14 @@
 //! `biorouter knowledge` subcommands — manage personal knowledge bases from the
 //! CLI with the same service the desktop GUI drives over HTTP: list bases, show
-//! or set the active base, create a base, and run the ingest / lint / query
+//! or set the primary base, create a base, and run the ingest / lint / query
 //! macros (each backed by a bounded knowledge sub-agent).
+//!
+//! The CLI has no session of its own, so every command here is machine-wide by
+//! default: the primary it reads and writes is the one in `.active-kb`, not a
+//! chat's. The single exception is `knowledge active --session <id>`, which
+//! addresses one chat's pointer on purpose — a chat can hold an explicit "no
+//! primary" override that only a session-scoped gesture can lift, and the CLI
+//! is the escape hatch when the GUI is not the surface in front of the user.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,7 +19,7 @@ use biorouter::knowledge::convert::SourceInput;
 use biorouter::knowledge::macros::{
     ingest as ingest_macro, lint as lint_macro, query as query_macro,
 };
-use biorouter::knowledge::service::KnowledgeService;
+use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter::knowledge::subagent::loop_::{Completer, SubAgentBounds};
 use biorouter::knowledge::ProviderCompleter;
 use biorouter::model::ModelConfig;
@@ -25,19 +32,34 @@ fn service() -> Result<KnowledgeService> {
     KnowledgeService::new_default().map_err(|e| anyhow!("Failed to open knowledge store: {}", e))
 }
 
-/// Resolve the knowledge base to operate on: the explicit `--kb` flag, else the
-/// persisted active base, else an actionable error.
-fn resolve_kb(svc: &KnowledgeService, explicit: Option<String>) -> Result<String> {
+/// Resolve the base a command operates on: the explicit `--kb` flag, else the
+/// primary. Returns the id and, when it was resolved rather than given, a
+/// notice the caller must print *before* doing any work — a KB-less write
+/// must never be silent about which base it landed in.
+fn resolve_kb(
+    svc: &KnowledgeService,
+    explicit: Option<String>,
+) -> Result<(String, Option<String>)> {
     if let Some(id) = explicit {
-        return Ok(id);
+        return Ok((id, None));
     }
-    match svc.get_active_persisted()? {
-        Some(id) => Ok(id),
-        None => bail!(
-            "No knowledge base selected. Pass --kb <id>, or set an active base with \
-             `biorouter knowledge active --set <id>`."
-        ),
+    if let Some(id) = svc.primary_for_session(None)? {
+        let notice = format!(
+            "  {} using primary knowledge base {}",
+            style("·").dim(),
+            style(&id).fg(ACCENT).bold()
+        );
+        return Ok((id, Some(notice)));
     }
+    let ids = svc.session_kb_ids(None)?;
+    if ids.is_empty() {
+        bail!("No knowledge bases yet. Create one with `biorouter knowledge create <id> --name <name>`.");
+    }
+    bail!(
+        "No primary knowledge base. Pass --kb <id> (one of: {}), or set one with \
+         `biorouter knowledge active --set <id>`.",
+        ids.join(", ")
+    )
 }
 
 /// Build an LLM completer from the configured (or overridden) provider/model,
@@ -88,38 +110,59 @@ fn section(title: &str) {
 
 pub async fn handle_list(format: &str) -> Result<()> {
     let svc = service()?;
+    // `render_list` builds a block with one newline per row; `println!` supplies
+    // the last one, so trim or every listing ends in a blank line.
+    println!("{}", render_list(&svc, format)?.trim_end());
+    Ok(())
+}
+
+/// Render the base list. Visible bases are the set the agent uses; exactly one
+/// of them may be the **primary** — the base a `--kb`-less write lands in — and
+/// it is marked, which `cli.rs` has promised since the focus/discovery split.
+fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
     let bases = svc.list_bases()?;
-    let hidden = svc.get_hidden_persisted().unwrap_or_default();
+    // One locked snapshot rather than a hidden read and a primary read that can
+    // disagree — and, crucially, no `unwrap_or_default()`: swallowing a failed
+    // read of `.hidden-kbs` rendered every base as visible to the agent while
+    // the agent's own resolver errored on the same file. This listing is the
+    // answer to "what can the agent see?", so it must refuse rather than guess.
+    let selection = svc.selection(None)?;
+    let hidden = selection.hidden_kbs;
+    let primary = selection.primary_kb;
 
     if format == "json" {
-        println!(
-            "{}",
-            serde_json::json!({
-                "bases": bases.iter().map(|b| serde_json::json!({
-                    "id": b.id, "name": b.name, "color": b.color,
-                    "hidden": hidden.contains(&b.id),
-                })).collect::<Vec<_>>(),
-            })
-        );
-        return Ok(());
+        return Ok(serde_json::json!({
+            "primary_kb": primary,
+            "bases": bases.iter().map(|b| serde_json::json!({
+                "id": b.id, "name": b.name, "color": b.color,
+                "hidden": hidden.contains(&b.id),
+                "primary": primary.as_deref() == Some(b.id.as_str()),
+            })).collect::<Vec<_>>(),
+        })
+        .to_string());
     }
 
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  {} {}\n",
+        style("▌").fg(ACCENT),
+        style("Knowledge bases").bold()
+    ));
     if bases.is_empty() {
-        section("Knowledge bases");
-        println!(
+        out.push_str(&format!(
             "    {}",
             style("none yet — create one with `biorouter knowledge create <id> --name <name>`")
                 .dim()
-        );
-        return Ok(());
+        ));
+        return Ok(out);
     }
-
-    section("Knowledge bases");
-    println!(
-        "    {}",
-        style("Visible bases are available to the agent; hide ones you don't want it to use.")
-            .dim()
-    );
+    out.push_str(&format!(
+        "    {}\n",
+        style(
+            "Visible bases are available to the agent; the primary is where a --kb-less ingest writes."
+        )
+        .dim()
+    ));
     let width = bases.iter().map(|b| b.id.len()).max().unwrap_or(0);
     for base in &bases {
         let is_hidden = hidden.contains(&base.id);
@@ -131,19 +174,21 @@ pub async fn handle_list(format: &str) -> Result<()> {
         };
         let suffix = if is_hidden {
             style("  (hidden)").dim().to_string()
+        } else if primary.as_deref() == Some(base.id.as_str()) {
+            style("  (primary)").fg(ACCENT).to_string()
         } else {
             String::new()
         };
-        println!(
-            "    {} {:<width$}  {}{}",
+        out.push_str(&format!(
+            "    {} {:<width$}  {}{}\n",
             marker,
             style(&base.id).bold(),
             style(&base.name).dim(),
             suffix,
             width = width
-        );
+        ));
     }
-    Ok(())
+    Ok(out)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -152,83 +197,164 @@ pub async fn handle_list(format: &str) -> Result<()> {
 
 pub async fn handle_hide(id: String) -> Result<()> {
     let svc = service()?;
+    println!("{}", hide_command(&svc, &id)?);
+    Ok(())
+}
+
+pub async fn handle_unhide(id: String) -> Result<()> {
+    let svc = service()?;
+    println!("{}", unhide_command(&svc, &id)?);
+    Ok(())
+}
+
+/// Naming a base that does not exist is a typo, not a no-op: report it before
+/// claiming success. The locked operation below re-checks under the lock and
+/// remains the authority — this pre-check exists only to say `knowledge list`.
+fn require_base(svc: &KnowledgeService, id: &str) -> Result<()> {
     if !svc.list_bases()?.iter().any(|b| b.id == id) {
         bail!(
             "No knowledge base with id '{}'. Run `biorouter knowledge list` to see them.",
             id
         );
     }
-    let mut hidden = svc.get_hidden_persisted().unwrap_or_default();
-    if !hidden.contains(&id) {
-        hidden.push(id.clone());
-        svc.set_hidden_persisted(&hidden)?;
-    }
-    println!(
-        "  {} {} is now hidden from the agent",
-        style("✓").green(),
-        style(&id).fg(ACCENT).bold()
-    );
     Ok(())
 }
 
-pub async fn handle_unhide(id: String) -> Result<()> {
-    let svc = service()?;
-    let mut hidden = svc.get_hidden_persisted().unwrap_or_default();
-    let before = hidden.len();
-    hidden.retain(|h| h != &id);
-    if hidden.len() != before {
-        svc.set_hidden_persisted(&hidden)?;
-    }
-    println!(
+fn hide_command(svc: &KnowledgeService, id: &str) -> Result<String> {
+    require_base(svc, id)?;
+    svc.hide_kb(None, id, PrimaryUpdate::Unchanged)?;
+    Ok(format!(
+        "  {} {} is now hidden from the agent",
+        style("✓").green(),
+        style(id).fg(ACCENT).bold()
+    ))
+}
+
+fn unhide_command(svc: &KnowledgeService, id: &str) -> Result<String> {
+    require_base(svc, id)?;
+    svc.include_kb(None, id, PrimaryUpdate::Unchanged)?;
+    Ok(format!(
         "  {} {} is now visible to the agent",
         style("✓").green(),
-        style(&id).fg(ACCENT).bold()
-    );
-    Ok(())
+        style(id).fg(ACCENT).bold()
+    ))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // active
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
+pub async fn handle_active(
+    set: Option<String>,
+    clear: bool,
+    inherit: bool,
+    session: Option<String>,
+) -> Result<()> {
     let svc = service()?;
+    println!(
+        "{}",
+        active_command(&svc, session.as_deref(), set, clear, inherit)?
+    );
+    Ok(())
+}
+
+/// Show, set, clear or un-override the **primary** knowledge base — the base a
+/// `--kb`-less ingest/query/lint writes to. Setting one validates membership: a
+/// base the CLI hides from the agent can never be the primary.
+///
+/// `session` is the one thing the CLI addresses that is not its own: everything
+/// else here is machine-wide (see the module header). It exists because
+/// `--inherit` only means something at session scope — a chat can hold an
+/// explicit "no primary" override that survives every other gesture, and
+/// deleting the base a chat had pinned *installs* one. Without a way to drop
+/// that override from outside the GUI, such a chat could never follow the
+/// machine-wide default again.
+fn active_command(
+    svc: &KnowledgeService,
+    session: Option<&str>,
+    set: Option<String>,
+    clear: bool,
+    inherit: bool,
+) -> Result<String> {
+    // Three incompatible outcomes; clap rejects the combination first, but the
+    // check belongs with the semantics, not only with the parser.
+    if [set.is_some(), clear, inherit]
+        .iter()
+        .filter(|asked| **asked)
+        .count()
+        > 1
+    {
+        bail!("--set, --clear and --inherit are three different gestures; pass at most one.");
+    }
+
+    let scope = match session {
+        Some(id) => format!(" for chat {}", style(id).fg(ACCENT).bold()),
+        None => String::new(),
+    };
+
+    if inherit {
+        let Some(session) = session else {
+            bail!(
+                "--inherit drops a chat's own primary so it follows the machine-wide one, so it \
+                 needs --session <id>. The machine-wide primary has nothing above it to inherit \
+                 — use --clear to unset it."
+            );
+        };
+        let selection = svc.set_selection(Some(session), None, PrimaryUpdate::Inherit)?;
+        return Ok(match selection.primary_kb {
+            Some(id) => format!(
+                "  {} chat {} now follows the machine-wide primary knowledge base ({})",
+                style("✓").green(),
+                style(session).fg(ACCENT).bold(),
+                style(&id).fg(ACCENT).bold()
+            ),
+            None => format!(
+                "  {} chat {} now follows the machine-wide primary knowledge base (none is set)",
+                style("✓").green(),
+                style(session).fg(ACCENT).bold()
+            ),
+        });
+    }
 
     if clear {
-        svc.set_active_persisted(None)?;
-        println!("  {} active knowledge base cleared", style("✓").green());
-        return Ok(());
+        svc.set_selection(session, None, PrimaryUpdate::Clear)?;
+        return Ok(format!(
+            "  {} primary knowledge base cleared{}",
+            style("✓").green(),
+            scope
+        ));
     }
 
     if let Some(id) = set {
-        // Validate the base exists before activating it.
-        if !svc.list_bases()?.iter().any(|b| b.id == id) {
-            bail!(
-                "No knowledge base with id '{}'. Run `biorouter knowledge list` to see them.",
-                id
-            );
-        }
-        svc.set_active_persisted(Some(&id))?;
-        println!(
-            "  {} active knowledge base set to {}",
+        svc.set_selection(session, None, PrimaryUpdate::Set(&id))
+            .map_err(|e| anyhow!("{e} Run `biorouter knowledge list` to see them."))?;
+        return Ok(format!(
+            "  {} primary knowledge base{} set to {}",
             style("✓").green(),
+            scope,
             style(&id).fg(ACCENT).bold()
-        );
-        return Ok(());
+        ));
     }
 
-    match svc.get_active_persisted()? {
-        Some(id) => println!(
-            "  {} {}",
-            style("active:").dim(),
-            style(id).fg(ACCENT).bold()
+    Ok(match svc.primary_for_session(session)? {
+        Some(id) => format!(
+            "  {} {}{}",
+            style("primary:").dim(),
+            style(id).fg(ACCENT).bold(),
+            scope
         ),
-        None => println!(
+        None => format!(
             "  {}",
-            style("no active knowledge base (use --set <id>)").dim()
+            style(format!(
+                "no primary knowledge base{} (use --set <id>)",
+                match session {
+                    Some(id) => format!(" for chat {id}"),
+                    None => String::new(),
+                }
+            ))
+            .dim()
         ),
-    }
-    Ok(())
+    })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -237,25 +363,50 @@ pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
 
 pub async fn handle_create(id: String, name: Option<String>, color: Option<String>) -> Result<()> {
     let svc = service()?;
+    println!("{}", create_command(&svc, id, name, color)?);
+    Ok(())
+}
+
+/// Create a base — and only create it.
+///
+/// This used to pin the new base as the primary whenever none was set, so the
+/// next `--kb`-less ingest "just worked". That is exactly the invention the
+/// model forbids: the primary is where a `--kb`-less write *commits*, and a
+/// pointer the user never chose sends an ingest into a base by accident, as a
+/// git commit in that base's history that is easy to miss. The first base is
+/// not a special case — one candidate is still a candidate, not a choice. With
+/// no primary, a KB-less command fails and lists the candidates, so instead of
+/// guessing we say how to choose.
+fn create_command(
+    svc: &KnowledgeService,
+    id: String,
+    name: Option<String>,
+    color: Option<String>,
+) -> Result<String> {
     let name = name.unwrap_or_else(|| id.clone());
     let manifest = svc
         .create_base(&id, &name, color.as_deref())
         .map_err(|e| anyhow!("Failed to create knowledge base: {}", e))?;
 
-    println!(
+    let mut out = format!(
         "  {} created knowledge base {} {}",
         style("✓").green(),
         style(&manifest.id).fg(ACCENT).bold(),
         style(format!("({})", manifest.name)).dim()
     );
 
-    // Make it active when there was no prior selection, so the next ingest/query
-    // "just works" without an explicit --kb.
-    if svc.get_active_persisted()?.is_none() {
-        svc.set_active_persisted(Some(&manifest.id))?;
-        println!("  {} set as active", style("·").dim());
+    if svc.primary_for_session(None)?.is_none() {
+        out.push_str(&format!(
+            "\n  {} {}",
+            style("·").dim(),
+            style(format!(
+                "no primary knowledge base yet — set one with `biorouter knowledge active --set {}`",
+                manifest.id
+            ))
+            .dim()
+        ));
     }
-    Ok(())
+    Ok(out)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -273,7 +424,10 @@ pub async fn handle_ingest(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
 
     let source = match (url, file, text) {
         (Some(u), None, None) => SourceInput::Url(u),
@@ -372,7 +526,11 @@ pub async fn handle_ingest_conversation(
         }
         id
     } else {
-        resolve_kb(&svc, kb)?
+        let (kb_id, notice) = resolve_kb(&svc, kb)?;
+        if let Some(notice) = notice {
+            println!("{notice}");
+        }
+        kb_id
     };
 
     // Resolve which sessions to ingest. Default: the most recent session.
@@ -462,7 +620,10 @@ pub async fn handle_lint(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
 
     let completer = if fix {
         Some(build_completer(provider, model).await?)
@@ -543,7 +704,10 @@ pub async fn handle_query(
     model: Option<String>,
 ) -> Result<()> {
     let svc = service()?;
-    let kb_id = resolve_kb(&svc, kb)?;
+    let (kb_id, notice) = resolve_kb(&svc, kb)?;
+    if let Some(notice) = notice {
+        println!("{notice}");
+    }
     let completer = build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
@@ -586,4 +750,336 @@ pub async fn handle_query(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_command, create_command, hide_command, render_list, unhide_command};
+    use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+    fn svc() -> (tempfile::TempDir, KnowledgeService) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None).unwrap();
+        svc.create_base("beta", "Beta", None).unwrap();
+        (tmp, svc)
+    }
+
+    /// First-ever CLI coverage for the knowledge commands. `--set` used to
+    /// validate only that the base existed, so it would happily pin a base the
+    /// CLI hides from the agent — a primary outside the set.
+    #[test]
+    fn active_command_shows_sets_validates_and_clears_the_primary() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+
+        assert!(
+            active_command(&svc, None, None, false, false)?.contains("no primary knowledge base")
+        );
+        assert!(
+            active_command(&svc, None, Some("beta".to_string()), false, false)?.contains("beta")
+        );
+        assert!(active_command(&svc, None, None, false, false)?.contains("beta"));
+
+        svc.set_hidden_persisted(&["alpha".to_string()])?;
+        let err = active_command(&svc, None, Some("alpha".to_string()), false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("alpha") && err.contains("knowledge list"),
+            "a hidden base cannot be the primary, and the error must say how to look, got: {err}"
+        );
+
+        assert!(active_command(&svc, None, None, true, false)?.contains("cleared"));
+        assert_eq!(svc.primary_for_session(None)?, None);
+        Ok(())
+    }
+
+    /// The explicit "no primary" override is durable by design — that is the
+    /// whole point of the blank-file state — but it used to be a **one-way
+    /// door**. `delete_base` installs one in every chat that had pinned the
+    /// deleted base, and nothing on the CLI or the HTTP surface could take it
+    /// back off, so such a chat could never follow the machine-wide default
+    /// again. `--inherit` is the way back.
+    #[test]
+    fn inherit_reopens_a_chat_that_was_left_with_an_explicit_no_primary() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.create_base("gamma", "Gamma", None)?;
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+
+        // The chat pinned a base of its own, and that base was then deleted —
+        // which must not silently hand the chat the machine-wide default.
+        svc.set_primary_for_session("s1", Some("gamma"))?;
+        svc.delete_base("gamma")?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        // Every other gesture leaves the override in place.
+        assert!(active_command(&svc, Some("s1"), None, false, false)?
+            .contains("no primary knowledge base for chat s1"));
+
+        let out = active_command(&svc, Some("s1"), None, false, true)?;
+        assert!(
+            out.contains("s1") && out.contains("alpha"),
+            "the confirmation must name the chat and the default it now follows, got: {out}"
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("alpha"),
+            "the chat must follow the machine-wide primary again"
+        );
+        // And it keeps following it, rather than having copied the value once.
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("beta")
+        );
+
+        // The machine-wide scope has nothing above it to inherit, so asking is
+        // a clean error naming the gesture that does apply …
+        let err = active_command(&svc, None, None, false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--session") && err.contains("--clear"),
+            "got: {err}"
+        );
+        // … and the three gestures are mutually exclusive.
+        let err = active_command(&svc, Some("s1"), Some("beta".to_string()), false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at most one"), "got: {err}");
+        Ok(())
+    }
+
+    /// `--session` makes the machine-wide CLI able to address one chat's
+    /// pointer, which is what `--inherit` needs to mean anything. It must not
+    /// leak in either direction.
+    #[test]
+    fn a_session_scoped_primary_does_not_disturb_the_machine_one() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+
+        assert!(
+            active_command(&svc, Some("s1"), Some("beta".to_string()), false, false)?
+                .contains("beta")
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some("alpha"),
+            "a chat's pin must not move the machine-wide pointer"
+        );
+
+        assert!(active_command(&svc, Some("s1"), None, true, false)?.contains("for chat s1"));
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some("alpha"),
+            "clearing a chat's primary must not clear the machine-wide one"
+        );
+        Ok(())
+    }
+
+    /// `cli.rs:901` has promised "the active one is marked" since the
+    /// focus/discovery split; `handle_list` only ever marked hidden-vs-visible.
+    #[test]
+    fn list_marks_the_primary_base() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+
+        let text = render_list(&svc, "text")?;
+        assert!(
+            text.contains("beta") && text.contains("primary"),
+            "got: {text}"
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&render_list(&svc, "json")?)?;
+        assert_eq!(json["primary_kb"], serde_json::json!("beta"));
+        let beta = json["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == serde_json::json!("beta"))
+            .unwrap();
+        assert_eq!(beta["primary"], serde_json::json!(true));
+        Ok(())
+    }
+
+    /// A `--kb`-less ingest/query/lint resolves its target silently. It must
+    /// hand back a notice so the command can say where it is about to write —
+    /// an ingest commits to that base's git history and is hard to notice
+    /// afterwards.
+    #[test]
+    fn resolve_kb_names_the_primary_and_lists_candidates_when_there_is_none() -> anyhow::Result<()>
+    {
+        let (_tmp, svc) = svc();
+
+        let err = super::resolve_kb(&svc, None).unwrap_err().to_string();
+        assert!(
+            err.contains("alpha, beta") && err.contains("--kb"),
+            "with no primary the error must list the candidates, got: {err}"
+        );
+
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+        let (id, notice) = super::resolve_kb(&svc, None)?;
+        assert_eq!(id, "beta");
+        assert!(
+            notice
+                .expect("a resolved primary must be announced")
+                .contains("beta"),
+            "the notice must name the base"
+        );
+
+        let (id, notice) = super::resolve_kb(&svc, Some("alpha".to_string()))?;
+        assert_eq!(id, "alpha");
+        assert!(notice.is_none(), "an explicit --kb needs no notice");
+        Ok(())
+    }
+
+    /// The primary is an explicit choice and is **never invented** — not even
+    /// for the very first base on a fresh machine, the one case where guessing
+    /// looks harmless. It is not: the next `--kb`-less ingest then commits into
+    /// a base the user never picked, and an ingest is a git commit in that
+    /// base's history that is hard to notice afterwards. Creating a base only
+    /// creates it; a KB-less write must still fail with the candidate list.
+    #[test]
+    fn creating_a_base_never_invents_a_primary() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        let out = create_command(&svc, "alpha".to_string(), None, None)?;
+        assert!(out.contains("alpha"), "got: {out}");
+        assert_eq!(
+            svc.primary_for_session(None)?,
+            None,
+            "creating the first base must not silently make it the primary"
+        );
+        assert!(
+            out.contains("knowledge active --set"),
+            "the user must be told how to choose one, got: {out}"
+        );
+
+        // …and the KB-less path is the candidate-listing error, not a guess.
+        let err = super::resolve_kb(&svc, None).unwrap_err().to_string();
+        assert!(err.contains("alpha") && err.contains("--kb"), "got: {err}");
+
+        // An explicit choice sticks, and a later create does not move it.
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+        let out = create_command(&svc, "beta".to_string(), None, None)?;
+        assert_eq!(svc.primary_for_session(None)?.as_deref(), Some("alpha"));
+        assert!(
+            !out.contains("knowledge active --set"),
+            "no nudge once a primary exists, got: {out}"
+        );
+        Ok(())
+    }
+
+    /// `hide` / `unhide` used to read the hidden list, edit it in memory and
+    /// write the whole thing back. Nothing serialises those two unlocked calls,
+    /// so two overlapping invocations — separate processes, or the desktop app
+    /// writing the same file while a shell command runs — each write a list
+    /// computed before the other's edit and one hide silently vanishes. The
+    /// user sees "✓ gamma is now hidden" and gamma is still visible.
+    #[test]
+    fn concurrent_hides_from_separate_invocations_all_survive() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let root = tmp.path().to_path_buf();
+        let svc = KnowledgeService::new(root.clone());
+        let ids = ["alpha", "beta", "gamma", "delta"];
+        for id in ids {
+            svc.create_base(id, id, None)?;
+        }
+
+        for round in 0..8 {
+            svc.clear_hidden_persisted()?;
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(ids.len()));
+            let handles: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    // A fresh service per thread: each stands in for its own
+                    // `biorouter knowledge hide <id>` process.
+                    let svc = KnowledgeService::new(root.clone());
+                    let id = id.to_string();
+                    let gate = gate.clone();
+                    std::thread::spawn(move || -> anyhow::Result<()> {
+                        gate.wait();
+                        hide_command(&svc, &id)?;
+                        Ok(())
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("hide thread panicked")?;
+            }
+
+            let mut hidden = svc.get_hidden_persisted()?;
+            hidden.sort();
+            assert_eq!(
+                hidden.len(),
+                ids.len(),
+                "round {round}: a concurrent hide was lost, got {hidden:?}"
+            );
+            assert!(
+                svc.session_kb_ids(None)?.is_empty(),
+                "round {round}: every base was hidden, so the set must be empty"
+            );
+        }
+        Ok(())
+    }
+
+    /// `list` is the surface that answers "what can the agent see?", so it must
+    /// not answer from a file it failed to read. It took the hidden list with
+    /// `unwrap_or_default()`, which turns an unreadable or corrupt
+    /// `.hidden-kbs` into "nothing is hidden" — every base rendered as
+    /// available to the agent, while the agent's own resolver errors on the
+    /// same file. (With a primary pinned the error surfaced by accident
+    /// through `primary_for_session`; with none pinned, which is now the
+    /// default state after a create, nothing caught it.)
+    #[test]
+    fn list_refuses_to_report_a_hidden_list_it_could_not_read() -> anyhow::Result<()> {
+        let (tmp, svc) = svc();
+        std::fs::write(
+            biorouter::knowledge::paths::hidden_kbs_path(tmp.path()),
+            b"{ not json }",
+        )?;
+
+        assert!(
+            svc.session_kb_ids(None).is_err(),
+            "precondition: the agent's own resolver rejects this file"
+        );
+        assert!(
+            render_list(&svc, "text").is_err(),
+            "so the listing must not claim every base is visible"
+        );
+        assert!(render_list(&svc, "json").is_err());
+        Ok(())
+    }
+
+    /// Unhiding a base nobody has heard of used to print "✓ … is now visible"
+    /// and change nothing, so a typo read as success.
+    #[test]
+    fn hide_and_unhide_reject_a_base_that_does_not_exist() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+
+        for err in [
+            hide_command(&svc, "ghost").unwrap_err().to_string(),
+            unhide_command(&svc, "ghost").unwrap_err().to_string(),
+        ] {
+            assert!(
+                err.contains("ghost") && err.contains("knowledge list"),
+                "got: {err}"
+            );
+        }
+
+        // The real round trip still works.
+        hide_command(&svc, "alpha")?;
+        assert_eq!(svc.session_kb_ids(None)?, vec!["beta".to_string()]);
+        unhide_command(&svc, "alpha")?;
+        assert_eq!(
+            svc.session_kb_ids(None)?,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        Ok(())
+    }
 }

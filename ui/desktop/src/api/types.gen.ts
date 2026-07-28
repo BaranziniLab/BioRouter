@@ -28,8 +28,20 @@ export type ActionRequiredData = {
 };
 
 export type ActiveKbResponse = {
+    /**
+     * Deprecated mirror of `primary_kb`.
+     */
     active_kb?: string | null;
     hidden_kbs: Array<string>;
+    /**
+     * The session's knowledge bases, sorted. Every one is searchable and
+     * readable; there is no narrower "active" list.
+     */
+    kb_ids: Array<string>;
+    /**
+     * The KB-less write target. Always a member of `kb_ids`, or `null`.
+     */
+    primary_kb?: string | null;
 };
 
 /**
@@ -1581,11 +1593,42 @@ export type SessionsQuery = {
 };
 
 export type SetActiveBody = {
+    /**
+     * Forget the primary *at this scope*: the session then has no primary
+     * even while the machine-wide default names a base. Mutually exclusive
+     * with `primary_kb` and `inherit_primary`.
+     */
+    clear_primary?: boolean;
+    /**
+     * Replace this scope's hidden list — i.e. redefine the session's set.
+     * Omit to leave the set alone. `[]` is an explicit "hide nothing here",
+     * not a request to inherit the machine-wide list.
+     */
     hidden_kbs?: Array<string> | null;
     /**
-     * `None` clears the active KB.
+     * Drop this session's own primary override so it follows the machine-wide
+     * default again — the way back from `clear_primary`, and the only way out
+     * of the explicit "no primary" that deleting a session's pinned base
+     * leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
+     *
+     * At machine scope there is nothing above to inherit, so this coincides
+     * with `clear_primary`.
+     */
+    inherit_primary?: boolean;
+    /**
+     * Deprecated alias for `primary_kb`, kept for one release so a stale
+     * renderer bundle talking to a fresh daemon keeps working. Follows the
+     * same rule: omitted leaves the pointer alone, `null` forgets it — which
+     * is exactly how such a bundle clears.
      */
     kb_id?: string | null;
+    /**
+     * Make this base the session's primary — the KB-less write target. It
+     * must be a member of the **resulting** set, so `hidden_kbs` in the same
+     * body is applied first. Omit to leave the pointer alone; send `null` to
+     * forget it (the same as `clear_primary`).
+     */
+    primary_kb?: string | null;
     session_id?: string | null;
 };
 
@@ -3349,7 +3392,7 @@ export type GetActiveData = {
     path?: never;
     query?: {
         /**
-         * Optional chat session id for session-scoped active KB selection
+         * Optional chat session id for the session-scoped selection
          */
         session_id?: string | null;
     };
@@ -3358,7 +3401,7 @@ export type GetActiveData = {
 
 export type GetActiveResponses = {
     /**
-     * Current active KB id
+     * The session's knowledge bases and its primary
      */
     200: ActiveKbResponse;
 };
@@ -3374,14 +3417,14 @@ export type SetActiveData = {
 
 export type SetActiveErrors = {
     /**
-     * Invalid kb id
+     * Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields
      */
     400: unknown;
 };
 
 export type SetActiveResponses = {
     /**
-     * Set successfully
+     * The resulting selection
      */
     200: ActiveKbResponse;
 };

@@ -1503,7 +1503,7 @@
           {
             "name": "session_id",
             "in": "query",
-            "description": "Optional chat session id for session-scoped active KB selection",
+            "description": "Optional chat session id for the session-scoped selection",
             "required": false,
             "schema": {
               "type": "string",
@@ -1513,7 +1513,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current active KB id",
+            "description": "The session's knowledge bases and its primary",
             "content": {
               "application/json": {
                 "schema": {
@@ -1541,7 +1541,7 @@
         },
         "responses": {
           "200": {
-            "description": "Set successfully",
+            "description": "The resulting selection",
             "content": {
               "application/json": {
                 "schema": {
@@ -1551,7 +1551,7 @@
             }
           },
           "400": {
-            "description": "Invalid kb id"
+            "description": "Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields"
           }
         }
       }
@@ -4499,11 +4499,13 @@
       "ActiveKbResponse": {
         "type": "object",
         "required": [
+          "kb_ids",
           "hidden_kbs"
         ],
         "properties": {
           "active_kb": {
             "type": "string",
+            "description": "Deprecated mirror of `primary_kb`.",
             "nullable": true
           },
           "hidden_kbs": {
@@ -4511,6 +4513,18 @@
             "items": {
               "type": "string"
             }
+          },
+          "kb_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The session's knowledge bases, sorted. Every one is searchable and\nreadable; there is no narrower \"active\" list."
+          },
+          "primary_kb": {
+            "type": "string",
+            "description": "The KB-less write target. Always a member of `kb_ids`, or `null`.",
+            "nullable": true
           }
         }
       },
@@ -8666,16 +8680,30 @@
       "SetActiveBody": {
         "type": "object",
         "properties": {
+          "clear_primary": {
+            "type": "boolean",
+            "description": "Forget the primary *at this scope*: the session then has no primary\neven while the machine-wide default names a base. Mutually exclusive\nwith `primary_kb` and `inherit_primary`."
+          },
           "hidden_kbs": {
             "type": "array",
             "items": {
               "type": "string"
             },
+            "description": "Replace this scope's hidden list — i.e. redefine the session's set.\nOmit to leave the set alone. `[]` is an explicit \"hide nothing here\",\nnot a request to inherit the machine-wide list.",
             "nullable": true
+          },
+          "inherit_primary": {
+            "type": "boolean",
+            "description": "Drop this session's own primary override so it follows the machine-wide\ndefault again — the way back from `clear_primary`, and the only way out\nof the explicit \"no primary\" that deleting a session's pinned base\nleaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.\n\nAt machine scope there is nothing above to inherit, so this coincides\nwith `clear_primary`."
           },
           "kb_id": {
             "type": "string",
-            "description": "`None` clears the active KB.",
+            "description": "Deprecated alias for `primary_kb`, kept for one release so a stale\nrenderer bundle talking to a fresh daemon keeps working. Follows the\nsame rule: omitted leaves the pointer alone, `null` forgets it — which\nis exactly how such a bundle clears.",
+            "nullable": true
+          },
+          "primary_kb": {
+            "type": "string",
+            "description": "Make this base the session's primary — the KB-less write target. It\nmust be a member of the **resulting** set, so `hidden_kbs` in the same\nbody is applied first. Omit to leave the pointer alone; send `null` to\nforget it (the same as `clear_primary`).",
             "nullable": true
           },
           "session_id": {

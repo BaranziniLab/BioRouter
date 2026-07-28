@@ -25,7 +25,7 @@ use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
-use biorouter::workflow::Workflow;
+use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
 use biorouter::workflow_deeplink;
 use biorouter::{
     agents::{
@@ -34,10 +34,11 @@ use biorouter::{
     },
     config::permission::PermissionLevel,
 };
+use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use rmcp::model::{CallToolRequestParams, Content};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -84,8 +85,52 @@ pub struct StopAgentRequest {
     session_id: String,
 }
 
+/// Turn a workflow's `{ default, visible }` into "which bases the session
+/// should hold" and "what its primary should be".
+///
+/// `WorkflowKnowledgeBases` already expresses a set plus one primary, which is
+/// exactly the session model — so this is a translation, not a schema change.
+/// It deliberately does **not** consult the installed bases: inverting the set
+/// against an inventory is the service's job, inside the lock (see
+/// [`apply_workflow_knowledge_selection`]).
+///
+/// **The primary comes only from `default`.** A workflow that lists bases
+/// without naming one is a workflow with no primary, whatever the set size.
+/// Promoting a sole visible member looked harmless — "there is only one
+/// candidate, so it cannot be the wrong one" — but the merged model forbids
+/// *inventing* the pointer at all: it is the target of KB-less writes, so a
+/// promoted primary silently turns "I did not say where to write" into a
+/// commit into someone's base. With no primary, the write fails and names the
+/// candidates; the author who wanted the write target says so in `default`.
+///
+/// One rule still earns its keep: a `default` that was not listed in `visible`
+/// is unioned into the set, because the invariant requires the primary to be a
+/// member and the author plainly meant it.
+pub(crate) fn plan_workflow_knowledge_selection(
+    selection: &WorkflowKnowledgeBases,
+) -> (Vec<String>, Option<String>) {
+    let mut visible: Vec<String> = selection.visible.clone();
+    if let Some(default) = selection.default.as_deref() {
+        if !visible.iter().any(|id| id == default) {
+            visible.push(default.to_string());
+        }
+    }
+    visible.sort();
+    visible.dedup();
+    (visible, selection.default.clone())
+}
+
+/// Install a workflow's declared selection into the session it just created.
+///
+/// The whole gesture is one root-locked service call. It used to list the
+/// installed bases here, invert them against `visible` to get a hidden list,
+/// and only then take the lock to write it — so a base created by any other
+/// surface in that window was absent from the hidden list it wrote, and joined
+/// a workflow session the workflow had never declared it in. `set_visible_kbs`
+/// takes the visible set and does the inversion *inside* the lock, against the
+/// inventory as it is at the moment of the write.
 fn apply_workflow_knowledge_selection(
-    state: &AppState,
+    svc: &KnowledgeService,
     session_id: &str,
     workflow: &Workflow,
 ) -> Result<(), ErrorResponse> {
@@ -93,40 +138,19 @@ fn apply_workflow_knowledge_selection(
         return Ok(());
     };
 
-    let visible: HashSet<&str> = selection.visible.iter().map(String::as_str).collect();
-    let all_bases = state.knowledge_service.list_bases().map_err(|err| {
-        error!(
-            "Failed to list knowledge bases for workflow session: {}",
-            err
-        );
-        ErrorResponse {
-            message: format!("Failed to apply workflow knowledge bases: {}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    })?;
-    let hidden: Vec<String> = all_bases
-        .into_iter()
-        .map(|base| base.id)
-        .filter(|id| !visible.contains(id.as_str()))
-        .collect();
-    let active = selection
-        .default
-        .as_deref()
-        .or_else(|| selection.visible.first().map(String::as_str));
+    let (visible, primary) = plan_workflow_knowledge_selection(selection);
+    let primary = match primary.as_deref() {
+        Some(id) => PrimaryUpdate::Set(id),
+        None => PrimaryUpdate::Clear,
+    };
 
-    state
-        .knowledge_service
-        .set_active_for_session(session_id, active)
-        .map_err(|err| ErrorResponse {
-            message: format!("Failed to set workflow default knowledge base: {}", err),
-            status: StatusCode::BAD_REQUEST,
-        })?;
-    state
-        .knowledge_service
-        .set_hidden_for_session(session_id, &hidden)
-        .map_err(|err| ErrorResponse {
-            message: format!("Failed to set workflow visible knowledge bases: {}", err),
-            status: StatusCode::BAD_REQUEST,
+    svc.set_visible_kbs(Some(session_id), &visible, primary)
+        .map_err(|err| {
+            error!("Failed to apply workflow knowledge bases: {}", err);
+            ErrorResponse {
+                message: format!("Failed to apply workflow knowledge bases: {}", err),
+                status: StatusCode::BAD_REQUEST,
+            }
         })?;
 
     Ok(())
@@ -291,7 +315,7 @@ async fn start_agent(
         })?;
 
     if let Some(workflow) = original_workflow.as_ref() {
-        apply_workflow_knowledge_selection(state.as_ref(), &session.id, workflow)?;
+        apply_workflow_knowledge_selection(&state.knowledge_service, &session.id, workflow)?;
     }
 
     let workflow_extensions = original_workflow
@@ -1349,5 +1373,125 @@ mod working_dir_lock_tests {
                 .expect_err("invalid paths are rejected");
             assert_eq!(err.status, StatusCode::BAD_REQUEST, "for {bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod knowledge_selection_tests {
+    use super::{apply_workflow_knowledge_selection, plan_workflow_knowledge_selection};
+    use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
+    use biorouter_mcp::knowledge::service::KnowledgeService;
+    use std::sync::Arc;
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A workflow that lists five bases used to activate exactly one, silently
+    /// (`selection.default.or(selection.visible.first())`). Under the merged
+    /// model `{ default, visible }` already *is* "a set plus one primary", so
+    /// the whole set applies and only `default` may set the pointer.
+    #[test]
+    fn workflow_applies_every_declared_base() {
+        let selection = WorkflowKnowledgeBases {
+            default: Some("c".to_string()),
+            visible: ids(&["a", "b", "c", "d", "e"]),
+        };
+        let (visible, primary) = plan_workflow_knowledge_selection(&selection);
+        assert_eq!(visible, ids(&["a", "b", "c", "d", "e"]));
+        assert_eq!(primary.as_deref(), Some("c"));
+    }
+
+    /// No `default` means **no primary**, at every set size. A one-base
+    /// workflow used to have its sole member promoted, which is the model's
+    /// forbidden move — inventing a pointer the author never wrote. The
+    /// author who wants that base to be the write target says so in `default`;
+    /// the author who lists it without a `default` gets a session whose
+    /// KB-less writes fail loudly naming `a` as the candidate.
+    #[test]
+    fn workflow_without_a_default_never_invents_a_primary() {
+        let one = WorkflowKnowledgeBases {
+            default: None,
+            visible: ids(&["a"]),
+        };
+        assert_eq!(
+            plan_workflow_knowledge_selection(&one).1,
+            None,
+            "a sole visible base is still not a primary the author chose"
+        );
+
+        let many = WorkflowKnowledgeBases {
+            default: None,
+            visible: ids(&["a", "b"]),
+        };
+        assert_eq!(plan_workflow_knowledge_selection(&many).1, None);
+    }
+
+    /// A `default` the author forgot to list is still the author's intent, and
+    /// the invariant requires the primary to be a member — so union it in
+    /// rather than dropping it.
+    #[test]
+    fn workflow_default_joins_the_set_when_it_was_not_listed() {
+        let selection = WorkflowKnowledgeBases {
+            default: Some("b".to_string()),
+            visible: ids(&["a"]),
+        };
+        let (visible, primary) = plan_workflow_knowledge_selection(&selection);
+        assert_eq!(
+            visible,
+            ids(&["a", "b"]),
+            "b must be in the set — it is the primary"
+        );
+        assert_eq!(primary.as_deref(), Some("b"));
+    }
+
+    /// The workflow's set must be inverted against the installed bases *inside*
+    /// the lock. Applying it used to list the bases first, unlocked, build a
+    /// hidden list from that snapshot, and only then take the lock to write it —
+    /// so a base created in that window was in nobody's hidden list and joined
+    /// a workflow session the workflow had never mentioned.
+    ///
+    /// The race is staged deterministically: the creator takes the root lock
+    /// first (`create_base` holds it for the whole git init), and the apply
+    /// starts a few ms later. `list_bases` takes no lock, so the old code read
+    /// its inventory straight through the creator's lock and missed `gamma`;
+    /// the locked write blocks until the base is fully installed and then hides
+    /// it like any other undeclared base.
+    #[test]
+    fn applying_a_workflow_hides_a_base_that_lands_mid_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = Arc::new(KnowledgeService::new(dir.path().to_path_buf()));
+        for id in ["alpha", "beta"] {
+            svc.create_base(id, id, None).unwrap();
+        }
+
+        let mut workflow = Workflow::builder()
+            .title("t")
+            .description("d")
+            .instructions("i")
+            .build()
+            .unwrap();
+        workflow.knowledge_bases = Some(WorkflowKnowledgeBases {
+            default: Some("alpha".to_string()),
+            visible: ids(&["alpha"]),
+        });
+
+        let creator = {
+            let svc = Arc::clone(&svc);
+            std::thread::spawn(move || svc.create_base("gamma", "gamma", None).unwrap())
+        };
+        // Long enough for `create_base` to be holding the root lock, short
+        // enough that it is nowhere near registering `gamma`.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        apply_workflow_knowledge_selection(&svc, "s1", &workflow).unwrap();
+        creator.join().unwrap();
+
+        let selection = svc.selection(Some("s1")).unwrap();
+        assert_eq!(
+            selection.kb_ids,
+            ids(&["alpha"]),
+            "only the declared base belongs to a workflow session"
+        );
+        assert_eq!(selection.primary_kb.as_deref(), Some("alpha"));
     }
 }

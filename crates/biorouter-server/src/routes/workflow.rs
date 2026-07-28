@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +43,7 @@ use crate::routes::workflow_utils::{
     validate_workflow, WorkflowManifest, WorkflowValidationError,
 };
 use crate::state::AppState;
+use biorouter_mcp::knowledge::service::KnowledgeService;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWorkflowRequest {
@@ -117,11 +118,20 @@ fn enrich_extension_description(mut config: ExtensionConfig) -> ExtensionConfig 
     config
 }
 
+/// Capture a session's knowledge selection into the workflow being authored.
+///
+/// `None` means "this workflow has nothing to say about knowledge bases", and
+/// replay skips the selection entirely. That is only true when the machine has
+/// no bases at all. A session that has *all* of them hidden is a session with
+/// a stated, empty set — capturing that as `None` let replay fall through to
+/// whatever machine-wide defaults the replaying machine happened to hold, so
+/// a workflow authored with knowledge deliberately switched off came back with
+/// somebody else's bases switched on.
 fn workflow_knowledge_bases_for_session(
-    state: &AppState,
+    svc: &KnowledgeService,
     session_id: &str,
 ) -> Result<Option<WorkflowKnowledgeBases>, StatusCode> {
-    let bases = state.knowledge_service.list_bases().map_err(|err| {
+    let bases = svc.list_bases().map_err(|err| {
         tracing::error!(
             "Failed to list knowledge bases for workflow creation: {}",
             err
@@ -132,48 +142,24 @@ fn workflow_knowledge_bases_for_session(
         return Ok(None);
     }
 
-    let hidden: HashSet<String> = state
-        .knowledge_service
-        .get_hidden_for_session_or_persisted(session_id)
-        .map_err(|err| {
-            tracing::error!(
-                "Failed to get session knowledge bases for workflow creation: {}",
-                err
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .into_iter()
-        .collect();
-    let visible = bases
-        .into_iter()
-        .map(|base| base.id)
-        .filter(|id| !hidden.contains(id))
-        .collect::<Vec<_>>();
+    // One locked snapshot rather than three unlocked reads. `selection` also
+    // knows the difference between a session that never chose a primary (which
+    // inherits the machine pointer) and one that explicitly holds none (which
+    // must not) — a distinction the old `get_primary_for_session(…)
+    // .or_else(get_primary_persisted)` could not see, because both collapse to
+    // `None`. It backfilled a rejected default into the captured workflow.
+    let selection = svc.selection(Some(session_id)).map_err(|err| {
+        tracing::error!(
+            "Failed to read the session knowledge selection for workflow creation: {}",
+            err
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    if visible.is_empty() {
-        return Ok(None);
-    }
-
-    let default = state
-        .knowledge_service
-        .get_active_for_session(session_id)
-        .map_err(|err| {
-            tracing::error!(
-                "Failed to get active knowledge base for workflow creation: {}",
-                err
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .or_else(|| {
-            state
-                .knowledge_service
-                .get_active_persisted()
-                .ok()
-                .flatten()
-        })
-        .filter(|active| visible.contains(active));
-
-    Ok(Some(WorkflowKnowledgeBases { default, visible }))
+    Ok(Some(WorkflowKnowledgeBases {
+        default: selection.primary_kb,
+        visible: selection.kb_ids,
+    }))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -322,8 +308,10 @@ async fn create_workflow(
             }
 
             if workflow.knowledge_bases.is_none() {
-                workflow.knowledge_bases =
-                    workflow_knowledge_bases_for_session(state.as_ref(), &request.session_id)?;
+                workflow.knowledge_bases = workflow_knowledge_bases_for_session(
+                    &state.knowledge_service,
+                    &request.session_id,
+                )?;
             }
 
             if let Some(author_req) = request.author {
@@ -696,6 +684,136 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/workflows/parse", post(parse_workflow))
         .route("/workflows/to-yaml", post(workflow_to_yaml))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod knowledge_capture_tests {
+    use super::workflow_knowledge_bases_for_session;
+    use biorouter::workflow::Workflow;
+    use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+    fn service_with(ids: &[&str]) -> (tempfile::TempDir, KnowledgeService) {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        for id in ids {
+            svc.create_base(id, id, None).unwrap();
+        }
+        (dir, svc)
+    }
+
+    /// "Every base hidden" is a *stated* selection, not an absent one. Captured
+    /// as `None` it read as "the author had no opinion", so replay skipped the
+    /// selection write entirely and the new session inherited whatever the
+    /// replaying machine's defaults were — the opposite of what was authored.
+    #[test]
+    fn an_empty_visible_set_is_captured_not_dropped() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_visible_kbs(Some("s1"), &[], PrimaryUpdate::Unchanged)
+            .unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("a session that hid every base still has a selection to state");
+        assert!(
+            captured.visible.is_empty(),
+            "the authored set was empty; capture must say so"
+        );
+        assert_eq!(captured.default, None);
+
+        // Capturing it is only half the fix: both fields are
+        // `skip_serializing_if`, so the empty selection serializes to a bare
+        // `{}` and would be indistinguishable from an absent `knowledge_bases`
+        // if the OUTER field ever gained a "skip if empty" rule. Replay reads
+        // `Option::is_none` to decide whether to touch the session at all, so
+        // pin the round trip here — a saved workflow that loses the empty set
+        // on the way to disk defeats the capture silently.
+        let mut workflow = Workflow::builder()
+            .title("t")
+            .description("d")
+            .instructions("i")
+            .build()
+            .unwrap();
+        workflow.knowledge_bases = Some(captured);
+        let yaml = serde_yaml::to_string(&workflow).unwrap();
+        let round_tripped: Workflow = serde_yaml::from_str(&yaml).unwrap();
+        let replayed = round_tripped
+            .knowledge_bases
+            .expect("an explicitly empty set must survive being saved and reloaded");
+        assert!(replayed.visible.is_empty());
+        assert_eq!(replayed.default, None);
+    }
+
+    /// The one case with genuinely nothing to say: no bases exist at all, so
+    /// there is no set to describe and replay should leave the target session
+    /// alone.
+    #[test]
+    fn a_machine_with_no_bases_captures_nothing() {
+        let (_d, svc) = service_with(&[]);
+        assert!(workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .is_none());
+    }
+
+    /// A session that explicitly holds *no* primary must not be captured as
+    /// holding the machine-wide one. `get_primary_for_session` collapses
+    /// "never chose" and "chose nothing" into the same `None`, so the
+    /// hand-rolled `.or_else(get_primary_persisted)` fallback could not tell
+    /// them apart and handed the workflow a default the session had rejected —
+    /// which replay would then arm as the KB-less write target.
+    #[test]
+    fn an_explicit_no_primary_is_not_backfilled_from_the_machine() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+        svc.set_selection(Some("s1"), None, PrimaryUpdate::Clear)
+            .unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(
+            captured.default, None,
+            "the session said it has no primary; the machine's is not a substitute"
+        );
+        assert_eq!(
+            captured.visible,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "clearing the primary must not narrow the set"
+        );
+    }
+
+    /// A session that has simply never chosen still follows the machine
+    /// pointer — the fallback itself is correct, only its blindness was not.
+    #[test]
+    fn a_session_that_never_chose_still_inherits_the_machine_primary() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(captured.default.as_deref(), Some("alpha"));
+    }
+
+    /// The ordinary path still round-trips the set and its primary.
+    #[test]
+    fn a_narrowed_session_captures_its_set_and_primary() {
+        let (_d, svc) = service_with(&["alpha", "beta", "gamma"]);
+        svc.set_visible_kbs(
+            Some("s1"),
+            &["alpha".to_string(), "beta".to_string()],
+            PrimaryUpdate::Set("beta"),
+        )
+        .unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("a session with bases has a selection");
+        assert_eq!(
+            captured.visible,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        assert_eq!(captured.default.as_deref(), Some("beta"));
+    }
 }
 
 #[cfg(test)]

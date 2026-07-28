@@ -15,6 +15,46 @@ fn build_test_router() -> (tempfile::TempDir, Router) {
     (dir, router)
 }
 
+async fn post_active(app: &Router, body: serde_json::Value) -> (u16, serde_json::Value) {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+async fn get_active(app: &Router, session_id: Option<&str>) -> serde_json::Value {
+    let uri = match session_id {
+        Some(sid) => format!("/active?session_id={sid}"),
+        None => "/active".to_string(),
+    };
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 /// Build a router and also return the underlying KB root directory so tests
 /// can seed files directly on disk (needed for routes that read from `raw/`
 /// where there is no write API).
@@ -1699,8 +1739,10 @@ async fn active_kb_roundtrip() {
         "hidden_kbs should round-trip the set value"
     );
 
-    // Clear it.
-    let clear_body = serde_json::to_vec(&serde_json::json!({"kb_id": null})).unwrap();
+    // Clearing is now an explicit flag. A body that simply does not mention
+    // the primary leaves it alone, so a hidden-only edit can never nuke it —
+    // the same composability rule the app-grant fix relies on.
+    let clear_body = serde_json::to_vec(&serde_json::json!({"clear_primary": true})).unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -1760,7 +1802,7 @@ async fn active_kb_roundtrip() {
 }
 
 #[tokio::test]
-async fn active_kb_can_be_scoped_per_session() {
+async fn primary_kb_can_be_scoped_per_session() {
     let (_d, app) = build_test_router();
 
     for (id, name) in [("act", "Act"), ("session-kb", "Session KB")] {
@@ -1780,96 +1822,371 @@ async fn active_kb_can_be_scoped_per_session() {
         assert_eq!(res.status(), 200);
     }
 
-    let global_body = serde_json::to_vec(&serde_json::json!({
-        "kb_id": "act",
-        "hidden_kbs": ["act"]
-    }))
-    .unwrap();
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/active")
-                .header("content-type", "application/json")
-                .body(Body::from(global_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    // Machine-wide: both bases in play, "act" is the primary.
+    let global = post_active(&app, serde_json::json!({"primary_kb": "act"})).await;
+    assert_eq!(global.0, 200);
+    assert_eq!(global.1["primary_kb"].as_str(), Some("act"));
+    assert_eq!(
+        global.1["kb_ids"],
+        serde_json::json!(["act", "session-kb"]),
+        "the response carries the session's whole set, not just the pointer"
+    );
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active?session_id=session-a")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("act"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
+    // session-a narrows to one base and points at it.
+    let scoped = post_active(
+        &app,
+        serde_json::json!({
+            "primary_kb": "session-kb",
+            "session_id": "session-a",
+            "hidden_kbs": ["act"],
+        }),
+    )
+    .await;
+    assert_eq!(scoped.0, 200);
+    assert_eq!(scoped.1["primary_kb"].as_str(), Some("session-kb"));
+    assert_eq!(scoped.1["kb_ids"], serde_json::json!(["session-kb"]));
+    assert_eq!(
+        scoped.1["active_kb"].as_str(),
+        Some("session-kb"),
+        "the deprecated mirror must track the primary for one release"
+    );
 
-    let session_body = serde_json::to_vec(&serde_json::json!({
-        "kb_id": "session-kb",
-        "session_id": "session-a",
-        "hidden_kbs": ["session-kb"]
-    }))
-    .unwrap();
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/active")
-                .header("content-type", "application/json")
-                .body(Body::from(session_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    // The machine scope is untouched, and a session that never overrode inherits it.
+    let machine = get_active(&app, None).await;
+    assert_eq!(machine["primary_kb"].as_str(), Some("act"));
+    let other = get_active(&app, Some("session-b")).await;
+    assert_eq!(other["primary_kb"].as_str(), Some("act"));
+    assert_eq!(other["kb_ids"], serde_json::json!(["act", "session-kb"]));
+}
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active?session_id=session-a")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("session-kb"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["session-kb"]));
+async fn create_bases(app: &Router, ids: &[&str]) {
+    for id in ids {
+        let body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "failed to create base {id}");
+    }
+}
 
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/active")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["active_kb"].as_str(), Some("act"));
-    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
+/// The deprecated `kb_id` alias exists so a renderer bundle built before
+/// `primary_kb` keeps working against a fresh daemon. That bundle's *only*
+/// spelling for "forget the primary" is `kb_id: null` — it always sends the
+/// field, and sends `null` to clear (the pre-branch route read
+/// `body.kb_id.as_deref()` straight into the setter, where `None` meant clear).
+///
+/// Typed `Option<String>`, an explicit `null` and an omitted field both arrive
+/// as `None`, so the alias could express every value except the one it was
+/// kept for: a stale bundle's clear became a silent no-op, and the generated
+/// TypeScript still advertised `kb_id?: string | null` as if it worked.
+#[tokio::test]
+async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+
+    let set = post_active(&app, serde_json::json!({"kb_id": "alpha"})).await;
+    assert_eq!(set.0, 200);
+    assert_eq!(set.1["primary_kb"].as_str(), Some("alpha"));
+
+    let cleared = post_active(&app, serde_json::json!({"kb_id": null})).await;
+    assert_eq!(cleared.0, 200);
+    assert!(
+        cleared.1["primary_kb"].is_null(),
+        "an explicit null on the deprecated alias must clear, as it always did"
+    );
+    assert!(cleared.1["active_kb"].is_null());
+
+    // And an omitted alias still means "leave the pointer alone", so a modern
+    // set-only edit does not clear the primary as a side effect.
+    post_active(&app, serde_json::json!({"kb_id": "alpha"})).await;
+    let set_only = post_active(&app, serde_json::json!({"hidden_kbs": ["beta"]})).await;
+    assert_eq!(
+        set_only.1["primary_kb"].as_str(),
+        Some("alpha"),
+        "an absent alias is not a clear"
+    );
+}
+
+/// `clear_primary` writes a durable "this chat has no primary" override — and
+/// `delete_base` installs one in every chat that had pinned the deleted base.
+/// Until `inherit_primary` existed there was no way back over the wire, so such
+/// a chat could never follow the machine-wide default again.
+#[tokio::test]
+async fn inherit_primary_lets_a_chat_follow_the_machine_default_again() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+
+    let cleared = post_active(
+        &app,
+        serde_json::json!({"clear_primary": true, "session_id": "s1"}),
+    )
+    .await;
+    assert!(cleared.1["primary_kb"].is_null());
+    // The override is durable: a set-only edit does not lift it.
+    let set_only = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": [], "session_id": "s1"}),
+    )
+    .await;
+    assert!(
+        set_only.1["primary_kb"].is_null(),
+        "an explicit no-primary must survive an unrelated edit"
+    );
+
+    let inherited = post_active(
+        &app,
+        serde_json::json!({"inherit_primary": true, "session_id": "s1"}),
+    )
+    .await;
+    assert_eq!(inherited.0, 200);
+    assert_eq!(inherited.1["primary_kb"].as_str(), Some("alpha"));
+    assert_eq!(
+        inherited.1["active_kb"].as_str(),
+        Some("alpha"),
+        "the deprecated mirror tracks it too"
+    );
+
+    // Following, not a one-time copy: the chat tracks later machine moves.
+    post_active(&app, serde_json::json!({"primary_kb": "beta"})).await;
+    assert_eq!(
+        get_active(&app, Some("s1")).await["primary_kb"].as_str(),
+        Some("beta")
+    );
+
+    // At machine scope there is nothing above to inherit, so it coincides with
+    // clearing rather than erroring.
+    let machine = post_active(&app, serde_json::json!({"inherit_primary": true})).await;
+    assert_eq!(machine.0, 200);
+    assert!(machine.1["primary_kb"].is_null());
+}
+
+/// The three primary gestures are mutually exclusive: pin a base, hold none, or
+/// follow the machine default. Two of them in one body is a 400 naming both
+/// fields, not a silent precedence rule that hands the caller a 200 for an
+/// outcome it did not ask for and cannot detect.
+#[tokio::test]
+async fn conflicting_primary_fields_are_rejected_instead_of_ranked() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+
+    for body in [
+        serde_json::json!({"primary_kb": "beta", "clear_primary": true}),
+        serde_json::json!({"primary_kb": "beta", "inherit_primary": true}),
+        serde_json::json!({"clear_primary": true, "inherit_primary": true}),
+        serde_json::json!({"kb_id": "beta", "clear_primary": true}),
+    ] {
+        let rejected = post_active(&app, body.clone()).await;
+        assert_eq!(rejected.0, 400, "{body} must be rejected");
+    }
+    assert_eq!(
+        get_active(&app, None).await["primary_kb"].as_str(),
+        Some("alpha"),
+        "a rejected body persists nothing"
+    );
+
+    // Two fields spelling the *same* gesture is not a conflict: that is how a
+    // bundle predating `clear_primary` clears.
+    let agreeing = post_active(
+        &app,
+        serde_json::json!({"primary_kb": null, "clear_primary": true}),
+    )
+    .await;
+    assert_eq!(agreeing.0, 200);
+    assert!(agreeing.1["primary_kb"].is_null());
+}
+
+/// A 400 must mean *nothing happened*. The two halves of this body are applied
+/// together — the set first, so the primary can be validated against the state
+/// the request produces — and the write used to be ordered before the
+/// validation, so "hide beta, and point at a base that does not exist" returned
+/// an error while the hide stuck and the stored pointer was left outside the
+/// resulting set. A caller that treats 400 as "my request was ignored", which
+/// is the only reasonable reading, then held a stale picture of the session.
+///
+/// The service is where the ordering was fixed (decide-validate-commit); this
+/// test pins the property at the surface a client actually sees, across both
+/// scopes and both ways a body can be rejected.
+#[tokio::test]
+async fn a_rejected_post_leaves_the_selection_exactly_as_it_was() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+
+    for session in [None, Some("s1")] {
+        let mut base = serde_json::json!({"hidden_kbs": [], "primary_kb": "beta"});
+        if let Some(sid) = session {
+            base["session_id"] = serde_json::json!(sid);
+        }
+        let before = post_active(&app, base).await;
+        assert_eq!(before.0, 200);
+        assert_eq!(before.1["primary_kb"].as_str(), Some("beta"));
+
+        // Rejected two ways: a primary outside the resulting set, and a
+        // malformed id in the set itself. Both bodies also carry a hide that
+        // must not survive the rejection.
+        for bad in [
+            serde_json::json!({"hidden_kbs": ["beta"], "primary_kb": "ghost"}),
+            serde_json::json!({"hidden_kbs": ["beta", "../escape"]}),
+        ] {
+            let mut bad = bad;
+            if let Some(sid) = session {
+                bad["session_id"] = serde_json::json!(sid);
+            }
+            let rejected = post_active(&app, bad.clone()).await;
+            assert_eq!(rejected.0, 400, "expected a rejection for {bad}");
+
+            let after = get_active(&app, session).await;
+            assert_eq!(
+                after["kb_ids"],
+                serde_json::json!(["alpha", "beta"]),
+                "a rejected request must not narrow the set ({bad})"
+            );
+            assert_eq!(
+                after["hidden_kbs"],
+                serde_json::json!([]),
+                "a rejected request must not persist its hide ({bad})"
+            );
+            assert_eq!(
+                after["primary_kb"].as_str(),
+                Some("beta"),
+                "a rejected request must not move the pointer ({bad})"
+            );
+        }
+    }
+}
+
+/// The merged model's one invariant, at the wire. A primary that is not in the
+/// resulting set is rejected with both halves named; the un-hide and the
+/// re-point travel in ONE body so the GUI's "make primary" on an off row is a
+/// single request validated against the state it produces.
+#[tokio::test]
+async fn primary_must_be_a_member_of_the_resulting_set() {
+    let (_d, app) = build_test_router();
+    for id in ["alpha", "beta"] {
+        let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let bad = post_active(
+        &app,
+        serde_json::json!({"primary_kb": "beta", "hidden_kbs": ["beta"]}),
+    )
+    .await;
+    assert_eq!(bad.0, 400, "a hidden base cannot be the primary");
+
+    let good = post_active(
+        &app,
+        serde_json::json!({"primary_kb": "beta", "hidden_kbs": []}),
+    )
+    .await;
+    assert_eq!(good.0, 200);
+    assert_eq!(good.1["primary_kb"].as_str(), Some("beta"));
+}
+
+/// A set-only edit must never move the pointer, and hiding the primary must
+/// promote deterministically rather than leaving a dangling write target.
+#[tokio::test]
+async fn set_only_edit_keeps_the_primary_until_it_leaves_the_set() {
+    let (_d, app) = build_test_router();
+    for id in ["alpha", "beta", "gamma"] {
+        let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    post_active(&app, serde_json::json!({"primary_kb": "beta"})).await;
+
+    let narrowed = post_active(&app, serde_json::json!({"hidden_kbs": ["gamma"]})).await;
+    assert_eq!(narrowed.1["primary_kb"].as_str(), Some("beta"));
+
+    let orphaned = post_active(&app, serde_json::json!({"hidden_kbs": ["beta"]})).await;
+    assert_eq!(
+        orphaned.1["primary_kb"].as_str(),
+        Some("alpha"),
+        "hiding the primary promotes to the first remaining member"
+    );
+}
+
+/// The same promotion, from the chat the user is actually in. Most chats never
+/// pin their own primary — they display the machine-wide one — so this is the
+/// common path, and it used to be the broken one: the repair only fired for a
+/// chat with its own stored pin, so hiding "this chat's primary" left the
+/// pinning chat on beta and the inheriting chat with nothing.
+#[tokio::test]
+async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta", "gamma"]).await;
+
+    // The machine default every chat starts out displaying.
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+    // One chat pins it explicitly; the other never says anything.
+    post_active(
+        &app,
+        serde_json::json!({"primary_kb": "alpha", "session_id": "pinned"}),
+    )
+    .await;
+    assert_eq!(
+        get_active(&app, Some("inherits")).await["primary_kb"].as_str(),
+        Some("alpha"),
+        "the two chats show the user the same primary"
+    );
+
+    let pinned = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": ["alpha"], "session_id": "pinned"}),
+    )
+    .await;
+    let inherits = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": ["alpha"], "session_id": "inherits"}),
+    )
+    .await;
+    assert_eq!(
+        inherits.1["primary_kb"], pinned.1["primary_kb"],
+        "one gesture, one answer — whether the chat pinned its primary or inherited it"
+    );
+    assert_eq!(inherits.1["primary_kb"].as_str(), Some("beta"));
+    assert_eq!(
+        get_active(&app, Some("inherits")).await["primary_kb"].as_str(),
+        Some("beta"),
+        "the promotion is persisted for the chat, not re-derived per response"
+    );
+
+    // The machine pointer is untouched, so every other chat still follows it.
+    assert_eq!(
+        get_active(&app, None).await["primary_kb"].as_str(),
+        Some("alpha")
+    );
+    assert_eq!(
+        get_active(&app, Some("bystander")).await["primary_kb"].as_str(),
+        Some("alpha")
+    );
 }
