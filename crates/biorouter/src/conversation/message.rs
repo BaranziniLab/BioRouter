@@ -592,8 +592,9 @@ impl From<PromptMessage> for Message {
 /// **The guarantee, stated as what is actually enforced.** A stamp is not
 /// suppressible by anything on the normalize → compact → write-back path, which
 /// is the path that decides what the model sees and what the store keeps. Three
-/// places had to be taught it, because each rebuilds or replaces metadata rather
-/// than updating it:
+/// sites across two stages had to be taught it, because each rebuilds or
+/// replaces metadata rather than updating it — the `..self` builders inherited
+/// the field for free, which is exactly why these stood out:
 ///
 /// - [`crate::conversation::merge_consecutive_messages`] keeps only the first
 ///   message's metadata, so a change of origin is a merge boundary
