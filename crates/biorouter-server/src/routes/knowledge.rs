@@ -636,9 +636,20 @@ pub struct SetActiveBody {
     #[serde(default, deserialize_with = "present_or_null")]
     #[schema(value_type = Option<String>)]
     pub kb_id: Option<Option<String>>,
-    /// Forget the primary. Wins over `primary_kb`.
+    /// Forget the primary *at this scope*: the session then has no primary
+    /// even while the machine-wide default names a base. Mutually exclusive
+    /// with `primary_kb` and `inherit_primary`.
     #[serde(default)]
     pub clear_primary: bool,
+    /// Drop this session's own primary override so it follows the machine-wide
+    /// default again — the way back from `clear_primary`, and the only way out
+    /// of the explicit "no primary" that deleting a session's pinned base
+    /// leaves behind. Mutually exclusive with `primary_kb` and `clear_primary`.
+    ///
+    /// At machine scope there is nothing above to inherit, so this coincides
+    /// with `clear_primary`.
+    #[serde(default)]
+    pub inherit_primary: bool,
     #[serde(default)]
     pub session_id: Option<String>,
     /// Replace this scope's hidden list — i.e. redefine the session's set.
@@ -649,21 +660,65 @@ pub struct SetActiveBody {
 }
 
 impl SetActiveBody {
-    /// Fold the three spellings of a primary change — `clear_primary`, the
-    /// current `primary_kb`, and the deprecated `kb_id` — into one decision.
+    /// Fold the spellings of a primary change — `clear_primary`,
+    /// `inherit_primary`, the current `primary_kb`, and the deprecated `kb_id`
+    /// — into one decision, or reject the request.
     ///
-    /// Precedence is `clear_primary`, then `primary_kb`, then `kb_id`, and a
-    /// field that is merely absent never votes. That is what lets a modern
+    /// A field that is merely absent never votes. That is what lets a modern
     /// set-only edit (`{"hidden_kbs": [...]}`) leave the pointer where it is
     /// instead of clearing it as a side effect.
-    fn primary_update(&self) -> PrimaryUpdate<'_> {
+    ///
+    /// Two fields asking for two *different* things is an error rather than a
+    /// precedence rule. "Pin beta", "this chat has no primary" and "follow the
+    /// machine default" are three incompatible outcomes; honouring one
+    /// silently leaves the caller believing it got another, and the caller
+    /// cannot tell which from a 200. Two fields asking for the *same* thing is
+    /// not a conflict — `clear_primary` alongside `primary_kb: null` is how a
+    /// bundle that predates `clear_primary` spells the identical gesture.
+    fn primary_update(&self) -> Result<PrimaryUpdate<'_>, String> {
+        let mut votes: Vec<(&'static str, PrimaryUpdate<'_>)> = Vec::new();
         if self.clear_primary {
-            return PrimaryUpdate::Clear;
+            votes.push(("clear_primary", PrimaryUpdate::Clear));
         }
-        match self.primary_kb.as_ref().or(self.kb_id.as_ref()) {
-            Some(Some(id)) => PrimaryUpdate::Set(id),
-            Some(None) => PrimaryUpdate::Clear,
-            None => PrimaryUpdate::Unchanged,
+        if self.inherit_primary {
+            votes.push(("inherit_primary", PrimaryUpdate::Inherit));
+        }
+        // `primary_kb` still shadows its deprecated alias: they are two names
+        // for one field, not two opinions.
+        let aliased = match self.primary_kb.as_ref() {
+            Some(value) => Some(("primary_kb", value)),
+            None => self.kb_id.as_ref().map(|value| ("kb_id", value)),
+        };
+        if let Some((field, value)) = aliased {
+            votes.push((
+                field,
+                match value {
+                    Some(id) => PrimaryUpdate::Set(id),
+                    None => PrimaryUpdate::Clear,
+                },
+            ));
+        }
+
+        let mut distinct: Vec<(&'static str, PrimaryUpdate<'_>)> = Vec::new();
+        for (field, update) in votes {
+            if !distinct.iter().any(|(_, seen)| *seen == update) {
+                distinct.push((field, update));
+            }
+        }
+
+        match distinct.as_slice() {
+            [] => Ok(PrimaryUpdate::Unchanged),
+            [(_, update)] => Ok(*update),
+            conflicting => Err(format!(
+                "conflicting primary-KB fields ({}): send at most one of `primary_kb` \
+                 (pin a base), `clear_primary` (this scope has no primary), or \
+                 `inherit_primary` (follow the machine-wide default).",
+                conflicting
+                    .iter()
+                    .map(|(field, _)| *field)
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            )),
         }
     }
 }
@@ -720,18 +775,22 @@ pub async fn get_active(
     request_body = SetActiveBody,
     responses(
         (status = 200, description = "The resulting selection", body = ActiveKbResponse),
-        (status = 400, description = "Unknown kb id, or a primary outside the resulting set"),
+        (status = 400, description = "Unknown kb id, a primary outside the resulting set, \
+                                      or conflicting primary-KB fields"),
     )
 )]
 pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
+    let primary = body
+        .primary_update()
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     let selection = svc
         .set_selection(
             body.session_id.as_deref(),
             body.hidden_kbs.as_deref(),
-            body.primary_update(),
+            primary,
         )
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     Ok(Json(ActiveKbResponse {

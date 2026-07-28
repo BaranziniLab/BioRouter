@@ -1916,6 +1916,96 @@ async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() 
     );
 }
 
+/// `clear_primary` writes a durable "this chat has no primary" override — and
+/// `delete_base` installs one in every chat that had pinned the deleted base.
+/// Until `inherit_primary` existed there was no way back over the wire, so such
+/// a chat could never follow the machine-wide default again.
+#[tokio::test]
+async fn inherit_primary_lets_a_chat_follow_the_machine_default_again() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+
+    let cleared = post_active(
+        &app,
+        serde_json::json!({"clear_primary": true, "session_id": "s1"}),
+    )
+    .await;
+    assert!(cleared.1["primary_kb"].is_null());
+    // The override is durable: a set-only edit does not lift it.
+    let set_only = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": [], "session_id": "s1"}),
+    )
+    .await;
+    assert!(
+        set_only.1["primary_kb"].is_null(),
+        "an explicit no-primary must survive an unrelated edit"
+    );
+
+    let inherited = post_active(
+        &app,
+        serde_json::json!({"inherit_primary": true, "session_id": "s1"}),
+    )
+    .await;
+    assert_eq!(inherited.0, 200);
+    assert_eq!(inherited.1["primary_kb"].as_str(), Some("alpha"));
+    assert_eq!(
+        inherited.1["active_kb"].as_str(),
+        Some("alpha"),
+        "the deprecated mirror tracks it too"
+    );
+
+    // Following, not a one-time copy: the chat tracks later machine moves.
+    post_active(&app, serde_json::json!({"primary_kb": "beta"})).await;
+    assert_eq!(
+        get_active(&app, Some("s1")).await["primary_kb"].as_str(),
+        Some("beta")
+    );
+
+    // At machine scope there is nothing above to inherit, so it coincides with
+    // clearing rather than erroring.
+    let machine = post_active(&app, serde_json::json!({"inherit_primary": true})).await;
+    assert_eq!(machine.0, 200);
+    assert!(machine.1["primary_kb"].is_null());
+}
+
+/// The three primary gestures are mutually exclusive: pin a base, hold none, or
+/// follow the machine default. Two of them in one body is a 400 naming both
+/// fields, not a silent precedence rule that hands the caller a 200 for an
+/// outcome it did not ask for and cannot detect.
+#[tokio::test]
+async fn conflicting_primary_fields_are_rejected_instead_of_ranked() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+
+    for body in [
+        serde_json::json!({"primary_kb": "beta", "clear_primary": true}),
+        serde_json::json!({"primary_kb": "beta", "inherit_primary": true}),
+        serde_json::json!({"clear_primary": true, "inherit_primary": true}),
+        serde_json::json!({"kb_id": "beta", "clear_primary": true}),
+    ] {
+        let rejected = post_active(&app, body.clone()).await;
+        assert_eq!(rejected.0, 400, "{body} must be rejected");
+    }
+    assert_eq!(
+        get_active(&app, None).await["primary_kb"].as_str(),
+        Some("alpha"),
+        "a rejected body persists nothing"
+    );
+
+    // Two fields spelling the *same* gesture is not a conflict: that is how a
+    // bundle predating `clear_primary` clears.
+    let agreeing = post_active(
+        &app,
+        serde_json::json!({"primary_kb": null, "clear_primary": true}),
+    )
+    .await;
+    assert_eq!(agreeing.0, 200);
+    assert!(agreeing.1["primary_kb"].is_null());
+}
+
 /// A 400 must mean *nothing happened*. The two halves of this body are applied
 /// together — the set first, so the primary can be validated against the state
 /// the request produces — and the write used to be ordered before the

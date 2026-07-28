@@ -3085,6 +3085,54 @@ mod tests {
         Ok(())
     }
 
+    /// …and the chat it leaves that way must have a way back. The blank
+    /// override is durable by design, which made it a **one-way door**: no set
+    /// edit lifts it, `Clear` reinstates it, and `Set` is only available if the
+    /// user wants to pin something specific. A chat that lost its pinned base
+    /// to a delete could therefore never follow the machine-wide default again.
+    /// `PrimaryUpdate::Inherit` is the escape hatch, and it must leave the
+    /// chat genuinely *following* the pointer rather than having copied it.
+    #[test]
+    fn inherit_lifts_the_no_primary_override_a_delete_installed() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            svc.create_base(id, id, None)?;
+        }
+        svc.set_primary_persisted(Some("alpha"))?;
+        svc.set_primary_for_session("s1", Some("gamma"))?;
+        svc.delete_base("gamma")?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+
+        // Every other gesture leaves the override standing.
+        svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Unchanged)?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        svc.set_selection(Some("s1"), None, PrimaryUpdate::Clear)?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+
+        let sel = svc.set_selection(Some("s1"), None, PrimaryUpdate::Inherit)?;
+        assert_eq!(sel.primary_kb.as_deref(), Some("alpha"));
+
+        // Following, not a one-time copy: the chat tracks later machine moves.
+        svc.set_primary_persisted(Some("beta"))?;
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            svc.get_primary_for_session("s1")?,
+            None,
+            "inheriting means holding no pointer of its own"
+        );
+
+        // At machine scope there is nothing above to inherit, so the two
+        // spellings coincide — and neither leaves debris behind.
+        let sel = svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
+        assert_eq!(sel.primary_kb, None);
+        assert!(!crate::knowledge::paths::primary_kb_path(svc.root()).exists());
+        Ok(())
+    }
+
     #[test]
     fn hidden_kbs_track_rename_and_delete() -> anyhow::Result<()> {
         let tmp = tempfile::TempDir::new()?;
