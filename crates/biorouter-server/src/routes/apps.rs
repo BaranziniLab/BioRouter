@@ -1206,12 +1206,22 @@ fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &Capability
     prompt
 }
 
-/// Make `kb` a member of a session's knowledge set, without disturbing
-/// anything else the session already holds.
+/// Make `kb` a member of `session_id`'s knowledge set and its primary, without
+/// disturbing anything else that session already holds.
 ///
 /// Composing is not a widening of the sandbox: the grant never restricted what
 /// the session could reach, it only chose a focus. What changes is that the
 /// outcome is stated rather than ordering-derived.
+///
+/// **Every grant takes the primary, because every agent has its own session.**
+/// The main agent's session is keyed `app:<id>:<client>` and each worker
+/// profile's is `app:<id>:<client>:<profile>`, so there is no sharing for a
+/// worker's grant to be polite about. A grant is only ever issued for a base
+/// the manifest explicitly declared, which is the author naming that agent's
+/// write target — so setting it is not inventing a primary, it is recording
+/// one. Leaving it unset was: the worker session then either had no primary at
+/// all (its KB-less writes failing) or inherited the machine-wide pointer,
+/// making an unrelated base the write target for an agent scoped to one KB.
 ///
 /// One root-locked `include_kb`, not a read-modify-write. An app with worker
 /// profiles issues several grants while configuring one connection, and
@@ -1219,22 +1229,16 @@ fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &Capability
 /// writes a list computed before the others' edits — so the last write puts
 /// back the bases the earlier ones had just released. It also errors on a base
 /// that does not exist, which is what `configure_agent` has always assumed
-/// (it reports `missing_knowledge_base` on `Err`) but only ever got for the
-/// primary-taking grant, since only `PrimaryUpdate::Set` validated the id.
+/// (it reports `missing_knowledge_base` on `Err`).
 pub(crate) fn grant_knowledge_base(
     svc: &biorouter_mcp::knowledge::service::KnowledgeService,
     session_id: &str,
     kb: &str,
-    make_primary: bool,
 ) -> anyhow::Result<()> {
     svc.include_kb(
         Some(session_id),
         kb,
-        if make_primary {
-            biorouter_mcp::knowledge::service::PrimaryUpdate::Set(kb)
-        } else {
-            biorouter_mcp::knowledge::service::PrimaryUpdate::Unchanged
-        },
+        biorouter_mcp::knowledge::service::PrimaryUpdate::Set(kb),
     )?;
     Ok(())
 }
@@ -1269,7 +1273,7 @@ async fn configure_agent(
     // is reported to the page and to the model rather than swallowed into a
     // `warn!` while its tools stay armed.
     if let Some(kb) = report.granted_knowledge_base.clone() {
-        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, &kb, true) {
+        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, &kb) {
             warn!(app = %manifest.id, kb = %kb, "grant knowledge base failed: {e}");
             report.granted_knowledge_base = None;
             report.missing_knowledge_base = Some(kb);
@@ -1550,9 +1554,11 @@ async fn configure_worker_agent(
     configure_worker_extensions(agent, manifest, profile_name, cfg).await;
 
     if let Some(kb) = cfg.knowledge_base.as_ref() {
-        // A worker's grant joins the app session's set but never takes the
-        // primary — the main agent's grant owns that.
-        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb, false) {
+        // `session_id` here is the WORKER's own session (`build_worker` mints
+        // one per profile), not the app's main session — so the profile's
+        // declared base is this worker's write target, exactly as the main
+        // agent's declared base is the main session's.
+        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker grant knowledge base failed: {e}");
         }
     }
@@ -4621,44 +4627,61 @@ mod tests {
     };
     use serde_json::json;
 
-    /// `configure_main_agent` and `configure_worker_agent` both called
-    /// `set_active_for_session` with the SAME session id (every profile in an
-    /// app shares one), so which base the app used depended on profile
-    /// configuration order. A grant now joins the session's set and only the
-    /// main agent's grant takes the primary.
+    /// Production topology, which the previous version of this test did not
+    /// have: the main agent's session is keyed `app:<id>:<client>` and every
+    /// worker profile's is `app:<id>:<client>:<profile>` (see
+    /// `handle_agent_socket` and `worker_session_key`), so **no worker shares
+    /// the main session**. A grant therefore composes with whatever its own
+    /// session already held, and each declared base is that session's primary.
     #[test]
-    fn app_knowledge_grants_compose_and_only_main_takes_the_primary() -> anyhow::Result<()> {
+    fn app_knowledge_grants_compose_and_each_profile_owns_its_primary() -> anyhow::Result<()> {
         use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+
+        const MAIN: &str = "app:demo:client-1";
+        const WORKER: &str = "app:demo:client-1:critic";
 
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
         for id in ["user-kb", "main-kb", "worker-kb"] {
             svc.create_base(id, id, None)?;
         }
-        // The user had narrowed this chat to their own base and chosen it.
-        svc.set_selection(
-            Some("app-session"),
-            Some(&["main-kb".to_string(), "worker-kb".to_string()]),
+        // A machine-wide default unrelated to this app — the pointer a worker
+        // session would silently inherit if its own grant never set one.
+        svc.set_primary_persisted(Some("user-kb"))?;
+        // The user had narrowed the app's main chat to their own base.
+        svc.set_visible_kbs(
+            Some(MAIN),
+            &["user-kb".to_string()],
             PrimaryUpdate::Set("user-kb"),
         )?;
 
-        super::grant_knowledge_base(&svc, "app-session", "main-kb", true)?;
-        super::grant_knowledge_base(&svc, "app-session", "worker-kb", false)?;
+        super::grant_knowledge_base(&svc, MAIN, "main-kb")?;
+        super::grant_knowledge_base(&svc, WORKER, "worker-kb")?;
 
-        let selection = svc.selection(Some("app-session"))?;
+        let main = svc.selection(Some(MAIN))?;
         assert_eq!(
-            selection.kb_ids,
-            vec![
-                "main-kb".to_string(),
-                "user-kb".to_string(),
-                "worker-kb".to_string()
-            ],
+            main.kb_ids,
+            vec!["main-kb".to_string(), "user-kb".to_string()],
             "a grant adds to the session's set, it never replaces it"
         );
         assert_eq!(
-            selection.primary_kb.as_deref(),
+            main.primary_kb.as_deref(),
             Some("main-kb"),
-            "the main agent's grant owns the primary; a worker's grant must not steal it"
+            "the main agent's declared base is the main session's write target"
+        );
+
+        let worker = svc.selection(Some(WORKER))?;
+        assert_eq!(
+            worker.primary_kb.as_deref(),
+            Some("worker-kb"),
+            "a worker writes into the base its profile declared, not into an \
+             unrelated machine-wide default it happened to inherit"
+        );
+
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some("user-kb"),
+            "an app's grants are session-scoped; the machine pointer is untouched"
         );
         Ok(())
     }
@@ -4700,7 +4723,7 @@ mod tests {
                     let kb = kb.to_string();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        super::grant_knowledge_base(&svc, &session, &kb, false)
+                        super::grant_knowledge_base(&svc, &session, &kb)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -4733,11 +4756,11 @@ mod tests {
         svc.create_base("real-kb", "real-kb", None)?;
 
         assert!(
-            super::grant_knowledge_base(&svc, "s1", "typo-kb", false).is_err(),
+            super::grant_knowledge_base(&svc, "s1", "typo-kb").is_err(),
             "a worker grant for a missing base must be reported, not swallowed"
         );
-        assert!(super::grant_knowledge_base(&svc, "s1", "typo-kb", true).is_err());
-        assert!(super::grant_knowledge_base(&svc, "s1", "real-kb", false).is_ok());
+        assert!(super::grant_knowledge_base(&svc, "s1", "typo-kb").is_err());
+        assert!(super::grant_knowledge_base(&svc, "s1", "real-kb").is_ok());
         Ok(())
     }
 
