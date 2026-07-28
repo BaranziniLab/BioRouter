@@ -1401,10 +1401,29 @@ pub fn display_session_info(
     // Surface the primary knowledge base — the base a `--kb`-less write lands
     // in — so chat-side knowledge tools have visible context.
     if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
-        if let Ok(Some(kb)) = svc.primary_for_session(None) {
+        if let Some(kb) = primary_kb_row(&svc, session_id) {
             row("knowledge", kb);
         }
     }
+}
+
+/// The `knowledge` row of the session banner: the base a `--kb`-less write
+/// lands in **for this session**.
+///
+/// This used to pass `None` — the machine-wide pointer — even though the
+/// session id was right there. A session can pin its own primary, and the
+/// agent's `kb_*` tools resolve `primary_for_session(session_id)`, so the
+/// banner announced one base while the very next KB-less write went to
+/// another. `primary_for_session` is the only correct resolver: it knows the
+/// difference between "this session never chose" (inherit the machine
+/// pointer) and "this session explicitly has none" (show nothing).
+fn primary_kb_row(
+    svc: &biorouter::knowledge::service::KnowledgeService,
+    session_id: &Option<String>,
+) -> Option<String> {
+    svc.primary_for_session(session_id.as_deref())
+        .ok()
+        .flatten()
 }
 
 /// Small, simple "Biorouter" wordmark banner (3 lines), rendered in the brand
@@ -1948,6 +1967,36 @@ mod tests {
         let after_second_toggle = toggle_full_tool_output();
         assert_eq!(after_second_toggle, initial);
         assert_eq!(get_show_full_tool_output(), initial);
+    }
+
+    /// The banner must name the base *this session* writes to. A session can
+    /// pin its own primary — the agent's `kb_*` tools resolve
+    /// `primary_for_session(session_id)` — so reading the machine-wide pointer
+    /// here announced one base while the agent silently wrote to another.
+    #[test]
+    fn the_knowledge_row_names_this_session_s_primary_not_the_machine_s(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use biorouter::knowledge::service::KnowledgeService;
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("machine-kb", "Machine", None)?;
+        svc.create_base("session-kb", "Session", None)?;
+        svc.set_primary_persisted(Some("machine-kb"))?;
+        svc.set_primary_for_session("s1", Some("session-kb"))?;
+
+        assert_eq!(
+            primary_kb_row(&svc, &Some("s1".to_string())).as_deref(),
+            Some("session-kb")
+        );
+        // No session (`biorouter run` without one) still falls back to the
+        // machine-wide pointer, and a session that never chose inherits it.
+        assert_eq!(primary_kb_row(&svc, &None).as_deref(), Some("machine-kb"));
+        assert_eq!(
+            primary_kb_row(&svc, &Some("s2".to_string())).as_deref(),
+            Some("machine-kb")
+        );
+        Ok(())
     }
 
     #[test]
