@@ -95,8 +95,9 @@ These are the parts where a plausible-looking simplification is silently wrong.
   (It also fixes a real pre-existing gap: the rewrite never bumped `updated_at`, so a
   compaction was invisible to the `ORDER BY updated_at DESC` session list.) Removing it as
   a gratuitous write reintroduces intermittent "database is locked" turn failures that look
-  like flaky infrastructure. `concurrent_appends_survive_racing_rewrites` asserts on the
-  absence of that error specifically.
+  like flaky infrastructure. `concurrent_appends_survive_racing_rewrites` asserts that no
+  *rewrite* reports that error. (A starved *append* still can, under enough pressure — see
+  [What it costs](#what-it-costs); that is ordinary lock contention, not the snapshot bug.)
 - **The merged list is built before the insert loop.** A recovered message's blob handle
   must be in `live_blob_uids` when `sweep_orphan_blobs` runs. Append the recovered rows in a
   second pass and the sweep deletes the payload of a message that survives, leaving a
@@ -173,11 +174,48 @@ process-local, so the CLI and the daemon on the same `sessions.db` are not order
 each other at all. Those turns will now burn duplicate summarization calls where one used
 to silently delete the other's work. Preventing the overlap is a separate problem.
 
-Two adjacent pre-existing defects are also untouched and deliberately not folded in here:
-an **aborted eager compaction is never billed** (`run_eager_compaction` returns before
+One adjacent pre-existing defect is also untouched and deliberately not folded in here: an
+**aborted eager compaction is never billed** (`run_eager_compaction` returns before
 `apply_session_metrics`, a systematic under-count that touches budgets and wants its own
-review), and **`PreCompact` can fire without a matching `PostCompact`** on the eager
-abort path, leaking hook consumers that pair the two events.
+review).
+
+**`PreCompact` can fire without a matching `PostCompact`, and that is by design.** The
+pre-existing instance is the eager abort path; the declined-swap arms this work added to
+in-turn auto-compaction and to `/compact` are two more, and the summarizer-error arms at
+both sites are two older ones. It is not a bracket to be balanced. `PreCompact` is fired
+*speculatively*, before a summarization whose outcome is unknown — which is exactly what
+gives a hook its chance to capture the transcript before it is replaced, and what makes it
+"pre". `PostCompact` means a compaction landed. Firing it on a skip would tell every
+consumer the transcript was replaced when it was not, so a hook that re-indexes the
+history, invalidates a cache or reports "compacted to N tokens" would act on a history that
+never changed — a worse failure than the asymmetry. The contract is written down for hook
+authors under [Known limitations](hooks/hooks-reference.md#known-limitations).
+
+## What it costs
+
+A whole-history rewrite holds SQLite's **single write lock for an O(history) transaction** —
+measured at ~310 ms for 300 messages in a debug build. The freshness guard does not add to
+that (312.5 ms vs 312.6 ms p50 over 30 rewrites of the same history: the guard's two extra
+SELECTs are index-only and run inside a transaction that was going to rewrite every row
+anyway), but it does not remove it either, and it is worth knowing before assuming a
+guarded rewrite is free.
+
+Under a synthetic 6-appender storm with a rewriter looping on a 2 ms gap, the rewriter
+re-takes the lock faster than a starved appender's 5 s `busy_timeout` can expire, and
+roughly **1 append in 300 fails with `SQLITE_BUSY`** ("database is locked"). Three things
+make this a cost rather than a regression:
+
+- it is **pre-existing** — it reproduces identically on the unguarded `replace_conversation`
+  path, so it is a property of whole-history rewriting, not of the guard;
+- it is **loud** — `add_message` returns `Err` and the caller is told the write failed,
+  which is the opposite of the silent destruction this work exists to fix;
+- it **disappears at realistic compaction gaps** — 0 failures in 300 appends at both 25 ms
+  and 50 ms. Compactions in production are minutes apart, not milliseconds.
+
+`conversation_writeback_stress.rs` therefore tolerates and counts a busy *append* (see the
+doc comment on `is_busy`) while treating a busy *rewrite* as a hard failure — a rewrite that
+reports `database is locked` means its transaction read before it wrote, which is the
+`SQLITE_BUSY_SNAPSHOT` bug the write-first `UPDATE sessions` exists to prevent.
 
 ## Related documentation
 
