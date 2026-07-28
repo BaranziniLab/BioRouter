@@ -39,6 +39,38 @@ pub enum TurnStartError {
     },
 }
 
+/// What kind of turn this is, which is also its `session_type` telemetry
+/// dimension.
+///
+/// An enum rather than the `&'static str` an earlier revision carried. That
+/// string is written verbatim into `session_type` on three counters, and under
+/// `#[derive(Default)]` its default is `""` — so one forgotten field in Task 8's
+/// `TurnExtras` literal would start a `session_completions{session_type=""}`
+/// series while draining the `session_type="app"` one it was meant to preserve,
+/// silently and at exactly the moment the whole hot path moves onto this runner.
+/// A type with no meaningless value cannot express that mistake.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TurnKind {
+    /// A turn driven by an interactive `/reply` request. The default,
+    /// deliberately: it is what the counters already report, so a caller that
+    /// omits the field lands on the existing series rather than inventing one.
+    #[default]
+    Interactive,
+    /// A turn injected by BR-71 workspace control (`workspace_send_prompt`).
+    Workspace,
+}
+
+impl TurnKind {
+    /// The `session_type` label. `"app"` is the exact string `/reply` has always
+    /// reported; changing it would split every existing dashboard's series.
+    pub(crate) fn session_type(self) -> &'static str {
+        match self {
+            TurnKind::Interactive => "app",
+            TurnKind::Workspace => "workspace",
+        }
+    }
+}
+
 /// Everything a turn needs that is not the session id or the user's message.
 /// A struct rather than eight positional arguments because `/reply` supplies
 /// four of these and an injected turn supplies none.
@@ -87,8 +119,8 @@ pub struct TurnExtras {
     /// for this on workspace-spawned work). `/reply` passes `false` — an
     /// interactive turn is already visible as a turn.
     pub register_active_work: bool,
-    /// Telemetry label: `"app"` for `/reply`, `"workspace"` for injected turns.
-    pub session_type_label: &'static str,
+    /// What kind of turn this is; supplies the `session_type` telemetry label.
+    pub kind: TurnKind,
 }
 
 pub struct TurnRequest {
@@ -104,7 +136,7 @@ impl TurnRequest {
             user_message,
             extras: TurnExtras {
                 register_active_work: true,
-                session_type_label: "workspace",
+                kind: TurnKind::Workspace,
                 ..TurnExtras::default()
             },
         }
@@ -429,7 +461,7 @@ pub async fn run_turn(
     emit_completion_metrics(
         &state,
         &session_id,
-        extras.session_type_label,
+        extras.kind.session_type(),
         exit_type,
         turn_started.elapsed(),
         all_messages.len(),
@@ -746,6 +778,28 @@ mod tests {
             "run_turn destroyed a stored message it was merely seeded around; \
              the seed is not a write-back (ids: {ids:?})"
         );
+    }
+
+    /// A defaulted `TurnExtras` must not put an EMPTY string in the
+    /// `session_type` telemetry dimension.
+    ///
+    /// The label is written verbatim into `session_type` on three counters
+    /// (`session_completions`, `session_duration_ms`, `session_tokens`). Task 8
+    /// builds `TurnExtras` by struct literal for `/reply`, so a field that
+    /// defaults to nothing means one forgotten line makes
+    /// `session_completions{session_type=""}` appear while the existing
+    /// `session_type="app"` series silently loses the volume — defeating the
+    /// only reason this derived copy of the metrics block exists. A type with
+    /// no meaningless value cannot express that, and the default is the
+    /// interactive turn `/reply` reports today.
+    #[test]
+    fn the_default_turn_kind_is_the_one_reply_already_reports() {
+        assert_eq!(TurnKind::default(), TurnKind::Interactive);
+        assert_eq!(TurnExtras::default().kind.session_type(), "app");
+        assert_eq!(TurnKind::Workspace.session_type(), "workspace");
+        // …and the workspace constructor still labels itself.
+        let request = TurnRequest::new("s".to_string(), Message::user().with_text("x"));
+        assert_eq!(request.extras.kind, TurnKind::Workspace);
     }
 
     /// Reconciliation #9: the terminal-error CLASSIFIER moved out of `/reply`
