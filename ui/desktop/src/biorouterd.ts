@@ -121,6 +121,27 @@ export interface StderrLineReader {
 }
 
 /**
+ * Longest logical stderr line the reader keeps, in characters.
+ *
+ * Holding a line back until its newline arrives is what lets the classifier and
+ * the startup fatal probe see whole lines — but it also means an unterminated
+ * record is retained in full, and nothing bounds how long the daemon (or a
+ * dependency it links, or a subprocess sharing the pipe) may go without writing
+ * a `\n`. Without a cap that buffer grows with the record, and because nothing
+ * is emitted until the newline, the 500-line ring stays *empty* the whole time:
+ * the symptom is main-process memory climbing with no diagnostic at all.
+ *
+ * 8 KiB is far more than any real tracing line and also bounds the ring itself
+ * (500 lines x 8 KiB ~ 4 MB worst case) and the per-attempt cost of
+ * `checkServerStatus`'s `trim().toLowerCase()` scan over it.
+ */
+export const STDERR_MAX_LINE_CHARS = 8192;
+
+/** Appended to a line cut short at `STDERR_MAX_LINE_CHARS`, so a reader of
+ * main.log can tell a truncated record from a genuinely short one. */
+export const STDERR_TRUNCATION_SUFFIX = ' …[truncated]';
+
+/**
  * Reassemble `biorouterd`'s stderr pipe into whole lines.
  *
  * Node stream chunks are byte-buffer sized, not line framed: one logical line
@@ -133,12 +154,21 @@ export interface StderrLineReader {
  * line. A split panic would be invisible to it and startup would hang out the
  * full status-poll timeout instead of failing fast.
  *
- * `StringDecoder` holds back an incomplete multi-byte sequence; `remainder`
- * holds back an incomplete line. Blank lines are dropped, as before.
+ * `StringDecoder` holds back an incomplete multi-byte sequence; `pending` holds
+ * back an incomplete line, capped at `STDERR_MAX_LINE_CHARS`. The cap keeps the
+ * *prefix* because that is the part with meaning: both `daemonStderrLogLevel`
+ * and `checkServerStatus`'s fatal predicate are anchored at the head of the
+ * line. Everything past the cap is discarded until the next newline, at which
+ * point the reader resumes normally. Blank lines are dropped, as before.
  */
 export const createStderrLineReader = (onLine: (line: string) => void): StderrLineReader => {
   const decoder = new StringDecoder('utf8');
-  let remainder = '';
+  // Head of the logical line being assembled; never longer than the cap (plus
+  // the suffix, once `truncated` is set and further appends are refused).
+  let pending = '';
+  // Set when the current logical line has overflowed: the rest of it is dropped
+  // rather than buffered. Cleared when its newline finally arrives.
+  let truncated = false;
 
   const emit = (line: string) => {
     // Windows CRLF: keep the line itself clean rather than trailing a \r.
@@ -146,20 +176,45 @@ export const createStderrLineReader = (onLine: (line: string) => void): StderrLi
     if (cleaned.trim()) onLine(cleaned);
   };
 
+  // Append `text[start, end)` to the pending line, keeping only what fits.
+  // Index-based rather than slicing first, so an oversized chunk is never
+  // copied into a same-sized temporary just to be thrown away.
+  const append = (text: string, start: number, end: number) => {
+    if (truncated || end <= start) return;
+    const room = STDERR_MAX_LINE_CHARS - pending.length;
+    if (end - start <= room) {
+      pending += text.slice(start, end);
+      return;
+    }
+    pending += text.slice(start, start + room) + STDERR_TRUNCATION_SUFFIX;
+    truncated = true;
+  };
+
+  const takePending = (): string => {
+    const line = pending;
+    pending = '';
+    truncated = false;
+    return line;
+  };
+
   return {
     push(chunk: Buffer | string) {
-      remainder += typeof chunk === 'string' ? chunk : decoder.write(chunk);
-      let newline = remainder.indexOf('\n');
+      const text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      let start = 0;
+      let newline = text.indexOf('\n');
       while (newline !== -1) {
-        emit(remainder.slice(0, newline));
-        remainder = remainder.slice(newline + 1);
-        newline = remainder.indexOf('\n');
+        append(text, start, newline);
+        emit(takePending());
+        start = newline + 1;
+        newline = text.indexOf('\n', start);
       }
+      append(text, start, text.length);
     },
     flush() {
-      const tail = remainder + decoder.end();
-      remainder = '';
-      if (tail) emit(tail);
+      const tail = decoder.end();
+      append(tail, 0, tail.length);
+      const line = takePending();
+      if (line) emit(line);
     },
   };
 };

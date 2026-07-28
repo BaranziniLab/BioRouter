@@ -40,7 +40,13 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...mocked, default: mocked };
 });
 
-import { daemonStderrLogLevel, startBiorouterd } from './biorouterd';
+import {
+  STDERR_MAX_LINE_CHARS,
+  STDERR_TRUNCATION_SUFFIX,
+  createStderrLineReader,
+  daemonStderrLogLevel,
+  startBiorouterd,
+} from './biorouterd';
 
 describe('daemonStderrLogLevel', () => {
   it('maps the daemon tracing level onto the matching electron-log level', () => {
@@ -123,6 +129,107 @@ describe('daemonStderrLogLevel', () => {
         "  2026-07-26T18:40:14.289898Z  INFO biorouter::agents: thread 'main' panicked at was in the tool output"
       )
     ).toBe('info');
+  });
+});
+
+// Holding a line back until its newline arrives is what makes the classifier
+// and the startup fatal probe see whole lines — but a daemon (or a dependency
+// it links) that emits one very long unterminated record would otherwise grow
+// the held-back buffer for as long as the record lasts, with nothing reaching
+// the ring to show why memory is climbing. The buffer must be bounded.
+describe('createStderrLineReader line cap', () => {
+  const CHUNK = 'x'.repeat(64 * 1024);
+  const KIB_64_PER_MIB = 16;
+
+  const feed = (reader: ReturnType<typeof createStderrLineReader>, mib: number) => {
+    const chunk = Buffer.from(CHUNK, 'utf8');
+    for (let i = 0; i < mib * KIB_64_PER_MIB; i++) reader.push(chunk);
+  };
+
+  it('caps one unterminated record instead of buffering all of it', () => {
+    const lines: string[] = [];
+    const reader = createStderrLineReader((line) => lines.push(line));
+
+    reader.push(Buffer.from('  2026-07-26T18:40:14.289898Z ERROR biorouter::agents: ', 'utf8'));
+    feed(reader, 1);
+    expect(lines).toHaveLength(0);
+
+    reader.push(Buffer.from('\n', 'utf8'));
+    expect(lines).toHaveLength(1);
+    // Nothing like the 1 MiB that arrived: exactly the cap plus the marker.
+    expect(lines[0]!.length).toBe(STDERR_MAX_LINE_CHARS + STDERR_TRUNCATION_SUFFIX.length);
+    // The prefix is the part worth keeping: both the classifier and
+    // checkServerStatus's fatal predicate key off the head of the line.
+    expect(lines[0]!.startsWith('  2026-07-26T18:40:14.289898Z ERROR biorouter::agents: x')).toBe(
+      true
+    );
+    expect(daemonStderrLogLevel(lines[0]!)).toBe('error');
+    // A reader can tell the line was cut rather than silently believing it.
+    expect(lines[0]!.endsWith(STDERR_TRUNCATION_SUFFIX)).toBe(true);
+    expect(lines[0]!).toContain('truncated');
+  });
+
+  // The cap must be invisible to every line the daemon actually writes, so
+  // check both sides of the boundary — an off-by-one here would quietly start
+  // stamping `…[truncated]` onto complete lines.
+  it('leaves a line at or under the cap untouched', () => {
+    const emitFor = (bodyLength: number) => {
+      const lines: string[] = [];
+      const reader = createStderrLineReader((line) => lines.push(line));
+      reader.push(Buffer.from(`${'y'.repeat(bodyLength)}\n`, 'utf8'));
+      return lines[0]!;
+    };
+
+    const atCap = emitFor(STDERR_MAX_LINE_CHARS);
+    expect(atCap).toBe('y'.repeat(STDERR_MAX_LINE_CHARS));
+
+    const overByOne = emitFor(STDERR_MAX_LINE_CHARS + 1);
+    expect(overByOne).toBe('y'.repeat(STDERR_MAX_LINE_CHARS) + STDERR_TRUNCATION_SUFFIX);
+  });
+
+  it('retains the same amount however much unterminated input arrives', () => {
+    const retained = (mib: number) => {
+      const lines: string[] = [];
+      const reader = createStderrLineReader((line) => lines.push(line));
+      reader.push(Buffer.from('ERROR biorouter::agents: ', 'utf8'));
+      feed(reader, mib);
+      reader.push(Buffer.from('\n', 'utf8'));
+      return lines[0]!.length;
+    };
+
+    expect(retained(8)).toBe(retained(1));
+  });
+
+  it('resumes normally on the line after a truncated one', () => {
+    const lines: string[] = [];
+    const reader = createStderrLineReader((line) => lines.push(line));
+
+    reader.push(Buffer.from('ERROR biorouter::agents: ', 'utf8'));
+    feed(reader, 1);
+    reader.push(
+      Buffer.from('\n  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening\n', 'utf8')
+    );
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe('  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening');
+    expect(daemonStderrLogLevel(lines[1]!)).toBe('info');
+  });
+
+  it('flushes a capped line when the daemon dies mid-record', () => {
+    const lines: string[] = [];
+    const reader = createStderrLineReader((line) => lines.push(line));
+
+    reader.push(Buffer.from("thread 'main' panicked at src/main.rs:44:9: ", 'utf8'));
+    feed(reader, 1);
+    reader.flush();
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.length).toBe(STDERR_MAX_LINE_CHARS + STDERR_TRUNCATION_SUFFIX.length);
+    // Still trips checkServerStatus's fatal predicate, which reads the head.
+    expect(lines[0]!.trim().toLowerCase().startsWith("thread 'main' panicked at")).toBe(true);
+    // And flushing again must not re-emit it.
+    reader.flush();
+    expect(lines).toHaveLength(1);
   });
 });
 
@@ -273,5 +380,33 @@ describe('biorouterd stderr routing', () => {
     expect(result.errorLog).toEqual([
       '  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening',
     ]);
+  });
+
+  // A single unterminated record must not grow the main process's heap, and —
+  // the perverse part — must not leave the ring empty while it does so: memory
+  // climbing with no diagnostic is the worst of both.
+  it('bounds a huge unterminated record and still records it in the ring', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    write('  2026-07-26T18:40:14.289898Z ERROR biorouter::agents::agent: ');
+    const filler = 'x'.repeat(64 * 1024);
+    for (let i = 0; i < 16; i++) write(filler); // 1 MiB, no newline
+    expect(result.errorLog).toHaveLength(0);
+
+    write('\n  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening\n');
+
+    expect(result.errorLog).toHaveLength(2);
+    expect(result.errorLog[0]!.length).toBe(
+      STDERR_MAX_LINE_CHARS + STDERR_TRUNCATION_SUFFIX.length
+    );
+    expect(result.errorLog[0]!).toContain('ERROR biorouter::agents::agent');
+    // Classified from the retained prefix, and logged exactly once.
+    expect(mocks.logError.mock.calls).toHaveLength(1);
+    // The next line is unaffected by the one before it.
+    expect(result.errorLog[1]).toBe(
+      '  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening'
+    );
+    expect(joined(mocks.logInfo.mock.calls)).toContain('listening');
   });
 });
