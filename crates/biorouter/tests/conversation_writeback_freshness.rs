@@ -1596,3 +1596,251 @@ fn turn_config(h: &Harness) -> SessionConfig {
         reasoning_effort: None,
     }
 }
+
+// ── #51 W6/W7/W8: the pin rule, through the loop that actually persists ──────
+//
+// The three unit-level fixes for these all live under `crates/biorouter/src`,
+// where the input is a `Vec<Message>` somebody wrote by hand. The tests below
+// exercise them from the outside instead: a real session, the real reply loop,
+// and — crucially — the OVERFLOW-recovery site, which is the one compaction
+// whose input is the NORMALIZED transcript and whose output is written to disk.
+// A pin that the normalizer destroys is destroyed durably there, and no unit
+// test of `merge_consecutive_messages` can say whether anything reaches it.
+
+/// W6: a pin next to another message of the same role.
+///
+/// `merge_consecutive_messages` extends the FIRST message and keeps only its
+/// metadata and its durable id, so an unpinned neighbour that absorbs a pinned
+/// note deletes the marker — and the note is then summarized away like anything
+/// else. Every pre-existing pin test in this file goes through a compaction site
+/// that sees the RAW stored history (`reply()`'s auto-compaction, `/compact`),
+/// so none of them could reach the merge pass at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_note_next_to_an_unpinned_one_survives_the_normalized_writeback() {
+    const NOTE: &str = "NOTE: units are mg/dL, never mmol/L";
+    const NEIGHBOUR: &str = "for context, the cohort is the 2019 one";
+
+    let (h, provider) = harness(|p| p.overflow_on(&[0])).await;
+
+    // Adjacent, same role, pin SECOND: the merge makes the unpinned one the
+    // carrier, so the marker is what gets dropped.
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NEIGHBOUR))
+        .await
+        .unwrap();
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NOTE).pinned())
+        .await
+        .unwrap();
+    seed_history(&h, 6).await;
+
+    h.run_turn(USER_PROMPT).await.unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        1,
+        "the overflow recovery must have compacted, or this proves nothing"
+    );
+    assert_eq!(
+        stored_pins(&h).await,
+        vec![(NOTE.to_string(), true)],
+        "the pinned note must survive a compaction whose input went through the \
+         merge pass, still marked and still in the agent's context"
+    );
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "control: the unmarked history WAS summarized away"
+    );
+    // ...and the pin did not broaden the other way either: the neighbour is not
+    // exempt just because it sat next to a marked message.
+    assert!(
+        !agent_sees(&h, NEIGHBOUR).await,
+        "an unpinned neighbour must not inherit the exemption; it is ordinary \
+         history and belongs in the summary"
+    );
+}
+
+/// W7: flipping the marker on a message the incremental normalizer has already
+/// frozen into its cached prefix.
+///
+/// `ConversationNormalizer` reuses a frozen prefix whenever a per-message
+/// fingerprint still matches, and serves that prefix's OUTPUT messages rather
+/// than re-deriving them. A fingerprint blind to `pinned` therefore hands back
+/// the marker's OLD value for as long as the session lives — and the overflow
+/// path writes that transcript to the store, so a pin set on an older message is
+/// not merely ignored, it is erased.
+///
+/// The normalizer lives on the `Agent`, so both turns below have to run on ONE
+/// harness for the cache to be warm at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pin_set_on_a_message_the_normalizer_already_froze_is_still_honoured() {
+    // `MIN_MESSAGES_TO_CACHE` is 16 and `TAIL_SLACK` is 8, so 20 seeded
+    // messages put "q2" comfortably inside the frozen prefix.
+    const MARKED: &str = "q2";
+
+    let (h, provider) = harness(|p| p.overflow_on(&[1])).await;
+    seed_history(&h, 10).await;
+
+    // Turn 1: no compaction, so nothing invalidates the cache — it just warms.
+    h.run_turn("first question").await.unwrap();
+    assert_eq!(
+        provider.summarizer_call_count(),
+        0,
+        "turn 1 must not compact, or the cache is reset and the seam is never \
+         exercised"
+    );
+
+    // The marker goes on afterwards — the shape of BR-71's note tool marking an
+    // earlier message, or a user pinning something from the transcript.
+    let current = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap();
+    let marked: Vec<Message> = current
+        .messages()
+        .iter()
+        .cloned()
+        .map(|m| {
+            let is_target = m
+                .content
+                .iter()
+                .any(|c| matches!(c, MessageContent::Text(t) if t.text == MARKED));
+            if is_target {
+                m.pinned()
+            } else {
+                m
+            }
+        })
+        .collect();
+    assert_eq!(
+        marked.iter().filter(|m| m.is_pinned()).count(),
+        1,
+        "exactly one message must have been marked"
+    );
+    h.session_manager
+        .replace_conversation(
+            &h.session_id,
+            &biorouter::conversation::Conversation::new_unvalidated(marked),
+        )
+        .await
+        .unwrap();
+
+    // Turn 2 overflows, so the compaction runs over the NORMALIZED transcript
+    // and persists it.
+    h.run_turn("second question").await.unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        1,
+        "turn 2 must actually have compacted, or this proves nothing"
+    );
+    assert_eq!(
+        stored_pins(&h).await,
+        vec![(MARKED.to_string(), true)],
+        "a marker set after the normalizer froze that message must still be \
+         honoured — a stale cached prefix erases it durably"
+    );
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "control: an unmarked message from the same frozen prefix WAS summarized"
+    );
+}
+
+/// W8: a marker on content that can never be honoured must not be honoured.
+///
+/// `FrontendToolRequest` is a real provider `tool_use` block — every formatter
+/// emits one — and the normalizer strips it only from ASSISTANT messages, so a
+/// user-role instance arriving through the API survives to the selector.
+/// Preserving one past a compaction that summarized its response away leaves a
+/// dangling tool call in the durable history, which the next request carries to
+/// the provider.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_frontend_tool_request_is_not_preserved_by_a_real_compaction() {
+    const FTR_ID: &str = "ftr-must-not-be-preserved";
+    const TEXT_NOTE: &str = "NOTE: this one is preservable and must survive";
+
+    // `/compact` sees the RAW stored history, which is what makes a user-role
+    // frontend tool request reachable at all. It is used here in preference to
+    // the auto-compaction site for a second reason: forcing that one needs a
+    // tiny `context_limit`, and `PinLimits::max_tokens` is a SHARE of the same
+    // number — at 100 the text note below alone exhausts the pinned-set budget
+    // and the frontend tool request is evicted for that reason instead, so the
+    // test passes whatever the eligibility rule says. (Observed, on the way to
+    // writing this: "the marked set exceeded the preserved-set token budget".)
+    let (h, provider) = harness(|p| p).await;
+
+    h.session_manager
+        .add_message(
+            &h.session_id,
+            &Message::user()
+                .with_content(MessageContent::frontend_tool_request(
+                    FTR_ID,
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "read_file".into(),
+                        arguments: None,
+                        meta: None,
+                    }),
+                ))
+                .pinned(),
+        )
+        .await
+        .unwrap();
+    // The control, marked the same way: a text note IS preservable, so the
+    // compaction below is demonstrably honouring markers at all.
+    h.session_manager
+        .add_message(
+            &h.session_id,
+            &Message::user().with_text(TEXT_NOTE).pinned(),
+        )
+        .await
+        .unwrap();
+    seed_history(&h, 6).await;
+
+    h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert!(
+        agent_sees(&h, TEXT_NOTE).await,
+        "control: a marked TEXT note must be preserved, or this compaction is \
+         not honouring markers and the assertion below means nothing"
+    );
+    // ...and nothing was evicted, so whatever happens to the frontend tool
+    // request below is the ELIGIBILITY rule talking and not the budget.
+    assert!(
+        !h.stored_texts()
+            .await
+            .iter()
+            .any(|t| t.contains("could not all be kept")),
+        "the pinned-set budget must not have evicted anything, or this test \
+         cannot tell an ineligible pin from a crowded-out one; stored: {:#?}",
+        h.stored_texts().await
+    );
+    assert!(
+        !agent_visible_frontend_tool_request(&h, FTR_ID).await,
+        "a marked frontend tool request must NOT be exempt from summarization: \
+         it is half a provider tool pair, and preserving it past the compaction \
+         that hid its response leaves a dangling tool call on disk"
+    );
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "control: the unmarked history WAS summarized away"
+    );
+}
+
+/// Is a `FrontendToolRequest` with this id still in the agent's context?
+async fn agent_visible_frontend_tool_request(h: &Harness, id: &str) -> bool {
+    h.session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .agent_visible_messages()
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|c| matches!(c, MessageContent::FrontendToolRequest(r) if r.id == id))
+}
