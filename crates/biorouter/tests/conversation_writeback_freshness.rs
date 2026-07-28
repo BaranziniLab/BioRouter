@@ -738,3 +738,100 @@ async fn overflow_recovery_retries_once_then_keeps_going_without_clobbering() {
         "HistoryReplaced must not claim a replacement that never happened"
     );
 }
+
+// ── /compact (execute_commands.rs) ───────────────────────────────────────────
+
+async fn seed_history(h: &Harness, turns: usize) {
+    for i in 0..turns {
+        h.session_manager
+            .add_message(&h.session_id, &Message::user().with_text(format!("q{i}")))
+            .await
+            .unwrap();
+        h.session_manager
+            .add_message(
+                &h.session_id,
+                &Message::assistant().with_text(format!("a{i}")),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// `/compact` is the third snapshot -> summarize -> write-back site, and the
+/// most user-visible one. A note appended while it summarizes must survive.
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_compact_preserves_a_concurrent_note() {
+    let (h, provider) =
+        harness(|p| p.note_during_summarization(0, "NOTE: landed during /compact")).await;
+    seed_history(&h, 6).await;
+
+    h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    let stored = h.stored_texts().await;
+    assert!(
+        stored
+            .iter()
+            .any(|t| t.contains("NOTE: landed during /compact")),
+        "the note must survive /compact; stored: {stored:#?}"
+    );
+    assert!(
+        stored.iter().any(|t| t.contains("User Intent")),
+        "and the compaction must land; stored: {stored:#?}"
+    );
+}
+
+/// The anti-false-conflict twin: with no concurrent writer `/compact` must
+/// still compact and still report success.
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_compact_still_compacts_with_no_concurrent_writer() {
+    let (h, provider) = harness(|p| p).await;
+    seed_history(&h, 6).await;
+
+    let events = h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert!(
+        notification_texts(&events)
+            .iter()
+            .any(|t| t.contains("Compaction complete")),
+        "saw: {:?}",
+        notification_texts(&events)
+    );
+    assert!(h
+        .stored_texts()
+        .await
+        .iter()
+        .any(|t| t.contains("User Intent")));
+}
+
+/// When the basis moved, `/compact` tells the user rather than silently doing
+/// nothing — it is user-initiated and trivially re-runnable.
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_compact_reports_a_skipped_compaction_to_the_user() {
+    let (h, provider) = harness(|p| p.rewrite_during_summarization(0)).await;
+    seed_history(&h, 6).await;
+    let before = h.stored_texts().await;
+
+    let events = h.run_turn("/compact").await.unwrap();
+
+    assert_eq!(provider.summarizer_call_count(), 1);
+    assert!(
+        notification_texts(&events)
+            .iter()
+            .any(|t| t.contains("Run /compact again")),
+        "the skipped compaction must be reported; saw: {:?}",
+        notification_texts(&events)
+    );
+    let after = h.stored_texts().await;
+    for text in &before {
+        assert!(
+            after.contains(text),
+            "a skipped /compact must leave the history intact; {text:?} vanished"
+        );
+    }
+    assert!(
+        !after.iter().any(|t| t.contains("User Intent")),
+        "nothing may be persisted when the swap was declined"
+    );
+}

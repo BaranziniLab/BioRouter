@@ -97,7 +97,7 @@ impl Agent {
     ) -> Result<Option<Message>> {
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
-        let session = manager.get_session(session_id, true).await?;
+        let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
         let conversation = session
             .conversation
             .ok_or_else(|| anyhow!("Session has no conversation"))?;
@@ -118,9 +118,42 @@ impl Agent {
         )
         .await?;
 
-        manager
-            .replace_conversation(session_id, &compacted_conversation)
+        // Same freshness discipline as the two in-turn compaction sites: a
+        // message another writer appended while the summarizer ran is carried
+        // over rather than deleted by the DELETE+reinsert.
+        let (outcome, _stored) = manager
+            .replace_conversation_preserving_tail(
+                session_id,
+                &compacted_conversation,
+                basis,
+                &conversation,
+            )
             .await?;
+
+        if !outcome.stored() {
+            tracing::warn!(
+                "Manual compaction skipped for session {session_id} ({outcome:?}); the \
+                 history changed while it was being summarized"
+            );
+            // The round-trip was spent, so bill it — but not as a compaction:
+            // it did not replace the context. No PostCompact either, since
+            // nothing was compacted.
+            self.update_session_metrics(
+                session_config,
+                &summarization_usage,
+                false,
+                &usage_event_key,
+            )
+            .await?;
+            // User-initiated and trivially re-runnable, so say so plainly
+            // instead of silently doing nothing.
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                "Compaction skipped: this conversation changed while it was being \
+                 summarized, so compacting now would discard the new messages. \
+                 Run /compact again.",
+            )));
+        }
 
         self.fire_compaction_hook(
             crate::hooks::HookEvent::PostCompact,
