@@ -62,8 +62,9 @@ export function IngestPanel() {
   // The base's own default wins; otherwise fall back to the app's configured
   // model. Never a hardcoded vendor — an unresolvable model leaves this null and
   // digestion stays disabled (issue #46).
-  // A base's own default outranks the app config, so a base whose manifest has
-  // not arrived yet has no resolvable model at all — falling through to the
+  //
+  // Because the base's default outranks the app config, a base whose manifest
+  // has not arrived yet has no resolvable model at all: falling through to the
   // app's would name, and dispatch to, a model that base overrides.
   const kbDefaultUnknown = Boolean(primaryKbId) && !primaryKb && basesLoading;
   const resolvedModel = kbDefaultUnknown
