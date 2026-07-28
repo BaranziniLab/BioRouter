@@ -273,25 +273,50 @@ fn active_command(svc: &KnowledgeService, set: Option<String>, clear: bool) -> R
 
 pub async fn handle_create(id: String, name: Option<String>, color: Option<String>) -> Result<()> {
     let svc = service()?;
+    println!("{}", create_command(&svc, id, name, color)?);
+    Ok(())
+}
+
+/// Create a base — and only create it.
+///
+/// This used to pin the new base as the primary whenever none was set, so the
+/// next `--kb`-less ingest "just worked". That is exactly the invention the
+/// model forbids: the primary is where a `--kb`-less write *commits*, and a
+/// pointer the user never chose sends an ingest into a base by accident, as a
+/// git commit in that base's history that is easy to miss. The first base is
+/// not a special case — one candidate is still a candidate, not a choice. With
+/// no primary, a KB-less command fails and lists the candidates, so instead of
+/// guessing we say how to choose.
+fn create_command(
+    svc: &KnowledgeService,
+    id: String,
+    name: Option<String>,
+    color: Option<String>,
+) -> Result<String> {
     let name = name.unwrap_or_else(|| id.clone());
     let manifest = svc
         .create_base(&id, &name, color.as_deref())
         .map_err(|e| anyhow!("Failed to create knowledge base: {}", e))?;
 
-    println!(
+    let mut out = format!(
         "  {} created knowledge base {} {}",
         style("✓").green(),
         style(&manifest.id).fg(ACCENT).bold(),
         style(format!("({})", manifest.name)).dim()
     );
 
-    // Make it the primary when there was no prior choice, so the next
-    // --kb-less ingest/query "just works".
     if svc.primary_for_session(None)?.is_none() {
-        svc.set_selection(None, None, PrimaryUpdate::Set(&manifest.id))?;
-        println!("  {} set as the primary knowledge base", style("·").dim());
+        out.push_str(&format!(
+            "\n  {} {}",
+            style("·").dim(),
+            style(format!(
+                "no primary knowledge base yet — set one with `biorouter knowledge active --set {}`",
+                manifest.id
+            ))
+            .dim()
+        ));
     }
-    Ok(())
+    Ok(out)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -639,7 +664,7 @@ pub async fn handle_query(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_command, render_list};
+    use super::{active_command, create_command, render_list};
     use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
@@ -728,6 +753,44 @@ mod tests {
         let (id, notice) = super::resolve_kb(&svc, Some("alpha".to_string()))?;
         assert_eq!(id, "alpha");
         assert!(notice.is_none(), "an explicit --kb needs no notice");
+        Ok(())
+    }
+
+    /// The primary is an explicit choice and is **never invented** — not even
+    /// for the very first base on a fresh machine, the one case where guessing
+    /// looks harmless. It is not: the next `--kb`-less ingest then commits into
+    /// a base the user never picked, and an ingest is a git commit in that
+    /// base's history that is hard to notice afterwards. Creating a base only
+    /// creates it; a KB-less write must still fail with the candidate list.
+    #[test]
+    fn creating_a_base_never_invents_a_primary() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        let out = create_command(&svc, "alpha".to_string(), None, None)?;
+        assert!(out.contains("alpha"), "got: {out}");
+        assert_eq!(
+            svc.primary_for_session(None)?,
+            None,
+            "creating the first base must not silently make it the primary"
+        );
+        assert!(
+            out.contains("knowledge active --set"),
+            "the user must be told how to choose one, got: {out}"
+        );
+
+        // …and the KB-less path is the candidate-listing error, not a guess.
+        let err = super::resolve_kb(&svc, None).unwrap_err().to_string();
+        assert!(err.contains("alpha") && err.contains("--kb"), "got: {err}");
+
+        // An explicit choice sticks, and a later create does not move it.
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+        let out = create_command(&svc, "beta".to_string(), None, None)?;
+        assert_eq!(svc.primary_for_session(None)?.as_deref(), Some("alpha"));
+        assert!(
+            !out.contains("knowledge active --set"),
+            "no nudge once a primary exists, got: {out}"
+        );
         Ok(())
     }
 }
