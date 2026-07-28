@@ -253,11 +253,10 @@ impl KnowledgeService {
         Ok(hidden)
     }
 
-    fn set_hidden_path_unlocked(&self, path: &Path, ids: &[String]) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
+    /// Normalise and validate a caller-supplied hidden list — trim, drop
+    /// blanks, sort, dedupe, reject malformed ids. Kept separate from the write
+    /// so a request can be rejected in full *before* anything touches disk.
+    fn sanitize_hidden_ids(ids: &[String]) -> anyhow::Result<Vec<String>> {
         let mut sanitized = ids
             .iter()
             .map(|id| id.trim())
@@ -271,14 +270,29 @@ impl KnowledgeService {
             crate::knowledge::paths::validate_kb_id(id)?;
         }
 
+        Ok(sanitized)
+    }
+
+    /// Persist an already-sanitized hidden list. Infallible except for I/O, so
+    /// it is safe to call once every decision in an operation has been made.
+    fn write_hidden_file_unlocked(&self, path: &Path, ids: &[String]) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         // An empty list is written, not deleted: `get_hidden_for_session_or_persisted`
         // discriminates on file *existence*, so `[]` is how a session says
         // "I override, and I hide nothing". Deleting the file here made that
         // state unrepresentable and silently re-inherited the machine default.
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&sanitized)?)?;
+        std::fs::write(&tmp, serde_json::to_vec(ids)?)?;
         std::fs::rename(tmp, path)?;
         Ok(())
+    }
+
+    fn set_hidden_path_unlocked(&self, path: &Path, ids: &[String]) -> anyhow::Result<()> {
+        let sanitized = Self::sanitize_hidden_ids(ids)?;
+        self.write_hidden_file_unlocked(path, &sanitized)
     }
 
     fn rewrite_hidden_path_refs_unlocked(
@@ -1285,29 +1299,75 @@ impl KnowledgeService {
         }
     }
 
-    /// Re-establish "the primary is a member of the set" for one scope after
-    /// the set changed. Promotes to the lexicographically first remaining
-    /// member, or clears when nothing remains. Never invents a pointer where
-    /// there was none. Callers must already hold the root lock.
-    fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
-        let path = match session_id {
+    /// Every knowledge base installed on this machine, as ids, sorted — the
+    /// universe the set is carved out of, and the answer to "does this id
+    /// still exist?".
+    fn installed_kb_ids_unlocked(&self) -> anyhow::Result<Vec<String>> {
+        let mut ids = self
+            .list_bases()?
+            .into_iter()
+            .map(|base| base.id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    fn hidden_for_scope_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>> {
+        match session_id {
+            Some(session_id) => self.get_hidden_for_session_or_persisted(session_id),
+            None => self.get_hidden_persisted(),
+        }
+    }
+
+    fn primary_path_for_scope(&self, session_id: Option<&str>) -> PathBuf {
+        match session_id {
             Some(session_id) => self.primary_session_path(session_id),
             None => crate::knowledge::paths::primary_kb_path(self.root()),
-        };
-        let Some(stored) = self.get_primary_path_unlocked(&path)?.clone() else {
-            return Ok(None);
-        };
-        let ids = self.session_kb_ids(session_id)?;
-        if ids.iter().any(|id| id == &stored) {
-            return Ok(Some(stored));
         }
-        let next = ids.into_iter().next();
-        let value = match &next {
+    }
+
+    fn hidden_path_for_scope(&self, session_id: Option<&str>) -> PathBuf {
+        match session_id {
+            Some(session_id) => self.hidden_session_path(session_id),
+            None => crate::knowledge::paths::hidden_kbs_path(self.root()),
+        }
+    }
+
+    /// What a scope's primary file must become for "the primary is a member of
+    /// the set" to hold against `next_ids`. `None` = leave the file alone.
+    ///
+    /// Pure, so the decision can be taken before anything is written. It never
+    /// invents a pointer: the two "no id" states are returned untouched.
+    fn repair_decision(
+        own: &StoredPrimary,
+        next_ids: &[String],
+        session_id: Option<&str>,
+    ) -> Option<StoredPrimary> {
+        let StoredPrimary::Pinned(stored) = own else {
+            return None;
+        };
+        if next_ids.iter().any(|id| id == stored) {
+            return None;
+        }
+        Some(match next_ids.first() {
             Some(id) => StoredPrimary::Pinned(id.clone()),
             None => no_primary_for(session_id),
-        };
-        self.write_primary_file_unlocked(&path, &value)?;
-        Ok(next)
+        })
+    }
+
+    /// Re-establish "the primary is a member of the set" for one scope after
+    /// the set changed. Never invents a pointer where there was none. Callers
+    /// must already hold the root lock.
+    fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
+        let path = self.primary_path_for_scope(session_id);
+        let own = self.read_primary_file_unlocked(&path)?;
+        let next_ids = self.session_kb_ids(session_id)?;
+        if let Some(value) = Self::repair_decision(&own, &next_ids, session_id) {
+            self.write_primary_file_unlocked(&path, &value)?;
+            return Ok(value.pinned().map(ToOwned::to_owned));
+        }
+        Ok(own.pinned().map(ToOwned::to_owned))
     }
 
     /// Read-only snapshot of a scope's selection.
@@ -1336,36 +1396,52 @@ impl KnowledgeService {
         primary: PrimaryUpdate<'_>,
     ) -> anyhow::Result<KbSelection> {
         let _lock = self.lock_root()?;
+        self.apply_selection_unlocked(session_id, hidden, primary)
+    }
 
-        if let Some(hidden) = hidden {
-            let path = match session_id {
-                Some(session_id) => self.hidden_session_path(session_id),
-                None => crate::knowledge::paths::hidden_kbs_path(self.root()),
-            };
-            self.set_hidden_path_unlocked(&path, hidden)?;
-        }
-
-        let primary_path = match session_id {
-            Some(session_id) => self.primary_session_path(session_id),
-            None => crate::knowledge::paths::primary_kb_path(self.root()),
+    /// The engine behind every selection write: decide, validate, *then* write.
+    ///
+    /// The two halves are strictly ordered and that ordering is the whole
+    /// point. This used to write the hidden list first and validate the
+    /// requested primary afterwards, so "hide the base I am pinned to, and pin
+    /// one that does not exist" persisted the hide, returned an error, and left
+    /// the stored pointer sitting outside the resulting set — a half-applied
+    /// request that broke the model's one invariant. Nothing below the
+    /// "commit" line can fail on anything but I/O.
+    ///
+    /// Callers must already hold the root lock.
+    fn apply_selection_unlocked(
+        &self,
+        session_id: Option<&str>,
+        hidden: Option<&[String]>,
+        primary: PrimaryUpdate<'_>,
+    ) -> anyhow::Result<KbSelection> {
+        // ---- decide: touch nothing on disk until every branch has succeeded ----
+        let installed = self.installed_kb_ids_unlocked()?;
+        let next_hidden = match hidden {
+            Some(ids) => Self::sanitize_hidden_ids(ids)?,
+            None => self.hidden_for_scope_unlocked(session_id)?,
         };
-        match primary {
-            PrimaryUpdate::Unchanged => {
-                self.repair_primary_unlocked(session_id)?;
-            }
-            PrimaryUpdate::Clear => {
-                self.write_primary_file_unlocked(&primary_path, &no_primary_for(session_id))?;
-            }
-            PrimaryUpdate::Inherit => {
-                self.write_primary_file_unlocked(&primary_path, &StoredPrimary::Inherit)?;
-            }
+        let next_ids = installed
+            .iter()
+            .filter(|id| !next_hidden.contains(id))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let primary_path = self.primary_path_for_scope(session_id);
+        let own_primary = self.read_primary_file_unlocked(&primary_path)?;
+
+        // `None` means "leave this scope's primary file exactly as it is".
+        let next_primary: Option<StoredPrimary> = match primary {
+            PrimaryUpdate::Unchanged => Self::repair_decision(&own_primary, &next_ids, session_id),
+            PrimaryUpdate::Clear => Some(no_primary_for(session_id)),
+            PrimaryUpdate::Inherit => Some(StoredPrimary::Inherit),
             PrimaryUpdate::Set(id) => {
-                let ids = self.session_kb_ids(session_id)?;
-                if !ids.iter().any(|known| known == id) {
-                    let available = if ids.is_empty() {
+                if !next_ids.iter().any(|known| known == id) {
+                    let available = if next_ids.is_empty() {
                         "none".to_string()
                     } else {
-                        ids.join(", ")
+                        next_ids.join(", ")
                     };
                     // Scope-appropriate vocabulary: the CLI and scheduled jobs
                     // pass `None` and have no session concept at all (D11), so
@@ -1383,14 +1459,38 @@ impl KnowledgeService {
                         ),
                     }
                 }
-                self.write_primary_file_unlocked(
-                    &primary_path,
-                    &StoredPrimary::Pinned(id.to_string()),
-                )?;
+                Some(StoredPrimary::Pinned(id.to_string()))
             }
+        };
+
+        // ---- commit ----
+        if hidden.is_some() {
+            let path = self.hidden_path_for_scope(session_id);
+            self.write_hidden_file_unlocked(&path, &next_hidden)?;
+        }
+        if let Some(value) = &next_primary {
+            self.write_primary_file_unlocked(&primary_path, value)?;
         }
 
-        self.selection(session_id)
+        // Report what we just decided rather than re-reading it: the values are
+        // known-coherent here, and a re-read would be three more chances to
+        // observe someone else's half-finished edit.
+        let effective = match next_primary.unwrap_or(own_primary) {
+            StoredPrimary::Inherit if session_id.is_some() => self.read_primary_file_unlocked(
+                &crate::knowledge::paths::primary_kb_path(self.root()),
+            )?,
+            settled => settled,
+        };
+        let primary_kb = effective
+            .pinned()
+            .filter(|id| next_ids.iter().any(|known| known == id))
+            .map(ToOwned::to_owned);
+
+        Ok(KbSelection {
+            kb_ids: next_ids,
+            hidden_kbs: next_hidden,
+            primary_kb,
+        })
     }
 }
 
@@ -2309,6 +2409,71 @@ mod tests {
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
         assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// All-or-nothing, or the invariant does not hold. The set was written
+    /// before the requested primary was validated, so "hide the base I am
+    /// pinned to, and pin one that does not exist" persisted the hide and
+    /// *then* returned an error — leaving the stored pointer sitting outside
+    /// the resulting set, which is precisely the state the merged model exists
+    /// to forbid.
+    #[test]
+    fn a_rejected_set_selection_persists_nothing() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta"] {
+            svc.create_base(id, id, None)?;
+        }
+        svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Set("beta"))?;
+        let before = svc.selection(Some("s1"))?;
+        assert_eq!(before.primary_kb.as_deref(), Some("beta"));
+
+        // Hide the pinned base *and* ask for a primary that does not exist.
+        let err = svc
+            .set_selection(
+                Some("s1"),
+                Some(&["beta".to_string()]),
+                PrimaryUpdate::Set("ghost"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ghost"), "got: {err}");
+
+        assert_eq!(
+            svc.selection(Some("s1"))?,
+            before,
+            "a rejected request must not persist the half of it that ran first"
+        );
+        assert_eq!(
+            svc.get_primary_for_session("s1")?.as_deref(),
+            Some("beta"),
+            "the stored pointer must still be a member of the stored set"
+        );
+
+        // A malformed id in the set half is rejected the same way.
+        let err = svc
+            .set_selection(
+                Some("s1"),
+                Some(&["NOT VALID".to_string()]),
+                PrimaryUpdate::Unchanged,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(!err.is_empty());
+        assert_eq!(svc.selection(Some("s1"))?, before);
+
+        // Same at machine scope, where the vocabulary differs but the rule does not.
+        svc.set_selection(None, Some(&[]), PrimaryUpdate::Set("alpha"))?;
+        let before = svc.selection(None)?;
+        assert!(svc
+            .set_selection(
+                None,
+                Some(&["alpha".to_string()]),
+                PrimaryUpdate::Set("ghost")
+            )
+            .is_err());
+        assert_eq!(svc.selection(None)?, before);
         Ok(())
     }
 
