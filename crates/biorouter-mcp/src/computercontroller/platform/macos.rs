@@ -6,7 +6,13 @@ pub struct MacOSAutomation;
 
 impl SystemAutomation for MacOSAutomation {
     fn execute_system_script(&self, script: &str) -> std::io::Result<String> {
-        let output = Command::new("osascript").arg("-e").arg(script).output()?;
+        // `script` is written by the model, and AppleScript's `do shell script`
+        // is a full shell — so this child is agent-controlled and must not
+        // inherit the daemon's own credentials (issue #57).
+        let mut cmd = Command::new("osascript");
+        cmd.arg("-e").arg(script);
+        crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
+        let output = cmd.output()?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
         // Honest reporting: osascript exits non-zero on failure and writes the

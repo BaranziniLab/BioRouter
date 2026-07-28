@@ -253,7 +253,14 @@ impl SystemAutomation for LinuxAutomation {
                 // The script will be executed by the Python interpreter directly
             }
 
-            let output = Command::new("python3").arg(&temp_path).output()?;
+            // The generated script runs each model-supplied command through
+            // `subprocess.run(..., shell=True)`, so this child is a full shell
+            // under the model's control and must not inherit the daemon's own
+            // credentials (issue #57).
+            let mut cmd = Command::new("python3");
+            cmd.arg(&temp_path);
+            crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
+            let output = cmd.output()?;
 
             std::fs::remove_file(temp_path)?;
 

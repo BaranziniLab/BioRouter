@@ -398,7 +398,6 @@ pub fn is_daemon_private_env_key(key: &str) -> bool {
 /// what stops an extension's declared `envs` (which a `.brxt` bundle can carry)
 /// from re-admitting the daemon's key.
 pub fn strip_daemon_private_env(command: &mut tokio::process::Command) {
-    let inherited = env::vars_os().map(|(k, _)| k);
     let explicit = command
         .as_std()
         .get_envs()
@@ -406,14 +405,40 @@ pub fn strip_daemon_private_env(command: &mut tokio::process::Command) {
         .map(|(k, _)| k.to_os_string())
         .collect::<Vec<_>>();
 
-    let doomed: Vec<OsString> = inherited
-        .chain(explicit)
-        .filter(|k| k.to_str().is_some_and(is_daemon_private_env_key))
-        .collect();
-
-    for key in doomed {
+    for key in doomed_env_keys(explicit) {
         command.env_remove(key);
     }
+}
+
+/// [`strip_daemon_private_env`] for a synchronous [`std::process::Command`].
+///
+/// Some spawn sites are not async — `computer_controller`'s per-platform
+/// system automation (`osascript` / `powershell` / `python3`) runs a script the
+/// model wrote and builds a `std::process::Command`. It needs the same policy,
+/// and must not grow a second copy of it: both variants share
+/// [`is_daemon_private_env_key`] and [`doomed_env_keys`], so the policy cannot
+/// drift between the async and sync paths.
+pub fn strip_daemon_private_env_std(command: &mut std::process::Command) {
+    let explicit = command
+        .get_envs()
+        .filter(|(_, v)| v.is_some())
+        .map(|(k, _)| k.to_os_string())
+        .collect::<Vec<_>>();
+
+    for key in doomed_env_keys(explicit) {
+        command.env_remove(key);
+    }
+}
+
+/// Every key a child must not receive: the daemon-private names this process
+/// would pass down by inheritance, plus any that were set on the command
+/// explicitly. Shared by both `strip_daemon_private_env*` variants.
+fn doomed_env_keys(explicit: Vec<OsString>) -> Vec<OsString> {
+    env::vars_os()
+        .map(|(k, _)| k)
+        .chain(explicit)
+        .filter(|k| k.to_str().is_some_and(is_daemon_private_env_key))
+        .collect()
 }
 
 /// Configure a shell command with process group support for proper child process tracking.
