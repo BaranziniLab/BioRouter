@@ -16845,15 +16845,40 @@ entries below are kept for the reasoning, each prefixed with the ruling:
 - **Question 2 — RULED: keep 600 s.** `workspace_watch` inherits `send_prompt`'s clamp
   verbatim, per decision a. Question 8, which asks the same thing from the other
   direction, is settled by the same ruling.
-- **Question 9 — RULED: fix the root cause instead.** The operator rejected both
-  in-plan options (refuse, and route through the soft-interrupt queue) in favour of the
-  third: the write-back paths themselves must not destroy a concurrent append. That work
-  is a `biorouter`-crate change outside this plan's blast radius and is being done
-  separately on `fix/conversation-writeback-freshness`. **BR-71 depends on it**:
-  `workspace_send_prompt { mode: "note" }` may only be built on top of a
-  `replace_conversation` that cannot silently drop an appended message. Until that lands,
-  `note` against a mid-turn target has no safe implementation, and Task 14 must not ship
-  one. Reconciliation #16's "refuse" becomes the interim behaviour, not the answer.
+- **Question 9 — RULED: fix the root cause instead.** The operator rejected both in-plan
+  options (refuse, and route through the soft-interrupt queue). The requirement they set
+  is stronger than either, and stronger than "don't lose the write":
+
+  > **A note must always be inserted into the prompt, wherever in the conversation it
+  > sits — and it must not disappear when the conversation is compacted.**
+
+  That is **two** defects, not one, and `note` is unsafe until both are fixed:
+
+  **(a) The append is destroyed by a concurrent write-back.**
+  `replace_conversation` DELETEs and re-INSERTs the entire message set, so a turn that
+  computed its conversation before the note existed writes a set without it. BR-12's
+  freshness discipline (`eager_swap_is_safe`, `context_mgmt/mod.rs:661-671`) guards the
+  background compaction path but was never extended to the in-turn sites
+  (`agents/agent.rs:3061`, `:4388`). The tool has already returned success by then.
+
+  **(b) The note is summarized away even when the write survives.**
+  Compaction keeps only the last `keep_last_turns` turns verbatim (default 4,
+  `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix
+  (`recent_window_split`, `compact_messages_with_window`). **There is no mechanism to
+  preserve an individual message across that boundary** — no pin, no sticky flag, nothing
+  `recent_window_split` consults. So a note that has fallen more than four turns back is
+  dissolved into a summary at best and dropped at worst. Fixing (a) alone would produce a
+  note that lands, is confirmed, and then quietly evaporates a few turns later — which is
+  the same broken promise arriving more slowly.
+
+  Both parts are `biorouter`-crate changes outside this plan's blast radius, tracked on
+  `fix/conversation-writeback-freshness`. Reconciliation #16's "refuse" is the interim
+  behaviour, not the answer.
+
+  **What Task 14 may assume once the prerequisite lands:** that a message marked for
+  preservation is carried verbatim through every compaction path, so `note` can append and
+  return success truthfully. **What it must not do before then:** ship any `note`
+  implementation, including one that appends and hopes.
 
 1. **Should the auto-injected spawn surface be visible in Settings?** *Restated after
    review — the previous version of this question was based on a false premise.* It
@@ -16956,9 +16981,11 @@ following three adversarial critic passes (decision 28's review gate is satisfie
   code-quality reviewer per task. Never parallel implementers. Stop on BLOCKED.
 - **Prerequisite 1 — issue #45 (multi-KB): SATISFIED.** Merged to `main` in `84d27fd4`
   on 2026-07-27; verification recorded in `docs/knowledge-base/multi-kb-verification.md`.
-- **Prerequisite 2 — conversation write-back freshness: IN PROGRESS** on
+- **Prerequisite 2 — a note always reaches the prompt: IN PROGRESS** on
   `fix/conversation-writeback-freshness`. Task 1 does not start until it merges, and
-  Task 14 must not ship a `mode: "note"` implementation before it.
+  Task 14 must not ship a `mode: "note"` implementation before it. It has **two parts**
+  (see the ruling on question 9): the append must survive the write-back race, *and* it
+  must survive compaction.
 
 Also ruled on at approval time, and folded into the questions section above: question 1
 (stay silent — no delegation badge), questions 2 and 8 (keep the 600 s clamp), and
