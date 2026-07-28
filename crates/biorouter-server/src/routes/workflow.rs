@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,36 +142,24 @@ fn workflow_knowledge_bases_for_session(
         return Ok(None);
     }
 
-    let hidden: HashSet<String> = svc
-        .get_hidden_for_session_or_persisted(session_id)
-        .map_err(|err| {
-            tracing::error!(
-                "Failed to get session knowledge bases for workflow creation: {}",
-                err
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .into_iter()
-        .collect();
-    let visible = bases
-        .into_iter()
-        .map(|base| base.id)
-        .filter(|id| !hidden.contains(id))
-        .collect::<Vec<_>>();
+    // One locked snapshot rather than three unlocked reads. `selection` also
+    // knows the difference between a session that never chose a primary (which
+    // inherits the machine pointer) and one that explicitly holds none (which
+    // must not) — a distinction the old `get_primary_for_session(…)
+    // .or_else(get_primary_persisted)` could not see, because both collapse to
+    // `None`. It backfilled a rejected default into the captured workflow.
+    let selection = svc.selection(Some(session_id)).map_err(|err| {
+        tracing::error!(
+            "Failed to read the session knowledge selection for workflow creation: {}",
+            err
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let default = svc
-        .get_primary_for_session(session_id)
-        .map_err(|err| {
-            tracing::error!(
-                "Failed to get active knowledge base for workflow creation: {}",
-                err
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .or_else(|| svc.get_primary_persisted().ok().flatten())
-        .filter(|active| visible.contains(active));
-
-    Ok(Some(WorkflowKnowledgeBases { default, visible }))
+    Ok(Some(WorkflowKnowledgeBases {
+        default: selection.primary_kb,
+        visible: selection.kb_ids,
+    }))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -741,6 +729,46 @@ mod knowledge_capture_tests {
         assert!(workflow_knowledge_bases_for_session(&svc, "s1")
             .unwrap()
             .is_none());
+    }
+
+    /// A session that explicitly holds *no* primary must not be captured as
+    /// holding the machine-wide one. `get_primary_for_session` collapses
+    /// "never chose" and "chose nothing" into the same `None`, so the
+    /// hand-rolled `.or_else(get_primary_persisted)` fallback could not tell
+    /// them apart and handed the workflow a default the session had rejected —
+    /// which replay would then arm as the KB-less write target.
+    #[test]
+    fn an_explicit_no_primary_is_not_backfilled_from_the_machine() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+        svc.set_selection(Some("s1"), None, PrimaryUpdate::Clear)
+            .unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(
+            captured.default, None,
+            "the session said it has no primary; the machine's is not a substitute"
+        );
+        assert_eq!(
+            captured.visible,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "clearing the primary must not narrow the set"
+        );
+    }
+
+    /// A session that has simply never chosen still follows the machine
+    /// pointer — the fallback itself is correct, only its blindness was not.
+    #[test]
+    fn a_session_that_never_chose_still_inherits_the_machine_primary() {
+        let (_d, svc) = service_with(&["alpha", "beta"]);
+        svc.set_primary_persisted(Some("alpha")).unwrap();
+
+        let captured = workflow_knowledge_bases_for_session(&svc, "s1")
+            .unwrap()
+            .expect("bases exist, so there is a selection");
+        assert_eq!(captured.default.as_deref(), Some("alpha"));
     }
 
     /// The ordinary path still round-trips the set and its primary.
