@@ -211,6 +211,8 @@ This is the element where copying Astryx directly would break the app, so the ce
 | **D — title + message + actions** | +36px | sticky errors | Two actions maximum, both quiet — a coral primary inside a toast competes with the page's own call to action. When actions are present the card stops being click-to-dismiss. |
 
 Three lines is the hard ceiling; a fourth is what sends a notice to a banner.
+
+**One optical axis.** The chip, the first line of text and the dismiss control all centre at **30px** from the card's top edge — 16px of padding, plus a 5px nudge on the text column, plus half of an 18px line. Without that nudge a title-only toast rides about 5px high of its own glyph, which is visible the moment you look for it. The axis holds no matter how many lines follow, because everything below the first line grows downward from it.
 | **Banner** (in-place) | title + description + one action | full-bleed `section` variant for app-level notices, `card` variant inline; translucent status wash at 22% with tinted ink, 20px icon, 12/16 padding. |
 | **Notification centre** | anything with a list, a disclosure, or per-item actions | the grouped extension report moves here. A toast may *link* to it. |
 
@@ -223,6 +225,14 @@ One floating-surface recipe: popover-tier surface (one step off the app ground),
 Menus: 4px container padding, 2px between items, 32px items at `--radius-element` with `6px 8px` padding and an 8px icon gap, hover = `--overlay-hover`, min-width = trigger. Biorouter's `DROPDOWN_ROW_CLASS_NAME` is already almost exactly this and becomes the shared row for Select too, ending the 13px-vs-14px menu-row fork.
 
 Tooltips: inverse surface, 14/20 text, `4px 8px` padding, 4px offset, 165ms rise-and-fade, instant on keyboard focus, ~310ms hover-intent delay. The heatmap's bespoke light card is retired in favour of a *rich popover* (it is a data readout, not a tooltip) and leaves the toast layer it borrowed.
+
+### 3.8b Iconography — one set, one weight, one box
+
+Every glyph in the app comes from the shipped set: Lucide at `strokeWidth 1.5` through the `light()` wrapper that pins the weight and forces `currentColor`, plus the two hand-authored exceptions (`KnowledgeIcon`, the brand marks). The rules that follow are already written down in §3.9 of the design system; what they need is enforcement:
+
+- **16px in a row, 20px in a banner or empty state, 14px only inside a chip.** Never two sizes in one cluster — Scheduler's 14px icons inside 28px buttons, and the composer toolbar's mix of 16 and 18px on a single row, are the two live violations.
+- **One glyph, one meaning**, and the corollary: *no two meanings may share a glyph*. `NewWindow` was `SquareStack` — two equally-sized offset squares, which is the same figure `Copy` draws at 36 call sites, so the titlebar control read as a duplicate button. It becomes **`PictureInPicture2`**, the one glyph in the set that depicts the actual outcome (a second window beside the first). The near-misses were checked and rejected: an arrow leaving a box is `ExternalLink` (20 sites, meaning "leave the app"), and a rounded square with a stroke inside is `PanelLeftIcon` — this button's immediate neighbour.
+- **Optical alignment is part of the spec.** Icons in a cluster share one baseline and one gap; a glyph beside a number is 16px against `tabular-nums` so the pair does not shift down a list.
 
 ### 3.9 Progress, spinners, skeletons, empty states
 
@@ -255,7 +265,9 @@ The audit measured **~462px of fixed chrome above the first recent chat**: a 52p
 
 1. **Fold the wordmark into the chrome band**, right of the two titlebar controls, and drop the band to 44px. The controls — collapse the sidebar, open a new window — keep their place beside the traffic lights; folding the wordmark in is what buys the shorter band without displacing them.
 2. **Delete the "MENU" header** (32px labelling something self-evident) and keep only the Recents header, which is doing real work.
-3. **The rail carries two destinations.** Only **New Session** and **Home** — the two things reached constantly — stay at the top level. The other seven (Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps) move behind a single **Components** disclosure: a 32px row identical to an item with a leading chevron, no uppercase mini-label, remembering its state. Expanded, its children indent 24px and keep the same 32px height — hierarchy by indent, never by size.
+3. **The rail carries one destination and one action.** **Home** sits at the top — it is where the rail returns you — with **New Session** beneath it. The other seven (Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps) move behind a single **Components** disclosure: a 32px row identical to an item with a leading chevron, no uppercase mini-label, remembering its state. Expanded, its children indent 24px and keep the same 32px height — hierarchy by indent, never by size.
+
+   **Actions do not stay lit.** New Session is the rail's only *action*: it fires and the view moves on, so it must never take the selected wash or the accent rail that a destination keeps. It shows hover and press, and a **pointer** click drops focus immediately rather than leaving a lit row behind. Keyboard activation keeps focus, or a Tab user would be stranded mid-rail — so the blur is conditioned on the activation being pointer-driven (`event.detail > 0`), not applied blindly.
 4. **Halve the divider blocks** and delete the upper one; the Components row and the Recents header now do the zoning.
 5. **Recents rows** keep 32px, gain a trailing status dot for running sessions, use the app's real session glyphs (a message square for a chat, a branch for a diverged session), and lose the one-off `color-mix` well surface and its 12px radius — the list sits directly on the rail like every other list in the app.
 6. Tooltip-on-every-row gets a hover-intent delay so scrubbing the list stops flashing 224px cards.
@@ -286,6 +298,8 @@ Breadcrumbs — 28px, 14/400, `/` separators, muted-vs-ink only — are added to
 
 Two roles, never mixed. **Underline tabs** for view switching: 32px, 2px indicator sized to the *label* (not the tab), weight 400 → 600, colour muted → ink, 125ms, with the hidden-bold-duplicate trick so bolding never changes width. **Squared chips** for filtering, `--overlay-selected` when active. Document tabs (chat, artifact, dock) keep their pill-plus-stripe language, dropped to 32px and unified on an 8px icon gap.
 
+The document tab's accent stripe sits on the **bottom** edge, inset 11px per side so the 8px corner radius never clips it back into the curve it used to be. That is the same axis D-07's nav underline uses, so one accent vocabulary runs from the page tabs down to the document tabs. A top-edge variant (VS Code's convention) was built and reverted: on a floating pill rather than a docked rectangle it reads as a lid on the tab instead of a marker under it.
+
 ### 4.4 The chat surface
 
 Keep: the 760px column, the 16px row rhythm, quiet tool-call lines, the code-block card, the working ring-and-glow (one motif, one owner — the duplicate `TurnActivityIndicator`/`LoadingBioRouter` pair collapses).
@@ -294,7 +308,7 @@ Change:
 
 - **Metadata drops to `supporting`** (12px). Timestamps are currently 14px — the same size as message content — repeated under every message; this is the surface's single biggest density cost. One `MessageMeta` primitive replaces three hand-copied animation stacks.
 - **One muted ink.** `text-text-default/70` and `text-text-muted` are used interchangeably across the composer toolbar, panel chrome and gauges; the semantic token wins.
-- **Composer**: radius 16 → 12, one padding grid (12px shell, 8px toolbar, 12px attachments — the current `p-4` attachments strip is the heaviest thing in the card), the dead focus ternary deleted, Send becomes a real primary Button instead of an `outline` repainted by className override, and the FLIP animation moves onto the motion tokens.
+- **Composer — elevation or a border, never both.** The composer carries a 1px border *and* `--shadow-composer`, so it is the one element in the app stating its edge twice; the shadow is what lifts it off the canvas and the border is the redundant half. It drops the border and gains the shared floating-surface recipe: elevation plus a 1px inset ring, which is what keeps the edge crisp in dark families where a shadow alone disappears. Focus stops being a border-colour shift and becomes the same 2px inset accent ring every other input uses (§3.2), so nothing shifts layout and drag-over can speak the same language. Radius 16 → 12; one 12px inset grid replacing four different insets (`px-4 pt-3 pb-3` shell, `px-3 pt-3 pb-1.5` textarea, `px-2 pt-2 pb-1` toolbar, `p-4` attachments); the dead focus ternary deleted; and Send becomes a real primary icon button instead of an `outline` repainted by a className override.
 - **Composer toolbar chips**: one recipe — 16px icons (retiring the 18px outliers), ≥6px horizontal padding (today `px-0.5` gives ~20px hit zones), one metadata size in their popovers (today: 10, 11, 12 and 13px).
 - **Tool-call interiors** get one inset grid, replacing five recipes, and arguments render in mono per the app's own mono-for-data rule. The disclosure chevron becomes visible at rest — today it appears on hover, so first-run users get no signal that rows expand.
 - **Landing state** adopts Astryx's AI-chat template: the greeting, the composer card, and a row of ghost suggestion chips beneath it — optional, and the one place a "what can I ask?" affordance genuinely belongs.
@@ -338,7 +352,17 @@ The dock's CSS claims "one tab language, both sizes", and that holds for how a t
 
 **Changes.** Bar 40 → **36px** and tabs 28 → **32px**, one step under the 44px chrome and on the one control ladder. Icon gap 6 → 8px. Close reveals on hover *and* focus, exactly like a chat tab. Overflow adopts the chat ladder. The cwd readout becomes `supporting` mono, truncating from the left so the leaf directory always survives. And the ground moves off `--sidebar`: that token was chosen so the chat strip could continue the *top* edge, and at the bottom edge the rationale inverts — the dock currently reads as a floating slice of sidebar. It grounds on the surface with a top hairline.
 
-**What must not change**, because each is an invariant with a bug behind it: the **per-family terminal ground** (Parchment paints the code ground, Alma Mater and Roche Limit paint muted — a generator that assumed they agree would re-ground two terminals under ANSI palettes tuned for a different surface); the **19-stop ANSI palette** and its per-slot contrast floors; and mono at **13/20**, byte-identical to code blocks.
+**The ground is a step within the family's own hue — never black.** A terminal is not an inverted panel dropped into the app; in a paper-coloured product a black well reads as a hole punched through the page. Each family's terminal ground is one deliberate step off its panel surface, in its own hue and its own mode:
+
+| Family | Light | Dark |
+|---|---|---|
+| Parchment | `#f4f0e6` — a deeper warm parchment | `#16120c` |
+| Alma Mater | `#f2f3f4` | `#0d2a50` |
+| Roche Limit | `#f4f4f2` | `#232320` |
+
+Ink is the family's own `--text-default`, so a light-mode terminal is dark-on-warm rather than light-on-black. This is a change of *value*, not of mechanism: the per-family ground token already exists and is already generated. It does mean the ANSI palettes must be re-verified against the new light grounds — which is exactly what the generator's per-slot contrast floors are for, and it will refuse to emit if a slot fails.
+
+**What must not change**, because each is an invariant with a bug behind it: the **per-family terminal ground** as a concept (Parchment, Alma Mater and Roche Limit each resolve their own — a generator that assumed they agree would re-ground two terminals under palettes tuned for a different surface); the **19-stop ANSI palette** and its per-slot contrast floors; and mono at **13/20**, byte-identical to code blocks.
 
 ### 4.7 Files, directories and code
 
