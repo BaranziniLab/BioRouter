@@ -253,10 +253,10 @@ impl KnowledgeService {
         Ok(hidden)
     }
 
-    /// Normalise and validate a caller-supplied hidden list — trim, drop
+    /// Normalise and validate a caller-supplied list of kb ids — trim, drop
     /// blanks, sort, dedupe, reject malformed ids. Kept separate from the write
     /// so a request can be rejected in full *before* anything touches disk.
-    fn sanitize_hidden_ids(ids: &[String]) -> anyhow::Result<Vec<String>> {
+    fn sanitize_kb_id_list(ids: &[String]) -> anyhow::Result<Vec<String>> {
         let mut sanitized = ids
             .iter()
             .map(|id| id.trim())
@@ -291,7 +291,7 @@ impl KnowledgeService {
     }
 
     fn set_hidden_path_unlocked(&self, path: &Path, ids: &[String]) -> anyhow::Result<()> {
-        let sanitized = Self::sanitize_hidden_ids(ids)?;
+        let sanitized = Self::sanitize_kb_id_list(ids)?;
         self.write_hidden_file_unlocked(path, &sanitized)
     }
 
@@ -1452,6 +1452,91 @@ impl KnowledgeService {
         self.apply_selection_unlocked(session_id, hidden, primary)
     }
 
+    /// Drop one base from this scope's set, in one root-locked step.
+    ///
+    /// Prefer this over reading the hidden list, editing it, and writing it
+    /// back: that pattern is a read-modify-write across two unlocked calls, so
+    /// two surfaces hiding two *different* bases at the same time each write a
+    /// list computed before the other's edit, and one of them silently
+    /// disappears. Every operation on this API takes the whole gesture, so the
+    /// racy shape is not expressible.
+    ///
+    /// Hiding a base that is not installed is accepted and idempotent — a base
+    /// that no longer exists is already absent from the set, and a UI racing a
+    /// concurrent delete should not have to care.
+    pub fn hide_kb(
+        &self,
+        session_id: Option<&str>,
+        kb_id: &str,
+        primary: PrimaryUpdate<'_>,
+    ) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::paths::validate_kb_id(kb_id)?;
+        let mut hidden = self.hidden_for_scope_unlocked(session_id)?;
+        if !hidden.iter().any(|id| id == kb_id) {
+            hidden.push(kb_id.to_string());
+        }
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+    }
+
+    /// Add one base to this scope's set (un-hide it), in one root-locked step.
+    /// See [`Self::hide_kb`] for why this exists rather than a bare setter.
+    ///
+    /// Unlike hiding, this **rejects** a base that is not installed: "make sure
+    /// this is not in my set" is satisfiable for a base that does not exist,
+    /// "make sure this *is* in my set" is not, and a caller granting a session
+    /// access to a named base wants to hear that the name was wrong rather than
+    /// succeed against nothing.
+    pub fn include_kb(
+        &self,
+        session_id: Option<&str>,
+        kb_id: &str,
+        primary: PrimaryUpdate<'_>,
+    ) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::paths::validate_kb_id(kb_id)?;
+        let installed = self.installed_kb_ids_unlocked()?;
+        if !installed.iter().any(|id| id == kb_id) {
+            let available = if installed.is_empty() {
+                "none".to_string()
+            } else {
+                installed.join(", ")
+            };
+            anyhow::bail!("knowledge base '{kb_id}' does not exist (installed: {available})");
+        }
+        let hidden = self
+            .hidden_for_scope_unlocked(session_id)?
+            .into_iter()
+            .filter(|id| id != kb_id)
+            .collect::<Vec<_>>();
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+    }
+
+    /// Set this scope's set from the ids that should be **visible** — the
+    /// inverse of the stored `hidden_kbs`, and the shape every UI actually has
+    /// (a list of checked bases), so no caller has to invert it by hand against
+    /// a base list it read separately.
+    ///
+    /// The set is taken literally: any installed base absent from `visible`
+    /// becomes hidden, including one created since the caller last listed. Ids
+    /// that are not installed are simply not part of the set and are dropped —
+    /// there is nothing to hide or show.
+    pub fn set_visible_kbs(
+        &self,
+        session_id: Option<&str>,
+        visible: &[String],
+        primary: PrimaryUpdate<'_>,
+    ) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+        let visible = Self::sanitize_kb_id_list(visible)?;
+        let hidden = self
+            .installed_kb_ids_unlocked()?
+            .into_iter()
+            .filter(|id| !visible.contains(id))
+            .collect::<Vec<_>>();
+        self.apply_selection_unlocked(session_id, Some(&hidden), primary)
+    }
+
     /// The engine behind every selection write: decide, validate, *then* write.
     ///
     /// The two halves are strictly ordered and that ordering is the whole
@@ -1472,7 +1557,7 @@ impl KnowledgeService {
         // ---- decide: touch nothing on disk until every branch has succeeded ----
         let installed = self.installed_kb_ids_unlocked()?;
         let next_hidden = match hidden {
-            Some(ids) => Self::sanitize_hidden_ids(ids)?,
+            Some(ids) => Self::sanitize_kb_id_list(ids)?,
             None => self.hidden_for_scope_unlocked(session_id)?,
         };
         let next_ids = installed
@@ -2464,6 +2549,133 @@ mod tests {
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
         assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// The membership primitives every caller actually needs, so none of them
+    /// has to read the hidden list, edit it and write it back. Each takes the
+    /// whole gesture and applies it under one root lock.
+    #[test]
+    fn membership_primitives_apply_one_gesture_under_one_lock() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            svc.create_base(id, id, None)?;
+        }
+
+        // Hide one base; the pointer is untouched because it was not the one hidden.
+        svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Set("alpha"))?;
+        let sel = svc.hide_kb(Some("s1"), "gamma", PrimaryUpdate::Unchanged)?;
+        assert_eq!(sel.kb_ids, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(sel.hidden_kbs, vec!["gamma".to_string()]);
+        assert_eq!(sel.primary_kb.as_deref(), Some("alpha"));
+
+        // Hiding is idempotent, and hiding an uninstalled base is accepted.
+        assert_eq!(
+            svc.hide_kb(Some("s1"), "gamma", PrimaryUpdate::Unchanged)?,
+            sel
+        );
+        svc.hide_kb(Some("s1"), "ghost", PrimaryUpdate::Unchanged)?;
+        assert_eq!(
+            svc.selection(Some("s1"))?.kb_ids,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+
+        // Add a base back and make it primary in the same operation — the
+        // combined gesture the apps platform and the chat chip both need.
+        let sel = svc.include_kb(Some("s1"), "gamma", PrimaryUpdate::Set("gamma"))?;
+        assert_eq!(
+            sel.kb_ids,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+        assert_eq!(sel.primary_kb.as_deref(), Some("gamma"));
+
+        // Including a base that does not exist is an error, not a silent no-op.
+        let err = svc
+            .include_kb(Some("s1"), "ghost", PrimaryUpdate::Unchanged)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("ghost") && err.contains("does not exist"),
+            "got: {err}"
+        );
+        assert_eq!(
+            svc.selection(Some("s1"))?,
+            sel,
+            "a rejected include changes nothing"
+        );
+
+        // The visible-set form is the exact inverse of hidden_kbs.
+        let sel = svc.set_visible_kbs(
+            Some("s1"),
+            &["beta".to_string(), "gamma".to_string()],
+            PrimaryUpdate::Unchanged,
+        )?;
+        assert_eq!(sel.kb_ids, vec!["beta".to_string(), "gamma".to_string()]);
+        assert_eq!(sel.hidden_kbs, vec!["alpha".to_string()]);
+        assert_eq!(
+            sel.primary_kb.as_deref(),
+            Some("gamma"),
+            "the pointer stays put while it is still a member"
+        );
+
+        // Dropping the primary out of the visible set repairs it, once.
+        let sel =
+            svc.set_visible_kbs(Some("s1"), &["beta".to_string()], PrimaryUpdate::Unchanged)?;
+        assert_eq!(sel.kb_ids, vec!["beta".to_string()]);
+        assert_eq!(sel.primary_kb.as_deref(), Some("beta"));
+
+        // And they validate the primary against the resulting set, all-or-nothing.
+        let before = svc.selection(Some("s1"))?;
+        assert!(svc
+            .set_visible_kbs(
+                Some("s1"),
+                &["beta".to_string()],
+                PrimaryUpdate::Set("alpha")
+            )
+            .is_err());
+        assert_eq!(svc.selection(Some("s1"))?, before);
+
+        // Machine scope works the same way.
+        let sel = svc.hide_kb(None, "beta", PrimaryUpdate::Unchanged)?;
+        assert_eq!(sel.kb_ids, vec!["alpha".to_string(), "gamma".to_string()]);
+        Ok(())
+    }
+
+    /// The reason these primitives exist. Hiding four different bases from four
+    /// threads used to be four read-modify-write cycles across two unlocked
+    /// calls, so each writer persisted a list computed before the others' edits
+    /// and updates were silently lost. Every hide must survive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_hides_of_different_bases_all_survive() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        let ids = ["alpha", "beta", "gamma", "delta"];
+        for id in ids {
+            svc.create_base(id, id, None)?;
+        }
+
+        let mut tasks = Vec::new();
+        for id in ids {
+            let svc = svc.clone();
+            tasks.push(tokio::task::spawn_blocking(
+                move || -> anyhow::Result<()> {
+                    svc.hide_kb(Some("s1"), id, PrimaryUpdate::Unchanged)?;
+                    Ok(())
+                },
+            ));
+        }
+        for task in tasks {
+            task.await??;
+        }
+
+        let sel = svc.selection(Some("s1"))?;
+        assert!(
+            sel.kb_ids.is_empty(),
+            "every concurrent hide must survive, got {:?}",
+            sel.kb_ids
+        );
+        assert_eq!(sel.hidden_kbs.len(), ids.len());
         Ok(())
     }
 
