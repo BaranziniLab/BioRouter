@@ -1346,15 +1346,30 @@ impl KnowledgeService {
     /// the set" to hold against `next_ids`. `None` = leave the file alone.
     ///
     /// Pure, so the decision can be taken before anything is written. It never
-    /// invents a pointer: the two "no id" states are returned untouched.
+    /// invents a pointer: the two "no id" states are returned untouched, and a
+    /// pointer at a base that no longer exists is *cleared* rather than
+    /// promoted.
+    ///
+    /// That last distinction is the whole reason `installed` is a parameter.
+    /// Promotion is only defensible for a base the user genuinely ranked and
+    /// that is still there to rank — one that was merely hidden. A pointer at a
+    /// base that has been deleted (or that an upgrade inherited from an older
+    /// `.active-kb`) is a dangling reference: it correctly reads as no-primary,
+    /// and treating it as "hidden" meant the next unrelated hide silently
+    /// promoted a base nobody had chosen, which is precisely the invention the
+    /// merged model forbids.
     fn repair_decision(
         own: &StoredPrimary,
+        installed: &[String],
         next_ids: &[String],
         session_id: Option<&str>,
     ) -> Option<StoredPrimary> {
         let StoredPrimary::Pinned(stored) = own else {
             return None;
         };
+        if !installed.iter().any(|id| id == stored) {
+            return Some(no_primary_for(session_id));
+        }
         if next_ids.iter().any(|id| id == stored) {
             return None;
         }
@@ -1370,8 +1385,14 @@ impl KnowledgeService {
     fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
         let path = self.primary_path_for_scope(session_id);
         let own = self.read_primary_file_unlocked(&path)?;
-        let next_ids = self.session_kb_ids_unlocked(session_id)?;
-        if let Some(value) = Self::repair_decision(&own, &next_ids, session_id) {
+        let installed = self.installed_kb_ids_unlocked()?;
+        let hidden = self.hidden_for_scope_unlocked(session_id)?;
+        let next_ids = installed
+            .iter()
+            .filter(|id| !hidden.contains(id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(value) = Self::repair_decision(&own, &installed, &next_ids, session_id) {
             self.write_primary_file_unlocked(&path, &value)?;
             return Ok(value.pinned().map(ToOwned::to_owned));
         }
@@ -1465,7 +1486,9 @@ impl KnowledgeService {
 
         // `None` means "leave this scope's primary file exactly as it is".
         let next_primary: Option<StoredPrimary> = match primary {
-            PrimaryUpdate::Unchanged => Self::repair_decision(&own_primary, &next_ids, session_id),
+            PrimaryUpdate::Unchanged => {
+                Self::repair_decision(&own_primary, &installed, &next_ids, session_id)
+            }
             PrimaryUpdate::Clear => Some(no_primary_for(session_id)),
             PrimaryUpdate::Inherit => Some(StoredPrimary::Inherit),
             PrimaryUpdate::Set(id) => {
@@ -2441,6 +2464,67 @@ mod tests {
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
         assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// Repair must tell "deleted" from "hidden". A pointer at a base that is no
+    /// longer installed is a dangling reference and must be *cleared*; only a
+    /// base that still exists and was merely hidden may promote. Conflating the
+    /// two meant an upgrade whose `.active-kb` named a since-removed base read
+    /// as no-primary at first and then, on the next entirely unrelated hide,
+    /// invented one — the single thing the merged model forbids.
+    #[test]
+    fn repair_clears_a_stale_pointer_and_promotes_only_a_hidden_one() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            svc.create_base(id, id, None)?;
+        }
+
+        // An upgrade (or an out-of-band edit): the machine pointer names a base
+        // that is not installed. It correctly reads as no primary …
+        std::fs::write(
+            crate::knowledge::paths::primary_kb_path(svc.root()),
+            b"ghost",
+        )?;
+        assert_eq!(svc.primary_for_session(None)?, None);
+
+        // … and an unrelated set edit must not turn it into one.
+        let sel =
+            svc.set_selection(None, Some(&["gamma".to_string()]), PrimaryUpdate::Unchanged)?;
+        assert_eq!(
+            sel.primary_kb, None,
+            "a primary must never be invented from a dangling pointer"
+        );
+        assert_eq!(
+            svc.get_primary_persisted()?,
+            None,
+            "the dangling pointer is cleared, not promoted"
+        );
+
+        // A pointer at a base that still exists but was hidden *does* promote:
+        // the user ranked it, and there is still a set to fall back into.
+        svc.set_selection(None, Some(&[]), PrimaryUpdate::Set("beta"))?;
+        let sel = svc.set_selection(None, Some(&["beta".to_string()]), PrimaryUpdate::Unchanged)?;
+        assert_eq!(sel.primary_kb.as_deref(), Some("alpha"));
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("alpha"));
+
+        // Same rule at session scope, where a wrong promotion is worse: the
+        // machine now points at alpha, so an invented session pointer would be
+        // indistinguishable from an inherited one.
+        let session_file = svc.primary_session_path("s1");
+        std::fs::create_dir_all(session_file.parent().unwrap())?;
+        std::fs::write(&session_file, b"ghost")?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+
+        let sel = svc.set_selection(
+            Some("s1"),
+            Some(&["gamma".to_string()]),
+            PrimaryUpdate::Unchanged,
+        )?;
+        assert_eq!(sel.primary_kb, None, "a session must not invent one either");
+        assert_eq!(svc.get_primary_for_session("s1")?, None);
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
         Ok(())
     }
 
