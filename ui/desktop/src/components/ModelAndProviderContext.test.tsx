@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
 import type Model from './settings/models/modelInterface';
@@ -105,6 +105,11 @@ function SwitchHarness() {
       Switch to local
     </button>
   );
+}
+
+function StatusHarness() {
+  const { modelConfigStatus, currentProvider } = useModelAndProvider();
+  return <div data-testid="status">{`${modelConfigStatus}:${currentProvider ?? 'none'}`}</div>;
 }
 
 function renderHarness() {
@@ -211,5 +216,54 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
       );
     });
     expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+  });
+});
+
+// A null provider/model means two different things — "not read yet" and
+// "nothing is configured" — and consumers were sending users to Settings on
+// the first. The status says which.
+describe('ModelAndProviderProvider config readiness', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProviders.mockResolvedValue([]);
+  });
+
+  it('reports loading until the configured provider has been read', async () => {
+    let releaseRead: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    mocks.read.mockImplementation(async (key: string) => {
+      await gate;
+      if (key === 'BIOROUTER_MODEL') return 'gpt-4o';
+      if (key === 'BIOROUTER_PROVIDER') return 'openai';
+      return null;
+    });
+
+    render(
+      <ModelAndProviderProvider>
+        <StatusHarness />
+      </ModelAndProviderProvider>
+    );
+
+    expect(screen.getByTestId('status')).toHaveTextContent('loading:none');
+
+    await act(async () => {
+      releaseRead();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready:openai'));
+  });
+
+  it('reports ready — not a permanent loading state — when the config read fails', async () => {
+    mocks.read.mockRejectedValue(new Error('config unreadable'));
+
+    render(
+      <ModelAndProviderProvider>
+        <StatusHarness />
+      </ModelAndProviderProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready:none'));
   });
 });

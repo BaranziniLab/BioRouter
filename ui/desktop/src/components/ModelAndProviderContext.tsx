@@ -39,9 +39,21 @@ export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config -- please inspec
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
 const SWITCH_MODEL_SUCCESS_MSG = 'Successfully switched models';
 
+/**
+ * Whether `currentModel`/`currentProvider` mean anything yet.
+ *
+ * Both start out `null`, and until the config has been read that `null` says
+ * "not known", not "nothing configured". Consumers that draw a conclusion from
+ * a null pair — telling the user no model is configured, sending them to
+ * Settings, disabling an action — must wait for `ready`, or they will say it
+ * about a perfectly valid configuration that is simply still loading.
+ */
+export type ModelConfigStatus = 'loading' | 'ready';
+
 interface ModelAndProviderContextType {
   currentModel: string | null;
   currentProvider: string | null;
+  modelConfigStatus: ModelConfigStatus;
   currentModelSupportsVision: boolean;
   currentModelSupportedInputMimeTypes: string[] | null;
   changeModel: (sessionId: string | null, model: Model) => Promise<boolean>;
@@ -135,6 +147,7 @@ const ModelAndProviderContext = createContext<ModelAndProviderContextType | unde
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
+  const [modelConfigStatus, setModelConfigStatus] = useState<ModelConfigStatus>('loading');
   const [currentModelSupportsVision, setCurrentModelSupportsVision] = useState<boolean>(false);
   const [currentModelSupportedInputMimeTypes, setCurrentModelSupportedInputMimeTypes] = useState<
     string[] | null
@@ -269,6 +282,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
 
         setCurrentProvider(providerName);
         setCurrentModel(modelName);
+        setModelConfigStatus('ready');
 
         toastSuccess({
           title: CHANGE_MODEL_TOAST_TITLE,
@@ -375,6 +389,11 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       setCurrentProvider(provider);
     } catch (_error) {
       console.error('Failed to refresh current model and provider:', _error);
+    } finally {
+      // Ready even when the read failed: a failed read is an answer ("we could
+      // not find a configured model"), and leaving the status at `loading`
+      // would park every consumer on a spinner that never resolves.
+      setModelConfigStatus('ready');
     }
   }, [getCurrentModelAndProvider]);
 
@@ -454,6 +473,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     () => ({
       currentModel,
       currentProvider,
+      modelConfigStatus,
       currentModelSupportsVision,
       currentModelSupportedInputMimeTypes,
       changeModel,
@@ -467,6 +487,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     [
       currentModel,
       currentProvider,
+      modelConfigStatus,
       currentModelSupportsVision,
       currentModelSupportedInputMimeTypes,
       changeModel,

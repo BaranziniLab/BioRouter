@@ -20,6 +20,12 @@ import {
 interface Props {
   /** `null` when no model could be resolved — the trigger says so instead of naming a vendor. */
   value: ModelRef | null;
+  /**
+   * A `null` `value` that is still being resolved. "No model configured" is a
+   * verdict on the user's setup, so it must not be shown while the answer is
+   * still in flight.
+   */
+  loading?: boolean;
   onChange: (v: ModelRef) => void;
   disabled?: boolean;
   saving?: boolean;
@@ -29,7 +35,13 @@ interface ProviderModelsSection extends OrderedProviderGroup {
   modelsByProvider: Record<string, string[]>;
 }
 
-export function IngestModelPicker({ value, onChange, disabled = false, saving = false }: Props) {
+export function IngestModelPicker({
+  value,
+  loading = false,
+  onChange,
+  disabled = false,
+  saving = false,
+}: Props) {
   const { getProviders, getProviderModels } = useConfig();
   const [open, setOpen] = useState(false);
   const [sections, setSections] = useState<ProviderModelsSection[]>([]);
@@ -102,7 +114,9 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
     [sections, value]
   );
   const triggerLabel = !value
-    ? 'No model configured'
+    ? loading
+      ? 'Loading model…'
+      : 'No model configured'
     : selectedProvider
       ? `${currentProviderLabel} / ${value.model}`
       : `${value.provider} / ${value.model}`;

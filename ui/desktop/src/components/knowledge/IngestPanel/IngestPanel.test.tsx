@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   modelAndProvider: {
     currentProvider: null as string | null,
     currentModel: null as string | null,
+    modelConfigStatus: 'ready' as 'loading' | 'ready',
   },
   checkModel: vi.fn(),
   start: vi.fn(),
@@ -106,6 +107,7 @@ beforeEach(() => {
   mocks.knowledge.loading = false;
   mocks.modelAndProvider.currentProvider = null;
   mocks.modelAndProvider.currentModel = null;
+  mocks.modelAndProvider.modelConfigStatus = 'ready';
   mocks.checkModel.mockResolvedValue({ data: { ok: true } });
   mocks.start.mockResolvedValue({ status: 'done' });
   mocks.knowledgeFetch.mockResolvedValue({ ok: true, text: async () => '' });
@@ -171,6 +173,76 @@ describe('IngestPanel model selection', () => {
     fireEvent.click(digest);
     await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('IngestPanel model loading state', () => {
+  it('does not claim nothing is configured while the config is still being read', async () => {
+    mocks.modelAndProvider.modelConfigStatus = 'loading';
+
+    render(<IngestPanel />);
+    stageSomeText();
+
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveTextContent(/loading/i);
+    expect(trigger.textContent).not.toMatch(/no model configured/i);
+
+    // Still not dispatchable — but the reason offered is "wait", not "go and
+    // configure a model", which is advice for a state we cannot see yet.
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.queryByText(/no model is configured/i)).not.toBeInTheDocument();
+
+    fireEvent.click(digest);
+    await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
+  });
+
+  it('says nothing is configured once the read has finished with nothing', async () => {
+    mocks.modelAndProvider.modelConfigStatus = 'ready';
+
+    render(<IngestPanel />);
+
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveTextContent(/no model configured/i);
+    expect(screen.getByText(/no model is configured/i)).toBeInTheDocument();
+  });
+
+  it('uses a base default immediately, without waiting on the app config', async () => {
+    mocks.modelAndProvider.modelConfigStatus = 'loading';
+    mocks.knowledge.primaryKb = {
+      id: 'kb-1',
+      name: 'Notes',
+      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+    };
+
+    render(<IngestPanel />);
+    stageSomeText();
+
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveTextContent('ollama / qwen3.6:latest');
+
+    fireEvent.click(screen.getByTestId('knowledge-digest-button'));
+    await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
+    expect(mocks.checkModel).toHaveBeenCalledWith({
+      body: { model: { provider: 'ollama', model: 'qwen3.6:latest' } },
+    });
+  });
+
+  it('waits for the base itself before falling back to the app config', async () => {
+    // The base's own default outranks the app config, so a base whose manifest
+    // has not arrived yet has no resolved model — naming the app's one here
+    // would both display and dispatch a model this base overrides.
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    mocks.knowledge.primaryKbId = 'kb-1';
+    mocks.knowledge.primaryKb = null as unknown as (typeof mocks.knowledge)['primaryKb'];
+    mocks.knowledge.loading = true;
+
+    render(<IngestPanel />);
+
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveTextContent(/loading/i);
+    expect(trigger.textContent).not.toContain('versa_azure');
   });
 });
 

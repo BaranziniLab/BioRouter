@@ -24,10 +24,16 @@ function genId(): string {
 }
 
 export function IngestPanel() {
-  const { primaryKbId, primaryKb, refresh, triggerGraphRefresh } = useKnowledge();
+  const {
+    primaryKbId,
+    primaryKb,
+    loading: basesLoading,
+    refresh,
+    triggerGraphRefresh,
+  } = useKnowledge();
   // The provider/model the app is configured with — the same pair the chat
   // composer's model selector shows.
-  const { currentProvider, currentModel } = useModelAndProvider();
+  const { currentProvider, currentModel, modelConfigStatus } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
@@ -56,9 +62,21 @@ export function IngestPanel() {
   // The base's own default wins; otherwise fall back to the app's configured
   // model. Never a hardcoded vendor — an unresolvable model leaves this null and
   // digestion stays disabled (issue #46).
-  const resolvedModel = resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel);
+  // A base's own default outranks the app config, so a base whose manifest has
+  // not arrived yet has no resolvable model at all — falling through to the
+  // app's would name, and dispatch to, a model that base overrides.
+  const kbDefaultUnknown = Boolean(primaryKbId) && !primaryKb && basesLoading;
+  const resolvedModel = kbDefaultUnknown
+    ? null
+    : resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel);
   const model =
     modelOverride && modelOverride.kbId === primaryKbId ? modelOverride.model : resolvedModel;
+
+  // Whether a null `model` means "nothing is configured" or only "not known
+  // yet". Both inputs to the resolver arrive asynchronously, and reporting the
+  // first while either is in flight told users with a perfectly good
+  // configuration to go and set one up.
+  const modelPending = !model && (kbDefaultUnknown || modelConfigStatus === 'loading');
 
   async function onDefaultModelChange(next: ModelRef) {
     if (!primaryKbId) {
@@ -354,11 +372,13 @@ export function IngestPanel() {
   const nothingToDigest = !primaryKbId || !model || items.length === 0;
   const digestBlockedReason = !primaryKbId
     ? 'Choose or create a primary knowledge base above to enable digestion.'
-    : !model
-      ? 'No model is configured. Choose a model above to enable digestion.'
-      : items.length === 0
-        ? 'Stage a file to digest.'
-        : null;
+    : modelPending
+      ? 'Checking which model this knowledge base digests with…'
+      : !model
+        ? 'No model is configured. Choose a model above to enable digestion.'
+        : items.length === 0
+          ? 'Stage a file to digest.'
+          : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -410,6 +430,7 @@ export function IngestPanel() {
       <div className="flex flex-col gap-2 border-t border-border-subtle p-4">
         <IngestModelPicker
           value={model}
+          loading={modelPending}
           onChange={(next) => void onDefaultModelChange(next)}
           disabled={!primaryKbId || savingDefaultModel}
           saving={savingDefaultModel}
