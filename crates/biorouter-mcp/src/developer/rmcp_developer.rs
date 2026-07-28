@@ -1873,6 +1873,21 @@ impl DeveloperServer {
     /// which the shell uses: *where a command runs* may fall back, because the
     /// shell is not jailed by this base at all and a fallback grants nothing.
     /// *What the file tools may touch* may not.
+    ///
+    /// ONE MOVE REMAINS, and it is not hypothetical. This calls
+    /// `session_cwd_or_fallback` first, which — when the session directory is
+    /// gone but `BIOROUTER_WORKING_DIR` still exists — returns the env
+    /// directory. If the session was working in a *subdirectory* of the env
+    /// base, deleting that subdirectory widens the jail up to the parent, and a
+    /// sibling file that was refused a moment earlier becomes writable
+    /// (measured, not inferred). It is narrow: the desktop app sets both to the
+    /// same value (`ui/desktop/src/main.ts`), where the two vanish together and
+    /// nothing widens. It is left as-is because #64 chose which substitutions to
+    /// forbid and this one is onto an app-sanctioned base, which is that issue's
+    /// option 2 — but "the jail base is never guessed" above means *never
+    /// guessed from the process cwd*, not *never moved*. Closing it means
+    /// requiring `self.working_dir` itself to exist, which is a deliberate call
+    /// for a person, not a sweep.
     fn effective_cwd(&self) -> Result<PathBuf, ErrorData> {
         if let Some(dir) = self.session_cwd_or_fallback() {
             return Ok(dir);
