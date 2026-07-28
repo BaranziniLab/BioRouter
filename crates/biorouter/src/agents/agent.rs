@@ -46,8 +46,8 @@ use crate::context_mgmt::{
     overflow_recovery_for_attempt, DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
-    ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
-    TokenState, ToolRequest,
+    new_message_id, ActionRequiredData, Message, MessageContent, ProviderMetadata,
+    SystemNotificationType, TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
@@ -76,6 +76,7 @@ use rmcp::model::{
     ServerNotification, Tool,
 };
 use rmcp::object;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -175,6 +176,74 @@ pub(crate) fn remint_duplicate_message_ids(batch: Conversation) -> Conversation 
         }
     }
     Conversation::new_unvalidated(messages)
+}
+
+/// #59: name a message the loop is about to YIELD and will persist later in the
+/// same iteration.
+///
+/// [`SessionManager::add_message_adopting_uid`] states the rule for the six
+/// sites that persist BEFORE they yield — "the retained/yielded copy must carry
+/// the same id as the stored row". The streaming path cannot persist first: the
+/// model's reply is yielded the instant it arrives and can only be stored once
+/// its tool calls have run. So it takes the inverse of the same rule — mint the
+/// id *before* yielding, and let `add_message` store the row under the
+/// caller-supplied id (it mints one only when the caller supplied none).
+///
+/// A fresh id per message, never a per-iteration one: a streamed reply that
+/// arrives as several id-less chunks is stored as one row per chunk today
+/// (`Conversation::push` merges only same-id neighbours, and `None == None` is
+/// not a match there), and sharing one id across the chunks would silently
+/// collapse them into a single row.
+fn named(message: Message) -> Message {
+    if message.id.is_some() {
+        message
+    } else {
+        message.with_id(new_message_id())
+    }
+}
+
+/// One row a turn persisted, as published by [`AgentEvent::MessagesPersisted`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedMessage {
+    /// The `msg_uid` the row was actually stored under — the id
+    /// `POST /sessions/{id}/edit_message` compares `expectedMessageIds`
+    /// against.
+    pub id: String,
+    /// Whether the client is meant to draw this row.
+    ///
+    /// `false` is the model-only plumbing a turn stores but deliberately keeps
+    /// out of the transcript (the BR-47 post-edit diagnostics, the loop-guard /
+    /// stall / budget nudges, hook context). Publishing it *with* the flag is
+    /// what separates "you are deliberately not being shown this row" from "you
+    /// were never told it exists" — the client can name the id without drawing
+    /// anything for it.
+    pub user_visible: bool,
+}
+
+impl PersistedMessage {
+    /// The published form of a message that has already adopted its effective
+    /// uid. `None` for a message that still carries no id, which cannot be
+    /// named and must not be claimed as published.
+    fn of(message: &Message) -> Option<Self> {
+        message.id.clone().map(|id| Self {
+            id,
+            user_visible: message.is_user_visible(),
+        })
+    }
+}
+
+/// The [`AgentEvent::MessagesPersisted`] for a batch of rows that have already
+/// adopted their effective uids, or `None` when there is nothing to publish.
+fn persisted_event<'a, I>(messages: I) -> Option<AgentEvent>
+where
+    I: IntoIterator<Item = &'a Message>,
+{
+    let published: Vec<PersistedMessage> = messages
+        .into_iter()
+        .filter_map(PersistedMessage::of)
+        .collect();
+    (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
 }
 
 /// Injected in place of a selected skill's full body on any turn after the first
@@ -527,6 +596,31 @@ pub enum AgentEvent {
         code: TurnAbortCode,
         message: String,
     },
+    /// #59: the ids the turn's rows were actually persisted under.
+    ///
+    /// A client that watched a whole turn go by used to end it knowing **none**
+    /// of the ids the store holds, which is why `expectedMessageIds` on
+    /// `POST /sessions/{id}/edit_message` — the ids of every message the
+    /// client's view holds, refused with 409 when the store holds one the view
+    /// does not name — could not be satisfied by any client and had to be made
+    /// optional.
+    ///
+    /// Two things stood in the way, and both are answered here rather than by
+    /// re-shaping the stream:
+    ///
+    /// * a message can be **yielded under a different id than it is stored
+    ///   under** — `add_message` re-mints on a uid collision, and the streamed
+    ///   assistant reply becomes up to three stored rows (thinking / tool
+    ///   request / response), only the first of which keeps the reply's id;
+    /// * a message can be **stored without ever being yielded** — the BR-47
+    ///   post-edit diagnostics, the loop-guard / stall / budget nudges and the
+    ///   hook-context injections are model-visible plumbing the user must not
+    ///   see in the transcript.
+    ///
+    /// So every persist site publishes what it stored. Emitted immediately
+    /// after the rows are durable, so a consumer that stops reading mid-turn
+    /// never holds an id for a row that was not written.
+    MessagesPersisted(Vec<PersistedMessage>),
 }
 
 impl Default for Agent {
@@ -3095,45 +3189,65 @@ impl Agent {
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         let session_manager = self.config.session_manager.clone();
+        // #59: everything this function persists BEFORE the reply stream is
+        // constructed — the user's own message, a slash command's resolution,
+        // the hook context. Each row adopts its effective uid as it is written
+        // and is published as the stream's first event, so a client that never
+        // minted an id for its prompt still learns the one the store did.
+        let mut user_message = user_message;
+        let mut prestream_persisted: Vec<Message> = Vec::new();
 
-        for content in &user_message.content {
-            if let MessageContent::ActionRequired(action_required) = content {
-                if let ActionRequiredData::ElicitationResponse { id, user_data } =
-                    &action_required.data
-                {
-                    if let Err(e) = ActionRequiredManager::global()
-                        .submit_response(id.clone(), user_data.clone())
-                        .await
-                    {
-                        // No live request is waiting on this id. The usual cause
-                        // is a daemon restart between the elicitation and the
-                        // reply: the in-memory pending request — and the tool
-                        // call parked on it — died with the old process, so the
-                        // answer has nowhere to go (BR-41). Surface that the run
-                        // was interrupted instead of a raw error, and still keep
-                        // the reply in history.
-                        tracing::warn!("Elicitation response for {id} could not be delivered: {e}");
-                        session_manager
-                            .add_message(&session_config.id, &user_message)
-                            .await?;
-                        let notice = Message::assistant()
-                            .with_system_notification(
-                                SystemNotificationType::InlineMessage,
-                                "The request that was waiting for your input was interrupted \
+        // Taken by value first: the persist below needs `&mut user_message`, so
+        // the scan cannot keep a borrow of its content alive across it.
+        let elicitation_response = user_message
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ActionRequired(action_required) => match &action_required.data {
+                    ActionRequiredData::ElicitationResponse { id, user_data } => {
+                        Some((id.clone(), user_data.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            });
+        if let Some((id, user_data)) = elicitation_response {
+            if let Err(e) = ActionRequiredManager::global()
+                .submit_response(id.clone(), user_data)
+                .await
+            {
+                // No live request is waiting on this id. The usual cause
+                // is a daemon restart between the elicitation and the
+                // reply: the in-memory pending request — and the tool
+                // call parked on it — died with the old process, so the
+                // answer has nowhere to go (BR-41). Surface that the run
+                // was interrupted instead of a raw error, and still keep
+                // the reply in history.
+                tracing::warn!("Elicitation response for {id} could not be delivered: {e}");
+                session_manager
+                    .add_message_adopting_uid(&session_config.id, &mut user_message)
+                    .await?;
+                let notice = Message::assistant()
+                    .with_system_notification(
+                        SystemNotificationType::InlineMessage,
+                        "The request that was waiting for your input was interrupted \
                                  (most likely by a restart), so your answer couldn't be \
                                  delivered. Please re-send your request to continue.",
-                            )
-                            .user_only();
-                        return Ok(Box::pin(stream::once(async move {
-                            Ok(AgentEvent::Message(notice))
-                        })));
-                    }
-                    session_manager
-                        .add_message(&session_config.id, &user_message)
-                        .await?;
-                    return Ok(Box::pin(futures::stream::empty()));
-                }
+                    )
+                    .user_only();
+                let published = persisted_event(std::slice::from_ref(&user_message));
+                return Ok(Box::pin(stream::iter(
+                    published
+                        .into_iter()
+                        .chain(std::iter::once(AgentEvent::Message(notice)))
+                        .map(Ok),
+                )));
             }
+            session_manager
+                .add_message_adopting_uid(&session_config.id, &mut user_message)
+                .await?;
+            let published = persisted_event(std::slice::from_ref(&user_message));
+            return Ok(Box::pin(stream::iter(published.into_iter().map(Ok))));
         }
 
         // A daemon restart drops the in-memory goal registry and its Stop-hook
@@ -3180,22 +3294,30 @@ impl Agent {
                         .deny_reason()
                         .unwrap_or("blocked")
                         .to_string();
+                    // #59: the stored row is the user-only copy; the id it takes
+                    // is stamped back onto `user_message` so the copy yielded
+                    // below names the row it became.
+                    let mut stored = user_message.clone().with_visibility(true, false);
                     session_manager
-                        .add_message(
-                            &session_config.id,
-                            &user_message.clone().with_visibility(true, false),
-                        )
+                        .add_message_adopting_uid(&session_config.id, &mut stored)
                         .await?;
+                    user_message.id = stored.id.clone();
                     let notice = Message::assistant()
                         .with_system_notification(
                             SystemNotificationType::InlineMessage,
                             format!("Prompt blocked by hook: {reason}"),
                         )
                         .user_only();
-                    return Ok(Box::pin(stream::iter(vec![
-                        Ok(AgentEvent::Message(user_message)),
-                        Ok(AgentEvent::Message(notice)),
-                    ])));
+                    let published = persisted_event(std::slice::from_ref(&stored));
+                    return Ok(Box::pin(stream::iter(
+                        published
+                            .into_iter()
+                            .chain([
+                                AgentEvent::Message(user_message),
+                                AgentEvent::Message(notice),
+                            ])
+                            .map(Ok),
+                    )));
                 }
 
                 let mut contexts: Vec<String> = Vec::new();
@@ -3233,18 +3355,22 @@ impl Agent {
                 })));
             }
             Ok(Some(response)) if response.role == rmcp::model::Role::Assistant => {
+                let mut stored_user = user_message.clone().with_visibility(true, false);
                 session_manager
-                    .add_message(
-                        &session_config.id,
-                        &user_message.clone().with_visibility(true, false),
-                    )
+                    .add_message_adopting_uid(&session_config.id, &mut stored_user)
                     .await?;
+                let mut stored_response = response.clone().with_visibility(true, false);
                 session_manager
-                    .add_message(
-                        &session_config.id,
-                        &response.clone().with_visibility(true, false),
-                    )
+                    .add_message_adopting_uid(&session_config.id, &mut stored_response)
                     .await?;
+                // #59: the yielded copies name the rows they became. Only the
+                // store's own uid is ever stamped here — minting a *different*
+                // fallback id would hand the client a name no row answers to,
+                // which is worse than the `None` it replaced.
+                let mut response = response;
+                user_message.id = stored_user.id.clone();
+                response.id = stored_response.id.clone();
+                let published = persisted_event([&stored_user, &stored_response]);
 
                 // Check if this was a command that modifies conversation history
                 let modifies_history = crate::agents::execute_commands::COMPACT_TRIGGERS
@@ -3252,6 +3378,9 @@ impl Agent {
                     || message_text.trim() == "/clear";
 
                 return Ok(Box::pin(async_stream::try_stream! {
+                    if let Some(published) = published {
+                        yield published;
+                    }
                     yield AgentEvent::Message(user_message);
                     yield AgentEvent::Message(response);
 
@@ -3268,38 +3397,41 @@ impl Agent {
                 }));
             }
             Ok(Some(resolved_message)) => {
+                let mut stored_user = user_message.clone().with_visibility(true, false);
                 session_manager
-                    .add_message(
-                        &session_config.id,
-                        &user_message.clone().with_visibility(true, false),
-                    )
+                    .add_message_adopting_uid(&session_config.id, &mut stored_user)
                     .await?;
+                user_message.id = stored_user.id.clone();
+                let mut resolved = resolved_message.with_visibility(false, true);
                 session_manager
-                    .add_message(
-                        &session_config.id,
-                        &resolved_message.clone().with_visibility(false, true),
-                    )
+                    .add_message_adopting_uid(&session_config.id, &mut resolved)
                     .await?;
+                prestream_persisted.push(stored_user);
+                prestream_persisted.push(resolved);
             }
             Ok(None) => {
                 session_manager
-                    .add_message(&session_config.id, &user_message)
+                    .add_message_adopting_uid(&session_config.id, &mut user_message)
                     .await?;
+                prestream_persisted.push(user_message.clone());
             }
         }
 
         // Context injected by SessionStart/UserPromptSubmit hooks: visible to
         // the model, hidden from the user.
         if let Some(context) = hook_context {
+            let mut injected = Message::user()
+                .with_text(crate::hooks::outcome::frame_hook_context(&context))
+                .with_visibility(false, true);
             session_manager
-                .add_message(
-                    &session_config.id,
-                    &Message::user()
-                        .with_text(crate::hooks::outcome::frame_hook_context(&context))
-                        .with_visibility(false, true),
-                )
+                .add_message_adopting_uid(&session_config.id, &mut injected)
                 .await?;
+            prestream_persisted.push(injected);
         }
+        // #59: published as the stream's first event, before anything else can
+        // be appended to the session, so the client's view of the stored set
+        // starts complete.
+        let prestream_published = persisted_event(prestream_persisted.iter());
 
         // Snapshot with the revision this view is based on, so every rewrite in
         // this turn — the auto-compaction below AND the reply loop's overflow
@@ -3350,6 +3482,9 @@ impl Agent {
         let conversation_to_compact = conversation.clone();
 
         Ok(Box::pin(async_stream::try_stream! {
+            if let Some(published) = prestream_published {
+                yield published;
+            }
             let final_conversation = if !needs_auto_compact {
                 conversation
             } else {
@@ -3818,6 +3953,11 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut nudge)
                             .await?;
+                        // #59: a row the user is deliberately not shown, named
+                        // so a client can still account for it.
+                        if let Some(published) = persisted_event(std::slice::from_ref(&nudge)) {
+                            yield published;
+                        }
                         conversation.push(nudge);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -3857,6 +3997,9 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut wrapup)
                             .await?;
+                        if let Some(published) = persisted_event(std::slice::from_ref(&wrapup)) {
+                            yield published;
+                        }
                         conversation.push(wrapup);
                         let why = if stalled {
                             "the same loop kept repeating"
@@ -3932,6 +4075,9 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut wrapup)
                             .await?;
+                        if let Some(published) = persisted_event(std::slice::from_ref(&wrapup)) {
+                            yield published;
+                        }
                         conversation.push(wrapup);
                         yield AgentEvent::Message(
                             Message::assistant()
@@ -4047,6 +4193,17 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                // #59: name the reply BEFORE it is yielded, so the
+                                // copy the client sees carries the id the row it
+                                // becomes is stored under. A provider that stamps
+                                // its own streaming `message_id` keeps it (and with
+                                // it the same-id merge in `Conversation::push`);
+                                // one that does not — `response_to_message` on the
+                                // non-streaming path builds a bare
+                                // `Message::assistant()` — used to hand the client
+                                // `id: null` while the store minted a uid nobody
+                                // was ever told.
+                                let response = named(response);
                                 let ToolCategorizeResult {
                                     frontend_requests,
                                     // BR-19: `mut` — a PreToolUse hook may rewrite a
@@ -4926,7 +5083,9 @@ impl Agent {
                                             .session(&session_config.id)
                                             .count(mistakes.provider_errors()),
                                     );
-                                    let message = Message::assistant().with_text(notice);
+                                    // #59: named before the yield, persisted under
+                                    // the same id below.
+                                    let message = named(Message::assistant().with_text(notice));
                                     yield AgentEvent::Message(message.clone());
                                     messages_to_add.push(message);
                                     pending_turn_abort = Some((
@@ -4996,17 +5155,18 @@ impl Agent {
                             "Response truncated by output-length limit (finish_reason=\"length\"); auto-continuing ({}/{})",
                             truncation_continuations, MAX_TRUNCATION_CONTINUATIONS
                         );
-                        let message = Message::user().with_text(TRUNCATION_CONTINUATION_MESSAGE);
+                        // #59: named before the yield, persisted under the same id.
+                        let message = named(Message::user().with_text(TRUNCATION_CONTINUATION_MESSAGE));
                         messages_to_add.push(message.clone());
                         yield AgentEvent::Message(message);
                     } else if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
                         if final_output_tool.final_output.is_none() {
                             warn!("Final output tool has not been called yet. Continuing agent loop.");
-                            let message = Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE);
+                            let message = named(Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE));
                             messages_to_add.push(message.clone());
                             yield AgentEvent::Message(message);
                         } else {
-                            let message = Message::assistant().with_text(final_output_tool.final_output.clone().unwrap());
+                            let message = named(Message::assistant().with_text(final_output_tool.final_output.clone().unwrap()));
                             messages_to_add.push(message.clone());
                             yield AgentEvent::Message(message);
                             exit_chat = true;
@@ -5057,6 +5217,16 @@ impl Agent {
                     if msg.id.as_deref() != Some(effective_uid.as_str()) {
                         msg.id = Some(effective_uid);
                     }
+                }
+                // #59: this iteration's rows are durable — publish the uids they
+                // actually took. This is the one site that closes the gaps a
+                // yielded copy structurally cannot: a re-mint on collision, the
+                // rebuilt thinking / tool-request rows one streamed reply is
+                // split into (only the first keeps the reply's id), and the
+                // model-only rows the user is deliberately never shown (BR-47
+                // post-edit diagnostics, loop-guard nudges, hook context).
+                if let Some(published) = persisted_event(messages_to_add.iter()) {
+                    yield published;
                 }
                 conversation.extend(messages_to_add);
 
@@ -5167,6 +5337,10 @@ impl Agent {
                                 session_manager
                                     .add_message_adopting_uid(&session_config.id, &mut feedback)
                                     .await?;
+                                // #59: hidden from the user, named for the client.
+                                if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                                    yield published;
+                                }
                                 conversation.push(feedback);
                                 // Keep looping so the model fixes the failures;
                                 // skip this iteration's Stop hook. The counter does
@@ -5228,6 +5402,10 @@ impl Agent {
                             session_manager
                                 .add_message_adopting_uid(&session_config.id, &mut feedback)
                                 .await?;
+                            // #59: hidden from the user, named for the client.
+                            if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                                yield published;
+                            }
                             conversation.push(feedback);
                             // Keep looping so the model revises; skip this
                             // iteration's Stop hook. The next finish attempt runs
@@ -5320,6 +5498,10 @@ impl Agent {
                             session_manager
                                 .add_message_adopting_uid(&session_config.id, &mut feedback)
                                 .await?;
+                            // #59: hidden from the user, named for the client.
+                            if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                                yield published;
+                            }
                             conversation.push(feedback);
                             yield AgentEvent::Message(
                                 Message::assistant()

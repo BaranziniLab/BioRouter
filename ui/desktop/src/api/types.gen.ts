@@ -1032,6 +1032,9 @@ export type MessageEvent = {
     token_state: TokenState;
     type: 'UpdateConversation';
 } | {
+    messages: Array<PersistedMessage>;
+    type: 'MessagesPersisted';
+} | {
     type: 'Ping';
 };
 
@@ -1181,6 +1184,29 @@ export type ParseWorkflowResponse = {
  * Enum representing the possible permission levels for a tool.
  */
 export type PermissionLevel = 'always_allow' | 'ask_before' | 'never_allow';
+
+/**
+ * One row a turn persisted, as published by [`AgentEvent::MessagesPersisted`].
+ */
+export type PersistedMessage = {
+    /**
+     * The `msg_uid` the row was actually stored under — the id
+     * `POST /sessions/{id}/edit_message` compares `expectedMessageIds`
+     * against.
+     */
+    id: string;
+    /**
+     * Whether the client is meant to draw this row.
+     *
+     * `false` is the model-only plumbing a turn stores but deliberately keeps
+     * out of the transcript (the BR-47 post-edit diagnostics, the loop-guard /
+     * stall / budget nudges, hook context). Publishing it *with* the flag is
+     * what separates "you are deliberately not being shown this row" from "you
+     * were never told it exists" — the client can name the id without drawing
+     * anything for it.
+     */
+    userVisible: boolean;
+};
 
 export type PreviewBody = {
     commit_sha: string;

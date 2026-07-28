@@ -247,6 +247,10 @@ fn get_agent_messages(
                 Ok(AgentEvent::McpNotification(_))
                 | Ok(AgentEvent::ModelChange { .. })
                 | Ok(AgentEvent::ToolCallPending(_))
+                // #59: the subagent's own rows are already carried by the
+                // `Message` events above (which now name themselves); the
+                // parent has no `expectedMessageIds` to satisfy.
+                | Ok(AgentEvent::MessagesPersisted(_))
                 | Ok(AgentEvent::TokenUsage(_)) => {}
                 Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
                     conversation = updated_conversation;

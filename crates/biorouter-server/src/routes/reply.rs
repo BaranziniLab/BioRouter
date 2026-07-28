@@ -6,7 +6,9 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::agents::{AgentEvent, ReasoningEffort, SessionConfig, TurnAbortCode};
+use biorouter::agents::{
+    AgentEvent, PersistedMessage, ReasoningEffort, SessionConfig, TurnAbortCode,
+};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::session::session_manager::ReplaceOutcome;
@@ -314,6 +316,24 @@ pub enum MessageEvent {
     UpdateConversation {
         conversation: Conversation,
         token_state: TokenState,
+    },
+    /// #59: the ids this turn's messages were actually persisted under.
+    ///
+    /// A client that watches a whole turn go by cannot otherwise learn them: a
+    /// message is streamed *before* it is stored, one streamed assistant reply
+    /// can become several stored rows, and the model-only rows (BR-47 post-edit
+    /// diagnostics, loop-guard / stall / budget nudges, hook context) are never
+    /// streamed at all. Without this frame `expectedMessageIds` on
+    /// `POST /sessions/{session_id}/edit_message` — the ids of every message the
+    /// client's view holds — is unsatisfiable, and the in-place edit it guards
+    /// answers 409 on a session nobody else has touched.
+    ///
+    /// Ids only: this frame never re-sends message bodies. Each entry carries
+    /// `userVisible`, which is what separates a row the client is deliberately
+    /// not shown from one it was simply never told about — a client draws
+    /// nothing for a hidden row but must still name it.
+    MessagesPersisted {
+        messages: Vec<PersistedMessage>,
     },
     Ping,
 }
@@ -813,6 +833,15 @@ pub async fn reply(
                             stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state: token_state.clone()}, &tx, &cancel_token).await;
 
                         }
+                        Ok(Some(Ok(AgentEvent::MessagesPersisted(messages)))) => {
+                            // #59: the agent just made these rows durable. Flush
+                            // any buffered text first so the client never learns
+                            // an id before the message it belongs to — the
+                            // coalescer can be holding the very delta whose row
+                            // this names.
+                            flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
+                            stream_event(MessageEvent::MessagesPersisted { messages }, &tx, &cancel_token).await;
+                        }
                         Ok(Some(Ok(AgentEvent::ModelChange { model, mode }))) => {
                             flush_coalesced(&mut coalescer, &tx, &cancel_token, &token_state).await;
                             stream_event(MessageEvent::ModelChange { model, mode }, &tx, &cancel_token).await;
@@ -1165,6 +1194,39 @@ mod tests {
         assert_eq!(value["scope"], "provider");
         assert_eq!(value["retryable"], false);
         assert_eq!(value["provider_kind"], "quota");
+    }
+
+    /// #59: the frame that makes `expectedMessageIds` satisfiable has to reach
+    /// the client as *data*, not as a re-send of the messages. A client reads
+    /// `messages[].id` into the set it will hand back to
+    /// `POST /sessions/{id}/edit_message`, and `userVisible` tells it which of
+    /// those it must draw — the difference between a row it is deliberately not
+    /// shown and one it was never told about.
+    #[test]
+    fn persisted_message_ids_reach_the_wire_with_their_visibility() {
+        let event = MessageEvent::MessagesPersisted {
+            messages: vec![
+                PersistedMessage {
+                    id: "019fa8-visible".to_string(),
+                    user_visible: true,
+                },
+                PersistedMessage {
+                    id: "019fa8-model-only".to_string(),
+                    user_visible: false,
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "MessagesPersisted");
+        assert_eq!(value["messages"][0]["id"], "019fa8-visible");
+        assert_eq!(value["messages"][0]["userVisible"], true);
+        assert_eq!(value["messages"][1]["id"], "019fa8-model-only");
+        assert_eq!(value["messages"][1]["userVisible"], false);
+        // Ids only — a client must never have to diff message bodies to learn
+        // what the store holds, and re-sending them per turn would be a second
+        // copy of the whole transcript on the hot path.
+        assert!(value["messages"][0].get("content").is_none());
     }
 
     /// #51 W5: `conversation_so_far` overwriting a live session.

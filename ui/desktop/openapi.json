@@ -7171,6 +7171,28 @@
           },
           {
             "type": "object",
+            "description": "#59: the ids this turn's messages were actually persisted under.\n\nA client that watches a whole turn go by cannot otherwise learn them: a\nmessage is streamed *before* it is stored, one streamed assistant reply\ncan become several stored rows, and the model-only rows (BR-47 post-edit\ndiagnostics, loop-guard / stall / budget nudges, hook context) are never\nstreamed at all. Without this frame `expectedMessageIds` on\n`POST /sessions/{session_id}/edit_message` — the ids of every message the\nclient's view holds — is unsatisfiable, and the in-place edit it guards\nanswers 409 on a session nobody else has touched.\n\nIds only: this frame never re-sends message bodies. Each entry carries\n`userVisible`, which is what separates a row the client is deliberately\nnot shown from one it was simply never told about — a client draws\nnothing for a hidden row but must still name it.",
+            "required": [
+              "messages",
+              "type"
+            ],
+            "properties": {
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PersistedMessage"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MessagesPersisted"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "type"
             ],
@@ -7469,6 +7491,24 @@
           "ask_before",
           "never_allow"
         ]
+      },
+      "PersistedMessage": {
+        "type": "object",
+        "description": "One row a turn persisted, as published by [`AgentEvent::MessagesPersisted`].",
+        "required": [
+          "id",
+          "userVisible"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The `msg_uid` the row was actually stored under — the id\n`POST /sessions/{id}/edit_message` compares `expectedMessageIds`\nagainst."
+          },
+          "userVisible": {
+            "type": "boolean",
+            "description": "Whether the client is meant to draw this row.\n\n`false` is the model-only plumbing a turn stores but deliberately keeps\nout of the transcript (the BR-47 post-edit diagnostics, the loop-guard /\nstall / budget nudges, hook context). Publishing it *with* the flag is\nwhat separates \"you are deliberately not being shown this row\" from \"you\nwere never told it exists\" — the client can name the id without drawing\nanything for it."
+          }
+        }
       },
       "PreviewBody": {
         "type": "object",
