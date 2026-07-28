@@ -6,10 +6,13 @@
 > fixed" is not read more broadly than it should be.
 > **Status:** Current. The rewrite paths — the four compaction sites and the client
 > write-back on `POST /reply` — are closed. Of the three *deletion* paths, two are now
-> bounded and one is deliberately left alone; and the second of those two is bounded only
-> as far as its client can name what it holds, which today's desktop client cannot. The
-> scoreboard is [What is closed and what is not](#what-is-closed-and-what-is-not) — read it
-> before concluding anything about "the truncation race".
+> bounded and one is deliberately left alone; and the second of those two closes its
+> widest race only as far as its client can name what it holds, which today's desktop
+> client can do only for a session it has re-read
+> ([#59](https://github.com/BaranziniLab/biorouter/issues/59)) — so that half of it is
+> an optional check, not a precondition. The scoreboard is
+> [What is closed and what is not](#what-is-closed-and-what-is-not) — read it before
+> concluding anything about "the truncation race".
 > **Audience:** developers touching the session store, the compaction paths, or any code
 > that appends to a session another turn might be running on.
 
@@ -213,7 +216,7 @@ clear.
 | The compaction rewrites (`run_eager_compaction`, `reply()`'s auto-compaction, the `ContextLengthExceeded` arm, `/compact`) | **Closed**, and structurally so — `replace_conversation_preserving_tail` is the only rewrite they can reach, and its check runs inside the rewrite's own transaction. |
 | `truncate_conversation` from `biorouter term run` | **Closed** — bounded by the caller's own basis (below). |
 | `truncate_conversation` from checkpoint restore | **Open, deliberately.** The mechanism exists and is not wired up, because bounding it makes a rewind incomplete. Needs an operator decision (below). |
-| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Closed by refusal, and currently refusing everything.** The decision is made in the browser, so the endpoint requires the client's view of the conversation and refuses a cut it cannot check. No client can supply that view yet, because the reply stream never publishes the ids messages are persisted under — so the endpoint is safe and the "Edit in Place" button is dead until that is fixed (below). |
+| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Closed, with its widest race optional.** The cut is under the turn lock and bounded to the rows the handler itself read, neither of which needs anything from the client. The decision is made in the browser, though, so the race between rendering the transcript and clicking edit can only be closed by the client's own view of the conversation — sent as `expectedMessageIds` it is enforced strictly (409, nothing deleted); omitted, the cut proceeds under the other two and logs a `warn`. No client can supply that view yet, because the reply stream never publishes the ids messages are persisted under ([#59](https://github.com/BaranziniLab/biorouter/issues/59), below). |
 | `conversation_so_far` on `POST /reply` | **Closed by refusal**, not by merging — a client copy that does not name every stored message gets a 409 and nothing is written (below). |
 
 ### Why truncation needed its own mechanism
@@ -295,10 +298,10 @@ changes `RestoreOutcome` and the GUI that renders it. Until one is made, the sit
 unbounded call **on purpose**: a complete rewind that can destroy a racing append is a
 defensible reading of "restore"; an incomplete rewind reported as a complete one is not.
 
-### `POST /sessions/{id}/edit_message` — closed by refusal, and refusing everything
+### `POST /sessions/{id}/edit_message` — bounded and locked, with the widest race optional
 
 `crates/biorouter-server/src/routes/session.rs`, the `EditType::Edit` arm. Threading a
-server-side basis through this endpoint on its own would have been theatre, and it is worth
+server-side basis through this endpoint *on its own* would have been theatre, and it is worth
 understanding why before touching it, because the shape of the fix follows from it.
 
 **The decision is made in the browser.** The user scrolls to a rendered message, opens the
@@ -307,20 +310,18 @@ that decision was based on is the client's rendered transcript, of unbounded age
 server never saw it. Any revision the handler reads for itself is taken *after* the
 concurrent append has already committed, so it would bound the DELETE to a watermark that
 includes exactly the row the bound exists to protect. That guard would pass every time and
-protect nothing — worse than no guard, because it would look fixed.
+protect *that* race — the wide one — not at all.
 
-So the endpoint stopped accepting an uncheckable cut. `EditType::Edit` now requires
-`expectedMessageIds`, the durable ids of every message the client's view holds, and takes
-three guards in the same order and with the same codes `/reply` uses for
-`conversation_so_far`:
+So the endpoint takes three guards, in the same order and with the same codes `/reply` uses
+for `conversation_so_far`:
 
 1. the BR-33 per-session **turn lock**, held across the whole check-and-cut, so rows cannot
    be deleted out from under an agent generating into them — 409 `turn_in_flight`;
-2. the **client's view**, for the wide race between rendering the transcript and clicking
-   edit: a stored message the view does not name landed after the client saw the
-   conversation, so the cut is refused with 409 `conversation_out_of_date` +
-   `missing_message_ids` and nothing is deleted. Absent entirely, the cut is unverifiable
-   and is refused **400** — that unverifiable case is the whole defect;
+2. the **client's view** (`expectedMessageIds`, the durable ids of every message the client
+   holds), for the wide race between rendering the transcript and clicking edit: a stored
+   message the view does not name landed after the client saw the conversation, so the cut
+   is refused with 409 `conversation_out_of_date` + `missing_message_ids` and nothing is
+   deleted;
 3. **`truncate_conversation_bounded`**, for the narrow race between the check and the DELETE
    that no client-side check can close. A `Stale` verdict (the id was recycled underneath
    the snapshot) is answered exactly like a stale view.
@@ -329,16 +330,34 @@ Message ids are durable and server-assigned (BR-45/#41), which is what makes a l
 sufficient: naming one is proof the client has seen it, and unlike `conversation_so_far`
 this field supplies no content the server has to trust.
 
+**Guard 2 is optional; 1 and 3 are not.** It is the only one that needs the client's
+cooperation, and [#59](https://github.com/BaranziniLab/biorouter/issues/59) (below) is proof
+no client can cooperate yet — so it landed as a *precondition*, refusing every request
+without it with a 400, and that refused every in-place edit in every live chat. That is a
+regression against the unguarded endpoint it replaced, so the field is optional and enforced
+when present:
+
+- **present** — the check above, unchanged and just as strict;
+- **absent** — the cut proceeds under guards 1 and 3, which is strictly more protection than
+  the unlocked, unbounded cut that shipped before, and one `warn` line per cut records that
+  the wide race went unchecked and names #59.
+
+An **empty** `expectedMessageIds` is *not* absence. It is a client asserting its view holds
+nothing, which is a claim the server can and does check — against a non-empty session it is
+a stale view and gets the same 409, naming every stored message. Folding `[]` into "absent"
+would give any caller a one-token opt-out of guard 2, which is deleting the guard rather
+than making it optional.
+
 The sibling `EditType::Diverge` arm — the default, and what the desktop app mostly uses —
 needs none of this: it truncates a session it just created, which is the owned-history
-exception, so it still works with no client view and with a turn in flight.
+exception, so it works with no client view and with a turn in flight.
 
-#### No client can satisfy the precondition yet
+#### No client can satisfy the client-view check yet
 
-Tracked as [#59](https://github.com/BaranziniLab/biorouter/issues/59). The guard is right and
+Tracked as [#59](https://github.com/BaranziniLab/biorouter/issues/59). The check is right and
 the desktop cannot pass it. **A client that watches a whole turn go by does not learn the ids
-that turn's messages were persisted under**, so the list it sends is missing them and the
-endpoint refuses a session nobody else has touched.
+that turn's messages were persisted under**, so any list it sends is missing them and the
+endpoint would refuse a session nobody else has touched.
 `a_client_that_watched_the_turn_knows_every_stored_message_id` (in
 `crates/biorouter/tests/conversation_writeback_freshness.rs`, landed `#[ignore]`d because it
 reproduces an open defect rather than guarding a fixed one) drives the real reply loop and
@@ -355,16 +374,21 @@ Three independent sources of the same gap:
 - the BR-47 post-edit diagnostics and the loop-guard nudges, which are
   `with_visibility(false, true)` and are therefore persisted without ever being yielded.
 
-The failure is loud and safe — 409, nothing deleted, and "Diverge Session" (the default
-button) is unaffected — but "Edit in Place" does not work in a live chat from the first
-assistant reply until the session is reloaded.
+Until it is fixed, the desktop client sends `expectedMessageIds` **only when every message
+it holds names itself with an id** — true of a session it just loaded, false from the first
+streamed assistant reply onwards. Sending a list it knows to be incomplete would be asking
+for a 409 it has already proved it will get; omitting it takes the honest fallback instead.
+So the strong check still runs in the case it was built for (a transcript loaded in one
+window while another window or the CLI appends to it), and "Edit in Place" is not dead in a
+live chat.
 
 **The fix is on the server side of the stream:** a message must be yielded under the id it
 was persisted under, which is the rule `add_message_adopting_uid` already encodes at the six
-sites that persist before yielding. Re-reading the session from the client instead is
-**theatre for exactly the reason given above** — the re-read happens after the concurrent
-append has committed, so it would hand back the very row the guard exists to protect, and
-the check would pass every time.
+sites that persist before yielding. When that lands, the desktop's condition becomes
+vacuously true and every edit takes the checked path with no further change. Re-reading the
+session from the client instead is **theatre for exactly the reason given above** — the
+re-read happens after the concurrent append has committed, so it would hand back the very
+row the guard exists to protect, and the check would pass every time.
 
 ### `conversation_so_far` on `POST /reply` — closed by refusal
 

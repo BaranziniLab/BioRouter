@@ -1891,11 +1891,11 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
 /// conversation_writeback_freshness -- --ignored a_client_that_watched`; it
 /// fails in ~0.2s.
 ///
-/// `POST /sessions/{id}/edit_message` with `edit_type: "edit"` now REQUIRES
+/// `POST /sessions/{id}/edit_message` with `edit_type: "edit"` accepts
 /// `expectedMessageIds` — the ids of every message the client's view holds — and
-/// answers 409 if the store holds one the view does not name. That precondition
-/// is only satisfiable if a client that has watched a whole turn go by actually
-/// ends up knowing every id the store persisted.
+/// answers 409 if the store holds one the view does not name. That check is only
+/// satisfiable if a client that has watched a whole turn go by actually ends up
+/// knowing every id the store persisted.
 ///
 /// It does not. `Message::user()` / `Message::assistant()` mint no id, the reply
 /// loop yields those messages *before* persisting them, and `add_message` then
@@ -1913,10 +1913,14 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
 ///    `with_visibility(false, true)` and so are persisted without ever being
 ///    yielded at all.
 ///
-/// Consequence: the desktop's "Edit in Place" button 409s on a session nobody
-/// else has touched, from the first assistant reply onward, until the session is
-/// reloaded. That is loud and safe — nothing is deleted, and "Diverge Session"
-/// (the default button) is unaffected — but the feature is dead in a live chat.
+/// Consequence, and THE REASON THE FIELD IS OPTIONAL: while the endpoint
+/// required it, the desktop's "Edit in Place" button 409'd on a session nobody
+/// else had touched, from the first assistant reply onward, until the session
+/// was reloaded — loud and safe, and dead in a live chat. So `expectedMessageIds`
+/// is now enforced when sent and absent-tolerated when not (the cut still runs
+/// under the turn lock and still bounded to the rows the handler read), and the
+/// desktop sends it only for a view in which every message names itself. This
+/// test is what says when that condition can become unconditional again.
 ///
 /// The fix belongs on the server side of the stream: a message must be yielded
 /// under the id it was persisted under, the rule `add_message_adopting_uid`
