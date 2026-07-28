@@ -32,6 +32,26 @@ function hiddenStorageKeyForSession(sessionId: string | null | undefined): strin
  */
 type PrimaryUpdate = { kind: 'unchanged' } | { kind: 'clear' } | { kind: 'set'; id: string };
 
+/** The shape both selection endpoints answer with — GET /active and POST /active. */
+type SelectionPayload =
+  | { primary_kb?: string | null; active_kb?: string | null; hidden_kbs?: string[] | null }
+  | undefined;
+
+/** `active_kb` is the deprecated mirror, read so a fresh renderer keeps working
+ * against a daemon that predates `primary_kb`. */
+function readPrimary(data: SelectionPayload): string | null {
+  return data?.primary_kb ?? data?.active_kb ?? null;
+}
+
+/** `null` means "this answer did not state a set" (a daemon that predates the
+ * field) — distinct from an empty set, and the caller must leave what it has
+ * rather than erase the session's whole working set. */
+function readHidden(data: SelectionPayload): string[] | null {
+  return Array.isArray(data?.hidden_kbs)
+    ? data.hidden_kbs.filter((id): id is string => typeof id === 'string')
+    : null;
+}
+
 interface KnowledgeContextType {
   bases: Manifest[];
   /** The session's knowledge bases — the one axis. Searchable, readable, usable. */
@@ -84,9 +104,52 @@ export function KnowledgeProvider({
     }
   });
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
+  // Every selection round-trip — a write, its recovery read, a hydrate — takes a
+  // generation. Only the newest may write state back, so a slow answer cannot
+  // reinstate a selection the user has already clicked past.
+  const selectionGenerationRef = useRef(0);
+
+  const applyPrimary = useCallback(
+    (primary: string | null) => {
+      setPrimaryKbIdState(primary);
+      if (primary) localStorage.setItem(storageKey, primary);
+      else localStorage.removeItem(storageKey);
+    },
+    [storageKey]
+  );
+
+  const applyHidden = useCallback(
+    (hidden: string[]) => {
+      setHiddenKbIdsState(hidden);
+      localStorage.setItem(hiddenStorageKey, JSON.stringify(hidden));
+    },
+    [hiddenStorageKey]
+  );
+
+  /** Re-read the authoritative selection after a write that did not land. */
+  const rehydrateSelection = useCallback(
+    async (generation: number) => {
+      try {
+        const res = await getActive({
+          query: sessionId ? { session_id: sessionId } : undefined,
+          throwOnError: true,
+        });
+        if (generation !== selectionGenerationRef.current) return;
+        applyPrimary(readPrimary(res.data));
+        const hidden = readHidden(res.data);
+        if (hidden) applyHidden(hidden);
+      } catch (err) {
+        // Both the write and the recovery read failed. Keep what is on screen —
+        // there is nothing better to show, and the next hydrate will settle it.
+        console.warn('getActive (recovering a failed selection write) failed:', err);
+      }
+    },
+    [applyHidden, applyPrimary, sessionId]
+  );
 
   const syncSelection = useCallback(
     (primary: PrimaryUpdate, nextHiddenKbIds: string[]) => {
+      const generation = ++selectionGenerationRef.current;
       // Optimistic: show the caller's intent now, then adopt whatever the
       // daemon says it actually applied.
       if (primary.kind === 'set') setPrimaryKbIdState(primary.id);
@@ -119,43 +182,38 @@ export function KnowledgeProvider({
         throwOnError: false,
       })
         .then((res) => {
+          // A newer edit is already in flight (or has already answered): this
+          // answer describes a selection the user has clicked past, so applying
+          // it would silently undo their newer choice.
+          if (generation !== selectionGenerationRef.current) return;
           // The daemon owns the "primary must be a member" repair: hiding the
           // primary promotes to the first remaining base, hiding everything
           // clears it. Adopt its answer instead of re-implementing that rule
-          // here, where the two would silently drift apart. A rejected or
-          // failed request leaves the local state alone — treating "no data"
-          // as "no primary" would let one network hiccup erase the pointer.
+          // here, where the two would silently drift apart.
           const data = res?.data;
           if (!data) {
+            // The write did not land. Keeping the optimistic value would leave
+            // the chip, the Knowledge view and the ingest target describing a
+            // selection the daemon never applied, with nothing to correct it —
+            // so re-read the truth instead of guessing at it.
             console.warn('setActive (server sync) returned no selection:', res?.error);
+            void rehydrateSelection(generation);
             return;
           }
-          // `active_kb` is the deprecated mirror. Reading only `primary_kb`
-          // would turn a *successful* write against an older daemon into "there
-          // is no primary" — and the design forbids inventing one back, so the
-          // pointer would stay lost. Same fallback as the hydrate path below.
-          const applied = data.primary_kb ?? data.active_kb ?? null;
-          setPrimaryKbIdState(applied);
-          if (applied) localStorage.setItem(storageKey, applied);
-          else localStorage.removeItem(storageKey);
+          applyPrimary(readPrimary(data));
           // Adopt the set too, not just the pointer: the repair moves both, and
           // taking one half of it is how the renderer ends up holding a primary
-          // that is not a member of its own visible set. Guarded on the field
-          // being present so a daemon that predates `hidden_kbs` in the reply
-          // leaves the optimistic set standing instead of erasing it.
-          if (Array.isArray(data.hidden_kbs)) {
-            const appliedHidden = data.hidden_kbs.filter(
-              (id): id is string => typeof id === 'string'
-            );
-            setHiddenKbIdsState(appliedHidden);
-            localStorage.setItem(hiddenStorageKey, JSON.stringify(appliedHidden));
-          }
+          // that is not a member of its own visible set.
+          const appliedHidden = readHidden(data);
+          if (appliedHidden) applyHidden(appliedHidden);
         })
         .catch((err) => {
+          if (generation !== selectionGenerationRef.current) return;
           console.warn('setActive (server sync) failed:', err);
+          void rehydrateSelection(generation);
         });
     },
-    [hiddenStorageKey, sessionId, storageKey]
+    [applyHidden, applyPrimary, hiddenStorageKey, rehydrateSelection, sessionId, storageKey]
   );
 
   const setPrimaryKbId = useCallback(
@@ -254,6 +312,9 @@ export function KnowledgeProvider({
     setPrimaryKbIdState(local);
     setHiddenKbIdsState(localHidden);
     let cancelled = false;
+    // The hydrate takes a generation of its own: switching sessions must not
+    // leave a write from the previous one able to answer into the new one.
+    const generation = ++selectionGenerationRef.current;
 
     void (async () => {
       try {
@@ -261,18 +322,9 @@ export function KnowledgeProvider({
           query: sessionId ? { session_id: sessionId } : undefined,
           throwOnError: true,
         });
-        if (cancelled) return;
-        // `active_kb` is the deprecated mirror, read so a fresh renderer keeps
-        // working against a daemon that predates `primary_kb`.
-        const server = res.data?.primary_kb ?? res.data?.active_kb ?? null;
-        const serverHidden = (res.data?.hidden_kbs ?? []).filter(
-          (id): id is string => typeof id === 'string'
-        );
-        setPrimaryKbIdState(server);
-        setHiddenKbIdsState(serverHidden);
-        if (server) localStorage.setItem(storageKey, server);
-        else localStorage.removeItem(storageKey);
-        localStorage.setItem(hiddenStorageKey, JSON.stringify(serverHidden));
+        if (cancelled || generation !== selectionGenerationRef.current) return;
+        applyPrimary(readPrimary(res.data));
+        applyHidden(readHidden(res.data) ?? []);
       } catch (err) {
         if (cancelled) return;
         console.warn('getActive (server hydrate) failed:', err);
@@ -283,7 +335,7 @@ export function KnowledgeProvider({
     return () => {
       cancelled = true;
     };
-  }, [hiddenStorageKey, sessionId, storageKey]);
+  }, [applyHidden, applyPrimary, hiddenStorageKey, sessionId, storageKey]);
 
   const primaryKb = useMemo(
     () => bases.find((b) => b.id === primaryKbId) ?? null,

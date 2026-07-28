@@ -190,4 +190,77 @@ describe('KnowledgeContext', () => {
 
     expect(screen.getByTestId('primary')).toHaveTextContent('beta');
   });
+
+  // The optimistic value is a guess about what the daemon will do. When the
+  // write does not land, keeping the guess leaves the chip, the Knowledge view
+  // and the ingest target describing a selection the daemon never applied — and
+  // nothing later corrects it. Re-read the truth instead.
+  it('re-reads the daemon selection when the write is rejected', async () => {
+    const pending = deferred<unknown>();
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+    expect(mocks.getActive).toHaveBeenCalledTimes(1);
+
+    mocks.setActive.mockReturnValue(pending.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+    expect(screen.getByTestId('primary').textContent).toBe('beta');
+
+    await settle(() => pending.reject(new Error('network down')));
+
+    expect(mocks.getActive).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('primary').textContent).toBe('alpha');
+    expect(screen.getByTestId('hidden').textContent).toBe('beta');
+  });
+
+  // Same divergence by the other door: the client resolves, but with an error
+  // envelope instead of a selection. That is a write that did not land.
+  it('re-reads the daemon selection when the write returns no selection', async () => {
+    const pending = deferred<unknown>();
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+    mocks.setActive.mockReturnValue(pending.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+
+    await settle(() => pending.resolve({ error: { message: 'primary_kb is not a member' } }));
+
+    expect(mocks.getActive).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('primary').textContent).toBe('alpha');
+    expect(screen.getByTestId('hidden').textContent).toBe('beta');
+  });
+
+  // Two clicks, two writes, answers out of order. The older answer describes a
+  // selection the user has already moved on from; adopting it silently undoes
+  // the newer click.
+  it('ignores a superseded response that lands after a newer one', async () => {
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+    mocks.setActive.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+    await userEvent.click(screen.getByRole('button', { name: 'make alpha primary' }));
+    expect(mocks.setActive).toHaveBeenCalledTimes(2);
+
+    await settle(() =>
+      second.resolve({
+        data: {
+          kb_ids: ['alpha', 'beta'],
+          primary_kb: 'alpha',
+          active_kb: 'alpha',
+          hidden_kbs: [],
+        },
+      })
+    );
+    expect(screen.getByTestId('primary').textContent).toBe('alpha');
+
+    await settle(() =>
+      first.resolve({
+        data: { kb_ids: ['beta'], primary_kb: 'beta', active_kb: 'beta', hidden_kbs: ['alpha'] },
+      })
+    );
+    expect(screen.getByTestId('primary').textContent).toBe('alpha');
+    expect(screen.getByTestId('hidden').textContent).toBe('none');
+  });
 });
