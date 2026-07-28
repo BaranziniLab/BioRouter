@@ -658,19 +658,6 @@ pub fn eager_compaction_enabled() -> bool {
         .unwrap_or(DEFAULT_EAGER_COMPACTION_ENABLED)
 }
 
-/// BR-12: a background compaction may only be swapped in when the conversation it
-/// was computed from has not been mutated since the snapshot — i.e. no turn
-/// appended messages while the summarizer ran. [`replace_conversation`] DELETEs +
-/// reinserts the *entire* message set, so swapping a stale snapshot would
-/// silently drop any messages a concurrent turn added. History is append-only
-/// between turns, so an unchanged message count is a sufficient (and cheap)
-/// freshness check.
-///
-/// [`replace_conversation`]: crate::session::SessionManager::replace_conversation
-pub fn eager_swap_is_safe(snapshot_len: usize, current_len: usize) -> bool {
-    snapshot_len == current_len
-}
-
 /// BR-12: compute and swap in a compaction off the user-visible critical path.
 ///
 /// Spawned as a detached background task at the turn boundary. The expensive
@@ -681,12 +668,22 @@ pub fn eager_swap_is_safe(snapshot_len: usize, current_len: usize) -> bool {
 /// background task) — that is the "keep a synchronous fallback" phasing BR-12
 /// calls for.
 ///
-/// Race-safe against a live turn: the compacted conversation is only persisted
-/// when the stored conversation is unchanged since the snapshot (see
-/// [`eager_swap_is_safe`]); otherwise the result is discarded and the next turn's
-/// synchronous fallback handles it. Callers must additionally serialize eager
-/// compactions per session (only one in flight) so two summarizers don't both
-/// try to swap.
+/// Race-safe against a live turn: the swap goes through
+/// [`SessionManager::replace_conversation_preserving_tail`], so a message a
+/// concurrent turn appended while the summarizer ran is carried over rather than
+/// destroyed, and a snapshot whose basis was truncated or rewritten underneath
+/// us is refused outright — in which case the result is discarded and the next
+/// turn's synchronous fallback handles it. That check runs inside the rewrite's
+/// own transaction, so unlike the message-count compare it replaces it has no
+/// window at all.
+///
+/// This makes the write safe, not the concurrency rare. Callers should still
+/// serialize eager compactions per session (only one in flight) so two
+/// summarizers don't both pay for a round-trip one of them will discard —
+/// and note that `Agent`-scoped serialization cannot cover a second process on
+/// the same `sessions.db`.
+///
+/// [`SessionManager::replace_conversation_preserving_tail`]: crate::session::SessionManager::replace_conversation_preserving_tail
 /// `on_before_compact` runs exactly once, only when compaction is actually about
 /// to happen (the threshold check passed) and just before the summarization call.
 /// The caller uses it to fire the `PreCompact` hook so — unlike firing it around
@@ -698,8 +695,8 @@ pub async fn run_eager_compaction(
     threshold: f64,
     on_before_compact: impl FnOnce(),
 ) -> Result<EagerCompactionOutcome> {
-    let session = session_manager
-        .get_session(&session_config.id, true)
+    let (session, basis) = session_manager
+        .snapshot_for_rewrite(&session_config.id)
         .await?;
     let Some(conversation) = session.conversation.clone() else {
         return Ok(EagerCompactionOutcome::NotNeeded);
@@ -720,30 +717,24 @@ pub async fn run_eager_compaction(
         return Ok(EagerCompactionOutcome::NotNeeded);
     }
 
-    let snapshot_len = conversation.messages().len();
-
     on_before_compact();
     let (compacted, usage) = compact_messages(provider.as_ref(), &conversation, false).await?;
 
-    // Re-load and only swap when no turn mutated the conversation while we
-    // summarized — otherwise the DELETE+reinsert would clobber the new messages.
-    let current_len = session_manager
-        .get_session(&session_config.id, true)
-        .await?
-        .conversation
-        .as_ref()
-        .map_or(0, |c| c.messages().len());
-    if !eager_swap_is_safe(snapshot_len, current_len) {
+    // Swap under the store's own freshness guard: anything a concurrent turn
+    // appended while we summarized is carried over instead of being clobbered,
+    // and a snapshot whose basis moved is refused.
+    let (outcome, _stored) = session_manager
+        .replace_conversation_preserving_tail(&session_config.id, &compacted, basis, &conversation)
+        .await?;
+    if !outcome.stored() {
         debug!(
-            "BR-12: eager compaction aborted for session {} (len {} -> {}); a turn started under it",
-            session_config.id, snapshot_len, current_len
+            "BR-12: eager compaction aborted for session {} ({:?}); the history \
+             was rewritten under it",
+            session_config.id, outcome
         );
         return Ok(EagerCompactionOutcome::Aborted);
     }
 
-    session_manager
-        .replace_conversation(&session_config.id, &compacted)
-        .await?;
     let usage_event_key = uuid::Uuid::new_v4().to_string();
     crate::agents::reply_parts::apply_session_metrics(
         &session_manager,
@@ -1919,17 +1910,6 @@ mod tests {
 
     // ---- BR-12: eager (background, between-turns) compaction ----
 
-    #[test]
-    fn test_eager_swap_is_safe_only_when_len_unchanged() {
-        // Unchanged length: no turn appended since the snapshot → safe to swap.
-        assert!(eager_swap_is_safe(10, 10));
-        // A message was appended by a racing turn → swapping the stale snapshot
-        // would DELETE+reinsert over it, so it must be refused.
-        assert!(!eager_swap_is_safe(10, 11));
-        // Defensive: any divergence at all is unsafe.
-        assert!(!eager_swap_is_safe(10, 9));
-    }
-
     /// Build a `SessionManager` backed by a throwaway temp dir + a session
     /// preloaded with `messages`, its live gauge set to `total_tokens`.
     async fn eager_test_session(
@@ -2026,6 +2006,177 @@ mod tests {
                 |c| matches!(c, MessageContent::Text(t) if t.text.contains("<mock summary>"))
             )),
             "the compacted history should carry the summary"
+        );
+    }
+
+    /// A provider that mutates the session's history from inside its own
+    /// completion call — the deterministic stand-in for a concurrent writer
+    /// landing in the summarizer's window. No sleeps, no barriers.
+    struct MutatingProvider {
+        inner: MockProvider,
+        manager: Arc<crate::session::SessionManager>,
+        session_id: String,
+        mutation: Mutation,
+    }
+
+    enum Mutation {
+        /// Another writer appends a message (BR-71's note, `term log`, a turn).
+        Append(String),
+        /// A checkpoint restore / message edit removes the basis' tail.
+        Truncate(i64),
+    }
+
+    #[async_trait]
+    impl Provider for MutatingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("mock", "", "", "", vec![""], "", vec![])
+        }
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+        async fn complete_with_model(
+            &self,
+            model_config: &ModelConfig,
+            system: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            match &self.mutation {
+                Mutation::Append(text) => {
+                    self.manager
+                        .add_message(&self.session_id, &Message::user().with_text(text.clone()))
+                        .await
+                        .unwrap();
+                }
+                Mutation::Truncate(ts) => {
+                    self.manager
+                        .truncate_conversation(&self.session_id, *ts)
+                        .await
+                        .unwrap();
+                }
+            }
+            self.inner
+                .complete_with_model(model_config, system, messages, tools)
+                .await
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            self.inner.get_model_config()
+        }
+    }
+
+    /// A well-formed summary, so `summary_is_usable` accepts it first time.
+    fn mock_summary() -> Message {
+        Message::assistant().with_text(
+            "## User Intent\nplot the data\n## Technical Concepts\nplotting\n\
+             ## Files\nnone\n## Pending Tasks\nnone\n",
+        )
+    }
+
+    fn eager_texts(conversation: &Conversation) -> Vec<String> {
+        conversation
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A message appended while the background summarizer ran must survive AND
+    /// the compaction must still land. The message-count guard this replaces
+    /// discarded the compaction outright, so the session kept re-paying for a
+    /// summarization it threw away.
+    #[tokio::test]
+    async fn run_eager_compaction_preserves_a_concurrent_append() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+
+        let provider: Arc<dyn Provider> = Arc::new(MutatingProvider {
+            inner: MockProvider::new(mock_summary(), 100),
+            manager: Arc::clone(&manager),
+            session_id: id.clone(),
+            mutation: Mutation::Append("NOTE: from a concurrent writer".to_string()),
+        });
+
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            EagerCompactionOutcome::Swapped,
+            "the compaction must land, not be discarded"
+        );
+        let texts = eager_texts(
+            &manager
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap(),
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("NOTE: from a concurrent writer")),
+            "the concurrently appended note must survive; stored: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("User Intent")),
+            "the summary must be persisted; stored: {texts:#?}"
+        );
+    }
+
+    /// When the basis itself is truncated underneath the summarizer there is no
+    /// sound prefix to merge onto: abort, write nothing, and let the next turn's
+    /// synchronous fallback re-derive. First integration coverage of `Aborted`.
+    #[tokio::test]
+    async fn run_eager_compaction_aborts_when_the_prefix_moved() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let before = manager.conversation_revision(&id).await.unwrap();
+
+        let provider: Arc<dyn Provider> = Arc::new(MutatingProvider {
+            inner: MockProvider::new(mock_summary(), 100),
+            manager: Arc::clone(&manager),
+            session_id: id.clone(),
+            // Messages carry `created = 0` here, so this removes the lot.
+            mutation: Mutation::Truncate(0),
+        });
+
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, EagerCompactionOutcome::Aborted);
+        let after = manager.conversation_revision(&id).await.unwrap();
+        assert_ne!(before, after, "the truncate itself did happen");
+        assert_eq!(
+            after.message_count(),
+            0,
+            "an aborted swap must not resurrect the truncated messages"
         );
     }
 
