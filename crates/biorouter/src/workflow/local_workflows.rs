@@ -30,7 +30,45 @@ pub fn get_workflow_library_dir(is_global: bool) -> PathBuf {
     if is_global {
         Paths::config_dir().join("workflows")
     } else {
-        env::current_dir().unwrap().join(".biorouter/workflows")
+        project_workflow_library_dir(env::current_dir())
+    }
+}
+
+/// The project workflow library — `<working dir>/.biorouter/workflows` — with
+/// the working directory taken as an argument so the failure case is testable
+/// without deleting a directory out from under the whole test binary.
+///
+/// Resolving it used to `unwrap` the working directory. A session's working
+/// directory is user-chosen and can vanish while the process is still running:
+/// a scratch directory cleaned up, a volume unmounted, a `git worktree remove`.
+/// In the CLI that panic ended one command; in `biorouterd` it took down a
+/// long-lived daemon serving every other session, so the user lost the backend
+/// for reasons unrelated to whatever they were doing. Listing workflows is not
+/// worth that.
+///
+/// So an unreadable working directory degrades instead: the library falls back
+/// to the same path relative to it, which cannot exist any more than the
+/// directory does. Every consumer already treats a missing directory as
+/// nothing to scan (`scan_directory_for_workflows` returns early,
+/// `canonicalize` falls back to the path as written), so the project library
+/// simply drops out while the global library and every
+/// `BIOROUTER_WORKFLOW_PATH` entry keep working.
+fn project_workflow_library_dir(working_dir: std::io::Result<PathBuf>) -> PathBuf {
+    let relative = PathBuf::from(".biorouter").join("workflows");
+    match working_dir {
+        Ok(dir) => dir.join(relative),
+        Err(err) => {
+            // Listing is user-triggered (opening the workflows view, a CLI
+            // lookup), not polled, so warning per call reports an ongoing
+            // condition rather than flooding the log.
+            tracing::warn!(
+                "Cannot resolve the working directory ({}); skipping the project \
+                 workflow library. Global workflows and BIOROUTER_WORKFLOW_PATH \
+                 entries are unaffected.",
+                err
+            );
+            relative
+        }
     }
 }
 
@@ -701,6 +739,121 @@ mod tests {
         assert!(
             logs.contains("ERROR") && logs.contains("not-yaml.yaml"),
             "an unparseable file in a workflow directory is a broken workflow; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_readable_working_directory_still_gives_the_project_library() {
+        let cwd = PathBuf::from("/some/project");
+
+        assert_eq!(
+            project_workflow_library_dir(Ok(cwd.clone())),
+            cwd.join(".biorouter").join("workflows")
+        );
+    }
+
+    /// The fallback has to be a path that cannot exist — a directory that is
+    /// gone has no workflow library — and it has to say so once, at a level
+    /// someone reading the daemon log will see. Silently substituting a
+    /// *different* real directory would be worse than the panic: it would list
+    /// another project's workflows.
+    #[test]
+    fn an_unreadable_working_directory_yields_no_project_library_and_a_warning() {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+
+        let dir = tracing::subscriber::with_default(subscriber, || {
+            project_workflow_library_dir(Err(std::io::Error::from(std::io::ErrorKind::NotFound)))
+        });
+
+        assert_eq!(dir, PathBuf::from(".biorouter").join("workflows"));
+        assert!(
+            dir.is_relative(),
+            "the fallback stays relative to the working directory, so when that \
+             directory is gone it resolves to nothing and the project library \
+             drops out. An absolute substitute would be worse than the panic — \
+             it would list some other directory's workflows as this project's; \
+             got {}",
+            dir.display()
+        );
+        let logs = logs.text();
+        assert!(
+            logs.contains("WARN") && logs.contains("working directory"),
+            "a working directory that cannot be resolved is worth saying out \
+             loud; logs were:\n{logs}"
+        );
+    }
+
+    /// Env var that tells a re-executed copy of this test binary that it is the
+    /// child half of [`listing_workflows_survives_a_deleted_working_directory`].
+    const DELETED_CWD_CHILD: &str = "BIOROUTER_TEST_DELETED_CWD_CHILD";
+
+    /// A session's working directory is user-chosen and can vanish while the
+    /// process is still running — a scratch directory cleaned up, a volume
+    /// unmounted, a `git worktree remove`. In the CLI resolving it badly costs
+    /// one command; in `biorouterd` it takes down a daemon serving every other
+    /// session, and the user sees the backend disappear for reasons unrelated
+    /// to anything they did. Listing workflows must not be able to do that.
+    ///
+    /// Deleting the working directory is process-global state, so this cannot
+    /// run beside the other tests in this binary: it re-executes the test
+    /// binary and does the destructive part in a child process. The child is
+    /// pointed at its own config root so it never reads or logs against the
+    /// real one.
+    #[test]
+    #[cfg(unix)]
+    fn listing_workflows_survives_a_deleted_working_directory() {
+        if env::var(DELETED_CWD_CHILD).is_ok() {
+            let scratch = tempfile::tempdir().unwrap().keep();
+            env::set_current_dir(&scratch).unwrap();
+            fs::remove_dir_all(&scratch).unwrap();
+            assert!(
+                env::current_dir().is_err(),
+                "the child must actually be standing in a deleted directory, \
+                 otherwise it proves nothing"
+            );
+
+            // None of these may panic: they are all reachable from a daemon
+            // request while a session's working directory is gone.
+            let _ = get_workflow_library_dir(false);
+            let _ = local_workflow_lookup_dirs();
+            let workflows = list_local_workflows()
+                .expect("listing must degrade to the directories that still exist");
+            assert!(workflows.is_empty());
+            assert!(
+                load_local_workflow_file("no-such-workflow").is_err(),
+                "a named lookup must fail as a normal error, not a panic"
+            );
+            return;
+        }
+
+        let config_root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--nocapture",
+                "workflow::local_workflows::tests::listing_workflows_survives_a_deleted_working_directory",
+            ])
+            .env(DELETED_CWD_CHILD, "1")
+            // Hermetic: its own config root, no inherited workflow path, and
+            // the working-directory scan opted in so the deleted `.` is
+            // enumerated too.
+            .env("BIOROUTER_PATH_ROOT", config_root.path())
+            .env(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR, "1")
+            .env_remove(BIOROUTER_WORKFLOW_PATH_ENV_VAR)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "a deleted working directory must not take the process down.\n\
+             --- child stdout ---\n{}\n--- child stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
 
