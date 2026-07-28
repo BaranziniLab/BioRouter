@@ -275,13 +275,33 @@ fn is_device(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// The persistence tests mutate process-global env vars
-    /// (`BIOROUTER_PERSIST_UNDO`, `BIOROUTER_PATH_ROOT`), which every test thread
-    /// shares. Cargo runs tests in parallel, so they must not overlap.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    /// Pin the process-global env the persistence tests drive
+    /// (`BIOROUTER_PATH_ROOT`, `BIOROUTER_PERSIST_UNDO`) for as long as the
+    /// returned guard lives.
+    ///
+    /// A module-local mutex plus `set_var`/`remove_var` is not enough on two
+    /// counts: the values leak out of any test that panics between the set and
+    /// the remove, and a module-local mutex serialises only *these* tests while
+    /// `BIOROUTER_PATH_ROOT` is read on every config-dir lookup anywhere in the
+    /// process. `env_lock` restores the previous values from `Drop` and takes
+    /// the same process-wide lock the rest of the workspace's
+    /// `BIOROUTER_PATH_ROOT` tests take.
+    ///
+    /// Values are owned `String`s so the guard does not borrow the caller's
+    /// `TempDir`.
+    fn scoped_undo_env(root: &Path, persist: Option<&str>) -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([
+            (
+                "BIOROUTER_PATH_ROOT",
+                Some(root.to_string_lossy().into_owned()),
+            ),
+            ("BIOROUTER_PERSIST_UNDO", persist.map(str::to_owned)),
+        ])
+    }
 
     #[test]
     fn in_memory_push_and_pop_lifo() {
@@ -325,11 +345,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn persists_across_instances() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempDir::new().unwrap();
-        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
-        std::env::remove_var("BIOROUTER_PERSIST_UNDO");
+        let _env = scoped_undo_env(root.path(), None);
         let work = TempDir::new().unwrap();
         let f = work.path().join("keep.txt");
         std::fs::write(&f, "original").unwrap();
@@ -342,21 +361,60 @@ mod tests {
         // A fresh instance for the same working dir reloads the stack.
         let h2 = FileHistory::persistent(work.path());
         assert_eq!(h2.pop(&f).as_deref(), Some("original"));
-
-        std::env::remove_var("BIOROUTER_PATH_ROOT");
     }
 
     #[test]
+    #[serial]
     fn persistence_opt_out_stays_in_memory() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempDir::new().unwrap();
-        std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
-        std::env::set_var("BIOROUTER_PERSIST_UNDO", "0");
+        let _env = scoped_undo_env(root.path(), Some("0"));
         let work = TempDir::new().unwrap();
         let h = FileHistory::persistent(work.path());
         assert!(h.persist_path.is_none());
-        std::env::remove_var("BIOROUTER_PERSIST_UNDO");
-        std::env::remove_var("BIOROUTER_PATH_ROOT");
+    }
+
+    /// The persistence tests above pin process-global env vars. If one of them
+    /// panics — an assertion failure, a `.unwrap()` on a missing file — the
+    /// scratch root must not survive the unwind: every later `Paths::*` call in
+    /// this process would then resolve into a `TempDir` that has been dropped.
+    ///
+    /// The panic below is caught, so the stderr backtrace it prints is expected.
+    ///
+    /// `#[serial]` is load-bearing *here* for a reason the guard cannot cover:
+    /// the "before" sample is necessarily read before the lock is acquired, so
+    /// without it this test could sample the ambient value while a sibling
+    /// persistence test had the variable pinned to its own `TempDir` and then
+    /// compare against that dead value. (Observed once in ~14 runs of the full
+    /// `developer::` suite before this annotation.) The other two mutators
+    /// carry it too, so the three cannot interleave.
+    #[test]
+    #[serial]
+    fn env_is_restored_when_a_persistence_test_panics() {
+        let before_root = std::env::var("BIOROUTER_PATH_ROOT").ok();
+        let before_optout = std::env::var("BIOROUTER_PERSIST_UNDO").ok();
+        let root = TempDir::new().unwrap();
+
+        let outcome = std::panic::catch_unwind(|| {
+            let _env = scoped_undo_env(root.path(), Some("0"));
+            assert_eq!(
+                std::env::var("BIOROUTER_PATH_ROOT").ok().as_deref(),
+                root.path().to_str(),
+                "the guard must actually pin the variable"
+            );
+            panic!("simulated assertion failure inside the guarded region");
+        });
+
+        assert!(outcome.is_err(), "the panic must propagate");
+        assert_eq!(
+            std::env::var("BIOROUTER_PATH_ROOT").ok(),
+            before_root,
+            "BIOROUTER_PATH_ROOT leaked out of a panicking persistence test"
+        );
+        assert_eq!(
+            std::env::var("BIOROUTER_PERSIST_UNDO").ok(),
+            before_optout,
+            "BIOROUTER_PERSIST_UNDO leaked out of a panicking persistence test"
+        );
     }
 
     #[test]

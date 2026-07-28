@@ -6,6 +6,7 @@
 //! serially because it toggles process-global env (`BIOROUTER_CHECKPOINTS`,
 //! `BIOROUTER_PATH_ROOT`) that the checkpoint config + data-dir resolution read.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -136,14 +137,73 @@ async fn drain(agent: &Agent, user: &str, session_id: &str) -> Result<Vec<Messag
     Ok(out)
 }
 
+/// Pin the process-global env this file's tests drive for as long as the
+/// returned guard lives.
+///
+/// Both variables are read on every `Paths::*` / checkpoint-config lookup, from
+/// anywhere in the process. `#[serial]` orders this test against other
+/// `#[serial]` tests only, and a bare `set_var`/`remove_var` pair leaks the
+/// value on any early return or panic. The `env_lock` guard restores the
+/// previous values from `Drop` and holds the same mutex the rest of the
+/// workspace's `BIOROUTER_PATH_ROOT` tests take.
+///
+/// Values are owned `String`s so the guard does not borrow the caller's
+/// `TempDir`.
+fn scoped_checkpoint_env(path_root: &Path) -> env_lock::EnvGuard<'static> {
+    env_lock::lock_env([
+        (
+            "BIOROUTER_PATH_ROOT",
+            Some(path_root.to_string_lossy().into_owned()),
+        ),
+        ("BIOROUTER_CHECKPOINTS", Some("1".to_string())),
+    ])
+}
+
+/// The loop test below pins `BIOROUTER_PATH_ROOT` and `BIOROUTER_CHECKPOINTS`
+/// for its whole body. Both are process-global and read on every `Paths::*`
+/// call, so if the test panics part-way — which is exactly what a failing
+/// assertion does — the scratch root must not outlive the unwind: later tests
+/// would resolve into a `TempDir` that has already been dropped.
+///
+/// The panic below is caught, so the stderr backtrace it prints is expected.
+#[test]
+#[serial_test::serial]
+fn checkpoint_env_is_restored_when_the_loop_test_panics() {
+    let before_root = std::env::var("BIOROUTER_PATH_ROOT").ok();
+    let before_checkpoints = std::env::var("BIOROUTER_CHECKPOINTS").ok();
+    let path_root = TempDir::new().unwrap();
+
+    let outcome = std::panic::catch_unwind(|| {
+        let _env = scoped_checkpoint_env(path_root.path());
+        assert_eq!(
+            std::env::var("BIOROUTER_PATH_ROOT").ok().as_deref(),
+            path_root.path().to_str(),
+            "the guard must actually pin the variable"
+        );
+        panic!("simulated assertion failure inside the guarded region");
+    });
+
+    assert!(outcome.is_err(), "the panic must propagate");
+    assert_eq!(
+        std::env::var("BIOROUTER_PATH_ROOT").ok(),
+        before_root,
+        "BIOROUTER_PATH_ROOT leaked out of a panicking checkpoint test"
+    );
+    assert_eq!(
+        std::env::var("BIOROUTER_CHECKPOINTS").ok(),
+        before_checkpoints,
+        "BIOROUTER_CHECKPOINTS leaked out of a panicking checkpoint test"
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn reply_loop_checkpoints_and_restore_rewinds_both_axes() {
     // Hermetic env: shadow repos under a temp data root, checkpoints enabled.
+    // The guard holds the process-wide env lock for the whole test and restores
+    // both variables on drop, including when an assertion below panics.
     let path_root = TempDir::new().unwrap();
-    // SAFETY: this test is `#[serial]`, so no other test races these globals.
-    std::env::set_var("BIOROUTER_PATH_ROOT", path_root.path());
-    std::env::set_var("BIOROUTER_CHECKPOINTS", "1");
+    let _env = scoped_checkpoint_env(path_root.path());
 
     let work_dir = TempDir::new().unwrap();
     std::fs::write(work_dir.path().join("data.txt"), "v1").unwrap();
@@ -243,7 +303,4 @@ async fn reply_loop_checkpoints_and_restore_rewinds_both_axes() {
         msg_count_after < msg_count_before,
         "conversation must be truncated back past the turn (before={msg_count_before}, after={msg_count_after})"
     );
-
-    std::env::remove_var("BIOROUTER_CHECKPOINTS");
-    std::env::remove_var("BIOROUTER_PATH_ROOT");
 }

@@ -108,6 +108,7 @@ temp-env = "0.3.6"
 colored = "2"
 serial_test = { workspace = true }
 wiremock = { workspace = true }
+env-lock = { workspace = true }
 
 [features]
 utoipa = ["dep:utoipa"]
