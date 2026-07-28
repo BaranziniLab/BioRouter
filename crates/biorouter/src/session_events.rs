@@ -40,7 +40,9 @@
 //! 1. [`subscribe`] is the only function that creates a ring — [`publish`] and
 //!    [`observer_count`] are pure lookups, because a session with no entry
 //!    provably has no receiver.
-//! 2. [`release_if_idle`] drops the ring when the last observer goes.
+//! 2. The [`Subscription`] it returns frees the ring when it is dropped, so
+//!    the reclaim belongs to the observer that caused the allocation rather
+//!    than to a turn that may never run. See [`release_if_idle`].
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -133,11 +135,76 @@ fn bus() -> std::sync::MutexGuard<'static, HashMap<String, broadcast::Sender<Ses
 /// * Because the count is therefore incremented under the same lock that
 ///   guards removal, an entry's absence provably means the session has no
 ///   receiver — a fact the rest of the module relies on.
-pub fn subscribe(session_id: &str) -> broadcast::Receiver<SessionBusEvent> {
-    bus()
+///
+/// Returns a [`Subscription`], which derefs to the underlying
+/// `broadcast::Receiver` and reclaims the ring when it is dropped. See that
+/// type for why the reclaim is not left to the caller.
+#[must_use = "dropping the subscription immediately unsubscribes"]
+pub fn subscribe(session_id: &str) -> Subscription {
+    let rx = bus()
         .entry(session_id.to_string())
         .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
-        .subscribe()
+        .subscribe();
+    Subscription {
+        session_id: session_id.to_string(),
+        rx: Some(rx),
+    }
+}
+
+/// A live observer of one session: a `broadcast::Receiver` that reclaims its
+/// session's ring when it goes away.
+///
+/// **The reclaim is RAII because the observer side has no other owner.**
+/// [`publish`] never creates an entry, so every ring in the registry was
+/// created by a `subscribe`; [`release_if_idle`] is called by the turn runner,
+/// but a turn is exactly what an observer-only session does not have. An
+/// archived session someone opened to read, or — since [`subscribe`] is
+/// advertised as safe for *any* id — a client-supplied id on
+/// `GET /sessions/{id}/events` that names no session at all, would otherwise
+/// pin ~10^5 bytes for the life of the process. One unauthenticated request
+/// per made-up id is then an unbounded allocation reachable from a single HTTP
+/// route, so "the route remembers to call `release_if_idle` on stream drop" is
+/// not a good enough contract: the type enforces it.
+///
+/// Deref, not a wrapper API, so `sub.recv().await` and every other
+/// `broadcast::Receiver` method work unchanged.
+#[derive(Debug)]
+pub struct Subscription {
+    session_id: String,
+    /// `Some` for the whole lifetime; `take`n in `Drop` so the receiver is
+    /// destroyed — and the count decremented — *before* `release_if_idle` reads
+    /// it. Field-order drop would run after our `Drop::drop`, so the count
+    /// would still include this receiver and nothing would ever be reclaimed.
+    rx: Option<broadcast::Receiver<SessionBusEvent>>,
+}
+
+impl Subscription {
+    /// The session this subscription follows.
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+}
+
+impl std::ops::Deref for Subscription {
+    type Target = broadcast::Receiver<SessionBusEvent>;
+
+    fn deref(&self) -> &Self::Target {
+        self.rx.as_ref().expect("receiver is only taken in Drop")
+    }
+}
+
+impl std::ops::DerefMut for Subscription {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.rx.as_mut().expect("receiver is only taken in Drop")
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        drop(self.rx.take());
+        release_if_idle(&self.session_id);
+    }
 }
 
 /// Publish, best-effort. A send with no receivers is a no-op, never an error —
@@ -164,12 +231,14 @@ pub fn publish(session_id: &str, event: SessionBusEvent) {
 
 /// Drop a session's sender — and its 1024-slot ring — once nothing is listening.
 ///
-/// Called by the turn runner AFTER the terminal event has been published and
-/// the consumers have had it (see `run_turn`'s exit path, Task 6). A live
-/// observer keeps `receiver_count() > 0` and the entry survives; when the last
-/// one goes, the next idle session's turn reclaims it. Re-creating the entry
-/// later is one allocation, which is exactly what happens for a session's first
-/// turn anyway.
+/// The primary caller is [`Subscription`]'s `Drop`, which is what makes the
+/// reclaim unforgettable: since [`publish`] never creates an entry, every ring
+/// belongs to some observer, and the last observer to leave frees it. A live
+/// observer keeps `receiver_count() > 0` and the entry survives.
+///
+/// Still public because the turn runner also calls it on its exit path (Task 6)
+/// as a belt-and-braces sweep — harmless and idempotent — and because a caller
+/// that has torn down its receivers by some other route needs a way to say so.
 ///
 /// NOT idempotency-sensitive: `subscribe` re-inserts on demand, and a receiver
 /// created from a sender that has since been removed from the map keeps working
@@ -196,12 +265,11 @@ pub fn observer_count(session_id: &str) -> usize {
 ///
 /// Deliberately a per-key predicate and **not** a `tracked_session_count()`.
 /// `BUS` is process-global and libtest runs this module's tests as parallel
-/// threads on one process: the three tests above insert `bus-t1`..`bus-t4` and
-/// never release them, so any `count == before + 1` assertion can observe
-/// `before + 2` depending on interleaving and fail for reasons that have
-/// nothing to do with the ring under test. A key the leak test owns outright
-/// cannot race, and it asserts the actual property (this entry was reclaimed)
-/// instead of a proxy for it.
+/// threads on one process, each subscribing and releasing on its own keys, so
+/// any `count == before + 1` assertion can observe `before + 2` depending on
+/// interleaving and fail for reasons that have nothing to do with the ring
+/// under test. A key its test owns outright cannot race, and it asserts the
+/// actual property (this entry was reclaimed) instead of a proxy for it.
 #[cfg(test)]
 pub(crate) fn is_tracked(session_id: &str) -> bool {
     bus().contains_key(session_id)
@@ -354,6 +422,38 @@ mod tests {
         }
     }
 
+    /// An observer-only session must reclaim itself, with no turn runner
+    /// involved and no explicit call from the observer.
+    ///
+    /// `release_if_idle` is documented as the turn runner's business, and after
+    /// the lookup-only fix a turn no longer creates entries at all — so every
+    /// entry in the registry is now created by an observer. `GET
+    /// /sessions/{id}/events` (Task 7) subscribes to a *client-supplied* id
+    /// before it has checked the session exists, and `subscribe` is advertised
+    /// as safe for any id. If the reclaim depended on a turn ever running, one
+    /// unauthenticated request per bogus id would pin ~10^5 bytes forever: an
+    /// unbounded allocation reachable from a single HTTP route.
+    ///
+    /// So the subscription itself owns the reclaim, and a consumer cannot
+    /// forget.
+    #[tokio::test]
+    async fn an_observer_only_session_is_reclaimed_when_the_observer_leaves() {
+        assert!(
+            !is_tracked("observer-only"),
+            "precondition: nothing else uses this key"
+        );
+        {
+            let _sub = subscribe("observer-only");
+            assert!(is_tracked("observer-only"), "subscribing creates the ring");
+            // No turn ever publishes on this session, so nothing else will ever
+            // call `release_if_idle` for it.
+        }
+        assert!(
+            !is_tracked("observer-only"),
+            "dropping the subscription must reclaim the ring on its own"
+        );
+    }
+
     /// Publishing to a session nobody is watching must not allocate anything.
     ///
     /// `broadcast::channel` builds the whole 1024-slot ring at creation
@@ -411,9 +511,13 @@ mod tests {
     /// and publishes for every turn of every session.
     ///
     /// Asserts on ITS OWN KEY, never on a map size. `BUS` is process-global and
-    /// the three tests above leave `bus-t1`..`bus-t4` in it forever; libtest
-    /// runs them as parallel threads, so a `count == before + 1` assertion is a
-    /// race against its own module. `leak-check` is touched by this test alone.
+    /// libtest runs this module's tests as parallel threads, so a
+    /// `count == before + 1` assertion is a race against its own module.
+    /// `leak-check` is touched by this test alone.
+    ///
+    /// Covers both branches of [`release_if_idle`] — a ring somebody is still
+    /// reading must survive both an explicit sweep (the turn runner's exit
+    /// path) and one of several observers leaving.
     #[tokio::test]
     async fn an_idle_session_releases_its_ring() {
         assert!(
@@ -421,8 +525,9 @@ mod tests {
             "precondition: nothing else uses this key"
         );
 
-        // A live observer creates the ring and pins it …
-        let rx = subscribe("leak-check");
+        // Two live observers create the ring and pin it …
+        let first = subscribe("leak-check");
+        let second = subscribe("leak-check");
         assert!(is_tracked("leak-check"), "subscribing creates the ring");
         publish(
             "leak-check",
@@ -430,12 +535,20 @@ mod tests {
                 turn_id: "t".into(),
             },
         );
+
+        // … an explicit sweep must not reclaim a ring somebody is reading …
         release_if_idle("leak-check");
         assert!(is_tracked("leak-check"), "an observer keeps the ring");
 
-        // … and losing the last one releases it.
-        drop(rx);
-        release_if_idle("leak-check");
+        // … nor may one observer leaving take it from the other …
+        drop(first);
+        assert!(
+            is_tracked("leak-check"),
+            "a remaining observer keeps the ring"
+        );
+
+        // … and the last one leaving reclaims it.
+        drop(second);
         assert!(
             !is_tracked("leak-check"),
             "the last observer leaving reclaims the ring"
