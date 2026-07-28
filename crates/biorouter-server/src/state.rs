@@ -62,6 +62,14 @@ pub struct TurnGuard {
     active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
 }
 
+impl TurnGuard {
+    /// The server-assigned id of the turn this guard owns (BR-71: published as
+    /// `SessionBusEvent::TurnStarted` so consumers can correlate lifecycles).
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+}
+
 impl Drop for TurnGuard {
     fn drop(&mut self) {
         let mut turns = self
@@ -404,6 +412,15 @@ mod tests {
             .try_begin_turn_idempotent("s1", CancellationToken::new(), None)
             .expect_err("no second turn starts");
         assert!(!conflict.duplicate);
+    }
+
+    #[tokio::test]
+    async fn turn_guard_exposes_its_turn_id() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("tg-id-test", CancellationToken::new(), None)
+            .unwrap();
+        assert!(guard.turn_id().starts_with("turn-"));
     }
 
     /// A guard may only ever clear its own turn. If a guard outlived its slot and

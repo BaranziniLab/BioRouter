@@ -26,6 +26,8 @@ pub enum ActiveWorkKind {
     BackgroundJob,
     /// A running subagent task.
     Subagent,
+    /// A turn started on someone else's session (BR-71 `workspace_send_prompt`).
+    DetachedTurn,
 }
 
 impl ActiveWorkKind {
@@ -34,6 +36,7 @@ impl ActiveWorkKind {
         match self {
             ActiveWorkKind::BackgroundJob => "background_job",
             ActiveWorkKind::Subagent => "subagent",
+            ActiveWorkKind::DetachedTurn => "detached_turn",
         }
     }
 
@@ -41,6 +44,7 @@ impl ActiveWorkKind {
         match self {
             ActiveWorkKind::BackgroundJob => "bg",
             ActiveWorkKind::Subagent => "sub",
+            ActiveWorkKind::DetachedTurn => "turn",
         }
     }
 }

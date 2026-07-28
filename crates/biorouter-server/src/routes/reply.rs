@@ -29,7 +29,7 @@ use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
-fn track_tool_telemetry(content: &MessageContent, all_messages: &[Message]) {
+pub(crate) fn track_tool_telemetry(content: &MessageContent, all_messages: &[Message]) {
     match content {
         MessageContent::ToolRequest(tool_request) => {
             if let Ok(tool_call) = &tool_request.tool_call {
@@ -344,13 +344,44 @@ pub enum MessageEvent {
     Ping,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnErrorScope {
     Provider,
     Session,
     Inference,
     Internal,
+}
+
+impl TurnErrorScope {
+    /// The exact strings the `#[serde(rename_all = "snake_case")]` impl emits.
+    /// Written out rather than derived through `serde_json`, so the wire values
+    /// are greppable and a renamed variant is a compile error here first.
+    pub(crate) fn wire_value(&self) -> &'static str {
+        match self {
+            TurnErrorScope::Provider => "provider",
+            TurnErrorScope::Session => "session",
+            TurnErrorScope::Inference => "inference",
+            TurnErrorScope::Internal => "internal",
+        }
+    }
+
+    /// The inverse. An unrecognized string degrades to `Internal` — a frame from
+    /// a newer runner must never panic a consumer.
+    ///
+    /// Landed with its forward direction (Task 6) so the pair is written and
+    /// reviewed together; the first consumer is Task 7's `map_bus_event`, which
+    /// turns a bus `TurnError.scope` string back into this enum. Drop the
+    /// `allow` there.
+    #[allow(dead_code)]
+    pub(crate) fn from_wire_value(value: &str) -> Self {
+        match value {
+            "provider" => TurnErrorScope::Provider,
+            "session" => TurnErrorScope::Session,
+            "inference" => TurnErrorScope::Inference,
+            _ => TurnErrorScope::Internal,
+        }
+    }
 }
 
 impl MessageEvent {
@@ -381,7 +412,10 @@ impl MessageEvent {
 /// a DB read is genuinely needed: seeding the state when the stream opens (a
 /// resumed session already has counters) and the authoritative reconciliation on
 /// `Finish`.
-async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
+pub(crate) async fn get_token_state(
+    session_manager: &SessionManager,
+    session_id: &str,
+) -> TokenState {
     // Fetch only the token counters — not a full session row plus a
     // `COUNT(*)` over the messages table — since only the token fields are used.
     session_manager
