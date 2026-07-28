@@ -1065,6 +1065,38 @@ impl CheckpointRow {
     }
 }
 
+/// A monotone revision marker for one session's stored message set.
+///
+/// `messages.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`, so SQLite keeps a
+/// high-water mark in `sqlite_sequence` and never reuses a rowid. Every append
+/// raises `max_rowid`. [`SessionManager::replace_conversation`] DELETEs and
+/// re-INSERTs the whole set, so a rewrite raises it too — even when the content
+/// is byte-identical. A delete lowers `count` and frees rowids that are never
+/// minted again. The pair therefore cannot ABA, which a message count alone
+/// demonstrably can: an edit that drops one message plus the next turn's user
+/// message nets to zero.
+///
+/// Read through the `idx_messages_session` covering index, so it is index-only:
+/// no table rows, no JSON. Cheaper than the `COUNT(*)` `get_session` already
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConversationRevision {
+    count: i64,
+    max_rowid: i64,
+}
+
+impl ConversationRevision {
+    /// How many messages the session held at this revision.
+    pub fn message_count(&self) -> usize {
+        self.count.max(0) as usize
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts(count: i64, max_rowid: i64) -> Self {
+        Self { count, max_rowid }
+    }
+}
+
 /// Outcome of [`SessionManager::try_update_working_dir_if_empty`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirUpdate {
@@ -1219,8 +1251,42 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Unconditional whole-history rewrite: DELETE every message of the session
+    /// and re-INSERT the supplied ones.
+    ///
+    /// This is the NAMED EXCEPTION. It is only correct for a caller that
+    /// genuinely owns the whole history — `/clear`, and the import/copy/diverge
+    /// paths that write into a session they just created. A caller that
+    /// computed `conversation` from a snapshot of a *live* session must use
+    /// [`Self::replace_conversation_preserving_tail`] instead: anything another
+    /// writer appended in between is destroyed here, silently, after that
+    /// writer was already told its append succeeded.
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
         self.storage.replace_conversation(id, conversation).await
+    }
+
+    /// The current revision of a session's stored message set (see
+    /// [`ConversationRevision`]). Cheap: one covering-index aggregate.
+    pub async fn conversation_revision(&self, id: &str) -> Result<ConversationRevision> {
+        self.storage.conversation_revision(id).await
+    }
+
+    /// Snapshot a session for a whole-history rewrite: its conversation plus the
+    /// revision that view is based on.
+    ///
+    /// Reads the REVISION FIRST, then the conversation. A message landing
+    /// between the two reads is then inside the returned conversation (so the
+    /// rewrite already accounts for it) rather than looking foreign. Reading in
+    /// the other order would leave such a message absent from the caller's view
+    /// *and* at `id <= max_rowid`, i.e. invisible to tail recovery — a silent
+    /// loss. The ordering is load-bearing.
+    pub async fn snapshot_for_rewrite(
+        &self,
+        id: &str,
+    ) -> Result<(Session, ConversationRevision)> {
+        let revision = self.storage.conversation_revision(id).await?;
+        let session = self.storage.get_session(id, true).await?;
+        Ok((session, revision))
     }
 
     /// Fetch one externalized tool-result payload by its blob handle (BR-7).
@@ -3505,6 +3571,27 @@ impl SessionStorage {
     ) -> Result<()> {
         let pool = self.pool().await?;
         Self::replace_conversation_inner(pool, session_id, conversation).await
+    }
+
+    /// [`ConversationRevision`] of one session, read from the pool.
+    pub async fn conversation_revision(&self, session_id: &str) -> Result<ConversationRevision> {
+        let pool = self.pool().await?;
+        Self::read_revision(pool, session_id).await
+    }
+
+    /// The revision read itself, over any executor — the pool for the public
+    /// reader, the open transaction for the guard inside a rewrite.
+    async fn read_revision<'e, E>(executor: E, session_id: &str) -> Result<ConversationRevision>
+    where
+        E: sqlx::Executor<'e, Database = Sqlite>,
+    {
+        let (count, max_rowid) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(*), IFNULL(MAX(id), 0) FROM messages WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(executor)
+        .await?;
+        Ok(ConversationRevision { count, max_rowid })
     }
 
     async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
@@ -7966,6 +8053,91 @@ mod tests {
         let new_id = &after_ids[4];
         assert!(!new_id.starts_with("msg_"));
         assert!(!before.contains(new_id));
+    }
+
+    // ── conversation revision token ──────────────────────────────────────────
+
+    async fn revision_session(sm: &SessionManager) -> String {
+        sm.create_session(PathBuf::from("/tmp/rev"), "rev".into(), SessionType::User)
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn conversation_revision_advances_on_append() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+
+        let empty = sm.conversation_revision(&id).await.unwrap();
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        let one = sm.conversation_revision(&id).await.unwrap();
+        sm.add_message(&id, &umsg(2, "two")).await.unwrap();
+        let two = sm.conversation_revision(&id).await.unwrap();
+
+        assert_ne!(empty, one);
+        assert_ne!(one, two);
+        assert_eq!(two.message_count(), 2);
+    }
+
+    /// The property a message COUNT cannot have: rewriting the same messages
+    /// back changes the revision. This is why the freshness guard is not the
+    /// length compare BR-12 shipped — an edit that drops one message plus the
+    /// next turn's user message nets to zero and would pass a length check.
+    #[tokio::test]
+    async fn conversation_revision_advances_on_identical_rewrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &umsg(2, "two")).await.unwrap();
+
+        let before = sm.conversation_revision(&id).await.unwrap();
+        let same = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        sm.replace_conversation(&id, &same).await.unwrap();
+        let after = sm.conversation_revision(&id).await.unwrap();
+
+        assert_eq!(before.message_count(), after.message_count());
+        assert_ne!(
+            before, after,
+            "an identical-content rewrite must still move the revision"
+        );
+    }
+
+    /// AUTOINCREMENT never rewinds `sqlite_sequence`, so truncating and
+    /// refilling to the same count cannot reproduce an earlier revision.
+    #[tokio::test]
+    async fn conversation_revision_never_ababs_across_truncate_and_refill() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &umsg(2, "two")).await.unwrap();
+        let original = sm.conversation_revision(&id).await.unwrap();
+
+        sm.truncate_conversation(&id, 2).await.unwrap();
+        sm.add_message(&id, &umsg(3, "three")).await.unwrap();
+        let refilled = sm.conversation_revision(&id).await.unwrap();
+
+        assert_eq!(original.message_count(), refilled.message_count());
+        assert_ne!(original, refilled, "revision must not ABA");
+    }
+
+    #[tokio::test]
+    async fn conversation_revision_is_zero_for_an_empty_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        assert_eq!(
+            sm.conversation_revision(&id).await.unwrap(),
+            ConversationRevision::from_parts(0, 0)
+        );
     }
 
     /// A rewrite changes the session's content, so it must move `updated_at`
