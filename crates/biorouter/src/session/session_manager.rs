@@ -8942,6 +8942,94 @@ mod tests {
         assert_eq!(unique.len(), stored_ids.len(), "duplicate msg_uid stored");
     }
 
+    /// The CLI-vs-daemon shape: two INDEPENDENT stores (separate connection
+    /// pools, no shared in-memory state) over one `sessions.db`, exactly as a
+    /// terminal `biorouter` and the desktop `biorouterd` see it. Nothing in
+    /// process memory orders these — only the guard inside the rewrite
+    /// transaction does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn appends_from_a_second_store_survive_racing_rewrites() {
+        let temp = TempDir::new().unwrap();
+        let daemon = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = daemon
+            .create_session(PathBuf::from("/tmp"), "cross".into(), SessionType::User)
+            .await
+            .unwrap();
+        daemon
+            .add_message(&session.id, &umsg(1, "seed"))
+            .await
+            .unwrap();
+
+        // A second store over the same file — its own pool, its own WAL reader.
+        let cli = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+
+        let appender = {
+            let cli = Arc::clone(&cli);
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let mut uids = Vec::new();
+                for i in 0..80 {
+                    let m = umsg(100 + i, &format!("term-log-{i}"));
+                    uids.push(cli.add_message(&id, &m).await.unwrap());
+                    tokio::task::yield_now().await;
+                }
+                uids
+            })
+        };
+        let rewriter = {
+            let daemon = Arc::clone(&daemon);
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let mut errors = Vec::new();
+                for i in 0..25 {
+                    let (session, basis) = daemon.snapshot_for_rewrite(&id).await.unwrap();
+                    let known = session.conversation.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    let mut msgs = known.messages().clone();
+                    msgs.push(amsg(1_000 + i, &format!("summary-{i}")));
+                    if let Err(e) = daemon
+                        .replace_conversation_preserving_tail(
+                            &id,
+                            &Conversation::new_unvalidated(msgs),
+                            basis,
+                            &known,
+                        )
+                        .await
+                    {
+                        errors.push(e.to_string());
+                    }
+                }
+                errors
+            })
+        };
+        let (uids, errors) = tokio::join!(appender, rewriter);
+        let uids = uids.unwrap();
+        let errors = errors.unwrap();
+
+        assert!(
+            errors.is_empty(),
+            "cross-pool rewrites must not fail: {errors:?}"
+        );
+
+        let stored_ids: Vec<String> = daemon
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
+        let lost: Vec<&String> = uids.iter().filter(|u| !stored_ids.contains(u)).collect();
+        assert!(
+            lost.is_empty(),
+            "{} of {} messages appended by the other store were destroyed",
+            lost.len(),
+            uids.len()
+        );
+    }
+
     /// Two racing preserving-tail rewrites must not collide on
     /// UNIQUE(session_id, msg_uid): the rewrite path has no duplicate-uid
     /// recovery of its own, unlike `add_message`.
