@@ -8,7 +8,7 @@ Biorouter's interface is coherent in intent and inconsistent in fact. Three para
 
 [Astryx](https://astryx.atmeta.com/) is the corrective. It is an open-source React/StyleX design system whose value here is not its colours — its default light body is `#F8F4ED`, a warm parchment cream within a hair of Biorouter's own, which is a pleasant accident and nothing more — but its **discipline**: one control height, one easing curve, one state model, one overlay recipe, one radius ladder, everything expressed as theme tokens so a component's construction never encodes a look. Adopting that discipline is how Biorouter stops re-deriving.
 
-This document proposes what to take, what to keep, and what to refuse. It is organised as: the contract that constrains everything (§1), foundations (§2), elements (§3), compositions (§4), motion (§5), what already agrees (§6), the deletion list (§7), execution (§8), and the decisions you need to settle (§9).
+This document proposes what to take, what to keep, and what to refuse. It is organised as: the contract that constrains everything (§1), foundations (§2), elements (§3), compositions — shell, headers, tabs, chat, views, **terminal**, **files and code** (§4), motion (§5), what already agrees (§6), the deletion list (§7), execution (§8), and the decisions you need to settle (§9).
 
 > **Rendered companion:** [`astryx-design-showcase.html`](astryx-design-showcase.html) — open it in a browser. Every control specified below is live there, built from the proposed tokens, with switches for theme family and a Today/Proposed flip that turns the whole page into the diff. It is the faster way to review this proposal; this document is the argument behind it.
 
@@ -200,6 +200,17 @@ This is the element where copying Astryx directly would break the app, so the ce
 | Tier | Content ceiling | Spec |
 |---|---|---|
 | **Toast** | title + ≤3 wrapped lines + ≤2 actions | 380–420px, `--radius-container`, 16px padding, status chip 28px, title 13/600, body 13/400 muted, actions in a `label`-size ghost row, close 20px in a reserved gutter. Auto-dismiss 5s; errors persist. |
+
+**The four toast layouts.** The chip column, the close gutter and the 16px padding never move; only the number of blocks in the text column changes, so a one-line confirmation and a sticky error are visibly the same object.
+
+| Layout | Height | When | Rule it carries |
+|---|---|---|---|
+| **A — title only** | 52px | most success confirmations | The chip is optically centred on the single line, not on the card. |
+| **B — title + message** | 2–3 lines | the dominant shape (~120 sites) | The chip anchors to the *first line* (`align-self: flex-start` plus a 5px optical nudge), not to the block centre. |
+| **C — message, no title** | ≤3 lines | one-sentence notices carrying a path or an id | With no title the message takes **full-strength ink** instead of muted; otherwise the only text in the card is the quietest thing in it. Long paths break anywhere. |
+| **D — title + message + actions** | +36px | sticky errors | Two actions maximum, both quiet — a coral primary inside a toast competes with the page's own call to action. When actions are present the card stops being click-to-dismiss. |
+
+Three lines is the hard ceiling; a fourth is what sends a notice to a banner.
 | **Banner** (in-place) | title + description + one action | full-bleed `section` variant for app-level notices, `card` variant inline; translucent status wash at 22% with tinted ink, 20px icon, 12/16 padding. |
 | **Notification centre** | anything with a list, a disclosure, or per-item actions | the grouped extension report moves here. A toast may *link* to it. |
 
@@ -226,7 +237,11 @@ Transparent — no card chrome, no outer border, no zebra. Headers are **muted 1
 
 List items: 8px padding, `--radius-element`, 2px gaps, two-line construction (14/400 primary over 12/400 supporting).
 
-**One row spec, enforced:** title `14/500`, metadata `supporting` in muted ink, at most **three visible actions** at 32px with 16px icons, everything else behind a `⋯` overflow. Destructive actions live only in the overflow. This ends: five row-title treatments, the 28-vs-32px delete-button fork, Scheduler's 14px icons, seven-action workflow rows, and primary-filled Launch/Play buttons that are invisible until hover.
+**A list gets no container.** Chat history already works this way and is the app's best-looking list: rows sit directly on the page, separated by hairlines, and the only box that ever appears is the hover wash under the row you are pointing at. A bordered list inside a bordered card is a box in a box, and it is what makes the rest of the app look heavier than Chat history does.
+
+**One row spec, enforced:** title `14/500`, metadata `supporting` in muted ink, stat figures in `tabular-nums` so columns align down the list, at most **three visible actions** at 32px with 16px icons, everything else behind a `⋯` overflow. Destructive actions live only in the overflow. This ends: five row-title treatments, the 28-vs-32px delete-button fork, Scheduler's 14px icons, seven-action workflow rows, and primary-filled Launch/Play buttons that are invisible until hover.
+
+**Running is a breathing dot, not a badge.** A green "Running" pill states the fact at the visual weight of a call to action, and it needs a lane reserved for it in every row that might ever have one. A 7px dot with a slow expanding ring shows the same thing and then gets out of the way — the chat's existing working motif, scaled down — and it rides beside the title where the eye already is. One motif, three scales: 16px in the chat, 7px in a row, and the same 1.8s period throughout.
 
 ---
 
@@ -238,14 +253,26 @@ The audit measured **~462px of fixed chrome above the first recent chat**: a 52p
 
 **Proposal.**
 
-1. **Fold the wordmark into the chrome band**, right of the traffic lights, and drop the band to 44px. Recovers ~48px and removes the app's only entirely empty 52px strip.
+1. **Fold the wordmark into the chrome band**, right of the two titlebar controls, and drop the band to 44px. The controls — collapse the sidebar, open a new window — keep their place beside the traffic lights; folding the wordmark in is what buys the shorter band without displacing them.
 2. **Delete the "MENU" header** (32px labelling something self-evident) and keep only the Recents header, which is doing real work.
-3. **Group the nav.** Primary verbs (New Session, Home) stay top. "Applications" and "Apps" are adjacent near-synonyms and merge. Scheduler and Workflows — low-frequency destinations currently sitting above the daily surface — move into a collapsible "More" group, styled as an Astryx section row: a 32px row identical to an item with a trailing 14px chevron, no uppercase mini-label.
-4. **Halve the divider blocks** and delete the upper one; the section rows now do the zoning.
-5. **Recents rows** keep 32px, gain a trailing status dot for running sessions (replacing the 16px ring-and-glow, which stays in the chat where it belongs), and lose the one-off `color-mix` well surface and its 12px radius — the list sits directly on the rail like every other list in the app.
+3. **The rail carries two destinations.** Only **New Session** and **Home** — the two things reached constantly — stay at the top level. The other seven (Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps) move behind a single **Components** disclosure: a 32px row identical to an item with a leading chevron, no uppercase mini-label, remembering its state. Expanded, its children indent 24px and keep the same 32px height — hierarchy by indent, never by size.
+4. **Halve the divider blocks** and delete the upper one; the Components row and the Recents header now do the zoning.
+5. **Recents rows** keep 32px, gain a trailing status dot for running sessions, use the app's real session glyphs (a message square for a chat, a branch for a diverged session), and lose the one-off `color-mix` well surface and its 12px radius — the list sits directly on the rail like every other list in the app.
 6. Tooltip-on-every-row gets a hover-intent delay so scrubbing the list stops flashing 224px cards.
 
-Net: **~110–130px** of the rail returned to content, with the item count down from nine to seven. The sidebar keeps 240px of width.
+| | Today | Proposed |
+|---|---|---|
+| Chrome band | 52 | 44 |
+| Brand row | 32 | 0 (in the band) |
+| "MENU" header | 32 | 0 |
+| Nav rows | 288 (9 × 32) | 96 (3 × 32) |
+| Divider block | 18 | 10 |
+| Recents header | 32 | 32 |
+| **Before the first chat** | **462px** | **190px** |
+
+Net: **272px** of rail returned to content. The sidebar keeps 240px of width, and rows stay 32px — already the rail rhythm, now written down.
+
+Merging "Applications" and "Apps" — two adjacent near-synonyms — was previously part of this compaction. With both now inside Components the adjacency is far less costly, so the merge is no longer forced by the layout; it stands or falls on its own merits and is not proposed here.
 
 The same 44px band is shared by the chat header and the artifact strip from one `--chrome-height` token — today it is 52px written three ways with two different hairline colours and three different grounds meeting at a seam the code comments claim is continuous.
 
@@ -273,6 +300,27 @@ Change:
 - **Landing state** adopts Astryx's AI-chat template: the greeting, the composer card, and a row of ghost suggestion chips beneath it — optional, and the one place a "what can I ask?" affordance genuinely belongs.
 - **User bubble** and the 896px replay column both move onto the standard radius and the 760px measure.
 
+#### The transcript, element by element
+
+The chat is the product, and these are the changes least safe to describe without seeing them — the [showcase](astryx-design-showcase.html) renders each row below side by side.
+
+| Element | Today | Proposed |
+|---|---|---|
+| User message | tinted, **bordered**, 12px radius, `px-4 py-2.5` | tinted, **no border** (the fill already separates it), `--radius-container`, `10×14` |
+| Assistant turn | full-width, no bubble | unchanged — this is right |
+| Message metadata | **14px**, the same size as the message text, hover-swaps to actions | **12px `supporting`**, actions sit *beside* the timestamp permanently; one `MessageMeta` primitive |
+| `h1` / `h2` / `h3` | 18/26, 16/24, 15/22 — a 20-line utility string on one component | `heading` 20/28, `subheading` 17/24, `label` 14/20 — the same roles as a page |
+| `h4` | 13/18 muted, `+0.02em` | `caps` 11/16 muted — the app's one caps style |
+| Inline code | 13px on a tinted wash, 4px radius | 13px, `--radius-inner`, `--overlay-selected` wash |
+| Blockquote | muted text, no mark | 2px left rail + muted ink — reads as a quote without italics |
+| Tables | their own 13px style, unrelated to the app's tables | **the app's table**: muted 600 header, hairlines, `tabular-nums` |
+| Lists | `my-2` / `mb-3` | 4px grid, `gap` on the list rather than margins per item |
+| Links | accent ink, 40% underline | unchanged — already correct |
+| Chain-of-thought | a native `<details>`, browser triangle, 4px radius, no motion | the standard 32px disclosure row, chevron **visible at rest** |
+| Tool-call line | a line, not a card (D-17) | unchanged, except the chevron is visible at rest |
+
+Prose stays capped at 68 characters and the column at 760px. What this closes is the audit's finding that the chat type ramp — the de-facto specification for the app's most-read surface — exists only as a class string on one component, and that metadata across the transcript spans **10, 11, 12, 13 and 14px**.
+
 ### 4.5 Primary views
 
 Every list view converges on: standard header (§4.2) → optional filter band → hairline list with 36px rows → shared empty state → shared skeleton. This closes seventeen of the eighteen items in the cross-view ledger, including the four error dialects and the five loading dialects.
@@ -283,6 +331,26 @@ Two views need structural work rather than alignment:
 - **Settings** adopts Astryx's two-cell section grid — description left, controls right, 40px gap — which gives long tabs the scannable hierarchy their flat 11px labels currently deny them, and a sticky anchor rail (232px, one 2px thumb sliding on a 10% track at 130ms) instead of relying on `scrollIntoView` deep links.
 
 **Knowledge** keeps its framed-panel workspace — it is a genuinely different kind of surface — but its panels move to `--radius-container`, its segmented switcher becomes the standard chip row, and its 360px fixed column becomes a `minmax` so the graph stops starving at narrow widths.
+
+### 4.6 The terminal dock
+
+The dock's CSS claims "one tab language, both sizes", and that holds for how a tab is *painted* — not for how it is composed. Today it runs a 40px bar with 28px tabs, a 6px icon gap where the chat strip uses 7px, close buttons always visible where the chat's are hover-revealed, a cwd readout and a hide button the chat strip would never carry, and a third overflow behaviour (scroll immediately, where chat shrinks, then scrolls, then overflows to a menu).
+
+**Changes.** Bar 40 → **36px** and tabs 28 → **32px**, one step under the 44px chrome and on the one control ladder. Icon gap 6 → 8px. Close reveals on hover *and* focus, exactly like a chat tab. Overflow adopts the chat ladder. The cwd readout becomes `supporting` mono, truncating from the left so the leaf directory always survives. And the ground moves off `--sidebar`: that token was chosen so the chat strip could continue the *top* edge, and at the bottom edge the rationale inverts — the dock currently reads as a floating slice of sidebar. It grounds on the surface with a top hairline.
+
+**What must not change**, because each is an invariant with a bug behind it: the **per-family terminal ground** (Parchment paints the code ground, Alma Mater and Roche Limit paint muted — a generator that assumed they agree would re-ground two terminals under ANSI palettes tuned for a different surface); the **19-stop ANSI palette** and its per-slot contrast floors; and mono at **13/20**, byte-identical to code blocks.
+
+### 4.7 Files, directories and code
+
+Opening a directory in the artifact panel today yields "a clickable listing" — names, no hierarchy, no status, no preview. This is the surface where Biorouter sits beside a terminal and a repository, so it borrows the interface its users already read fluently: the git working tree.
+
+**Directory tree.** A 240px pane: 28px rows (the compact tier — a tree is the densest list in the app), 24px indent with a 1px guide, one glyph per kind from the app's own icon set, and a status letter at the row end in the status ink (`M` modified, `A` added, `·` clean). The selected file takes the same treatment as a selected nav row — wash plus the straight 2px rail — so "where am I" is one vocabulary from the sidebar to the tree. Status letters are the only colour in the panel, which is the point: colour is evidence.
+
+**File preview.** A 44px header carrying a mono breadcrumb (ancestors muted, the file in ink), a language-and-size chip, and copy / open-externally as 32px ghost icon buttons; then the code body.
+
+**Code blocks — one presentation, two homes.** A snippet in chat and the same file in the preview are the same object and should look it. Today they differ: chat wraps long lines with no gutter, the panel numbers them and scrolls. The rule becomes **line numbers plus horizontal scroll, everywhere** — which is also the only *safe* combination, since `wrapLongLines` together with `showLineNumbers` sets `display: flex` on every line and shreds long lines across the panel. A wrap toggle lives in the header for the rare prose-in-a-fence case.
+
+Header 32px on the control ladder; the language label becomes `supporting` mono in muted ink rather than a fourth uppercase-tracked style; copy and wrap are 24px compact icon buttons — Astryx's sanctioned compact tier, which exists precisely for controls inside a code block. Card radius follows `--radius-container`, the gutter is `tabular-nums` at 60% opacity, and diff rows keep the existing 9% / 10% `color-mix` tints. **The palette itself does not change**: one generated file already feeds chat markdown, the artifact panel and xterm so they cannot drift, and it is contrast-verified per family.
 
 ---
 
@@ -367,7 +435,7 @@ Everything above is a recommendation. These ten are the ones where a different a
 | **A-05** | **Interaction tints** replace hand-authored `--sidebar-hover`/`-active` per family | **Yes.** Removes the exact class of derived-value drift the theming doc warns about, and shrinks what a new family must author. |
 | **A-06** | **Selection** — achromatic wash + weight as the base, accent kept as one 2px mark per surface | **Adopt the wash, keep the rail.** Astryx would drop the coral entirely; you asked to keep the colour, and the straightened rail already shipped here. |
 | **A-07** | **Toast tiering** — a notification centre for compound reports | **Yes.** The grouped extension report is a 400px interactive panel living in a transient layer; nothing else in the census needs more than three lines and two buttons. |
-| **A-08** | **Sidebar compaction** — wordmark into the band, "MENU" deleted, Scheduler/Workflows into a "More" group, Applications and Apps merged | **Yes** on all four; the nav grouping is the one users will notice, so it is the most worth iterating on if you disagree. |
+| **A-08** | **Sidebar compaction** — wordmark folded into the band beside the two titlebar controls, "MENU" deleted, and everything except New Session and Home behind one **Components** disclosure | **Yes.** It returns 272px — more than half the rail on a 720p window — and the two-destination rail matches how the app is actually used. The seven views inside Components are one click away and keep their real icons. |
 | **A-09** | **Focus** — keep the surface shift, add an instant 2px accent outline for `:focus-visible` only | **Yes.** These are separable; today keyboard focus is nearly invisible on several controls. |
 | **A-10** | **Scope** — all ten phases, or a subset? | **All ten, in order.** Phases 1–3 are what make the rest small; stopping after 5 would leave two systems running at once, which is the state the app is already in. |
 

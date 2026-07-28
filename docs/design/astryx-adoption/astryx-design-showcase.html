@@ -268,7 +268,22 @@ section { padding-top:56px; }
               font-size:var(--t-support); color:var(--ink-subtle); max-width:74ch; }
 .card .note b { color:var(--ink-muted); font-weight:600; }
 .demo { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-.stage { background:var(--canvas); border:1px solid var(--line); border-radius:var(--r-element); padding:16px; }
+/* A demo ground is a SURFACE STEP, not a box. An outlined stage inside an
+   outlined card is the box-in-a-box this whole document argues against. */
+.stage { background:var(--muted); border:0; border-radius:var(--r-element); padding:16px; }
+.stage.bare { background:transparent; padding:0; }
+
+/* The breathing dot. One motif for "this is running", scaled to its context:
+   7px in a row, 16px in the chat. A badge states it; a dot shows it. */
+.live { position:relative; width:7px; height:7px; border-radius:999px; background:var(--success); flex:none; }
+.live::after { content:""; position:absolute; inset:-4px; border-radius:999px;
+               border:1px solid var(--success); animation:breathe-ring 1.8s var(--ease) infinite; }
+@keyframes breathe-ring {
+  0%   { transform:scale(.55); opacity:.75; }
+  70%  { transform:scale(1.5); opacity:0; }
+  100% { transform:scale(1.5); opacity:0; }
+}
+@media (prefers-reduced-motion:reduce) { .live::after { animation:none; opacity:.45; transform:scale(1); } }
 .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
 .lbl { font-size:var(--t-caps); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-subtle); margin-bottom:10px; }
 
@@ -294,6 +309,10 @@ section { padding-top:56px; }
 .iconbtn { width:var(--ctl); height:var(--ctl); padding:0; }
 .iconbtn.sm { width:24px; height:24px; }
 .g { width:16px; height:16px; flex:none; display:block; }
+/* The app's real glyphs, drawn from the sprite at their shipped weight. */
+.ico { width:16px; height:16px; flex:none; display:block; fill:none; stroke:currentColor;
+       stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.ico.sm { width:14px; height:14px; }
 
 /* --- inputs ------------------------------------------------- */
 .field { display:flex; flex-direction:column; gap:4px; min-width:220px; }
@@ -347,6 +366,26 @@ section { padding-top:56px; }
 .row .sp { flex:1; }
 .row .acts { display:flex; gap:2px; opacity:0; transition:opacity var(--dur-fast) var(--ease); }
 .row:hover .acts, .row:focus-within .acts { opacity:1; }
+/* The history row, as Chat history already draws it — specified.
+   No container, no per-row box: a hairline between rows and a hover wash. */
+.hrow {
+  display:flex; align-items:flex-start; gap:16px; padding:10px 12px;
+  border-bottom:1px solid var(--line); border-radius:var(--r-element);
+  transition:background-color var(--dur-min) var(--ease);
+}
+.hrow:last-child { border-bottom-color:transparent; }
+.hrow:hover { background:var(--ov-hover); }
+.hmain { min-width:0; flex:1; }
+.htitle { display:flex; align-items:center; gap:10px; font-size:var(--t-label); font-weight:500;
+          line-height:20px; overflow-wrap:anywhere; }
+.hsub, .hmeta { display:flex; align-items:center; gap:6px; margin-top:2px;
+                font-size:var(--t-support); line-height:16px; color:var(--ink-muted); }
+.hmeta { gap:14px; color:var(--ink-subtle); }
+.hmeta span { display:inline-flex; align-items:center; gap:5px; min-width:0; }
+.hstats { display:flex; align-items:center; gap:14px; padding-top:2px;
+          font-size:var(--t-support); color:var(--ink-subtle); font-variant-numeric:tabular-nums; }
+.hstats span { display:inline-flex; align-items:center; gap:5px; }
+.hrow .acts { padding-top:1px; }
 table { width:100%; border-collapse:collapse; font-size:var(--t-body); }
 th { text-align:left; font-weight:600; color:var(--ink-muted); font-size:var(--t-body); }
 th, td { padding:8px 12px; border-bottom:1px solid var(--line); }
@@ -411,6 +450,9 @@ tbody tr:hover { background:var(--ov-hover); }
 .toast .x { position:absolute; right:10px; top:14px; width:20px; height:20px; border:0; background:transparent;
             color:var(--ink-muted); border-radius:var(--r-inner); cursor:pointer; display:grid; place-items:center; }
 .toast .x:hover { background:var(--ov-hover); color:var(--ink); }
+.vlbl { font-size:var(--t-caps); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-subtle);
+        margin-bottom:6px; font-family:ui-monospace,monospace; }
+.vnote { font-size:var(--t-support); color:var(--ink-subtle); margin-top:6px; max-width:46ch; }
 .banner { display:flex; gap:8px; padding:12px 16px; border-radius:var(--r-container); align-items:flex-start; }
 .banner.section { border-radius:0; margin:0 -20px; }
 .banner .bt { font-size:var(--t-label); font-weight:600; }
@@ -476,7 +518,122 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
           transition:height var(--dur-med) var(--ease), border-radius var(--dur-med) var(--ease); }
 .doctab.on { background:var(--surface); color:var(--ink); font-weight:500; box-shadow:var(--elev-1);
              background-image:linear-gradient(var(--accent-bar),var(--accent-bar));
-             background-repeat:no-repeat; background-size:calc(100% - 22px) 2px; background-position:50% 100%; }
+             background-repeat:no-repeat; background-size:calc(100% - 22px) 2px; background-position:50% 0%; }
+
+/* --- code block, terminal, file tree -------------------------- */
+.code {
+  border:1px solid var(--line); border-radius:var(--r-container); overflow:hidden;
+  background:var(--code-ground, var(--muted));
+  transition:border-radius var(--dur-med) var(--ease);
+}
+.code-head {
+  display:flex; align-items:center; gap:8px; height:32px; padding:0 8px 0 12px;
+  background:var(--surface); border-bottom:1px solid var(--line);
+}
+.code-head .lang { font-size:var(--t-support); color:var(--ink-muted); font-family:ui-monospace,monospace; }
+.code-head .path { font-size:var(--t-support); color:var(--ink-subtle); font-family:ui-monospace,monospace;
+                   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.code-body { display:flex; overflow-x:auto; font-family:ui-monospace,"SF Mono",Menlo,monospace;
+             font-size:13px; line-height:20px; }
+.gutter { flex:none; padding:12px 0 12px 12px; text-align:right; color:var(--ink-subtle);
+          font-variant-numeric:tabular-nums; user-select:none; opacity:.6; }
+.codelines { padding:12px; white-space:pre; min-width:0; }
+.codelines .ln { display:block; }
+.codelines .ln.add { background:color-mix(in srgb, var(--success) 12%, transparent); margin:0 -12px; padding:0 12px; }
+.codelines .ln.del { background:color-mix(in srgb, var(--danger) 12%, transparent); margin:0 -12px; padding:0 12px; }
+/* syntax roles mirror codeTheme.ts — one palette, six themes, never re-picked here */
+.t-key { color:var(--syn-key); font-weight:600; }
+.t-str { color:var(--syn-str); }
+.t-com { color:var(--syn-com); font-style:italic; }
+.t-fn  { color:var(--syn-fn); }
+.t-num { color:var(--syn-num); }
+.t-typ { color:var(--syn-typ); font-weight:600; }
+:root { --syn-key:#a3542a; --syn-str:#1f7a3d; --syn-com:#8d8577; --syn-fn:#1e5fbf; --syn-num:#8a5a00; --syn-typ:#7a4b9c; --code-ground:#faf8f3; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --syn-key:#e8a06f; --syn-str:#7ac87c; --syn-com:#8d8577; --syn-fn:#7aabf5; --syn-num:#f0c84a; --syn-typ:#c9a0e8; --code-ground:#16120c; } }
+:root[data-theme="dark"] { --syn-key:#e8a06f; --syn-str:#7ac87c; --syn-com:#8d8577; --syn-fn:#7aabf5; --syn-num:#f0c84a; --syn-typ:#c9a0e8; --code-ground:#16120c; }
+
+.term { border:1px solid var(--line); border-radius:var(--r-container); overflow:hidden; }
+.term-strip { display:flex; align-items:center; gap:3px; height:36px; padding:0 8px;
+              background:var(--surface); border-bottom:1px solid var(--line); }
+.term-body { background:var(--term-ground, #16120c); color:#f4f0e6; padding:12px;
+             font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; line-height:20px;
+             white-space:pre-wrap; }
+:root { --term-ground:#16120c; }
+:root[data-family="alma"] { --term-ground:#f2f3f4; }
+:root[data-family="roche"] { --term-ground:#f4f4f2; }
+@media (prefers-color-scheme: dark) {
+  :root[data-family="alma"]:not([data-theme="light"]) { --term-ground:#0d2a50; }
+  :root[data-family="roche"]:not([data-theme="light"]) { --term-ground:#232320; }
+}
+:root[data-family="alma"][data-theme="dark"] { --term-ground:#0d2a50; }
+:root[data-family="roche"][data-theme="dark"] { --term-ground:#232320; }
+:root[data-family="alma"] .term-body, :root[data-family="roche"] .term-body { color:var(--ink); }
+.term-body .p { color:#7ac87c; }
+.term-body .d { color:var(--ink-subtle); }
+
+.tree { display:flex; flex-direction:column; }
+.trow { display:flex; align-items:center; gap:8px; height:28px; padding:0 8px; position:relative;
+        border-radius:var(--r-element); font-size:var(--t-secondary); color:var(--ink);
+        cursor:default; transition:background-color var(--dur-min) var(--ease); }
+.trow:hover { background:var(--ov-hover); }
+.trow.on { background:var(--ov-select); font-weight:500; }
+.trow.on::before { content:""; position:absolute; left:0; top:5px; bottom:5px; width:2px; background:var(--accent-bar); }
+.trow .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.trow .st { margin-left:auto; font-family:ui-monospace,monospace; font-size:11px; font-weight:600; }
+.indent { position:relative; }
+.indent::before { content:""; position:absolute; left:-9px; top:0; bottom:0; width:1px; background:var(--line); }
+
+/* --- side-by-side comparison --------------------------------- */
+.vs { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px; }
+.vs-col { min-width:0; }
+.vs-tag { display:inline-flex; align-items:center; height:20px; padding:0 8px; margin-bottom:10px;
+          border-radius:var(--r-inner); background:var(--ov-select); color:var(--ink-muted);
+          font-size:var(--t-caps); font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+.vs-tag.on { background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent-ink); }
+.chatpane { background:var(--muted); border-radius:var(--r-element); padding:14px; }
+
+/* chat: today */
+.umsg-today { max-width:85%; margin-left:auto; width:fit-content; border:1px solid var(--line);
+              background:var(--medium); border-radius:12px; padding:10px 16px; font-size:14px; line-height:1.625; }
+.meta-today { font-size:14px; color:var(--ink-muted); margin:4px 0 12px; text-align:right; }
+.meta-today + .amsg + .meta-today { text-align:left; }
+/* chat: proposed */
+.umsg { max-width:85%; margin-left:auto; width:fit-content; background:var(--medium);
+        border-radius:var(--r-container); padding:10px 14px; font-size:14px; line-height:20px; }
+.meta { font-size:12px; line-height:16px; color:var(--ink-subtle); margin:4px 0 12px; text-align:right; }
+.meta + .amsg + .meta { text-align:left; }
+.amsg { font-size:14px; line-height:20px; }
+
+/* markdown ramp — today vs proposed */
+.md-today h1 { font-size:18px; line-height:26px; font-weight:600; letter-spacing:-.005em; margin-bottom:6px; }
+.md-today h2 { font-size:16px; line-height:24px; font-weight:600; margin:10px 0 6px; }
+.md-today p, .md-today li { font-size:14px; line-height:1.5; }
+.md-today p { margin-bottom:8px; }
+.md-today ul { margin:8px 0; padding-left:20px; }
+.md-today blockquote { margin:8px 0; color:var(--ink-muted); }
+.md-today code { font-size:13px; background:var(--medium); border-radius:4px; padding:1px 4px; }
+.md-today table { font-size:13px; margin-top:8px; }
+.md-today th, .md-today td { padding:4px 8px; }
+
+.md-new h1 { font-size:20px; line-height:28px; font-weight:600; margin-bottom:8px; }
+.md-new h2 { font-size:17px; line-height:24px; font-weight:600; margin:12px 0 8px; }
+.md-new p, .md-new li { font-size:14px; line-height:20px; }
+.md-new p { margin-bottom:8px; }
+.md-new ul { margin:8px 0; padding-left:20px; display:flex; flex-direction:column; gap:4px; }
+.md-new blockquote { margin:8px 0; padding-left:12px; border-left:2px solid var(--line-strong);
+                     color:var(--ink-muted); }
+.md-new code { font-size:13px; background:var(--ov-select); border-radius:var(--r-inner); padding:1px 5px; }
+.md-new table { margin-top:8px; }
+.md-new th { font-size:14px; font-weight:600; color:var(--ink-muted); padding:6px 8px; }
+.md-new td { font-size:14px; padding:6px 8px; }
+
+.cot-today { background:var(--medium); border:1px solid var(--line); border-radius:4px; padding:8px;
+             font-size:14px; margin-bottom:10px; }
+.disc { display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:var(--r-element);
+        font-size:var(--t-body); margin-bottom:10px; transition:background-color var(--dur-min) var(--ease); }
+.disc:hover { background:var(--ov-hover); }
+.toolline { display:flex; align-items:center; gap:8px; height:24px; font-size:14px; }
 
 /* --- two-column ledgers -------------------------------------- */
 .ledger { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
@@ -514,6 +671,31 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
 }
 </style>
 
+<!-- Icon sprite. These are the app's REAL glyphs, not stand-ins: Lucide at
+     strokeWidth 1.5 exactly as ui/desktop/src/components/icons/app-icons.tsx
+     wraps them, plus the hand-authored KnowledgeIcon. Entity mapping comes
+     from icons/entity-icons.ts; session glyphs from RecentChats' KIND_GLYPHS. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-workflow" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></symbol>
+  <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+  <symbol id="i-knowledge" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="1.6"/><circle cx="19" cy="6" r="1.6"/><circle cx="6" cy="18" r="1.6"/><circle cx="18" cy="18" r="1.6"/><path d="M10 10.5L6 7M14 10.5l4-3.5M10 14l-4 3M14 14l4 3"/></symbol>
+  <symbol id="i-appwindow" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></symbol>
+  <symbol id="i-appwindowmac" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/></symbol>
+  <symbol id="i-panelleft" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-squarestack" viewBox="0 0 24 24"><path d="M4 10c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2"/><path d="M10 16c-1.1 0-2-.9-2-2v-4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2"/><rect width="8" height="8" x="14" y="14" rx="2"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-gitbranch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-chevrondown" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-filecode" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/></symbol>
+  <symbol id="i-filetext" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+</defs></svg>
+
 <div class="chrome">
   <span class="mark">Bio<i>Router</i></span>
   <span class="pill accent">Astryx adoption</span>
@@ -541,10 +723,13 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
       <li><a href="#notify"><span class="n">05</span>Notification</a></li>
       <li><a href="#feedback"><span class="n">06</span>Feedback</a></li>
       <li><a href="#composition"><span class="n">07</span>Composition</a></li>
-      <li><a href="#motion"><span class="n">08</span>Motion</a></li>
-      <li><a href="#ledger"><span class="n">09</span>Kept &amp; deleted</a></li>
-      <li><a href="#phases"><span class="n">10</span>Phases</a></li>
-      <li><a href="#decisions"><span class="n">11</span>Decisions</a></li>
+      <li><a href="#terminal"><span class="n">08</span>Terminal</a></li>
+      <li><a href="#files"><span class="n">09</span>Files &amp; code</a></li>
+      <li><a href="#chat"><span class="n">10</span>Chat surface</a></li>
+      <li><a href="#motion"><span class="n">11</span>Motion</a></li>
+      <li><a href="#ledger"><span class="n">12</span>Kept &amp; deleted</a></li>
+      <li><a href="#phases"><span class="n">13</span>Phases</a></li>
+      <li><a href="#decisions"><span class="n">14</span>Decisions</a></li>
     </ol>
   </nav>
 
@@ -817,44 +1002,64 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
       </div>
 
       <div class="card">
-        <h3>Cards, rows and tables</h3>
-        <p class="rule">Astryx's own guidance is the part to internalise: cards are not the default layout tool, and most content groups need no container at all. Tables carry no card chrome, no outer border and no zebra — muted 600 headers, ink cells, hairlines only, and the last row's border omitted.</p>
-        <div class="stage" style="padding:0">
+        <h3>Rows — the list is the layout</h3>
+        <p class="rule">Astryx's own guidance is the part to internalise: cards are not the default layout tool, and most content groups need no container at all. So a list gets <b>no container</b> — it sits directly on the page, separated by hairlines, and the only box that ever appears is the hover wash under the row you are pointing at. Chat history already works this way and is the app's best-looking list; this is that layout, specified.</p>
+        <div class="stage bare">
+          <div class="caps" style="height:auto;padding:0 12px 8px">Today</div>
           <div class="rows">
-            <div class="row">
-              <svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--ink-subtle)"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>
-              <div><div class="title">Variant calling on the MS cohort</div><div class="meta">07/27/2026 · 41 messages · ~/Desktop/biorouter</div></div>
-              <span class="sp"></span>
-              <span class="pill ok">Running</span>
+            <div class="hrow">
+              <div class="hmain">
+                <div class="htitle">Variant calling on the MS cohort <span class="live" title="Running"></span></div>
+                <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>9:34 AM</span><span class="mono">~/Desktop/biorouter</span></div>
+              </div>
+              <div class="hstats">
+                <span><svg class="ico sm"><use href="#i-message"/></svg>41</span>
+                <span class="num">24,818</span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>14</span>
+              </div>
               <div class="acts">
-                <button class="btn btn--ghost iconbtn" aria-label="Open"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M8 3l5 5-5 5"/></svg></button>
-                <button class="btn btn--ghost iconbtn" aria-label="Export"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 11V3M5 6l3-3 3 3M3 12h10"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Rename"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2.5 13.5 5 6 12.5 3 13l.5-3z"/></svg></button>
                 <button class="btn btn--ghost iconbtn" aria-label="More"><svg class="g" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg></button>
               </div>
             </div>
-            <div class="row">
-              <svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--ink-subtle)"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>
-              <div><div class="title">SPOKE pathway enrichment</div><div class="meta">07/26/2026 · 12 messages · ~/Desktop/biorouter</div></div>
-              <span class="sp"></span>
+            <div class="hrow">
+              <div class="hmain">
+                <div class="htitle">Session description request 2 (branch 1)</div>
+                <div class="hsub"><svg class="ico sm"><use href="#i-gitbranch"/></svg>branched from Session description request 2</div>
+                <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>9:12 AM</span><span class="mono">~/Desktop/biorouter</span></div>
+              </div>
+              <div class="hstats">
+                <span><svg class="ico sm"><use href="#i-message"/></svg>4</span>
+                <span class="num">5,084</span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>14</span>
+              </div>
               <div class="acts">
-                <button class="btn btn--ghost iconbtn" aria-label="Open"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M8 3l5 5-5 5"/></svg></button>
-                <button class="btn btn--ghost iconbtn" aria-label="Export"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 11V3M5 6l3-3 3 3M3 12h10"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Rename"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2.5 13.5 5 6 12.5 3 13l.5-3z"/></svg></button>
                 <button class="btn btn--ghost iconbtn" aria-label="More"><svg class="g" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg></button>
               </div>
             </div>
-            <div class="row">
-              <svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--ink-subtle)"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>
-              <div><div class="title">Clinical note de-identification</div><div class="meta">07/24/2026 · 88 messages · ~/Desktop/cdw</div></div>
-              <span class="sp"></span>
+            <div class="hrow">
+              <div class="hmain">
+                <div class="htitle">Clinical note de-identification</div>
+                <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>07/24/2026 2:39 PM</span><span class="mono">~/Desktop/cdw</span></div>
+              </div>
+              <div class="hstats">
+                <span><svg class="ico sm"><use href="#i-message"/></svg>88</span>
+                <span class="num">894,974</span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>13</span>
+              </div>
               <div class="acts">
-                <button class="btn btn--ghost iconbtn" aria-label="Open"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M8 3l5 5-5 5"/></svg></button>
-                <button class="btn btn--ghost iconbtn" aria-label="Export"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 11V3M5 6l3-3 3 3M3 12h10"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Rename"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2.5 13.5 5 6 12.5 3 13l.5-3z"/></svg></button>
                 <button class="btn btn--ghost iconbtn" aria-label="More"><svg class="g" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg></button>
               </div>
             </div>
           </div>
         </div>
-        <p class="note"><b>One row spec, enforced:</b> title 14/500, metadata in supporting-muted, <b>at most three visible actions</b> at 32px, everything else behind the overflow — where destructive actions live exclusively. This ends five row-title treatments, the 28-vs-32px delete-button fork, Scheduler's 14px icons in 28px buttons, Workflows' seven-action rows, and primary-filled Launch buttons that are invisible until hover.</p>
+        <p class="note"><b>What changed from today's Chat history:</b> the row keeps its shape — title, an optional branched-from line, a time-and-directory line, and a right-hand stat cluster — and loses the inconsistencies. Metadata drops to <code>supporting</code> so it stops competing with the title; the stat numbers take <code>tabular-nums</code> so they align down the list; the four hover actions become <b>three plus an overflow</b>, all at one size, with delete living only in the overflow (today delete is 32px among 28px siblings, in the open).</p>
+        <p class="note" style="border:0;padding-top:0;margin-top:6px"><b>Running is a breathing dot, not a badge.</b> A green pill states the fact at the weight of a call to action; a 7px dot with a slow ring shows it and gets out of the way — the chat's working motif, scaled down. It rides beside the title where the eye already is, so no lane has to be reserved for it.</p>
       </div>
     </section>
 
@@ -886,22 +1091,54 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
         <p class="rule">A toast that cannot hold its content is not a toast. Anything with a list, a disclosure or per-item actions moves to a notification centre; a toast may link to it.</p>
         <div class="grid2" style="align-items:start">
           <div>
-            <div class="lbl">Tier 1 · Toast — ≤ 3 lines, ≤ 2 actions</div>
-            <div style="display:flex;flex-direction:column;gap:12px">
-              <div class="toast">
-                <span class="chip" style="background:color-mix(in srgb,var(--success) 20%,transparent);color:var(--success)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3.5 8 3 3 6-6"/></svg></span>
-                <div style="min-width:0"><div class="tt">Session deleted</div><div class="tm">"Variant calling on the MS cohort" was removed from chat history.</div></div>
-                <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
-              </div>
-              <div class="toast">
-                <span class="chip" style="background:color-mix(in srgb,var(--danger) 20%,transparent);color:var(--danger)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 4v5M8 11.5v.5"/><circle cx="8" cy="8" r="6"/></svg></span>
-                <div style="min-width:0">
-                  <div class="tt">Backend disconnected</div>
-                  <div class="tm">Biorouter could not reach its backend. Your message was kept — try again in a moment.</div>
-                  <div class="acts"><button class="btn btn--secondary btn--sm">Ask biorouter</button><button class="btn btn--ghost btn--sm">Copy error</button></div>
+            <div class="lbl">Tier 1 · Toast — four layouts, one geometry</div>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle);margin-bottom:12px">The chip, the close gutter and the 16px padding never move. What varies is how many blocks sit in the text column, so a one-line confirmation and a sticky error are visibly the same object. The dashed guide marks the fixed 28px chip column and the reserved 44px close gutter.</p>
+            <div style="display:flex;flex-direction:column;gap:14px">
+
+              <div>
+                <div class="vlbl">A · Title only — 52px</div>
+                <div class="toast">
+                  <span class="chip" style="background:color-mix(in srgb,var(--success) 20%,transparent);color:var(--success)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3.5 8 3 3 6-6"/></svg></span>
+                  <div style="min-width:0"><div class="tt">Workflow saved</div></div>
+                  <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
                 </div>
-                <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+                <p class="vnote">The chip is optically centred on the single line — not on the card. Most success confirmations should be this.</p>
               </div>
+
+              <div>
+                <div class="vlbl">B · Title + message — 2 lines</div>
+                <div class="toast">
+                  <span class="chip" style="background:color-mix(in srgb,var(--success) 20%,transparent);color:var(--success)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3.5 8 3 3 6-6"/></svg></span>
+                  <div style="min-width:0"><div class="tt">Session deleted</div><div class="tm">"Variant calling on the MS cohort" was removed from chat history.</div></div>
+                  <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+                </div>
+                <p class="vnote">The chip now aligns to the <i>first line</i>, not the block centre — which is why it is <code>align-self:flex-start</code> with a 5px optical nudge rather than centred.</p>
+              </div>
+
+              <div>
+                <div class="vlbl">C · Message only, no title — the ceiling at 3 lines</div>
+                <div class="toast">
+                  <span class="chip" style="background:color-mix(in srgb,var(--info) 20%,transparent);color:var(--info)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 7.5v4M8 5v.5"/></svg></span>
+                  <div style="min-width:0"><div class="tm" style="color:var(--ink);margin-top:0">Workflow exported to <span class="mono" style="font-size:12px">~/Desktop/biorouter/exports/ehr-diabetes-dashboard.yaml</span></div></div>
+                  <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+                </div>
+                <p class="vnote">With no title the message takes full-strength ink instead of muted — otherwise the only text in the card would be the quietest thing in it. Long paths break anywhere; three lines is the hard ceiling, and the fourth is what sends a notice to a banner.</p>
+              </div>
+
+              <div>
+                <div class="vlbl">D · Title + message + actions — sticky</div>
+                <div class="toast">
+                  <span class="chip" style="background:color-mix(in srgb,var(--danger) 20%,transparent);color:var(--danger)"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 4v5M8 11.5v.5"/><circle cx="8" cy="8" r="6"/></svg></span>
+                  <div style="min-width:0">
+                    <div class="tt">Backend disconnected</div>
+                    <div class="tm">Biorouter could not reach its backend. Your message was kept — try again in a moment.</div>
+                    <div class="acts"><button class="btn btn--secondary btn--sm">Ask biorouter</button><button class="btn btn--ghost btn--sm">Copy error</button></div>
+                  </div>
+                  <button class="x" aria-label="Dismiss"><svg class="g" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" style="width:12px;height:12px"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+                </div>
+                <p class="vnote">Two actions maximum, both quiet — a coral primary inside a toast competes with the page's own call to action. When actions are present the card stops being click-to-dismiss, which today kills an error toast if you miss the button by 2px.</p>
+              </div>
+
               <p style="font-size:var(--t-support);color:var(--ink-subtle)">380–420px · top-right (the composer and artifact panel own bottom-right) · 12px stack gap · 5s auto-dismiss · errors persist · dedupe by key as policy, not exception.</p>
             </div>
           </div>
@@ -986,53 +1223,74 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
           <div class="railbox">
             <div class="cap"><span>Today</span><span class="mono" style="color:var(--ink-muted)">462px before first chat</span></div>
             <div class="railbody">
-              <div class="band" style="height:52px"><span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span></div>
+              <div class="band" style="height:52px">
+                <span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
+                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+              </div>
               <div class="navrow" style="height:32px"><span class="mark" style="font-size:14px">Bio<i>Router</i></span></div>
               <div class="caps">Menu</div>
-              <div class="navrow on"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg>New Session</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 8 8 3l5.5 5M4 7.5V13h8V7.5"/></svg>Home</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/><path d="M4.5 7v3.5H9"/></svg>Workflows</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>Scheduler</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2h4v3h3v4h-3v5H6v-5H3V5h3z"/></svg>Extensions</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m8 2 6 3-6 3-6-3z"/><path d="m2 8 6 3 6-3"/></svg>Skills</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h4a2 2 0 0 1 2 2v8a2 2 0 0 0-2-2H3z"/><path d="M13 3H9a2 2 0 0 0-2 2v8a2 2 0 0 1 2-2h4z"/></svg>Knowledge</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6h12"/></svg>Applications</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="2"/></svg>Apps</div>
+              <div class="navrow on"><svg class="ico ic"><use href="#i-plus"/></svg>New Session</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-home"/></svg>Home</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-workflow"/></svg>Workflows</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-clock"/></svg>Scheduler</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-puzzle"/></svg>Extensions</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-layers"/></svg>Skills</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-knowledge"/></svg>Knowledge</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-appwindow"/></svg>Applications</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-appwindowmac"/></svg>Apps</div>
               <div class="hr"></div>
               <div class="caps">Recents <span class="sp" style="flex:1"></span></div>
-              <div class="navrow" style="opacity:.55"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>Variant calling on the…</div>
+              <!-- the well: the rail's one-off fourth surface, at a radius nothing else uses -->
+              <div style="margin:0 -4px;padding:4px;border-radius:12px 12px 0 0;background:color-mix(in srgb, var(--rail-line) 42%, transparent)">
+                <div class="navrow" style="opacity:.6"><svg class="ico ic sm"><use href="#i-message"/></svg>Variant calling on the…</div>
+              </div>
             </div>
           </div>
           <div class="railbox">
-            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈340px · 7 items</span></div>
+            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈190px · 3 rows</span></div>
             <div class="railbody">
-              <div class="band" style="height:44px"><span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span><span class="mark" style="font-size:14px;margin-left:4px">Bio<i>Router</i></span></div>
-              <div class="navrow on"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3v10M3 8h10"/></svg>New Session</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 8 8 3l5.5 5M4 7.5V13h8V7.5"/></svg>Home</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2h4v3h3v4h-3v5H6v-5H3V5h3z"/></svg>Extensions</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m8 2 6 3-6 3-6-3z"/><path d="m2 8 6 3 6-3"/></svg>Skills</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h4a2 2 0 0 1 2 2v8a2 2 0 0 0-2-2H3z"/><path d="M13 3H9a2 2 0 0 0-2 2v8a2 2 0 0 1 2-2h4z"/></svg>Knowledge</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6h12"/></svg>Applications</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 6 4 4 4-4"/></svg>More<span class="sp"></span></div>
+              <div class="band" style="height:44px">
+                <span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
+                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+                <span class="mark" style="font-size:13px;margin-left:2px">Bio<i>Router</i></span>
+              </div>
+              <div class="navrow on"><svg class="ico ic"><use href="#i-plus"/></svg>New Session</div>
+              <div class="navrow"><svg class="ico ic"><use href="#i-home"/></svg>Home</div>
+              <button class="navrow" id="compToggle" aria-expanded="false" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer">
+                <svg class="ico ic" id="compChev" style="transition:transform var(--dur-fast) var(--ease)"><use href="#i-chevrondown"/></svg>Components<span class="sp"></span>
+              </button>
+              <div id="compList" hidden>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-workflow"/></svg>Workflows</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-clock"/></svg>Scheduler</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-puzzle"/></svg>Extensions</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-layers"/></svg>Skills</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-knowledge"/></svg>Knowledge</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-appwindow"/></svg>Applications</div>
+                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-appwindowmac"/></svg>Apps</div>
+              </div>
               <div class="hr"></div>
               <div class="caps">Recents</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>Variant calling on the…<span class="sp"></span><span style="width:7px;height:7px;border-radius:9px;background:var(--success);flex:none"></span></div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>SPOKE pathway enrich…</div>
-              <div class="navrow"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>Clinical note de-ident…</div>
+              <div class="navrow"><svg class="ico ic sm"><use href="#i-message"/></svg>Variant calling on the…<span class="sp"></span><span style="width:7px;height:7px;border-radius:9px;background:var(--success);flex:none"></span></div>
+              <div class="navrow"><svg class="ico ic sm"><use href="#i-message"/></svg>SPOKE pathway enrich…</div>
+              <div class="navrow"><svg class="ico ic sm"><use href="#i-gitbranch"/></svg>MS cohort (branch 2)</div>
+              <div class="navrow"><svg class="ico ic sm"><use href="#i-message"/></svg>Clinical note de-ident…</div>
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px">
-            <div class="lbl" style="margin:0">Where the ~120px comes from</div>
+            <div class="lbl" style="margin:0">Where the 272px comes from</div>
             <div class="tally">
-              <div><span>Band 52 → 44, wordmark folded in</span><span>−48</span></div>
+              <div><span>Band 52 → 44</span><span>−8</span></div>
+              <div><span>Brand row folded into the band</span><span>−32</span></div>
               <div><span>"MENU" header deleted</span><span>−32</span></div>
-              <div><span>Scheduler + Workflows → More</span><span>−32</span></div>
-              <div><span>Applications + Apps merged</span><span>−32</span></div>
-              <div><span>Upper divider deleted</span><span>−18</span></div>
-              <div><span>"More" group row added</span><span>+32</span></div>
-              <div class="tot"><span>Returned to content</span><span>−130px</span></div>
+              <div><span>Nine nav rows → three</span><span>−192</span></div>
+              <div><span>Divider block halved</span><span>−8</span></div>
+              <div class="tot"><span>Returned to content</span><span>−272px</span></div>
             </div>
-            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents well — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses — is dropped; the list sits directly on the rail like every other list. Running sessions get a trailing status dot; the 16px ring-and-glow stays in the chat, where it belongs.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>New Session</b> and <b>Home</b> — plus one <b>Components</b> disclosure holding the seven destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The two titlebar controls — collapse the sidebar, open a new window — keep their place beside the traffic lights; folding the wordmark into that band is what buys the 44px chrome without displacing them.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents <b>well is gone</b> — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses. The list now sits directly on the rail like every other list, glyphs at their real weight: a chat is a message square, a diverged session is a branch. Running sessions get a trailing status dot; the ring-and-glow stays in the chat.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">Width stays 240px. Rows stay 32px — already the rail rhythm, now written down.</p>
           </div>
         </div>
@@ -1064,13 +1322,221 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             <div class="doctab"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="2"/></svg>MS cohort</div>
           </div>
         </div>
-        <p class="note">The 2px underline is sized to the <b>label</b>, not the tab, and each tab carries a hidden bold duplicate so weight changes never alter width. The document tab's straight accent stripe is inset clear of the corner radius — shipped in this worktree already.</p>
+        <p class="note">The 2px underline is sized to the <b>label</b>, not the tab, and each tab carries a hidden bold duplicate so weight changes never alter width. The document tab's straight accent stripe sits on the <b>top</b> edge, VS&nbsp;Code-style — the indicator marks where the tab meets its strip, not where it meets the content. It stays inset 11px per side so the 8px corner radius never clips it back into a curve.</p>
       </div>
     </section>
 
-    <!-- ============ 08 MOTION ============ -->
+    <!-- ============ 08 TERMINAL ============ -->
+    <section id="terminal">
+      <div class="sec-head"><span class="n">08</span><h2>The terminal</h2></div>
+      <p class="sec-intro">The dock claims "one tab language, both sizes", and that holds for how a tab is <i>painted</i> — not for how it is composed. Today it runs a 40px bar with 28px tabs, a 6px icon gap where the chat strip uses 7px, close buttons that are always visible where the chat's are hover-revealed, a cwd readout and a hide button the chat strip would never carry, and a third overflow behaviour (scroll immediately, where chat shrinks then scrolls then overflows to a menu).</p>
+
+      <div class="card">
+        <h3>One strip language, bottom edge included</h3>
+        <p class="rule">The dock keeps its own furniture — a working directory belongs there — but adopts the shared tab. The one thing it stops inheriting is the sidebar ground: <code>--sidebar</code> was chosen so the chat strip could continue the top edge, and at the <i>bottom</i> edge that rationale inverts, leaving the dock reading as a floating slice of sidebar. It grounds on the surface with a hairline instead.</p>
+        <div class="stage" style="padding:0;background:transparent">
+          <div class="term">
+            <div class="term-strip">
+              <div class="doctab on" style="height:32px"><svg class="ico sm"><use href="#i-appwindowmac"/></svg>zsh<span style="width:14px"></span></div>
+              <div class="doctab" style="height:32px"><svg class="ico sm"><use href="#i-appwindowmac"/></svg>cargo watch</div>
+              <button class="btn btn--ghost iconbtn sm" aria-label="New terminal"><svg class="ico sm"><use href="#i-plus"/></svg></button>
+              <span class="sp" style="flex:1"></span>
+              <span class="mono" style="font-size:12px;color:var(--ink-subtle);max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">~/Desktop/biorouter</span>
+              <button class="btn btn--ghost iconbtn" aria-label="Hide terminal"><svg class="ico"><use href="#i-chevrondown"/></svg></button>
+            </div>
+            <div class="term-body"><span class="p">➜</span>  biorouter <span class="d">git:(</span>main<span class="d">)</span> cargo test -p biorouter-mcp --lib knowledge::
+   <span class="d">Compiling</span> biorouter-mcp v1.88.6
+    <span class="d">Finished</span> test profile [unoptimized + debuginfo] in 12.41s
+     Running unittests src/lib.rs
+
+test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
+
+<span class="p">➜</span>  biorouter <span class="d">git:(</span>main<span class="d">)</span> <span style="border-left:2px solid var(--accent);margin-left:1px">&nbsp;</span></div>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:16px">
+          <div>
+            <div class="lbl">What changes</div>
+            <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:6px">
+              <li>Bar 40 → <b>36px</b>, tabs 28 → <b>32px</b> — the one control height, one step under the 44px chrome.</li>
+              <li>Ground moves from <code>--sidebar</code> to the surface, with a top hairline.</li>
+              <li>Icon gap 6 → 8px; close reveals on hover and focus, exactly like a chat tab.</li>
+              <li>Overflow adopts the chat ladder: shrink to a floor, then scroll, then a menu.</li>
+              <li>The cwd readout becomes <code>supporting</code> mono, truncating from the left so the leaf directory always survives.</li>
+            </ul>
+          </div>
+          <div>
+            <div class="lbl">What must not change</div>
+            <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:6px">
+              <li>The <b>per-family terminal ground</b>. Parchment paints the code ground; Alma Mater and Roche Limit paint muted. A generator that assumed they agree would re-ground two terminals under ANSI palettes tuned for a different surface.</li>
+              <li>The <b>19-stop ANSI palette</b> and its contrast floors, generated per family and refused on failure.</li>
+              <li>Mono at <b>13/20</b>, byte-identical to code blocks — the one duplication in the app enforced by comment alone.</li>
+            </ul>
+          </div>
+        </div>
+        <p class="note">Switch families above: the terminal re-grounds while every measurement holds. That is the invariant the redesign has to respect, not route around.</p>
+      </div>
+    </section>
+
+    <!-- ============ 09 FILES & CODE ============ -->
+    <section id="files">
+      <div class="sec-head"><span class="n">09</span><h2>Files and code</h2></div>
+      <p class="sec-intro">Open a directory in the artifact panel today and you get "a clickable listing" — a bare list of names with no hierarchy, no status and no preview. This is the surface where Biorouter is a research instrument standing next to a terminal and a repo, so it borrows the one interface every user of those already reads fluently: the git tree.</p>
+
+      <div class="card">
+        <h3>Directory and preview — one pane, two panels</h3>
+        <p class="rule">A 240px tree beside the file. The tree is the git working-tree view: indent guides, one glyph per kind, and a status letter at the row end in the status ink — <span class="mono" style="color:var(--warning)">M</span> modified, <span class="mono" style="color:var(--success)">A</span> added, <span class="mono" style="color:var(--ink-subtle)">·</span> clean. Rows are 28px, the compact tier, because a tree is the densest list in the app.</p>
+        <div class="stage" style="padding:0;background:transparent">
+          <div style="display:grid;grid-template-columns:240px minmax(0,1fr);border:1px solid var(--line);border-radius:var(--r-container);overflow:hidden">
+            <div style="background:var(--muted);border-right:1px solid var(--line);padding:6px">
+              <div class="tree">
+                <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-chevrondown"/></svg><span class="nm">crates</span></div>
+                <div class="indent" style="margin-left:18px">
+                  <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-chevrondown"/></svg><span class="nm">biorouter-mcp</span></div>
+                  <div class="indent" style="margin-left:18px">
+                    <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle);transform:rotate(-90deg)"><use href="#i-chevrondown"/></svg><span class="nm">src</span></div>
+                    <div class="trow on"><svg class="ico sm" style="color:var(--accent-ink)"><use href="#i-filecode"/></svg><span class="nm">graph.rs</span><span class="st" style="color:var(--warning)">M</span></div>
+                    <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-filecode"/></svg><span class="nm">store.rs</span><span class="st" style="color:var(--success)">A</span></div>
+                    <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-filecode"/></svg><span class="nm">mod.rs</span></div>
+                  </div>
+                </div>
+                <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle);transform:rotate(-90deg)"><use href="#i-chevrondown"/></svg><span class="nm">docs</span></div>
+                <div class="trow"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-filetext"/></svg><span class="nm">README.md</span><span class="st" style="color:var(--warning)">M</span></div>
+              </div>
+            </div>
+            <div style="min-width:0;background:var(--surface)">
+              <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 8px 0 14px;border-bottom:1px solid var(--line)">
+                <span class="mono" style="font-size:12px;color:var(--ink-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">crates / biorouter-mcp / src / <span style="color:var(--ink)">graph.rs</span></span>
+                <span class="sp" style="flex:1"></span>
+                <span class="pill" style="height:20px">Rust · 412 lines</span>
+                <button class="btn btn--ghost iconbtn" aria-label="Copy file"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4a1.5 1.5 0 0 0-1.5 1.5V10"/></svg></button>
+                <button class="btn btn--ghost iconbtn" aria-label="Open externally"><svg class="ico"><use href="#i-squarestack"/></svg></button>
+              </div>
+              <div class="code" style="border:0;border-radius:0">
+                <div class="code-body">
+                  <div class="gutter">86<br>87<br>88<br>89<br>90<br>91<br>92</div>
+                  <div class="codelines"><span class="ln"><span class="t-com">/// Derive edges from [[knowledge-link]] markers in page bodies.</span></span><span class="ln"><span class="t-key">pub fn</span> <span class="t-fn">derive_edges</span>(pages: &amp;[<span class="t-typ">Page</span>]) -&gt; <span class="t-typ">Vec</span>&lt;<span class="t-typ">Edge</span>&gt; {</span><span class="ln add">+   <span class="t-key">let</span> mut seen = <span class="t-typ">HashSet</span>::new();</span><span class="ln del">-   <span class="t-key">let</span> mut out = <span class="t-typ">Vec</span>::new();</span><span class="ln">    <span class="t-key">for</span> page <span class="t-key">in</span> pages {</span><span class="ln">        edges.extend(<span class="t-fn">scan_links</span>(&amp;page.body, <span class="t-num">2</span>));</span><span class="ln">    }</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="note">The selected file takes the same treatment as a selected nav row — wash plus the straight 2px rail — so "where am I" is one vocabulary from the sidebar to the tree. Status letters are the only colour in the panel, which is the point: colour is evidence.</p>
+      </div>
+
+      <div class="card">
+        <h3>Code blocks — one presentation, two homes</h3>
+        <p class="rule">A snippet in chat and the same file in the preview are the same object and should look it. Today they differ: chat wraps long lines with no gutter, the panel numbers them and scrolls. The rule becomes <b>numbers plus horizontal scroll, everywhere</b> — which is also the only safe combination, since wrapping <i>and</i> numbering together sets <code>display:flex</code> on every line and shreds long lines across the panel.</p>
+        <div class="stage" style="background:transparent;padding:0">
+          <div class="code">
+            <div class="code-head">
+              <span class="lang">python</span>
+              <span class="sp" style="flex:1"></span>
+              <button class="btn btn--ghost iconbtn sm" aria-label="Toggle wrap"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h9a2.5 2.5 0 0 1 0 5h-2m0 0 1.5-1.5M9 13l1.5 1.5M2 12h3"/></svg></button>
+              <button class="btn btn--ghost iconbtn sm" aria-label="Copy"><svg class="g" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4a1.5 1.5 0 0 0-1.5 1.5V10"/></svg></button>
+            </div>
+            <div class="code-body">
+              <div class="gutter">1<br>2<br>3<br>4<br>5</div>
+              <div class="codelines"><span class="ln"><span class="t-key">import</span> scanpy <span class="t-key">as</span> sc</span><span class="ln"></span><span class="ln"><span class="t-com"># Leiden clustering at the resolution the cohort paper used</span></span><span class="ln">adata = sc.read_h5ad(<span class="t-str">"ms_cohort.h5ad"</span>)</span><span class="ln">sc.tl.leiden(adata, resolution=<span class="t-num">0.8</span>, key_added=<span class="t-str">"clusters"</span>)</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="note">Header 32px on the control ladder; language as <code>supporting</code> mono in muted ink rather than a fourth uppercase-tracked label style; copy and wrap as 24px compact icon buttons — Astryx's sanctioned compact tier, which exists precisely for controls inside a code block. Card radius follows <code>--radius-container</code>, the gutter is <code>tabular-nums</code> at 60% opacity, and diff rows keep the existing 9%/10% <code>color-mix</code> tints. The palette itself does not change: one generated file already feeds chat markdown, this panel and xterm so they cannot drift.</p>
+      </div>
+    </section>
+
+    <!-- ============ 10 CHAT ============ -->
+    <section id="chat">
+      <div class="sec-head"><span class="n">10</span><h2>The chat surface, element by element</h2></div>
+      <p class="sec-intro">The transcript is the product. Everything below is shown twice — the shipped rendering on the left, the proposal on the right — because these are the changes least safe to describe in prose. The 760px column, the full-width assistant turn and the tool-call line are <i>kept</i>; what moves is the metadata weight, the heading ramp, and the boxes that shouldn't be boxes.</p>
+
+      <div class="card">
+        <h3>Message forms</h3>
+        <div class="vs">
+          <div class="vs-col">
+            <div class="vs-tag">Today</div>
+            <div class="chatpane">
+              <div class="umsg-today">Can you cluster the MS cohort at resolution 0.8 and show the marker genes?</div>
+              <div class="meta-today">9:34 AM</div>
+              <div class="amsg">
+                <p style="margin-bottom:8px">Running Leiden at 0.8 gives 14 clusters. The top markers per cluster are below.</p>
+              </div>
+              <div class="meta-today">9:34 AM</div>
+            </div>
+            <p class="vnote">The user bubble is tinted, bordered and 12px-rounded. Both timestamps render at <b>14px — the same size as the message text</b>, under every turn, and swap to actions on hover, so the transcript shimmers as the pointer travels and the actions are unreachable by touch.</p>
+          </div>
+          <div class="vs-col">
+            <div class="vs-tag on">Proposed</div>
+            <div class="chatpane">
+              <div class="umsg">Can you cluster the MS cohort at resolution 0.8 and show the marker genes?</div>
+              <div class="meta">9:34 AM</div>
+              <div class="amsg">
+                <p style="margin-bottom:8px">Running Leiden at 0.8 gives 14 clusters. The top markers per cluster are below.</p>
+              </div>
+              <div class="meta">9:34 AM · <span style="color:var(--accent-ink)">Copy</span> · <span style="color:var(--accent-ink)">Diverge</span></div>
+            </div>
+            <p class="vnote">Bubble keeps its tint, drops the border — the fill already separates it — and takes <code>--radius-container</code>. Metadata drops to <b>12px supporting</b>, one <code>MessageMeta</code> primitive instead of three hand-copied stacks, and actions sit <i>beside</i> the timestamp permanently rather than replacing it on hover.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Markdown in an assistant turn</h3>
+        <div class="vs">
+          <div class="vs-col">
+            <div class="vs-tag">Today</div>
+            <div class="chatpane md-today">
+              <h1>Cluster summary</h1>
+              <h2>Marker genes</h2>
+              <p>Cluster 3 is driven by <code>CD8A</code> and <em>GZMB</em>, consistent with the <a href="#chat">cytotoxic T signature</a>.</p>
+              <ul><li>14 clusters at resolution 0.8</li><li>2 merged after QC</li></ul>
+              <blockquote>Counts are post-doublet-removal.</blockquote>
+              <table><tbody><tr><th>Cluster</th><th>Cells</th></tr><tr><td>3</td><td>1,204</td></tr></tbody></table>
+            </div>
+            <p class="vnote">The ramp is a 20-line utility string on one component: h1 18/26, h2 16/24, h3 15/22, h4 13/18 muted with +0.02em. Tables get their own 13px style unrelated to the app's table spec; the blockquote is muted text with no mark; inline code is 4px-rounded on a tinted wash.</p>
+          </div>
+          <div class="vs-col">
+            <div class="vs-tag on">Proposed</div>
+            <div class="chatpane md-new">
+              <h1>Cluster summary</h1>
+              <h2>Marker genes</h2>
+              <p>Cluster 3 is driven by <code>CD8A</code> and <em>GZMB</em>, consistent with the <a href="#chat">cytotoxic T signature</a>.</p>
+              <ul><li>14 clusters at resolution 0.8</li><li>2 merged after QC</li></ul>
+              <blockquote>Counts are post-doublet-removal.</blockquote>
+              <table><tbody><tr><th>Cluster</th><th>Cells</th></tr><tr><td>3</td><td class="num">1,204</td></tr></tbody></table>
+            </div>
+            <p class="vnote">Headings land on the tokenized roles — h1 <code>heading</code> 20/28, h2 <code>subheading</code> 17/24, h3 <code>label</code> 14/20 — so a chat heading and a page heading are the same object. The table <i>is</i> the app's table: muted 600 header, hairlines, tabular figures. The blockquote gains a 2px rail so it reads as a quote without italics, and inline code takes <code>--radius-inner</code>.</p>
+          </div>
+        </div>
+        <p class="note">Prose stays capped at 68 characters and the column at 760px. What this closes is the audit's finding that the chat type ramp — the de-facto specification for the app's most-read surface — exists only as a class string on one component, and that metadata across the transcript spans <b>10, 11, 12, 13 and 14px</b>.</p>
+      </div>
+
+      <div class="card">
+        <h3>Thinking, tools, and the disclosure problem</h3>
+        <div class="vs">
+          <div class="vs-col">
+            <div class="vs-tag">Today</div>
+            <div class="chatpane">
+              <details class="cot-today"><summary>Show thinking</summary></details>
+              <div class="toolline"><span style="color:var(--ink-muted)">Ran</span> <b>rg</b> <span style="color:var(--ink-muted)">across 412 files · 1.2s</span></div>
+            </div>
+            <p class="vnote">Chain-of-thought is a native <code>&lt;details&gt;</code> with the browser's own triangle, a 4px radius that belongs to no role, and no motion — one screen away from the tool row's chevron. It is one of <b>three</b> native disclosures styled three ways.</p>
+          </div>
+          <div class="vs-col">
+            <div class="vs-tag on">Proposed</div>
+            <div class="chatpane">
+              <div class="disc"><svg class="ico sm" style="transform:rotate(-90deg)"><use href="#i-chevrondown"/></svg>Thinking<span class="sp" style="flex:1"></span><span style="font-size:12px;color:var(--ink-subtle)">4.2s</span></div>
+              <div class="toolline"><svg class="ico sm" style="color:var(--ink-subtle)"><use href="#i-chevrondown"/></svg><span style="color:var(--ink-muted)">Ran</span> <b>rg</b> <span style="color:var(--ink-muted)">across 412 files · 1.2s</span></div>
+            </div>
+            <p class="vnote">One disclosure component: a 32px row, a chevron that is <b>visible at rest</b> (today it appears only on hover, so first-run users get no signal these rows open), and the same rotation on the same token. The tool line itself is untouched — it is the best-reasoned thing on the surface.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 11 MOTION ============ -->
     <section id="motion">
-      <div class="sec-head"><span class="n">08</span><h2>Motion</h2></div>
+      <div class="sec-head"><span class="n">11</span><h2>Motion</h2></div>
       <p class="sec-intro">Astryx runs everything on one easing — <code>cubic-bezier(0.24, 1, 0.4, 1)</code> — and nine durations. The governing rule is visible in the data: the bigger the element, the slower the motion. Entrances are staged; exits get out of the way.</p>
       <div class="card">
         <h3>The problem is not the tokens, it is the default</h3>
@@ -1092,9 +1558,9 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
       </div>
     </section>
 
-    <!-- ============ 09 LEDGER ============ -->
+    <!-- ============ 12 LEDGER ============ -->
     <section id="ledger">
-      <div class="sec-head"><span class="n">09</span><h2>Kept &amp; deleted</h2></div>
+      <div class="sec-head"><span class="n">12</span><h2>Kept &amp; deleted</h2></div>
       <p class="sec-intro">A redesign that only adds is a redesign that fails. Both columns are drawn from the audits, each item verified dead, duplicative — or good.</p>
       <div class="ledger">
         <div class="card">
@@ -1124,9 +1590,9 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
       </div>
     </section>
 
-    <!-- ============ 10 PHASES ============ -->
+    <!-- ============ 13 PHASES ============ -->
     <section id="phases">
-      <div class="sec-head"><span class="n">10</span><h2>Ten phases</h2></div>
+      <div class="sec-head"><span class="n">13</span><h2>Ten phases</h2></div>
       <p class="sec-intro">Each is one commit on this worktree, independently revertible, gated on the full frontend suite (1,654 tests), <code>lint:check</code>, the theme <code>--check</code> and the 252 contrast assertions. Phases 1–3 change no pixels by themselves — they are what make 4–10 small.</p>
       <div class="card scroll-x">
         <table>
@@ -1141,16 +1607,16 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             <tr><td class="mono">7</td><td><b>Shell</b></td><td>44px band, the sidebar compaction, tabs at 32px, one icon-label gap</td><td><span class="pill warn">medium</span></td></tr>
             <tr><td class="mono">8</td><td><b>Views</b></td><td>Header recipe, row spec, list and table, empty/loading/error convergence, ScheduleDetailView and Settings rebuilt</td><td><span class="pill" style="background:color-mix(in srgb,var(--danger) 18%,transparent);color:var(--danger)">high</span></td></tr>
             <tr><td class="mono">9</td><td><b>Chat</b></td><td>Metadata sizing, one MessageMeta, composer grid and radius, toolbar chips, tool-call interiors</td><td><span class="pill warn">medium</span></td></tr>
-            <tr><td class="mono">10</td><td><b>Sweep</b></td><td>The §09 deletions, <code>design.md</code> amended rather than appended, gallery regenerated</td><td><span class="pill ok">low</span></td></tr>
+            <tr><td class="mono">10</td><td><b>Sweep</b></td><td>The §12 deletions, <code>design.md</code> amended rather than appended, gallery regenerated</td><td><span class="pill ok">low</span></td></tr>
           </tbody>
         </table>
       </div>
       <p style="font-size:var(--t-secondary);color:var(--ink-muted);max-width:70ch">Verification is not "it compiles". Every phase ships screenshots at 1440×900, 1120×800 and 800×600, in light and dark, for all three families — driven through the Vite + agent-browser harness, because jsdom cannot catch a Tailwind class collision and Electron will not launch from an agent shell. Phases 6 and 8 additionally get a manual pass in the real dev GUI.</p>
     </section>
 
-    <!-- ============ 11 DECISIONS ============ -->
+    <!-- ============ 14 DECISIONS ============ -->
     <section id="decisions">
-      <div class="sec-head"><span class="n">11</span><h2>Decisions</h2></div>
+      <div class="sec-head"><span class="n">14</span><h2>Decisions</h2></div>
       <p class="sec-intro">Everything above is a recommendation. These ten are where a different answer changes the work.</p>
       <div class="card">
         <div class="dec"><span class="id">A-01</span><div>
@@ -1260,6 +1726,17 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
     document.getElementById(id).addEventListener('click', function () { dlg.close(); });
   });
   dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
+
+  // The Components disclosure in the proposed rail
+  var compToggle = document.getElementById('compToggle');
+  var compList = document.getElementById('compList');
+  var compChev = document.getElementById('compChev');
+  compToggle.addEventListener('click', function () {
+    var open = compToggle.getAttribute('aria-expanded') === 'true';
+    compToggle.setAttribute('aria-expanded', String(!open));
+    compList.hidden = open;
+    compChev.style.transform = open ? '' : 'rotate(-90deg)';
+  });
 
   // Tabs
   document.querySelectorAll('[role="tablist"]').forEach(function (list) {
