@@ -136,6 +136,36 @@ and, in `WorkspaceServices` (Task 9), the plural mirror
 
 ---
 
+## The standing verification gate (operator instruction, 2026-07-27)
+
+**Binding at every phase gate — Tasks 21, 31, 40 and 44 — and at the prerequisite's own
+merge.** A phase is not complete when its tasks are done. It is complete when all three of
+the following have happened, in this order:
+
+1. **The functionality is demonstrated to work**, not merely to compile and pass the tests
+   written alongside it. Exercise the feature the way it will actually be used — headless
+   and CLI for Phase 1, the running desktop GUI over CDP for Phases 2 and 3 — and record
+   what was observed, with evidence. Use the Versa models per standing policy
+   (`versa_azure` / `gpt-5.5-2026-04-24` and `versa_bedrock` opus 4.8); use a local model
+   only when local-model behaviour is itself what is under test.
+2. **A full regression sweep**, not a scoped one. The whole workspace suite
+   (`cargo test --workspace --no-fail-fast` — exactly ONE expected pre-existing failure,
+   `providers::test_anthropic_provider`, which calls the live Anthropic API and fails on
+   billing), the whole frontend suite, `cargo fmt --check`, `./scripts/clippy-lint.sh`,
+   `npx tsc --noEmit`, `npm run lint:check`. Any *other* failure belongs to this phase.
+   Note the pre-existing `SessionListView.test.tsx` failure, which also fails on a clean
+   tree — verify that claim before dismissing it, rather than assuming it.
+3. **An adversarial Codex review of the phase's diff**, and **every finding addressed** —
+   fixed, or rebutted with evidence, never silently dropped. Codex reviews found sixteen
+   real defects in the multi-KB work *after* it had landed with a green suite; that gap is
+   the reason this step exists. Re-review after applying fixes when the fixes are
+   substantial.
+
+The campaign that closed issues #18–#44 established this order and it held: implement →
+Codex review → apply every comment → regression → GUI verification. Do not reorder it, and
+do not treat a green suite as evidence that the code is right — it is evidence that the
+code does what its author believed.
+
 ## Ground rules for the implementing engineer
 
 - **Branch/worktree:** create a worktree per the `using-git-worktrees` skill before Task 1:
