@@ -1188,3 +1188,141 @@ async fn a_pinned_message_is_not_also_summarized() {
         .count();
     assert_eq!(occurrences, 1, "the pinned note must appear exactly once");
 }
+
+// ── W1: `basis` and `known` must come from ONE snapshot ──────────────────────
+//
+// The store's guard splits the history at `basis.max_rowid`: rows ABOVE the
+// watermark that `known` does not name are another writer's and are carried
+// over; everything at or below it is deleted and replaced. That is only sound
+// when `known` was read WITH `basis` (revision first, then the conversation —
+// `SessionManager::snapshot_for_rewrite`). Source the two independently and an
+// append that lands in between is counted by `basis.max_rowid` — so
+// `scan_foreign_tail` never looks at it — while `known` does not contain it
+// either. The DELETE destroys it, after `add_message` already returned success.
+//
+// Both tests below hit that window with no sleeps and no barriers, by choosing
+// where in the event stream the concurrent append happens.
+
+/// The turn-start window: `reply()` takes its snapshot inside the async fn, and
+/// the reply loop reads its overflow-recovery basis in the stream body, which
+/// does not run until the stream is polled. An append between the two is
+/// invisible to the loop's view and already inside its basis.
+#[tokio::test(flavor = "multi_thread")]
+async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read() {
+    const NOTE: &str = "NOTE: landed between the snapshot and the basis read";
+
+    let (h, provider) = harness(|p| p.overflow_on(&[0])).await;
+
+    let stream = h
+        .agent
+        .reply(
+            Message::user().with_text(USER_PROMPT),
+            turn_config(&h),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // The window. `reply()` has snapshotted the conversation; nothing of the
+    // loop has run yet.
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text(NOTE))
+        .await
+        .unwrap();
+
+    tokio::pin!(stream);
+    while let Some(event) = stream.next().await {
+        event.unwrap();
+    }
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        1,
+        "the overflow recovery must actually have run, or this proves nothing"
+    );
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "and the turn must still complete"
+    );
+
+    let stored = h.stored_texts().await;
+    assert!(
+        stored.iter().any(|t| t.contains(NOTE)),
+        "a message appended before the turn read its freshness basis must \
+         survive the overflow-recovery writeback; stored: {stored:#?}"
+    );
+}
+
+/// The post-swap window: a landed swap renumbers every row, so the basis has to
+/// be re-seeded — and re-seeding the REVISION alone, after the conversation the
+/// turn adopts was already decided, reopens the same split one iteration later.
+/// The turn reports its new token state between the two, which is where this
+/// test appends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap() {
+    const NOTE: &str = "NOTE: landed between the swap and the basis refresh";
+
+    let (h, provider) = harness(|p| p.overflow_on(&[0, 1])).await;
+
+    let stream = h
+        .agent
+        .reply(
+            Message::user().with_text(USER_PROMPT),
+            turn_config(&h),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::pin!(stream);
+
+    let mut appended = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        // The first recovery swap has committed by the time the turn reports the
+        // token state it moved; the basis is refreshed after this yield.
+        if !appended && matches!(event, AgentEvent::TokenUsage(_)) {
+            h.session_manager
+                .add_message(&h.session_id, &Message::user().with_text(NOTE))
+                .await
+                .unwrap();
+            appended = true;
+        }
+    }
+
+    assert!(
+        appended,
+        "the turn must have reported a token state after the first swap"
+    );
+    assert_eq!(
+        provider.summarizer_call_count(),
+        2,
+        "two overflows must each run their own recovery compaction"
+    );
+    assert_eq!(
+        provider.main_call_count(),
+        3,
+        "two overflows, then a success"
+    );
+
+    let stored = h.stored_texts().await;
+    assert!(
+        stored.iter().any(|t| t.contains(NOTE)),
+        "a message appended after the first swap committed must survive the \
+         second one; stored: {stored:#?}"
+    );
+}
+
+/// The `SessionConfig` `Harness::run_turn` uses, for the tests that have to
+/// drive the stream themselves to land an append in a specific window.
+fn turn_config(h: &Harness) -> SessionConfig {
+    SessionConfig {
+        id: h.session_id.clone(),
+        schedule_id: None,
+        max_turns: Some(8),
+        max_tool_calls: None,
+        retry_config: None,
+        budget: None,
+        reasoning_effort: None,
+    }
+}

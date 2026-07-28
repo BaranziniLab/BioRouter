@@ -211,6 +211,96 @@ pub struct ReplyContext {
     pub initial_messages: Conversation,
 }
 
+/// The freshness basis for a whole-history rewrite: a durable revision together
+/// with the history that was read AT it.
+///
+/// `replace_conversation_preserving_tail` splits the stored rows at
+/// `basis.max_rowid`. Rows ABOVE the watermark that `known` does not name belong
+/// to another writer and are carried over; everything at or below it is deleted
+/// and replaced. That is sound only when the two halves come from ONE paired
+/// read — revision first, then the conversation, which is exactly what
+/// [`SessionManager::snapshot_for_rewrite`] guarantees. Source them
+/// independently and an append landing in between is counted by
+/// `basis.max_rowid` — so `scan_foreign_tail`, which only scans above the
+/// watermark, never sees it — while `known` does not contain it either. The
+/// DELETE then destroys it, after `add_message` already told that writer it had
+/// succeeded. That is the whole bug the guard exists to prevent, reintroduced
+/// one level up.
+///
+/// So the two halves live in one value that can ONLY be produced by a paired
+/// read: there is no constructor taking a revision and a conversation, and the
+/// fields are private. A caller cannot re-split them, and "re-seed the basis"
+/// cannot compile into "re-seed the revision".
+struct RewriteBasis {
+    /// The stored history at `revision` — the seed the turn's live conversation
+    /// descends from.
+    known: Conversation,
+    revision: crate::session::session_manager::ConversationRevision,
+}
+
+impl RewriteBasis {
+    /// The only way to obtain one.
+    async fn read(session_manager: &SessionManager, session_id: &str) -> Result<Self> {
+        Ok(Self::read_with_session(session_manager, session_id)
+            .await?
+            .1)
+    }
+
+    /// The same paired read, keeping the `Session` it came from so a caller that
+    /// needs the session metadata does not pay for a second round trip — nor
+    /// get it from a *different* moment than the basis.
+    async fn read_with_session(
+        session_manager: &SessionManager,
+        session_id: &str,
+    ) -> Result<(Session, Self)> {
+        let (session, revision) = session_manager.snapshot_for_rewrite(session_id).await?;
+        let known = session
+            .conversation
+            .clone()
+            .ok_or_else(|| anyhow!("Session {session_id} has no conversation"))?;
+        Ok((session, Self { known, revision }))
+    }
+
+    /// The stored history this basis was read with.
+    fn known(&self) -> &Conversation {
+        &self.known
+    }
+
+    /// Everything the turn has seen at or since this basis: the durable seed
+    /// plus the live conversation the rewrite is replacing.
+    ///
+    /// The store reads only message ids out of `known`, and it must not mistake
+    /// a row the turn already saw for another writer's append. `live` alone is
+    /// not enough: the normalizer drops and merges messages at turn start, so a
+    /// row the seed carried can be missing from `live` and would then be
+    /// "recovered" verbatim onto the tail of its own summary. Borrowed — no
+    /// copy — in the overwhelmingly common case where `live` already names
+    /// everything the seed did.
+    fn known_with<'a>(&'a self, live: &'a Conversation) -> std::borrow::Cow<'a, Conversation> {
+        let live_ids: HashSet<&str> = live
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.as_deref())
+            .collect();
+        let mut extra = self
+            .known
+            .messages()
+            .iter()
+            .filter(|m| m.id.as_deref().is_none_or(|id| !live_ids.contains(id)))
+            .peekable();
+        if extra.peek().is_none() {
+            return std::borrow::Cow::Borrowed(live);
+        }
+        let merged: Vec<Message> = live
+            .messages()
+            .iter()
+            .cloned()
+            .chain(extra.cloned())
+            .collect();
+        std::borrow::Cow::Owned(Conversation::new_unvalidated(merged))
+    }
+}
+
 /// What one overflow-recovery compaction achieved.
 struct OverflowCompactionSwap {
     /// The conversation now on disk — `None` when the swap could not be made
@@ -1779,18 +1869,23 @@ impl Agent {
     ///
     /// Never returns `Err` for a lost race. It also never returns `Err` once
     /// the FIRST summarization has been billed: past that point a failure —
-    /// the retry's summarizer, or the database — degrades to
+    /// either summarizer, or the database on either attempt — degrades to
     /// `stored: None` with `usages` intact, so the spend is still reported and
     /// the turn still has a compaction to continue from. Only a failure before
     /// anything was charged propagates, because there is then nothing to
     /// salvage. This site is the last rung before the turn dies with "context
     /// limit still exceeded", so declining to persist must not also decline to
     /// continue.
+    ///
+    /// `basis` is `&mut` because a landed swap invalidates it — the rewrite
+    /// renumbered every row — and re-seeding it is this function's job, not the
+    /// caller's. Doing it here is what keeps the revision and the history it
+    /// describes moving together (see [`RewriteBasis`]).
     async fn swap_overflow_compaction(
         &self,
         session_id: &str,
         conversation: &Conversation,
-        basis: crate::session::session_manager::ConversationRevision,
+        basis: &mut RewriteBasis,
         recovery: crate::context_mgmt::OverflowRecovery,
     ) -> Result<OverflowCompactionSwap> {
         let session_manager = self.config.session_manager.clone();
@@ -1802,11 +1897,16 @@ impl Agent {
         usages.push(usage);
 
         let (outcome, stored) = session_manager
-            .replace_conversation_preserving_tail(session_id, &compacted, basis, conversation)
+            .replace_conversation_preserving_tail(
+                session_id,
+                &compacted,
+                basis.revision,
+                &basis.known_with(conversation),
+            )
             .await?;
         if outcome.stored() {
             return Ok(OverflowCompactionSwap {
-                stored: Some(stored),
+                stored: Some(self.reseed_basis(session_id, basis, stored).await),
                 compacted,
                 usages,
             });
@@ -1816,37 +1916,34 @@ impl Agent {
             "Overflow-recovery compaction for session {session_id} was declined ({outcome:?}); \
              recomputing against the current history and retrying once"
         );
-        // From here on `usages` holds a summarization the provider already
-        // CHARGED for, and `compacted` is a perfectly usable in-memory result.
-        // A `?` past this point drops both: the caller's `Err` arm only logs
-        // and breaks, so the spend vanishes from the budget and the session
-        // gauge (contradicting `OverflowCompactionSwap::usages`' own contract —
-        // "all of it is spend whether or not the result was kept"), the turn
-        // ends where it could have continued, and the `PreCompact` the caller
-        // fired never gets its `PostCompact`. Degrade to "could not persist"
-        // instead, which is exactly what a declined swap already returns.
-        let (fresh_session, fresh_basis) =
-            match session_manager.snapshot_for_rewrite(session_id).await {
-                Ok(snapshot) => snapshot,
-                Err(e) => {
-                    warn!(
-                        "Could not re-read session {session_id} to retry the overflow-recovery \
+        // `usages` holds a summarization the provider already CHARGED for, and
+        // `compacted` is a perfectly usable in-memory result. A `?` past this
+        // point drops both: the caller's `Err` arm only logs and breaks, so the
+        // spend vanishes from the budget and the session gauge (contradicting
+        // `OverflowCompactionSwap::usages`' own contract — "all of it is spend
+        // whether or not the result was kept"), the turn ends where it could
+        // have continued, and the `PreCompact` the caller fired never gets its
+        // `PostCompact`. Degrade to "could not persist" instead, which is
+        // exactly what a declined swap already returns.
+        //
+        // The retry re-seeds `basis` before recomputing: the decline means the
+        // stored history moved, so the pair the retry writes against has to be
+        // re-read as a PAIR, never a fresh revision against the stale view.
+        match RewriteBasis::read(&session_manager, session_id).await {
+            Ok(fresh) => *basis = fresh,
+            Err(e) => {
+                warn!(
+                    "Could not re-read session {session_id} to retry the overflow-recovery \
                      compaction ({e}); continuing in memory with the first compaction"
-                    );
-                    return Ok(OverflowCompactionSwap {
-                        stored: None,
-                        compacted,
-                        usages,
-                    });
-                }
-            };
-        let Some(fresh) = fresh_session.conversation else {
-            return Ok(OverflowCompactionSwap {
-                stored: None,
-                compacted,
-                usages,
-            });
-        };
+                );
+                return Ok(OverflowCompactionSwap {
+                    stored: None,
+                    compacted,
+                    usages,
+                });
+            }
+        }
+        let fresh = basis.known().clone();
         let provider = match self.provider().await {
             Ok(provider) => provider,
             Err(e) => {
@@ -1879,11 +1976,14 @@ impl Agent {
         usages.push(retry_usage);
 
         match session_manager
-            .replace_conversation_preserving_tail(session_id, &recompacted, fresh_basis, &fresh)
+            .replace_conversation_preserving_tail(session_id, &recompacted, basis.revision, &fresh)
             .await
         {
             Ok((retry_outcome, retry_stored)) => Ok(OverflowCompactionSwap {
-                stored: retry_outcome.stored().then_some(retry_stored),
+                stored: match retry_outcome.stored() {
+                    true => Some(self.reseed_basis(session_id, basis, retry_stored).await),
+                    false => None,
+                },
                 compacted: recompacted,
                 usages,
             }),
@@ -1901,6 +2001,46 @@ impl Agent {
                     compacted: recompacted,
                     usages,
                 })
+            }
+        }
+    }
+
+    /// Re-seed `basis` after a rewrite landed, and hand back the conversation
+    /// the turn should continue from.
+    ///
+    /// A landed rewrite renumbered every row, so the old basis describes a store
+    /// that no longer exists. The replacement has to be a PAIR again: re-reading
+    /// only the revision — against the `stored` view the rewrite returned, which
+    /// was fixed at commit time — leaves anything appended in between counted by
+    /// the new watermark yet absent from the turn's view, i.e. exactly the row
+    /// the next swap would delete without recovering. So the turn continues from
+    /// the re-read history rather than from `stored`: it is `stored` plus
+    /// whatever landed since, which the next compaction then summarizes instead
+    /// of destroying.
+    ///
+    /// If the re-read fails, `basis` is deliberately left stale. A stale basis
+    /// fails the store's prefix check, so the next swap this turn is DECLINED
+    /// (and retried against a fresh pair) — the safe outcome. Guessing a
+    /// revision for a view we no longer trust is the unsafe one.
+    async fn reseed_basis(
+        &self,
+        session_id: &str,
+        basis: &mut RewriteBasis,
+        stored: Conversation,
+    ) -> Conversation {
+        match RewriteBasis::read(&self.config.session_manager, session_id).await {
+            Ok(fresh) => {
+                let adopted = fresh.known().clone();
+                *basis = fresh;
+                adopted
+            }
+            Err(e) => {
+                warn!(
+                    "Could not re-read session {session_id} after its history was replaced ({e}); \
+                     a further compaction this turn will be declined rather than written against \
+                     a basis that no longer describes the store"
+                );
+                stored
             }
         }
     }
@@ -3123,15 +3263,16 @@ impl Agent {
                 .await?;
         }
 
-        // Snapshot with the revision this view is based on, so an auto-compaction
-        // below can tell a concurrent append apart from its own edits.
-        let (session, compaction_basis) = session_manager
-            .snapshot_for_rewrite(&session_config.id)
-            .await?;
-        let conversation = session
-            .conversation
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Session {} has no conversation", session_config.id))?;
+        // Snapshot with the revision this view is based on, so every rewrite in
+        // this turn — the auto-compaction below AND the reply loop's overflow
+        // recoveries — can tell a concurrent append apart from its own edits.
+        // The basis travels WITH the history it describes, all the way down: a
+        // revision re-read later, against a view decided earlier, is the split
+        // that lets a concurrent append fall between the two (see
+        // [`RewriteBasis`]).
+        let (session, mut rewrite_basis) =
+            RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
+        let conversation = rewrite_basis.known().clone();
 
         // BR-12: this synchronous check is the *fallback*. In the common case
         // the previous turn's `maybe_spawn_eager_compaction` already compacted in
@@ -3217,10 +3358,29 @@ impl Agent {
                             .replace_conversation_preserving_tail(
                                 &session_config.id,
                                 &compacted_conversation,
-                                compaction_basis,
-                                &conversation_to_compact,
+                                rewrite_basis.revision,
+                                rewrite_basis.known(),
                             )
                             .await?;
+
+                        // Re-pair the basis the moment the rewrite returns,
+                        // before anything is yielded. A landed rewrite renumbered
+                        // every row and a declined one means the store moved under
+                        // us; either way the reply loop below must inherit a
+                        // revision and a history read TOGETHER, not a revision
+                        // read after the view it is meant to describe.
+                        let latest_conversation = self.reseed_basis(
+                            &session_config.id,
+                            &mut rewrite_basis,
+                            if outcome.stored() {
+                                stored_conversation
+                            } else {
+                                // Nothing was written, so the rewrite handed back
+                                // its own `replacement`. The pre-compaction view
+                                // is the honest fallback if the re-read fails.
+                                conversation_to_compact.clone()
+                            },
+                        ).await;
 
                         if !outcome.stored() {
                             // The basis was truncated or rewritten under us (a
@@ -3254,13 +3414,9 @@ impl Agent {
                                      being summarized. Continuing with the full history.",
                                 )
                             );
-                            match session_manager.get_session(&session_config.id, true).await {
-                                Ok(fresh) => fresh.conversation.unwrap_or(conversation_to_compact),
-                                Err(e) => {
-                                    warn!("Could not re-read session {} after a skipped compaction: {e}", session_config.id);
-                                    conversation_to_compact
-                                }
-                            }
+                            // Continue on the fresh history the re-pair above read
+                            // (or, if that failed, the view we started from).
+                            latest_conversation
                         } else {
                         self.update_session_metrics(
                             &session_config,
@@ -3282,7 +3438,7 @@ impl Agent {
                             yield AgentEvent::TokenUsage(token_state);
                         }
 
-                        yield AgentEvent::HistoryReplaced(stored_conversation.clone());
+                        yield AgentEvent::HistoryReplaced(latest_conversation.clone());
 
                         yield AgentEvent::Message(
                             Message::assistant().with_system_notification(
@@ -3291,7 +3447,7 @@ impl Agent {
                             )
                         );
 
-                        stored_conversation
+                        latest_conversation
                         }
                     }
                     Err(e) => {
@@ -3305,7 +3461,7 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, session_config, session, cancel_token).await?;
+            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token).await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -3316,6 +3472,7 @@ impl Agent {
     async fn reply_internal(
         &self,
         conversation: Conversation,
+        rewrite_basis: RewriteBasis,
         session_config: SessionConfig,
         session: Session,
         cancel_token: Option<CancellationToken>,
@@ -3338,20 +3495,20 @@ impl Agent {
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
-        // Captured HERE — after `reply()`'s auto-compaction has already run and,
-        // if it fired, rewritten (and therefore renumbered) every row. A basis
-        // taken before it would fail the prefix check on every overflow recovery
-        // that follows an auto-compaction, silently disabling durable recovery
-        // compaction on exactly the largest sessions. Re-seeded after each
-        // successful swap for the same reason.
+        // Handed DOWN from `reply()`, already re-paired past its auto-compaction
+        // if that fired (which renumbers every row, so a basis taken before it
+        // would fail the store's prefix check and silently disable durable
+        // recovery compaction on exactly the largest sessions). It is never
+        // re-read here as a bare revision: the history it describes has to come
+        // with it, or an append landing between the two reads is counted by the
+        // watermark and missing from the view — the one shape the store's guard
+        // cannot recover. See [`RewriteBasis`].
         //
         // It deliberately is NOT compared against the in-memory conversation's
         // length: the normalizer merges and drops messages at turn start, and
         // the retry manager pushes messages that are never persisted, so the two
         // are routinely unequal with zero concurrency.
-        let mut rewrite_basis = session_manager
-            .conversation_revision(&session_config.id)
-            .await?;
+        let mut rewrite_basis = rewrite_basis;
 
         // BR-63: the turn's reasoning effort. `Normal` (the default) changes
         // nothing: same provider object, same caps.
@@ -4606,7 +4763,7 @@ impl Agent {
                             match self.swap_overflow_compaction(
                                 &session_config.id,
                                 &conversation,
-                                rewrite_basis,
+                                &mut rewrite_basis,
                                 recovery,
                             ).await {
                                 Ok(swap) => {
@@ -4649,13 +4806,17 @@ impl Agent {
 
                                     match swap.stored {
                                         Some(stored) => {
-                                            conversation = stored;
                                             // The rewrite renumbered every row and minted a
                                             // uid for the summary, so a second overflow in
-                                            // this same turn needs the new basis.
-                                            rewrite_basis = session_manager
-                                                .conversation_revision(&session_config.id)
-                                                .await?;
+                                            // this same turn needs a new basis — which the
+                                            // swap already re-read AS A PAIR with this
+                                            // conversation, before anything above was
+                                            // yielded. Refreshing only the revision here
+                                            // (with the view fixed at commit time) is what
+                                            // let an append landing in between be counted
+                                            // by the watermark yet be unknown to the next
+                                            // swap, which then deleted it.
+                                            conversation = stored;
                                             yield AgentEvent::HistoryReplaced(conversation.clone());
                                         }
                                         None => {
