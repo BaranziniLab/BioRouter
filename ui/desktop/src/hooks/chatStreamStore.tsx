@@ -1269,6 +1269,25 @@ class ChatStreamController {
         throw new Error(`Message with id ${messageId} not found in current messages`);
       }
 
+      // #51 NF-D: `edit` truncates the LIVE session, so the server checks the
+      // cut against our view of it when we can supply one. `expectedMessageIds`
+      // names every message we hold; if the session has moved on (another
+      // window, the CLI, a scheduled run) the server refuses with 409 rather
+      // than silently destroying what we never saw. `diverge` ignores it.
+      //
+      // #59: we can only make that assertion when every message we hold names
+      // ITSELF. From the first streamed assistant reply onward it does not —
+      // the reply stream yields a message before persisting it and never
+      // publishes the id it was persisted under — so a list built from a live
+      // transcript is missing exactly those ids and would buy a guaranteed 409
+      // on a session nobody else has touched. A partial list is not a weaker
+      // claim, it is a false one, so send nothing instead: the server keeps the
+      // cut under its turn lock and bounded to the rows it read. When #59 lands
+      // this condition is simply always true and every edit is checked again.
+      const namedIds = this.messagesRef.flatMap((m) => (typeof m.id === 'string' ? [m.id] : []));
+      const expectedMessageIds =
+        namedIds.length === this.messagesRef.length ? namedIds : undefined;
+
       const response = await editMessage({
         path: {
           session_id: this.sessionId,
@@ -1276,14 +1295,7 @@ class ChatStreamController {
         body: {
           timestamp: message.created,
           editType,
-          // #51 NF-D: `edit` truncates the LIVE session, so the server checks
-          // that we are deleting the history we actually have. Send the ids of
-          // every message we hold; if the session has moved on (another window,
-          // the CLI, a scheduled run) the server refuses with 409 rather than
-          // silently destroying what we never saw. `diverge` ignores it.
-          expectedMessageIds: this.messagesRef
-            .map((m) => m.id)
-            .filter((id): id is string => typeof id === 'string'),
+          ...(expectedMessageIds ? { expectedMessageIds } : {}),
         },
         throwOnError: true,
       });
