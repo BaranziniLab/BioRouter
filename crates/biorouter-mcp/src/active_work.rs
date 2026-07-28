@@ -40,11 +40,20 @@ impl ActiveWorkKind {
         }
     }
 
+    /// The prefix each kind's registry ids carry. Every one of these must be
+    /// unambiguous *outside* this registry too: an id here is client-visible on
+    /// `GET /active_work` and is the handle for
+    /// `POST /active_work/{id}/cancel`, which routes anything without the
+    /// `sched:` prefix straight in. `dturn`, not `turn`, because the server
+    /// mints its own session-turn ids as `turn-<n>` from an unrelated counter
+    /// (`AppState::try_begin_turn_idempotent`) and publishes them on
+    /// `SessionBusEvent::TurnStarted` — same shape, different namespace, so a
+    /// caller that confused the two would cancel someone else's turn.
     fn id_prefix(self) -> &'static str {
         match self {
             ActiveWorkKind::BackgroundJob => "bg",
             ActiveWorkKind::Subagent => "sub",
-            ActiveWorkKind::DetachedTurn => "turn",
+            ActiveWorkKind::DetachedTurn => "dturn",
         }
     }
 }
@@ -68,7 +77,8 @@ struct Entry {
 /// layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveWorkItem {
-    /// Registry-unique id (e.g. `bg-7`, `sub-3`); also the cancel handle.
+    /// Registry-unique id (e.g. `bg-7`, `sub-3`, `dturn-2`); also the cancel
+    /// handle.
     pub id: String,
     pub kind: ActiveWorkKind,
     pub title: String,
@@ -257,6 +267,29 @@ mod tests {
         assert!(b.starts_with("sub-"));
         assert!(c.starts_with("bg-"));
         assert_ne!(a, c);
+    }
+
+    /// A detached turn's registry id must not be mistakable for the *session
+    /// turn id* the server mints.
+    ///
+    /// `AppState::try_begin_turn_idempotent` names each in-flight turn
+    /// `turn-<n>` off its own `TURN_SEQ`, and that id is client-visible on
+    /// `SessionBusEvent::TurnStarted`. This registry's ids are also
+    /// client-visible (`GET /active_work`) and are the handle for
+    /// `POST /active_work/{id}/cancel`, which routes anything without the
+    /// `sched:` prefix straight into the registry. Two independent counters
+    /// minting the same `turn-<n>` shape means a caller that mixes the two up
+    /// silently cancels a *different* detached turn that happens to share the
+    /// number — the exact ambiguity `bg`/`sub` were chosen to avoid.
+    #[test]
+    fn detached_turn_ids_cannot_be_mistaken_for_a_session_turn_id() {
+        let reg = fresh();
+        let id = reg.register(ActiveWorkKind::DetachedTurn, "t", None, None, None);
+        assert!(
+            !id.starts_with("turn-"),
+            "`{id}` collides with the server's own turn-<n> ids"
+        );
+        assert!(id.starts_with("dturn-"), "unexpected prefix: {id}");
     }
 
     #[test]

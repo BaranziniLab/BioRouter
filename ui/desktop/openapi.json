@@ -4583,7 +4583,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`background_job`, `subagent`, or `scheduled_run`."
+            "description": "`background_job`, `subagent`, `detached_turn`, or `scheduled_run`."
           },
           "runningForSeconds": {
             "type": "integer",

@@ -61,7 +61,7 @@ export type ActiveWorkItemDto = {
      */
     id: string;
     /**
-     * `background_job`, `subagent`, or `scheduled_run`.
+     * `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
      */
     kind: string;
     /**
