@@ -1,14 +1,14 @@
 # Launching the dev GUI from a shell without a TTY
 
 > **What this is.** The procedure for starting the Electron dev GUI from an agent
-> shell, a CI step, or any other context without a TTY — and the four failure modes
+> shell, a CI step, or any other context without a TTY — and the five failure modes
 > that make a working app look broken.
 > **Status:** Current.
 > **Audience:** agents driving the desktop app, and developers automating a GUI launch.
 
 `just run-dev` is the right command **at a human terminal**. It does not survive being
 launched without a TTY, and the ways it fails all look like application bugs rather
-than launcher bugs. This page is the procedure that works and, more usefully, the four
+than launcher bugs. This page is the procedure that works and, more usefully, the five
 wrong turns that each cost a debugging cycle, so the next session recognises them
 instead of rediscovering them.
 
@@ -52,7 +52,7 @@ pgrep -f "target/debug/biorouterd"     # the daemon the app spawned
 curl -s http://localhost:9333/json/list | grep '"title"'   # -> "Biorouter"
 ```
 
-## The four failures, and how to recognise each
+## The five failures, and how to recognise each
 
 **1. `ELECTRON_RUN_AS_NODE=1` in the environment — Electron exits instantly.**
 Agent shells commonly export this. Electron then runs `main.js` as plain Node
@@ -82,6 +82,26 @@ app window is usually *behind* the editor anyway, so the capture does not even
 show what you need. `AXRaise`/`frontmost` via System Events is unreliable here.
 Use the CDP screenshot: it captures the renderer only, needs no focus, and
 cannot pick up the user's other windows.
+
+**5. The standalone dev bundle hangs on an *invisible* modal dialog.**
+`scripts/build-main-dev.mjs` emits `electron-devtools-installer` as
+`const installExtension = require("electron-devtools-installer")` and then calls
+it, so `installExtension` is the module namespace rather than the function.
+`createChat` throws `TypeError: installExtension is not a function`, the
+`app.whenReady()` handler catches it, and `dialog.showErrorBox` opens an
+`NSAlert` — which nothing is there to dismiss. The main thread then blocks
+forever inside `-[NSAlert runModal]`.
+
+The symptom is the worst kind: a CDP page target *exists* but its `url` is `""`,
+nothing is written to stdout or stderr, and the process ignores `SIGTERM`
+(a modal run loop does not service it), so `pkill` appears to do nothing. It
+reads as a hung app or a wedged renderer; it is neither.
+
+Recognise it with `sample <pid>` — an `-[NSAlert runModal]` frame on the main
+thread is conclusive. `kill -9` is required to clear it. `electron-forge start`
+does **not** hit this, because it does not use the dev bundle; only the
+direct-Electron path above does. The fix is to patch the (gitignored)
+`.vite/build/main.dev.js` so `installExtension` is callable before launching.
 
 ## Two things that are NOT the problem
 
