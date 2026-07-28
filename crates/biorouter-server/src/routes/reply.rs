@@ -201,6 +201,13 @@ async fn apply_client_writeback(
         });
     }
 
+    // `known` is the CLIENT's copy rather than the snapshot's conversation. The
+    // precondition that matters — `basis` must come from a real
+    // `snapshot_for_rewrite` of this session — holds; and the check above
+    // already proved the client's copy names every message the snapshot saw, so
+    // it is a superset of the snapshot's uid set. What that buys: a row landing
+    // above the watermark is foreign, and preserved, unless the client already
+    // has it.
     match session_manager
         .replace_conversation_preserving_tail(session_id, &client, basis, &client)
         .await
