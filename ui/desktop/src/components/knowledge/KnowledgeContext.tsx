@@ -91,6 +91,20 @@ export function KnowledgeProvider({
       // daemon says it actually applied.
       if (primary.kind === 'set') setPrimaryKbIdState(primary.id);
       if (primary.kind === 'clear') setPrimaryKbIdState(null);
+      if (primary.kind === 'unchanged') {
+        // A set-only edit can orphan the primary — hiding the primary's own
+        // base is precisely the case the daemon's repair exists for. Until that
+        // repair comes back the renderer must not keep naming a base this chat
+        // no longer includes: IngestPanel passes `primaryKbId` straight into
+        // `/knowledge/bases/<id>/ingest`, so a stale pointer aims a digest at a
+        // base the user just removed. Drop the subject and adopt the daemon's
+        // answer below. Only the in-memory pointer is dropped — the persisted
+        // one stays until an authoritative answer replaces it, so a reload
+        // during the in-flight window still has a last-known value to show.
+        setPrimaryKbIdState((current) =>
+          current && nextHiddenKbIds.includes(current) ? null : current
+        );
+      }
       setHiddenKbIdsState(nextHiddenKbIds);
       if (primary.kind === 'set') localStorage.setItem(storageKey, primary.id);
       if (primary.kind === 'clear') localStorage.removeItem(storageKey);
@@ -124,6 +138,18 @@ export function KnowledgeProvider({
           setPrimaryKbIdState(applied);
           if (applied) localStorage.setItem(storageKey, applied);
           else localStorage.removeItem(storageKey);
+          // Adopt the set too, not just the pointer: the repair moves both, and
+          // taking one half of it is how the renderer ends up holding a primary
+          // that is not a member of its own visible set. Guarded on the field
+          // being present so a daemon that predates `hidden_kbs` in the reply
+          // leaves the optimistic set standing instead of erasing it.
+          if (Array.isArray(data.hidden_kbs)) {
+            const appliedHidden = data.hidden_kbs.filter(
+              (id): id is string => typeof id === 'string'
+            );
+            setHiddenKbIdsState(appliedHidden);
+            localStorage.setItem(hiddenStorageKey, JSON.stringify(appliedHidden));
+          }
         })
         .catch((err) => {
           console.warn('setActive (server sync) failed:', err);

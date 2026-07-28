@@ -139,6 +139,35 @@ describe('KnowledgeContext', () => {
     await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('beta'));
   });
 
+  // The primary is the KB-less write target. Between the click that removes it
+  // from the chat and the daemon's repair there must be no window in which the
+  // renderer still names it — IngestPanel passes `primaryKbId` explicitly, so a
+  // stale one aims a digest at a base this session no longer includes.
+  it('never keeps a primary the user just removed from the set', async () => {
+    const pending = deferred<unknown>();
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+    mocks.setActive.mockReturnValue(pending.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+    await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+
+    expect(screen.getByTestId('hidden').textContent).toBe('alpha,beta');
+    expect(screen.getByTestId('primary').textContent).toBe('none');
+
+    await settle(() =>
+      pending.resolve({
+        data: { kb_ids: ['beta'], primary_kb: 'beta', active_kb: 'beta', hidden_kbs: ['alpha'] },
+      })
+    );
+
+    // …and then the whole repair is adopted, set included, so the primary is a
+    // member of the visible set again rather than of a set only the daemon has.
+    expect(screen.getByTestId('primary').textContent).toBe('beta');
+    expect(screen.getByTestId('hidden').textContent).toBe('alpha');
+    expect(screen.getByTestId('visible').textContent).toBe('beta');
+  });
+
   // Mixed versions: a new renderer against a daemon that predates `primary_kb`.
   // Its POST answer carries only the deprecated `active_kb` mirror, and reading
   // just `primary_kb` turns a *successful* write into "there is no primary" —
