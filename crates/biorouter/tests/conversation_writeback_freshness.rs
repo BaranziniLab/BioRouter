@@ -2271,3 +2271,136 @@ async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
         );
     }
 }
+
+// ── #59 ordering: content first, then the frame that names it ────────────────
+//
+// Every assertion above reduces a turn to a SET of ids and asks only *whether*
+// an id arrived. Ordering is invisible to that shape, and ordering is half the
+// contract: `MessagesPersisted` is an accounting frame, and accounting that
+// arrives before the thing it accounts for is how a client ends up believing a
+// truncated transcript is complete.
+
+/// A one-line shape per event, so an ordering assertion reads the way the wire
+/// does: `Message` frames carry their role, `MessagesPersisted` its row count.
+fn event_shapes(events: &[AgentEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|ev| match ev {
+            AgentEvent::Message(m) => match m.role {
+                rmcp::model::Role::User => "Message(user)".to_string(),
+                rmcp::model::Role::Assistant => "Message(assistant)".to_string(),
+            },
+            AgentEvent::MessagesPersisted(rows) => format!("MessagesPersisted[{}]", rows.len()),
+            AgentEvent::HistoryReplaced(_) => "HistoryReplaced".to_string(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// Every id a turn published in a `MessagesPersisted` that a **later** `Message`
+/// frame turns out to carry — i.e. every id the client was handed before the
+/// message it names.
+///
+/// This is the ordering the server's own SSE adapter is built around: it flushes
+/// the coalescer before forwarding a `MessagesPersisted`, "so the client never
+/// learns an id before the message it belongs to"
+/// (`crates/biorouter-server/src/routes/reply.rs`). The adapter can only flush
+/// what it is *holding* — an order the agent loop emits backwards passes through
+/// it untouched, so the invariant has to hold at the source.
+fn ids_named_before_their_own_message(events: &[AgentEvent]) -> Vec<String> {
+    let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut early = Vec::new();
+    for ev in events {
+        match ev {
+            AgentEvent::MessagesPersisted(rows) => {
+                named.extend(rows.iter().map(|r| r.id.clone()));
+            }
+            AgentEvent::Message(m) => {
+                if let Some(id) = m.id.as_ref().filter(|id| named.contains(*id)) {
+                    early.push(id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    early
+}
+
+/// #59 ordering: a slash command that answers inline must hand over both
+/// messages BEFORE it names them.
+///
+/// The inline-answer path persisted the user message and the response, published
+/// both ids, and only then yielded the two `Message` frames. A client consuming
+/// the new frame the way it is meant to be consumed — union its ids into
+/// `expectedMessageIds` — that lost the connection in between (any send failure
+/// ends the stream, `routes/reply.rs`) would hold the id of **every** stored row
+/// while missing the response body. `POST /sessions/{id}/edit_message` checks
+/// only `stored ∖ client`, so that client passes the guard with an incomplete
+/// transcript and the server truncates rows still on the user's screen. The
+/// desktop is insulated today only because it ignores the frame, which is not a
+/// property of the wire contract.
+///
+/// `/clear` is the whole shape in one turn: two rows persisted inline, both
+/// yielded, and a history rewrite to announce afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slash_command_hands_over_its_messages_before_it_names_them() {
+    let (h, _provider) = harness(|p| p).await;
+
+    let events = h.run_turn("/clear").await.unwrap();
+
+    assert_eq!(
+        event_shapes(&events),
+        vec![
+            "Message(user)",
+            "Message(assistant)",
+            "MessagesPersisted[2]",
+            "HistoryReplaced",
+        ],
+        "content first, then the accounting frame that names it, then the \
+         rewrite: a client that stops reading at any point holds a transcript \
+         no shorter than the id set it would claim"
+    );
+
+    let early = ids_named_before_their_own_message(&events);
+    assert!(
+        early.is_empty(),
+        "{} id(s) were published before the `Message` frame carrying them: \
+         {early:#?}\nevents: {:#?}",
+        early.len(),
+        event_shapes(&events)
+    );
+}
+
+/// The same ordering on every other turn shape #59 drives — the regression net
+/// for the audit of the remaining publication sites, not the gate for the defect
+/// above (these already held; the inline slash-command path did not).
+///
+/// A row is allowed to be published without ever being yielded (the model-only
+/// plumbing) and to be yielded without being published in that batch. What is
+/// never allowed is publishing an id and yielding its message afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_turn_shape_names_a_row_before_it_hands_it_over() {
+    let (plain, _p) = harness(|p| p).await;
+    let plain_events = plain.run_turn(USER_PROMPT).await.unwrap();
+
+    let (with_tools, _p) = harness(|p| p.tools_on(0)).await;
+    let tool_events = with_tools.run_turn(USER_PROMPT).await.unwrap();
+
+    let (recovered, _p) = harness(|p| p.server_error_on(0)).await;
+    let recovered_events = recovered.run_turn(USER_PROMPT).await.unwrap();
+
+    for (shape, events) in [
+        ("an ordinary reply", plain_events),
+        ("a reply split across several stored rows", tool_events),
+        ("a recovered provider error", recovered_events),
+    ] {
+        let early = ids_named_before_their_own_message(&events);
+        assert!(
+            early.is_empty(),
+            "{shape}: {} id(s) were published before the `Message` frame \
+             carrying them: {early:#?}\nevents: {:#?}",
+            early.len(),
+            event_shapes(&events)
+        );
+    }
+}
