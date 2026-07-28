@@ -857,6 +857,143 @@ mod tests {
         );
     }
 
+    /// Env var carrying the decoy project's path to the child half of
+    /// [`a_lost_working_directory_never_binds_a_root_to_another_project`].
+    const DECOY_CWD_CHILD: &str = "BIOROUTER_TEST_DECOY_CWD_CHILD";
+
+    /// A search root decided while the working directory is unresolvable must
+    /// not later attach itself to a *different* project.
+    ///
+    /// The process working directory is mutable and this codebase moves it
+    /// itself — `biorouter-cli`'s session builder calls
+    /// `std::env::set_current_dir` when a resumed session asks to go back to
+    /// its original directory — while `biorouterd` serves other sessions from
+    /// the same process. So a root that is still *relative* when it goes into
+    /// the search list is not a root at all: it is a promise to look in
+    /// whatever directory the process happens to be standing in when the list
+    /// is finally consumed. If that is another project, that project's
+    /// workflows are loaded and presented as this one's.
+    ///
+    /// That is strictly worse than the panic this fallback replaced: a panic is
+    /// loud and local, silently reading someone else's directory is neither.
+    ///
+    /// Moving the working directory is process-global, so the destructive half
+    /// runs in a re-executed copy of this test binary, pointed at its own
+    /// config root.
+    #[test]
+    #[cfg(unix)]
+    fn a_lost_working_directory_never_binds_a_root_to_another_project() {
+        if let Ok(decoy) = env::var(DECOY_CWD_CHILD) {
+            let decoy = PathBuf::from(decoy);
+
+            // Stand in a directory and lose it, as a cleaned-up scratch dir or
+            // a `git worktree remove` does under a live session.
+            let scratch = tempfile::tempdir().unwrap().keep();
+            env::set_current_dir(&scratch).unwrap();
+            fs::remove_dir_all(&scratch).unwrap();
+            assert!(
+                env::current_dir().is_err(),
+                "the child must actually be standing in a deleted directory, \
+                 otherwise it proves nothing"
+            );
+
+            // Decide the roots now — this is what a listing request or a named
+            // lookup does the moment it arrives.
+            let scan_roots = local_workflow_scan_dirs();
+            let lookup_roots = local_workflow_lookup_dirs();
+
+            // ...and now the process moves, exactly as the session builder
+            // moves it, into an unrelated project that has a workflow library.
+            env::set_current_dir(&decoy).unwrap();
+
+            let mut found = Vec::new();
+            for (dir, origin) in &scan_roots {
+                found.extend(scan_directory_for_workflows(dir, *origin).unwrap());
+            }
+            let leaked: Vec<String> = found
+                .iter()
+                .filter(|(_, workflow)| workflow.title.starts_with("Decoy"))
+                .map(|(path, _)| path.display().to_string())
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "the working directory these roots were derived from is gone, so \
+                 they name nothing; instead they bound themselves to whatever \
+                 directory the process moved to and listed that project's \
+                 workflows as this session's. Leaked: {leaked:?}; roots were \
+                 {scan_roots:?}"
+            );
+
+            for dir in &lookup_roots {
+                assert!(
+                    load_workflow_file_from_dir(dir, "decoy-workflow").is_err(),
+                    "a named lookup resolved into another project's workflow \
+                     library ({}); lookup roots were {lookup_roots:?}",
+                    dir.display()
+                );
+            }
+
+            // The structural invariant behind both assertions: a root that is
+            // still relative has not been decided, only deferred.
+            for (dir, _) in &scan_roots {
+                assert!(
+                    dir.is_absolute(),
+                    "search root {} is relative, so it re-resolves against \
+                     whatever the working directory is when it is used",
+                    dir.display()
+                );
+            }
+            for dir in &lookup_roots {
+                assert!(
+                    dir.is_absolute(),
+                    "lookup root {} is relative, so it re-resolves against \
+                     whatever the working directory is when it is used",
+                    dir.display()
+                );
+            }
+            return;
+        }
+
+        let decoy = tempfile::tempdir().unwrap();
+        let decoy_library = decoy.path().join(".biorouter").join("workflows");
+        fs::create_dir_all(&decoy_library).unwrap();
+        write_file(
+            &decoy_library,
+            "decoy-workflow.yaml",
+            "title: Decoy Project Library\ndescription: another project's workflow\nprompt: go\n",
+        );
+        // The working-directory root is the second relative root in the list,
+        // so give the decoy something there too.
+        write_file(
+            decoy.path(),
+            "decoy-root.yaml",
+            "title: Decoy Working Directory\ndescription: another project's workflow\nprompt: go\n",
+        );
+
+        let config_root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--nocapture",
+                "workflow::local_workflows::tests::a_lost_working_directory_never_binds_a_root_to_another_project",
+            ])
+            .env(DECOY_CWD_CHILD, decoy.path())
+            .env("BIOROUTER_PATH_ROOT", config_root.path())
+            .env(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR, "1")
+            .env_remove(BIOROUTER_WORKFLOW_PATH_ENV_VAR)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "a search root decided without a working directory must not attach \
+             itself to a later one.\n\
+             --- child stdout ---\n{}\n--- child stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     #[test]
     fn valid_workflows_are_still_loaded_alongside_unrelated_files() {
         let dir = tempfile::tempdir().unwrap();
