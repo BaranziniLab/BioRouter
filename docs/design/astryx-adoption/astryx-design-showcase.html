@@ -490,7 +490,7 @@ tbody tr:hover { background:var(--ov-hover); }
 .menu { width:230px; padding:4px; background:var(--surface); border-radius:var(--r-container);
         box-shadow:var(--elev-2), var(--ring-inset); display:flex; flex-direction:column; gap:2px; }
 .mi { display:flex; align-items:center; gap:8px; height:var(--ctl); padding:6px 8px; border-radius:var(--r-element);
-      font-size:var(--t-body); color:var(--ink); cursor:default;
+      font-size:var(--t-body); color:var(--ink); cursor:default; white-space:nowrap;
       transition:background-color var(--dur-min) var(--ease); }
 .mi:hover { background:var(--ov-hover); }
 .mi.danger { color:var(--danger); }
@@ -694,7 +694,11 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .cchip--locked:hover { background:transparent; color:var(--ink-muted); }
 /* the collapsed composer: one "+" stands in for the whole toolbar */
 .composer--narrow { max-width:340px; }
-.cpop { width:248px; padding:4px; background:var(--surface); border-radius:var(--r-container);
+.cpop-fact { padding:8px 8px 6px; }
+.cpop-fact-row { display:flex; align-items:center; gap:8px; font-size:var(--t-body); color:var(--ink-muted); }
+.cpop-fact-why { margin-top:4px; padding-left:24px; font-size:var(--t-support); color:var(--ink-subtle);
+                 line-height:16px; }
+.cpop { width:264px; padding:4px; background:var(--surface); border-radius:var(--r-container);
         box-shadow:var(--elev-2), var(--ring-inset); display:flex; flex-direction:column; gap:2px; }
 .cdiv { width:1px; height:16px; background:var(--line); flex:none; }
 .sendbtn-today { width:28px; height:28px; padding:0; border:1px solid var(--line-strong);
@@ -1804,16 +1808,31 @@ IndexError: index out of range for axis 0 with size 18452</div>
               <p class="vnote">The <b>+</b> takes the 32px icon-button box, so the collapsed row is the same height as the expanded one — the composer does not change size when the panel opens, only its contents do. Two things never collapse: the <b>model</b>, because it changes what your next message costs and does, and <b>Send</b>. Everything else is one click away.</p>
             </div>
             <div class="vs-col">
-              <div class="vs-tag on">What the + opens</div>
+              <div class="vs-tag on">What the + opens — before the first message</div>
               <div class="stage" style="padding:14px;display:flex;justify-content:center">
                 <div class="cpop">
-                  <div class="mi"><svg class="ico"><use href="#i-folderdot"/></svg>Working directory<span class="sp"></span><span class="kbd">…/Desktop</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-folderdot"/></svg>Working directory<span class="sp"></span><span class="kbd">…/Desktop</span><svg class="ico sm" style="opacity:.5;margin-left:4px;transform:rotate(-90deg)"><use href="#i-chevrondown"/></svg></div>
                   <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
                   <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
                   <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
                 </div>
               </div>
-              <p class="vnote">The standard menu recipe from §04 — 4px container padding, 32px rows, 2px gaps — rather than the bespoke <code>w-64 p-2</code> popover it uses today. Each row keeps its glyph <i>and</i> its current value on the right, so the popover answers "what is set?" without being opened twice. Order matches the expanded row exactly, so the collapse never rearranges anything. <b>No "Attach a file" row</b> — dropping a file on the composer already does it, and a menu item for a gesture the surface teaches by itself is a row that earns nothing.</p>
+              <p class="vnote">Four menu items. The directory carries a trailing chevron because it opens a picker rather than toggling something — the one row that leads somewhere else.</p>
+
+              <div class="vs-tag" style="margin-top:18px">…and after the session has started</div>
+              <div class="stage" style="padding:14px;display:flex;justify-content:center">
+                <div class="cpop">
+                  <div class="cpop-fact">
+                    <div class="cpop-fact-row"><svg class="ico"><use href="#i-folderdot"/></svg><span>Working directory</span><span class="sp" style="flex:1"></span><span class="mono" style="font-size:12px;color:var(--ink)">…/Desktop</span></div>
+                    <p class="cpop-fact-why">Set when this session started. Start a new session to work somewhere else.</p>
+                  </div>
+                  <div class="msep" style="margin:4px -4px"></div>
+                  <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
+                </div>
+              </div>
+              <p class="vnote"><b>The directory stops being a menu item.</b> It moves above the divider into a small context block — a stated fact with its reason, in the same place your eye already goes for "what is set" — while extensions, skills and knowledge bases stay interactive, because those genuinely can change mid-session. Nothing is greyed out: the row does not become a dead control, it becomes a different kind of thing. This is the same rule the expanded toolbar follows, applied to the menu: <b>state what is true, don't disable what was once offered.</b></p>
             </div>
           </div>
         </div>
