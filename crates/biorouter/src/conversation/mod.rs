@@ -492,6 +492,34 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     (messages, issues)
 }
 
+/// #51: whether this message's preservation marker makes it a hard boundary for
+/// [`merge_consecutive_messages`].
+///
+/// A merge extends the FIRST message and keeps only its metadata and its durable
+/// id, so merging across a marker either destroys it (an unpinned neighbour
+/// swallows the pinned note — the note is then summarized away like anything
+/// else) or broadens it (a pinned carrier absorbs what follows, so unrelated
+/// content silently inherits the exemption and spends the pinned-set token
+/// budget). Both are invisible to `context_mgmt`, which honours pins correctly
+/// but only ever sees the already-merged transcript — and that same transcript is
+/// what the overflow path writes back to the store. The boundary has to survive
+/// here or it never reaches the code that respects it.
+///
+/// Tool content is excluded for the same reason `context_mgmt::pins` refuses to
+/// honour it: a request and its response are one unit to every provider, so a
+/// marker on either half is never honoured anyway. Leaving those merges alone
+/// keeps the change scoped to markers that actually mean something — the
+/// provider-shape passes win wherever no pin is at stake.
+fn is_pin_boundary(message: &Message) -> bool {
+    message.metadata.pinned
+        && !message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+            )
+        })
+}
+
 pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
     let mut merged_messages: Vec<Message> = Vec::new();
@@ -499,7 +527,10 @@ pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<
     for message in messages {
         if let Some(last) = merged_messages.last_mut() {
             let effective = effective_role(&message);
-            if effective_role(last) == effective {
+            if effective_role(last) == effective
+                && !is_pin_boundary(last)
+                && !is_pin_boundary(&message)
+            {
                 last.content.extend(message.content);
                 issues.push(format!("Merged consecutive {} messages", effective));
                 continue;
@@ -1223,6 +1254,173 @@ mod tests {
 
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0], "Hello");
+    }
+
+    /// #51 part (b) depends on the preservation marker reaching compaction. The
+    /// transcript that reaches it — and that the overflow path writes back to the
+    /// store — is the *normalized* one, and `merge_consecutive_messages` keeps
+    /// only the FIRST message's metadata and durable id. So an unpinned neighbour
+    /// swallowing a pinned note destroys the marker (and the note's id) before any
+    /// compaction function gets the chance to honour it.
+    #[test]
+    fn merging_does_not_swallow_a_pinned_message() {
+        let messages = vec![
+            Message::user()
+                .with_id("m-plain")
+                .with_text("summarise the logs"),
+            Message::user()
+                .with_id("m-note")
+                .with_text("standing instruction: always cite sources")
+                .pinned(),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        let note = fixed
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text().contains("standing instruction"))
+            .expect("the pinned note must survive normalization");
+        assert!(
+            note.is_pinned(),
+            "normalization dropped the #51 preservation marker: {:#?}",
+            fixed.messages()
+        );
+        assert_eq!(
+            note.id.as_deref(),
+            Some("m-note"),
+            "the pinned note must keep its own durable id: {:#?}",
+            fixed.messages()
+        );
+    }
+
+    /// The mirror image: a pinned message that absorbs what follows lends its
+    /// exemption to unrelated content, which then silently escapes summarization
+    /// and spends the pinned-set token budget it never claimed.
+    #[test]
+    fn merging_does_not_broaden_a_pin_onto_later_content() {
+        let messages = vec![
+            Message::user()
+                .with_id("m-note")
+                .with_text("standing instruction: always cite sources")
+                .pinned(),
+            Message::user()
+                .with_id("m-plain")
+                .with_text("summarise the logs"),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        assert!(
+            !fixed
+                .messages()
+                .iter()
+                .any(|m| m.is_pinned() && m.as_concat_text().contains("summarise the logs")),
+            "unpinned content inherited the pin's exemption: {:#?}",
+            fixed.messages()
+        );
+        assert_eq!(
+            fixed.len(),
+            2,
+            "the pin boundary must survive as a message boundary: {:#?}",
+            fixed.messages()
+        );
+    }
+
+    /// Two adjacent pins stay two messages. The pinned-set budget evicts
+    /// oldest-first and reports each evicted pin by its own id
+    /// (`context_mgmt::pins::EvictedPin`); merging them would collapse that into
+    /// one all-or-nothing unit under a single id.
+    #[test]
+    fn merging_keeps_adjacent_pins_separate() {
+        let messages = vec![
+            Message::user()
+                .with_id("m-note-1")
+                .with_text("first note")
+                .pinned(),
+            Message::user()
+                .with_id("m-note-2")
+                .with_text("second note")
+                .pinned(),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        let ids: Vec<Option<&str>> = fixed
+            .messages()
+            .iter()
+            .map(|m| m.id.as_deref())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![Some("m-note-1"), Some("m-note-2")],
+            "each pin keeps its own identity: {:#?}",
+            fixed.messages()
+        );
+        assert!(fixed.messages().iter().all(|m| m.is_pinned()));
+    }
+
+    /// A pin is only a merge boundary where it can actually be honoured. Tool
+    /// content is never eligible for preservation (exempting half a tool pair
+    /// from a summarization that hides the other half is a rejected request), so
+    /// a marked tool message must keep merging exactly as it did before — the
+    /// provider-shape invariants win where no pin is at stake.
+    #[test]
+    fn a_marked_tool_message_still_merges() {
+        use rmcp::model::CallToolResult;
+
+        let messages = vec![
+            Message::user().with_text("go"),
+            Message::assistant()
+                .with_tool_request(
+                    "call-1",
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        name: "developer__shell".into(),
+                        arguments: Some(object!({})),
+                        meta: None,
+                    }),
+                )
+                .with_tool_request(
+                    "call-2",
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        name: "developer__shell".into(),
+                        arguments: Some(object!({})),
+                        meta: None,
+                    }),
+                ),
+            Message::user()
+                .with_tool_response(
+                    "call-1",
+                    Ok(CallToolResult {
+                        content: vec![rmcp::model::Content::text("out")],
+                        structured_content: None,
+                        is_error: Some(false),
+                        meta: None,
+                    }),
+                )
+                .pinned(),
+            Message::user()
+                .with_tool_response(
+                    "call-2",
+                    Ok(CallToolResult {
+                        content: vec![rmcp::model::Content::text("more")],
+                        structured_content: None,
+                        is_error: Some(false),
+                        meta: None,
+                    }),
+                )
+                .pinned(),
+        ];
+
+        let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        assert!(
+            issues.iter().any(|i| i.contains("Merged consecutive tool")),
+            "a pin that can never be honoured must not block the merge: {issues:?}"
+        );
+        assert_eq!(fixed.len(), 3, "{:#?}", fixed.messages());
     }
 
     #[test]
