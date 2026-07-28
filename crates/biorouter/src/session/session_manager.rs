@@ -6555,7 +6555,11 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let manager = SessionManager::new(temp.path().to_path_buf());
         let parent = manager
-            .create_session(temp.path().to_path_buf(), "p".to_string(), SessionType::User)
+            .create_session(
+                temp.path().to_path_buf(),
+                "p".to_string(),
+                SessionType::User,
+            )
             .await
             .unwrap();
         let child = manager
