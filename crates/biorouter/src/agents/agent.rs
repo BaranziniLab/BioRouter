@@ -4010,6 +4010,7 @@ impl Agent {
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
                 for queued in self.drain_soft_interrupts() {
+                    let QueuedInterrupt { text, provenance } = queued;
                     // Frame ONLY agent-originated steers. This drain loop is
                     // SHARED with the human's own typed soft interrupt, which
                     // `queue_soft_interrupt` enqueues with `provenance: None` —
@@ -4026,26 +4027,25 @@ impl Agent {
                     // prompt-injection vector `frame_workspace_injection` exists
                     // to close. Exhaustiveness makes a new variant a compile
                     // error and forces an explicit framing decision.
-                    let mut m = match &queued.provenance {
+                    let body = match &provenance {
                         Some(p) => match p.kind {
-                            ProvenanceKind::AgentInjection => Message::user().with_text(
+                            ProvenanceKind::AgentInjection => {
                                 crate::conversation::message::frame_workspace_injection(
                                     p.from_session_name.as_deref(),
-                                    &queued.text,
-                                ),
-                            ),
+                                    &text,
+                                )
+                            }
                             // The human typed this into the subagent's own tab,
                             // or it is a spawn-context record this session
                             // authored — neither is another agent's text, so
                             // neither is framed.
-                            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => {
-                                Message::user().with_text(queued.text.clone())
-                            }
+                            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => text,
                         },
                         // Unstamped: the human's own typed soft interrupt.
-                        None => Message::user().with_text(queued.text.clone()),
+                        None => text,
                     };
-                    if let Some(p) = queued.provenance {
+                    let mut m = Message::user().with_text(body);
+                    if let Some(p) = provenance {
                         m = m.with_provenance(p);
                     }
                     // #41: adopt the minted uid — the retained/yielded copy
