@@ -90,10 +90,19 @@ pub struct StopAgentRequest {
 ///
 /// `WorkflowKnowledgeBases` already expresses a set plus one primary, which is
 /// exactly the session model — so this is a translation, not a schema change.
-/// Two rules earn their keep: a `default` that was not listed is unioned into
-/// the set (the invariant requires the primary to be a member, and the author
-/// clearly meant it), and a missing `default` only yields a primary when the
-/// set has exactly one member — never the first of several.
+///
+/// **The primary comes only from `default`.** A workflow that lists bases
+/// without naming one is a workflow with no primary, whatever the set size.
+/// Promoting a sole visible member looked harmless — "there is only one
+/// candidate, so it cannot be the wrong one" — but the merged model forbids
+/// *inventing* the pointer at all: it is the target of KB-less writes, so a
+/// promoted primary silently turns "I did not say where to write" into a
+/// commit into someone's base. With no primary, the write fails and names the
+/// candidates; the author who wanted the write target says so in `default`.
+///
+/// One rule still earns its keep: a `default` that was not listed in `visible`
+/// is unioned into the set, because the invariant requires the primary to be a
+/// member and the author plainly meant it.
 pub(crate) fn plan_workflow_knowledge_selection(
     selection: &WorkflowKnowledgeBases,
     all_base_ids: &[String],
@@ -107,12 +116,7 @@ pub(crate) fn plan_workflow_knowledge_selection(
         .filter(|id| !visible.contains(id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
-    let primary = match selection.default.clone() {
-        Some(default) => Some(default),
-        None if visible.len() == 1 => visible.iter().next().map(|id| id.to_string()),
-        None => None,
-    };
-    (hidden, primary)
+    (hidden, selection.default.clone())
 }
 
 fn apply_workflow_knowledge_selection(
@@ -1403,19 +1407,23 @@ mod knowledge_selection_tests {
         assert_eq!(primary.as_deref(), Some("c"));
     }
 
-    /// No `default`: one visible base is unambiguous, several are not — and
-    /// picking the first of several is exactly the silent data loss being
-    /// removed. A KB-less write then fails with a candidate list instead.
+    /// No `default` means **no primary**, at every set size. A one-base
+    /// workflow used to have its sole member promoted, which is the model's
+    /// forbidden move — inventing a pointer the author never wrote. The
+    /// author who wants that base to be the write target says so in `default`;
+    /// the author who lists it without a `default` gets a session whose
+    /// KB-less writes fail loudly naming `a` as the candidate.
     #[test]
-    fn workflow_without_a_default_only_infers_an_unambiguous_primary() {
+    fn workflow_without_a_default_never_invents_a_primary() {
         let all = ids(&["a", "b"]);
         let one = WorkflowKnowledgeBases {
             default: None,
             visible: ids(&["a"]),
         };
         assert_eq!(
-            plan_workflow_knowledge_selection(&one, &all).1.as_deref(),
-            Some("a")
+            plan_workflow_knowledge_selection(&one, &all).1,
+            None,
+            "a sole visible base is still not a primary the author chose"
         );
 
         let many = WorkflowKnowledgeBases {
