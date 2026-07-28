@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Input } from '../../ui/input';
 import { Button } from '../../ui/button';
 import { useConfig } from '../../ConfigContext';
+import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { cn } from '../../../utils';
 import { Save, RotateCcw, FileText, Settings } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
@@ -19,6 +20,7 @@ import {
 
 export default function ConfigSettings() {
   const { config, upsert } = useConfig();
+  const { currentProvider: liveProvider, refreshCurrentModelAndProvider } = useModelAndProvider();
   const typedConfig = config as ConfigData;
   const [configValues, setConfigValues] = useState<ConfigData>({});
   const [modifiedKeys, setModifiedKeys] = useState<Set<string>>(new Set());
@@ -108,7 +110,21 @@ export default function ConfigSettings() {
     setIsModalOpen(open);
   };
 
-  const currentProvider = typedConfig.BIOROUTER_PROVIDER || '';
+  // #50 — the ACTIVE provider, not the one this page happened to boot with.
+  // ConfigContext's `config` is refetched only when a write goes through that
+  // context, and switching model/provider writes straight to the API via
+  // `setConfigProvider` — so the cached copy keeps naming the provider that was
+  // configured at startup (the reported "current settings for ollama" while
+  // versa_azure was active). ModelAndProviderContext tracks the live one; the
+  // cached config value is only the fallback for the first paint, before the
+  // live value has loaded.
+  const currentProvider = liveProvider || typedConfig.BIOROUTER_PROVIDER || '';
+
+  // Opening Settings re-reads the provider from the backing config, so the
+  // label is also correct after a change made outside this renderer session.
+  useEffect(() => {
+    refreshCurrentModelAndProvider();
+  }, [refreshCurrentModelAndProvider]);
 
   const configEntries: [string, ConfigValue][] = useMemo(() => {
     const currentProviderPrefixes = providerPrefixes[currentProvider] || [];
