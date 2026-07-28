@@ -355,12 +355,14 @@ A tool row currently conveys its state almost entirely through its opening verb 
 |---|---|---|---|
 | **Thinking** | the **breathing dot**, kept exactly as it is | 6px core + expanding ring + breathing glow, one 1.8s period | elapsed, counting |
 | Queued | tool glyph, 55% opacity | none | — |
-| **Running** | tool glyph + breathing ring | a 2px accent hairline sweeps the row, 1.5s | elapsed, counting, after 2s |
+| **Running** | tool glyph + breathing ring | the ring alone — expanding and fading on a 1.8s period | elapsed, counting, after 2s |
 | Done | check in `--text-success` | none | elapsed + result summary |
 | Failed | alert in `--text-danger`, 5% danger wash on the row | none | elapsed |
 | Stopped | its own glyph, muted — never the pending dot | none | elapsed |
 
-The rules that make it work: **movement always means "still going"**, because the sweep is the only animated thing in the transcript; the sweep **stops and fades over `--dur-fast` rather than finishing its loop**, so motion ending *is* the completion signal; a finished row is completely still, which is what makes a running one findable three rows away; the live detail replaces itself rather than appending, so the row never grows; and under `prefers-reduced-motion` the sweep becomes a static 40%-opacity bar — the state still reads, the movement goes.
+The rules that make it work: **one motion, not two** — a sweeping progress bar along the row was tried and cut, because with the ring already breathing the row had two things moving for one fact; **movement always means "still going"**, and it should say so once; the ring **stops and fades over `--dur-fast` rather than finishing its cycle**, so motion ending *is* the completion signal; a finished row is completely still, which is what makes a running one findable three rows away; the live detail replaces itself rather than appending, so the row never grows; and under `prefers-reduced-motion` the ring holds still at 45% opacity — the state still reads, the movement goes.
+
+That leaves the transcript with exactly **one** running motif at three scales: the thinking dot, the tool ring, and the sidebar's session dot — same period, same construction, different sizes.
 
 This is additive. The collapsed row, the verb grammar and the humanised summaries are all kept; what it adds is a state the eye can find without reading.
 

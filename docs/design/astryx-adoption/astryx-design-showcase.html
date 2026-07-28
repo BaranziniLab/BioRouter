@@ -739,17 +739,9 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .chatrow .chev { transition:transform var(--dur-fast) var(--ease); }
 .chatrow[data-open="false"] .chev { transform:rotate(-90deg); }
 
-/* RUNNING — a 2px hairline sweeps the row's width. It is the only animated
-   thing in the transcript, it says "still going" without a spinner, and it
-   stops the moment the row resolves. */
-.chatrow--running::after {
-  content:""; position:absolute; left:8px; right:8px; bottom:0; height:2px; border-radius:999px;
-  background-image:linear-gradient(90deg, transparent, var(--accent), transparent);
-  background-size:45% 100%; background-repeat:no-repeat;
-  animation:toolsweep 1.5s var(--ease) infinite;
-}
-@keyframes toolsweep { from { background-position:-45% 0; } to { background-position:145% 0; } }
-/* the leading glyph breathes while running — the app's one working motif */
+/* RUNNING — the breathing ring around the glyph, and nothing else. A sweeping
+   bar was tried and cut: two motions competing on one row, where the ring
+   alone already says "still going" and matches the thinking dot beside it. */
 .chatrow--running .lead::after {
   content:""; position:absolute; inset:-3px; border-radius:999px;
   border:1px solid var(--accent); animation:breathe-ring 1.8s var(--ease) infinite;
@@ -776,8 +768,7 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .chatrow--stopped .lead, .chatrow--queued .lead { color:var(--ink-subtle); }
 .chatrow--queued { opacity:.55; }
 @media (prefers-reduced-motion:reduce) {
-  .chatrow--running::after { animation:none; background-size:100% 100%; opacity:.4; }
-  .chatrow--running .lead::after { animation:none; opacity:.4; }
+  .chatrow--running .lead::after { animation:none; opacity:.45; transform:scale(1.1); }
 }
 
 /* --- two-column ledgers -------------------------------------- */
@@ -1878,8 +1869,8 @@ IndexError: index out of range for axis 0 with size 18452</span>
           <div>
             <div class="lbl">How running reads</div>
             <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
-              <li>A <b>2px hairline sweeps the row</b> on a 1.5s loop — the indeterminate-progress motion from §11, borrowed at row scale. It is the only animated thing in the transcript, so movement always means "still going".</li>
-              <li>The leading glyph carries the <b>breathing ring</b>, the same motif as the sidebar's running dot and the chat's working indicator. One motion vocabulary, three sizes.</li>
+              <li>The leading glyph carries the <b>breathing ring</b> — an expanding, fading ring on a 1.8s period, the same motif as the thinking dot above it and the sidebar's running dot. That ring is the entire signal.</li>
+              <li><b>One motion, not two.</b> A sweeping progress bar along the row was tried and cut: with the ring already breathing, the row had two things moving for one fact. Movement in the transcript always means "still going", and it should say so once.</li>
               <li><b>Elapsed time counts up</b> in the right slot, and only appears after 2s — a tool that returns instantly should not flash a timer.</li>
               <li>The live detail (<code>· compiling biorouter-mcp</code>) is the one place the row changes text while open; it replaces itself rather than appending, so the row never grows.</li>
             </ul>
@@ -1887,11 +1878,11 @@ IndexError: index out of range for axis 0 with size 18452</span>
           <div>
             <div class="lbl">How finishing reads</div>
             <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
-              <li>The sweep <b>stops and fades</b> over <code>--dur-fast</code> — it does not run to the end of its loop first. Motion ending <i>is</i> the completion signal.</li>
+              <li>The ring <b>stops and fades</b> over <code>--dur-fast</code> — it does not finish its cycle first. Motion ending <i>is</i> the completion signal.</li>
               <li>The glyph swaps to a check in <code>--text-success</code> and the elapsed time freezes, gaining the result summary beside it.</li>
               <li>Nothing moves after that. A finished row is completely still, which is what makes a running one legible three rows away.</li>
               <li><b>Stopped is not pending.</b> It takes its own glyph and says who stopped it, so an interrupted call can never be mistaken for one that never began.</li>
-              <li>Under <code>prefers-reduced-motion</code> the sweep becomes a static 40%-opacity bar: the state still reads, the movement goes.</li>
+              <li>Under <code>prefers-reduced-motion</code> the ring holds still at 45% opacity: the state still reads, the movement goes.</li>
             </ul>
           </div>
         </div>
