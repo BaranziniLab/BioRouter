@@ -1916,6 +1916,65 @@ async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() 
     );
 }
 
+/// A 400 must mean *nothing happened*. The two halves of this body are applied
+/// together — the set first, so the primary can be validated against the state
+/// the request produces — and the write used to be ordered before the
+/// validation, so "hide beta, and point at a base that does not exist" returned
+/// an error while the hide stuck and the stored pointer was left outside the
+/// resulting set. A caller that treats 400 as "my request was ignored", which
+/// is the only reasonable reading, then held a stale picture of the session.
+///
+/// The service is where the ordering was fixed (decide-validate-commit); this
+/// test pins the property at the surface a client actually sees, across both
+/// scopes and both ways a body can be rejected.
+#[tokio::test]
+async fn a_rejected_post_leaves_the_selection_exactly_as_it_was() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+
+    for session in [None, Some("s1")] {
+        let mut base = serde_json::json!({"hidden_kbs": [], "primary_kb": "beta"});
+        if let Some(sid) = session {
+            base["session_id"] = serde_json::json!(sid);
+        }
+        let before = post_active(&app, base).await;
+        assert_eq!(before.0, 200);
+        assert_eq!(before.1["primary_kb"].as_str(), Some("beta"));
+
+        // Rejected two ways: a primary outside the resulting set, and a
+        // malformed id in the set itself. Both bodies also carry a hide that
+        // must not survive the rejection.
+        for bad in [
+            serde_json::json!({"hidden_kbs": ["beta"], "primary_kb": "ghost"}),
+            serde_json::json!({"hidden_kbs": ["beta", "../escape"]}),
+        ] {
+            let mut bad = bad;
+            if let Some(sid) = session {
+                bad["session_id"] = serde_json::json!(sid);
+            }
+            let rejected = post_active(&app, bad.clone()).await;
+            assert_eq!(rejected.0, 400, "expected a rejection for {bad}");
+
+            let after = get_active(&app, session).await;
+            assert_eq!(
+                after["kb_ids"],
+                serde_json::json!(["alpha", "beta"]),
+                "a rejected request must not narrow the set ({bad})"
+            );
+            assert_eq!(
+                after["hidden_kbs"],
+                serde_json::json!([]),
+                "a rejected request must not persist its hide ({bad})"
+            );
+            assert_eq!(
+                after["primary_kb"].as_str(),
+                Some("beta"),
+                "a rejected request must not move the pointer ({bad})"
+            );
+        }
+    }
+}
+
 /// The merged model's one invariant, at the wire. A primary that is not in the
 /// resulting set is rejected with both halves named; the un-hide and the
 /// re-point travel in ONE body so the GUI's "make primary" on an off row is a
